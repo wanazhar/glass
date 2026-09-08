@@ -37,6 +37,7 @@ bounded-paint-color-important/bounded-physical-border-color-important,
 bounded-logical-border-color-important/bounded-text-presentation-important/
 bounded-local-presentation-important,
 bounded-flex-gap-important/bounded-dimension-important/bounded-box-model-important/
+bounded-logical-box-model-edges/
 bounded-overflow-important,
 bounded-physical-border-width-important,
 bounded-physical-border-style-important,
@@ -188,7 +189,15 @@ precedence, invalid-later preservation, independent axis projection, and
 `revert-layer !important` rollback through the existing clip, root-overflow,
 layout, display-list, raster, capture, point-hit, and semantic/source-order
 owners. Nested scrolling, visible/auto/scroll used-value parity, and
-remaining properties retain their existing bounded behavior, and
+remaining properties retain their existing bounded behavior. The horizontal-tb
+logical `padding-block`/`padding-inline` and `margin-block`/`margin-inline`
+shorthands plus their block/inline start/end longhands project through resolved
+`ltr`/`rtl` direction into those physical edge owners, sharing their per-edge
+important-over-normal, reversed-layer, inline-important, invalid-later, and
+`revert-layer` behavior; logical `box-sizing`, vertical writing modes, and
+other logical properties remain outside the boundary. The existing geometry,
+normal-flow/flex, overflow, display-list, raster, capture, point-hit, and
+semantic/source-order owners remain unchanged, and
 bounded block-level `display:flex` single-row placement for eligible direct
 element children, and
 bounded one-value non-negative fixed-pixel `gap` spacing between visible flex
@@ -1662,6 +1671,24 @@ focused units/integration, full native integration (230/230), strict Clippy,
 warning-denied rustdoc, and formatting pass locally; final static, paired-crate,
 package, workspace, security/fuzz, cleanup, issue-level, and remote-CI gates
 remain pending.
+
+The completed dependency-ordered `native-engine-193` slice is recorded in
+`docs/plan/tasks/native-engine-193.md` and implemented at `3e78c246` (design
+`03bcf403`). It adds bounded horizontal-tb logical `padding-block`,
+`padding-inline`, `margin-block`, and `margin-inline` shorthands plus their
+block/inline start/end longhands. Resolved `ltr`/`rtl` direction projects the
+logical edges into the existing physical per-edge candidate streams, preserving
+important-over-normal ordering, reversed named-layer priority, inline-important
+precedence, invalid-later behavior, same-rule physical/logical source order,
+`auto` margin provenance, and `revert-layer` rollback through the existing
+geometry, normal-flow/flex, overflow, display-list, raster, capture, point-hit,
+and semantic/source-order owners. Logical `box-sizing`, vertical writing modes,
+percentages, negative lengths, margin collapsing, positioning, CSS-wide reset
+keywords, and browser-wide conformance remain outside this slice. Scoped check,
+focused parser/integration tests, full native integration (231/231), strict
+Clippy, warning-denied rustdoc, and formatting pass locally; final static,
+paired-crate, package, workspace, security/fuzz, cleanup, issue-level, and
+remote-CI gates remain pending.
 
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list

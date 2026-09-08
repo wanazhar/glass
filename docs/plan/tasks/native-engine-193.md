@@ -1,7 +1,7 @@
 ---
 id: native-engine-193
 scope: glass-browser/native-engine/logical-box-model-edges
-status: planned
+status: complete
 depends-on: [native-engine-192]
 ---
 
@@ -90,6 +90,29 @@ targets, issue snapshots, and unrelated workloads remain untouched.
 
 ## Completion evidence
 
-To be filled after implementation and local certification. Remote CI, push,
-release, tag, registry publication, browser parity, security-boundary
-certification, and promotion remain outside this local task.
+- Design checkpoint: `03bcf403`.
+- Implementation checkpoint: `3e78c246`.
+- Locked native-feature check passed in an isolated task target.
+- The focused parser/cascade unit and logical-edge integration regression passed.
+- The complete native integration target passed: `231 passed; 0 failed; 0
+  ignored`.
+- Strict native-feature Clippy and warnings-denied rustdoc passed, as did
+  formatting and `git diff --check`.
+- The integration fixture covered ltr/rtl projection, physical/logical
+  competition, content-box geometry, normal-flow and flex auto margins,
+  overflow/scroll projection, display-list/raster/PNG capture, point-hit, and
+  semantic/source-order outputs.
+- Static gates passed: release-documentation truth reported 607 Markdown
+  documents, 83 current documents, 57 previous-version hits, 704 semantic
+  audit hits, and 0 current-claim failures; documentation depth reported 93
+  current guides and 19 substantive contracts; the TUI shortcut inventory
+  reported 15 implementation help keys and 63 documentation markers.
+- After confirming no Cargo/Rust process and no open handle referenced them,
+  the exact `/tmp/glass-193-focused` target (3,864,645,685 bytes; 6,973 files;
+  844 directories) and exact `/tmp/glass-release-documentation-193.json`
+  report (193,648 bytes) were removed with bounded `find -P -xdev -depth
+  -delete`. Both paths were verified absent; filesystem free space increased
+  from the observed 73G rounded value to 77G.
+
+Remote CI, push, release, tag, registry publication, browser parity,
+security-boundary certification, and promotion remain outside this local task.

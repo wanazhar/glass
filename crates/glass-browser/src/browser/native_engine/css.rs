@@ -254,6 +254,10 @@ impl NativeTextDecorationThicknessDeclaration {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeTextUnderlineOffsetDeclaration {
     Value(i32),
+    Inherit,
+    Initial,
+    Unset,
+    Revert,
     RevertLayer,
 }
 
@@ -261,6 +265,8 @@ impl NativeTextUnderlineOffsetDeclaration {
     const fn resolve(self, inherited: i32) -> i32 {
         match self {
             Self::Value(value) => value,
+            Self::Inherit | Self::Unset | Self::Revert => inherited,
+            Self::Initial => 0,
             Self::RevertLayer => inherited,
         }
     }
@@ -7305,8 +7311,13 @@ fn parse_text_decoration_thickness(
 
 fn parse_text_underline_offset(value: &str) -> Option<NativeTextUnderlineOffsetDeclaration> {
     let value = value.trim();
-    if value.eq_ignore_ascii_case("revert-layer") {
-        return Some(NativeTextUnderlineOffsetDeclaration::RevertLayer);
+    match value.to_ascii_lowercase().as_str() {
+        "inherit" => return Some(NativeTextUnderlineOffsetDeclaration::Inherit),
+        "initial" => return Some(NativeTextUnderlineOffsetDeclaration::Initial),
+        "unset" => return Some(NativeTextUnderlineOffsetDeclaration::Unset),
+        "revert" => return Some(NativeTextUnderlineOffsetDeclaration::Revert),
+        "revert-layer" => return Some(NativeTextUnderlineOffsetDeclaration::RevertLayer),
+        _ => {}
     }
     let value = value.to_ascii_lowercase();
     let value = value.strip_suffix("px")?.trim();
@@ -14097,7 +14108,7 @@ mod tests {
     }
 
     #[test]
-    fn text_underline_offset_parser_accepts_only_bounded_signed_pixels() {
+    fn text_underline_offset_parser_accepts_css_wide_resets_and_bounded_signed_pixels() {
         assert_eq!(NativeInheritedStyle::default().text_underline_offset, 0);
         assert_eq!(
             parse_text_underline_offset("-4px"),
@@ -14121,6 +14132,22 @@ mod tests {
             parse_text_underline_offset("ReVeRt-LaYeR"),
             Some(NativeTextUnderlineOffsetDeclaration::RevertLayer)
         );
+        assert_eq!(
+            parse_text_underline_offset("InHeRiT"),
+            Some(NativeTextUnderlineOffsetDeclaration::Inherit)
+        );
+        assert_eq!(
+            parse_text_underline_offset("InItIaL"),
+            Some(NativeTextUnderlineOffsetDeclaration::Initial)
+        );
+        assert_eq!(
+            parse_text_underline_offset("UnSeT"),
+            Some(NativeTextUnderlineOffsetDeclaration::Unset)
+        );
+        assert_eq!(
+            parse_text_underline_offset("ReVeRt"),
+            Some(NativeTextUnderlineOffsetDeclaration::Revert)
+        );
         assert_eq!(parse_text_underline_offset("-5px"), None);
         assert_eq!(parse_text_underline_offset("5px"), None);
         assert_eq!(parse_text_underline_offset("+1px"), None);
@@ -14128,6 +14155,35 @@ mod tests {
         assert_eq!(parse_text_underline_offset("auto"), None);
         assert_eq!(parse_text_underline_offset("10%"), None);
         assert_eq!(parse_text_underline_offset("2px 3px"), None);
+        assert_eq!(parse_text_underline_offset("inherit initial"), None);
+    }
+
+    #[test]
+    fn text_underline_offset_css_wide_resets_follow_parent_and_initial() {
+        let document = NativeDocument::parse(
+            "<style>#parent { text-underline-offset: -3px; } #initial { text-underline-offset: initial; } #inherit { text-underline-offset: inherit; } #unset { text-underline-offset: unset; } #revert { text-underline-offset: revert; } #invalid { text-underline-offset: 4px; text-underline-offset: 5px; } #important { text-underline-offset: -2px !important; } #important { text-underline-offset: 0px; }</style><div id='parent'><span id='initial'>Initial</span><span id='inherit'>Inherit</span><span id='unset'>Unset</span><span id='revert'>Revert</span><span id='invalid'>Invalid</span><span id='important'>Important</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .text_underline_offset()
+        };
+
+        assert_eq!(
+            document
+                .computed_style_for_layout(document.root())
+                .text_underline_offset(),
+            0
+        );
+        assert_eq!(style("parent"), -3);
+        assert_eq!(style("initial"), 0);
+        assert_eq!(style("inherit"), -3);
+        assert_eq!(style("unset"), -3);
+        assert_eq!(style("revert"), -3);
+        assert_eq!(style("invalid"), 4);
+        assert_eq!(style("important"), -2);
     }
 
     #[test]

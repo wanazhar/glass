@@ -2208,6 +2208,17 @@ integration (248/248) and the feature library (1,031 passed, 1 ignored) pass
 locally. Remote CI, push, release, tag, and registry publication remain
 unclaimed.
 
+The completed dependency-ordered [native-engine-211](tasks/native-engine-211.md)
+slice is implemented at `29e23b4a` (design `c5c36b40`). It adds bounded
+standalone case-insensitive `initial`, `unset`, and one-author-origin `revert`
+to local `align-items`, retaining finite cross-axis values and `revert-layer`
+rollback. Reset forms reuse the existing bounded `flex-start` fallback while
+important/source order, invalid-later preservation, cross-axis placement,
+`align-self` overrides, flex sizing, display-list, raster/PNG, point-hit,
+diagnostics, and the two-crate boundary remain bounded. Full native integration
+(249/249) and the feature library (1,032 passed, 1 ignored) pass locally.
+Remote CI, push, release, tag, and registry publication remain unclaimed.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

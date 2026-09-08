@@ -431,9 +431,11 @@ named-layer rollback and mixed/unsupported forms remain bounded,
   initial defaults; standalone `initial|unset|revert` reset forms for local
   flex-item `order` resolve through the existing local resolver to finite `0`;
   standalone `initial|unset|revert` reset forms for local `justify-content`
-  reuse the existing bounded `flex-start` fallback; `inherit`, percentages,
-  negative/fractional/intrinsic basis values, and other alignment owners remain
-  outside the boundary, plus bounded
+  reuse the existing bounded `flex-start` fallback; standalone
+  `initial|unset|revert` reset forms for local `align-items` reuse the existing
+  bounded `flex-start` fallback; `inherit`, percentages,
+  negative/fractional/intrinsic basis values, `align-self`, `align-content`,
+  and `place-content` remain outside the boundary, plus bounded
   case-insensitive gap-family
   `revert-layer` rollback for `gap`, `row-gap`, and `column-gap` with
   independent finite-pixel components, plus standalone case-insensitive
@@ -777,9 +779,11 @@ projection, and point hit-testing,
   initial defaults; standalone `initial|unset|revert` reset forms for local
   flex-item `order` resolve through the existing local resolver to finite `0`;
   standalone `initial|unset|revert` reset forms for local `justify-content`
-  reuse the existing bounded `flex-start` fallback; `inherit`, percentages,
-  negative/fractional/intrinsic basis values, and other alignment owners remain
-  outside the boundary, plus bounded
+  reuse the existing bounded `flex-start` fallback; standalone
+  `initial|unset|revert` reset forms for local `align-items` reuse the existing
+  bounded `flex-start` fallback; `inherit`, percentages,
+  negative/fractional/intrinsic basis values, `align-self`, `align-content`,
+  and `place-content` remain outside the boundary, plus bounded
   case-insensitive gap-family
   `revert-layer` rollback for `gap`, `row-gap`, and `column-gap` with
   independent finite-pixel components, plus standalone case-insensitive

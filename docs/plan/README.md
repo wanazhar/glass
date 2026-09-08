@@ -2498,6 +2498,22 @@ locally. Full issue-level gates, remote CI, push, release, tag, registry
 publication, browser-parity, security-boundary, and promotion remain
 unclaimed.
 
+The completed dependency-ordered [native-engine-234](tasks/native-engine-234.md)
+slice is implemented at `8a96f56b` (design `b2119e5f`). It accepts bounded
+standalone case-insensitive `overflow: visible|auto|scroll`,
+`overflow-x: visible|auto|scroll`, and `overflow-y: visible|auto|scroll`
+values as the existing visible/no-clip projection, without nested scroll
+containers or scrollbar artifacts. It preserves explicit `inherit`, CSS-wide
+reset forms, named-layer `revert-layer`, priority, axis-specific clipping,
+root scroll projection, display-list, fixed-cell raster/PNG, point-hit,
+semantics, diagnostics, and the two-crate boundary. The focused no-clip pair
+passed 1 library-target test and 1 native integration test; the broader
+overflow-filtered regression batch passed 11 library-target tests and 21
+matching native integration tests; and the scoped check plus formatting/diff
+checks passed locally. Full issue-level gates, remote CI, push, release, tag,
+registry publication, browser-parity, security-boundary, and promotion remain
+unclaimed.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

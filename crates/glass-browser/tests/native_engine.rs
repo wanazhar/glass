@@ -17158,6 +17158,127 @@ fn native_flex_direction_inherit_reaches_nested_layout_and_artifacts() {
 }
 
 #[test]
+fn native_flex_wrap_inherit_reaches_wrapped_layout_and_artifacts() {
+    let document = NativeDocument::parse(
+        concat!(
+            "<style>",
+            "#parent{flex-wrap:wrap-reverse;}",
+            ".row{display:flex;width:20px;height:40px;gap:2px;align-items:flex-start;align-content:flex-start;}",
+            "#inherited{flex-wrap:InHeRiT;}",
+            "#invalid{flex-wrap:wrap;flex-wrap:inherit wrap;}",
+            "#flow{flex-flow:row wrap;flex-wrap:inherit;}",
+            ".item{width:8px;height:6px;flex-shrink:0;}",
+            "</style>",
+            "<div id='parent'>",
+            "<div id='inherited' class='row'><button id='inherited-first' class='item' style='background-color:red'><span id='nested'>A</span></button><button id='inherited-second' class='item'>B</button><button id='inherited-third' class='item'>C</button></div>",
+            "<div id='omitted' class='row'><button id='omitted-first' class='item'>D</button><button id='omitted-second' class='item'>E</button><button id='omitted-third' class='item'>F</button></div>",
+            "<div id='invalid' class='row'><button id='invalid-first' class='item'>G</button><button id='invalid-second' class='item'>H</button><button id='invalid-third' class='item'>I</button></div>",
+            "<div id='flow' class='row'><button id='flow-first' class='item'>J</button><button id='flow-second' class='item'>K</button><button id='flow-third' class='item'>L</button></div>",
+            "</div>"
+        ),
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 24,
+        height: 180,
+        device_scale_factor_milli: 1000,
+    };
+    let target = |id: &str| document.resolve_target(&format!("id={id}")).unwrap();
+    let inherited = target("inherited");
+    let inherited_first = target("inherited-first");
+    let inherited_second = target("inherited-second");
+    let inherited_third = target("inherited-third");
+    let nested = target("nested");
+    let omitted = target("omitted");
+    let omitted_first = target("omitted-first");
+    let omitted_second = target("omitted-second");
+    let omitted_third = target("omitted-third");
+    let invalid = target("invalid");
+    let invalid_first = target("invalid-first");
+    let invalid_third = target("invalid-third");
+    let flow = target("flow");
+    let flow_first = target("flow-first");
+    let flow_third = target("flow-third");
+
+    let layout = document.layout(viewport).unwrap();
+    let inherited_box = layout.box_for(inherited).unwrap();
+    let inherited_first_box = layout.box_for(inherited_first).unwrap();
+    let inherited_second_box = layout.box_for(inherited_second).unwrap();
+    let inherited_third_box = layout.box_for(inherited_third).unwrap();
+    let omitted_box = layout.box_for(omitted).unwrap();
+    let omitted_first_box = layout.box_for(omitted_first).unwrap();
+    let omitted_second_box = layout.box_for(omitted_second).unwrap();
+    let omitted_third_box = layout.box_for(omitted_third).unwrap();
+    let invalid_box = layout.box_for(invalid).unwrap();
+    let invalid_first_box = layout.box_for(invalid_first).unwrap();
+    let invalid_third_box = layout.box_for(invalid_third).unwrap();
+    let flow_box = layout.box_for(flow).unwrap();
+    let flow_first_box = layout.box_for(flow_first).unwrap();
+    let flow_third_box = layout.box_for(flow_third).unwrap();
+
+    assert_eq!(inherited_first_box.x, inherited_box.x);
+    assert_eq!(inherited_second_box.x, inherited_box.x + 10);
+    assert_eq!(inherited_first_box.y, inherited_box.y + 34);
+    assert_eq!(inherited_second_box.y, inherited_box.y + 34);
+    assert_eq!(inherited_third_box.y, inherited_box.y + 26);
+    assert_eq!(omitted_first_box.y, omitted_box.y);
+    assert_eq!(omitted_second_box.y, omitted_box.y);
+    assert_eq!(omitted_third_box.y, omitted_box.y);
+    assert!(omitted_third_box.x > omitted_second_box.x);
+    assert_eq!(invalid_first_box.y, invalid_box.y);
+    assert_eq!(invalid_third_box.y, invalid_box.y + 8);
+    assert_eq!(flow_first_box.y, flow_box.y + 34);
+    assert_eq!(flow_third_box.y, flow_box.y + 26);
+
+    assert_eq!(
+        document.node(inherited).unwrap().children(),
+        &[inherited_first, inherited_second, inherited_third]
+    );
+    let semantic_nodes = document.semantic_nodes();
+    assert!(
+        semantic_nodes
+            .iter()
+            .position(|node| node.node_id == inherited_first)
+            .unwrap()
+            < semantic_nodes
+                .iter()
+                .position(|node| node.node_id == inherited_second)
+                .unwrap()
+    );
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == inherited_first
+                    && rect.y == inherited_first_box.y
+                    && *color == NativeColor::RED
+        )
+    }));
+    assert_eq!(
+        layout
+            .hit_test(
+                i64::from(inherited_first_box.x + 1),
+                i64::from(inherited_first_box.y + 1),
+            )
+            .unwrap(),
+        Some(nested)
+    );
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(inherited_first_box.x + 1, inherited_first_box.y + 1),
+        Some([255, 0, 0, 255])
+    );
+    assert!(!surface.to_png().unwrap().is_empty());
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "flex-wrap"
+    }));
+}
+
+#[test]
 fn native_flex_align_self_stretch_fills_auto_height_and_preserves_explicit_size() {
     let document = NativeDocument::parse(
         "<div id='row' style='display:flex;width:30px;height:32px;gap:2px;align-items:center'><div id='stretched' style='width:8px;align-self:stretch;background-color:red'><span id='nested' style='display:block;height:2px'>F</span></div><div id='explicit' style='width:8px;height:8px;align-self:stretch;background-color:green'>E</div><div id='inset' style='width:8px;box-sizing:border-box;padding:1px;border:1px solid blue;max-height:24px;align-self:stretch;background-color:blue'>I</div></div>",

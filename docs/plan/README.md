@@ -2469,6 +2469,21 @@ integration (1 test), full-native integration (269/269), the feature library
 push, release, tag, registry publication, browser-parity, security-boundary,
 and promotion remain unclaimed.
 
+The completed dependency-ordered [native-engine-232](tasks/native-engine-232.md)
+slice is implemented at `1a7df31b` (design `0a617b8c`, contract clarification
+`2e8bcf9a`). It adds bounded standalone case-insensitive `overflow: inherit`,
+`overflow-x: inherit`, and `overflow-y: inherit` through the existing private
+parent-style chain, copying the parent's effective clip/no-clip axis
+projections only when explicitly authored while omitted overflow remains local
+with the visible/no-clip fallback. It preserves shorthand/longhand and
+important precedence, mixed-invalid preservation, axis-specific clip/scroll
+projection, display-list, fixed-cell raster/PNG, point-hit, semantic/source
+order, diagnostics, and the two-crate boundary. The focused batch passed all 9
+library-target tests and 19 matching native integration tests, and the scoped
+native-feature check plus formatting/diff checks passed locally. Full issue-level
+gates, remote CI, push, release, tag, registry publication, browser-parity,
+security-boundary, and promotion remain unclaimed.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

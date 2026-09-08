@@ -1,7 +1,7 @@
 ---
 id: native-engine-232
 scope: glass-browser/native-engine/overflow-inherit
-status: planned
+status: complete
 depends-on: [native-engine-231]
 ---
 
@@ -99,6 +99,26 @@ targets, issue snapshots, and unrelated workloads remain untouched.
 
 ## Completion evidence
 
-Pending implementation and local certification. Remote CI, push, release, tag,
-registry publication, browser-parity, security-boundary certification, and
-promotion remain outside this local task.
+Implementation and local certification are complete at `1a7df31b`; the task
+contract wording clarification is `2e8bcf9a` and the design checkpoint is
+`0a617b8c`. The scoped native-feature test-target check passed before tests.
+The focused overflow-filtered batch passed all 9 library-target tests and all
+19 matching native integration tests, including the new inherited-axis
+clip/scroll/display-list/raster/PNG/point-hit/semantic/diagnostic fixture.
+Formatting and diff checks pass. The implementation copies the parent's
+effective clip/no-clip projection through private x/y inherited fields; it does
+not preserve hidden-versus-clip spelling and does not add public style fields,
+dependencies, feature defaults, layout schema, or a crate boundary. Full
+issue-level native integration, feature-library, strict lint, rustdoc, paired
+two-crate, package, security/fuzz, static documentation, workspace,
+clean-install, remote-CI, issue-sync, and bounded-cleanup gates remain for the
+broader issue completion boundary. Remote CI, push, release, tag, registry
+publication, browser-parity, security-boundary certification, and promotion
+remain outside this local task.
+Static documentation checks also pass: release truth reports 646 Markdown
+documents (83 current, 59 previous-version hits, 832 semantic audit hits, 0
+current-claim failures); coverage reports 646 Markdown files, 345 full-product
+MCP tools (100 browser-only), 17 examples, and 22 public modules; depth reports
+93 current guides and 19 substantive contracts; feature parity reports 14
+capabilities across 4 targets; TUI reports 15 implementation help keys and 63
+documentation markers; and version sync reports `0.3.14`.

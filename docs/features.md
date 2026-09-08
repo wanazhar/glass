@@ -407,6 +407,12 @@ named-layer rollback and mixed/unsupported forms remain bounded,
   `clip|ellipsis` value only when explicitly authored and omitted
   `text-overflow` remains local; negative/fractional or percentage indentation
   and browser-wide overflow conformance remain outside the boundary,
+  standalone case-insensitive `overflow:inherit`, `overflow-x:inherit`, and
+  `overflow-y:inherit` likewise copy the parent's effective bounded clip/no-clip
+  axis projections only when explicitly authored while omitted overflow remains
+  local with the visible/no-clip fallback; hidden-versus-clip spelling,
+  nested scrolling, scrollbars, and browser-wide overflow conformance remain
+  outside the boundary,
   bounded inherited `vertical-align:baseline|top|middle|bottom` offsets for
   fixed-cell inline and inline-block line items within the existing line box,
   plus bounded case-insensitive 15-layer/unlayered inherited `revert-layer`
@@ -809,6 +815,12 @@ projection, and point hit-testing,
   `clip|ellipsis` value only when explicitly authored and omitted
   `text-overflow` remains local; negative/fractional or percentage indentation
   and browser-wide overflow conformance remain outside the boundary,
+  standalone case-insensitive `overflow:inherit`, `overflow-x:inherit`, and
+  `overflow-y:inherit` likewise copy the parent's effective bounded clip/no-clip
+  axis projections only when explicitly authored while omitted overflow remains
+  local with the visible/no-clip fallback; hidden-versus-clip spelling,
+  nested scrolling, scrollbars, and browser-wide overflow conformance remain
+  outside the boundary,
   bounded inherited `vertical-align:baseline|top|middle|bottom` offsets for
   fixed-cell inline and inline-block line items within the existing line box,
   plus bounded case-insensitive 15-layer/unlayered inherited `revert-layer`

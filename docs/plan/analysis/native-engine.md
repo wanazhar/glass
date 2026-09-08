@@ -2447,11 +2447,13 @@ visual stacking.
 | `native-engine-203` | completed bounded standalone case-insensitive `inherit`, `initial`, `unset`, and one-author-origin `revert` for the inherited `text-decoration-line` three-bit owner and existing bounded `text-decoration` shorthand route; parent/root fallback, finite line combinations, `none` initial behavior, terminal reset semantics, invalid-later preservation, `revert-layer` distinction, shorthand/longhand source order, display-list, fixed-cell raster, PNG capture, diagnostics, public schemas, and the two-crate boundary remain bounded; implementation `73c00616`; locked scoped check, focused parser/cascade/integration, full-native integration (241/241), feature library (1,023 passed, 1 ignored), paired binaries, strict Clippy, warning-denied rustdoc, workspace all-target/all-feature tests, doctests, fuzz, package, security, static audits, and formatting passed locally | `native-engine-202` | full text-decoration shorthand expansion, `all`, additional origins, transitions, animations, generic CSS-wide machinery, layout/geometry changes, font metrics, and browser-wide text-decoration conformance |
 | `native-engine-204` | completed bounded standalone case-insensitive `inherit`, `initial`, `unset`, and one-author-origin `revert` for inherited signed `text-underline-offset:-4px..=4px`; parent/root fallback, `0px` initial behavior, terminal reset semantics, invalid-later preservation, `revert-layer` distinction, important/source order, underline-only movement, overline/line-through preservation, display-list, fixed-cell raster, PNG capture, diagnostics, public schemas, and the two-crate boundary remain bounded; implementation `c82773e2`; locked scoped check, focused parser/cascade/integration, full-native integration (242/242), feature library (1,024 passed, 1 ignored), paired binaries, strict Clippy, warning-denied rustdoc, workspace all-target/all-feature tests, doctests, fuzz, package, security, static audits, and formatting passed locally | `native-engine-203` | `auto`, percentages, fractional/font-derived values, dimensions outside the bounded range, additional origins, transitions, animations, generic CSS-wide machinery, decoration-origin propagation, geometry/layout changes, and browser-wide text-decoration conformance |
 | `native-engine-205` | completed bounded standalone case-insensitive `initial`, `unset`, and one-author-origin `revert` for local `gap`, `row-gap`, and `column-gap`; zero-gap reset fallback, finite non-negative pixel values, `revert-layer` distinction, shorthand/longhand axis projection, important/source order, invalid-later preservation, flex placement, display-list, fixed-cell raster, PNG capture, hit testing, diagnostics, public schemas, and the two-crate boundary remain bounded; implementation `46128c2e`; locked scoped check, focused parser/cascade/integration, full-native integration (243/243), feature library (1,025 passed, 1 ignored), paired binaries, strict Clippy, warning-denied rustdoc, workspace all-target/all-feature tests, doctests, fuzz, package, security, static audits, and formatting passed locally | `native-engine-204` | `inherit`, parent-gap propagation, percentages, fractional/intrinsic values, dimensions outside the bounded range, additional origins, transitions, animations, generic CSS-wide machinery, grid track sizing, and browser-wide gap conformance |
+| `native-engine-206` | completed bounded standalone case-insensitive `initial`, `unset`, and one-author-origin `revert` for local `text-indent` and `text-overflow`; reset forms resolve to finite `0px` and `clip` fallbacks, preserving non-negative fixed-pixel indentation, `clip|ellipsis`, `revert-layer` distinction, important/source order, invalid-later preservation, first-line layout, eligible truncation, display-list, fixed-cell raster, PNG capture, point-hit, diagnostics, public schemas, and the two-crate boundary; implementation `b7bd9ace`; locked scoped check, focused parser/cascade/integration, full-native integration (244/244), feature library (1,026 passed, 1 ignored), paired binaries, strict Clippy, warning-denied rustdoc, workspace all-target/all-feature tests, doctests, fuzz, package, security, static audits, and formatting passed locally | `native-engine-205` | `inherit`, parent propagation, negative/fractional/percentage indentation, additional origins, transitions, animations, generic CSS-wide machinery, ellipsis layout expansion, multi-line/nested-inline truncation, and browser-wide text/overflow conformance |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-205.md` is the latest completed task;
+`docs/plan/tasks/native-engine-206.md` is the latest completed task;
+`docs/plan/tasks/native-engine-205.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-204.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-203.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-202.md` is the preceding completed task;
@@ -2593,20 +2595,24 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 The current completed checkpoint is recorded for
-`docs/plan/tasks/native-engine-205.md`: implementation is `46128c2e` (design
-`8852adee`). It adds standalone case-insensitive `initial`, `unset`, and
-one-author-origin `revert` to local `gap`, `row-gap`, and `column-gap`,
-retaining finite non-negative pixel values and `revert-layer` as the
-named-layer rollback. Zero-gap reset fallback, shorthand/longhand axis
-projection, important/source-order behavior, invalid-later preservation, flex
-placement, display-list, raster, PNG capture, hit testing, diagnostics, schema,
-and two-crate owners remain bounded. The locked scoped native check, focused
-parser/cascade/integration coverage, full native integration (243/243),
-feature library (1,025 passed, 1 ignored), paired binaries, strict Clippy,
-warning-denied rustdoc, workspace all-target/all-feature tests, doctests, fuzz,
-package, security audits, static documentation gates, and formatting/diff checks
-passed. The direct registry-backed dev package verification remains blocked by
-the immutable public `glass-browser 0.3.14` API surface; the canonical local
+`docs/plan/tasks/native-engine-206.md`: implementation is `b7bd9ace` (design
+`82c31c9a`). It adds standalone case-insensitive `initial`, `unset`, and
+one-author-origin `revert` to local `text-indent` and `text-overflow`, retaining
+finite non-negative fixed-pixel indentation, `clip|ellipsis`, and
+`revert-layer` as the named-layer rollback. Reset forms use the existing `0px`
+and `clip` fallbacks; important/source-order behavior, invalid-later
+preservation, first-line layout, eligible truncation, display-list, raster,
+PNG capture, point-hit, diagnostics, schema, and two-crate owners remain
+bounded. The locked scoped native check, focused parser/cascade/integration
+coverage, full native integration (244/244), feature library (1,026 passed, 1
+ignored), paired binaries, strict Clippy, warning-denied rustdoc, workspace
+all-target/all-feature tests (serial test harness), doctests, fuzz, package,
+security audits, static documentation gates, and formatting/diff checks passed.
+The workspace matrix's default parallel run exposed an existing process-ID
+temporary-directory teardown collision in an unrelated `glass-dev` test; the
+same matrix passed with `--test-threads=1`, and the isolated test passed on its
+own. The direct registry-backed dev package verification remains blocked by the
+immutable public `glass-browser 0.3.14` API surface; the canonical local
 patched/no-verify route passes. Remote CI, push, release, tag, registry
 publication, browser-parity, security-boundary, or promotion claims are not
 made.

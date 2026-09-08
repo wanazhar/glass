@@ -398,6 +398,12 @@ named-layer rollback and mixed/unsupported forms remain bounded,
   direct text,
   plus bounded case-insensitive 15-layer/unlayered local `revert-layer` rollback
   for `text-overflow` with a finite `clip` fallback,
+  plus standalone case-insensitive `initial`, `unset`, and one-author-origin
+  `revert` reset forms for both local owners: `text-indent` uses finite `0px`
+  and `text-overflow` uses `clip`; `revert-layer` remains named-layer rollback,
+  while `inherit`, parent propagation, negative/fractional or percentage
+  indentation, and browser-wide overflow conformance remain outside the
+  boundary,
   bounded inherited `vertical-align:baseline|top|middle|bottom` offsets for
   fixed-cell inline and inline-block line items within the existing line box,
   plus bounded case-insensitive 15-layer/unlayered inherited `revert-layer`
@@ -726,6 +732,12 @@ projection, and point hit-testing,
   direct text,
   plus bounded case-insensitive 15-layer/unlayered local `revert-layer` rollback
   for `text-overflow` with a finite `clip` fallback,
+  plus standalone case-insensitive `initial`, `unset`, and one-author-origin
+  `revert` reset forms for both local owners: `text-indent` uses finite `0px`
+  and `text-overflow` uses `clip`; `revert-layer` remains named-layer rollback,
+  while `inherit`, parent propagation, negative/fractional or percentage
+  indentation, and browser-wide overflow conformance remain outside the
+  boundary,
   bounded inherited `vertical-align:baseline|top|middle|bottom` offsets for
   fixed-cell inline and inline-block line items within the existing line box,
   plus bounded case-insensitive 15-layer/unlayered inherited `revert-layer`

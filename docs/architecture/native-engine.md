@@ -32,6 +32,7 @@ bounded-inherited-text-spacing-revert-layer,
 bounded-inherited-vertical-align-revert-layer,
 bounded-local-text-geometry-revert-layer,
 bounded-local-dimension-revert-layer,
+bounded-local-text-indent-overflow-css-wide-resets,
 bounded-local-box-model-revert-layer,
 bounded-paint-color-revert-layer,
 bounded-paint-color-important/bounded-physical-border-color-important,
@@ -1926,6 +1927,21 @@ point-hit, fixed-cell raster, PNG capture, diagnostics, and the two-crate
 boundary remain bounded; parent-gap propagation, `inherit`, percentages,
 fractional/intrinsic values, and generic CSS-wide machinery remain outside the
 contract. Full native integration (243/243) and the feature library (1,025
+passed, 1 ignored) pass locally. Remote CI, push, release, tag, and registry
+publication remain unclaimed for this local-only checkout.
+
+The completed dependency-ordered `native-engine-206` slice is recorded in
+`docs/plan/tasks/native-engine-206.md` and implemented at `b7bd9ace` (design
+`82c31c9a`). It extends the local `text-indent` and `text-overflow` owners with
+standalone case-insensitive `initial`, `unset`, and one-author-origin `revert`,
+retaining finite non-negative fixed-pixel indentation, `clip|ellipsis`, and
+`revert-layer` rollback. `text-indent` reset forms use the existing `0px`
+fallback and `text-overflow` reset forms use `clip`; invalid-later preservation,
+important/source order, first-line layout, eligible truncation, point-hit,
+display-list, fixed-cell raster, PNG capture, diagnostics, and the two-crate
+boundary remain bounded. `inherit`, parent propagation, negative/fractional or
+percentage indentation, and browser-wide overflow conformance remain outside
+the contract. Full native integration (244/244) and the feature library (1,026
 passed, 1 ignored) pass locally. Remote CI, push, release, tag, and registry
 publication remain unclaimed for this local-only checkout.
 

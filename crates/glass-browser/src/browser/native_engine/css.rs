@@ -8344,6 +8344,9 @@ fn parse_flex_grow_declaration(value: &str) -> Option<FlexGrowDeclaration> {
     if is_local_reset_keyword(value) {
         return Some(FlexGrowDeclaration::Reset);
     }
+    if value.trim().eq_ignore_ascii_case("inherit") {
+        return Some(FlexGrowDeclaration::Inherit);
+    }
     parse_flex_grow(value).map(FlexGrowDeclaration::Value)
 }
 
@@ -13616,6 +13619,11 @@ mod tests {
         }
         assert_eq!(parse_flex_item_order_declaration("inherit"), None);
         assert_eq!(
+            parse_flex_grow_declaration(" InHeRiT "),
+            Some(FlexGrowDeclaration::Inherit)
+        );
+        assert_eq!(parse_flex_grow_declaration("inherit 1"), None);
+        assert_eq!(
             parse_flex_grow_declaration("initial"),
             Some(FlexGrowDeclaration::Reset)
         );
@@ -14156,7 +14164,7 @@ mod tests {
     #[test]
     fn stylesheet_flex_inherit_projects_parent_components() {
         let stylesheet = NativeStylesheet::from_sources(vec![
-            "#inherit { flex: InHeRiT; } #invalid { flex: 1 1 4px; flex: inherit 1 auto; } #important { flex: 2 3 12px !important; } #important { flex: inherit; } #longhands { flex: 1 1 4px; flex-grow: 4; flex-shrink: 5; flex-basis: 12px; }"
+            "@layer base { #layered { flex-grow: 7; } } @layer theme { #layered { flex-grow: inherit; } } #inherit { flex: InHeRiT; } #direct { flex-grow: InHeRiT; } #direct-order { flex-grow: 1; } #direct-order { flex-grow: inherit; } #direct-invalid { flex-grow: 4; flex-grow: inherit 1; } #direct-important { flex-grow: 8 !important; } #direct-important { flex-grow: inherit; } #direct-reset { flex-grow: inherit; flex-grow: initial; } #direct-longhand { flex: 1 1 4px; flex-grow: inherit; } #invalid { flex: 1 1 4px; flex: inherit 1 auto; } #important { flex: 2 3 12px !important; } #important { flex: inherit; } #longhands { flex: 1 1 4px; flex-grow: 4; flex-shrink: 5; flex-basis: 12px; }"
                 .into(),
         ])
         .unwrap();
@@ -14180,6 +14188,22 @@ mod tests {
         assert_eq!(inherited.flex_grow(), inherited_grow);
         assert_eq!(inherited.flex_shrink(), inherited_shrink);
         assert_eq!(inherited.flex_basis(), inherited_basis);
+        let layered = computed(&node("<div id='layered'>Layered</div>"));
+        assert_eq!(layered.flex_grow(), inherited_grow);
+        let direct = computed(&node("<div id='direct'>Direct</div>"));
+        assert_eq!(direct.flex_grow(), inherited_grow);
+        let direct_order = computed(&node("<div id='direct-order'>Direct order</div>"));
+        assert_eq!(direct_order.flex_grow(), inherited_grow);
+        let direct_invalid = computed(&node("<div id='direct-invalid'>Direct invalid</div>"));
+        assert_eq!(direct_invalid.flex_grow(), 4);
+        let direct_important = computed(&node("<div id='direct-important'>Direct important</div>"));
+        assert_eq!(direct_important.flex_grow(), 8);
+        let direct_reset = computed(&node("<div id='direct-reset'>Direct reset</div>"));
+        assert_eq!(direct_reset.flex_grow(), 0);
+        let direct_longhand = computed(&node("<div id='direct-longhand'>Direct longhand</div>"));
+        assert_eq!(direct_longhand.flex_grow(), inherited_grow);
+        assert_eq!(direct_longhand.flex_shrink(), 1);
+        assert_eq!(direct_longhand.flex_basis(), FlexBasisValue::Length(4));
         let omitted = computed(&node("<div id='omitted'>Omitted</div>"));
         assert_eq!(omitted.flex_grow(), 0);
         assert_eq!(omitted.flex_shrink(), 1);

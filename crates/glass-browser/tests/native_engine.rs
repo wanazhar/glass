@@ -22034,6 +22034,77 @@ fn native_flex_inherit_reaches_sizing_and_artifacts() {
 }
 
 #[test]
+fn native_flex_grow_inherit_reaches_sizing_and_artifacts() {
+    let document = NativeDocument::parse(
+        "<style>#outer{display:flex;width:24px;height:8px;gap:2px;align-items:flex-start;flex-grow:2;}#direct{flex-grow:InHeRiT;width:4px;height:8px;background-color:red;}#omitted{width:4px;height:8px;background-color:green;}#invalid{width:4px;height:8px;flex-grow:3;flex-grow:inherit 1;background-color:blue;}</style><div id='outer'><button id='direct'><span id='nested' style='display:block;height:4px'>A</span></button><button id='omitted'>B</button><button id='invalid'>C</button></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let outer = document.resolve_target("id=outer").unwrap();
+    let direct = document.resolve_target("id=direct").unwrap();
+    let nested = document.resolve_target("id=nested").unwrap();
+    let omitted = document.resolve_target("id=omitted").unwrap();
+    let invalid = document.resolve_target("id=invalid").unwrap();
+    let viewport = Viewport {
+        width: 30,
+        height: 16,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+    let outer_box = layout.box_for(outer).unwrap();
+    let direct_box = layout.box_for(direct).unwrap();
+    let nested_box = layout.box_for(nested).unwrap();
+    let omitted_box = layout.box_for(omitted).unwrap();
+    let invalid_box = layout.box_for(invalid).unwrap();
+    assert_eq!(outer_box.width, 24);
+    assert!(direct_box.width > 4);
+    assert_eq!(nested_box.width, direct_box.width);
+    assert_eq!(omitted_box.width, 4);
+    assert!(invalid_box.width > 4);
+    assert_eq!(direct_box.x, outer_box.x);
+    assert_eq!(omitted_box.x, direct_box.x + direct_box.width + 2);
+    assert_eq!(invalid_box.x, omitted_box.x + omitted_box.width + 2);
+
+    let semantic_nodes = document.semantic_nodes();
+    assert!(
+        semantic_nodes
+            .iter()
+            .position(|node| node.node_id == direct)
+            .unwrap()
+            < semantic_nodes
+                .iter()
+                .position(|node| node.node_id == omitted)
+                .unwrap()
+    );
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == direct
+                    && rect.width == direct_box.width
+                    && *color == NativeColor::RED
+        )
+    }));
+    assert_eq!(
+        layout
+            .hit_test(i64::from(direct_box.x + 1), i64::from(direct_box.y + 1),)
+            .unwrap(),
+        Some(nested)
+    );
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(direct_box.x + 1, direct_box.y + 1),
+        Some([255, 0, 0, 255])
+    );
+    assert!(!surface.to_png().unwrap().is_empty());
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "flex-grow"
+    }));
+}
+
+#[test]
 fn native_flex_shorthand_expands_zero_basis_and_preserves_shared_consumers() {
     let document = NativeDocument::parse(
         "<div id='row' style='display:flex;width:20px;gap:2px'><div id='first' style='width:100px;height:8px;flex:1;background-color:red'><span id='nested' style='display:block;height:4px'>A</span></div><div id='second' style='width:100px;height:8px;flex:1;background-color:blue'>B</div></div>",

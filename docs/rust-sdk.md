@@ -468,6 +468,11 @@ standalone case-insensitive `overflow:initial`, `overflow:unset`, and
 one-author-origin `overflow:revert` reset each affected axis to the same
 visible/no-clip fallback while remaining distinct from explicit `inherit` and
 named-layer `revert-layer`; mixed token forms remain invalid,
+standalone case-insensitive finite `overflow:visible|auto|scroll`,
+`overflow-x:visible|auto|scroll`, and `overflow-y:visible|auto|scroll` values
+share the existing visible/no-clip projection without nested scroll containers
+or scrollbar artifacts; mixed forms remain invalid and supported keywords do
+not emit overflow diagnostics,
 bounded inherited `vertical-align:baseline|top|middle|bottom` offsets for
 fixed-cell inline and inline-block line items within the existing line box,
 plus bounded case-insensitive 15-layer/unlayered inherited `revert-layer`

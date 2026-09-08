@@ -2476,11 +2476,13 @@ visual stacking.
 | `native-engine-231` | completed bounded standalone case-insensitive `text-overflow:inherit` through the existing private parent-style chain; an explicit declaration copies the computed parent `clip|ellipsis` value while omitted `text-overflow` remains local with the bounded `clip` fallback, preserving finite values, CSS-wide resets, `revert-layer`, mixed-invalid preservation, source-order/important precedence, eligible clipped-nowrap truncation, text fragments, display-list, fixed-cell raster, PNG capture, overflow, point-hit, semantic/source order, diagnostics, and the two-crate boundary; implementation `9a9ef2c7` (design `57e37dfe`); locked scoped check, focused parser/cascade (3 tests), public truncation/artifact integration (1 test), full-native integration (269/269), feature library (1,048 passed, 1 ignored), and formatting/diff checks passed locally | `native-engine-230` | `overflow:inherit`, custom ellipsis/fade, multi-line or nested-inline truncation, percentages, additional origins, transitions, animations, generic CSS-wide machinery, browser parity, and browser-wide overflow conformance |
 | `native-engine-232` | completed bounded standalone case-insensitive `overflow:inherit`, `overflow-x:inherit`, and `overflow-y:inherit` through the existing private parent-style chain; each explicit declaration copies the parent's effective bounded clip/no-clip axis projection while omitted overflow remains local with the visible/no-clip fallback, preserving shorthand/longhand and important precedence, mixed-invalid preservation, axis-specific clip/scroll projection, display-list, fixed-cell raster, PNG capture, point-hit, semantic/source order, diagnostics, and the two-crate boundary; implementation `1a7df31b` (design `0a617b8c`, contract clarification `2e8bcf9a`); scoped native-feature check, focused batch (9 library-target tests and 19 overflow-matching native integration tests), and formatting/diff checks passed locally | `native-engine-231` | CSS-wide reset forms, nested scrolling, scrollbars, visible/auto/scroll used-value parity, custom overflow behavior, additional origins, transitions, animations, generic CSS-wide machinery, browser parity, and browser-wide overflow conformance |
 | `native-engine-233` | completed bounded standalone case-insensitive `overflow:initial`, `overflow:unset`, and one-author-origin `overflow:revert` reset forms across the shorthand and longhands; each winning reset resolves the affected axis to the existing visible/no-clip fallback while explicit `inherit`, named-layer `revert-layer`, important/source order, mixed-invalid preservation, axis-specific clip/scroll projection, display-list, fixed-cell raster, PNG capture, point-hit, semantic/source order, diagnostics, and the two-crate boundary remain bounded; implementation `7b31b72e` (design `70f4f924`); scoped native-feature check, focused reset batch (1 library-target test and 1 native integration test), and formatting/diff checks passed locally | `native-engine-232` | nested scrolling, scrollbars, visible/auto/scroll used-value parity, other CSS-wide machinery, additional origins, transitions, animations, browser parity, and browser-wide overflow conformance |
+| `native-engine-234` | completed bounded standalone case-insensitive finite `visible`, `auto`, and `scroll` acceptance for `overflow`, `overflow-x`, and `overflow-y`; all values reuse the existing visible/no-clip `OverflowValue::Other` projection without nested scroll containers or scrollbar artifacts, preserving explicit `inherit`, CSS-wide resets, named-layer `revert-layer`, priority, independent axes, mixed-invalid preservation, root scroll projection, display-list, fixed-cell raster, PNG capture, point-hit, semantic/source order, diagnostics, and the two-crate boundary; implementation `8a96f56b` (design `b2119e5f`); scoped native-feature check, focused no-clip pair (1 library-target test and 1 native integration test), overflow regression batch (11 library-target tests and 21 native integration tests), and formatting/diff checks passed locally | `native-engine-233` | nested scrolling, scrollbars, scroll-container used-value behavior, overflow propagation beyond the root owner, other CSS-wide machinery, additional origins, transitions, animations, browser parity, and browser-wide overflow conformance |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-233.md` is the latest completed task;
+`docs/plan/tasks/native-engine-234.md` is the latest completed task;
+`docs/plan/tasks/native-engine-233.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-232.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-231.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-230.md` is the preceding completed task;
@@ -2649,6 +2651,21 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 The current completed checkpoint is recorded for
+`docs/plan/tasks/native-engine-234.md`: implementation is `8a96f56b` (design
+`b2119e5f`). It accepts bounded standalone case-insensitive finite
+`overflow: visible|auto|scroll`, `overflow-x: visible|auto|scroll`, and
+`overflow-y: visible|auto|scroll` values as the existing visible/no-clip
+projection, without nested scroll containers or scrollbar artifacts. It
+preserves explicit `inherit`, CSS-wide resets, named-layer `revert-layer`,
+priority, independent axes, mixed-invalid preservation, root scroll projection,
+display-list, raster/PNG, point-hit, semantics, diagnostics, and the two-crate
+boundary. The scoped check passed; the focused no-clip pair passed 1
+library-target test and 1 native integration test; the overflow regression
+batch passed 11 library-target tests and 21 native integration tests; and
+formatting/diff checks pass locally. Remote CI, push, release, tag, registry
+publication, browser-parity, security-boundary, and promotion claims are not
+made.
+The preceding completed checkpoint remains recorded for
 `docs/plan/tasks/native-engine-233.md`: implementation is `7b31b72e` (design
 `70f4f924`). It adds standalone, case-insensitive `overflow: initial`,
 `overflow: unset`, and one-author-origin `overflow: revert` reset forms across

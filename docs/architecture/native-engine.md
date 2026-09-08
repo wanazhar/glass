@@ -55,6 +55,7 @@ bounded-dimension-css-wide-resets/bounded-inherited-text-css-wide-resets/
 bounded-overflow-important,
 bounded-overflow-inherit,
 bounded-overflow-css-wide-resets,
+bounded-overflow-no-clip-keywords,
 bounded-physical-border-width-important,
 bounded-physical-border-style-important,
 bounded-inherited-color-current-color,
@@ -2316,7 +2317,11 @@ and one-author-origin `revert` reset forms for the same three declarations,
 resetting each affected axis to visible/no-clip while preserving explicit
 `inherit` and named-layer `revert-layer`. Its focused reset batch passed 1
 library-target test and 1 native integration test. Full issue-level gates and
-remote CI remain unclaimed for this local-only checkout.
+remote CI remain unclaimed for this local-only checkout. The 234 slice accepts
+case-insensitive finite `visible`, `auto`, and `scroll` for the same shorthand
+and longhands as the existing visible/no-clip projection, without nested scroll
+containers or scrollbar artifacts; its no-clip-focused pair and overflow
+regression batch pass locally.
 
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list

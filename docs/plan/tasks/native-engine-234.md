@@ -1,7 +1,7 @@
 ---
 id: native-engine-234
 scope: glass-browser/native-engine/overflow-no-clip-keywords
-status: planned
+status: complete
 depends-on: [native-engine-233]
 ---
 
@@ -99,6 +99,27 @@ targets, issue snapshots, and unrelated workloads remain untouched.
 
 ## Completion evidence
 
-Pending implementation and local certification. Remote CI, push, release, tag,
-registry publication, browser-parity, security-boundary certification, and
-promotion remain outside this local task.
+Implementation and local certification are complete at `8a96f56b`; the design
+checkpoint is `b2119e5f`. The scoped native-feature test-target check passed
+before tests. The focused no-clip keyword batch passed 1 library-target test
+and 1 native integration test, and the broader overflow-filtered regression
+batch passed 11 library-target tests and 21 matching native integration tests.
+The evidence covers case-insensitive `visible|auto|scroll`, independent
+longhands, no-clip/root-scroll projection, display-list, fixed-cell raster/PNG,
+point-hit, semantic/source order, diagnostic absence for supported values, and
+diagnostic presence for mixed invalid forms. Formatting and diff checks pass.
+The implementation reuses `OverflowValue::Other`; it adds no nested scroll
+container, scrollbar, public style field, dependency, feature default, layout
+schema, or crate-boundary behavior. Full issue-level native integration,
+feature-library, strict lint, rustdoc, paired two-crate, package,
+security/fuzz, static documentation, workspace, clean-install, remote-CI,
+issue-sync, and bounded-cleanup gates remain for the broader issue completion
+boundary. Remote CI, push, release, tag, registry publication, browser-parity,
+security-boundary certification, and promotion remain outside this local task.
+Static documentation checks also pass: release truth reports 648 Markdown
+documents (83 current, 59 previous-version hits, 838 semantic audit hits, 0
+current-claim failures); coverage reports 648 Markdown files, 345 full-product
+MCP tools (100 browser-only), 17 examples, and 22 public modules; depth reports
+93 current guides and 19 substantive contracts; feature parity reports 14
+capabilities across 4 targets; TUI reports 15 implementation help keys and 63
+documentation markers; and version sync reports `0.3.14`.

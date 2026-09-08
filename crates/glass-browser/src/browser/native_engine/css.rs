@@ -1523,6 +1523,10 @@ impl NativeStylesheet {
         >; MAX_NATIVE_RADIUS_CASCADE_LAYERS];
             LOGICAL_BORDER_SIDES] =
             [[None; MAX_NATIVE_RADIUS_CASCADE_LAYERS]; LOGICAL_BORDER_SIDES];
+        let mut logical_padding: NativeLogicalBoxModelCandidates<u32> =
+            [[None; MAX_NATIVE_LOCAL_CASCADE_LAYERS]; LOGICAL_BORDER_SIDES];
+        let mut logical_margin: NativeLogicalBoxModelCandidates<NativeMarginValue> =
+            [[None; MAX_NATIVE_LOCAL_CASCADE_LAYERS]; LOGICAL_BORDER_SIDES];
         let mut padding: [[Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
             MAX_NATIVE_LOCAL_CASCADE_LAYERS]; 4] = [[None; MAX_NATIVE_LOCAL_CASCADE_LAYERS]; 4];
         let mut margin: [[Option<CascadeValue<LocalCascadeDeclaration<NativeMarginValue>>>;
@@ -1938,9 +1942,18 @@ impl NativeStylesheet {
                 false,
                 &mut logical_border_radius,
             );
+            apply_logical_box_model_cascade(
+                &rule.declarations.logical_box_model,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                &mut logical_padding,
+                &mut logical_margin,
+            );
             apply_local_important_cascade_edges(
                 &rule.declarations.padding,
                 &rule.declarations.box_model_importance.padding,
+                &rule.declarations.padding_order,
                 rule.selector.specificity,
                 rule.order,
                 false,
@@ -1949,6 +1962,7 @@ impl NativeStylesheet {
             apply_local_important_cascade_edges(
                 &rule.declarations.margin,
                 &rule.declarations.box_model_importance.margin,
+                &rule.declarations.margin_order,
                 rule.selector.specificity,
                 rule.order,
                 false,
@@ -2381,9 +2395,18 @@ impl NativeStylesheet {
                 true,
                 &mut logical_border_radius,
             );
+            apply_logical_box_model_cascade(
+                &declarations.logical_box_model,
+                u16::MAX,
+                usize::MAX,
+                true,
+                &mut logical_padding,
+                &mut logical_margin,
+            );
             apply_local_important_cascade_edges(
                 &declarations.padding,
                 &declarations.box_model_importance.padding,
+                &declarations.padding_order,
                 u16::MAX,
                 usize::MAX,
                 true,
@@ -2392,6 +2415,7 @@ impl NativeStylesheet {
             apply_local_important_cascade_edges(
                 &declarations.margin,
                 &declarations.box_model_importance.margin,
+                &declarations.margin_order,
                 u16::MAX,
                 usize::MAX,
                 true,
@@ -2452,6 +2476,8 @@ impl NativeStylesheet {
             resolved_direction,
             &mut border_radius,
         );
+        project_logical_box_model_candidates(&logical_padding, resolved_direction, &mut padding);
+        project_logical_box_model_candidates(&logical_margin, resolved_direction, &mut margin);
 
         let resolved_padding = padding.map(resolve_local_optional_cascade_declaration);
         let resolved_margin = margin.map(resolve_local_optional_cascade_declaration);
@@ -3875,6 +3901,22 @@ impl NativeLogicalBorderRadiusDeclarations {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct NativeLogicalBoxModelDeclarations {
+    padding: [Option<LocalCascadeDeclaration<u32>>; LOGICAL_BORDER_SIDES],
+    padding_order: [usize; LOGICAL_BORDER_SIDES],
+    padding_important: [bool; LOGICAL_BORDER_SIDES],
+    margin: [Option<LocalCascadeDeclaration<NativeMarginValue>>; LOGICAL_BORDER_SIDES],
+    margin_order: [usize; LOGICAL_BORDER_SIDES],
+    margin_important: [bool; LOGICAL_BORDER_SIDES],
+}
+
+impl NativeLogicalBoxModelDeclarations {
+    fn has_any(self) -> bool {
+        self.padding.iter().any(Option::is_some) || self.margin.iter().any(Option::is_some)
+    }
+}
+
 type NativeLogicalBorderCandidates<T> = [[Option<CascadeValue<LocalCascadeDeclaration<T>>>;
     MAX_NATIVE_CASCADE_LAYERS]; LOGICAL_BORDER_SIDES];
 type NativeLogicalBorderWidthCandidates =
@@ -3889,6 +3931,9 @@ type NativeLogicalBorderColorCandidates =
 type NativeLogicalBorderRadiusCandidates =
     [[Option<CascadeValue<LocalCascadeDeclaration<NativeBorderRadiusValue>>>;
         MAX_NATIVE_RADIUS_CASCADE_LAYERS]; LOGICAL_BORDER_SIDES];
+type NativeLogicalBoxModelCandidates<T> = [[Option<CascadeValue<LocalCascadeDeclaration<T>>>;
+    MAX_NATIVE_LOCAL_CASCADE_LAYERS];
+    LOGICAL_BORDER_SIDES];
 type NativePhysicalBorderCandidates<T> =
     [[Option<CascadeValue<LocalCascadeDeclaration<T>>>; MAX_NATIVE_CASCADE_LAYERS]; 4];
 type NativePhysicalBorderColorCandidates = [[Option<
@@ -4137,6 +4182,30 @@ fn project_logical_border_radius_candidates(
     }
 }
 
+fn project_logical_box_model_candidates<T: Copy>(
+    sources: &NativeLogicalBoxModelCandidates<T>,
+    direction: DirectionValue,
+    targets: &mut [[Option<CascadeValue<LocalCascadeDeclaration<T>>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
+             4],
+) {
+    for (logical_side, logical_candidates) in sources.iter().enumerate() {
+        let physical_side = logical_border_physical_side(logical_side, direction);
+        for (layer, candidate) in logical_candidates.iter().copied().enumerate() {
+            let Some(candidate) = candidate else {
+                continue;
+            };
+            if wins(
+                candidate.specificity,
+                candidate.order,
+                candidate.inline,
+                targets[physical_side][layer],
+            ) {
+                targets[physical_side][layer] = Some(candidate);
+            }
+        }
+    }
+}
+
 fn apply_local_cascade_edges<T: Copy>(
     declarations: &[Option<LocalCascadeDeclaration<T>>; 4],
     specificity: u16,
@@ -4159,8 +4228,9 @@ fn apply_local_cascade_edges<T: Copy>(
 fn apply_local_important_cascade_edges<T: Copy>(
     declarations: &[Option<LocalCascadeDeclaration<T>>; 4],
     importance: &[bool; 4],
+    declaration_orders: &[usize; 4],
     specificity: u16,
-    order: usize,
+    rule_order: usize,
     inline: bool,
     candidates: &mut [[Option<CascadeValue<LocalCascadeDeclaration<T>>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
              4],
@@ -4169,10 +4239,41 @@ fn apply_local_important_cascade_edges<T: Copy>(
         apply_local_important_cascade_declaration(
             declaration,
             specificity,
-            order,
+            border_cascade_order(rule_order, declaration_orders[index], inline),
             inline,
             importance[index],
             &mut candidates[index],
+        );
+    }
+}
+
+fn apply_logical_box_model_cascade(
+    declarations: &NativeLogicalBoxModelDeclarations,
+    specificity: u16,
+    rule_order: usize,
+    inline: bool,
+    padding: &mut NativeLogicalBoxModelCandidates<u32>,
+    margin: &mut NativeLogicalBoxModelCandidates<NativeMarginValue>,
+) {
+    for index in 0..LOGICAL_BORDER_SIDES {
+        let order = border_cascade_order(rule_order, declarations.padding_order[index], inline);
+        apply_local_important_cascade_declaration(
+            declarations.padding[index],
+            specificity,
+            order,
+            inline,
+            declarations.padding_important[index],
+            &mut padding[index],
+        );
+
+        let order = border_cascade_order(rule_order, declarations.margin_order[index], inline);
+        apply_local_important_cascade_declaration(
+            declarations.margin[index],
+            specificity,
+            order,
+            inline,
+            declarations.margin_important[index],
+            &mut margin[index],
         );
     }
 }
@@ -4492,7 +4593,9 @@ struct NativeDeclarations {
     border_radius_corner_important: [bool; 4],
     logical_border_radius: NativeLogicalBorderRadiusDeclarations,
     padding: [Option<LocalCascadeDeclaration<u32>>; 4],
+    padding_order: [usize; 4],
     margin: [Option<LocalCascadeDeclaration<NativeMarginValue>>; 4],
+    margin_order: [usize; 4],
     box_sizing: Option<LocalCascadeDeclaration<NativeBoxSizing>>,
     color: Option<LocalCascadeDeclaration<NativeColorValue>>,
     color_important: bool,
@@ -4500,6 +4603,7 @@ struct NativeDeclarations {
     overflow_x: Option<LocalCascadeDeclaration<OverflowValue>>,
     overflow_y: Option<LocalCascadeDeclaration<OverflowValue>>,
     overflow_importance: NativeOverflowDeclarationImportance,
+    logical_box_model: NativeLogicalBoxModelDeclarations,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4803,6 +4907,7 @@ fn parse_style_rule(
             .iter()
             .any(Option::is_some)
         || declarations.logical_border_radius.has_any()
+        || declarations.logical_box_model.has_any()
         || declarations.padding.iter().any(Option::is_some)
         || declarations.margin.iter().any(Option::is_some)
         || declarations.box_sizing.is_some()
@@ -5060,7 +5165,17 @@ fn parse_declarations_with_diagnostics(
             | "border-end-start-radius"
             | "border-end-end-radius" => parse_border_radius_corner_declaration(value).is_some(),
             "padding" => parse_local_box_edges(value).is_some(),
+            "padding-block" | "padding-inline" => parse_local_box_edge_pair(value).is_some(),
+            "padding-block-start"
+            | "padding-block-end"
+            | "padding-inline-start"
+            | "padding-inline-end" => parse_local_padding_declaration(value).is_some(),
             "margin" => parse_local_margin_edges(value).is_some(),
+            "margin-block" | "margin-inline" => parse_local_margin_edge_pair(value).is_some(),
+            "margin-block-start"
+            | "margin-block-end"
+            | "margin-inline-start"
+            | "margin-inline-end" => parse_local_margin_declaration(value).is_some(),
             "padding-top" | "padding-right" | "padding-bottom" | "padding-left" => {
                 parse_local_padding_declaration(value).is_some()
             }
@@ -5215,7 +5330,19 @@ fn is_known_css_property(property: &str) -> bool {
             | "border-end-start-radius"
             | "border-end-end-radius"
             | "padding"
+            | "padding-block"
+            | "padding-block-start"
+            | "padding-block-end"
+            | "padding-inline"
+            | "padding-inline-start"
+            | "padding-inline-end"
             | "margin"
+            | "margin-block"
+            | "margin-block-start"
+            | "margin-block-end"
+            | "margin-inline"
+            | "margin-inline-start"
+            | "margin-inline-end"
             | "padding-top"
             | "padding-right"
             | "padding-bottom"
@@ -6130,60 +6257,202 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             "padding" => {
                 if let Some(values) = parse_local_box_edges(value) {
                     declarations.padding = values.map(Some);
+                    declarations.padding_order = [declaration_order; 4];
                     declarations.box_model_importance.padding = [important; 4];
                 }
+            }
+            "padding-block" => {
+                set_logical_border_pair(
+                    &mut declarations.logical_box_model.padding,
+                    &mut declarations.logical_box_model.padding_order,
+                    &mut declarations.logical_box_model.padding_important,
+                    [LOGICAL_BORDER_BLOCK_START, LOGICAL_BORDER_BLOCK_END],
+                    parse_local_box_edge_pair(value),
+                    declaration_order,
+                    important,
+                );
+            }
+            "padding-block-start" => {
+                set_logical_border_side(
+                    &mut declarations.logical_box_model.padding,
+                    &mut declarations.logical_box_model.padding_order,
+                    &mut declarations.logical_box_model.padding_important,
+                    LOGICAL_BORDER_BLOCK_START,
+                    parse_local_padding_declaration(value),
+                    declaration_order,
+                    important,
+                );
+            }
+            "padding-block-end" => {
+                set_logical_border_side(
+                    &mut declarations.logical_box_model.padding,
+                    &mut declarations.logical_box_model.padding_order,
+                    &mut declarations.logical_box_model.padding_important,
+                    LOGICAL_BORDER_BLOCK_END,
+                    parse_local_padding_declaration(value),
+                    declaration_order,
+                    important,
+                );
+            }
+            "padding-inline" => {
+                set_logical_border_pair(
+                    &mut declarations.logical_box_model.padding,
+                    &mut declarations.logical_box_model.padding_order,
+                    &mut declarations.logical_box_model.padding_important,
+                    [LOGICAL_BORDER_INLINE_START, LOGICAL_BORDER_INLINE_END],
+                    parse_local_box_edge_pair(value),
+                    declaration_order,
+                    important,
+                );
+            }
+            "padding-inline-start" => {
+                set_logical_border_side(
+                    &mut declarations.logical_box_model.padding,
+                    &mut declarations.logical_box_model.padding_order,
+                    &mut declarations.logical_box_model.padding_important,
+                    LOGICAL_BORDER_INLINE_START,
+                    parse_local_padding_declaration(value),
+                    declaration_order,
+                    important,
+                );
+            }
+            "padding-inline-end" => {
+                set_logical_border_side(
+                    &mut declarations.logical_box_model.padding,
+                    &mut declarations.logical_box_model.padding_order,
+                    &mut declarations.logical_box_model.padding_important,
+                    LOGICAL_BORDER_INLINE_END,
+                    parse_local_padding_declaration(value),
+                    declaration_order,
+                    important,
+                );
             }
             "margin" => {
                 if let Some(values) = parse_local_margin_edges(value) {
                     declarations.margin = values.map(Some);
+                    declarations.margin_order = [declaration_order; 4];
                     declarations.box_model_importance.margin = [important; 4];
                 }
+            }
+            "margin-block" => {
+                set_logical_border_pair(
+                    &mut declarations.logical_box_model.margin,
+                    &mut declarations.logical_box_model.margin_order,
+                    &mut declarations.logical_box_model.margin_important,
+                    [LOGICAL_BORDER_BLOCK_START, LOGICAL_BORDER_BLOCK_END],
+                    parse_local_margin_edge_pair(value),
+                    declaration_order,
+                    important,
+                );
+            }
+            "margin-block-start" => {
+                set_logical_border_side(
+                    &mut declarations.logical_box_model.margin,
+                    &mut declarations.logical_box_model.margin_order,
+                    &mut declarations.logical_box_model.margin_important,
+                    LOGICAL_BORDER_BLOCK_START,
+                    parse_local_margin_declaration(value),
+                    declaration_order,
+                    important,
+                );
+            }
+            "margin-block-end" => {
+                set_logical_border_side(
+                    &mut declarations.logical_box_model.margin,
+                    &mut declarations.logical_box_model.margin_order,
+                    &mut declarations.logical_box_model.margin_important,
+                    LOGICAL_BORDER_BLOCK_END,
+                    parse_local_margin_declaration(value),
+                    declaration_order,
+                    important,
+                );
+            }
+            "margin-inline" => {
+                set_logical_border_pair(
+                    &mut declarations.logical_box_model.margin,
+                    &mut declarations.logical_box_model.margin_order,
+                    &mut declarations.logical_box_model.margin_important,
+                    [LOGICAL_BORDER_INLINE_START, LOGICAL_BORDER_INLINE_END],
+                    parse_local_margin_edge_pair(value),
+                    declaration_order,
+                    important,
+                );
+            }
+            "margin-inline-start" => {
+                set_logical_border_side(
+                    &mut declarations.logical_box_model.margin,
+                    &mut declarations.logical_box_model.margin_order,
+                    &mut declarations.logical_box_model.margin_important,
+                    LOGICAL_BORDER_INLINE_START,
+                    parse_local_margin_declaration(value),
+                    declaration_order,
+                    important,
+                );
+            }
+            "margin-inline-end" => {
+                set_logical_border_side(
+                    &mut declarations.logical_box_model.margin,
+                    &mut declarations.logical_box_model.margin_order,
+                    &mut declarations.logical_box_model.margin_important,
+                    LOGICAL_BORDER_INLINE_END,
+                    parse_local_margin_declaration(value),
+                    declaration_order,
+                    important,
+                );
             }
             "padding-top" => {
                 if let Some(value) = parse_local_padding_declaration(value) {
                     declarations.padding[0] = Some(value);
+                    declarations.padding_order[0] = declaration_order;
                     declarations.box_model_importance.padding[0] = important;
                 }
             }
             "padding-right" => {
                 if let Some(value) = parse_local_padding_declaration(value) {
                     declarations.padding[1] = Some(value);
+                    declarations.padding_order[1] = declaration_order;
                     declarations.box_model_importance.padding[1] = important;
                 }
             }
             "padding-bottom" => {
                 if let Some(value) = parse_local_padding_declaration(value) {
                     declarations.padding[2] = Some(value);
+                    declarations.padding_order[2] = declaration_order;
                     declarations.box_model_importance.padding[2] = important;
                 }
             }
             "padding-left" => {
                 if let Some(value) = parse_local_padding_declaration(value) {
                     declarations.padding[3] = Some(value);
+                    declarations.padding_order[3] = declaration_order;
                     declarations.box_model_importance.padding[3] = important;
                 }
             }
             "margin-top" => {
                 if let Some(value) = parse_local_margin_declaration(value) {
                     declarations.margin[0] = Some(value);
+                    declarations.margin_order[0] = declaration_order;
                     declarations.box_model_importance.margin[0] = important;
                 }
             }
             "margin-right" => {
                 if let Some(value) = parse_local_margin_declaration(value) {
                     declarations.margin[1] = Some(value);
+                    declarations.margin_order[1] = declaration_order;
                     declarations.box_model_importance.margin[1] = important;
                 }
             }
             "margin-bottom" => {
                 if let Some(value) = parse_local_margin_declaration(value) {
                     declarations.margin[2] = Some(value);
+                    declarations.margin_order[2] = declaration_order;
                     declarations.box_model_importance.margin[2] = important;
                 }
             }
             "margin-left" => {
                 if let Some(value) = parse_local_margin_declaration(value) {
                     declarations.margin[3] = Some(value);
+                    declarations.margin_order[3] = declaration_order;
                     declarations.box_model_importance.margin[3] = important;
                 }
             }
@@ -6629,6 +6898,25 @@ fn parse_local_box_edges(value: &str) -> Option<[LocalCascadeDeclaration<u32>; 4
     parse_box_edges(value).map(|values| values.map(LocalCascadeDeclaration::Value))
 }
 
+fn parse_box_edge_pair(value: &str) -> Option<[u32; 2]> {
+    let values = value
+        .split_ascii_whitespace()
+        .map(parse_dimension)
+        .collect::<Option<Vec<_>>>()?;
+    match values.as_slice() {
+        [all] => Some([*all; 2]),
+        [start, end] => Some([*start, *end]),
+        _ => None,
+    }
+}
+
+fn parse_local_box_edge_pair(value: &str) -> Option<[LocalCascadeDeclaration<u32>; 2]> {
+    if value.trim().eq_ignore_ascii_case("revert-layer") {
+        return Some([LocalCascadeDeclaration::RevertLayer; 2]);
+    }
+    parse_box_edge_pair(value).map(|values| values.map(LocalCascadeDeclaration::Value))
+}
+
 fn parse_margin_value(value: &str) -> Option<NativeMarginValue> {
     if value.eq_ignore_ascii_case("auto") {
         Some(NativeMarginValue::Auto)
@@ -6652,6 +6940,27 @@ fn parse_local_margin_edges(
         return Some([LocalCascadeDeclaration::RevertLayer; 4]);
     }
     parse_margin_edges(value).map(|values| values.map(LocalCascadeDeclaration::Value))
+}
+
+fn parse_margin_edge_pair(value: &str) -> Option<[NativeMarginValue; 2]> {
+    let values = value
+        .split_ascii_whitespace()
+        .map(parse_margin_value)
+        .collect::<Option<Vec<_>>>()?;
+    match values.as_slice() {
+        [all] => Some([*all; 2]),
+        [start, end] => Some([*start, *end]),
+        _ => None,
+    }
+}
+
+fn parse_local_margin_edge_pair(
+    value: &str,
+) -> Option<[LocalCascadeDeclaration<NativeMarginValue>; 2]> {
+    if value.trim().eq_ignore_ascii_case("revert-layer") {
+        return Some([LocalCascadeDeclaration::RevertLayer; 2]);
+    }
+    parse_margin_edge_pair(value).map(|values| values.map(LocalCascadeDeclaration::Value))
 }
 
 fn expand_box_edges<T: Copy>(values: &[T]) -> Option<[T; 4]> {
@@ -17307,5 +17616,87 @@ mod tests {
             })
         );
         assert_eq!(parse_color("rgb(101%, 2, 3)"), None);
+    }
+
+    #[test]
+    fn logical_box_model_edges_parse_and_project_with_priority() {
+        assert_eq!(
+            parse_local_box_edge_pair("2px 3px"),
+            Some([
+                LocalCascadeDeclaration::Value(2),
+                LocalCascadeDeclaration::Value(3),
+            ])
+        );
+        assert_eq!(
+            parse_local_box_edge_pair("ReVeRt-LaYeR"),
+            Some([LocalCascadeDeclaration::RevertLayer; 2])
+        );
+        assert_eq!(parse_local_box_edge_pair("1px 2px 3px"), None);
+        assert_eq!(parse_local_box_edge_pair("revert-layer 1px"), None);
+        assert_eq!(
+            parse_local_margin_edge_pair("auto 4px"),
+            Some([
+                LocalCascadeDeclaration::Value(NativeMarginValue::Auto),
+                LocalCascadeDeclaration::Value(NativeMarginValue::Length(4)),
+            ])
+        );
+
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #ltr { direction:ltr; padding-block:1px 2px; padding-inline:3px 4px; margin-block:auto 5px; margin-inline:6px auto; } #rtl { direction:rtl; padding-block:1px 2px; padding-inline:3px 4px; margin-block:auto 5px; margin-inline:6px auto; } } @layer theme { #ltr { padding-block-start:7px !important; margin-inline-start:9px !important; } } #ltr { padding-top:8px; padding-inline-start:10px; }".into(),
+        ])
+        .unwrap();
+        let ltr = node("<div id='ltr'>Ltr</div>");
+        let rtl = node("<div id='rtl'>Rtl</div>");
+        let ltr_style = stylesheet.computed_for(&ltr);
+        assert_eq!(
+            ltr_style.padding(),
+            NativeBoxEdges {
+                top: 7,
+                right: 4,
+                bottom: 2,
+                left: 10,
+            }
+        );
+        assert_eq!(
+            ltr_style.margin(),
+            NativeBoxEdges {
+                top: 0,
+                right: 0,
+                bottom: 5,
+                left: 9,
+            }
+        );
+        assert!(ltr_style.margin_auto().top());
+        assert!(ltr_style.margin_auto().right());
+        assert!(!ltr_style.margin_auto().left());
+
+        let rtl_style = stylesheet.computed_for(&rtl);
+        assert_eq!(
+            rtl_style.padding(),
+            NativeBoxEdges {
+                top: 1,
+                right: 3,
+                bottom: 2,
+                left: 4,
+            }
+        );
+        assert_eq!(
+            rtl_style.margin(),
+            NativeBoxEdges {
+                top: 0,
+                right: 6,
+                bottom: 5,
+                left: 0,
+            }
+        );
+        assert!(rtl_style.margin_auto().top());
+        assert!(rtl_style.margin_auto().left());
+
+        let inline = node(
+            "<div style='direction:rtl;padding-top:1px;padding-block-start:2px;margin-left:3px;margin-inline-start:4px'>Inline</div>",
+        );
+        let inline_style = NativeStylesheet::default().computed_for(&inline);
+        assert_eq!(inline_style.padding().top(), 2);
+        assert_eq!(inline_style.margin().right(), 4);
     }
 }

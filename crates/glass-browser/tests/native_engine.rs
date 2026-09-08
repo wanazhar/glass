@@ -5613,6 +5613,165 @@ fn native_box_model_important_priority_reaches_geometry_and_artifact_consumers()
 }
 
 #[test]
+fn native_logical_box_edges_map_and_feed_all_consumers() {
+    let document = NativeDocument::parse(
+        r#"<style>
+        @layer base {
+          #ltr { display:block; width:20px; height:10px; padding-block:1px 2px; padding-inline:3px 4px; margin-block:1px 2px; margin-inline:3px 4px; background-color:red; }
+          #rtl { display:block; direction:rtl; width:20px; height:10px; padding-block:1px 2px; padding-inline:3px 4px; margin-block:1px 2px; margin-inline:3px 4px; background-color:blue; }
+          #priority { display:block; direction:ltr; width:10px; height:6px; padding:1px; padding-inline-start:5px !important; }
+          #flex { display:flex; width:40px; height:12px; background-color:blue; }
+          #auto { width:8px; height:6px; margin-inline:auto; background-color:green; }
+          #clip { display:block; width:10px; height:8px; padding-block:1px; padding-inline:2px 3px; overflow:hidden; background-color:green; }
+          #clip-child { display:block; width:24px; height:4px; background-color:red; }
+        }
+        @layer theme {
+          #priority { padding-inline-start:7px !important; }
+        }
+        #priority { padding-left:9px !important; }
+        </style>
+        <div id='ltr' role='button'>Ltr</div>
+        <div id='rtl' role='button'>Rtl</div>
+        <div id='priority' role='button'>Priority</div>
+        <div id='flex'><div id='auto'>Auto</div></div>
+        <div id='clip' role='button'><div id='clip-child'>Child</div></div>"#,
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    assert!(!document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssProperty
+            || (diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+                && matches!(
+                    diagnostic.detail.as_str(),
+                    "padding-block"
+                        | "padding-block-start"
+                        | "padding-inline"
+                        | "padding-inline-start"
+                        | "margin-block"
+                        | "margin-inline"
+                ))
+    }));
+
+    let viewport = Viewport {
+        width: 64,
+        height: 128,
+        device_scale_factor_milli: 1000,
+    };
+    let ltr = document.resolve_target("id=ltr").unwrap();
+    let rtl = document.resolve_target("id=rtl").unwrap();
+    let priority = document.resolve_target("id=priority").unwrap();
+    let flex = document.resolve_target("id=flex").unwrap();
+    let auto = document.resolve_target("id=auto").unwrap();
+    let clip = document.resolve_target("id=clip").unwrap();
+    let clip_child = document.resolve_target("id=clip-child").unwrap();
+    let layout = document.layout(viewport).unwrap();
+
+    let ltr_rect = layout.box_for(ltr).unwrap();
+    assert_eq!((ltr_rect.width, ltr_rect.height), (27, 13));
+    let ltr_box = layout
+        .boxes
+        .iter()
+        .find(|item| item.node_id == ltr)
+        .unwrap();
+    assert_eq!(
+        ltr_box.content_rect,
+        NativeRect {
+            x: ltr_rect.x + 3,
+            y: ltr_rect.y + 1,
+            width: 20,
+            height: 10,
+        }
+    );
+
+    let rtl_rect = layout.box_for(rtl).unwrap();
+    assert_eq!((rtl_rect.width, rtl_rect.height), (27, 13));
+    let rtl_box = layout
+        .boxes
+        .iter()
+        .find(|item| item.node_id == rtl)
+        .unwrap();
+    assert_eq!(
+        rtl_box.content_rect,
+        NativeRect {
+            x: rtl_rect.x + 4,
+            y: rtl_rect.y + 1,
+            width: 20,
+            height: 10,
+        }
+    );
+
+    let priority_rect = layout.box_for(priority).unwrap();
+    assert_eq!((priority_rect.width, priority_rect.height), (16, 8));
+    let priority_box = layout
+        .boxes
+        .iter()
+        .find(|item| item.node_id == priority)
+        .unwrap();
+    assert_eq!(priority_box.content_rect.x, priority_rect.x + 5);
+
+    let flex_rect = layout.box_for(flex).unwrap();
+    let auto_rect = layout.box_for(auto).unwrap();
+    assert_eq!((flex_rect.width, flex_rect.height), (40, 12));
+    assert_eq!(
+        (auto_rect.x - flex_rect.x, auto_rect.y - flex_rect.y),
+        (16, 0)
+    );
+    assert_eq!(
+        layout.hit_test((auto_rect.x + 1).into(), (auto_rect.y + 1).into()),
+        Ok(Some(auto))
+    );
+
+    let clip_rect = layout.box_for(clip).unwrap();
+    assert_eq!((clip_rect.width, clip_rect.height), (15, 10));
+    assert_eq!(
+        layout.viewport_rect_for(clip_child),
+        Some(NativeRect {
+            x: clip_rect.x + 2,
+            y: clip_rect.y + 1,
+            width: 10,
+            height: 4,
+        })
+    );
+    assert_eq!(
+        layout.hit_test((clip_rect.x + 14).into(), (clip_rect.y + 2).into()),
+        Ok(Some(clip))
+    );
+
+    let semantic_ids = document
+        .semantic_nodes()
+        .into_iter()
+        .map(|node| node.node_id)
+        .collect::<Vec<_>>();
+    for pair in [ltr, rtl, priority, clip].windows(2) {
+        assert!(
+            semantic_ids.iter().position(|id| *id == pair[0])
+                < semantic_ids.iter().position(|id| *id == pair[1]),
+            "semantic/source order lost for {pair:?}"
+        );
+    }
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == ltr && *rect == ltr_rect && *color == NativeColor::RED
+        )
+    }));
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(ltr_rect.x + 1, ltr_rect.y + 1),
+        Some([255, 0, 0, 255])
+    );
+    let capture = surface.to_png().unwrap();
+    let decoder = png::Decoder::new(Cursor::new(capture));
+    let mut reader = decoder.read_info().unwrap();
+    let mut decoded = vec![0; reader.output_buffer_size()];
+    let output = reader.next_frame(&mut decoded).unwrap();
+    assert_eq!((output.width, output.height), (64, 128));
+}
+
+#[test]
 fn native_text_alignment_revert_layer_preserves_inheritance_and_owner_paths() {
     let document = NativeDocument::parse(
         "<style>.line { display:block; width:45px; } @layer base { #named { text-align:left; } #repeat { text-align:center; } #final { text-align:justify; text-align-last:right; text-justify:none; } #parent { text-align:center; } } @layer theme { #named { text-align:center; } #repeat { text-align:revert-layer; } #final { text-align-last:justify; text-justify:inter-word; } } @layer top { #repeat { text-align:revert-layer; } #final { text-align-last:revert-layer; text-justify:revert-layer; } } #named { text-align:revert-layer; } #repeat { text-align:revert-layer; } #final { text-align-last:revert-layer; text-justify:revert-layer; }</style><div id='named' class='line'>A</div><div id='repeat' class='line'>B</div><div id='final' class='line'>A B C</div><div id='parent' class='line'><span id='child' style='text-align:revert-layer'>C</span></div><div id='fallback' class='line' style='text-align:REVERT-LAYER'>D</div>",

@@ -241,6 +241,10 @@ bounded one-value non-negative fixed-pixel `gap` spacing between visible flex
 items, and bounded `justify-content:normal|flex-start|center|flex-end|space-between|
 space-around|space-evenly|stretch` free-space placement for eligible fixed-width flex
 rows,
+bounded explicit case-insensitive `gap:inherit` propagation through the private
+parent-style chain, copying computed row and column gap components while omitted
+`gap` remains local with the bounded `0` fallback; direct `row-gap:inherit` and
+`column-gap:inherit` remain outside this shorthand-only boundary,
 bounded non-inherited signed flex-item `order` in `-1024..=1024` with stable
 source-order ties,
 bounded explicit case-insensitive `order:inherit` propagation through the
@@ -2230,6 +2234,20 @@ display-list, raster/PNG, point-hit, diagnostics, and the two-crate boundary
 remain bounded. Full native integration (265/265) and the feature library
 (1,044 passed, 1 ignored) pass locally. Remote CI, push, release, tag, and
 registry publication remain unclaimed for this local-only checkout.
+
+The completed dependency-ordered `native-engine-228` slice is recorded in
+`docs/plan/tasks/native-engine-228.md` and implemented at `978ae3b5` (design
+`8241ef68`), with compatibility coverage retained at `b645585b`. It adds
+standalone, case-insensitive `gap: inherit` through the existing private
+parent-style chain, copying computed parent row and column gap components while
+keeping omitted `gap` local with the bounded `0` fallback. Direct
+`row-gap: inherit` and `column-gap: inherit` remain unsupported by design;
+mixed-invalid forms, important priority, shorthand/longhand precedence,
+reset semantics, `revert-layer`, wrapped/column placement, display-list,
+raster/PNG, point-hit, diagnostics, and the two-crate boundary remain bounded.
+Full native integration (266/266) and the feature library (1,045 passed, 1
+ignored) pass locally. Remote CI, push, release, tag, and registry publication
+remain unclaimed for this local-only checkout.
 
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list

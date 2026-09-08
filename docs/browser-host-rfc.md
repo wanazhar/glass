@@ -487,7 +487,10 @@ the existing bounded `flex-start` fallback; standalone case-insensitive
 authored, while omitted `align-content` remains non-inherited; standalone
 `initial|unset|revert` reset forms for local `place-content` project through
 the existing bounded `flex-start` fallbacks for both `align-content` and
-`justify-content`; mixed reset/finite tokens remain bounded diagnostics, plus
+`justify-content`; standalone case-insensitive `place-content:inherit` copies
+both computed parent components only when explicitly authored while omitted
+`place-content` remains local; mixed inherit/finite and reset/finite tokens
+remain bounded diagnostics, plus
 bounded case-insensitive gap-family
 `revert-layer` rollback for `gap`, `row-gap`, and `column-gap` with independent
 finite-pixel components, plus standalone case-insensitive `initial|unset|revert`

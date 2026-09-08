@@ -2460,11 +2460,13 @@ visual stacking.
 | `native-engine-216` | completed bounded standalone case-insensitive `justify-content:inherit` through the existing private parent-style chain; omitted `justify-content` remains non-inherited with the bounded `flex-start` fallback, preserving finite values, CSS-wide resets, `revert-layer`, mixed-invalid preservation, important/source order, main-axis placement, flex sizing, display-list, fixed-cell raster, PNG capture, point-hit, semantics, diagnostics, and the two-crate boundary; implementation `c3dc1faf`; locked scoped check, focused justify-content parser/cascade (4 tests), public reset/inheritance integration, full-native integration (254/254), feature library (1,037 passed, 1 ignored), workspace all-target/all-feature check, strict Clippy, paired binaries, warning-denied rustdoc, and formatting passed locally | `native-engine-215` | percentages, baseline/safe/unsafe forms, other alignment owners, additional origins, transitions, animations, generic CSS-wide machinery, browser parity, and browser-wide flex conformance |
 | `native-engine-217` | completed bounded standalone case-insensitive `align-items:inherit` through the existing private parent-style chain; omitted `align-items` remains non-inherited with the bounded `flex-start` fallback, preserving finite values, CSS-wide resets, `revert-layer`, mixed-invalid preservation, important/source order, cross-axis placement, `align-self` overrides, flex sizing, display-list, fixed-cell raster, PNG capture, point-hit, semantics, diagnostics, and the two-crate boundary; implementation `feb6b607`; locked scoped check, focused align-items parser/cascade (4 tests), public reset/inheritance integration (7 tests), full-native integration (255/255), feature library (1,038 passed, 1 ignored), workspace all-target/all-feature check, strict Clippy, paired binaries, warning-denied rustdoc, and formatting passed locally | `native-engine-216` | percentages, baseline/safe/unsafe forms, other alignment owners, additional origins, transitions, animations, generic CSS-wide machinery, `align-self` inheritance, `place-items`, grid, browser parity, and browser-wide flex conformance |
 | `native-engine-218` | completed bounded standalone case-insensitive `align-self:inherit` through the existing private parent-style chain; omitted `align-self` remains local `auto`, explicit `auto` continues to delegate through the containing `align-items`, and inherited finite values remain explicit item overrides, preserving finite values, CSS-wide resets, `revert-layer`, mixed-invalid preservation, important/source order, cross-axis placement, complete-subtree movement, flex sizing, display-list, fixed-cell raster, PNG capture, point-hit, semantics, diagnostics, and the two-crate boundary; implementation `52adc7d1`; locked scoped check, focused align-self parser/cascade (4 tests), public reset/inheritance integration (5 tests), full-native integration (256/256), feature library (1,039 passed, 1 ignored), workspace all-target/all-feature check, strict Clippy, paired binaries, warning-denied rustdoc, and formatting passed locally | `native-engine-217` | percentages, baseline/safe/unsafe forms, other alignment owners, additional origins, transitions, animations, generic CSS-wide machinery, `place-items`, grid, browser parity, and browser-wide flex conformance |
+| `native-engine-219` | completed bounded standalone case-insensitive `place-content:inherit` through the existing private `align-content` and `justify-content` parent-style owners; both computed parent components copy only when the shorthand is explicitly authored while omitted `place-content` remains local, preserving finite one-/two-value expansion, CSS-wide resets, `revert-layer`, mixed-invalid preservation, important/source order, wrapped-line distribution, main-axis placement, flex sizing, display-list, fixed-cell raster, PNG capture, point-hit, semantics, diagnostics, and the two-crate boundary; implementation `23703765`; locked scoped check, focused place-content parser/cascade (5 tests), public inheritance integration (1 test), full-native integration (257/257), feature library (1,040 passed, 1 ignored), workspace all-target/all-feature check, strict Clippy, paired binaries, warning-denied rustdoc, and formatting passed locally | `native-engine-218` | percentages, baseline/safe/unsafe forms, `place-items`, grid, additional origins, transitions, animations, generic CSS-wide machinery, browser parity, and browser-wide flex conformance |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-218.md` is the latest completed task;
+`docs/plan/tasks/native-engine-219.md` is the latest completed task;
+`docs/plan/tasks/native-engine-218.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-217.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-216.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-215.md` is the preceding completed task;
@@ -2619,17 +2621,23 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 The current completed checkpoint is recorded for
+`docs/plan/tasks/native-engine-219.md`: implementation is `23703765` (design
+`0b9e784b`). It adds standalone, case-insensitive `place-content: inherit`
+through the existing private `align-content` and `justify-content` parent-style
+owners, copying both computed parent components only when explicitly authored
+while omitted `place-content` remains local. The locked scoped native check,
+focused place-content parser/cascade coverage (5 tests), public inheritance
+integration (1 test), full-native integration (257/257), feature library
+(1,040 passed, 1 ignored), workspace all-target/all-feature check, strict
+Clippy, paired binaries, warning-denied rustdoc, and formatting/diff checks
+passed. Remote CI, push, release, tag, registry publication, browser-parity,
+security-boundary, and promotion claims are not made.
+The preceding completed checkpoint remains recorded for
 `docs/plan/tasks/native-engine-218.md`: implementation is `52adc7d1` (design
 `ca9afd5f`). It adds standalone, case-insensitive `align-self: inherit`
 through the existing private ancestor-style chain while omitted
 `align-self` remains local `auto`; explicit `auto` continues to delegate to the
-containing flex parent's `align-items`. The locked scoped native check, focused
-align-self parser/cascade coverage (4 tests), public reset/inheritance
-integration (5 tests), full-native integration (256/256), feature library
-(1,039 passed, 1 ignored), workspace all-target/all-feature check, strict
-Clippy, paired binaries, warning-denied rustdoc, and formatting/diff checks
-passed. Remote CI, push, release, tag, registry publication, browser-parity,
-security-boundary, and promotion claims are not made.
+containing flex parent's `align-items`.
 The preceding completed checkpoint remains recorded for
 `docs/plan/tasks/native-engine-217.md`: implementation is `feb6b607` (design
 `5ee75fcb`). It adds standalone, case-insensitive `align-items: inherit`

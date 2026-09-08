@@ -1,7 +1,7 @@
 ---
 id: native-engine-219
 scope: glass-browser/native-engine/local-place-content-inherit
-status: planned
+status: complete
 depends-on: [native-engine-218]
 ---
 
@@ -95,6 +95,31 @@ targets, issue snapshots, and unrelated workloads remain untouched.
 
 ## Completion evidence
 
-Pending implementation and local certification. Remote CI, push, release,
-tag, registry publication, browser-parity, security-boundary certification,
-and promotion remain outside this local task.
+Implementation is `23703765`; the design checkpoint is `0b9e784b`. The locked
+native-feature test-target check passed before tests. Focused `place-content`
+parser/cascade coverage passed 5 tests, the public inheritance fixture passed
+1 test, full native integration passed `257/257`, and the serial
+native-feature library passed `1,040` tests with 1 ignored under
+`RUST_MIN_STACK=8388608` and one test thread. The fixtures cover standalone
+case-insensitive shorthand inheritance, both computed parent components,
+omitted-property local fallbacks, mixed-invalid preservation,
+important/source order, finite one-/two-value expansion, `revert-layer`,
+wrapped-line distribution, main-axis placement, display-list, fixed-cell
+raster/PNG, point-hit, semantic ordering, and typed unsupported-value
+diagnostics. No public schema, dependency, feature default, or crate-boundary
+change was made.
+
+Workspace all-target/all-feature checking, strict two-crate Clippy with
+warnings denied, paired browser/dev builds, warning-denied rustdoc for both
+crates, formatting, and diff checks passed locally. Static audits also passed:
+release truth `633 Markdown / 83 current / 59 previous-version / 784 semantic /
+0 current-claim failures`, documentation coverage `633 Markdown / 345
+full-product MCP tools / 100 browser-only / 17 examples / 22 public modules`,
+documentation depth `93 current guides / 19 substantive contracts`, feature
+parity `14 capabilities across 4 targets`, TUI inventory `15 implementation
+keys / 63 documentation markers`, synchronized version `0.3.14`, reliability
+`6 scenarios across 4 targets`, public read-only adapters `5`, Web IR `8
+fixtures / 8 scenarios / 11 categories`, and knowledge migration v1
+round-trip/v2 rejection over 6 records. Remote CI, push, release, tag,
+registry publication, browser-parity, security-boundary certification, and
+promotion remain outside this local task.

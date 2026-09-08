@@ -15661,6 +15661,72 @@ fn native_gap_revert_layer_preserves_row_column_layout_and_artifacts() {
 }
 
 #[test]
+fn native_gap_css_wide_resets_reach_layout_and_raster() {
+    let document = NativeDocument::parse(
+        "<style>.flow { display:flex; width:24px; height:8px; align-items:flex-start; } .item { width:4px; height:4px; flex-shrink:0; background-color:green; } #shorthand { gap:4px 5px; gap:InItIaL; } #longhand { gap:4px 5px; row-gap:UnSeT; column-gap:ReVeRt; } #invalid { gap:3px 4px; gap:inherit; } #important { gap:4px !important; } #important { gap:initial; }</style><div id='shorthand' class='flow'><div id='shorthand-first' class='item'>A</div><div id='shorthand-second' class='item'>B</div></div><div id='longhand' class='flow'><div id='longhand-first' class='item'>C</div><div id='longhand-second' class='item'>D</div></div><div id='invalid' class='flow'><div id='invalid-first' class='item'>E</div><div id='invalid-second' class='item'>F</div></div><div id='important' class='flow'><div id='important-first' class='item'>G</div><div id='important-second' class='item'>H</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 64,
+        device_scale_factor_milli: 1000,
+    };
+    let shorthand_first = document.resolve_target("id=shorthand-first").unwrap();
+    let shorthand_second = document.resolve_target("id=shorthand-second").unwrap();
+    let longhand_first = document.resolve_target("id=longhand-first").unwrap();
+    let longhand_second = document.resolve_target("id=longhand-second").unwrap();
+    let invalid_first = document.resolve_target("id=invalid-first").unwrap();
+    let invalid_second = document.resolve_target("id=invalid-second").unwrap();
+    let important_first = document.resolve_target("id=important-first").unwrap();
+    let important_second = document.resolve_target("id=important-second").unwrap();
+
+    let layout = document.layout(viewport).unwrap();
+    let rect = |node_id| layout.box_for(node_id).expect("layout rectangle");
+    let shorthand_first_rect = rect(shorthand_first);
+    let shorthand_second_rect = rect(shorthand_second);
+    assert_eq!(shorthand_second_rect.x, shorthand_first_rect.x + 4);
+    let longhand_first_rect = rect(longhand_first);
+    let longhand_second_rect = rect(longhand_second);
+    assert_eq!(longhand_second_rect.x, longhand_first_rect.x + 4);
+    let invalid_first_rect = rect(invalid_first);
+    let invalid_second_rect = rect(invalid_second);
+    assert_eq!(invalid_second_rect.x, invalid_first_rect.x + 8);
+    let important_first_rect = rect(important_first);
+    let important_second_rect = rect(important_second);
+    assert_eq!(important_second_rect.x, important_first_rect.x + 8);
+    assert_eq!(
+        layout.hit_test(
+            i64::from(invalid_second_rect.x + 1),
+            i64::from(invalid_second_rect.y + 1),
+        ),
+        Ok(Some(invalid_second))
+    );
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, .. }
+                if *node_id == important_second && *rect == important_second_rect
+        )
+    }));
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(invalid_second_rect.x + 1, invalid_second_rect.y + 1),
+        Some([0, 128, 0, 255])
+    );
+    assert_eq!(
+        surface.pixel(important_second_rect.x + 1, important_second_rect.y + 1),
+        Some([0, 128, 0, 255])
+    );
+    assert!(!surface.to_png().unwrap().is_empty());
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue && diagnostic.detail == "gap"
+    }));
+}
+
+#[test]
 fn native_inherited_text_presentation_revert_layer_preserves_consumers() {
     let document = NativeDocument::parse(
         "<style>.line { display:block;width:40px; } @layer base { #transform { text-transform:lowercase; } #weight { font-weight:normal; } #style { font-style:normal; } #break { word-break:break-all; } #unlayered { text-transform:lowercase; } #inline { text-transform:lowercase; } #parent { text-transform:uppercase;font-weight:bold;font-style:italic;word-break:break-all; } } @layer theme { #transform { text-transform:revert-layer; } #weight { font-weight:bold; } #style { font-style:italic; } #break { word-break:normal; } #unlayered { text-transform:uppercase; } #inline { text-transform:uppercase; } #parent { text-transform:lowercase;font-weight:normal;font-style:normal;word-break:normal; } } @layer top { #transform { text-transform:revert-layer; } #weight { font-weight:revert-layer; } #style { font-style:revert-layer; } #break { word-break:revert-layer; } #parent { text-transform:revert-layer;font-weight:revert-layer;font-style:revert-layer;word-break:revert-layer; } } #unlayered { text-transform:revert-layer; }</style><div id='transform' class='line'>aB cD</div><div id='weight' class='line'>A</div><div id='style' class='line'>A</div><div id='break' class='line'>ABC DEFG</div><div id='unlayered' class='line'>aB</div><div id='inline' class='line' style='text-transform:revert-layer'>aB</div><div id='parent' class='line'>P<span id='child' style='text-transform:revert-layer;font-weight:revert-layer;font-style:revert-layer;word-break:revert-layer'>aB</span></div>",

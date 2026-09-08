@@ -1,7 +1,7 @@
 ---
 id: native-engine-198
 scope: glass-browser/native-engine/inherited-text-css-wide-resets
-status: planned
+status: complete
 depends-on: [native-engine-197]
 ---
 
@@ -86,6 +86,41 @@ targets, issue snapshots, and unrelated workloads remain untouched.
 
 ## Completion evidence
 
-To be filled after implementation and local certification. Remote CI, push,
-release, tag, registry publication, browser parity, security-boundary
+Implementation is `95a988d0`; design is `927cccca`. The implementation
+replaces the specialized inherited-text declaration paths with one private
+five-state declaration model for standalone, case-insensitive `inherit`,
+`initial`, `unset`, `revert`, and `revert-layer`. Parent/root fallback,
+terminal reset behavior, invalid-later preservation, existing cascade
+priority, positive-pixel line-height auto representation, and the public
+finite computed-style/artifact schemas remain bounded. `revert` remains the
+one-author-origin parent fallback; it does not claim user-agent or user-origin
+behavior.
+
+Local evidence:
+
+- `cargo fmt --all -- --check` and `git diff --check` passed.
+- Locked native-feature test-target check passed in
+  `/tmp/glass-198-focused`.
+- Focused parser/cascade unit passed: `1 passed; 0 failed`.
+- Focused public integration passed: `1 passed; 0 failed`.
+- Full native integration passed: `236 passed; 0 failed; 0 ignored`.
+- Full native-feature library tests passed with `RUST_MIN_STACK=8388608`:
+  `1019 passed; 0 failed; 1 ignored`. The default-stack run reproduces the
+  pre-existing large-Clap parser test overflow in
+  `cli::args::tests::agent_readiness_commands_are_explicit`; no task-198 test
+  is involved.
+- Strict native-feature Clippy passed with `-D warnings`.
+- Warning-denied native-feature rustdoc passed.
+- Static release truth passed: 612 Markdown documents (83 current, 57
+  previous-version hits, 715 semantic audit hits, 0 current-claim failures).
+- Documentation coverage, depth, feature parity, TUI shortcut, and version
+  synchronization passed: 612 Markdown files, 345 full-product MCP tools
+  (100 browser-only), 17 examples, 22 public modules, 93 current guides, 19
+  substantive contracts, 14 capabilities across 4 targets, 15 implementation
+  help keys, 63 documentation markers, and synchronized version `0.3.14`.
+
+Paired-crate, package, security/fuzz, workspace all-target/all-feature, static
+documentation, issue synchronization, final cleanup, and remote-CI gates
+remain deferred to the final issue #40 certification boundary. Remote CI,
+push, release, tag, registry publication, browser parity, security-boundary
 certification, and promotion remain outside this local task.

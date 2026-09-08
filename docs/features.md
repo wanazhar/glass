@@ -400,6 +400,13 @@ decreasing or increasing y,
   bounded case-insensitive 15-layer/unlayered inherited `revert-layer` rollback
   for `text-transform`, `font-weight`, `font-style`, and `word-break` with
   finite parent/root fallbacks,
+  bounded standalone case-insensitive CSS-wide `inherit`, `initial`, `unset`,
+  and one-author-origin `revert` for inherited `white-space`, positive-pixel
+  `line-height`, `text-transform`, `font-weight`, `font-style`, `word-break`,
+  `vertical-align`, `word-spacing`, and `letter-spacing`; `initial` uses the
+  bounded root defaults, `inherit`/`unset` use the computed parent, `revert`
+  uses the current one-author-origin parent fallback, and `revert-layer`
+  remains the named-layer rollback form,
   bounded case-insensitive 15-layer/unlayered rollback for non-inherited
   `flex-wrap`, `justify-content`, `align-items`, `align-self`, `align-content`,
   and `flex-direction` owners with their native fallbacks,

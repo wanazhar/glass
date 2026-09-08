@@ -40,7 +40,7 @@ bounded-flex-gap-important/bounded-dimension-important/bounded-box-model-importa
 bounded-logical-box-model-edges/
 bounded-box-model-css-wide-resets/
 bounded-box-model-explicit-inheritance/bounded-dimension-explicit-inheritance/
-bounded-dimension-css-wide-resets/
+bounded-dimension-css-wide-resets/bounded-inherited-text-css-wide-resets/
 bounded-overflow-important,
 bounded-physical-border-width-important,
 bounded-physical-border-style-important,
@@ -1777,6 +1777,29 @@ guides and 19 substantive contracts; parity reports 14 capabilities across 4
 targets; TUI reports 15 implementation help keys and 63 documentation markers;
 version sync reports 0.3.14. Paired-crate, package, workspace, security/fuzz,
 cleanup, issue-level, and remote-CI gates remain pending.
+
+The completed dependency-ordered `native-engine-198` slice is recorded in
+`docs/plan/tasks/native-engine-198.md` and implemented at `95a988d0` (design
+`927cccca`). It adds standalone case-insensitive `inherit`, `initial`, `unset`,
+and one-author-origin `revert` to inherited `white-space`, positive-pixel
+`line-height`, `text-transform`, `font-weight`, `font-style`, `word-break`,
+`vertical-align`, `word-spacing`, and `letter-spacing`. Parent/root fallback,
+terminal reset behavior, invalid-later preservation, existing cascade priority,
+and `revert-layer` distinction reuse the existing fixed-cell computed-style,
+layout, display-list, raster, PNG, point-hit, semantic, and diagnostic owners;
+the public schemas and two-crate boundary remain unchanged. Focused and full
+native integration (236/236), feature-library tests with an explicit 8 MiB
+test-thread stack (1019 passed, 1 ignored), strict Clippy, warning-denied
+rustdoc, locked scoped check, and formatting pass locally. Static release truth
+passes with 612 Markdown documents (83 current, 57 previous-version hits, 715
+semantic audit hits, 0 current-claim failures); coverage, depth, parity, TUI,
+and version-sync also pass with 612 Markdown files, 345 full-product MCP tools
+(100 browser-only), 17 examples, 22 public modules, 93 current guides, 19
+substantive contracts, 14 capabilities across 4 targets, 15 implementation
+help keys, 63 documentation markers, and version `0.3.14`. The default-stack
+library run reproduces the pre-existing large-Clap parser-test overflow.
+Paired-crate, package, workspace, security/fuzz, cleanup, issue-level, and
+remote-CI gates remain pending.
 
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list

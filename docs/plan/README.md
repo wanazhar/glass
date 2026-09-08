@@ -2019,6 +2019,31 @@ implementation help keys and 63 documentation markers; version sync reports
 and remote-CI gates remain pending until issue #40 reaches its final validation
 boundary.
 
+The completed dependency-ordered [native-engine-198](tasks/native-engine-198.md)
+slice is implemented at `95a988d0` (design `927cccca`). It adds bounded
+standalone case-insensitive `inherit`, `initial`, `unset`, and one-author-origin
+`revert` to inherited `white-space`, positive-pixel `line-height`,
+`text-transform`, `font-weight`, `font-style`, `word-break`, `vertical-align`,
+`word-spacing`, and `letter-spacing`. Parent/root fallbacks, terminal reset
+behavior, invalid-later preservation, existing cascade priority, and
+`revert-layer` distinction are covered through the existing computed-style,
+layout, display-list, raster, PNG, point-hit, semantic, and diagnostic owners;
+the private declaration model and two-crate boundary remain unchanged.
+Unit, public integration, full native integration (236/236), full feature
+library (1019/1019 with one ignored test and an explicit 8 MiB test-thread
+stack), strict Clippy, warning-denied rustdoc, locked scoped check, and
+formatting passed locally. Static documentation truth passed with 612 Markdown
+documents (83 current, 57 previous-version hits, 715 semantic audit hits, and
+0 current-claim failures); coverage, depth, parity, TUI, and version-sync
+passed with 612 Markdown files, 345 full-product MCP tools (100 browser-only),
+17 examples, 22 public modules, 93 current guides, 19 substantive contracts,
+14 capabilities across 4 targets, 15 implementation help keys, 63
+documentation markers, and version `0.3.14`. The default-stack library run
+still reproduces the pre-existing large-Clap parser test overflow. Paired-crate, package,
+workspace, security/fuzz, static documentation, cleanup, issue-level, and
+remote-CI gates remain pending until issue #40 reaches its final validation
+boundary.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

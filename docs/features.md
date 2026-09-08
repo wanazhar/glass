@@ -480,6 +480,9 @@ named-layer rollback and mixed/unsupported forms remain bounded,
   bounded case-insensitive 15-layer/unlayered rollback for local
   `flex-wrap`, `justify-content`, `align-items`, `align-self`, `align-content`,
   and `flex-direction` owners with their native fallbacks,
+  standalone case-insensitive `flex-direction:inherit` copies the computed
+  parent direction only when explicitly authored while omitted
+  `flex-direction` remains local with the bounded `row` fallback,
   bounded non-inherited `align-items:flex-start|center|flex-end` cross-axis
   placement using explicit content height or the auto row's maximum item outer
   height,
@@ -829,6 +832,9 @@ projection, and point hit-testing,
   bounded case-insensitive 15-layer/unlayered rollback for local
   `flex-wrap`, `justify-content`, `align-items`, `align-self`, `align-content`,
   and `flex-direction` owners with their native fallbacks,
+  standalone case-insensitive `flex-direction:inherit` copies the computed
+  parent direction only when explicitly authored while omitted
+  `flex-direction` remains local with the bounded `row` fallback,
   bounded non-inherited `align-items:flex-start|center|flex-end` cross-axis
   placement using explicit content height or the auto row's maximum item outer
   height,

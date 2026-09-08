@@ -2175,6 +2175,19 @@ remain bounded. Full native integration (261/261) and the feature library
 (1,044 passed, 1 ignored) pass locally. Remote CI, push, release, tag, and
 registry publication remain unclaimed for this local-only checkout.
 
+The completed dependency-ordered `native-engine-224` slice is recorded in
+`docs/plan/tasks/native-engine-224.md` and implemented at `bc8de568` (design
+`4402c331`). It adds standalone, case-insensitive `flex-grow: inherit` through
+the existing private grow component and ancestor-style chain, copying the
+computed parent grow value while keeping omitted `flex-grow` local with the
+bounded `0` fallback. Mixed forms, source order, important priority, finite
+shorthand/longhand precedence, reset semantics, `revert-layer`, row/column
+and wrapped sizing, display-list, raster/PNG, point-hit, semantics,
+diagnostics, and the two-crate boundary remain bounded. Full native
+integration (262/262) and the feature library (1,044 passed, 1 ignored) pass
+locally. Remote CI, push, release, tag, and registry publication remain
+unclaimed for this local-only checkout.
+
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded
@@ -3181,6 +3194,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded explicit case-insensitive `flex:inherit` projection through the
   existing private grow, shrink, and basis owners, while omitted `flex` remains
   local with the bounded `0 1 auto` component fallbacks.
+- bounded explicit case-insensitive `flex-grow:inherit` propagation through
+  the existing private grow owner, while omitted `flex-grow` remains local with
+  the bounded `0` fallback.
 - bounded non-negative fixed-pixel `text-indent` parsing and cascade for the
   first line of block containers, with one-cell clamping and shared
   layout/wrapping/fragment/paint/hit-test/overflow coordinates.

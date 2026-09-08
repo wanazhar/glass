@@ -1,7 +1,7 @@
 ---
 id: native-engine-224
 scope: glass-browser/native-engine/flex-grow-inherit
-status: planned
+status: complete
 depends-on: [native-engine-223]
 ---
 
@@ -92,6 +92,12 @@ targets, issue snapshots, and unrelated workloads remain untouched.
 
 ## Completion evidence
 
-Pending implementation and local certification. Remote CI, push, release, tag,
+Implementation is `bc8de568` (design `4402c331`). The locked native-feature
+check passed before testing. Focused flex parser/cascade coverage passed (35
+tests), and the public direct-grow sizing/artifact fixture passed (1 test).
+Full native integration passed (262/262), and the feature library passed
+(1,044 passed, 1 ignored). Formatting, workspace check, strict Clippy, paired
+package builds, and warning-denied rustdoc for both crates also passed locally.
+Remote CI, push, release, tag,
 registry publication, browser-parity, security-boundary certification, and
 promotion remain outside this local task.

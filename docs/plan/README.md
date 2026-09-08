@@ -2363,6 +2363,19 @@ Full native integration (261/261) and the feature library (1,044 passed, 1
 ignored) pass locally. Remote CI, push, release, tag, and registry publication
 remain unclaimed.
 
+The completed dependency-ordered [native-engine-224](tasks/native-engine-224.md)
+slice is implemented at `bc8de568` (design `4402c331`). It adds bounded
+standalone case-insensitive `flex-grow: inherit` through the existing private
+grow component and ancestor-style chain, copying the computed parent grow
+value while keeping omitted `flex-grow` local with the bounded `0` fallback.
+Mixed invalid forms, source order, important priority, finite
+shorthand/longhand precedence, reset semantics, `revert-layer`, row/column
+and wrapped sizing, display-list, raster/PNG, point-hit, semantics,
+diagnostics, and the two-crate boundary remain bounded. Full native
+integration (262/262) and the feature library (1,044 passed, 1 ignored) pass
+locally. Remote CI, push, release, tag, and registry publication remain
+unclaimed.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

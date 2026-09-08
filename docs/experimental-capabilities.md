@@ -559,6 +559,9 @@ direction and wrap components only when explicitly authored while omitted
 standalone case-insensitive `flex:inherit` copies the computed parent grow,
 shrink, and basis components only when explicitly authored while omitted
 `flex` remains local with bounded `0 1 auto` fallbacks,
+standalone case-insensitive `flex-grow:inherit` copies the computed parent
+grow component only when explicitly authored while omitted `flex-grow` remains
+local with the bounded `0` fallback,
 bounded non-inherited `align-items:flex-start|center|flex-end` cross-axis
 placement using explicit content height or the auto row's maximum item outer
 height,

@@ -104,6 +104,12 @@ targets, issue snapshots, and unrelated workloads remain untouched.
   display-list clips, raster pixels, PNG dimensions, point-hit routing, and
   semantic/source-order preservation. Unit coverage also records terminal
   marker parsing and invalid-later preservation.
+- Exact task cleanup removed only `/tmp/glass-192-focused` after process and
+  open-handle checks: 3,439,891,564 bytes across 6,713 files and 843
+  directories, plus `/tmp/glass-release-documentation-192.json` (193,396
+  bytes). Both paths were verified absent; available space moved from about
+  74 GiB to 77 GiB. Source, repository targets, issue snapshots, and unrelated
+  workloads were untouched.
 - Synchronized architecture, plan, analysis, product capability, SDK,
   host-RFC, and issue records describe the bounded overflow `!important`
   contract and retain the nested-scroll, used-value, origin, and browser-wide

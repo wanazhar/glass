@@ -1,7 +1,7 @@
 ---
 id: native-engine-216
 scope: glass-browser/native-engine/local-justify-content-inherit
-status: planned
+status: complete
 depends-on: [native-engine-215]
 ---
 
@@ -89,8 +89,29 @@ targets, issue snapshots, and unrelated workloads remain untouched.
 
 ## Completion evidence
 
-This design checkpoint is intentionally incomplete until implementation,
-focused tests, full native integration, and the issue-level documentation
-closeout are recorded. Remote CI, push, release, tag, registry publication,
-browser-parity, security-boundary certification, and promotion remain outside
-this local task.
+Implementation is `c3dc1faf`; the design checkpoint is `485c5750`. The locked
+native-feature test-target check passed before tests. Focused `justify-content`
+parser/cascade coverage passed 4 tests, the public reset and inheritance
+fixtures passed, full native integration passed `254/254`, and the serial
+native-feature library passed `1,037` tests with 1 ignored. The fixtures cover
+standalone case-insensitive inheritance, supplied-parent propagation,
+omitted-property fallback, mixed-invalid preservation, important/source order,
+main-axis placement, flex sizing, display-list, fixed-cell raster/PNG,
+point-hit, semantic ordering, and typed unsupported-value diagnostics. No
+public schema, dependency, feature default, or crate-boundary change was made.
+
+Workspace all-target/all-feature checking, strict two-crate Clippy, paired
+browser/dev builds, warning-denied rustdoc for both crates, formatting, and diff
+checks passed locally. The final static evidence also passed: release-document
+truth `630 Markdown / 83 current / 59 previous-version / 772 semantic / 0
+current-claim failures`, documentation coverage `630 Markdown / 345 full MCP
+tools / 100 browser-only / 17 examples / 22 public modules`, feature parity
+`14 capabilities across 4 targets`, TUI shortcuts `15 implementation keys /
+63 documentation markers`, documentation depth `93 current guides / 19
+substantive contracts`, version `0.3.14`, reliability `6 scenarios across 4
+targets`, public read-only adapters `5`, knowledge migration `6 records`, and
+Web IR `8 fixtures / 8 scenarios / 11 categories`. Issue #40 remains the
+external source-of-truth record for this checkpoint and is synchronized after
+this local closeout commit. Remote CI, push, release, tag, registry
+publication, browser-parity, security-boundary certification, and promotion
+remain outside this local task.

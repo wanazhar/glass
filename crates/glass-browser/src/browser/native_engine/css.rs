@@ -233,6 +233,10 @@ impl NativeTextDecorationStyleDeclaration {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeTextDecorationThicknessDeclaration {
     Value(u32),
+    Inherit,
+    Initial,
+    Unset,
+    Revert,
     RevertLayer,
 }
 
@@ -240,6 +244,8 @@ impl NativeTextDecorationThicknessDeclaration {
     const fn resolve(self, inherited: u32) -> u32 {
         match self {
             Self::Value(value) => value,
+            Self::Inherit | Self::Unset | Self::Revert => inherited,
+            Self::Initial => 1,
             Self::RevertLayer => inherited,
         }
     }
@@ -7261,6 +7267,18 @@ fn parse_text_decoration_skip_spaces(
 fn parse_text_decoration_thickness(
     value: &str,
 ) -> Option<NativeTextDecorationThicknessDeclaration> {
+    if value.eq_ignore_ascii_case("inherit") {
+        return Some(NativeTextDecorationThicknessDeclaration::Inherit);
+    }
+    if value.eq_ignore_ascii_case("initial") {
+        return Some(NativeTextDecorationThicknessDeclaration::Initial);
+    }
+    if value.eq_ignore_ascii_case("unset") {
+        return Some(NativeTextDecorationThicknessDeclaration::Unset);
+    }
+    if value.eq_ignore_ascii_case("revert") {
+        return Some(NativeTextDecorationThicknessDeclaration::Revert);
+    }
     if value.eq_ignore_ascii_case("revert-layer") {
         return Some(NativeTextDecorationThicknessDeclaration::RevertLayer);
     }
@@ -13910,16 +13928,29 @@ mod tests {
             parse_text_decoration_thickness("ReVeRt-LaYeR"),
             Some(NativeTextDecorationThicknessDeclaration::RevertLayer)
         );
+        assert_eq!(
+            parse_text_decoration_thickness("InHeRiT"),
+            Some(NativeTextDecorationThicknessDeclaration::Inherit)
+        );
+        assert_eq!(
+            parse_text_decoration_thickness("InItIaL"),
+            Some(NativeTextDecorationThicknessDeclaration::Initial)
+        );
+        assert_eq!(
+            parse_text_decoration_thickness("UnSeT"),
+            Some(NativeTextDecorationThicknessDeclaration::Unset)
+        );
+        assert_eq!(
+            parse_text_decoration_thickness("ReVeRt"),
+            Some(NativeTextDecorationThicknessDeclaration::Revert)
+        );
         assert_eq!(parse_text_decoration_thickness("0px"), None);
         assert_eq!(parse_text_decoration_thickness("5px"), None);
         assert_eq!(parse_text_decoration_thickness("auto"), None);
         assert_eq!(parse_text_decoration_thickness("1.5px"), None);
         assert_eq!(parse_text_decoration_thickness("2px 3px"), None);
         assert_eq!(parse_text_decoration_thickness("from-font"), None);
-        assert_eq!(parse_text_decoration_thickness("revert"), None);
-        assert_eq!(parse_text_decoration_thickness("inherit"), None);
-        assert_eq!(parse_text_decoration_thickness("unset"), None);
-        assert_eq!(parse_text_decoration_thickness("initial"), None);
+        assert_eq!(parse_text_decoration_thickness("inherit initial"), None);
         assert_eq!(parse_text_decoration_thickness("all"), None);
     }
 
@@ -13972,6 +14003,34 @@ mod tests {
                 .text_decoration_thickness(),
             2
         );
+    }
+
+    #[test]
+    fn text_decoration_thickness_css_wide_resets_follow_parent_and_initial() {
+        let document = NativeDocument::parse(
+            "<style>#parent { text-decoration-thickness: 3px; } #initial { text-decoration-thickness: initial; } #inherit { text-decoration-thickness: inherit; } #unset { text-decoration-thickness: unset; } #revert { text-decoration-thickness: revert; } #invalid { text-decoration-thickness: 4px; text-decoration-thickness: 5px; } #important { text-decoration-thickness: 3px !important; } #important { text-decoration-thickness: 1px; }</style><div id='parent'><span id='initial'>Initial</span><span id='inherit'>Inherit</span><span id='unset'>Unset</span><span id='revert'>Revert</span><span id='invalid'>Invalid</span><span id='important'>Important</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .text_decoration_thickness()
+        };
+
+        assert_eq!(
+            document
+                .computed_style_for_layout(document.root())
+                .text_decoration_thickness(),
+            1
+        );
+        assert_eq!(style("parent"), 3);
+        assert_eq!(style("initial"), 1);
+        assert_eq!(style("inherit"), 3);
+        assert_eq!(style("unset"), 3);
+        assert_eq!(style("revert"), 3);
+        assert_eq!(style("invalid"), 4);
+        assert_eq!(style("important"), 3);
     }
 
     #[test]

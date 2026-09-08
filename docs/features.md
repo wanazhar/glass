@@ -437,8 +437,9 @@ named-layer rollback and mixed/unsupported forms remain bounded,
   negative/fractional/intrinsic basis values; standalone
   `initial|unset|revert` reset forms for local `align-self` reuse the existing
   bounded `auto` fallback and continue through parent `align-items`;
-  `align-content` and `place-content` remain outside the boundary, plus bounded
-  case-insensitive gap-family
+  standalone `initial|unset|revert` reset forms for local `align-content` reuse
+  the existing bounded `flex-start` fallback; `place-content` remains outside
+  the boundary, plus bounded case-insensitive gap-family
   `revert-layer` rollback for `gap`, `row-gap`, and `column-gap` with
   independent finite-pixel components, plus standalone case-insensitive
   `initial|unset|revert` reset forms for all three gap declarations that
@@ -787,8 +788,9 @@ projection, and point hit-testing,
   negative/fractional/intrinsic basis values; standalone
   `initial|unset|revert` reset forms for local `align-self` reuse the existing
   bounded `auto` fallback and continue through parent `align-items`;
-  `align-content` and `place-content` remain outside the boundary, plus bounded
-  case-insensitive gap-family
+  standalone `initial|unset|revert` reset forms for local `align-content` reuse
+  the existing bounded `flex-start` fallback; `place-content` remains outside
+  the boundary, plus bounded case-insensitive gap-family
   `revert-layer` rollback for `gap`, `row-gap`, and `column-gap` with
   independent finite-pixel components, plus standalone case-insensitive
   `initial|unset|revert` reset forms for all three gap declarations that

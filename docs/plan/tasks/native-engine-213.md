@@ -1,7 +1,7 @@
 ---
 id: native-engine-213
 scope: glass-browser/native-engine/local-align-content-css-wide-resets
-status: planned
+status: complete
 depends-on: [native-engine-212]
 ---
 
@@ -80,7 +80,24 @@ targets, issue snapshots, and unrelated workloads remain untouched.
 
 ## Completion evidence
 
-Implementation and validation evidence will be recorded here after the
-bounded implementation and documentation closeout. Remote CI, push, release,
-tag, registry publication, browser-parity, security-boundary certification,
-and promotion remain outside this local task.
+Implementation is `337da7c5`; the design checkpoint is `e82eea50`. The locked
+native-feature test-target check passed in the isolated task target. Focused
+flex parser/cascade coverage passed 31 tests, the public wrapped-line reset
+fixture passed, full native integration passed 251/251, and the serial
+native-feature library passed 1,034 tests with one ignored. Workspace
+all-target/all-feature checking, strict Clippy, paired browser/dev builds,
+warning-denied rustdoc for both crates, formatting, and diff checks passed
+locally. The fixture covers case-insensitive reset parsing, bounded
+`FlexStart` fallback, terminal reset and invalid-later preservation,
+`!important`, source order, named-layer `revert-layer`, wrapped-line
+distribution, item alignment, flex sizing, display-list, fixed-cell
+raster/PNG, point-hit, semantics, and typed unsupported-value diagnostics for
+excluded `inherit`. No public schema, dependency, feature default, or
+crate-boundary change was made.
+
+The preceding task's six-target nightly fuzz certification remains current
+because this slice changes only CSS flex parsing/cascade. Package and security
+evidence is retained from the preceding dependency-stable task until the next
+issue-level validation boundary. Remote CI, push, release, tag, registry
+publication, browser-parity, security-boundary certification, and promotion
+remain outside this local task.

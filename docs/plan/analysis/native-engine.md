@@ -2454,11 +2454,13 @@ visual stacking.
 | `native-engine-210` | completed bounded standalone case-insensitive `initial`, `unset`, and one-author-origin `revert` for local `justify-content`; reset forms reuse the existing bounded `flex-start` fallback, preserving finite distribution values, `revert-layer`, important/source order, invalid-later preservation, free-space distribution, row/column mapping, flex sizing, display-list, fixed-cell raster, PNG capture, point-hit, diagnostics, public schemas, and the two-crate boundary; implementation `e9ac0b1c`; locked scoped check, focused flex parser/cascade (29 tests), public integration, full-native integration (248/248), feature library (1,031 passed, 1 ignored), workspace all-target/all-feature check, strict Clippy, paired binaries, warning-denied rustdoc, and formatting passed locally | `native-engine-209` | `inherit`, percentages, `place-content`, other alignment owners, additional origins, transitions, animations, generic CSS-wide machinery, and browser-wide flex conformance |
 | `native-engine-211` | completed bounded standalone case-insensitive `initial`, `unset`, and one-author-origin `revert` for local `align-items`; reset forms reuse the existing bounded `flex-start` fallback, preserving finite cross-axis values, `revert-layer`, important/source order, invalid-later preservation, cross-axis placement, `align-self` overrides, flex sizing, display-list, fixed-cell raster, PNG capture, point-hit, diagnostics, public schemas, and the two-crate boundary; implementation `29e23b4a`; locked scoped check, focused flex parser/cascade (30 tests), public integration, full-native integration (249/249), feature library (1,032 passed, 1 ignored), workspace all-target/all-feature check, strict Clippy, paired binaries, warning-denied rustdoc, and formatting passed locally | `native-engine-210` | `inherit`, percentages, baseline/safe/unsafe forms, `align-self`, `align-content`, `place-content`, additional origins, transitions, animations, generic CSS-wide machinery, and browser-wide flex conformance |
 | `native-engine-212` | completed bounded standalone case-insensitive `initial`, `unset`, and one-author-origin `revert` for local `align-self`; reset forms reuse the existing bounded `auto` fallback and continue through parent `align-items`, preserving finite item values, `revert-layer`, important/source order, invalid-later preservation, complete-subtree movement, flex sizing, display-list, fixed-cell raster, PNG capture, point-hit, diagnostics, public schemas, and the two-crate boundary; implementation `0a624642`; locked scoped check, focused flex parser/cascade (30 tests) plus dedicated align-self cascade (1 test), public integration, full-native integration (250/250), feature library (1,033 passed, 1 ignored), workspace all-target/all-feature check, strict Clippy, paired binaries, warning-denied rustdoc, and formatting passed locally | `native-engine-211` | `inherit`, percentages, baseline/safe/unsafe forms, `align-content`, `place-content`, additional origins, transitions, animations, generic CSS-wide machinery, and browser-wide flex conformance |
+| `native-engine-213` | completed bounded standalone case-insensitive `initial`, `unset`, and one-author-origin `revert` for local `align-content`; reset forms reuse the existing bounded `flex-start` fallback, preserving finite wrapped-line distribution values, `revert-layer`, terminal reset behavior, invalid-later preservation, important/source order, wrapped-line distribution, item alignment, flex sizing, display-list, fixed-cell raster, PNG capture, point-hit, diagnostics, public schemas, and the two-crate boundary; implementation `337da7c5`; locked scoped check, focused flex parser/cascade (31 tests), public integration, full-native integration (251/251), feature library (1,034 passed, 1 ignored), workspace all-target/all-feature check, strict Clippy, paired binaries, warning-denied rustdoc, and formatting passed locally | `native-engine-212` | `inherit`, percentages, baseline/safe/unsafe forms, `place-content`, additional origins, transitions, animations, generic CSS-wide machinery, and browser-wide flex conformance |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-212.md` is the latest completed task;
+`docs/plan/tasks/native-engine-213.md` is the latest completed task;
+`docs/plan/tasks/native-engine-212.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-211.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-210.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-209.md` is the preceding completed task;
@@ -2607,26 +2609,27 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 The current completed checkpoint is recorded for
+`docs/plan/tasks/native-engine-213.md`: implementation is `337da7c5` (design
+`e82eea50`). It extends local `align-content` with standalone,
+case-insensitive `initial`, `unset`, and one-author-origin `revert`, retaining
+finite wrapped-line distribution values and named-layer `revert-layer`. Reset
+forms reuse the bounded `flex-start` fallback while terminal reset,
+invalid-later preservation, important/source-order behavior, wrapped-line
+distribution, item alignment, flex sizing, display-list, fixed-cell raster,
+PNG capture, point-hit, diagnostics, schema, and two-crate owners remain
+bounded. The locked scoped native check, focused flex parser/cascade coverage
+(31 tests), public integration, full native integration (251/251), feature
+library (1,034 passed, 1 ignored), workspace all-target/all-feature check,
+strict Clippy, paired binaries, warning-denied rustdoc, and formatting/diff
+checks passed. The preceding task's six-target nightly fuzz certification
+remains current because this slice changes only CSS flex parsing/cascade.
+Package and security evidence is retained from the preceding dependency-stable
+task until the next issue-level validation boundary. Remote CI, push, release,
+tag, registry publication, browser-parity, security-boundary, or promotion
+claims are not made.
+The preceding completed checkpoint remains recorded for
 `docs/plan/tasks/native-engine-212.md`: implementation is `0a624642` (design
-`68f42ebe`). It extends local `align-self` with standalone, case-insensitive
-`initial`, `unset`, and one-author-origin `revert`, retaining finite item values
-and named-layer `revert-layer`. Reset forms reuse the bounded `auto` fallback
-and continue through parent `align-items` while important/source-order
-behavior, invalid-later preservation, complete-subtree movement, flex sizing,
-display-list, fixed-cell raster, PNG capture, point-hit, diagnostics, schema,
-and two-crate owners remain bounded. The locked scoped native check, focused
-flex parser/cascade coverage (30 tests) plus dedicated align-self cascade (1
-test), public integration, full native integration (250/250), feature library
-(1,033 passed, 1 ignored), workspace all-target/all-feature check, strict
-Clippy, paired binaries, warning-denied rustdoc, and formatting/diff checks
-passed. The preceding task's six-target nightly fuzz certification remains
-current because this slice changes only CSS flex parsing/cascade. Package and
-security evidence is retained from the preceding dependency-stable task until
-the next issue-level validation boundary. The direct registry-backed dev
-package verification remains blocked by the immutable public `glass-browser
-0.3.14` API surface; the canonical local patched/no-verify route passes. Remote
-CI, push, release, tag, registry publication, browser-parity, security-boundary,
-or promotion claims are not made.
+`68f42ebe`); its local gate evidence is retained in the task record.
 The preceding completed checkpoint remains recorded for
 `docs/plan/tasks/native-engine-202.md`: implementation is `65e3a76d` (design
 `d435032c`); its local gate evidence is retained in the task record.

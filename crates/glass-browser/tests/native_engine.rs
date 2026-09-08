@@ -20673,6 +20673,112 @@ fn native_flex_shorthand_expands_zero_basis_and_preserves_shared_consumers() {
 }
 
 #[test]
+fn native_flex_sizing_css_wide_resets_reach_layout_and_raster() {
+    let document = NativeDocument::parse(
+        "<style>.row { display:flex; width:32px; height:8px; gap:2px; align-items:flex-start; } .item { width:4px; height:4px; flex-shrink:0; } #reset { flex:4 5 12px; background-color:red; } #reset { flex:InItIaL; } #longhands { flex-grow:4; flex-shrink:5; flex-basis:12px; background-color:green; } #longhands { flex-grow:UnSeT; } #longhands { flex-shrink:ReVeRt; flex-basis:INITIAL; } #invalid { flex:2 3 8px; background-color:blue; } #invalid { flex:inherit; } #important { flex:5 6 10px !important; background-color:black; } #important { flex:initial; }</style><div id='row' class='row'><div id='reset' class='item'>A</div><div id='longhands' class='item'>B</div><div id='invalid' class='item'>C</div><div id='important' class='item'>D</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 40,
+        height: 16,
+        device_scale_factor_milli: 1000,
+    };
+    let row = document.resolve_target("id=row").unwrap();
+    let reset = document.resolve_target("id=reset").unwrap();
+    let longhands = document.resolve_target("id=longhands").unwrap();
+    let invalid = document.resolve_target("id=invalid").unwrap();
+    let important = document.resolve_target("id=important").unwrap();
+
+    let layout = document.layout(viewport).unwrap();
+    assert_eq!(layout.box_for(row).unwrap().width, 32);
+    let rect = |node_id| layout.box_for(node_id).expect("layout rectangle");
+    let reset_rect = rect(reset);
+    let longhands_rect = rect(longhands);
+    let invalid_rect = rect(invalid);
+    let important_rect = rect(important);
+    assert_eq!(
+        reset_rect,
+        NativeRect {
+            x: 0,
+            y: 0,
+            width: 4,
+            height: 4
+        }
+    );
+    assert_eq!(
+        longhands_rect,
+        NativeRect {
+            x: 6,
+            y: 0,
+            width: 4,
+            height: 4
+        }
+    );
+    assert_eq!(
+        invalid_rect,
+        NativeRect {
+            x: 12,
+            y: 0,
+            width: 8,
+            height: 4
+        }
+    );
+    assert_eq!(
+        important_rect,
+        NativeRect {
+            x: 22,
+            y: 0,
+            width: 10,
+            height: 4
+        }
+    );
+
+    let list = document.display_list(viewport).unwrap();
+    for (node_id, rect, color) in [
+        (reset, reset_rect, NativeColor::RED),
+        (
+            longhands,
+            longhands_rect,
+            NativeColor {
+                red: 0,
+                green: 128,
+                blue: 0,
+                alpha: u8::MAX,
+            },
+        ),
+        (
+            invalid,
+            invalid_rect,
+            NativeColor {
+                red: 0,
+                green: 0,
+                blue: u8::MAX,
+                alpha: u8::MAX,
+            },
+        ),
+        (important, important_rect, NativeColor::BLACK),
+    ] {
+        assert!(list.commands.iter().any(|command| {
+            matches!(
+                command,
+                NativeDisplayCommand::FillRect { node_id: command_node, rect: command_rect, color: command_color, .. }
+                    if *command_node == node_id && *command_rect == rect && *command_color == color
+            )
+        }));
+    }
+    assert_eq!(layout.hit_test(1, 1).unwrap(), Some(reset));
+    assert_eq!(layout.hit_test(23, 1).unwrap(), Some(important));
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(1, 1), Some([255, 0, 0, 255]));
+    assert_eq!(surface.pixel(23, 1), Some([0, 0, 0, 255]));
+    assert!(!surface.to_png().unwrap().is_empty());
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue && diagnostic.detail == "flex"
+    }));
+}
+
+#[test]
 fn native_flex_flow_shorthand_reuses_reverse_and_wrap_consumers() {
     let document = NativeDocument::parse(
         "<div id='row' style='display:flex;width:12px;gap:2px;flex-flow:row-reverse wrap'><div id='first' style='width:8px;height:6px;margin:1px;flex-shrink:0;background-color:red'>A</div><div id='second' style='width:4px;height:6px;margin:1px;flex-shrink:0;background-color:blue'>B</div></div>",

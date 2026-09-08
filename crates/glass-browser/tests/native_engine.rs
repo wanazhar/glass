@@ -15519,6 +15519,72 @@ fn native_flex_item_order_sizing_revert_layer_preserves_layout_and_artifacts() {
 }
 
 #[test]
+fn native_flex_item_order_css_wide_resets_reach_visual_order_and_raster() {
+    let document = NativeDocument::parse(
+        "<style>.row { display:flex; width:32px; height:8px; gap:2px; align-items:flex-start; } #reset { order:-2; background-color:red; } #reset { order:INITIAL; } #unset { order:-3; background-color:green; } #unset { order:UNSET; } #revert { order:-4; background-color:blue; } #revert { order:ReVeRt; } #invalid { order:-5; background-color:black; } #invalid { order:inherit; } #important { order:-6 !important; background-color:#102030; } #important { order:initial; } .item { width:4px; height:4px; flex-shrink:0; }</style><div id='row' class='row'><button id='reset' class='item'>R</button><button id='unset' class='item'>U</button><button id='revert' class='item'>V</button><button id='invalid' class='item'>I</button><button id='important' class='item'>P</button><button id='default' class='item' style='background-color:#804000'>D</button></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 40,
+        height: 16,
+        device_scale_factor_milli: 1000,
+    };
+    let row = document.resolve_target("id=row").unwrap();
+    let reset = document.resolve_target("id=reset").unwrap();
+    let unset = document.resolve_target("id=unset").unwrap();
+    let revert = document.resolve_target("id=revert").unwrap();
+    let invalid = document.resolve_target("id=invalid").unwrap();
+    let important = document.resolve_target("id=important").unwrap();
+    let default_item = document.resolve_target("id=default").unwrap();
+
+    let layout = document.layout(viewport).unwrap();
+    let rect = |node_id| layout.box_for(node_id).expect("layout rectangle");
+    assert_eq!(rect(row).width, 32);
+    assert_eq!(rect(important).x, 0);
+    assert_eq!(rect(invalid).x, 6);
+    assert_eq!(rect(reset).x, 12);
+    assert_eq!(rect(unset).x, 18);
+    assert_eq!(rect(revert).x, 24);
+    assert_eq!(rect(default_item).x, 30);
+
+    let semantic_nodes = document.semantic_nodes();
+    assert_eq!(
+        semantic_nodes
+            .iter()
+            .map(|node| node.node_id)
+            .collect::<Vec<_>>(),
+        vec![reset, unset, revert, invalid, important, default_item]
+    );
+
+    let list = document.display_list(viewport).unwrap();
+    let painted_ids = list
+        .commands
+        .iter()
+        .filter_map(|command| match command {
+            NativeDisplayCommand::FillRect { node_id, .. } => Some(*node_id),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        painted_ids,
+        vec![important, invalid, reset, unset, revert, default_item]
+    );
+
+    assert_eq!(layout.hit_test(1, 1).unwrap(), Some(important));
+    assert_eq!(layout.hit_test(13, 1).unwrap(), Some(reset));
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(1, 1), Some([16, 32, 48, 255]));
+    assert_eq!(surface.pixel(13, 1), Some([255, 0, 0, 255]));
+    assert_eq!(surface.pixel(19, 1), Some([0, 128, 0, 255]));
+    assert_eq!(surface.pixel(25, 1), Some([0, 0, 255, 255]));
+    assert!(!surface.to_png().unwrap().is_empty());
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue && diagnostic.detail == "order"
+    }));
+}
+
+#[test]
 fn native_flex_shorthand_revert_layer_preserves_components_and_artifacts() {
     let document = NativeDocument::parse(
         "<style>@layer base { #row { display:flex;width:24px;height:8px;gap:2px; } #first { flex:0 1 4px; width:4px;height:8px;background-color:red; } #second { flex:2 3 5px; width:5px;height:8px;background-color:blue; } #inline { flex:2 3 4px; } #repeated { flex:2 3 7px; } #mixed { flex:2 3 6px; } } @layer theme { #first { flex:1 0 10px; } #second { flex:0 0 8px; } #inline { flex:5 0 9px; } #repeated { flex:4 2 9px; } #mixed { flex:revert-layer; flex-grow:5; } } @layer top { #second { flex:revert-layer; } #repeated { flex:revert-layer; } } #first { flex:revert-layer; } #second { flex:revert-layer; } #inline { flex:revert-layer; } #repeated { flex:revert-layer; } #mixed { flex:revert-layer; } #fallback { flex:revert-layer; } #same-before { flex:2 3 6px; flex-grow:4; } #same-after { flex-grow:4; flex:2 3 6px; } #invalid { flex:2 3 6px; flex:1 2 3%; }</style><div id='row'><div id='first'>A</div><div id='second'>B</div></div><div id='inline' style='flex:REVERT-LAYER'>Inline</div><div id='repeated'>Repeated</div><div id='mixed'>Mixed</div><div id='fallback'>Fallback</div><div id='same-before'>Before</div><div id='same-after'>After</div><div id='invalid'>Invalid</div>",

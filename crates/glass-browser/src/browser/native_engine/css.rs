@@ -673,6 +673,7 @@ pub(crate) struct NativeOrderValue(i32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FlexItemOrderDeclaration {
     Value(NativeOrderValue),
+    Reset,
     RevertLayer,
 }
 
@@ -2933,6 +2934,7 @@ fn resolve_flex_item_order(
     resolve_alignment_candidates(candidates, NativeOrderValue::default(), |declaration| {
         match declaration {
             FlexItemOrderDeclaration::Value(value) => Some(value),
+            FlexItemOrderDeclaration::Reset => Some(NativeOrderValue::default()),
             FlexItemOrderDeclaration::RevertLayer => None,
         }
     })
@@ -8187,10 +8189,12 @@ fn parse_flex_item_order(value: &str) -> Option<NativeOrderValue> {
 
 fn parse_flex_item_order_declaration(value: &str) -> Option<FlexItemOrderDeclaration> {
     if value.trim().eq_ignore_ascii_case("revert-layer") {
-        Some(FlexItemOrderDeclaration::RevertLayer)
-    } else {
-        parse_flex_item_order(value).map(FlexItemOrderDeclaration::Value)
+        return Some(FlexItemOrderDeclaration::RevertLayer);
     }
+    if is_local_reset_keyword(value) {
+        return Some(FlexItemOrderDeclaration::Reset);
+    }
+    parse_flex_item_order(value).map(FlexItemOrderDeclaration::Value)
 }
 
 fn parse_flex_grow(value: &str) -> Option<u32> {
@@ -13337,6 +13341,13 @@ mod tests {
             Some(FlexBasisDeclaration::Value(FlexBasisValue::Length(12)))
         );
 
+        for reset in ["initial", "UNSET", "ReVeRt"] {
+            assert_eq!(
+                parse_flex_item_order_declaration(reset),
+                Some(FlexItemOrderDeclaration::Reset),
+                "{reset}"
+            );
+        }
         assert_eq!(parse_flex_item_order_declaration("inherit"), None);
         assert_eq!(
             parse_flex_grow_declaration("initial"),
@@ -13398,6 +13409,35 @@ mod tests {
         assert_eq!(parent_style.flex_shrink(), 7);
         assert_eq!(parent_style.flex_basis(), FlexBasisValue::Length(20));
         assert_values(&child, 0, 0, 1, FlexBasisValue::Auto);
+    }
+
+    #[test]
+    fn stylesheet_flex_order_css_wide_resets_use_zero_and_preserve_cascade() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #layer { order: -3; } } @layer theme { #layer { order: revert-layer; } } #reset { order: -2; } #reset { order: INITIAL; } #unset { order: -4; } #unset { order: UnSeT; } #revert { order: -5; } #revert { order: ReVeRt; } #invalid { order: -6; } #invalid { order: inherit; } #important { order: -7 !important; } #important { order: initial; }"
+                .into(),
+        ])
+        .unwrap();
+        let layer = node("<div id='layer'>Layer</div>");
+        let reset = node("<div id='reset'>Reset</div>");
+        let unset = node("<div id='unset'>Unset</div>");
+        let revert = node("<div id='revert'>Revert</div>");
+        let invalid = node("<div id='invalid'>Invalid</div>");
+        let important = node("<div id='important'>Important</div>");
+
+        let assert_order = |element: &NativeNode, order: i32| {
+            assert_eq!(
+                stylesheet.computed_for(element).flex_item_order(),
+                NativeOrderValue(order)
+            );
+        };
+
+        assert_order(&layer, -3);
+        assert_order(&reset, 0);
+        assert_order(&unset, 0);
+        assert_order(&revert, 0);
+        assert_order(&invalid, -6);
+        assert_order(&important, -7);
     }
 
     #[test]

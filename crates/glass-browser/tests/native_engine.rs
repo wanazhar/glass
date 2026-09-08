@@ -7713,6 +7713,65 @@ fn native_text_decoration_style_revert_layer_reaches_all_pattern_owners() {
 }
 
 #[test]
+fn native_text_decoration_style_css_wide_resets_reach_inheritance_and_raster() {
+    let document = NativeDocument::parse(
+        "<style>.line { display:block; width:32px; height:20px; line-height:20px; color:black; text-decoration:underline; text-decoration-style:dotted; } #parent { text-decoration-style:dashed; } #initial { text-decoration-style:initial; } #inherit { text-decoration-style:inherit; } #unset { text-decoration-style:unset; } #revert { text-decoration-style:revert; } #invalid { text-decoration-style:wavy; text-decoration-style:zigzag; } #important { text-decoration-style:dashed !important; } #important { text-decoration-style:solid; } </style><div id='parent' class='line'><span id='initial' class='line'>A</span><span id='inherit' class='line'>B</span><span id='unset' class='line'>C</span><span id='revert' class='line'>D</span><span id='invalid' class='line'>E</span><span id='important' class='line'>F</span></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 64,
+        height: 160,
+        device_scale_factor_milli: 1000,
+    };
+    let list = document.display_list(viewport).unwrap();
+    let command_for = |id| {
+        let node_id = document.resolve_target(&format!("id={id}")).unwrap();
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id: command_node_id,
+                origin,
+                decoration_style,
+                underline,
+                ..
+            } if *command_node_id == node_id => Some((*origin, *decoration_style, *underline)),
+            _ => None,
+        })
+    };
+    let initial = command_for("initial").expect("initial text command");
+    let inherited = command_for("inherit").expect("inherit text command");
+    let unset = command_for("unset").expect("unset text command");
+    let revert = command_for("revert").expect("revert text command");
+    let invalid = command_for("invalid").expect("invalid text command");
+    let important = command_for("important").expect("important text command");
+    assert_eq!(initial.1, NativeTextDecorationStyle::Solid);
+    assert_eq!(inherited.1, NativeTextDecorationStyle::Dashed);
+    assert_eq!(unset.1, NativeTextDecorationStyle::Dashed);
+    assert_eq!(revert.1, NativeTextDecorationStyle::Dashed);
+    assert_eq!(invalid.1, NativeTextDecorationStyle::Wavy);
+    assert_eq!(important.1, NativeTextDecorationStyle::Dashed);
+    assert!(initial.2 && inherited.2 && important.2);
+
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(initial.0.x, initial.0.y + 7),
+        Some([0, 0, 0, 255])
+    );
+    assert_eq!(
+        surface.pixel(inherited.0.x + 3, inherited.0.y + 7),
+        Some([255, 255, 255, 255])
+    );
+    assert_eq!(
+        surface.pixel(important.0.x + 3, important.0.y + 7),
+        Some([255, 255, 255, 255])
+    );
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "text-decoration-style"
+    }));
+}
+
+#[test]
 fn native_text_decoration_skip_ink_cascades_to_display_commands() {
     let document = NativeDocument::parse(
         "<style>.line { display:block; width:24px; height:20px; line-height:20px; color:black; text-decoration:underline; text-decoration-style:wavy; } #none { text-decoration-skip-ink:none; } #parent { text-decoration-skip-ink:auto; } #invalid { text-decoration-skip-ink:all; }</style><div id='auto' class='line'>A</div><div id='none' class='line'>A</div><div id='parent' class='line'><span id='inherited'>A</span></div><div id='invalid' class='line'>A</div>",

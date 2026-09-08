@@ -1557,18 +1557,18 @@ workspace all-target/all-feature, security/fuzz, and formatting gates pass
 locally; exact evidence and bounded cleanup are recorded in the task. Remote CI
 remains pending because the checkout is local-only.
 The completed dependency-ordered `native-engine-177` through
-`native-engine-190` slices are recorded in their task files. This run's latest
-slice, `native-engine-190`, extends the bounded author-origin `!important`
-partition from the radius, paint-color, border, text, local-presentation, and
-flex/gap families to the six normal-only local dimension declarations through
-one private doubled dimension partition. Important-over-normal ordering,
-reversed named-layer priority, inline precedence in the unlayered important
-bucket, invalid-later preservation, independent dimension streams, and
-`revert-layer` rollback are covered without changing public schemas, artifact
-owners, dependencies, defaults, or the two-crate boundary.
-Box-model declarations, overflow priority, multiple origins, transitions,
-animations, vertical writing modes, and browser-wide CSS conformance remain
-outside the bounded contract.
+`native-engine-191` slices are recorded in their task files. This run's latest
+slice, `native-engine-191`, extends the bounded author-origin `!important`
+partition from the radius, paint-color, border, text, local-presentation,
+flex/gap, and dimension families to the normal-only physical box-model
+declarations through private doubled edge and `box-sizing` partitions.
+Important-over-normal ordering, reversed named-layer priority, inline
+precedence in the unlayered important bucket, per-edge source order,
+invalid-later preservation, `auto` margin provenance, and `revert-layer`
+rollback are covered without changing public schemas, artifact owners,
+dependencies, defaults, or the two-crate boundary. Logical edges, overflow
+priority, multiple origins, transitions, animations, vertical writing modes,
+and browser-wide CSS conformance remain outside the bounded contract.
 Local certification for the latest slice is recorded below; the checkout
 remains local-only.
 The dependency-ordered `native-engine-122` implementation is complete at
@@ -2360,10 +2360,13 @@ visual stacking.
 
 | `native-engine-190` | completed bounded author-origin `!important` priority for the six normal-only local dimension declarations through private doubled candidate arrays and per-property importance bits, preserving important-over-normal ordering, reversed named-layer priority, inline precedence in the unlayered important bucket, invalid-later preservation, independent dimension streams, `revert-layer` rollback, min/max constraints, box geometry, clipping, hit testing, display-list, raster, PNG capture, public schemas, and the two-crate boundary; implementation `d5cc6e6b`; scoped check, focused/full-native integration (228/228), strict Clippy, warning-denied rustdoc, and formatting passed locally | `native-engine-189` | box-model declarations, overflow priority, other properties, dependencies, multiple origins, transitions, animations, vertical writing modes, and browser-wide CSS conformance |
 
+| `native-engine-191` | completed bounded author-origin `!important` priority for normal-only physical `box-sizing`, padding, and margin shorthand/longhand edges through private doubled candidate streams and per-edge importance bits, preserving important-over-normal ordering, reversed named-layer priority, inline precedence in the unlayered important bucket, per-edge source order, invalid-later preservation, `auto` margin provenance, `revert-layer` rollback, content-box/border-box geometry, normal-flow/flex placement, overflow clipping, display-list, raster, PNG capture, point-hit, semantic/source order, public schemas, and the two-crate boundary; implementation `43e5f8c2`; scoped check, focused/full-native integration (229/229), strict Clippy, warning-denied rustdoc, and formatting passed locally | `native-engine-190` | logical edges, overflow priority, other properties, dependencies, multiple origins, transitions, animations, vertical writing modes, and browser-wide CSS conformance |
+
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-190.md` is the latest completed task;
+`docs/plan/tasks/native-engine-191.md` is the latest completed task;
+`docs/plan/tasks/native-engine-190.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-189.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-188.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-187.md` is the preceding completed task;
@@ -2490,24 +2493,25 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 The current completed checkpoint is recorded for
-`docs/plan/tasks/native-engine-190.md`: implementation is `d5cc6e6b`. It
-extends bounded author-origin `!important` priority to the six normal-only
-local dimension declarations through private doubled candidate arrays and
-per-property importance bits, preserving important-over-normal ordering,
-reversed named-layer priority, inline precedence in the unlayered important
-bucket, invalid-later preservation, independent dimension streams,
-`revert-layer` rollback, and the existing min/max, box geometry, clipping,
-overflow, layout, display-list, raster, PNG capture, hit, diagnostics, schema,
-and two-crate owners. The scoped native check, 2 parser/cascade unit tests, 1
-integration regression, full native integration (228/228), strict Clippy,
-warning-denied rustdoc, and formatting gates passed. Static release truth,
-documentation coverage/depth, feature parity, TUI shortcut, version-sync,
-paired-crate, package, workspace, security/fuzz, final cleanup, and remote-CI
-gates remain deferred to the final issue #40 certification boundary. No remote
-CI, push, release, tag, registry publication, browser-parity,
-security-boundary, or promotion claim is made.
+`docs/plan/tasks/native-engine-191.md`: implementation is `43e5f8c2`. It
+extends bounded author-origin `!important` priority to normal-only physical
+`box-sizing`, padding, and margin shorthand/longhand edges through private
+doubled candidate streams and per-edge importance bits, preserving
+important-over-normal ordering, reversed named-layer priority, inline
+precedence in the unlayered important bucket, per-edge source order,
+invalid-later preservation, `auto` margin provenance, `revert-layer` rollback,
+and the existing content-box/border-box, normal-flow/flex, overflow,
+layout, display-list, raster, PNG capture, point-hit, semantic/source-order,
+diagnostics, schema, and two-crate owners. The scoped native check, 2
+parser/cascade unit tests, 1 integration regression, full native integration
+(229/229), strict Clippy, warning-denied rustdoc, and formatting gates passed.
+Static release truth, documentation coverage/depth, feature parity, TUI
+shortcut, version-sync, paired-crate, package, workspace, security/fuzz, final
+cleanup, and remote-CI gates remain deferred to the final issue #40
+certification boundary. No remote CI, push, release, tag, registry
+publication, browser-parity, security-boundary, or promotion claim is made.
 The preceding checkpoint remains recorded for
-`docs/plan/tasks/native-engine-189.md` at `94724ab0`.
+`docs/plan/tasks/native-engine-190.md` at `d5cc6e6b`.
 The historical checkpoint remains recorded for
 `docs/plan/tasks/native-engine-173.md`: the implementation is `f5f53cec`. It
 adds the bounded complete physical `border` and four side-border shorthand

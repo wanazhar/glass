@@ -36,7 +36,7 @@ bounded-paint-color-revert-layer,
 bounded-paint-color-important/bounded-physical-border-color-important,
 bounded-logical-border-color-important/bounded-text-presentation-important/
 bounded-local-presentation-important,
-bounded-flex-gap-important/bounded-dimension-important,
+bounded-flex-gap-important/bounded-dimension-important/bounded-box-model-important,
 bounded-physical-border-width-important,
 bounded-physical-border-style-important,
 bounded-inherited-color-current-color,
@@ -175,7 +175,11 @@ through private doubled dimension candidate streams; important-over-normal
 ordering, reversed named-layer priority, inline precedence, invalid-later
 preservation, and `revert-layer` rollback are carried into the existing
 optional computed dimensions without changing the geometry/artifact owners.
-Box-model declarations, overflow, and remaining properties retain their
+The normal-only physical box-model declarations (`box-sizing`, `padding`, and
+`margin` with their four physical longhands) also accept that bounded priority
+through private doubled candidate streams with per-edge importance, preserving
+content-box/border-box conversion, auto-margin provenance, and the existing
+geometry/artifact owners. Overflow and remaining properties retain their
 existing bounded behavior, and
 bounded block-level `display:flex` single-row placement for eligible direct
 element children, and
@@ -1617,6 +1621,22 @@ integration, full native integration (228/228), strict Clippy, warning-denied
 rustdoc, and formatting pass locally; final static, paired-crate, package,
 workspace, security/fuzz, cleanup, issue-level, and remote-CI gates remain
 pending.
+
+The completed dependency-ordered `native-engine-191` slice is recorded in
+`docs/plan/tasks/native-engine-191.md` and implemented at `43e5f8c2`. It extends
+the bounded author-origin `!important` partition to the normal-only physical
+box-model declarations: `box-sizing`, four physical padding edges, and four
+physical margin edges plus their shorthand forms. Important-over-normal
+ordering, reversed named-layer priority, inline precedence in the unlayered
+important bucket, per-edge shorthand/longhand source order, invalid-later
+preservation, `auto` margin provenance, and `revert-layer !important` rollback
+flow through the existing content-box/border-box, normal-flow/flex, overflow,
+layout, display-list, raster, capture, point-hit, and semantic/source-order
+owners. Logical edges, overflow priority, and general CSS conformance remain
+outside this slice. Focused units, the dedicated integration fixture, full
+native integration (229/229), strict Clippy, warning-denied rustdoc, and
+formatting pass locally; final static, paired-crate, package, workspace,
+security/fuzz, cleanup, issue-level, and remote-CI gates remain pending.
 
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list

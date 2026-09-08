@@ -1889,6 +1889,22 @@ warning-denied rustdoc, and formatting pass locally; final issue-level gates
 and remote CI remain pending until issue #40 reaches its final validation
 boundary.
 
+The completed dependency-ordered [native-engine-191](tasks/native-engine-191.md)
+slice is implemented at `43e5f8c2`. It extends bounded author-origin
+`!important` priority to the normal-only physical box-model declarations:
+`box-sizing`, physical padding, and physical margin shorthand/longhand edges.
+Important-over-normal ordering, reversed named-layer priority, inline
+precedence in the unlayered important bucket, per-edge source order,
+invalid-later preservation, `auto` margin provenance, and `revert-layer`
+rollback flow through the existing content-box/border-box, normal-flow/flex,
+overflow, layout, display-list, raster, capture, point-hit, and
+semantic/source-order owners. Logical edges, overflow priority, other
+properties, and browser-wide CSS conformance remain outside this slice. The
+scoped check, focused units/integration, full native integration (229/229),
+strict Clippy, warning-denied rustdoc, and formatting pass locally; final
+issue-level gates and remote CI remain pending until issue #40 reaches its
+final validation boundary.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

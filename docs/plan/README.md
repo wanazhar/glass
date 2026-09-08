@@ -2299,6 +2299,18 @@ two-crate boundary remain bounded. Full native integration (256/256) and the
 feature library (1,039 passed, 1 ignored) pass locally. Remote CI, push,
 release, tag, and registry publication remain unclaimed.
 
+The completed dependency-ordered [native-engine-219](tasks/native-engine-219.md)
+slice is implemented at `23703765` (design `0b9e784b`). It adds bounded
+standalone case-insensitive `place-content: inherit` through the existing
+`align-content` and `justify-content` inheritance owners, copying both
+computed parent components only when explicitly authored while keeping omitted
+`place-content` local. Mixed invalid forms, source order, important priority,
+finite shorthand expansion, `revert-layer`, wrapped-line distribution,
+main-axis placement, display-list, raster/PNG, point-hit, semantics,
+diagnostics, and the two-crate boundary remain bounded. Full native integration
+(257/257) and the feature library (1,040 passed, 1 ignored) pass locally.
+Remote CI, push, release, tag, and registry publication remain unclaimed.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

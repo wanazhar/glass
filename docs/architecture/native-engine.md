@@ -2107,6 +2107,19 @@ integration (256/256) and the feature library (1,039 passed, 1 ignored) pass
 locally. Remote CI, push, release, tag, and registry publication remain
 unclaimed for this local-only checkout.
 
+The completed dependency-ordered `native-engine-219` slice is recorded in
+`docs/plan/tasks/native-engine-219.md` and implemented at `23703765` (design
+`0b9e784b`). It adds standalone, case-insensitive `place-content: inherit`
+through the existing private `align-content` and `justify-content` ancestor-
+style owners, copying both computed parent components only when explicitly
+authored while keeping omitted `place-content` local. Mixed forms, source
+order, important priority, finite shorthand expansion, `revert-layer`,
+wrapped-line distribution, main-axis placement, display-list, raster/PNG,
+point-hit, semantics, diagnostics, and the two-crate boundary remain bounded.
+Full native integration (257/257) and the feature library (1,040 passed, 1
+ignored) pass locally. Remote CI, push, release, tag, and registry publication
+remain unclaimed for this local-only checkout.
+
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

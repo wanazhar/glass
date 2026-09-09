@@ -10,7 +10,9 @@ use super::javascript::{
     host_key_event_script, literal_dynamic_module_specifiers, static_module_specifiers,
 };
 use super::origin::NativeOrigin;
-use super::resource_loader::{NativeFetchResponse, NativeResourceLoader};
+use super::resource_loader::{
+    NativeFetchResponse, NativeNavigationMethod, NativeNavigationRequest, NativeResourceLoader,
+};
 #[cfg(windows)]
 use super::sandbox::NativeContentSandbox;
 use super::sandbox::prepare_worker_command;
@@ -177,7 +179,7 @@ impl NativeContentProcess {
 
     pub(crate) async fn load(
         &mut self,
-        url: &str,
+        navigation: &NativeNavigationRequest,
         limits: &NativeEngineLimits,
         viewport: Viewport,
         referrer: Option<&str>,
@@ -189,7 +191,12 @@ impl NativeContentProcess {
                 "kind": "load",
                 "id": id,
                 "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
-                "url": url,
+                "url": navigation.url,
+                "method": match navigation.method {
+                    NativeNavigationMethod::Get => "GET",
+                    NativeNavigationMethod::Post => "POST",
+                },
+                "body": navigation.body,
                 "referrer": referrer,
                 "max_document_bytes": limits.max_document_bytes,
                 "max_nodes": limits.max_nodes,
@@ -1348,6 +1355,49 @@ async fn load_content_resource(
             reason: "content process accepts only HTTP(S) document URLs".into(),
         });
     }
+    let method = match request
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or("GET")
+    {
+        "GET" => NativeNavigationMethod::Get,
+        "POST" => NativeNavigationMethod::Post,
+        _ => {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "content process supports only GET and POST document navigation".into(),
+            });
+        }
+    };
+    let body = request
+        .get("body")
+        .and_then(|value| (!value.is_null()).then_some(value))
+        .map(|value| {
+            value.as_str().ok_or_else(|| {
+                NativeEngineError::invalid(
+                    "content-process navigation body",
+                    "must be text or null",
+                )
+            })
+        })
+        .transpose()?;
+    let navigation = match method {
+        NativeNavigationMethod::Get => {
+            if body.is_some() {
+                return Err(NativeEngineError::invalid(
+                    "content-process GET body",
+                    "must be null",
+                ));
+            }
+            NativeNavigationRequest::get(url)
+        }
+        NativeNavigationMethod::Post => NativeNavigationRequest::post(
+            url,
+            body.ok_or_else(|| {
+                NativeEngineError::invalid("content-process POST body", "must be present")
+            })?
+            .to_owned(),
+        )?,
+    };
     let max_document_bytes = request
         .get("max_document_bytes")
         .and_then(Value::as_u64)
@@ -1421,7 +1471,9 @@ async fn load_content_resource(
                 .expect("content-process resource loader was just initialized")
         }
     };
-    let resource = loader.load_async_with_referrer(url, referrer).await?;
+    let resource = loader
+        .load_async_request_with_referrer(&navigation, referrer)
+        .await?;
     let discovery = NativeDocument::parse(&resource.body, &limits)?;
     let mut external_stylesheets = Vec::new();
     for href in discovery
@@ -1687,7 +1739,7 @@ fn mutate_click_with_event_preflight(
             )? {
                 navigation = Some(NativeContentNavigation {
                     node_index: form_id.index(),
-                    href: next.form_submission_url(form_id, document_url)?,
+                    href: next.form_submission_request(form_id, document_url)?.url,
                 });
             }
         }
@@ -1942,7 +1994,7 @@ fn mutate_script_document(
                     ..
                 } => Ok(NativeContentNavigation {
                     node_index,
-                    href: next.form_submission_url(form_id, document_url)?,
+                    href: next.form_submission_request(form_id, document_url)?.url,
                 }),
             })
             .transpose()?,
@@ -1978,7 +2030,7 @@ fn script_navigation_target(
                         href: href.to_owned(),
                     })
                 } else if let Some(form_id) = document.submit_control_form(node_id) {
-                    document.form_submission_url(form_id, document_url)?;
+                    document.form_submission_request(form_id, document_url)?;
                     Some(ScriptNavigationTarget::Form {
                         node_index: form_id.index(),
                         form_id,
@@ -1990,7 +2042,7 @@ fn script_navigation_target(
             }
             NativeScriptCommand::SubmitForm { node_index } => {
                 let node_id = NativeNodeId::from_parts(document.generation(), *node_index);
-                document.form_submission_url(node_id, document_url)?;
+                document.form_submission_request(node_id, document_url)?;
                 Some(ScriptNavigationTarget::Form {
                     node_index: *node_index,
                     form_id: node_id,
@@ -1999,7 +2051,7 @@ fn script_navigation_target(
             }
             NativeScriptCommand::RequestSubmitForm { node_index } => {
                 let node_id = NativeNodeId::from_parts(document.generation(), *node_index);
-                document.form_submission_url(node_id, document_url)?;
+                document.form_submission_request(node_id, document_url)?;
                 Some(ScriptNavigationTarget::Form {
                     node_index: *node_index,
                     form_id: node_id,

@@ -451,8 +451,15 @@ bubbling, cancelable `submit` event before query serialization; callback
 mutations are included in the resulting URL, while direct `form.submit()`
 remains event-free. Local and child semantic submit-button clicks use their
 existing navigation owners, and child click IPC now transfers the navigation
-record explicitly. POST/multipart, validation, submitter metadata, target
-contexts, and unload ordering remain open.
+record explicitly.
+
+The completed native-engine-browser-035 batch extends that lifecycle to
+bounded `method="post"` forms using
+`application/x-www-form-urlencoded`. The encoded body travels through the
+same typed parent/content-process request path, preserves the submit event and
+callback-mutation contract, and keeps the existing redirect, referrer, cookie,
+MIME, and response limits. Multipart/text/plain encoding, validation,
+submitter metadata, target contexts, and unload ordering remain open.
 
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
@@ -3508,12 +3515,12 @@ The native profile is `experimental` and declares:
 | Capability | Level | Current contract |
 |---|---|---|
 | lifecycle | available | initialize and explicit close |
-| navigation | available | local resources plus bounded external HTTP(S) HTML navigation, inline/classic/module-root/static-graph/literal-dynamic-import child scripts, bounded task turns, and bounded GET-form navigation; no computed module loading or general subresources |
+| navigation | available | local resources plus bounded external HTTP(S) HTML navigation, inline/classic/module-root/static-graph/literal-dynamic-import child scripts, bounded task turns, and bounded GET or urlencoded-POST form navigation; no computed module loading or general subresources |
 | contexts | available | one active context |
 | evidence | available | bounded URL, title, visible text, revision; native semantic projection is Rust-only |
-| action | available | semantic click/type, focused-text printable/Backspace/Delete key input, bounded vertical root scrolling, bounded GET form defaults, plus native point targets for supported local controls; no selection/IME or nested scrolling |
+| action | available | semantic click/type, focused-text printable/Backspace/Delete key input, bounded vertical root scrolling, bounded GET or urlencoded-POST form defaults, plus native point targets for supported local controls; no selection/IME or nested scrolling |
 | effects | available | current revision and changed signal; bounded event metadata is Rust-only |
-| script | available | bounded QuickJS ECMAScript with a refreshed `window`/`document` snapshot, bounded inline/classic/module-root page-script loading, HTTP(S) static module graphs, literal dynamic imports, and deterministic microtask/next-turn timer callbacks, typed click/form-submit/attribute/focus commands, persistent listener records, bounded Event/CustomEvent capture/target/bubble dispatch, cancelable click preflight, transactional type/input/change event re-entry, top-level link/form navigation handoff, and relative HTTP(S)/same-document resolution; no live Web IDL identity, target contexts, beforeinput/composition, POST/multipart forms, intervals/animation/idle callbacks, wall-clock timer semantics, computed imports, bare specifiers/import maps, local external subresources, or general page loading |
+| script | available | bounded QuickJS ECMAScript with a refreshed `window`/`document` snapshot, bounded inline/classic/module-root page-script loading, HTTP(S) static module graphs, literal dynamic imports, and deterministic microtask/next-turn timer callbacks, typed click/form-submit/attribute/focus commands, persistent listener records, bounded Event/CustomEvent capture/target/bubble dispatch, cancelable click preflight, transactional type/input/change event re-entry, top-level link/form navigation handoff, and relative HTTP(S)/same-document resolution; no live Web IDL identity, target contexts, beforeinput/composition, multipart/text/plain forms, validation/submitter parity, intervals/animation/idle callbacks, wall-clock timer semantics, computed imports, bare specifiers/import maps, local external subresources, or general page loading |
 | capture | available | bounded PNG of the current logical RGBA surface; JPEG/PDF and screenshot-containing evidence are unavailable |
 | storage | partial | process-owned session cookies and bounded document cache; no local/session/IndexedDB storage or persistence |
 | prompts | omitted | no dialogs |

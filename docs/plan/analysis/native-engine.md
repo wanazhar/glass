@@ -2319,10 +2319,27 @@ HttpOnly-visibility policy to later navigation and fetch requests. Storage
 events, cookie profile persistence, IndexedDB, full binary/stream FormData
 support, and full Storage Web IDL identity remain open.
 
-The next bounded workstream is cross-document storage-event delivery,
-followed by IndexedDB, full binary/stream FormData support, full task
-ordering/navigation edge cases, remaining full pattern-regex/file constraint
-validation, target contexts, and the remaining browser-context primitives.
+The `7ac4c39d` navigation-semantics correction repaired revision allocation,
+nonfatal page-script exceptions, POST form handoff, hidden-action rejection,
+timer-clock determinism, and lifecycle effect ordering; the native integration
+gate was re-run at 359 passed before the next feature slice.
+
+The completed bounded same-profile local storage-event follow-up is
+[native-engine-browser-070](../tasks/native-engine-browser-070.md). Concurrently
+alive local native documents sharing the same explicit profile path receive
+origin-filtered `storage` events for effective `localStorage` changes; source
+documents are excluded, no-op mutations do not publish, and the receiving Rust
+and JavaScript stores are synchronized before dispatch. This is an in-process
+coordinator only. Session-storage browsing-context routing, sandboxed HTTP(S)
+content-worker transport, profile-writer locking, IndexedDB, full
+binary/stream FormData support, full Storage Web IDL identity, and the
+remaining browser-context gates remain open.
+
+The next bounded workstream is session-storage and child-process /
+multi-context event transport, followed by IndexedDB, full binary/stream
+FormData support, full task ordering/navigation edge cases, remaining full
+pattern-regex/file constraint validation, target contexts, and the remaining
+browser-context primitives.
 
 ## Baseline and constraints
 

@@ -18,8 +18,15 @@ use glass_browser::browser_backend::{
 };
 use glass_browser::{BackendFactory, BrowserRuntime, BrowserRuntimeSession, NativeEngineBackend};
 use std::io::Cursor;
+use std::sync::OnceLock;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+use tokio::sync::Mutex;
+
+fn native_content_process_test_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 
 fn find_element_with_attribute(
     document: &NativeDocument,
@@ -69,6 +76,7 @@ async fn native_runtime_session_uses_explicit_local_constructor() {
 
 #[tokio::test]
 async fn native_runtime_session_loads_bounded_external_http_html_without_cdp() {
+    let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
@@ -123,6 +131,7 @@ async fn native_runtime_session_loads_bounded_external_http_html_without_cdp() {
 
 #[tokio::test]
 async fn native_content_process_decodes_declared_external_html_charset() {
+    let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
@@ -151,7 +160,112 @@ async fn native_content_process_decodes_declared_external_html_charset() {
 }
 
 #[tokio::test]
+async fn native_content_process_preserves_bounded_cookie_state_between_navigations() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/set", "/check"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 4096];
+            let read = stream.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..read]);
+            assert!(
+                request
+                    .split_whitespace()
+                    .nth(1)
+                    .is_some_and(|path| path == expected_path),
+                "unexpected request: {request}"
+            );
+            if expected_path == "/set" {
+                assert!(
+                    !request.lines().any(|line| {
+                        line.split_once(':')
+                            .is_some_and(|(name, _)| name.eq_ignore_ascii_case("cookie"))
+                    }),
+                    "session cookie leaked into its first request: {request}"
+                );
+            } else {
+                assert!(
+                    request.lines().any(|line| {
+                        line.split_once(':').is_some_and(|(name, value)| {
+                            name.eq_ignore_ascii_case("cookie") && value.trim() == "session=alpha"
+                        })
+                    }),
+                    "session cookie was not sent on the next navigation: {request}"
+                );
+            }
+            let (extra_headers, body) = if expected_path == "/set" {
+                (
+                    "Set-Cookie: session=alpha; Path=/\r\n",
+                    "<title>Cookie set</title><p>First navigation</p>",
+                )
+            } else {
+                ("", "<title>Cookie sent</title><p>Second navigation</p>")
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n{extra_headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let base_url = format!("http://{address}");
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("{base_url}/set")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(engine.snapshot().unwrap().title, "Cookie set");
+    engine
+        .navigate_async(format!("{base_url}/check"))
+        .await
+        .unwrap();
+    assert_eq!(engine.snapshot().unwrap().title, "Cookie sent");
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_reuses_bounded_http_cache_for_fragment_navigation() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0_u8; 4096];
+        let read = stream.read(&mut request).await.unwrap();
+        let request = String::from_utf8_lossy(&request[..read]);
+        assert_eq!(request.split_whitespace().nth(1), Some("/cached"));
+        let body = "<title>Cached</title><p>One network response</p>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let base_url = format!("http://{address}");
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("{base_url}/cached")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .navigate_async(format!("{base_url}/cached#section"))
+        .await
+        .unwrap();
+    let snapshot = engine.snapshot().unwrap();
+    assert_eq!(snapshot.url, format!("{base_url}/cached#section"));
+    assert_eq!(snapshot.title, "Cached");
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_enforces_child_owned_document_limit() {
+    let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
@@ -186,6 +300,7 @@ async fn native_content_process_enforces_child_owned_document_limit() {
 
 #[tokio::test]
 async fn native_content_process_rejects_malformed_html_before_parent_commit() {
+    let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
@@ -230,6 +345,7 @@ async fn native_content_process_rejects_malformed_html_before_parent_commit() {
 
 #[tokio::test]
 async fn native_content_process_transfers_computed_style_for_layout() {
+    let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
@@ -271,6 +387,7 @@ async fn native_content_process_transfers_computed_style_for_layout() {
 
 #[tokio::test]
 async fn native_content_process_owns_external_form_mutations_and_effects() {
+    let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
@@ -357,6 +474,7 @@ async fn native_content_process_owns_external_form_mutations_and_effects() {
 #[cfg(unix)]
 #[tokio::test]
 async fn native_content_process_recovers_after_worker_exit_during_startup() {
+    let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {

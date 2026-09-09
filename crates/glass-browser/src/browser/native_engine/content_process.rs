@@ -568,6 +568,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut stdout = tokio::io::stdout();
     let mut running = false;
     let mut document = None;
+    let mut resource_loader = None;
     loop {
         let payload = read_frame(&mut stdin).await?;
         let request: Value =
@@ -592,7 +593,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 json!({"kind":"committed","id":id})
             }
             "load" if protocol_matches(&request) && running => {
-                match load_content_resource(&request).await {
+                match load_content_resource(&request, &mut resource_loader).await {
                     Ok((resource, parsed)) => {
                         document = Some(parsed);
                         json!({
@@ -653,6 +654,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
 
 async fn load_content_resource(
     request: &Value,
+    resource_loader: &mut Option<NativeResourceLoader>,
 ) -> Result<(NativeContentLoad, NativeDocument), NativeEngineError> {
     let url = request
         .get("url")
@@ -693,9 +695,24 @@ async fn load_content_resource(
             .unwrap_or(NativeEngineLimits::default().max_text_bytes),
         ..NativeEngineLimits::default()
     };
-    let resource = NativeResourceLoader::for_content_process(max_document_bytes)?
-        .load_async(url)
-        .await?;
+    let loader = match resource_loader {
+        Some(loader) if loader.max_document_bytes() == max_document_bytes => loader,
+        Some(_) => {
+            return Err(NativeEngineError::invalid(
+                "content-process document limit",
+                "cannot change the document limit after the content process starts",
+            ));
+        }
+        None => {
+            *resource_loader = Some(NativeResourceLoader::for_content_process(
+                max_document_bytes,
+            )?);
+            resource_loader
+                .as_mut()
+                .expect("content-process resource loader was just initialized")
+        }
+    };
+    let resource = loader.load_async(url).await?;
     let document = NativeDocument::parse(&resource.body, &limits)?;
     let wire = document.to_content_wire();
     Ok((

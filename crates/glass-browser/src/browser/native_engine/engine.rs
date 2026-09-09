@@ -732,7 +732,7 @@ impl NativeEngine {
     }
 
     async fn prepare_navigation_async(
-        &self,
+        &mut self,
         url: &str,
     ) -> Result<PreparedNavigation, NativeEngineError> {
         let resource = self.loader.load_async(url).await?;

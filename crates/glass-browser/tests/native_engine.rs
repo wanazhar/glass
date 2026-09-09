@@ -1133,6 +1133,65 @@ async fn native_local_form_validation_covers_common_constraints() {
 }
 
 #[tokio::test]
+async fn native_local_form_validation_covers_temporal_constraints() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://temporal-validation",
+            "<form id='search'><input id='date' name='date' type='date' value='2024-02-30'><input id='month' name='month' type='month' value='2024-13'><input id='time' name='time' type='time' value='24:00'><input id='datetime' name='datetime' type='datetime-local' value='2024-02-29T25:00'><input id='step-date' name='step-date' type='date' min='2024-01-01' step='2' value='2024-01-02'><button id='go' type='submit'>Go</button></form>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://temporal-validation");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            "(() => { globalThis.invalidEvents = []; globalThis.submitCount = 0; ['date', 'month', 'time', 'datetime', 'step-date'].forEach(id => document.getElementById(id).addEventListener('invalid', event => invalidEvents.push(event.target.id))); document.getElementById('search').addEventListener('submit', event => { submitCount += 1; event.preventDefault(); }); })()",
+        )
+        .await
+        .unwrap();
+    engine
+        .evaluate_async(
+            "document.getElementById('search').requestSubmit(document.getElementById('go'))",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.invalidEvents")
+            .await
+            .unwrap(),
+        serde_json::json!(["date", "month", "time", "datetime", "step-date"])
+    );
+    engine
+        .evaluate_async(
+            "(() => { document.getElementById('date').value = '2024-02-29'; document.getElementById('month').value = '2024-12'; document.getElementById('time').value = '23:59'; document.getElementById('datetime').value = '2024-02-29T23:59'; document.getElementById('step-date').value = '2024-01-03'; globalThis.invalidEvents = []; })()",
+        )
+        .await
+        .unwrap();
+    engine
+        .evaluate_async(
+            "document.getElementById('search').requestSubmit(document.getElementById('go'))",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.invalidEvents")
+            .await
+            .unwrap(),
+        serde_json::json!([])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.submitCount")
+            .await
+            .unwrap(),
+        serde_json::json!(1)
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_semantic_submit_button_navigates_without_script_realm() {
     let config = NativeEngineConfig::default()
         .with_fixture(

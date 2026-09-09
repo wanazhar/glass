@@ -2717,6 +2717,23 @@ fn valid_text_input_value(node: &NativeNode, value: &str) -> bool {
     } else if input_type.eq_ignore_ascii_case("url") && url::Url::parse(value).is_err() {
         return false;
     }
+    match input_type.to_ascii_lowercase().as_str() {
+        "date" if !valid_temporal_constraints(node, value, TemporalInputKind::Date) => {
+            return false;
+        }
+        "month" if !valid_temporal_constraints(node, value, TemporalInputKind::Month) => {
+            return false;
+        }
+        "time" if !valid_temporal_constraints(node, value, TemporalInputKind::Time) => {
+            return false;
+        }
+        "datetime-local"
+            if !valid_temporal_constraints(node, value, TemporalInputKind::DateTimeLocal) =>
+        {
+            return false;
+        }
+        _ => {}
+    }
     if matches!(input_type.to_ascii_lowercase().as_str(), "number" | "range")
         && !valid_numeric_constraints(node, value)
     {
@@ -2792,6 +2809,158 @@ fn valid_numeric_constraints(node: &NativeNode, value: &str) -> bool {
     let base = minimum.unwrap_or(0.0);
     let remainder = ((number - base) / step).fract().abs();
     remainder <= f64::EPSILON * 32.0 || (1.0 - remainder) <= f64::EPSILON * 32.0
+}
+
+#[derive(Debug, Clone, Copy)]
+enum TemporalInputKind {
+    Date,
+    Month,
+    Time,
+    DateTimeLocal,
+}
+
+fn valid_temporal_constraints(node: &NativeNode, value: &str, kind: TemporalInputKind) -> bool {
+    let Some(number) = parse_temporal_value(value, kind) else {
+        return false;
+    };
+    let minimum = node
+        .attribute("min")
+        .and_then(|value| parse_temporal_value(value, kind));
+    let maximum = node
+        .attribute("max")
+        .and_then(|value| parse_temporal_value(value, kind));
+    if minimum.is_some_and(|minimum| number < minimum)
+        || maximum.is_some_and(|maximum| number > maximum)
+    {
+        return false;
+    }
+    let default_step = match kind {
+        TemporalInputKind::Date => 86_400.0,
+        TemporalInputKind::Month => 1.0,
+        TemporalInputKind::Time | TemporalInputKind::DateTimeLocal => 60.0,
+    };
+    let step_unit = match kind {
+        TemporalInputKind::Date | TemporalInputKind::DateTimeLocal => 86_400.0,
+        TemporalInputKind::Month | TemporalInputKind::Time => 1.0,
+    };
+    let step_value = node.attribute("step").unwrap_or_default();
+    if step_value.eq_ignore_ascii_case("any") {
+        return true;
+    }
+    let step = if step_value.is_empty() {
+        default_step
+    } else {
+        step_value
+            .parse::<f64>()
+            .ok()
+            .filter(|step| step.is_finite() && *step > 0.0)
+            .map(|step| step * step_unit)
+            .filter(|step| step.is_finite() && *step > 0.0)
+            .unwrap_or(default_step)
+    };
+    let base = minimum.unwrap_or_else(|| match kind {
+        TemporalInputKind::Date | TemporalInputKind::DateTimeLocal => parse_temporal_value(
+            if matches!(kind, TemporalInputKind::Date) {
+                "1970-01-01"
+            } else {
+                "1970-01-01T00:00"
+            },
+            kind,
+        )
+        .unwrap_or(0.0),
+        TemporalInputKind::Month => 1970.0 * 12.0,
+        TemporalInputKind::Time => 0.0,
+    });
+    let remainder = ((number - base) / step).fract().abs();
+    remainder <= f64::EPSILON * 32.0 || (1.0 - remainder) <= f64::EPSILON * 32.0
+}
+
+fn parse_temporal_value(value: &str, kind: TemporalInputKind) -> Option<f64> {
+    match kind {
+        TemporalInputKind::Date => parse_date_value(value).map(|days| days as f64 * 86_400.0),
+        TemporalInputKind::Month => parse_month_value(value).map(|months| months as f64),
+        TemporalInputKind::Time => parse_time_value(value),
+        TemporalInputKind::DateTimeLocal => {
+            let (date, time) = value.split_once('T')?;
+            Some(parse_date_value(date)? as f64 * 86_400.0 + parse_time_value(time)?)
+        }
+    }
+}
+
+fn parse_date_value(value: &str) -> Option<i64> {
+    if value.len() != 10 || value.as_bytes().get(4) != Some(&b'-') {
+        return None;
+    }
+    if value.as_bytes().get(7) != Some(&b'-') {
+        return None;
+    }
+    let year = value.get(..4)?.parse::<i64>().ok()?;
+    let month = value.get(5..7)?.parse::<i64>().ok()?;
+    let day = value.get(8..)?.parse::<i64>().ok()?;
+    if !(1..=9999).contains(&year) || !(1..=12).contains(&month) {
+        return None;
+    }
+    let first = days_from_civil(year, month, 1);
+    let next_month = if month == 12 {
+        days_from_civil(year + 1, 1, 1)
+    } else {
+        days_from_civil(year, month + 1, 1)
+    };
+    (1..=(next_month - first))
+        .contains(&day)
+        .then_some(first + day - 1)
+}
+
+fn parse_month_value(value: &str) -> Option<i64> {
+    if value.len() != 7 || value.as_bytes().get(4) != Some(&b'-') {
+        return None;
+    }
+    let year = value.get(..4)?.parse::<i64>().ok()?;
+    let month = value.get(5..)?.parse::<i64>().ok()?;
+    (1..=9999)
+        .contains(&year)
+        .then_some(month)
+        .filter(|month| (1..=12).contains(month))
+        .map(|month| year * 12 + month - 1)
+}
+
+fn parse_time_value(value: &str) -> Option<f64> {
+    let (hour, remainder) = value.split_once(':')?;
+    let (minute, seconds) = remainder
+        .split_once(':')
+        .map_or((remainder, None), |(m, s)| (m, Some(s)));
+    let hour = hour.parse::<u32>().ok()?;
+    let minute = minute.parse::<u32>().ok()?;
+    if hour > 23 || minute > 59 {
+        return None;
+    }
+    let second = seconds.unwrap_or("0");
+    let (whole, fraction) = second
+        .split_once('.')
+        .map_or((second, None), |(s, f)| (s, Some(f)));
+    let whole = whole.parse::<u32>().ok()?;
+    if whole > 59 || fraction.is_some_and(|fraction| fraction.is_empty()) {
+        return None;
+    }
+    let fraction = match fraction {
+        Some(fraction) => format!("0.{fraction}").parse::<f64>().ok()?,
+        None => 0.0,
+    };
+    Some(hour as f64 * 3600.0 + minute as f64 * 60.0 + whole as f64 + fraction)
+}
+
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let adjusted_year = year - i64::from(month <= 2);
+    let era = if adjusted_year >= 0 {
+        adjusted_year / 400
+    } else {
+        (adjusted_year - 399) / 400
+    };
+    let year_of_era = adjusted_year - era * 400;
+    let month_prime = month + if month > 2 { -3 } else { 9 };
+    let day_of_year = (153 * month_prime + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era
 }
 
 fn encode_urlencoded_form_data(pairs: &[(String, String)]) -> Result<String, NativeEngineError> {

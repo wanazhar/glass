@@ -2158,7 +2158,7 @@ The completed bounded common-constraint follow-up is
 [native-engine-browser-050](../tasks/native-engine-browser-050.md). Local and
 child-owned forms now validate required, email/URL, UTF-16 length, and numeric
 min/max/step constraints before ordered `invalid` events and submit handoff.
-Pattern/date/file constraints, custom validity, and
+Pattern/file constraints, custom validity, and
 `ValidityState`/`checkValidity` Web IDL identity remain open.
 
 The completed bounded script-fetch follow-up is
@@ -2217,9 +2217,16 @@ bounded `application/x-www-form-urlencoded;charset=UTF-8` POST data with
 `+`-encoded spaces. Full constructors, sorting, iterator/Web IDL identity,
 and streaming remain open.
 
+The completed bounded temporal-validation follow-up is
+[native-engine-browser-058](../tasks/native-engine-browser-058.md). Local and
+child-owned forms now strictly validate `date`, `month`, `time`, and
+`datetime-local` values, including calendar validity and bounded `min`/`max`/
+`step` checks in the correct temporal units. Pattern/file constraints, custom
+validity, and `ValidityState`/`checkValidity` Web IDL identity remain open.
+
 The next bounded workstream is full task ordering and navigation edge cases,
-followed by file/FormData support, full constraint validation, target contexts,
-and the remaining browser-context primitives.
+followed by file/FormData support, the remaining pattern/file/custom constraint
+validation, target contexts, and the remaining browser-context primitives.
 
 ## Baseline and constraints
 

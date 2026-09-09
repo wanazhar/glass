@@ -1952,6 +1952,16 @@ external non-fragment links remain child-owned. Target contexts, form
 submission, lifecycle/default-action ordering, timers, modules, Fetch/XHR, and
 remaining resource classes stay open.
 
+The completed inline-page-script follow-up is
+[native-engine-browser-026](../tasks/native-engine-browser-026.md). Local
+prepared navigations and child-owned HTTP(S) loads now discover and execute a
+bounded set of inline JavaScript sources in the realm that owns the document.
+The parsed document receives only validated typed commands, local failures do
+not publish a partial navigation, and child globals/listeners persist without
+transferring executable state over IPC. External `src` scripts, modules,
+parser timing, timers, Fetch/XHR, CSP script enforcement, and full Web IDL
+identity remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

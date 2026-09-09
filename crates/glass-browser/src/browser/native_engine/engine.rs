@@ -12,7 +12,9 @@ use super::error::NativeEngineError;
 use super::error::NativeWorkerFailureKind;
 use super::history::{NativeHistory, NativeHistoryDirection};
 use super::interaction::{MAX_NATIVE_EFFECTS, NativeAction, NativeEffect, NativeEventKind};
-use super::javascript::{NativeJavaScriptRuntime, NativeScriptEvaluation, host_event_script};
+use super::javascript::{
+    NativeJavaScriptRuntime, NativeScriptEvaluation, execute_inline_scripts, host_event_script,
+};
 use super::layout::{NativeLayoutSnapshot, NativePoint};
 use super::lifecycle::NativeLifecycleState;
 use super::origin::NativeOrigin;
@@ -1086,6 +1088,7 @@ impl NativeEngine {
                 body: String::new(),
             },
             document,
+            execute_inline_scripts: false,
         })
     }
 
@@ -1099,10 +1102,27 @@ impl NativeEngine {
         })?;
         let document =
             NativeDocument::parse_with_generation(&resource.body, &self.config.limits, generation)?;
-        Ok(PreparedNavigation { resource, document })
+        Ok(PreparedNavigation {
+            resource,
+            document,
+            execute_inline_scripts: true,
+        })
     }
 
-    fn commit_navigation(&mut self, prepared: PreparedNavigation) -> Result<(), NativeEngineError> {
+    fn commit_navigation(
+        &mut self,
+        mut prepared: PreparedNavigation,
+    ) -> Result<(), NativeEngineError> {
+        let mut javascript = None;
+        if prepared.execute_inline_scripts {
+            execute_inline_scripts(
+                &mut prepared.document,
+                &mut javascript,
+                &prepared.resource.url,
+                &prepared.resource.origin,
+                self.config.viewport,
+            )?;
+        }
         let scroll_offset = self.fragment_scroll_offset_for_document(
             &prepared.document,
             &prepared.resource.url,
@@ -1111,7 +1131,7 @@ impl NativeEngine {
         self.run_commit_task(NativeTask::CommitNavigation, "navigation")?;
         let revision = self.next_revision()?;
         self.document = prepared.document;
-        self.javascript = None;
+        self.javascript = javascript;
         self.url = prepared.resource.url;
         self.origin = prepared.resource.origin;
         self.scroll_offset = scroll_offset;
@@ -1122,9 +1142,19 @@ impl NativeEngine {
 
     async fn commit_navigation_async(
         &mut self,
-        prepared: PreparedNavigation,
+        mut prepared: PreparedNavigation,
         worker: &NativeRuntimeWorker,
     ) -> Result<(), NativeEngineError> {
+        let mut javascript = None;
+        if prepared.execute_inline_scripts {
+            execute_inline_scripts(
+                &mut prepared.document,
+                &mut javascript,
+                &prepared.resource.url,
+                &prepared.resource.origin,
+                self.config.viewport,
+            )?;
+        }
         let scroll_offset = self.fragment_scroll_offset_for_document(
             &prepared.document,
             &prepared.resource.url,
@@ -1134,7 +1164,7 @@ impl NativeEngine {
             .await?;
         let revision = self.next_revision()?;
         self.document = prepared.document;
-        self.javascript = None;
+        self.javascript = javascript;
         self.url = prepared.resource.url;
         self.origin = prepared.resource.origin;
         self.scroll_offset = scroll_offset;
@@ -1477,6 +1507,7 @@ impl NativeEngine {
 struct PreparedNavigation {
     resource: NativeResource,
     document: NativeDocument,
+    execute_inline_scripts: bool,
 }
 
 enum HistoryCommit {

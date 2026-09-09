@@ -101,6 +101,36 @@ async fn native_runtime_session_uses_explicit_local_constructor() {
 }
 
 #[tokio::test]
+async fn native_local_inline_page_scripts_run_before_commit_and_persist_realm() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://inline-script-load",
+            "<script>globalThis.inlineCount = (globalThis.inlineCount || 0) + 1;</script><script>globalThis.inlineCount += 1; document.getElementById('name').value = 'loaded';</script><input id='name' type='text'>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://inline-script-load");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(engine.revision(), 1);
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.inlineCount")
+            .await
+            .unwrap(),
+        serde_json::json!(2)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("document.getElementById('name').value")
+            .await
+            .unwrap(),
+        serde_json::json!("loaded")
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_script_applies_bounded_dom_commands_once() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -558,6 +588,46 @@ async fn native_content_process_evaluates_persistent_script_realm() {
     assert_eq!(
         engine.evaluate_async("answer").await.unwrap(),
         serde_json::json!(1)
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_runs_inline_page_scripts_in_persistent_realm() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0_u8; 4096];
+        let _ = stream.read(&mut request).await.unwrap();
+        let body = "<script>globalThis.inlineCount = (globalThis.inlineCount || 0) + 1;</script><script>globalThis.inlineCount += 1; document.getElementById('name').value = 'loaded';</script><input id='name' type='text'>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.inlineCount")
+            .await
+            .unwrap(),
+        serde_json::json!(2)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("document.getElementById('name').value")
+            .await
+            .unwrap(),
+        serde_json::json!("loaded")
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

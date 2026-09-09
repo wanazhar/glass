@@ -380,6 +380,16 @@ external non-fragment links remain child-owned. Target contexts, form
 submission, lifecycle/default-action ordering, timers, modules, Fetch/XHR, and
 remaining resource classes stay open.
 
+The completed native-engine-browser-026 batch adds bounded inline page-script
+loading. Local prepared navigations execute accepted inline JavaScript sources
+in a fresh owner-side realm before publication; HTTP(S) documents execute them
+inside the sandboxed content process, whose globals and listener records remain
+available to later script and action requests. Commands still cross the typed
+document-clone boundary, load-time link activation is rejected, and local
+script failures do not publish a partial navigation. External scripts,
+modules, parser timing, timers, Fetch/XHR, CSP script enforcement, and full Web
+IDL identity remain open.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature
@@ -3430,12 +3440,12 @@ The native profile is `experimental` and declares:
 | Capability | Level | Current contract |
 |---|---|---|
 | lifecycle | available | initialize and explicit close |
-| navigation | available | local resources plus bounded external HTTP(S) HTML navigation; no page-script loading or general subresources |
+| navigation | available | local resources plus bounded external HTTP(S) HTML navigation and bounded inline page-script loading; no external scripts/modules or general subresources |
 | contexts | available | one active context |
 | evidence | available | bounded URL, title, visible text, revision; native semantic projection is Rust-only |
 | action | available | semantic click/type, bounded vertical root scrolling, plus native point targets for supported local controls; no nested scrolling or default browser behavior |
 | effects | available | current revision and changed signal; bounded event metadata is Rust-only |
-| script | available | bounded QuickJS ECMAScript with a refreshed `window`/`document` snapshot, typed click/form/attribute/focus commands, persistent listener records, bounded Event/CustomEvent capture/target/bubble dispatch, cancelable click preflight, transactional type/input/change event re-entry, top-level link navigation handoff, and relative HTTP(S)/same-document resolution; no live Web IDL identity, target contexts, beforeinput/composition, timers, modules, or page-script loading |
+| script | available | bounded QuickJS ECMAScript with a refreshed `window`/`document` snapshot, bounded inline page-script loading, typed click/form/attribute/focus commands, persistent listener records, bounded Event/CustomEvent capture/target/bubble dispatch, cancelable click preflight, transactional type/input/change event re-entry, top-level link navigation handoff, and relative HTTP(S)/same-document resolution; no live Web IDL identity, target contexts, beforeinput/composition, timers, modules, external scripts, or general page loading |
 | capture | available | bounded PNG of the current logical RGBA surface; JPEG/PDF and screenshot-containing evidence are unavailable |
 | storage | partial | process-owned session cookies and bounded document cache; no local/session/IndexedDB storage or persistence |
 | prompts | omitted | no dialogs |

@@ -47,7 +47,7 @@ pub use engine::{
     NativeActionResult, NativeDiagnosticsSnapshot, NativeEffectsSnapshot, NativeEngine,
     NativeEngineSnapshot,
 };
-pub use error::NativeEngineError;
+pub use error::{NativeEngineError, NativeWorkerFailureKind};
 pub use history::{NativeHistory, NativeHistoryDirection, NativeHistoryEntry};
 pub use interaction::{MAX_NATIVE_EFFECTS, NativeAction, NativeEffect, NativeEventKind};
 pub use layout::{

@@ -2054,8 +2054,7 @@ impl NativeDocument {
             let Some(node) = self.node(id) else {
                 continue;
             };
-            if node.attribute("required").is_none() || self.is_disabled(id) || self.is_read_only(id)
-            {
+            if self.is_disabled(id) || self.is_read_only(id) {
                 continue;
             }
             let valid = match node.element_name() {
@@ -2069,34 +2068,42 @@ impl NativeDocument {
                     {
                         true
                     } else if input_type.eq_ignore_ascii_case("checkbox") {
-                        node.state.checked
+                        node.attribute("required")
+                            .is_none_or(|_| node.state.checked)
                     } else if input_type.eq_ignore_ascii_case("radio") {
-                        self.radio_group_has_checked(form_id, id)
+                        node.attribute("required")
+                            .is_none_or(|_| self.radio_group_has_checked(form_id, id))
                     } else {
-                        self.current_value(id)
-                            .is_some_and(|value| !value.is_empty())
+                        let value = self.current_value(id).unwrap_or_default();
+                        valid_text_input_value(node, &value)
                     }
                 }
-                Some("textarea") => self
-                    .current_value(id)
-                    .is_some_and(|value| !value.is_empty()),
-                Some("select") => self
-                    .select_option_ids(id)
-                    .into_iter()
-                    .filter(|option_id| {
-                        self.node(*option_id)
-                            .is_some_and(|option| option.state.selected)
-                    })
-                    .any(|option_id| {
-                        self.node(option_id)
-                            .and_then(|option| option.attribute("value"))
-                            .map(str::to_owned)
-                            .or_else(|| {
-                                self.element_text(option_id, MAX_LOCATOR_BYTES)
-                                    .map(|(value, _)| value)
+                Some("textarea") => {
+                    let value = self.current_value(id).unwrap_or_default();
+                    valid_textarea_value(node, &value)
+                }
+                Some("select") => {
+                    if node.attribute("required").is_none() {
+                        true
+                    } else {
+                        self.select_option_ids(id)
+                            .into_iter()
+                            .filter(|option_id| {
+                                self.node(*option_id)
+                                    .is_some_and(|option| option.state.selected)
                             })
-                            .is_some_and(|value| !value.is_empty())
-                    }),
+                            .any(|option_id| {
+                                self.node(option_id)
+                                    .and_then(|option| option.attribute("value"))
+                                    .map(str::to_owned)
+                                    .or_else(|| {
+                                        self.element_text(option_id, MAX_LOCATOR_BYTES)
+                                            .map(|(value, _)| value)
+                                    })
+                                    .is_some_and(|value| !value.is_empty())
+                            })
+                    }
+                }
                 _ => true,
             };
             if !valid {
@@ -2686,6 +2693,104 @@ impl NativeDocument {
             NativeNodeKind::Text(_) => {}
         }
     }
+}
+
+fn valid_text_input_value(node: &NativeNode, value: &str) -> bool {
+    let required = node.attribute("required").is_some();
+    if required && value.is_empty() {
+        return false;
+    }
+    if value.is_empty() {
+        return true;
+    }
+    let input_type = node.attribute("type").unwrap_or("text");
+    if input_type.eq_ignore_ascii_case("email") {
+        let values = if node.attribute("multiple").is_some() {
+            value.split(',').map(str::trim).collect::<Vec<_>>()
+        } else {
+            vec![value]
+        };
+        if values.is_empty() || values.iter().any(|item| !valid_email_value(item)) {
+            return false;
+        }
+    } else if input_type.eq_ignore_ascii_case("url") && url::Url::parse(value).is_err() {
+        return false;
+    }
+    if matches!(input_type.to_ascii_lowercase().as_str(), "number" | "range")
+        && !valid_numeric_constraints(node, value)
+    {
+        return false;
+    }
+    valid_length_constraints(node, value)
+}
+
+fn valid_textarea_value(node: &NativeNode, value: &str) -> bool {
+    if node.attribute("required").is_some() && value.is_empty() {
+        return false;
+    }
+    valid_length_constraints(node, value)
+}
+
+fn valid_email_value(value: &str) -> bool {
+    if value.is_empty() || value.chars().any(char::is_whitespace) {
+        return false;
+    }
+    let Some((local, domain)) = value.split_once('@') else {
+        return false;
+    };
+    !local.is_empty()
+        && !domain.is_empty()
+        && !domain.contains('@')
+        && !local.starts_with('.')
+        && !local.ends_with('.')
+        && !domain.starts_with('.')
+        && !domain.ends_with('.')
+}
+
+fn valid_length_constraints(node: &NativeNode, value: &str) -> bool {
+    let length = value.encode_utf16().count();
+    let min_length = node
+        .attribute("minlength")
+        .and_then(|value| value.parse::<usize>().ok());
+    let max_length = node
+        .attribute("maxlength")
+        .and_then(|value| value.parse::<usize>().ok());
+    min_length.is_none_or(|minimum| value.is_empty() || length >= minimum)
+        && max_length.is_none_or(|maximum| length <= maximum)
+}
+
+fn valid_numeric_constraints(node: &NativeNode, value: &str) -> bool {
+    let Ok(number) = value.parse::<f64>() else {
+        return false;
+    };
+    if !number.is_finite() {
+        return false;
+    }
+    let minimum = node
+        .attribute("min")
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| value.is_finite());
+    let maximum = node
+        .attribute("max")
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| value.is_finite());
+    if minimum.is_some_and(|minimum| number < minimum)
+        || maximum.is_some_and(|maximum| number > maximum)
+    {
+        return false;
+    }
+    let step_value = node.attribute("step").unwrap_or("1");
+    if step_value.eq_ignore_ascii_case("any") {
+        return true;
+    }
+    let step = step_value
+        .parse::<f64>()
+        .ok()
+        .filter(|step| step.is_finite() && *step > 0.0)
+        .unwrap_or(1.0);
+    let base = minimum.unwrap_or(0.0);
+    let remainder = ((number - base) / step).fract().abs();
+    remainder <= f64::EPSILON * 32.0 || (1.0 - remainder) <= f64::EPSILON * 32.0
 }
 
 fn encode_urlencoded_form_data(pairs: &[(String, String)]) -> Result<String, NativeEngineError> {

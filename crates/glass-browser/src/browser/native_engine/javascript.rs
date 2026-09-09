@@ -9,6 +9,7 @@ use super::dom::NativeDocument;
 use super::error::NativeEngineError;
 use super::origin::NativeOrigin;
 use rquickjs::{Context, Runtime, Value};
+use serde::Deserialize;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -19,6 +20,40 @@ pub(crate) const MAX_NATIVE_SCRIPT_RESULT_BYTES: usize = crate::browser_backend:
 const NATIVE_SCRIPT_MEMORY_BYTES: usize = 32 * 1024 * 1024;
 const NATIVE_SCRIPT_STACK_BYTES: usize = 1024 * 1024;
 const NATIVE_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub(crate) enum NativeScriptCommand {
+    Click {
+        node_index: u32,
+    },
+    SetValue {
+        node_index: u32,
+        value: String,
+    },
+    SetChecked {
+        node_index: u32,
+        checked: bool,
+    },
+    SetSelected {
+        node_index: u32,
+        selected: bool,
+    },
+    SetAttribute {
+        node_index: u32,
+        name: String,
+        value: String,
+    },
+    RemoveAttribute {
+        node_index: u32,
+        name: String,
+    },
+}
+
+pub(crate) struct NativeScriptEvaluation {
+    pub(crate) value: serde_json::Value,
+    pub(crate) commands: Vec<NativeScriptCommand>,
+}
 
 /// One persistent ECMAScript realm. A full navigation creates a new value;
 /// same-document navigation retains it, matching a page global object's
@@ -64,7 +99,7 @@ impl NativeJavaScriptRuntime {
         document_url: &str,
         origin: &NativeOrigin,
         viewport: Viewport,
-    ) -> Result<serde_json::Value, NativeEngineError> {
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
         if source.is_empty() {
             return Err(NativeEngineError::invalid(
                 "script source",
@@ -107,6 +142,7 @@ impl NativeJavaScriptRuntime {
                     });
                 }
             };
+            let commands = read_script_commands(ctx.clone())?;
             let json = ctx
                 .json_stringify(value)
                 .map_err(|_| NativeEngineError::Worker {
@@ -114,7 +150,10 @@ impl NativeJavaScriptRuntime {
                     reason: "JavaScript result could not be serialized".into(),
                 })?;
             let Some(json) = json else {
-                return Ok(serde_json::Value::Null);
+                return Ok(NativeScriptEvaluation {
+                    value: serde_json::Value::Null,
+                    commands,
+                });
             };
             let json = json.to_string().map_err(|_| NativeEngineError::Worker {
                 operation: "serialize JavaScript result".into(),
@@ -139,7 +178,10 @@ impl NativeJavaScriptRuntime {
             {
                 result = value;
             }
-            Ok(result)
+            Ok(NativeScriptEvaluation {
+                value: result,
+                commands,
+            })
         });
         if let Ok(mut current) = self.deadline.lock() {
             *current = None;
@@ -151,6 +193,38 @@ impl NativeJavaScriptRuntime {
     pub(crate) fn has_pending_jobs(&self) -> bool {
         self.runtime.is_job_pending()
     }
+}
+
+fn read_script_commands<'js>(
+    ctx: rquickjs::Ctx<'js>,
+) -> Result<Vec<NativeScriptCommand>, NativeEngineError> {
+    let json: String = ctx
+        .eval("JSON.stringify(globalThis.__glassHostCommands || [])")
+        .map_err(|_| NativeEngineError::Worker {
+            operation: "collect JavaScript host commands".into(),
+            reason: "native JavaScript host commands could not be collected".into(),
+        })?;
+    if json.len() > MAX_NATIVE_SCRIPT_RESULT_BYTES {
+        return Err(NativeEngineError::limit(
+            "script host commands",
+            MAX_NATIVE_SCRIPT_RESULT_BYTES,
+            json.len(),
+        ));
+    }
+    let commands = serde_json::from_str::<Vec<NativeScriptCommand>>(&json).map_err(|_| {
+        NativeEngineError::Worker {
+            operation: "decode JavaScript host commands".into(),
+            reason: "native JavaScript host commands were invalid".into(),
+        }
+    })?;
+    if commands.len() > super::interaction::MAX_NATIVE_EFFECTS {
+        return Err(NativeEngineError::limit(
+            "script host commands",
+            super::interaction::MAX_NATIVE_EFFECTS,
+            commands.len(),
+        ));
+    }
+    Ok(commands)
 }
 
 fn contains_await_token(source: &str) -> bool {
@@ -226,6 +300,11 @@ fn document_bootstrap(
         r###"(() => {{
   const host = {serialized};
   const state = host.state;
+  const commands = [];
+  const pushCommand = (command) => {{
+    if (commands.length >= {max_commands}) throw new RangeError("native host command limit exceeded");
+    commands.push(command);
+  }};
   const makeElement = (entry) => {{
     const element = {{
       nodeIndex: entry.nodeIndex,
@@ -247,9 +326,65 @@ fn document_bootstrap(
         return null;
       }},
       hasAttribute(name) {{ return this.getAttribute(name) !== null; }},
-      click() {{ throw new TypeError("native DOM mutation is not available"); }},
-      setAttribute() {{ throw new TypeError("native DOM mutation is not available"); }}
+      click() {{
+        if (this.disabled) return;
+        pushCommand({{ kind: "click", node_index: entry.nodeIndex }});
+        if (this.tagName === "INPUT") {{
+          const type = String(entry.attributes.type || "text").toLowerCase();
+          if (type === "checkbox") checked = !checked;
+          if (type === "radio") checked = true;
+        }}
+      }},
+      setAttribute(name, value) {{
+        const key = String(name).toLowerCase();
+        const stringValue = String(value);
+        entry.attributes[key] = stringValue;
+        if (key === "id") this.id = stringValue;
+        if (key === "class") this.className = stringValue;
+        if (key === "disabled") this.disabled = true;
+        if (key === "hidden") this.hidden = true;
+        pushCommand({{ kind: "setAttribute", node_index: entry.nodeIndex, name: key, value: stringValue }});
+      }},
+      removeAttribute(name) {{
+        const key = String(name).toLowerCase();
+        delete entry.attributes[key];
+        if (key === "id") this.id = "";
+        if (key === "class") this.className = "";
+        if (key === "disabled") this.disabled = false;
+        if (key === "hidden") this.hidden = false;
+        pushCommand({{ kind: "removeAttribute", node_index: entry.nodeIndex, name: key }});
+      }}
     }};
+    let value = element.value;
+    Object.defineProperty(element, "value", {{
+      enumerable: true,
+      configurable: false,
+      get() {{ return value; }},
+      set(next) {{
+        value = String(next);
+        pushCommand({{ kind: "setValue", node_index: entry.nodeIndex, value }});
+      }}
+    }});
+    let checked = element.checked;
+    Object.defineProperty(element, "checked", {{
+      enumerable: true,
+      configurable: false,
+      get() {{ return checked; }},
+      set(next) {{
+        checked = Boolean(next);
+        pushCommand({{ kind: "setChecked", node_index: entry.nodeIndex, checked }});
+      }}
+    }});
+    let selected = element.selected;
+    Object.defineProperty(element, "selected", {{
+      enumerable: true,
+      configurable: false,
+      get() {{ return selected; }},
+      set(next) {{
+        selected = Boolean(next);
+        pushCommand({{ kind: "setSelected", node_index: entry.nodeIndex, selected }});
+      }}
+    }});
     return element;
   }};
   const elements = state.elements.map(makeElement);
@@ -280,6 +415,7 @@ fn document_bootstrap(
     }}
   }};
   globalThis.window = globalThis;
+  globalThis.__glassHostCommands = commands;
   globalThis.document = document;
   globalThis.location = Object.freeze({{ href: host.url, origin: host.origin }});
   globalThis.innerWidth = {width};
@@ -290,6 +426,7 @@ fn document_bootstrap(
   }};
 }})();"###,
         serialized = serialized,
+        max_commands = super::interaction::MAX_NATIVE_EFFECTS,
         width = viewport.width,
         height = viewport.height,
     ))

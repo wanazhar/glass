@@ -3,6 +3,7 @@ use super::css::NativeStylesheet;
 use super::diagnostics::{NativeDiagnostic, NativeDiagnosticSink, NativeDiagnosticSource};
 use super::error::NativeEngineError;
 use super::interaction::NativeEventKind;
+use super::javascript::NativeScriptCommand;
 use super::layout::NativeLayoutSnapshot;
 use super::paint::NativeDisplayList;
 use super::raster::NativeSurface;
@@ -892,6 +893,204 @@ impl NativeDocument {
         events.push((id, NativeEventKind::Input));
         events.push((id, NativeEventKind::Change));
         Ok(events)
+    }
+
+    /// Apply validated commands emitted by one JavaScript evaluation.
+    /// Commands run against the caller's document clone so the engine can
+    /// commit the complete script batch as one revision.
+    pub(crate) fn apply_script_commands(
+        &mut self,
+        commands: &[NativeScriptCommand],
+    ) -> Result<Vec<(NativeNodeId, NativeEventKind)>, NativeEngineError> {
+        let mut events = Vec::new();
+        for command in commands {
+            match command {
+                NativeScriptCommand::Click { node_index } => {
+                    let id = NativeNodeId::from_parts(self.generation, *node_index);
+                    if self.link_href(id).is_some_and(|href| !href.is_empty()) {
+                        return Err(NativeEngineError::TargetNotActionable {
+                            reason: "script-driven link navigation is not available".into(),
+                        });
+                    }
+                    events.extend(self.apply_click(id)?);
+                }
+                NativeScriptCommand::SetValue { node_index, value } => {
+                    let id = NativeNodeId::from_parts(self.generation, *node_index);
+                    self.apply_script_value(id, value)?;
+                }
+                NativeScriptCommand::SetChecked {
+                    node_index,
+                    checked,
+                } => {
+                    let id = NativeNodeId::from_parts(self.generation, *node_index);
+                    self.apply_script_checked(id, *checked)?;
+                }
+                NativeScriptCommand::SetSelected {
+                    node_index,
+                    selected,
+                } => {
+                    let id = NativeNodeId::from_parts(self.generation, *node_index);
+                    self.apply_script_selected(id, *selected)?;
+                }
+                NativeScriptCommand::SetAttribute {
+                    node_index,
+                    name,
+                    value,
+                } => {
+                    let id = NativeNodeId::from_parts(self.generation, *node_index);
+                    self.apply_script_attribute(id, name, value)?;
+                }
+                NativeScriptCommand::RemoveAttribute { node_index, name } => {
+                    let id = NativeNodeId::from_parts(self.generation, *node_index);
+                    self.remove_script_attribute(id, name)?;
+                }
+            }
+            if events.len() > super::interaction::MAX_NATIVE_EFFECTS {
+                return Err(NativeEngineError::limit(
+                    "script mutation effects",
+                    super::interaction::MAX_NATIVE_EFFECTS,
+                    events.len(),
+                ));
+            }
+        }
+        Ok(events)
+    }
+
+    fn apply_script_value(
+        &mut self,
+        id: NativeNodeId,
+        value: &str,
+    ) -> Result<(), NativeEngineError> {
+        if value.len() > MAX_LOCATOR_BYTES {
+            return Err(NativeEngineError::limit(
+                "script value",
+                MAX_LOCATOR_BYTES,
+                value.len(),
+            ));
+        }
+        let node = self.node_mut(id).ok_or(NativeEngineError::DetachedTarget)?;
+        if !matches!(node.element_name(), Some("input" | "textarea")) {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "script value requires an input or textarea".into(),
+            });
+        }
+        node.state.value = Some(value.to_owned());
+        Ok(())
+    }
+
+    fn apply_script_checked(
+        &mut self,
+        id: NativeNodeId,
+        checked: bool,
+    ) -> Result<(), NativeEngineError> {
+        let node = self.node(id).ok_or(NativeEngineError::DetachedTarget)?;
+        if node.element_name() != Some("input")
+            || !matches!(
+                node.attribute("type").unwrap_or("text"),
+                "checkbox" | "radio"
+            )
+        {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "script checked state requires a checkbox or radio input".into(),
+            });
+        }
+        if checked && node.attribute("type") == Some("radio") {
+            let group_name = node.attribute("name").map(str::to_owned);
+            let radio_ids = self
+                .nodes
+                .iter()
+                .filter(|candidate| {
+                    candidate.element_name() == Some("input")
+                        && candidate.attribute("type") == Some("radio")
+                })
+                .filter(|candidate| {
+                    candidate.id() == id
+                        || group_name.as_deref().is_some_and(|name| {
+                            !name.is_empty() && candidate.attribute("name") == Some(name)
+                        })
+                })
+                .map(NativeNode::id)
+                .collect::<Vec<_>>();
+            for radio_id in radio_ids {
+                self.node_mut(radio_id)
+                    .ok_or(NativeEngineError::DetachedTarget)?
+                    .state
+                    .checked = radio_id == id;
+            }
+        } else {
+            self.node_mut(id)
+                .ok_or(NativeEngineError::DetachedTarget)?
+                .state
+                .checked = checked;
+        }
+        Ok(())
+    }
+
+    fn apply_script_selected(
+        &mut self,
+        id: NativeNodeId,
+        selected: bool,
+    ) -> Result<(), NativeEngineError> {
+        if self.node(id).and_then(NativeNode::element_name) != Some("option") {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "script selected state requires an option".into(),
+            });
+        }
+        let select_id = self.single_select_for_option(id)?;
+        if selected {
+            for option_id in self.select_option_ids(select_id) {
+                self.node_mut(option_id)
+                    .ok_or(NativeEngineError::DetachedTarget)?
+                    .state
+                    .selected = option_id == id;
+            }
+        } else {
+            self.node_mut(id)
+                .ok_or(NativeEngineError::DetachedTarget)?
+                .state
+                .selected = false;
+        }
+        Ok(())
+    }
+
+    fn apply_script_attribute(
+        &mut self,
+        id: NativeNodeId,
+        name: &str,
+        value: &str,
+    ) -> Result<(), NativeEngineError> {
+        let name = validate_script_attribute(name)?;
+        if value.len() > MAX_ATTRIBUTE_BYTES {
+            return Err(NativeEngineError::limit(
+                "script attribute value",
+                MAX_ATTRIBUTE_BYTES,
+                value.len(),
+            ));
+        }
+        let node = self.node_mut(id).ok_or(NativeEngineError::DetachedTarget)?;
+        let NativeNodeKind::Element { attributes, .. } = &mut node.kind else {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "script attributes require an element".into(),
+            });
+        };
+        attributes.insert(name, value.to_owned());
+        Ok(())
+    }
+
+    fn remove_script_attribute(
+        &mut self,
+        id: NativeNodeId,
+        name: &str,
+    ) -> Result<(), NativeEngineError> {
+        let name = validate_script_attribute(name)?;
+        let node = self.node_mut(id).ok_or(NativeEngineError::DetachedTarget)?;
+        let NativeNodeKind::Element { attributes, .. } = &mut node.kind else {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "script attributes require an element".into(),
+            });
+        };
+        attributes.remove(&name);
+        Ok(())
     }
 
     pub fn title(&self, max_bytes: usize) -> (String, bool) {
@@ -2235,6 +2434,32 @@ fn decode_entity(entity: &str) -> Option<char> {
         _ if entity.starts_with('#') => entity[1..].parse().ok().and_then(char::from_u32),
         _ => None,
     }
+}
+
+fn validate_script_attribute(name: &str) -> Result<String, NativeEngineError> {
+    if name.is_empty() {
+        return Err(NativeEngineError::invalid(
+            "script attribute name",
+            "must not be empty",
+        ));
+    }
+    if name.len() > MAX_ATTRIBUTE_BYTES {
+        return Err(NativeEngineError::limit(
+            "script attribute name",
+            MAX_ATTRIBUTE_BYTES,
+            name.len(),
+        ));
+    }
+    if name
+        .bytes()
+        .any(|byte| byte.is_ascii_whitespace() || matches!(byte, b'"' | b'\'' | b'<' | b'>' | b'='))
+    {
+        return Err(NativeEngineError::invalid(
+            "script attribute name",
+            "contains a forbidden character",
+        ));
+    }
+    Ok(name.to_ascii_lowercase())
 }
 
 fn collapse_text(value: &str, max_bytes: usize) -> (String, bool) {

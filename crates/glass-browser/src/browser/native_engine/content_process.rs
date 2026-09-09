@@ -4,7 +4,7 @@ use super::config::{
 use super::dom::{NativeDocument, NativeDocumentWire, NativeNodeId};
 use super::error::{NativeEngineError, NativeWorkerFailureKind};
 use super::interaction::{MAX_NATIVE_EFFECTS, NativeEventKind};
-use super::javascript::NativeJavaScriptRuntime;
+use super::javascript::{NativeJavaScriptRuntime, NativeScriptCommand, NativeScriptEvaluation};
 use super::origin::NativeOrigin;
 use super::resource_loader::{NativeFetchResponse, NativeResourceLoader};
 #[cfg(windows)]
@@ -49,6 +49,11 @@ pub(crate) struct NativeContentEvent {
 pub(crate) struct NativeContentMutation {
     pub(crate) document: NativeDocumentWire,
     pub(crate) events: Vec<NativeContentEvent>,
+}
+
+pub(crate) struct NativeContentScriptResult {
+    pub(crate) value: Value,
+    pub(crate) mutation: Option<NativeContentMutation>,
 }
 
 /// Process-backed lifecycle and bounded document-transfer channel for one
@@ -284,7 +289,10 @@ impl NativeContentProcess {
         result
     }
 
-    pub(crate) async fn evaluate(&mut self, source: &str) -> Result<Value, NativeEngineError> {
+    pub(crate) async fn evaluate(
+        &mut self,
+        source: &str,
+    ) -> Result<NativeContentScriptResult, NativeEngineError> {
         let id = self.next_id();
         let response = match timeout(
             CONTENT_PROCESS_SCRIPT_TIMEOUT,
@@ -592,25 +600,32 @@ fn decode_mutated_response(
     id: u64,
 ) -> Result<NativeContentMutation, NativeEngineError> {
     require_response_kind(response, "mutated", id, "content process mutation")?;
+    decode_mutation_payload(response, "decode content process mutation")
+}
+
+fn decode_mutation_payload(
+    response: &Value,
+    operation: &str,
+) -> Result<NativeContentMutation, NativeEngineError> {
     let encoded_document = response
         .get("document_base64")
         .and_then(Value::as_str)
         .ok_or_else(|| NativeEngineError::Worker {
-            operation: "decode content process mutation".into(),
+            operation: operation.into(),
             reason: "content process omitted the mutated document snapshot".into(),
         })?;
     let document_bytes = base64::engine::general_purpose::STANDARD
         .decode(encoded_document)
         .map_err(|_| NativeEngineError::Worker {
-            operation: "decode content process mutation".into(),
+            operation: operation.into(),
             reason: "content process returned an invalid document snapshot".into(),
         })?;
-    let document = decode_document_wire(&document_bytes, "decode content process mutation")?;
+    let document = decode_document_wire(&document_bytes, operation)?;
     let event_values = response
         .get("events")
         .and_then(Value::as_array)
         .ok_or_else(|| NativeEngineError::Worker {
-            operation: "decode content process mutation".into(),
+            operation: operation.into(),
             reason: "content process omitted mutation effects".into(),
         })?;
     if event_values.len() > MAX_NATIVE_EFFECTS {
@@ -627,7 +642,7 @@ fn decode_mutated_response(
             .and_then(Value::as_u64)
             .and_then(|value| u32::try_from(value).ok())
             .ok_or_else(|| NativeEngineError::Worker {
-                operation: "decode content process mutation".into(),
+                operation: operation.into(),
                 reason: "content process returned an invalid mutation node".into(),
             })?;
         let kind = value
@@ -635,7 +650,7 @@ fn decode_mutated_response(
             .and_then(Value::as_str)
             .and_then(parse_event_kind)
             .ok_or_else(|| NativeEngineError::Worker {
-                operation: "decode content process mutation".into(),
+                operation: operation.into(),
                 reason: "content process returned an invalid mutation effect".into(),
             })?;
         events.push(NativeContentEvent { node_index, kind });
@@ -712,7 +727,10 @@ fn decode_fetch_response(
     })
 }
 
-fn decode_script_response(response: &Value, id: u64) -> Result<Value, NativeEngineError> {
+fn decode_script_response(
+    response: &Value,
+    id: u64,
+) -> Result<NativeContentScriptResult, NativeEngineError> {
     require_response_kind(response, "evaluated", id, "content process script")?;
     let value = response
         .get("value")
@@ -732,7 +750,17 @@ fn decode_script_response(response: &Value, id: u64) -> Result<Value, NativeEngi
             encoded.len(),
         ));
     }
-    Ok(value)
+    let has_document = response.get("document_base64").is_some();
+    let has_events = response.get("events").is_some();
+    let mutation = if has_document || has_events {
+        Some(decode_mutation_payload(
+            response,
+            "decode content process script",
+        )?)
+    } else {
+        None
+    };
+    Ok(NativeContentScriptResult { value, mutation })
 }
 
 fn decode_document_wire(
@@ -911,7 +939,28 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     continue;
                 };
                 match runtime.evaluate(source, current, document_url, document_origin, viewport) {
-                    Ok(value) => json!({"kind":"evaluated","id":id,"value":value}),
+                    Ok(NativeScriptEvaluation { value, commands }) if commands.is_empty() => {
+                        json!({"kind":"evaluated","id":id,"value":value})
+                    }
+                    Ok(NativeScriptEvaluation { value, commands }) => {
+                        match mutate_script_document(current, &commands) {
+                            Ok((next, mutation)) => {
+                                document = Some(next);
+                                json!({
+                                    "kind": "evaluated",
+                                    "id": id,
+                                    "value": value,
+                                    "document_base64": base64::engine::general_purpose::STANDARD
+                                        .encode(serde_json::to_vec(&mutation.document).unwrap_or_default()),
+                                    "events": mutation.events.iter().map(|event| json!({
+                                        "node_index": event.node_index,
+                                        "kind": event_kind_text(event.kind),
+                                    })).collect::<Vec<_>>(),
+                                })
+                            }
+                            Err(error) => content_error_response(id, error),
+                        }
+                    }
                     Err(error) => content_error_response(id, error),
                 }
             }
@@ -1117,6 +1166,32 @@ fn mutate_content_document(
     if events.len() > MAX_NATIVE_EFFECTS {
         return Err(NativeEngineError::limit(
             "content-process mutation effects",
+            MAX_NATIVE_EFFECTS,
+            events.len(),
+        ));
+    }
+    let mutation = NativeContentMutation {
+        document: next.to_content_wire(),
+        events: events
+            .into_iter()
+            .map(|(node, kind)| NativeContentEvent {
+                node_index: node.index(),
+                kind,
+            })
+            .collect(),
+    };
+    Ok((next, mutation))
+}
+
+fn mutate_script_document(
+    current: &NativeDocument,
+    commands: &[NativeScriptCommand],
+) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
+    let mut next = current.clone();
+    let events = next.apply_script_commands(commands)?;
+    if events.len() > MAX_NATIVE_EFFECTS {
+        return Err(NativeEngineError::limit(
+            "content-process script mutation effects",
             MAX_NATIVE_EFFECTS,
             events.len(),
         ));

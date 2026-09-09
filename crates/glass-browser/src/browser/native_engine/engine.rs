@@ -3,7 +3,9 @@ use super::config::{
     NativeEngineConfig, decode_percent_encoded_fragment, decode_text_fragment_terms,
     is_network_url, resolve_fixture_relative_url, validate_url_text, without_fragment,
 };
-use super::content_process::{NativeContentAction, NativeContentLoad, NativeContentProcess};
+use super::content_process::{
+    NativeContentAction, NativeContentLoad, NativeContentMutation, NativeContentProcess,
+};
 use super::diagnostics::NativeDiagnostic;
 use super::dom::{NativeDocument, NativeNodeId};
 use super::error::NativeEngineError;
@@ -433,18 +435,24 @@ impl NativeEngine {
                     "content process is unavailable after a failed operation; navigate to recover it",
                 ));
             }
-            return process.evaluate(&source).await;
+            let evaluation = process.evaluate(&source).await?;
+            if let Some(mutation) = evaluation.mutation {
+                self.apply_content_process_mutation(mutation)?;
+            }
+            return Ok(evaluation.value);
         }
         let javascript = self
             .javascript
             .get_or_insert(NativeJavaScriptRuntime::new()?);
-        javascript.evaluate(
+        let evaluation = javascript.evaluate(
             &source,
             &self.document,
             &self.url,
             &self.origin,
             self.config.viewport,
-        )
+        )?;
+        self.apply_local_script_commands(&evaluation.commands)?;
+        Ok(evaluation.value)
     }
 
     /// Return diagnostics for CSS that the bounded native presentation model
@@ -617,7 +625,6 @@ impl NativeEngine {
         &mut self,
         action: NativeContentAction,
     ) -> Result<NativeActionResult, NativeEngineError> {
-        let next_revision = self.next_revision()?;
         let mutation = {
             let process =
                 self.content_process
@@ -628,6 +635,42 @@ impl NativeEngine {
                     })?;
             process.mutate(action).await?
         };
+        let next_revision = self.next_revision()?;
+        self.apply_content_process_mutation_at(next_revision, mutation)
+    }
+
+    fn apply_local_script_commands(
+        &mut self,
+        commands: &[super::javascript::NativeScriptCommand],
+    ) -> Result<(), NativeEngineError> {
+        if commands.is_empty() {
+            return Ok(());
+        }
+        let mut document = self.document.clone();
+        let events = document.apply_script_commands(commands)?;
+        let next_revision = self.next_revision()?;
+        document.set_revision(next_revision);
+        self.document = document;
+        self.revision = next_revision;
+        self.history.update_current_scroll(self.scroll_offset);
+        self.record_effects(events);
+        Ok(())
+    }
+
+    fn apply_content_process_mutation(
+        &mut self,
+        mutation: NativeContentMutation,
+    ) -> Result<(), NativeEngineError> {
+        let next_revision = self.next_revision()?;
+        self.apply_content_process_mutation_at(next_revision, mutation)?;
+        Ok(())
+    }
+
+    fn apply_content_process_mutation_at(
+        &mut self,
+        next_revision: u64,
+        mutation: NativeContentMutation,
+    ) -> Result<NativeActionResult, NativeEngineError> {
         let generation = self.document.generation();
         let mut document = match NativeDocument::from_content_wire(
             mutation.document,

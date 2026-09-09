@@ -991,7 +991,7 @@ async fn native_local_form_rejects_unsupported_post_encoding() {
     let config = NativeEngineConfig::default()
         .with_fixture(
             "fixture://unsupported-post-form",
-            "<form id='search' method='post' enctype='multipart/form-data' action='fixture://post-result'><input name='query' value='hello'></form>",
+            "<form id='search' method='post' enctype='application/x-glass-unsupported' action='fixture://post-result'><input name='query' value='hello'></form>",
         )
         .unwrap()
         .with_fixture("fixture://post-result", "<title>Result</title>")

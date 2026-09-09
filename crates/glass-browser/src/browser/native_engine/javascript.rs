@@ -468,7 +468,7 @@ pub(crate) fn execute_page_scripts(
                     document_url,
                     document_origin,
                     viewport,
-                )?,
+                ),
                 NativePageScript::Module { name, source } => script_runtime.evaluate_module(
                     name,
                     source,
@@ -476,9 +476,14 @@ pub(crate) fn execute_page_scripts(
                     document_url,
                     document_origin,
                     viewport,
-                )?,
+                ),
                 NativePageScript::ModuleDependency { .. } => continue,
             }
+        };
+        let evaluation = match evaluation {
+            Ok(evaluation) => evaluation,
+            Err(error) if is_ignorable_page_script_error(&error) => continue,
+            Err(error) => return Err(error),
         };
         apply_page_script_evaluation(document, evaluation, &mut pending_fetches)?;
     }
@@ -544,7 +549,20 @@ pub(crate) fn execute_page_scripts(
             )?;
         apply_page_script_evaluation(document, evaluation, &mut pending_fetches)?;
     }
+    runtime
+        .as_mut()
+        .expect("page script runtime initialized")
+        .reset_timer_clock();
     Ok(pending_fetches)
+}
+
+fn is_ignorable_page_script_error(error: &NativeEngineError) -> bool {
+    matches!(
+        error,
+        NativeEngineError::Worker { operation, .. }
+            if operation == "evaluate JavaScript"
+                || operation == "evaluate JavaScript module"
+    )
 }
 
 fn apply_page_script_evaluation(
@@ -820,6 +838,10 @@ impl NativeJavaScriptRuntime {
             .elapsed()
             .as_millis()
             .min(u128::from(u64::MAX)) as u64
+    }
+
+    pub(crate) fn reset_timer_clock(&mut self) {
+        self.clock_origin = Instant::now();
     }
 
     pub(crate) fn set_ready_state(&mut self, ready_state: &str) {

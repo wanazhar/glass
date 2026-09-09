@@ -89,8 +89,18 @@ The completed computed-style batch is
 documents now carry one typed computed-style record per child-parsed node; the
 parent validates the bounded snapshot and uses it for layout/visibility without
 reparsing stylesheet sources. Local resources retain the direct stylesheet
-path. DOM mutation, CSS diagnostics transfer, script execution, sandboxing,
-supervisor recovery, and browser parity remain open.
+path. CSS diagnostics transfer, script execution, sandboxing, supervisor
+recovery, and browser parity remain open.
+
+The completed mutation-ownership batch is
+[native-engine-browser-007](tasks/native-engine-browser-007.md). The child now
+retains each external document, applies bounded click/type mutations
+transactionally, and returns a fresh snapshot plus typed privacy-safe effects;
+the parent validates and publishes the revision exactly once. Mutation timeout,
+malformed-transfer, and child-rejection paths poison the worker without false
+success or CDP fallback. Scroll and link navigation remain explicit
+parent-owned handoffs; standards events, script execution, diagnostics
+transfer, sandboxing, supervisor recovery, and browser parity remain open.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

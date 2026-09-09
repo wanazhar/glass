@@ -36,6 +36,10 @@ pub struct NativeNodeId {
 }
 
 impl NativeNodeId {
+    pub(crate) const fn from_parts(generation: u32, index: u32) -> Self {
+        Self { generation, index }
+    }
+
     pub const fn generation(self) -> u32 {
         self.generation
     }

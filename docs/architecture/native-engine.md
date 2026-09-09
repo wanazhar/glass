@@ -200,9 +200,17 @@ The completed computed-style batch is recorded in
 External child snapshots now include one typed computed-style record per DOM
 node. The parent validates the cardinality and uses the immutable cache for
 layout, paint, hit testing, and visibility without reparsing stylesheet
-sources; local resources keep the direct stylesheet path. DOM mutation,
-diagnostics transfer, script execution, OS sandboxing, and full content
-recovery remain open.
+sources; local resources keep the direct stylesheet path.
+
+The completed mutation-ownership batch is recorded in
+[`native-engine-browser-007`](../plan/tasks/native-engine-browser-007.md).
+External content workers now retain the parsed document and transactionally
+apply bounded click/type control mutations, returning a fresh snapshot and
+typed privacy-safe effects. The parent validates and publishes the revision
+once; mutation deadlines and malformed transfers poison the worker without
+false success or CDP fallback. Scroll and link navigation remain explicit
+parent-owned handoffs. Diagnostics transfer, script execution, OS sandboxing,
+supervisor recovery, and full content recovery remain open.
 
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third

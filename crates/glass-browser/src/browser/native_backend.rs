@@ -225,7 +225,7 @@ impl BrowserBackend for NativeEngineBackend {
                             NativeAction::Scroll { delta_x, delta_y }
                         }
                     };
-                    let outcome = engine.action(action).map_err(native_error)?;
+                    let outcome = engine.action_async(action).await.map_err(native_error)?;
                     Ok(BackendResponse::Action(ActionResult {
                         context_id: NATIVE_CONTEXT_ID.into(),
                         revision: outcome.revision,

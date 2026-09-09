@@ -1,6 +1,7 @@
 use super::config::{NativeEngineLimits, is_network_url, validate_url_text, without_fragment};
-use super::dom::{NativeDocument, NativeDocumentWire};
+use super::dom::{NativeDocument, NativeDocumentWire, NativeNodeId};
 use super::error::NativeEngineError;
+use super::interaction::{MAX_NATIVE_EFFECTS, NativeEventKind};
 use super::origin::NativeOrigin;
 use super::resource_loader::NativeResourceLoader;
 use base64::Engine as _;
@@ -16,11 +17,29 @@ const MAX_CONTENT_IPC_FRAME_BYTES: usize = 4 * 1024 * 1024;
 const MAX_CONTENT_DOCUMENT_WIRE_BYTES: usize = 2 * 1024 * 1024;
 const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 1;
 const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
+const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) struct NativeContentLoad {
     pub(crate) url: String,
     pub(crate) origin: NativeOrigin,
     pub(crate) document: NativeDocumentWire,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum NativeContentAction {
+    Click { node_index: u32 },
+    Type { node_index: u32, text: String },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct NativeContentEvent {
+    pub(crate) node_index: u32,
+    pub(crate) kind: NativeEventKind,
+}
+
+pub(crate) struct NativeContentMutation {
+    pub(crate) document: NativeDocumentWire,
+    pub(crate) events: Vec<NativeContentEvent>,
 }
 
 /// Process-backed lifecycle and bounded document-transfer channel for one
@@ -153,6 +172,68 @@ impl NativeContentProcess {
             });
         }
         let result = decode_loaded_response(&response, id);
+        if result.is_err() {
+            self.healthy = false;
+            let _ = self.child.start_kill();
+        }
+        result
+    }
+
+    pub(crate) async fn mutate(
+        &mut self,
+        action: NativeContentAction,
+    ) -> Result<NativeContentMutation, NativeEngineError> {
+        let id = self.next_id();
+        let action = match action {
+            NativeContentAction::Click { node_index } => {
+                json!({"kind":"click","node_index":node_index})
+            }
+            NativeContentAction::Type { node_index, text } => {
+                json!({"kind":"type","node_index":node_index,"text":text})
+            }
+        };
+        self.mutate_with_request(id, action).await
+    }
+
+    async fn mutate_with_request(
+        &mut self,
+        id: u64,
+        action: Value,
+    ) -> Result<NativeContentMutation, NativeEngineError> {
+        let response = match timeout(
+            CONTENT_PROCESS_MUTATION_TIMEOUT,
+            self.exchange(json!({
+                "kind": "mutate",
+                "id": id,
+                "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
+                "action": action,
+            })),
+        )
+        .await
+        {
+            Ok(response) => response?,
+            Err(_) => {
+                self.healthy = false;
+                let _ = self.child.start_kill();
+                return Err(NativeEngineError::Worker {
+                    operation: "content process mutation".into(),
+                    reason: "content process mutation exceeded its deadline".into(),
+                });
+            }
+        };
+        if response.get("kind").and_then(Value::as_str) == Some("error") {
+            self.healthy = false;
+            let _ = self.child.start_kill();
+            return Err(NativeEngineError::Worker {
+                operation: "content process mutation".into(),
+                reason: response
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("content process rejected the mutation")
+                    .into(),
+            });
+        }
+        let result = decode_mutated_response(&response, id);
         if result.is_err() {
             self.healthy = false;
             let _ = self.child.start_kill();
@@ -340,11 +421,7 @@ fn decode_loaded_response(
             document_bytes.len(),
         ));
     }
-    let document: NativeDocumentWire =
-        serde_json::from_slice(&document_bytes).map_err(|_| NativeEngineError::Worker {
-            operation: "decode content process load".into(),
-            reason: "content process returned an invalid document snapshot".into(),
-        })?;
+    let document = decode_document_wire(&document_bytes, "decode content process load")?;
     let origin_url =
         url::Url::parse(without_fragment(url)).map_err(|_| NativeEngineError::Worker {
             operation: "decode content process load".into(),
@@ -358,11 +435,85 @@ fn decode_loaded_response(
     })
 }
 
+fn decode_mutated_response(
+    response: &Value,
+    id: u64,
+) -> Result<NativeContentMutation, NativeEngineError> {
+    require_response_kind(response, "mutated", id, "content process mutation")?;
+    let encoded_document = response
+        .get("document_base64")
+        .and_then(Value::as_str)
+        .ok_or_else(|| NativeEngineError::Worker {
+            operation: "decode content process mutation".into(),
+            reason: "content process omitted the mutated document snapshot".into(),
+        })?;
+    let document_bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded_document)
+        .map_err(|_| NativeEngineError::Worker {
+            operation: "decode content process mutation".into(),
+            reason: "content process returned an invalid document snapshot".into(),
+        })?;
+    let document = decode_document_wire(&document_bytes, "decode content process mutation")?;
+    let event_values = response
+        .get("events")
+        .and_then(Value::as_array)
+        .ok_or_else(|| NativeEngineError::Worker {
+            operation: "decode content process mutation".into(),
+            reason: "content process omitted mutation effects".into(),
+        })?;
+    if event_values.len() > MAX_NATIVE_EFFECTS {
+        return Err(NativeEngineError::limit(
+            "content-process mutation effects",
+            MAX_NATIVE_EFFECTS,
+            event_values.len(),
+        ));
+    }
+    let mut events = Vec::with_capacity(event_values.len());
+    for value in event_values {
+        let node_index = value
+            .get("node_index")
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or_else(|| NativeEngineError::Worker {
+                operation: "decode content process mutation".into(),
+                reason: "content process returned an invalid mutation node".into(),
+            })?;
+        let kind = value
+            .get("kind")
+            .and_then(Value::as_str)
+            .and_then(parse_event_kind)
+            .ok_or_else(|| NativeEngineError::Worker {
+                operation: "decode content process mutation".into(),
+                reason: "content process returned an invalid mutation effect".into(),
+            })?;
+        events.push(NativeContentEvent { node_index, kind });
+    }
+    Ok(NativeContentMutation { document, events })
+}
+
+fn decode_document_wire(
+    document_bytes: &[u8],
+    operation: &str,
+) -> Result<NativeDocumentWire, NativeEngineError> {
+    if document_bytes.len() > MAX_CONTENT_DOCUMENT_WIRE_BYTES {
+        return Err(NativeEngineError::limit(
+            "content-process document snapshot",
+            MAX_CONTENT_DOCUMENT_WIRE_BYTES,
+            document_bytes.len(),
+        ));
+    }
+    serde_json::from_slice(document_bytes).map_err(|_| NativeEngineError::Worker {
+        operation: operation.into(),
+        reason: "content process returned an invalid document snapshot".into(),
+    })
+}
+
 #[doc(hidden)]
 pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();
     let mut running = false;
+    let mut document = None;
     loop {
         let payload = read_frame(&mut stdin).await?;
         let request: Value =
@@ -388,13 +539,45 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             }
             "load" if protocol_matches(&request) && running => {
                 match load_content_resource(&request).await {
-                    Ok(resource) => json!({
-                        "kind": "loaded",
-                        "id": id,
-                        "url": resource.url,
-                        "document_base64": base64::engine::general_purpose::STANDARD
-                            .encode(serde_json::to_vec(&resource.document).unwrap_or_default()),
-                    }),
+                    Ok((resource, parsed)) => {
+                        document = Some(parsed);
+                        json!({
+                            "kind": "loaded",
+                            "id": id,
+                            "url": resource.url,
+                            "document_base64": base64::engine::general_purpose::STANDARD
+                                .encode(serde_json::to_vec(&resource.document).unwrap_or_default()),
+                        })
+                    }
+                    Err(error) => content_error_response(id, error),
+                }
+            }
+            "mutate" if protocol_matches(&request) && running => {
+                let Some(current) = document.as_ref() else {
+                    let response = content_error_response(
+                        id,
+                        NativeEngineError::Worker {
+                            operation: "content process mutation".into(),
+                            reason: "content process has no committed document".into(),
+                        },
+                    );
+                    write_value_frame(&mut stdout, &response).await?;
+                    continue;
+                };
+                match mutate_content_document(current, &request) {
+                    Ok((next, mutation)) => {
+                        document = Some(next);
+                        json!({
+                            "kind": "mutated",
+                            "id": id,
+                            "document_base64": base64::engine::general_purpose::STANDARD
+                                .encode(serde_json::to_vec(&mutation.document).unwrap_or_default()),
+                            "events": mutation.events.iter().map(|event| json!({
+                                "node_index": event.node_index,
+                                "kind": event_kind_text(event.kind),
+                            })).collect::<Vec<_>>(),
+                        })
+                    }
                     Err(error) => content_error_response(id, error),
                 }
             }
@@ -414,7 +597,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     }
 }
 
-async fn load_content_resource(request: &Value) -> Result<NativeContentLoad, NativeEngineError> {
+async fn load_content_resource(
+    request: &Value,
+) -> Result<(NativeContentLoad, NativeDocument), NativeEngineError> {
     let url = request
         .get("url")
         .and_then(Value::as_str)
@@ -457,12 +642,88 @@ async fn load_content_resource(request: &Value) -> Result<NativeContentLoad, Nat
     let resource = NativeResourceLoader::for_content_process(max_document_bytes)?
         .load_async(url)
         .await?;
-    let document = NativeDocument::parse(&resource.body, &limits)?.to_content_wire();
-    Ok(NativeContentLoad {
-        url: resource.url,
-        origin: resource.origin,
+    let document = NativeDocument::parse(&resource.body, &limits)?;
+    let wire = document.to_content_wire();
+    Ok((
+        NativeContentLoad {
+            url: resource.url,
+            origin: resource.origin,
+            document: wire,
+        },
         document,
-    })
+    ))
+}
+
+fn mutate_content_document(
+    current: &NativeDocument,
+    request: &Value,
+) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
+    let action = request
+        .get("action")
+        .ok_or_else(|| NativeEngineError::invalid("content-process action", "is required"))?;
+    let node_index = action
+        .get("node_index")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| NativeEngineError::invalid("content-process node", "must be a uint32"))?;
+    let node_id = NativeNodeId::from_parts(current.generation(), node_index);
+    let mut next = current.clone();
+    let events = match action.get("kind").and_then(Value::as_str) {
+        Some("click") => next.apply_click(node_id)?,
+        Some("type") => {
+            let text = action.get("text").and_then(Value::as_str).ok_or_else(|| {
+                NativeEngineError::invalid("content-process text", "must be text")
+            })?;
+            next.apply_type(node_id, text)?
+        }
+        _ => {
+            return Err(NativeEngineError::invalid(
+                "content-process action",
+                "must be click or type",
+            ));
+        }
+    };
+    if events.len() > MAX_NATIVE_EFFECTS {
+        return Err(NativeEngineError::limit(
+            "content-process mutation effects",
+            MAX_NATIVE_EFFECTS,
+            events.len(),
+        ));
+    }
+    let mutation = NativeContentMutation {
+        document: next.to_content_wire(),
+        events: events
+            .into_iter()
+            .map(|(node, kind)| NativeContentEvent {
+                node_index: node.index(),
+                kind,
+            })
+            .collect(),
+    };
+    Ok((next, mutation))
+}
+
+fn event_kind_text(kind: NativeEventKind) -> &'static str {
+    match kind {
+        NativeEventKind::Blur => "blur",
+        NativeEventKind::Focus => "focus",
+        NativeEventKind::Click => "click",
+        NativeEventKind::Input => "input",
+        NativeEventKind::Change => "change",
+        NativeEventKind::Scroll => "scroll",
+    }
+}
+
+fn parse_event_kind(value: &str) -> Option<NativeEventKind> {
+    match value {
+        "blur" => Some(NativeEventKind::Blur),
+        "focus" => Some(NativeEventKind::Focus),
+        "click" => Some(NativeEventKind::Click),
+        "input" => Some(NativeEventKind::Input),
+        "change" => Some(NativeEventKind::Change),
+        "scroll" => Some(NativeEventKind::Scroll),
+        _ => None,
+    }
 }
 
 async fn write_value_frame(

@@ -240,6 +240,91 @@ async fn native_content_process_transfers_computed_style_for_layout() {
     server.await.unwrap();
 }
 
+#[tokio::test]
+async fn native_content_process_owns_external_form_mutations_and_effects() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0_u8; 4096];
+        let _ = stream.read(&mut request).await.unwrap();
+        let body = "<input id='toggle' type='checkbox' style='width:80px;height:20px'><input id='name' type='text' style='width:120px;height:20px'>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/form")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let initial_revision = engine.revision();
+
+    let clicked = engine
+        .action_async(NativeAction::Click {
+            target: "id=toggle".into(),
+        })
+        .await
+        .unwrap();
+    assert!(clicked.accepted);
+    assert_eq!(clicked.revision, initial_revision + 1);
+    let toggle = engine
+        .semantic_nodes()
+        .unwrap()
+        .into_iter()
+        .find(|node| node.input_type.as_deref() == Some("checkbox"))
+        .unwrap();
+    assert_eq!(toggle.checked, Some(true));
+
+    let typed = engine
+        .action_async(NativeAction::Type {
+            target: "id=name".into(),
+            text: "secret-value".into(),
+        })
+        .await
+        .unwrap();
+    assert!(typed.accepted);
+    assert_eq!(typed.revision, clicked.revision + 1);
+    let input = engine
+        .semantic_nodes()
+        .unwrap()
+        .into_iter()
+        .find(|node| node.input_type.as_deref() == Some("text"))
+        .unwrap();
+    assert_eq!(input.empty, Some(false));
+    assert!(input.focused);
+
+    let effects = engine.effects_since(initial_revision).unwrap();
+    assert_eq!(effects.revision, typed.revision);
+    assert!(effects.changed);
+    assert!(
+        effects
+            .effects
+            .iter()
+            .any(|effect| effect.kind == NativeEventKind::Click)
+    );
+    assert!(
+        effects
+            .effects
+            .iter()
+            .any(|effect| effect.kind == NativeEventKind::Input)
+    );
+    assert!(
+        effects
+            .effects
+            .iter()
+            .any(|effect| effect.kind == NativeEventKind::Change)
+    );
+    let encoded_effects = format!("{:?}", effects.effects);
+    assert!(!encoded_effects.contains("secret-value"));
+
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
 #[test]
 fn native_layout_is_deterministic_and_uses_bounded_pixel_dimensions() {
     let document = NativeDocument::parse(

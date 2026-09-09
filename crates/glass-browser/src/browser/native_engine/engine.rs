@@ -3,9 +3,9 @@ use super::config::{
     NativeEngineConfig, decode_percent_encoded_fragment, decode_text_fragment_terms,
     is_network_url, resolve_fixture_relative_url, validate_url_text, without_fragment,
 };
-use super::content_process::{NativeContentLoad, NativeContentProcess};
+use super::content_process::{NativeContentAction, NativeContentLoad, NativeContentProcess};
 use super::diagnostics::NativeDiagnostic;
-use super::dom::NativeDocument;
+use super::dom::{NativeDocument, NativeNodeId};
 use super::error::NativeEngineError;
 use super::history::{NativeHistory, NativeHistoryDirection};
 use super::interaction::{MAX_NATIVE_EFFECTS, NativeAction, NativeEffect, NativeEventKind};
@@ -203,7 +203,9 @@ impl NativeEngine {
                 self.runtime_worker.take();
                 self.lifecycle = NativeLifecycleState::Closed;
                 if let Some(process) = self.content_process.take() {
-                    process.close().await?;
+                    if process.is_healthy() {
+                        process.close().await?;
+                    }
                 }
                 Ok(())
             }
@@ -256,6 +258,7 @@ impl NativeEngine {
             }
             return self.navigate_content(content);
         }
+        self.content_process.take();
         let resource = self.loader.load_async(&url).await?;
         if let Some(worker) = self.runtime_worker.clone() {
             self.navigate_resource_async(resource, &worker).await
@@ -313,6 +316,8 @@ impl NativeEngine {
     ) -> Result<NativeEngineSnapshot, NativeEngineError> {
         if is_network_url(&resource.url) {
             self.commit_content_process().await?;
+        } else {
+            self.content_process.take();
         }
         if self.is_same_document_navigation(&resource.url) {
             self.commit_same_document_navigation_async(resource.url, HistoryCommit::Push, worker)
@@ -469,6 +474,120 @@ impl NativeEngine {
         }
         let next_revision = self.next_revision()?;
         self.document.set_revision(next_revision);
+        self.revision = next_revision;
+        self.history.update_current_scroll(self.scroll_offset);
+        self.record_effects(events);
+        Ok(NativeActionResult {
+            revision: next_revision,
+            accepted: true,
+        })
+    }
+
+    /// Apply an action through the child-owned document when the current
+    /// navigation is process-backed. Navigation actions remain parent-owned so
+    /// a link cannot mutate the child document without also committing a new
+    /// resource and history entry.
+    pub async fn action_async(
+        &mut self,
+        action: NativeAction,
+    ) -> Result<NativeActionResult, NativeEngineError> {
+        self.require_running("action")?;
+        let Some(process) = self.content_process.as_ref() else {
+            return self.action(action);
+        };
+        if !process.is_healthy() {
+            return Err(NativeEngineError::Worker {
+                operation: "content process mutation".into(),
+                reason:
+                    "content process is unavailable after a failed mutation; navigate to recover it"
+                        .into(),
+            });
+        }
+        match action {
+            NativeAction::Click { target } => {
+                let id = self.resolve_click_target(&target)?;
+                if !self.document.is_hidden_for_layout(id) {
+                    self.require_layout_actionable(id)?;
+                }
+                if self
+                    .document
+                    .link_href(id)
+                    .is_some_and(|href| !href.is_empty())
+                {
+                    self.content_process.take();
+                    return self.action(NativeAction::Click { target });
+                }
+                let mut preview = self.document.clone();
+                preview.apply_click(id)?;
+                self.apply_content_process_action(NativeContentAction::Click {
+                    node_index: id.index(),
+                })
+                .await
+            }
+            NativeAction::Type { target, text } => {
+                let id = self.document.resolve_target(&target)?;
+                if !self.document.is_hidden_for_layout(id) {
+                    self.require_layout_actionable(id)?;
+                }
+                let mut preview = self.document.clone();
+                preview.apply_type(id, &text)?;
+                self.apply_content_process_action(NativeContentAction::Type {
+                    node_index: id.index(),
+                    text,
+                })
+                .await
+            }
+            NativeAction::Scroll { .. } => self.action(action),
+        }
+    }
+
+    async fn apply_content_process_action(
+        &mut self,
+        action: NativeContentAction,
+    ) -> Result<NativeActionResult, NativeEngineError> {
+        let next_revision = self.next_revision()?;
+        let mutation = {
+            let process =
+                self.content_process
+                    .as_mut()
+                    .ok_or_else(|| NativeEngineError::Worker {
+                        operation: "content process mutation".into(),
+                        reason: "native content process is not running".into(),
+                    })?;
+            process.mutate(action).await?
+        };
+        let generation = self.document.generation();
+        let mut document = match NativeDocument::from_content_wire(
+            mutation.document,
+            &self.config.limits,
+            generation,
+        ) {
+            Ok(document) => document,
+            Err(error) => {
+                self.content_process.take();
+                return Err(error);
+            }
+        };
+        let events = match mutation
+            .events
+            .into_iter()
+            .map(|event| {
+                let node_id = NativeNodeId::from_parts(generation, event.node_index);
+                document
+                    .node(node_id)
+                    .map(|_| (node_id, event.kind))
+                    .ok_or(NativeEngineError::DetachedTarget)
+            })
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(events) => events,
+            Err(error) => {
+                self.content_process.take();
+                return Err(error);
+            }
+        };
+        document.set_revision(next_revision);
+        self.document = document;
         self.revision = next_revision;
         self.history.update_current_scroll(self.scroll_offset);
         self.record_effects(events);

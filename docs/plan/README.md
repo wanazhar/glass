@@ -504,6 +504,13 @@ evaluations in process-backed HTTP(S) documents can now issue policy-owned GET
 typed DOM callback mutations. Page-load fetch scheduling, non-GET uploads,
 XHR/WebSocket, and full Fetch Web IDL identity remain open.
 
+The completed bounded page-load fetch slice is
+[native-engine-browser-052](tasks/native-engine-browser-052.md). Fetches from
+initial page scripts and lifecycle evaluation now settle before the child
+publishes its first document snapshot, including typed callback DOM mutations.
+Callback navigation during initial publication, non-GET uploads, XHR/WebSocket,
+and full Fetch Web IDL identity remain open.
+
 The next BE-02/BE-03/BE-04 gate is full task ordering and navigation edge cases,
 followed by file/FormData support, full constraint validation, target contexts,
 and the remaining browser-context primitives.

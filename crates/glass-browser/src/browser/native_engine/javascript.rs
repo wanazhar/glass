@@ -197,6 +197,7 @@ pub(crate) fn execute_inline_scripts(
         viewport,
         &[],
     )
+    .map(|_| ())
 }
 
 pub(crate) fn execute_page_scripts(
@@ -207,7 +208,7 @@ pub(crate) fn execute_page_scripts(
     document_origin: &NativeOrigin,
     viewport: Viewport,
     resource_load_nodes: &[u32],
-) -> Result<(), NativeEngineError> {
+) -> Result<Vec<NativeScriptCommand>, NativeEngineError> {
     if runtime.is_none() {
         *runtime = Some(NativeJavaScriptRuntime::new()?);
     }
@@ -229,6 +230,7 @@ pub(crate) fn execute_page_scripts(
         .as_ref()
         .expect("page script runtime initialized")
         .set_module_sources(module_sources);
+    let mut pending_fetches = Vec::new();
     for source in sources {
         let evaluation = {
             let script_runtime = runtime.as_ref().expect("page script runtime initialized");
@@ -251,22 +253,7 @@ pub(crate) fn execute_page_scripts(
                 NativePageScript::ModuleDependency { .. } => continue,
             }
         };
-        if evaluation
-            .commands
-            .iter()
-            .any(|command| matches!(command, NativeScriptCommand::Fetch { .. }))
-        {
-            return Err(NativeEngineError::UnsupportedUrl {
-                reason: "page-script fetch scheduling is not available during document commit"
-                    .into(),
-            });
-        }
-        if evaluation.commands.is_empty() {
-            continue;
-        }
-        let mut next = document.clone();
-        next.apply_script_commands(&evaluation.commands)?;
-        *document = next;
+        apply_page_script_evaluation(document, evaluation, &mut pending_fetches)?;
     }
     for node_index in resource_load_nodes {
         let Some(event_source) = host_event_script(&[(*node_index, NativeEventKind::Load)])? else {
@@ -282,22 +269,7 @@ pub(crate) fn execute_page_scripts(
                 document_origin,
                 viewport,
             )?;
-        if evaluation
-            .commands
-            .iter()
-            .any(|command| matches!(command, NativeScriptCommand::Fetch { .. }))
-        {
-            return Err(NativeEngineError::UnsupportedUrl {
-                reason: "page-event fetch scheduling is not available during document commit"
-                    .into(),
-            });
-        }
-        if evaluation.commands.is_empty() {
-            continue;
-        }
-        let mut next = document.clone();
-        next.apply_script_commands(&evaluation.commands)?;
-        *document = next;
+        apply_page_script_evaluation(document, evaluation, &mut pending_fetches)?;
     }
     runtime
         .as_mut()
@@ -320,12 +292,7 @@ pub(crate) fn execute_page_scripts(
                 document_origin,
                 viewport,
             )?;
-        if evaluation.commands.is_empty() {
-            continue;
-        }
-        let mut next = document.clone();
-        next.apply_script_commands(&evaluation.commands)?;
-        *document = next;
+        apply_page_script_evaluation(document, evaluation, &mut pending_fetches)?;
     }
     runtime
         .as_mut()
@@ -348,13 +315,30 @@ pub(crate) fn execute_page_scripts(
                 document_origin,
                 viewport,
             )?;
-        if evaluation.commands.is_empty() {
-            continue;
-        }
-        let mut next = document.clone();
-        next.apply_script_commands(&evaluation.commands)?;
-        *document = next;
+        apply_page_script_evaluation(document, evaluation, &mut pending_fetches)?;
     }
+    Ok(pending_fetches)
+}
+
+fn apply_page_script_evaluation(
+    document: &mut NativeDocument,
+    evaluation: NativeScriptEvaluation,
+    pending_fetches: &mut Vec<NativeScriptCommand>,
+) -> Result<(), NativeEngineError> {
+    let mut commands = Vec::new();
+    for command in evaluation.commands {
+        if matches!(command, NativeScriptCommand::Fetch { .. }) {
+            pending_fetches.push(command);
+        } else {
+            commands.push(command);
+        }
+    }
+    if commands.is_empty() {
+        return Ok(());
+    }
+    let mut next = document.clone();
+    next.apply_script_commands(&commands)?;
+    *document = next;
     Ok(())
 }
 

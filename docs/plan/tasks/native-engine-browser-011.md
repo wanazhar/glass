@@ -46,8 +46,10 @@ from other native sessions.
 
 - This is a session cache, not a complete HTTP cache: freshness dates,
   revalidation, validators, Vary negotiation beyond the explicit safety
-  deny-list, HSTS, proxy behavior, connection pooling, redirect-cookie
-  capture, partitioned cookies, SameSite, and persistent storage remain open.
+  deny-list, HSTS, proxy behavior, connection pooling, partitioned cookies,
+  SameSite, and persistent storage remain open. Redirect response cookies are
+  captured only within the bounded manual redirect policy and remain
+  transactionally pending until the final document succeeds.
 - The cookie parser intentionally accepts a small safe subset. It does not
   claim full RFC6265bis behavior, public-suffix enforcement, cookie prefixes,
   Expires parsing, or script-visible document.cookie.

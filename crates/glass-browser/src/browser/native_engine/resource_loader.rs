@@ -9,7 +9,6 @@ use futures_util::StreamExt;
 use reqwest::header::HeaderMap;
 use std::collections::BTreeMap;
 use std::fmt;
-use std::io;
 use std::time::{Duration, Instant};
 use url::Url;
 
@@ -133,13 +132,21 @@ impl NativeResourceLoader {
         })
     }
 
-    /// Load one bounded HTML document over HTTP(S).
+    /// Load one bounded HTML document over HTTP(S) without a referrer.
     ///
     /// This is deliberately a document-only network slice: it follows a
     /// bounded redirect chain, rejects credentials and non-HTML responses,
     /// enforces the configured document limit while streaming, and does not
     /// fetch subresources or execute page code.
     pub async fn load_async(&mut self, url: &str) -> Result<NativeResource, NativeEngineError> {
+        self.load_async_with_referrer(url, None).await
+    }
+
+    pub(crate) async fn load_async_with_referrer(
+        &mut self,
+        url: &str,
+        referrer: Option<&str>,
+    ) -> Result<NativeResource, NativeEngineError> {
         validate_url_text("navigation URL", url)?;
         let resource_url = without_fragment(url);
         if !is_network_url(resource_url) {
@@ -149,24 +156,78 @@ impl NativeResourceLoader {
             reason: "HTTP(S) navigation URL is not valid URL syntax".into(),
         })?;
         reject_credentials(&parsed)?;
+        let referrer = normalize_referrer(referrer, &parsed)?;
         if let Some(cached) = self.network.cache.get(&cache_key(&parsed)).cloned() {
             return with_original_fragment(cached, url);
         }
         let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::custom(native_redirect_policy))
+            .redirect(reqwest::redirect::Policy::none())
             .timeout(NATIVE_NETWORK_TIMEOUT)
             .build()
             .map_err(|error| network_error("HTTP client construction", error))?;
-        let mut request = client
-            .get(parsed.clone())
-            .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml");
-        if let Some(cookie) = self.network.cookie_header(&parsed) {
-            request = request.header(reqwest::header::COOKIE, cookie);
-        }
-        let response = request
-            .send()
-            .await
-            .map_err(|error| network_error("HTTP document request", error))?;
+        let mut current_url = parsed.clone();
+        let mut request_referrer = referrer;
+        let mut redirects = 0;
+        let mut pending_cookies = Vec::new();
+        let response = loop {
+            let mut request_url = current_url.clone();
+            request_url.set_fragment(None);
+            let mut request = client
+                .get(request_url)
+                .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml");
+            if let Some(referrer) = request_referrer.as_deref() {
+                request = request.header(reqwest::header::REFERER, referrer);
+            }
+            if let Some(cookie) = self.network.cookie_header(&current_url) {
+                request = request.header(reqwest::header::COOKIE, cookie);
+            }
+            let response = request
+                .send()
+                .await
+                .map_err(|error| network_error("HTTP document request", error))?;
+            for value in response
+                .headers()
+                .get_all(reqwest::header::SET_COOKIE)
+                .iter()
+            {
+                if let Ok(cookie) = value.to_str() {
+                    pending_cookies.push((current_url.clone(), cookie.to_owned()));
+                }
+            }
+            if !is_http_redirect(response.status()) {
+                break response;
+            }
+            if redirects >= MAX_NATIVE_NETWORK_REDIRECTS {
+                return Err(NativeEngineError::Network {
+                    operation: "HTTP redirect".into(),
+                    reason: "HTTP(S) redirect chain exceeded the native limit".into(),
+                });
+            }
+            let location = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| NativeEngineError::Network {
+                    operation: "HTTP redirect".into(),
+                    reason: "HTTP(S) redirect did not provide a valid location".into(),
+                })?;
+            let next_url = current_url
+                .join(location)
+                .map_err(|_| NativeEngineError::Network {
+                    operation: "HTTP redirect".into(),
+                    reason: "HTTP(S) redirect location is not valid URL syntax".into(),
+                })?;
+            reject_credentials(&next_url)?;
+            if !is_network_url(without_fragment(next_url.as_str())) {
+                return Err(NativeEngineError::UnsupportedUrl {
+                    reason: "HTTP(S) navigation redirected to a non-HTTP(S) URL".into(),
+                });
+            }
+            request_referrer = normalize_referrer(Some(current_url.as_str()), &next_url)?;
+            current_url = next_url;
+            redirects += 1;
+        };
         if !response.status().is_success() {
             return Err(NativeEngineError::Network {
                 operation: "HTTP document request".into(),
@@ -175,12 +236,6 @@ impl NativeResourceLoader {
         }
         let charset = content_type_charset(response.headers().get(reqwest::header::CONTENT_TYPE))?;
         let cacheable = cacheable_response(response.headers());
-        let set_cookie = response
-            .headers()
-            .get_all(reqwest::header::SET_COOKIE)
-            .iter()
-            .filter_map(|value| value.to_str().ok().map(str::to_owned))
-            .collect::<Vec<_>>();
         let content_length = response.content_length();
         if content_length.is_some_and(|length| length > self.max_document_bytes as u64) {
             return Err(NativeEngineError::limit(
@@ -191,7 +246,7 @@ impl NativeResourceLoader {
                     .unwrap_or(usize::MAX),
             ));
         }
-        let final_url = response.url().clone();
+        let final_url = current_url;
         reject_credentials(&final_url)?;
         if !is_network_url(final_url.as_str()) {
             return Err(NativeEngineError::UnsupportedUrl {
@@ -234,9 +289,9 @@ impl NativeResourceLoader {
             origin: resource.origin.clone(),
             body: resource.body.clone(),
         };
-        let has_set_cookie = !set_cookie.is_empty();
-        for cookie in set_cookie {
-            self.network.store_cookie(&final_url, &cookie);
+        let has_set_cookie = !pending_cookies.is_empty();
+        for (cookie_url, cookie) in pending_cookies {
+            self.network.store_cookie(&cookie_url, &cookie);
         }
         if cacheable && !has_set_cookie {
             self.network.store_cache(cache_key(&parsed), cache_resource);
@@ -274,6 +329,58 @@ impl NativeResourceLoader {
             origin: NativeOrigin::Opaque,
             body,
         })
+    }
+}
+
+pub(crate) fn referrer_for_navigation(
+    current_url: &str,
+    target_url: &str,
+) -> Result<Option<String>, NativeEngineError> {
+    validate_url_text("navigation URL", target_url)?;
+    let target = Url::parse(without_fragment(target_url)).map_err(|_| {
+        NativeEngineError::UnsupportedUrl {
+            reason: "HTTP(S) navigation URL is not valid URL syntax".into(),
+        }
+    })?;
+    if !is_network_url(target.as_str()) {
+        return Ok(None);
+    }
+    reject_credentials(&target)?;
+    let Ok(current) = Url::parse(without_fragment(current_url)) else {
+        return Ok(None);
+    };
+    if !is_network_url(current.as_str()) {
+        return Ok(None);
+    }
+    normalize_referrer(Some(current.as_str()), &target)
+}
+
+fn normalize_referrer(
+    referrer: Option<&str>,
+    target: &Url,
+) -> Result<Option<String>, NativeEngineError> {
+    let Some(referrer) = referrer else {
+        return Ok(None);
+    };
+    validate_url_text("navigation referrer", referrer)?;
+    let source =
+        Url::parse(without_fragment(referrer)).map_err(|_| NativeEngineError::UnsupportedUrl {
+            reason: "navigation referrer is not valid URL syntax".into(),
+        })?;
+    if !is_network_url(source.as_str()) {
+        return Ok(None);
+    }
+    reject_credentials(&source)?;
+    if source.scheme().eq_ignore_ascii_case("https") && target.scheme().eq_ignore_ascii_case("http")
+    {
+        return Ok(None);
+    }
+    if source.origin() == target.origin() {
+        let mut full = source;
+        full.set_fragment(None);
+        Ok(Some(full.to_string()))
+    } else {
+        Ok(Some(source.origin().ascii_serialization()))
     }
 }
 
@@ -597,21 +704,15 @@ fn content_type_charset(
     })
 }
 
-fn native_redirect_policy(attempt: reqwest::redirect::Attempt<'_>) -> reqwest::redirect::Action {
-    if attempt.previous().len() >= MAX_NATIVE_NETWORK_REDIRECTS {
-        return attempt.stop();
-    }
-    let url = attempt.url();
-    if !is_network_url(without_fragment(url.as_str()))
-        || !url.username().is_empty()
-        || url.password().is_some()
-    {
-        return attempt.error(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "native navigation redirect violates the HTTP(S) URL policy",
-        ));
-    }
-    attempt.follow()
+fn is_http_redirect(status: reqwest::StatusCode) -> bool {
+    matches!(
+        status,
+        reqwest::StatusCode::MOVED_PERMANENTLY
+            | reqwest::StatusCode::FOUND
+            | reqwest::StatusCode::SEE_OTHER
+            | reqwest::StatusCode::TEMPORARY_REDIRECT
+            | reqwest::StatusCode::PERMANENT_REDIRECT
+    )
 }
 
 fn decode_html_body(
@@ -798,7 +899,7 @@ fn hex_value(value: u8) -> Option<u8> {
 mod tests {
     use super::{
         MAX_NATIVE_CACHE_ENTRIES, NativeNetworkState, NativeResource, cacheable_response,
-        decode_html_body,
+        decode_html_body, referrer_for_navigation,
     };
     use reqwest::header::{CACHE_CONTROL, HeaderMap, HeaderValue, PRAGMA, VARY};
     use url::Url;
@@ -876,5 +977,31 @@ mod tests {
         headers.remove(PRAGMA);
         headers.insert(VARY, HeaderValue::from_static("Accept-Encoding, Cookie"));
         assert!(!cacheable_response(&headers));
+    }
+
+    #[test]
+    fn referrer_policy_is_full_same_origin_origin_only_cross_origin_and_none_on_downgrade() {
+        assert_eq!(
+            referrer_for_navigation(
+                "http://source.test/path/page?query=1#fragment",
+                "http://source.test/next",
+            )
+            .unwrap(),
+            Some("http://source.test/path/page?query=1".into())
+        );
+        assert_eq!(
+            referrer_for_navigation("http://source.test/path/page", "http://target.test/next")
+                .unwrap(),
+            Some("http://source.test".into())
+        );
+        assert_eq!(
+            referrer_for_navigation("https://source.test/path", "http://target.test/next").unwrap(),
+            None
+        );
+        assert_eq!(
+            referrer_for_navigation("data:text/html,<p>local</p>", "http://target.test/next")
+                .unwrap(),
+            None
+        );
     }
 }

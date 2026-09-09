@@ -15,7 +15,7 @@ use super::lifecycle::NativeLifecycleState;
 use super::origin::NativeOrigin;
 use super::paint::NativeDisplayList;
 use super::raster::NativeSurface;
-use super::resource_loader::{NativeResource, NativeResourceLoader};
+use super::resource_loader::{NativeResource, NativeResourceLoader, referrer_for_navigation};
 use super::runtime::{NativeRuntimeState, NativeRuntimeTraceEvent};
 use super::scheduler::{DeterministicScheduler, NativeTask};
 use super::worker::{NativeRuntimeShared, NativeRuntimeWorker};
@@ -158,7 +158,9 @@ impl NativeEngine {
             process.start().await?;
         }
         let prepared = if let Some(process) = content_process.as_mut() {
-            let resource = process.load(&initial_url, &self.config.limits).await?;
+            let resource = process
+                .load(&initial_url, &self.config.limits, None)
+                .await?;
             self.prepare_navigation_content(resource)?
         } else {
             self.prepare_navigation_async(&initial_url).await?
@@ -243,6 +245,7 @@ impl NativeEngine {
         self.require_running("navigate")?;
         let url = url.into();
         if is_network_url(&url) {
+            let referrer = referrer_for_navigation(&self.url, &url)?;
             self.ensure_content_process().await?;
             let content = self
                 .content_process
@@ -251,7 +254,7 @@ impl NativeEngine {
                     operation: "content process load".into(),
                     reason: "native content process is not running".into(),
                 })?
-                .load(&url, &self.config.limits)
+                .load(&url, &self.config.limits, referrer.as_deref())
                 .await?;
             self.commit_content_process().await?;
             if let Some(worker) = self.runtime_worker.clone() {

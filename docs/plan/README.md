@@ -141,9 +141,22 @@ service-worker routing, permissions, subresources, complete encoding
 sniffing, origin/referrer request policy, script execution, and browser parity
 remain open.
 
-The next dependency gate is BE-02c: explicit origin/referrer request policy
-and cross-origin request mediation, followed by CSP/mixed-content,
-service-worker, permission, and subresource work.
+The BE-02c scope was explicit origin/referrer request policy and cross-origin
+request mediation, followed by CSP/mixed-content, service-worker, permission,
+and subresource work.
+
+The completed origin/referrer batch is
+[native-engine-browser-012](tasks/native-engine-browser-012.md). Native
+top-level navigation now derives a strict-origin-when-cross-origin referrer
+from the previously committed URL, re-evaluates it at every manually
+validated redirect hop, and keeps redirect cookies transactional until the
+final document succeeds. Same-origin full URLs, cross-origin origin-only
+referrers, HTTPS downgrade suppression, and child-wire policy validation are
+covered. CORS/CSP, mixed content, service workers, permissions, subresources,
+full HTTP cache semantics, script execution, and browser parity remain open.
+
+The next dependency gate is BE-02d: CORS/CSP, mixed-content, and initial
+subresource mediation for the native document path.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

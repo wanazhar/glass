@@ -244,6 +244,16 @@ request policy, CORS/CSP, mixed content, service workers, permissions,
 subresources, complete encoding sniffing, and browser security promotion
 remain open.
 
+The completed native-engine-browser-012 batch adds explicit
+strict-origin-when-cross-origin referrer derivation for top-level HTTP(S)
+navigation. Same-origin requests send a fragment-free full referrer,
+cross-origin requests send only the source origin, and opaque or
+HTTPS-to-HTTP transitions send none. Manual redirect handling validates every
+location and recomputes the policy per hop, while redirect cookies remain
+transactional until final document validation. CORS/CSP, mixed content,
+service workers, permissions, subresources, full cache semantics, and script
+request mediation remain open.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature

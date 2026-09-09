@@ -1808,6 +1808,16 @@ Full cache freshness/revalidation, origin/referrer policy, CORS/CSP, mixed
 content, service workers, permissions, subresources, complete WHATWG encoding
 sniffing, and script/browser parity remain open.
 
+The completed origin/referrer follow-up is
+[native-engine-browser-012](../tasks/native-engine-browser-012.md). Native
+top-level HTTP(S) navigation now derives a strict-origin-when-cross-origin
+referrer from the committed URL, recomputes it for each manually validated
+redirect, and keeps redirect cookies pending until final document validation.
+Same-origin full URLs, cross-origin origin-only referrers, downgrade
+suppression, and child-wire validation are covered. CORS/CSP, mixed content,
+service workers, permissions, subresources, full cache semantics, script
+request mediation, and browser parity remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

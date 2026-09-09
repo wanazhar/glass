@@ -161,6 +161,7 @@ impl NativeContentProcess {
         &mut self,
         url: &str,
         limits: &NativeEngineLimits,
+        referrer: Option<&str>,
     ) -> Result<NativeContentLoad, NativeEngineError> {
         let id = self.next_id();
         let response = match timeout(
@@ -170,6 +171,7 @@ impl NativeContentProcess {
                 "id": id,
                 "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
                 "url": url,
+                "referrer": referrer,
                 "max_document_bytes": limits.max_document_bytes,
                 "max_nodes": limits.max_nodes,
                 "max_dom_depth": limits.max_dom_depth,
@@ -695,6 +697,15 @@ async fn load_content_resource(
             .unwrap_or(NativeEngineLimits::default().max_text_bytes),
         ..NativeEngineLimits::default()
     };
+    let referrer = request
+        .get("referrer")
+        .and_then(|value| (!value.is_null()).then_some(value))
+        .map(|value| {
+            value.as_str().ok_or_else(|| {
+                NativeEngineError::invalid("content-process referrer", "must be text or null")
+            })
+        })
+        .transpose()?;
     let loader = match resource_loader {
         Some(loader) if loader.max_document_bytes() == max_document_bytes => loader,
         Some(_) => {
@@ -712,7 +723,7 @@ async fn load_content_resource(
                 .expect("content-process resource loader was just initialized")
         }
     };
-    let resource = loader.load_async(url).await?;
+    let resource = loader.load_async_with_referrer(url, referrer).await?;
     let document = NativeDocument::parse(&resource.body, &limits)?;
     let wire = document.to_content_wire();
     Ok((

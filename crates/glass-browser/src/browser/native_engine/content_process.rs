@@ -10,8 +10,8 @@ use super::interaction::{MAX_NATIVE_EFFECTS, NativeEventKind, validate_native_ed
 use super::javascript::{
     MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_SCRIPT_BYTES, NativeJavaScriptRuntime, NativePageScript,
     NativeScriptCommand, NativeScriptEvaluation, execute_page_scripts, host_event_script,
-    host_key_event_script, host_submit_event_script, literal_dynamic_module_specifiers,
-    order_page_scripts, static_module_specifiers,
+    host_hash_change_event_script, host_key_event_script, host_submit_event_script,
+    literal_dynamic_module_specifiers, order_page_scripts, static_module_specifiers,
 };
 use super::origin::NativeOrigin;
 use super::resource_loader::{
@@ -297,6 +297,20 @@ impl NativeContentProcess {
             id,
             "mutate_lifecycle_events",
             json!({"events": event_names}),
+        )
+        .await
+    }
+
+    pub(crate) async fn dispatch_hash_change(
+        &mut self,
+        old_url: &str,
+        new_url: &str,
+    ) -> Result<NativeContentMutation, NativeEngineError> {
+        let id = self.next_id();
+        self.mutate_with_request_kind(
+            id,
+            "mutate_hash_change",
+            json!({"old_url": old_url, "new_url": new_url}),
         )
         .await
     }
@@ -1461,6 +1475,87 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     Err(error) => content_error_response(id, error),
                 }
             }
+            "mutate_hash_change" if protocol_matches(&request) && running => {
+                let Some(current) = document.as_ref() else {
+                    let response = content_error_response(
+                        id,
+                        NativeEngineError::Worker {
+                            operation: "content process hashchange".into(),
+                            reason: "content process has no committed document".into(),
+                        },
+                    );
+                    write_value_frame(&mut stdout, &response).await?;
+                    continue;
+                };
+                let old_url = request
+                    .get("action")
+                    .and_then(|action| action.get("old_url"))
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        NativeEngineError::invalid("hashchange old URL", "must be text")
+                    })?;
+                let new_url = request
+                    .get("action")
+                    .and_then(|action| action.get("new_url"))
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        NativeEngineError::invalid("hashchange new URL", "must be text")
+                    })?;
+                validate_url_text("hashchange old URL", old_url)?;
+                validate_url_text("hashchange new URL", new_url)?;
+                if without_fragment(old_url) != without_fragment(new_url) || old_url == new_url {
+                    return Err(NativeEngineError::invalid(
+                        "hashchange URLs",
+                        "must differ only by a non-empty fragment",
+                    ));
+                }
+                let Some(document_origin) = document_origin.as_ref() else {
+                    let response = content_error_response(
+                        id,
+                        NativeEngineError::Worker {
+                            operation: "content process hashchange".into(),
+                            reason: "content process has no committed origin".into(),
+                        },
+                    );
+                    write_value_frame(&mut stdout, &response).await?;
+                    continue;
+                };
+                let Some(runtime) = javascript_runtime.as_ref() else {
+                    let response = content_error_response(
+                        id,
+                        NativeEngineError::Worker {
+                            operation: "content process hashchange".into(),
+                            reason: "content process has no JavaScript runtime".into(),
+                        },
+                    );
+                    write_value_frame(&mut stdout, &response).await?;
+                    continue;
+                };
+                match mutate_hash_change(
+                    current,
+                    runtime,
+                    old_url,
+                    new_url,
+                    document_origin,
+                    viewport,
+                ) {
+                    Ok((next, mutation)) => {
+                        document = Some(next);
+                        document_url = Some(new_url.to_owned());
+                        json!({
+                            "kind": "mutated",
+                            "id": id,
+                            "document_base64": base64::engine::general_purpose::STANDARD
+                                .encode(serde_json::to_vec(&mutation.document).unwrap_or_default()),
+                            "events": mutation.events.iter().map(|event| json!({
+                                "node_index": event.node_index,
+                                "kind": event_kind_text(event.kind),
+                            })).collect::<Vec<_>>(),
+                        })
+                    }
+                    Err(error) => content_error_response(id, error),
+                }
+            }
             "close" if protocol_matches(&request) => {
                 write_value_frame(&mut stdout, &json!({"kind":"closed","id":id})).await?;
                 return Ok(());
@@ -2223,6 +2318,51 @@ fn mutate_lifecycle_events(
     ))
 }
 
+fn mutate_hash_change(
+    current: &NativeDocument,
+    runtime: &NativeJavaScriptRuntime,
+    old_url: &str,
+    new_url: &str,
+    document_origin: &NativeOrigin,
+    viewport: Viewport,
+) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
+    let source = host_hash_change_event_script(old_url, new_url)?.ok_or_else(|| {
+        NativeEngineError::Worker {
+            operation: "content process hashchange".into(),
+            reason: "hashchange event source was empty".into(),
+        }
+    })?;
+    let evaluation = runtime.evaluate(&source, current, new_url, document_origin, viewport)?;
+    let mut next = current.clone();
+    let mut events = vec![NativeContentEvent {
+        node_index: 0,
+        kind: NativeEventKind::HashChange,
+    }];
+    events.extend(
+        next.apply_script_commands(&evaluation.commands)?
+            .into_iter()
+            .map(|(node, kind)| NativeContentEvent {
+                node_index: node.index(),
+                kind,
+            }),
+    );
+    if events.len() > MAX_NATIVE_EFFECTS {
+        return Err(NativeEngineError::limit(
+            "native hashchange effects",
+            MAX_NATIVE_EFFECTS,
+            events.len(),
+        ));
+    }
+    Ok((
+        next.clone(),
+        NativeContentMutation {
+            document: next.to_content_wire(),
+            events,
+            navigation: None,
+        },
+    ))
+}
+
 fn mutate_script_document(
     current: &NativeDocument,
     runtime: &NativeJavaScriptRuntime,
@@ -2405,6 +2545,7 @@ fn event_kind_text(kind: NativeEventKind) -> &'static str {
         NativeEventKind::PageHide => "pagehide",
         NativeEventKind::Unload => "unload",
         NativeEventKind::PageShow => "pageshow",
+        NativeEventKind::HashChange => "hashchange",
         NativeEventKind::Invalid => "invalid",
         NativeEventKind::KeyDown => "keydown",
         NativeEventKind::KeyUp => "keyup",
@@ -2426,6 +2567,7 @@ fn parse_event_kind(value: &str) -> Option<NativeEventKind> {
         "pagehide" => Some(NativeEventKind::PageHide),
         "unload" => Some(NativeEventKind::Unload),
         "pageshow" => Some(NativeEventKind::PageShow),
+        "hashchange" => Some(NativeEventKind::HashChange),
         "invalid" => Some(NativeEventKind::Invalid),
         "keydown" => Some(NativeEventKind::KeyDown),
         "keyup" => Some(NativeEventKind::KeyUp),

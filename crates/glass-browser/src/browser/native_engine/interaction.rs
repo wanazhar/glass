@@ -24,6 +24,7 @@ pub enum NativeEventKind {
     PageHide,
     Unload,
     PageShow,
+    HashChange,
     Invalid,
     KeyDown,
     KeyUp,

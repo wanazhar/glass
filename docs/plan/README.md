@@ -430,8 +430,15 @@ The completed bounded replacement-navigation lifecycle slice is
 replacement navigations now deliver window `pagehide` then `unload` before
 resource replacement and `pageshow` after the new page is published; local and
 child owners expose the same order through bounded effects and typed callback
-mutation. Cancelable `beforeunload`, same-document `hashchange`, bfcache/history
-traversal parity, and full HTML navigation task ordering remain open.
+mutation. Cancelable `beforeunload`, bfcache/history-traversal parity, and full
+HTML navigation task ordering remain open.
+
+The completed bounded same-document navigation slice is
+[native-engine-browser-043](tasks/native-engine-browser-043.md). GET fragment
+changes retain the current document/realm, avoid a reload, update the URL owner,
+and dispatch window `hashchange` with `oldURL`/`newURL` in both local and child
+paths. `beforeunload`, `popstate`, bfcache/history lifecycle parity, and full
+HTML navigation task ordering remain open.
 
 The next BE-02/BE-03/BE-04 gate is full task ordering and navigation edge cases,
 followed by multipart/full constraint validation, external form ownership and

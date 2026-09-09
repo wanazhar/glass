@@ -353,6 +353,31 @@ pub(crate) fn host_submit_event_script(
     host_event_script_with_submitters(&[(form_index, NativeEventKind::Submit, submitter_index)])
 }
 
+pub(crate) fn host_hash_change_event_script(
+    old_url: &str,
+    new_url: &str,
+) -> Result<Option<String>, NativeEngineError> {
+    let old_url = serde_json::to_string(old_url).map_err(|_| NativeEngineError::Worker {
+        operation: "serialize hashchange event".into(),
+        reason: "hashchange old URL could not be serialized".into(),
+    })?;
+    let new_url = serde_json::to_string(new_url).map_err(|_| NativeEngineError::Worker {
+        operation: "serialize hashchange event".into(),
+        reason: "hashchange new URL could not be serialized".into(),
+    })?;
+    let source = format!(
+        "globalThis.__glassDispatchHostEvents([{{\"node_index\":4294967295,\"type\":\"hashchange\",\"bubbles\":false,\"cancelable\":false,\"old_url\":{old_url},\"new_url\":{new_url}}}])"
+    );
+    if source.len() > MAX_NATIVE_SCRIPT_BYTES {
+        return Err(NativeEngineError::limit(
+            "hashchange event",
+            MAX_NATIVE_SCRIPT_BYTES,
+            source.len(),
+        ));
+    }
+    Ok(Some(source))
+}
+
 fn host_event_script_with_submitters(
     events: &[(u32, NativeEventKind, Option<u32>)],
 ) -> Result<Option<String>, NativeEngineError> {
@@ -371,6 +396,7 @@ fn host_event_script_with_submitters(
                 NativeEventKind::PageHide => ("pagehide", false, false),
                 NativeEventKind::Unload => ("unload", false, false),
                 NativeEventKind::PageShow => ("pageshow", false, false),
+                NativeEventKind::HashChange => ("hashchange", false, false),
                 NativeEventKind::Invalid => ("invalid", false, true),
                 NativeEventKind::KeyDown => ("keydown", true, true),
                 NativeEventKind::KeyUp => ("keyup", true, false),
@@ -1101,6 +1127,8 @@ fn document_bootstrap(
       eventPhase: 0,
       defaultPrevented: false,
       submitter: settings.submitter === undefined ? null : settings.submitter,
+      oldURL: settings.oldURL === undefined ? "" : String(settings.oldURL),
+      newURL: settings.newURL === undefined ? "" : String(settings.newURL),
       preventDefault() {{
         if (this.cancelable) this.defaultPrevented = true;
       }},
@@ -1404,6 +1432,8 @@ fn document_bootstrap(
       submitter: descriptor.submitter_node_index == null
         ? null
         : elements.find((element) => element.nodeIndex === descriptor.submitter_node_index) || null,
+      oldURL: descriptor.old_url,
+      newURL: descriptor.new_url,
     }});
     return dispatchTarget(target, event);
   }});

@@ -2095,7 +2095,14 @@ replacement navigations deliver window `pagehide` then `unload` before
 resource replacement and `pageshow` after new-page publication in both local
 and child owners. Effects and callback mutations use the existing typed
 boundary; same-document fragments remain in-place. Cancelable `beforeunload`,
-`hashchange`, bfcache/history traversal, popup/opener contexts, visibility, and
+bfcache/history traversal, popup/opener contexts, visibility, and full HTML
+navigation task ordering remain open.
+
+The completed bounded same-document navigation follow-up is
+[native-engine-browser-043](../tasks/native-engine-browser-043.md). GET
+fragment changes retain the current document/realm, avoid reload, update the
+URL owner, and dispatch window `hashchange` with `oldURL`/`newURL` in local and
+child paths. `beforeunload`, `popstate`, bfcache/history lifecycle parity, and
 full HTML navigation task ordering remain open.
 
 The next bounded workstream is full task ordering and navigation edge cases,

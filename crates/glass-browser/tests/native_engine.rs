@@ -250,6 +250,43 @@ async fn native_local_full_navigation_orders_page_lifecycle_events() {
 }
 
 #[tokio::test]
+async fn native_local_fragment_navigation_dispatches_hashchange_without_reload() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://hash-page",
+            "<script>globalThis.hashEvents = []; addEventListener('hashchange', (event) => hashEvents.push({ oldURL: event.oldURL, newURL: event.newURL, href: location.href }));</script><p id='target'>Hash target</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://hash-page#one");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    let before_navigation = engine.revision();
+    engine
+        .navigate_async("fixture://hash-page#two")
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.hashEvents")
+            .await
+            .unwrap(),
+        serde_json::json!([{
+            "oldURL": "fixture://hash-page#one",
+            "newURL": "fixture://hash-page#two",
+            "href": "fixture://hash-page#two"
+        }])
+    );
+    assert_eq!(engine.snapshot().unwrap().url, "fixture://hash-page#two");
+    let effects = engine.effects_since(before_navigation).unwrap().effects;
+    assert!(
+        effects
+            .iter()
+            .any(|effect| effect.kind == NativeEventKind::HashChange)
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_inline_modules_run_in_document_order() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -1225,6 +1262,60 @@ async fn native_content_process_orders_navigation_lifecycle_events() {
             NativeEventKind::Unload,
             NativeEventKind::PageShow
         ]
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_fragment_navigation_dispatches_hashchange_in_place() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0_u8; 4096];
+        let read = stream.read(&mut request).await.unwrap();
+        let request = String::from_utf8_lossy(&request[..read]);
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = "<script>globalThis.hashEvents = []; addEventListener('hashchange', (event) => hashEvents.push({ oldURL: event.oldURL, newURL: event.newURL, href: location.href }));</script><p id='target'>Hash target</p>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page#one")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let before_navigation = engine.revision();
+    engine
+        .navigate_async(format!("http://{address}/page#two"))
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.hashEvents")
+            .await
+            .unwrap(),
+        serde_json::json!([{
+            "oldURL": format!("http://{address}/page#one"),
+            "newURL": format!("http://{address}/page#two"),
+            "href": format!("http://{address}/page#two")
+        }])
+    );
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        format!("http://{address}/page#two")
+    );
+    let effects = engine.effects_since(before_navigation).unwrap().effects;
+    assert!(
+        effects
+            .iter()
+            .any(|effect| effect.kind == NativeEventKind::HashChange)
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

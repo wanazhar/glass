@@ -22,6 +22,7 @@ mod paint;
 mod raster;
 mod resource_loader;
 mod runtime;
+mod sandbox;
 mod scheduler;
 mod worker;
 

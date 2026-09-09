@@ -1799,9 +1799,14 @@ The completed redirect/charset follow-up is
 shared loader rejects credential-bearing and non-HTTP(S) redirects before
 follow, caps the chain at eight hops, rebuilds final tuple origins, and
 supports bounded UTF-8, UTF-16, Latin-1, and Windows-1252 document decoding.
-Cookies/cache, CORS/CSP, mixed content, service workers, permissions,
-subresources, complete WHATWG encoding sniffing, and script/browser parity
-remain open.
+The completed stateful network follow-up is
+[native-engine-browser-011](../tasks/native-engine-browser-011.md). The
+content process now retains bounded session-only cookies and a bounded
+in-memory document cache across navigations, with domain/path/secure matching,
+explicit cache safety denials, and no persistence or sensitive-data logging.
+Full cache freshness/revalidation, origin/referrer policy, CORS/CSP, mixed
+content, service workers, permissions, subresources, complete WHATWG encoding
+sniffing, and script/browser parity remain open.
 
 ## Baseline and constraints
 
@@ -2412,7 +2417,7 @@ visual stacking.
 | Decision | Benefit | Cost / what we miss | Mitigation |
 |---|---|---|---|
 | custom small HTML parser | owns the DOM boundary and keeps the default graph unchanged | not HTML5-conformant yet; malformed markup coverage is narrow | explicit Phase 2 conformance work and parser fixtures |
-| bounded local plus HTTP(S) document loader | real external HTML navigation enters the native document owner while local fixtures remain deterministic | no subresources, charset/security policy, cache/cookies, or hostile-content isolation | explicit async path, redirect/size/MIME bounds, UTF-8-only decoding, typed failures, and later BE-01/BE-02 promotion gates |
+| bounded local plus HTTP(S) document loader | real external HTML navigation enters the native document owner while local fixtures remain deterministic | no subresources, full charset/security policy, complete cache/cookie semantics, or hostile-content isolation | explicit async path, redirect/size/MIME/charset bounds, typed failures, process-owned session state, and later BE-01/BE-02 promotion gates |
 | in-process single owner | simple revision/history invariants and reproducible tests | no crash isolation or hostile-content safety | keep content local-only; process isolation is a promotion gate |
 | no async task callbacks | deterministic scheduler with no hidden sleeps/threads | no script/event-loop realism | typed task kinds and test clock establish the future seam |
 | single-select only | useful basic form semantics with a small deterministic state model | no keyboard, multi-select, or submission behavior | reject unsupported variants explicitly and keep values private |

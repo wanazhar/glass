@@ -236,9 +236,13 @@ The completed redirect/charset batch is recorded in
 The shared resource loader now applies strict HTTP(S)-only, credential-free,
 eight-hop redirects, revalidates the final tuple origin, and decodes bounded
 UTF-8, UTF-16, Latin-1, and Windows-1252 HTML responses. The child and parent
-share the policy. Cookies/cache, CORS/CSP, mixed content, service workers,
-permissions, subresources, complete encoding sniffing, and browser security
-promotion remain open.
+share the policy. The completed native-engine-browser-011 batch adds
+process-owned, session-only bounded cookies and a bounded fragment-free
+in-memory document cache, with explicit no-cache and variant denials and no
+sensitive-data logging. Full HTTP freshness/revalidation, origin/referrer
+request policy, CORS/CSP, mixed content, service workers, permissions,
+subresources, complete encoding sniffing, and browser security promotion
+remain open.
 
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
@@ -2605,13 +2609,15 @@ The current resource boundary supports:
 - exact `fixture://...` URLs registered in `NativeEngineConfig`; and
 - HTTP(S) HTML documents through the asynchronous native navigation path,
   with an eight-redirect limit, a 30-second request timeout, configured
-  document-size enforcement, optional HTML MIME validation, and UTF-8 body
-  decoding.
+  document-size enforcement, HTML MIME validation, bounded charset decoding,
+  process-owned session cookies, and a bounded in-memory document cache.
 
-Filesystem, custom schemes, cookies, cache, CORS/CSP, mixed-content policy,
-service workers, permissions, and all other resource schemes fail closed.
-Subresources are not fetched. A raw fragment is removed for resource lookup
-and decoding but is retained in the successful navigation URL;
+Filesystem, custom schemes, CORS/CSP, mixed-content policy, service workers,
+permissions, and all other resource schemes fail closed. Cookie/cache state
+is session-only and process-owned; full HTTP cache freshness, persistence,
+and cross-origin policy remain outside this boundary. Subresources are not
+fetched. A raw fragment is removed for resource lookup and decoding but is
+retained in the successful navigation URL;
 percent-encoded fragment markers remain payload data. Local resources have an
 opaque origin; HTTP(S) resources have a normalized tuple origin. This boundary
 is not a hostile-content security boundary until the runtime/process and
@@ -3283,14 +3289,14 @@ The native profile is `experimental` and declares:
 | Capability | Level | Current contract |
 |---|---|---|
 | lifecycle | available | initialize and explicit close |
-| navigation | available | local `about`, `data`, and registered fixture URLs |
+| navigation | available | local resources plus bounded external HTTP(S) HTML navigation; no subresources or script |
 | contexts | available | one active context |
 | evidence | available | bounded URL, title, visible text, revision; native semantic projection is Rust-only |
 | action | available | semantic click/type, bounded vertical root scrolling, plus native point targets for supported local controls; no nested scrolling or default browser behavior |
 | effects | available | current revision and changed signal; bounded event metadata is Rust-only |
 | script | omitted | JavaScript is unavailable |
 | capture | available | bounded PNG of the current logical RGBA surface; JPEG/PDF and screenshot-containing evidence are unavailable |
-| storage | omitted | no cookies/local/session storage |
+| storage | partial | process-owned session cookies and bounded document cache; no local/session/IndexedDB storage or persistence |
 | prompts | omitted | no dialogs |
 | downloads | omitted | no download pipeline |
 

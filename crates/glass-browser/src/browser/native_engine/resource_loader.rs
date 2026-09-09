@@ -6,13 +6,18 @@ use super::error::NativeEngineError;
 use super::origin::NativeOrigin;
 use base64::Engine as _;
 use futures_util::StreamExt;
+use reqwest::header::HeaderMap;
 use std::collections::BTreeMap;
+use std::fmt;
 use std::io;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use url::Url;
 
 const MAX_NATIVE_NETWORK_REDIRECTS: usize = 8;
 const NATIVE_NETWORK_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_NATIVE_CACHE_ENTRIES: usize = 32;
+const MAX_NATIVE_COOKIES: usize = 128;
+const MAX_NATIVE_COOKIE_BYTES: usize = 4096;
 
 /// A bounded HTML resource accepted by the native engine.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,10 +28,40 @@ pub struct NativeResource {
 }
 
 /// Bounded resource loader for local documents and HTTP(S) HTML responses.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct NativeResourceLoader {
     fixtures: BTreeMap<String, String>,
     max_document_bytes: usize,
+    network: NativeNetworkState,
+}
+
+impl fmt::Debug for NativeResourceLoader {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NativeResourceLoader")
+            .field("fixture_count", &self.fixtures.len())
+            .field("max_document_bytes", &self.max_document_bytes)
+            .field("cached_document_count", &self.network.cache.len())
+            .field("cookie_count", &self.network.cookies.len())
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct NativeNetworkState {
+    cache: BTreeMap<String, NativeResource>,
+    cookies: Vec<NativeCookie>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeCookie {
+    name: String,
+    value: String,
+    domain: String,
+    path: String,
+    host_only: bool,
+    secure: bool,
+    expires_at: Option<Instant>,
 }
 
 impl NativeResourceLoader {
@@ -40,6 +75,7 @@ impl NativeResourceLoader {
         Ok(Self {
             fixtures,
             max_document_bytes: config.limits.max_document_bytes,
+            network: NativeNetworkState::default(),
         })
     }
 
@@ -55,7 +91,12 @@ impl NativeResourceLoader {
         Ok(Self {
             fixtures: BTreeMap::new(),
             max_document_bytes,
+            network: NativeNetworkState::default(),
         })
+    }
+
+    pub(crate) fn max_document_bytes(&self) -> usize {
+        self.max_document_bytes
     }
 
     /// Load one supported local resource without filesystem or network access.
@@ -98,7 +139,7 @@ impl NativeResourceLoader {
     /// bounded redirect chain, rejects credentials and non-HTML responses,
     /// enforces the configured document limit while streaming, and does not
     /// fetch subresources or execute page code.
-    pub async fn load_async(&self, url: &str) -> Result<NativeResource, NativeEngineError> {
+    pub async fn load_async(&mut self, url: &str) -> Result<NativeResource, NativeEngineError> {
         validate_url_text("navigation URL", url)?;
         let resource_url = without_fragment(url);
         if !is_network_url(resource_url) {
@@ -108,14 +149,21 @@ impl NativeResourceLoader {
             reason: "HTTP(S) navigation URL is not valid URL syntax".into(),
         })?;
         reject_credentials(&parsed)?;
+        if let Some(cached) = self.network.cache.get(&cache_key(&parsed)).cloned() {
+            return with_original_fragment(cached, url);
+        }
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::custom(native_redirect_policy))
             .timeout(NATIVE_NETWORK_TIMEOUT)
             .build()
             .map_err(|error| network_error("HTTP client construction", error))?;
-        let response = client
-            .get(parsed)
-            .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml")
+        let mut request = client
+            .get(parsed.clone())
+            .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml");
+        if let Some(cookie) = self.network.cookie_header(&parsed) {
+            request = request.header(reqwest::header::COOKIE, cookie);
+        }
+        let response = request
             .send()
             .await
             .map_err(|error| network_error("HTTP document request", error))?;
@@ -126,6 +174,13 @@ impl NativeResourceLoader {
             });
         }
         let charset = content_type_charset(response.headers().get(reqwest::header::CONTENT_TYPE))?;
+        let cacheable = cacheable_response(response.headers());
+        let set_cookie = response
+            .headers()
+            .get_all(reqwest::header::SET_COOKIE)
+            .iter()
+            .filter_map(|value| value.to_str().ok().map(str::to_owned))
+            .collect::<Vec<_>>();
         let content_length = response.content_length();
         if content_length.is_some_and(|length| length > self.max_document_bytes as u64) {
             return Err(NativeEngineError::limit(
@@ -162,18 +217,31 @@ impl NativeResourceLoader {
             bytes.extend_from_slice(&chunk);
         }
         let body = decode_html_body(&bytes, charset.as_deref(), self.max_document_bytes)?;
-        let navigation_url = append_original_fragment(final_url, url);
+        let navigation_url = append_original_fragment(&final_url, url);
         let origin =
             NativeOrigin::from_url(&Url::parse(without_fragment(&navigation_url)).map_err(
                 |_| NativeEngineError::UnsupportedUrl {
                     reason: "HTTP(S) navigation produced invalid final URL syntax".into(),
                 },
             )?)?;
-        Ok(NativeResource {
+        let resource = NativeResource {
             url: navigation_url,
             origin,
             body,
-        })
+        };
+        let cache_resource = NativeResource {
+            url: without_fragment(&resource.url).to_owned(),
+            origin: resource.origin.clone(),
+            body: resource.body.clone(),
+        };
+        let has_set_cookie = !set_cookie.is_empty();
+        for cookie in set_cookie {
+            self.network.store_cookie(&final_url, &cookie);
+        }
+        if cacheable && !has_set_cookie {
+            self.network.store_cache(cache_key(&parsed), cache_resource);
+        }
+        Ok(resource)
     }
 
     fn load_data_url(&self, url: &str, data: &str) -> Result<NativeResource, NativeEngineError> {
@@ -207,6 +275,287 @@ impl NativeResourceLoader {
             body,
         })
     }
+}
+
+fn cache_key(url: &Url) -> String {
+    let mut key = url.clone();
+    key.set_fragment(None);
+    key.to_string()
+}
+
+fn with_original_fragment(
+    mut resource: NativeResource,
+    original_url: &str,
+) -> Result<NativeResource, NativeEngineError> {
+    let final_url = Url::parse(&resource.url).map_err(|_| NativeEngineError::UnsupportedUrl {
+        reason: "cached HTTP(S) resource has invalid URL syntax".into(),
+    })?;
+    resource.url = append_original_fragment(&final_url, original_url);
+    Ok(resource)
+}
+
+fn cacheable_response(headers: &HeaderMap) -> bool {
+    if headers
+        .get(reqwest::header::CACHE_CONTROL)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value.split(',').any(|directive| {
+                matches!(
+                    directive
+                        .split_once('=')
+                        .map_or(directive, |(name, _)| name)
+                        .trim()
+                        .to_ascii_lowercase()
+                        .as_str(),
+                    "no-store" | "no-cache" | "max-age=0"
+                )
+            })
+        })
+    {
+        return false;
+    }
+    if headers
+        .get(reqwest::header::PRAGMA)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(',')
+                .any(|directive| directive.trim().eq_ignore_ascii_case("no-cache"))
+        })
+    {
+        return false;
+    }
+    !headers
+        .get(reqwest::header::VARY)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(',')
+                .any(|field| field.trim() == "*" || field.trim().eq_ignore_ascii_case("cookie"))
+        })
+}
+
+impl NativeNetworkState {
+    fn cookie_header(&mut self, url: &Url) -> Option<String> {
+        let host = url.host_str()?.to_ascii_lowercase();
+        let request_path = if url.path().is_empty() {
+            "/"
+        } else {
+            url.path()
+        };
+        let secure_request = url.scheme().eq_ignore_ascii_case("https");
+        let now = Instant::now();
+        self.cookies
+            .retain(|cookie| cookie.expires_at.is_none_or(|expires_at| expires_at > now));
+
+        let mut matching = self
+            .cookies
+            .iter()
+            .filter(|cookie| {
+                domain_matches(cookie, &host)
+                    && path_matches(request_path, &cookie.path)
+                    && (!cookie.secure || secure_request)
+            })
+            .collect::<Vec<_>>();
+        matching.sort_by(|left, right| {
+            right
+                .path
+                .len()
+                .cmp(&left.path.len())
+                .then_with(|| left.name.cmp(&right.name))
+                .then_with(|| left.domain.cmp(&right.domain))
+        });
+
+        let mut header = String::new();
+        for cookie in matching {
+            let pair = format!("{}={}", cookie.name, cookie.value);
+            let separator = usize::from(!header.is_empty()) * 2;
+            if header
+                .len()
+                .saturating_add(separator)
+                .saturating_add(pair.len())
+                > MAX_NATIVE_COOKIE_BYTES
+            {
+                break;
+            }
+            if !header.is_empty() {
+                header.push_str("; ");
+            }
+            header.push_str(&pair);
+        }
+        (!header.is_empty()).then_some(header)
+    }
+
+    fn store_cookie(&mut self, url: &Url, line: &str) {
+        if line.len() > MAX_NATIVE_COOKIE_BYTES {
+            return;
+        }
+        let Some(host) = url.host_str().map(str::to_ascii_lowercase) else {
+            return;
+        };
+        let (pair, attributes) = line.split_once(';').unwrap_or((line, ""));
+        let Some((name, value)) = pair.trim().split_once('=') else {
+            return;
+        };
+        let name = name.trim();
+        let value = value.trim();
+        if name.is_empty()
+            || !valid_cookie_text(name, true)
+            || !valid_cookie_text(value, false)
+            || name.len().saturating_add(value.len()) > MAX_NATIVE_COOKIE_BYTES
+        {
+            return;
+        }
+
+        let mut domain = host.clone();
+        let mut host_only = true;
+        let mut path = default_cookie_path(url);
+        let mut secure = false;
+        let mut max_age = None;
+        for attribute in attributes.split(';').map(str::trim) {
+            if attribute.eq_ignore_ascii_case("secure") {
+                secure = true;
+                continue;
+            }
+            let Some((key, attribute_value)) = attribute.split_once('=') else {
+                continue;
+            };
+            match key.trim().to_ascii_lowercase().as_str() {
+                "domain" => {
+                    let candidate = attribute_value
+                        .trim()
+                        .trim_start_matches('.')
+                        .to_ascii_lowercase();
+                    if candidate.is_empty()
+                        || !valid_cookie_domain(&candidate)
+                        || !host_matches_domain(&host, &candidate)
+                    {
+                        return;
+                    }
+                    domain = candidate;
+                    host_only = false;
+                }
+                "path" => {
+                    if attribute_value.trim().starts_with('/') {
+                        path = attribute_value.trim().to_owned();
+                    }
+                }
+                "max-age" => {
+                    max_age = attribute_value.trim().parse::<i64>().ok();
+                }
+                _ => {}
+            }
+        }
+        if secure && !url.scheme().eq_ignore_ascii_case("https") {
+            return;
+        }
+
+        let same_cookie = |cookie: &NativeCookie| {
+            cookie.name == name && cookie.domain == domain && cookie.path == path
+        };
+        if max_age.is_some_and(|age| age <= 0) {
+            self.cookies.retain(|cookie| !same_cookie(cookie));
+            return;
+        }
+        let expires_at = max_age.map(|age| {
+            let seconds = u64::try_from(age)
+                .unwrap_or_default()
+                .min(60 * 60 * 24 * 365 * 10);
+            Instant::now() + Duration::from_secs(seconds)
+        });
+        self.cookies.retain(|cookie| !same_cookie(cookie));
+        if self.cookies.len() >= MAX_NATIVE_COOKIES {
+            self.cookies.remove(0);
+        }
+        self.cookies.push(NativeCookie {
+            name: name.to_owned(),
+            value: value.to_owned(),
+            domain,
+            path,
+            host_only,
+            secure,
+            expires_at,
+        });
+    }
+
+    fn store_cache(&mut self, key: String, resource: NativeResource) {
+        if !self.cache.contains_key(&key) && self.cache.len() >= MAX_NATIVE_CACHE_ENTRIES {
+            if let Some(oldest) = self.cache.keys().next().cloned() {
+                self.cache.remove(&oldest);
+            }
+        }
+        self.cache.insert(key, resource);
+    }
+}
+
+fn valid_cookie_text(value: &str, name: bool) -> bool {
+    !value.bytes().any(|byte| {
+        if byte.is_ascii_control() {
+            return true;
+        }
+        name && matches!(
+            byte,
+            b'(' | b')'
+                | b'<'
+                | b'>'
+                | b'@'
+                | b','
+                | b';'
+                | b':'
+                | b'\\'
+                | b'"'
+                | b'/'
+                | b'['
+                | b']'
+                | b'?'
+                | b'='
+                | b'{'
+                | b'}'
+                | b' '
+                | b'\t'
+        )
+    })
+}
+
+fn valid_cookie_domain(domain: &str) -> bool {
+    domain
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b':'))
+}
+
+fn domain_matches(cookie: &NativeCookie, host: &str) -> bool {
+    host_matches_domain(host, &cookie.domain) && (!cookie.host_only || host == cookie.domain)
+}
+
+fn host_matches_domain(host: &str, domain: &str) -> bool {
+    host == domain
+        || host
+            .strip_suffix(domain)
+            .is_some_and(|prefix| prefix.ends_with('.'))
+}
+
+fn path_matches(request_path: &str, cookie_path: &str) -> bool {
+    request_path == cookie_path
+        || (request_path.starts_with(cookie_path)
+            && (cookie_path.ends_with('/')
+                || request_path.as_bytes().get(cookie_path.len()) == Some(&b'/')))
+}
+
+fn default_cookie_path(url: &Url) -> String {
+    let path = url.path();
+    if path.is_empty() || path == "/" || !path.starts_with('/') {
+        return "/".into();
+    }
+    path.rfind('/').map_or_else(
+        || "/".into(),
+        |index| {
+            if index == 0 {
+                "/".into()
+            } else {
+                path[..index].to_owned()
+            }
+        },
+    )
 }
 
 fn reject_credentials(url: &Url) -> Result<(), NativeEngineError> {
@@ -354,11 +703,11 @@ fn charset_error(charset: &str) -> NativeEngineError {
     }
 }
 
-fn append_original_fragment(final_url: Url, original_url: &str) -> String {
+fn append_original_fragment(final_url: &Url, original_url: &str) -> String {
     let Some((_, fragment)) = original_url.split_once('#') else {
         return final_url.to_string();
     };
-    let mut final_url = final_url;
+    let mut final_url = final_url.clone();
     final_url.set_fragment(Some(fragment));
     final_url.to_string()
 }
@@ -447,7 +796,12 @@ fn hex_value(value: u8) -> Option<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::decode_html_body;
+    use super::{
+        MAX_NATIVE_CACHE_ENTRIES, NativeNetworkState, NativeResource, cacheable_response,
+        decode_html_body,
+    };
+    use reqwest::header::{CACHE_CONTROL, HeaderMap, HeaderValue, PRAGMA, VARY};
+    use url::Url;
 
     #[test]
     fn decodes_bounded_declared_html_charsets() {
@@ -461,5 +815,66 @@ mod tests {
         );
         assert!(decode_html_body(b"\xff", Some("us-ascii"), 32).is_err());
         assert!(decode_html_body(b"text", Some("x-unknown"), 32).is_err());
+    }
+
+    #[test]
+    fn cookie_state_obeys_scope_security_expiration_and_bounds() {
+        let mut state = NativeNetworkState::default();
+        let page = Url::parse("http://example.test/account/login").unwrap();
+        state.store_cookie(&page, "session=alpha; Path=/account");
+        let secure_page = Url::parse("https://example.test/account/login").unwrap();
+        state.store_cookie(&secure_page, "secure=secret; Secure; Path=/");
+        assert_eq!(
+            state.cookie_header(&Url::parse("http://example.test/account/home").unwrap()),
+            Some("session=alpha".into())
+        );
+        assert_eq!(
+            state.cookie_header(&Url::parse("http://example.test/public").unwrap()),
+            None
+        );
+        assert_eq!(
+            state.cookie_header(&Url::parse("https://example.test/account/home").unwrap()),
+            Some("session=alpha; secure=secret".into())
+        );
+
+        state.store_cookie(&page, "session=gone; Path=/account; Max-Age=0");
+        assert_eq!(
+            state.cookie_header(&Url::parse("http://example.test/account/home").unwrap()),
+            None
+        );
+
+        for index in 0..(MAX_NATIVE_CACHE_ENTRIES + 1) {
+            state.store_cache(
+                format!("http://example.test/{index}"),
+                NativeResource {
+                    url: format!("http://example.test/{index}"),
+                    origin: super::NativeOrigin::from_url(
+                        &Url::parse("http://example.test/").unwrap(),
+                    )
+                    .unwrap(),
+                    body: index.to_string(),
+                },
+            );
+        }
+        assert_eq!(state.cache.len(), MAX_NATIVE_CACHE_ENTRIES);
+    }
+
+    #[test]
+    fn cache_policy_rejects_private_or_stale_variants() {
+        let mut headers = HeaderMap::new();
+        assert!(cacheable_response(&headers));
+        headers.insert(
+            CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=60"),
+        );
+        assert!(cacheable_response(&headers));
+        headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        assert!(!cacheable_response(&headers));
+        headers.remove(CACHE_CONTROL);
+        headers.insert(PRAGMA, HeaderValue::from_static("no-cache"));
+        assert!(!cacheable_response(&headers));
+        headers.remove(PRAGMA);
+        headers.insert(VARY, HeaderValue::from_static("Accept-Encoding, Cookie"));
+        assert!(!cacheable_response(&headers));
     }
 }

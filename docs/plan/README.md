@@ -130,6 +130,21 @@ share this policy; cookies/cache, CORS/CSP, mixed content, service workers,
 permissions, subresources, full WHATWG encoding sniffing, script execution,
 and browser parity remain open.
 
+The completed stateful network batch is
+[native-engine-browser-011](tasks/native-engine-browser-011.md). The
+process-backed loader now retains bounded session-only cookies and a bounded
+in-memory document cache across same-child navigations, applies domain/path/
+secure cookie matching, and denies cache reuse for explicit no-cache, private
+variant, or Set-Cookie responses. Cookie/cache state is never persisted or
+logged. Full HTTP freshness/revalidation, CORS/CSP, mixed content,
+service-worker routing, permissions, subresources, complete encoding
+sniffing, origin/referrer request policy, script execution, and browser parity
+remain open.
+
+The next dependency gate is BE-02c: explicit origin/referrer request policy
+and cross-origin request mediation, followed by CSP/mixed-content,
+service-worker, permission, and subresource work.
+
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,
 fixture/data-URL-only, one-context engine kernel and explicit semantic backend.

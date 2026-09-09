@@ -276,8 +276,8 @@ impl NativeEngine {
         self.require_running("navigate")?;
         let url = navigation.url.as_str();
         let same_document = self.is_same_document_navigation(url);
-        if !same_document {
-            self.dispatch_navigation_lifecycle_async().await?;
+        if !same_document && !self.dispatch_navigation_lifecycle_async().await? {
+            return Ok(self.snapshot_unchecked());
         }
         if same_document && navigation.method == NativeNavigationMethod::Get {
             validate_url_text("navigation URL", url)?;
@@ -421,7 +421,21 @@ impl NativeEngine {
         Ok(self.snapshot_unchecked())
     }
 
-    async fn dispatch_navigation_lifecycle_async(&mut self) -> Result<(), NativeEngineError> {
+    async fn dispatch_navigation_lifecycle_async(&mut self) -> Result<bool, NativeEngineError> {
+        let allowed = if self
+            .content_process
+            .as_ref()
+            .is_some_and(NativeContentProcess::is_healthy)
+        {
+            self.dispatch_content_before_unload_async().await?
+        } else if self.javascript.is_some() {
+            self.dispatch_local_before_unload()?
+        } else {
+            true
+        };
+        if !allowed {
+            return Ok(false);
+        }
         let events = [NativeEventKind::PageHide, NativeEventKind::Unload];
         let mutation = if self
             .content_process
@@ -438,27 +452,47 @@ impl NativeEngine {
         if let Some(mutation) = mutation {
             let next_revision = self.next_revision()?;
             self.apply_content_process_mutation_at(next_revision, mutation)?;
-            return Ok(());
+            return Ok(true);
         }
         if self.javascript.is_some() {
             self.dispatch_local_navigation_lifecycle()?;
         }
-        Ok(())
+        Ok(true)
     }
 
-    async fn dispatch_content_page_show_async(&mut self) -> Result<(), NativeEngineError> {
+    async fn dispatch_content_before_unload_async(&mut self) -> Result<bool, NativeEngineError> {
+        let Some(process) = self.content_process.as_mut() else {
+            return Ok(true);
+        };
+        if !process.is_healthy() {
+            return Ok(true);
+        }
+        let mutation = process.dispatch_before_unload().await?;
+        let allowed = mutation.allowed;
+        let next_revision = self.next_revision()?;
+        self.apply_content_process_mutation_at(next_revision, mutation)?;
+        Ok(allowed)
+    }
+
+    async fn dispatch_content_events_async(
+        &mut self,
+        events: &[NativeEventKind],
+    ) -> Result<(), NativeEngineError> {
         let Some(process) = self.content_process.as_mut() else {
             return Ok(());
         };
         if !process.is_healthy() {
             return Ok(());
         }
-        let mutation = process
-            .dispatch_lifecycle_events(&[NativeEventKind::PageShow])
-            .await?;
+        let mutation = process.dispatch_lifecycle_events(events).await?;
         let next_revision = self.next_revision()?;
         self.apply_content_process_mutation_at(next_revision, mutation)?;
         Ok(())
+    }
+
+    async fn dispatch_content_page_show_async(&mut self) -> Result<(), NativeEngineError> {
+        self.dispatch_content_events_async(&[NativeEventKind::PageShow])
+            .await
     }
 
     async fn dispatch_content_hash_change_async(
@@ -1023,10 +1057,6 @@ impl NativeEngine {
         let mut document = self.document.clone();
         let mut effects = document.apply_script_commands_allowing_links(&evaluation.commands)?;
         effects.extend(lifecycle_events);
-        if evaluation.commands.is_empty() {
-            self.record_effects(effects);
-            return Ok(());
-        }
         let next_revision = self.next_revision()?;
         document.set_revision(next_revision);
         self.document = document;
@@ -1036,12 +1066,55 @@ impl NativeEngine {
         Ok(())
     }
 
+    fn dispatch_local_before_unload(&mut self) -> Result<bool, NativeEngineError> {
+        let window = NativeNodeId::from_parts(self.document.generation(), u32::MAX);
+        let Some(evaluation) =
+            self.evaluate_local_events(&self.document, &[(window, NativeEventKind::BeforeUnload)])?
+        else {
+            return Ok(true);
+        };
+        let allowed = evaluation
+            .value
+            .as_array()
+            .and_then(|values| values.first())
+            .and_then(serde_json::Value::as_bool)
+            .ok_or_else(|| NativeEngineError::Worker {
+                operation: "native beforeunload".into(),
+                reason: "beforeunload event result was invalid".into(),
+            })?;
+        let mut document = self.document.clone();
+        let mut effects = document.apply_script_commands(&evaluation.commands)?;
+        effects.push((window, NativeEventKind::BeforeUnload));
+        if evaluation.commands.is_empty() {
+            self.record_effects(effects);
+            return Ok(allowed);
+        }
+        let next_revision = self.next_revision()?;
+        document.set_revision(next_revision);
+        self.document = document;
+        self.revision = next_revision;
+        self.history.update_current_scroll(self.scroll_offset);
+        self.record_effects(effects);
+        Ok(allowed)
+    }
+
     fn dispatch_local_page_show(&mut self) -> Result<(), NativeEngineError> {
         if self.javascript.is_none() {
             return Ok(());
         }
         let window = NativeNodeId::from_parts(self.document.generation(), u32::MAX);
         let event = (window, NativeEventKind::PageShow);
+        self.dispatch_local_events(&[event])?;
+        self.record_effects(vec![event]);
+        Ok(())
+    }
+
+    fn dispatch_local_pop_state(&mut self) -> Result<(), NativeEngineError> {
+        if self.javascript.is_none() {
+            return Ok(());
+        }
+        let window = NativeNodeId::from_parts(self.document.generation(), u32::MAX);
+        let event = (window, NativeEventKind::PopState);
         self.dispatch_local_events(&[event])?;
         self.record_effects(vec![event]);
         Ok(())
@@ -1651,6 +1724,9 @@ impl NativeEngine {
         mut prepared: PreparedNavigation,
     ) -> Result<(), NativeEngineError> {
         if self.javascript.is_some() {
+            if !self.dispatch_local_before_unload()? {
+                return Ok(());
+            }
             self.dispatch_local_navigation_lifecycle()?;
         }
         let mut javascript = None;
@@ -1743,6 +1819,7 @@ impl NativeEngine {
         self.url = url.clone();
         self.scroll_offset = scroll_offset;
         self.revision = revision;
+        let traversing_history = matches!(&history_commit, HistoryCommit::Activate(_));
         match history_commit {
             HistoryCommit::Push => self.history.push(url, revision, scroll_offset),
             HistoryCommit::Activate(index) => {
@@ -1752,6 +1829,9 @@ impl NativeEngine {
                     }
                 })?;
             }
+        }
+        if traversing_history {
+            self.dispatch_local_pop_state()?;
         }
         self.dispatch_local_hash_change(&old_url, &self.url.clone())?;
         Ok(())
@@ -1785,6 +1865,7 @@ impl NativeEngine {
         self.url = url.clone();
         self.scroll_offset = scroll_offset;
         self.revision = revision;
+        let traversing_history = matches!(&history_commit, HistoryCommit::Activate(_));
         match history_commit {
             HistoryCommit::Push => self.history.push(url, revision, scroll_offset),
             HistoryCommit::Activate(index) => {
@@ -1794,6 +1875,10 @@ impl NativeEngine {
                     }
                 })?;
             }
+        }
+        if traversing_history {
+            self.dispatch_content_events_async(&[NativeEventKind::PopState])
+                .await?;
         }
         let new_url = self.url.clone();
         if self

@@ -2122,6 +2122,16 @@ clear content type when POST becomes GET. File parts, FormData/Web IDL
 identity, submitter encoding overrides, full constraint validation, target
 contexts, and the remaining browser-context primitives remain open.
 
+The completed bounded navigation-cancellation/history-event follow-up is
+[native-engine-browser-046](../tasks/native-engine-browser-046.md). Replacement
+navigation now dispatches cancelable window `beforeunload` before
+`pagehide`/`unload` and resource loading, honors `preventDefault()` and
+non-empty `returnValue`, and keeps the current page when canceled. Same-
+document history traversal dispatches window `popstate` before `hashchange` in
+the local and child owners. Prompts, bfcache/session-history parity,
+cross-document restoration, target contexts, and full HTML task-source
+semantics remain open.
+
 The next bounded workstream is full task ordering and navigation edge cases,
 followed by file/FormData support, full constraint validation, target contexts,
 and the remaining browser-context primitives.

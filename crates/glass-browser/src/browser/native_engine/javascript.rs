@@ -396,7 +396,9 @@ fn host_event_script_with_submitters(
                 NativeEventKind::PageHide => ("pagehide", false, false),
                 NativeEventKind::Unload => ("unload", false, false),
                 NativeEventKind::PageShow => ("pageshow", false, false),
+                NativeEventKind::BeforeUnload => ("beforeunload", false, true),
                 NativeEventKind::HashChange => ("hashchange", false, false),
+                NativeEventKind::PopState => ("popstate", false, false),
                 NativeEventKind::Invalid => ("invalid", false, true),
                 NativeEventKind::KeyDown => ("keydown", true, true),
                 NativeEventKind::KeyUp => ("keyup", true, false),
@@ -1126,6 +1128,7 @@ fn document_bootstrap(
       currentTarget: null,
       eventPhase: 0,
       defaultPrevented: false,
+      returnValue: "",
       submitter: settings.submitter === undefined ? null : settings.submitter,
       oldURL: settings.oldURL === undefined ? "" : String(settings.oldURL),
       newURL: settings.newURL === undefined ? "" : String(settings.newURL),
@@ -1196,6 +1199,7 @@ fn document_bootstrap(
         if (eventState.stopped || eventState.immediate) break;
       }}
     }}
+    if (event.type === "beforeunload" && event.returnValue !== "") event.defaultPrevented = true;
     event.currentTarget = null;
     event.eventPhase = 0;
     eventState.dispatching = false;

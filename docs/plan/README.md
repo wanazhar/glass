@@ -458,6 +458,15 @@ header and redirect method/body reset. File parts, FormData/Web IDL identity,
 submitter encoding overrides, full constraint validation, target contexts, and
 the remaining browser-context primitives remain open.
 
+The completed bounded navigation-cancellation/history-event slice is
+[native-engine-browser-046](tasks/native-engine-browser-046.md). Replacement
+navigations now dispatch cancelable window `beforeunload` before
+`pagehide`/`unload`, honor `preventDefault()` and non-empty `returnValue`, and
+avoid resource loading when canceled. Same-document history traversal now
+dispatches window `popstate` before `hashchange` in local and child owners.
+Prompts, bfcache/session-history parity, cross-document traversal restoration,
+and full task-source semantics remain open.
+
 The next BE-02/BE-03/BE-04 gate is full task ordering and navigation edge cases,
 followed by file/FormData support, full constraint validation, target contexts,
 and the remaining browser-context primitives.

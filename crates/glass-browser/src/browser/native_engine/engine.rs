@@ -12,7 +12,7 @@ use super::error::NativeEngineError;
 use super::error::NativeWorkerFailureKind;
 use super::history::{NativeHistory, NativeHistoryDirection};
 use super::interaction::{MAX_NATIVE_EFFECTS, NativeAction, NativeEffect, NativeEventKind};
-use super::javascript::NativeJavaScriptRuntime;
+use super::javascript::{NativeJavaScriptRuntime, host_event_script};
 use super::layout::{NativeLayoutSnapshot, NativePoint};
 use super::lifecycle::NativeLifecycleState;
 use super::origin::NativeOrigin;
@@ -555,7 +555,8 @@ impl NativeEngine {
         self.document.set_revision(next_revision);
         self.revision = next_revision;
         self.history.update_current_scroll(self.scroll_offset);
-        self.record_effects(events);
+        self.record_effects(events.clone());
+        self.dispatch_local_events(&events)?;
         Ok(NativeActionResult {
             revision: next_revision,
             accepted: true,
@@ -635,8 +636,16 @@ impl NativeEngine {
                     })?;
             process.mutate(action).await?
         };
+        let event_metadata = mutation
+            .events
+            .iter()
+            .map(|event| (event.node_index, event.kind))
+            .collect::<Vec<_>>();
         let next_revision = self.next_revision()?;
-        self.apply_content_process_mutation_at(next_revision, mutation)
+        let result = self.apply_content_process_mutation_at(next_revision, mutation)?;
+        self.dispatch_content_process_events(&event_metadata)
+            .await?;
+        Ok(result)
     }
 
     fn apply_local_script_commands(
@@ -654,6 +663,55 @@ impl NativeEngine {
         self.revision = next_revision;
         self.history.update_current_scroll(self.scroll_offset);
         self.record_effects(events);
+        Ok(())
+    }
+
+    fn dispatch_local_events(
+        &mut self,
+        events: &[(NativeNodeId, NativeEventKind)],
+    ) -> Result<(), NativeEngineError> {
+        let event_metadata = events
+            .iter()
+            .map(|(node_id, kind)| (node_id.index(), *kind))
+            .collect::<Vec<_>>();
+        let Some(source) = host_event_script(&event_metadata)? else {
+            return Ok(());
+        };
+        let Some(javascript) = self.javascript.as_ref() else {
+            return Ok(());
+        };
+        let evaluation = {
+            javascript.evaluate(
+                &source,
+                &self.document,
+                &self.url,
+                &self.origin,
+                self.config.viewport,
+            )?
+        };
+        self.apply_local_script_commands(&evaluation.commands)
+    }
+
+    async fn dispatch_content_process_events(
+        &mut self,
+        events: &[(u32, NativeEventKind)],
+    ) -> Result<(), NativeEngineError> {
+        let Some(source) = host_event_script(events)? else {
+            return Ok(());
+        };
+        let evaluation = {
+            let process =
+                self.content_process
+                    .as_mut()
+                    .ok_or_else(|| NativeEngineError::Worker {
+                        operation: "content process event dispatch".into(),
+                        reason: "native content process is not running".into(),
+                    })?;
+            process.evaluate(&source).await?
+        };
+        if let Some(mutation) = evaluation.mutation {
+            self.apply_content_process_mutation(mutation)?;
+        }
         Ok(())
     }
 

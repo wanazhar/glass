@@ -262,6 +262,19 @@ are enforced before accepted CSS enters a child-owned reparse. Images,
 media, fonts, scripts, fetch/XHR, service workers, permissions, broad
 CORS/CSP, and browser security promotion remain open.
 
+The completed native-engine-browser-014 batch centralizes the next network
+policy boundary. The loader now names resource families for CSP evaluation,
+recognizes their directive-specific source lists with `default-src` fallback,
+resolves credential-free HTTP(S) subresources through one helper, and applies
+one HTTPS mixed-content decision at the initial URL and every stylesheet
+redirect hop. A private CORS mode also computes the serialized `Origin`
+request value and validates exact or non-credentialed wildcard response
+authorization, with credentialed reads requiring an explicit credentials
+response. Stylesheets use the shared URL/CSP/mixed-content path. No script,
+fetch/XHR, image, font, media, frame, worker, preflight, service-worker, or
+permission caller exists yet; policy primitives are not browser support by
+themselves.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature
@@ -2630,14 +2643,14 @@ The current resource boundary supports:
   document-size enforcement, HTML MIME validation, bounded charset decoding,
   process-owned session cookies, and a bounded in-memory document cache.
 
-Filesystem, custom schemes, CORS/CSP outside the bounded stylesheet policy,
-mixed-content violations, service workers, permissions, and all other
-resource schemes fail closed. Cookie/cache state is session-only and
-process-owned; full HTTP cache freshness, persistence, and cross-origin
-policy remain outside this boundary. Only bounded link stylesheets are
-fetched as subresources; images, media, fonts, scripts, and imports are not
-fetched. A raw fragment is removed for resource lookup and decoding but is
-retained in the successful navigation URL;
+Filesystem, custom schemes, and resource candidates denied by the shared
+credential/mixed-content policy fail closed. The loader has private CSP
+directive-family and CORS authorization primitives, but only bounded link
+stylesheets currently call them. Service workers, permissions, full HTTP
+cache freshness, persistence, and cross-origin request callers remain outside
+this boundary. Only bounded link stylesheets are fetched as subresources;
+images, media, fonts, scripts, and imports are not fetched. A raw fragment is
+removed for resource lookup and decoding but is retained in the successful navigation URL;
 percent-encoded fragment markers remain payload data. Local resources have an
 opaque origin; HTTP(S) resources have a normalized tuple origin. This boundary
 is not a hostile-content security boundary until the runtime/process and

@@ -167,8 +167,19 @@ and includes accepted rules in the child-owned computed-style snapshot.
 Images, media, fonts, scripts, fetch/XHR, service workers, permissions,
 complete CSP/CORS, and browser parity remain open.
 
-The next dependency gate is BE-02e: broad CORS/CSP and mixed-content
-mediation for script/fetch and the remaining resource classes.
+The completed BE-02e policy-foundation batch is
+[native-engine-browser-014](tasks/native-engine-browser-014.md). The shared
+loader now has typed resource-family CSP source lists, credential-free
+HTTP(S) subresource resolution, a common HTTPS mixed-content check, and
+credential-aware CORS origin/response authorization. Stylesheet loading uses
+the shared URL/CSP/mixed-content path. Script/module execution, fetch/XHR
+callers and preflights, image/media/font/frame/worker loading, service
+workers, permissions, complete CSP, and browser parity remain open; the
+helpers alone do not claim those capabilities.
+
+The remaining BE-02e implementation gate is to wire the policy into real
+script/module and connect/fetch request callers, then add the remaining
+resource classes without leaking response data or bypassing process ownership.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

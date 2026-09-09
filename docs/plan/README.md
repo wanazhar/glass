@@ -57,6 +57,14 @@ HTTP(S) origins, and native-only integration coverage. It does not yet claim
 subresources, JavaScript, cookies/cache, CORS/CSP, charset sniffing, process
 isolation, or browser parity.
 
+The next runtime batch is
+[native-engine-browser-003](tasks/native-engine-browser-003.md). It adds a
+bounded typed Tokio worker over the single runtime state, routes asynchronous
+native initialization/navigation commits through that worker, and reports
+worker cancellation/crash failures explicitly. It is still in-process and does
+not yet claim content-process isolation, OS sandboxing, supervisor restart, or
+browser parity.
+
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,
 fixture/data-URL-only, one-context engine kernel and explicit semantic backend.

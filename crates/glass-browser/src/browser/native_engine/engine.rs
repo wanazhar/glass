@@ -14,8 +14,9 @@ use super::origin::NativeOrigin;
 use super::paint::NativeDisplayList;
 use super::raster::NativeSurface;
 use super::resource_loader::{NativeResource, NativeResourceLoader};
-use super::runtime::{NativeRuntime, NativeRuntimeState, NativeRuntimeTraceEvent};
+use super::runtime::{NativeRuntimeState, NativeRuntimeTraceEvent};
 use super::scheduler::{DeterministicScheduler, NativeTask};
+use super::worker::{NativeRuntimeShared, NativeRuntimeWorker};
 use std::collections::VecDeque;
 
 /// Bounded observation of the current native document.
@@ -59,7 +60,8 @@ pub struct NativeDiagnosticsSnapshot {
 pub struct NativeEngine {
     config: NativeEngineConfig,
     loader: NativeResourceLoader,
-    runtime: NativeRuntime,
+    runtime: NativeRuntimeShared,
+    runtime_worker: Option<NativeRuntimeWorker>,
     history: NativeHistory,
     lifecycle: NativeLifecycleState,
     document: NativeDocument,
@@ -77,13 +79,14 @@ impl NativeEngine {
         if !is_network_url(&config.initial_url) {
             loader.load(&config.initial_url)?;
         }
-        let runtime = NativeRuntime::new(config.limits.max_scheduler_tasks)?;
+        let runtime = NativeRuntimeShared::new(config.limits.max_scheduler_tasks)?;
         let max_history_entries = config.limits.max_history_entries;
         Ok(Self {
             url: config.initial_url.clone(),
             config,
             loader,
             runtime,
+            runtime_worker: None,
             history: NativeHistory::new(max_history_entries),
             lifecycle: NativeLifecycleState::New,
             document: NativeDocument::empty(),
@@ -143,11 +146,13 @@ impl NativeEngine {
         }
         let initial_url = self.config.initial_url.clone();
         let prepared = self.prepare_navigation_async(&initial_url).await?;
-        self.runtime.start()?;
-        if let Err(error) = self.commit_navigation(prepared) {
-            self.runtime.rollback_start()?;
+        let worker = NativeRuntimeWorker::spawn_shared(self.runtime.clone())?;
+        worker.start().await?;
+        if let Err(error) = self.commit_navigation_async(prepared, &worker).await {
+            worker.rollback_start().await?;
             return Err(error);
         }
+        self.runtime_worker = Some(worker);
         self.lifecycle = NativeLifecycleState::Running;
         Ok(())
     }
@@ -156,6 +161,7 @@ impl NativeEngine {
         match self.lifecycle {
             NativeLifecycleState::Running => {
                 self.runtime.close()?;
+                self.runtime_worker.take();
                 self.lifecycle = NativeLifecycleState::Closed;
                 Ok(())
             }
@@ -191,7 +197,11 @@ impl NativeEngine {
     ) -> Result<NativeEngineSnapshot, NativeEngineError> {
         self.require_running("navigate")?;
         let resource = self.loader.load_async(&url.into()).await?;
-        self.navigate_resource(resource)
+        if let Some(worker) = self.runtime_worker.clone() {
+            self.navigate_resource_async(resource, &worker).await
+        } else {
+            self.navigate_resource(resource)
+        }
     }
 
     fn navigate_resource(
@@ -203,6 +213,21 @@ impl NativeEngine {
         } else {
             let prepared = self.prepare_navigation_resource(resource)?;
             self.commit_navigation(prepared)?;
+        }
+        Ok(self.snapshot_unchecked())
+    }
+
+    async fn navigate_resource_async(
+        &mut self,
+        resource: NativeResource,
+        worker: &NativeRuntimeWorker,
+    ) -> Result<NativeEngineSnapshot, NativeEngineError> {
+        if self.is_same_document_navigation(&resource.url) {
+            self.commit_same_document_navigation_async(resource.url, HistoryCommit::Push, worker)
+                .await?;
+        } else {
+            let prepared = self.prepare_navigation_resource(resource)?;
+            self.commit_navigation_async(prepared, worker).await?;
         }
         Ok(self.snapshot_unchecked())
     }
@@ -448,11 +473,11 @@ impl NativeEngine {
         &self.history
     }
 
-    pub fn scheduler(&self) -> &DeterministicScheduler {
+    pub fn scheduler(&self) -> Result<DeterministicScheduler, NativeEngineError> {
         self.runtime.scheduler()
     }
 
-    pub const fn runtime_state(&self) -> NativeRuntimeState {
+    pub fn runtime_state(&self) -> NativeRuntimeState {
         self.runtime.state()
     }
 
@@ -503,6 +528,28 @@ impl NativeEngine {
         Ok(())
     }
 
+    async fn commit_navigation_async(
+        &mut self,
+        prepared: PreparedNavigation,
+        worker: &NativeRuntimeWorker,
+    ) -> Result<(), NativeEngineError> {
+        let scroll_offset = self.fragment_scroll_offset_for_document(
+            &prepared.document,
+            &prepared.resource.url,
+            NativePoint { x: 0, y: 0 },
+        )?;
+        self.run_commit_task_async(NativeTask::CommitNavigation, "navigation", worker)
+            .await?;
+        let revision = self.next_revision()?;
+        self.document = prepared.document;
+        self.url = prepared.resource.url;
+        self.origin = prepared.resource.origin;
+        self.scroll_offset = scroll_offset;
+        self.revision = revision;
+        self.history.push(self.url.clone(), revision, scroll_offset);
+        Ok(())
+    }
+
     fn commit_same_document_navigation(
         &mut self,
         url: String,
@@ -522,6 +569,46 @@ impl NativeEngine {
             NativeTask::CommitSameDocumentNavigation,
             "same-document navigation",
         )?;
+        let revision = self.next_revision()?;
+        self.document.set_revision(revision);
+        self.url = url.clone();
+        self.scroll_offset = scroll_offset;
+        self.revision = revision;
+        match history_commit {
+            HistoryCommit::Push => self.history.push(url, revision, scroll_offset),
+            HistoryCommit::Activate(index) => {
+                self.history.activate(index, revision).ok_or_else(|| {
+                    NativeEngineError::Scheduler {
+                        reason: "history entry disappeared during same-document traversal".into(),
+                    }
+                })?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn commit_same_document_navigation_async(
+        &mut self,
+        url: String,
+        history_commit: HistoryCommit,
+        worker: &NativeRuntimeWorker,
+    ) -> Result<(), NativeEngineError> {
+        let scroll_offset = match &history_commit {
+            HistoryCommit::Push => self.fragment_scroll_offset(&url)?,
+            HistoryCommit::Activate(index) => self
+                .history
+                .entry(*index)
+                .map(|entry| entry.scroll_offset)
+                .ok_or_else(|| NativeEngineError::Scheduler {
+                    reason: "history target is no longer available".into(),
+                })?,
+        };
+        self.run_commit_task_async(
+            NativeTask::CommitSameDocumentNavigation,
+            "same-document navigation",
+            worker,
+        )
+        .await?;
         let revision = self.next_revision()?;
         self.document.set_revision(revision);
         self.url = url.clone();
@@ -664,6 +751,26 @@ impl NativeEngine {
     ) -> Result<(), NativeEngineError> {
         self.runtime.schedule(expected, 0)?;
         let Some(task) = self.runtime.pop_ready()? else {
+            return Err(NativeEngineError::Scheduler {
+                reason: format!("{operation} commit was not ready at the current logical time"),
+            });
+        };
+        if task.task != expected {
+            return Err(NativeEngineError::Scheduler {
+                reason: format!("{operation} produced an unexpected task kind"),
+            });
+        }
+        Ok(())
+    }
+
+    async fn run_commit_task_async(
+        &mut self,
+        expected: NativeTask,
+        operation: &str,
+        worker: &NativeRuntimeWorker,
+    ) -> Result<(), NativeEngineError> {
+        worker.schedule(expected, 0).await?;
+        let Some(task) = worker.pop_ready().await? else {
             return Err(NativeEngineError::Scheduler {
                 reason: format!("{operation} commit was not ready at the current logical time"),
             });

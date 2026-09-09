@@ -22,6 +22,7 @@ mod raster;
 mod resource_loader;
 mod runtime;
 mod scheduler;
+mod worker;
 
 pub use browsing_context::{NATIVE_CONTEXT_ID, NativeBrowsingContext};
 pub use config::{
@@ -65,3 +66,4 @@ pub use runtime::{
     NativeRuntime, NativeRuntimeState, NativeRuntimeTraceEvent, NativeRuntimeTraceKind,
 };
 pub use scheduler::{DeterministicClock, DeterministicScheduler, NativeTask, ScheduledTask};
+pub use worker::{NativeRuntimeWorker, NativeRuntimeWorkerState};

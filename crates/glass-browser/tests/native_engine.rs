@@ -182,6 +182,27 @@ async fn native_local_inline_modules_run_in_document_order() {
 }
 
 #[tokio::test]
+async fn native_local_scripts_honor_bounded_parser_timing_order() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://parser-timing",
+            "<script>globalThis.parserOrder = 'blocking-1';</script><script>globalThis.parserOrder += '-blocking-2';</script><script type='module'>globalThis.parserOrder += '-module-defer';</script>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://parser-timing");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.parserOrder")
+            .await
+            .unwrap(),
+        serde_json::json!("blocking-1-blocking-2-module-defer")
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_scripts_drain_microtasks_and_next_turn_timers() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -968,6 +989,70 @@ async fn native_content_process_loads_classic_external_scripts_in_document_order
     assert_eq!(
         engine.evaluate_async("globalThis.order").await.unwrap(),
         serde_json::json!("external-inline")
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_honors_bounded_async_and_defer_script_order() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in [
+            "/page",
+            "/blocking.js",
+            "/defer.js",
+            "/async.js",
+            "/blocking-two.js",
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 4096];
+            let read = stream.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..read]);
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let (content_type, body) = match expected_path {
+                "/page" => (
+                    "text/html",
+                    "<script src='/blocking.js'></script><script defer src='/defer.js'></script><script async src='/async.js'></script><script src='/blocking-two.js'></script>",
+                ),
+                "/blocking.js" => (
+                    "application/javascript",
+                    "globalThis.parserOrder = 'blocking-1';",
+                ),
+                "/defer.js" => (
+                    "application/javascript",
+                    "globalThis.parserOrder += '-defer';",
+                ),
+                "/async.js" => (
+                    "application/javascript",
+                    "globalThis.parserOrder += '-async';",
+                ),
+                _ => (
+                    "application/javascript",
+                    "globalThis.parserOrder += '-blocking-2';",
+                ),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.parserOrder")
+            .await
+            .unwrap(),
+        serde_json::json!("blocking-1-blocking-2-async-defer")
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

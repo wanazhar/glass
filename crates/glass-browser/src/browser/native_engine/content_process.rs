@@ -1,13 +1,17 @@
 use super::config::{
     NativeEngineLimits, Viewport, is_network_url, validate_url_text, without_fragment,
 };
-use super::dom::{NativeDocument, NativeDocumentWire, NativeNodeId, NativePageScriptSource};
+use super::dom::{
+    NativeDocument, NativeDocumentWire, NativeNodeId, NativePageScriptSource,
+    NativePageScriptTiming,
+};
 use super::error::{NativeEngineError, NativeWorkerFailureKind};
 use super::interaction::{MAX_NATIVE_EFFECTS, NativeEventKind, validate_native_edit_key};
 use super::javascript::{
     MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_SCRIPT_BYTES, NativeJavaScriptRuntime, NativePageScript,
     NativeScriptCommand, NativeScriptEvaluation, execute_page_scripts, host_event_script,
-    host_key_event_script, literal_dynamic_module_specifiers, static_module_specifiers,
+    host_key_event_script, literal_dynamic_module_specifiers, order_page_scripts,
+    static_module_specifiers,
 };
 use super::origin::NativeOrigin;
 use super::resource_loader::{
@@ -1528,22 +1532,26 @@ async fn load_page_script_sources(
         .enumerate()
     {
         match script {
-            NativePageScriptSource::Inline(source) => {
-                sources.push(NativePageScript::Classic { source });
+            NativePageScriptSource::Inline { source, timing } => {
+                sources.push((timing, NativePageScript::Classic { source }));
             }
-            NativePageScriptSource::ModuleInline(source) => {
+            NativePageScriptSource::ModuleInline { source, timing } => {
                 let name = format!("{document_url}#glass-inline-module-{index}");
                 let mut seen = BTreeSet::new();
                 seen.insert(name.clone());
                 let mut total_bytes = source.len();
-                sources.push(NativePageScript::Module {
-                    name: name.clone(),
-                    source: source.clone(),
-                });
+                sources.push((
+                    timing,
+                    NativePageScript::Module {
+                        name: name.clone(),
+                        source: source.clone(),
+                    },
+                ));
                 load_module_dependencies(
                     document_url,
                     &name,
                     &source,
+                    timing,
                     loader,
                     &mut sources,
                     &mut seen,
@@ -1551,17 +1559,20 @@ async fn load_page_script_sources(
                 )
                 .await?;
             }
-            NativePageScriptSource::External(href) => {
+            NativePageScriptSource::External { href, timing } => {
                 if let Some(resource) = loader
                     .load_script_async(document_url, &href, MAX_NATIVE_SCRIPT_BYTES)
                     .await?
                 {
-                    sources.push(NativePageScript::Classic {
-                        source: resource.body,
-                    });
+                    sources.push((
+                        timing,
+                        NativePageScript::Classic {
+                            source: resource.body,
+                        },
+                    ));
                 }
             }
-            NativePageScriptSource::ModuleExternal(href) => {
+            NativePageScriptSource::ModuleExternal { href, timing } => {
                 if let Some(resource) = loader
                     .load_script_async(document_url, &href, MAX_NATIVE_SCRIPT_BYTES)
                     .await?
@@ -1571,14 +1582,18 @@ async fn load_page_script_sources(
                     let mut seen = BTreeSet::new();
                     seen.insert(name.clone());
                     let mut total_bytes = source.len();
-                    sources.push(NativePageScript::Module {
-                        name: name.clone(),
-                        source: source.clone(),
-                    });
+                    sources.push((
+                        timing,
+                        NativePageScript::Module {
+                            name: name.clone(),
+                            source: source.clone(),
+                        },
+                    ));
                     load_module_dependencies(
                         document_url,
                         &name,
                         &source,
+                        timing,
                         loader,
                         &mut sources,
                         &mut seen,
@@ -1589,15 +1604,16 @@ async fn load_page_script_sources(
             }
         }
     }
-    Ok(sources)
+    Ok(order_page_scripts(sources))
 }
 
 async fn load_module_dependencies(
     owner_url: &str,
     module_url: &str,
     source: &str,
+    timing: NativePageScriptTiming,
     loader: &mut NativeResourceLoader,
-    scripts: &mut Vec<NativePageScript>,
+    scripts: &mut Vec<(NativePageScriptTiming, NativePageScript)>,
     seen: &mut BTreeSet<String>,
     total_bytes: &mut usize,
 ) -> Result<(), NativeEngineError> {
@@ -1635,10 +1651,13 @@ async fn load_module_dependencies(
                     *total_bytes,
                 ));
             }
-            scripts.push(NativePageScript::ModuleDependency {
-                name: name.clone(),
-                source: source.clone(),
-            });
+            scripts.push((
+                timing,
+                NativePageScript::ModuleDependency {
+                    name: name.clone(),
+                    source: source.clone(),
+                },
+            ));
             pending.push((name, source));
         }
     }

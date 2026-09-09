@@ -218,12 +218,31 @@ pub(crate) struct NativeScriptElementSnapshot {
     pub(crate) focused: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NativePageScriptTiming {
+    ParserBlocking,
+    Async,
+    Defer,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum NativePageScriptSource {
-    Inline(String),
-    External(String),
-    ModuleInline(String),
-    ModuleExternal(String),
+    Inline {
+        source: String,
+        timing: NativePageScriptTiming,
+    },
+    External {
+        href: String,
+        timing: NativePageScriptTiming,
+    },
+    ModuleInline {
+        source: String,
+        timing: NativePageScriptTiming,
+    },
+    ModuleExternal {
+        href: String,
+        timing: NativePageScriptTiming,
+    },
 }
 
 /// A parsed document owned by one engine generation.
@@ -705,25 +724,41 @@ impl NativeDocument {
                     }
                     Some(_) => return None,
                 };
-                Some((node, module))
+                let external = node
+                    .attribute("src")
+                    .is_some_and(|source| !source.is_empty());
+                let timing = if external && node.attribute("async").is_some() {
+                    NativePageScriptTiming::Async
+                } else if module || (external && node.attribute("defer").is_some()) {
+                    NativePageScriptTiming::Defer
+                } else {
+                    NativePageScriptTiming::ParserBlocking
+                };
+                Some((node, module, timing))
             })
             .take(max_scripts)
-            .filter_map(|(node, module)| {
+            .filter_map(|(node, module, timing)| {
                 if let Some(source) = node.attribute("src") {
                     return (!source.is_empty()).then(|| {
                         if module {
-                            NativePageScriptSource::ModuleExternal(source.to_owned())
+                            NativePageScriptSource::ModuleExternal {
+                                href: source.to_owned(),
+                                timing,
+                            }
                         } else {
-                            NativePageScriptSource::External(source.to_owned())
+                            NativePageScriptSource::External {
+                                href: source.to_owned(),
+                                timing,
+                            }
                         }
                     });
                 }
                 let mut source = String::new();
                 self.collect_raw_text(node.id(), &mut source);
                 (source.len() <= max_source_bytes && !source.is_empty()).then_some(if module {
-                    NativePageScriptSource::ModuleInline(source)
+                    NativePageScriptSource::ModuleInline { source, timing }
                 } else {
-                    NativePageScriptSource::Inline(source)
+                    NativePageScriptSource::Inline { source, timing }
                 })
             })
             .collect()

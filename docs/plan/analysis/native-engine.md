@@ -2037,6 +2037,14 @@ remain in force; unsupported methods and multipart/text/plain encodings fail
 explicitly. Validation, submitter metadata, target contexts, multipart bodies,
 and unload/navigation task ordering remain open.
 
+The completed bounded parser-time script-ordering follow-up is
+[native-engine-browser-036](../tasks/native-engine-browser-036.md). DOM script
+discovery now retains parser-blocking, external-async, and deferred/module
+timing metadata; both local and child owners execute those buckets through one
+deterministic ordering helper. Incremental parsing, wall-clock completion
+races, script lifecycle events, dynamic insertion, and full task-source timing
+remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

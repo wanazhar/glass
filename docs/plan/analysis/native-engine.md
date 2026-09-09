@@ -2250,6 +2250,14 @@ fallback and is ignored. Full JavaScript RegExp `v`-flag and Unicode-set
 parity, file constraints, picker/UI behavior, and full live `ValidityState` Web
 IDL identity remain open.
 
+The completed bounded FormData select-control follow-up is
+[native-engine-browser-062](../tasks/native-engine-browser-062.md). Local and
+child-owned `new FormData(form)` calls preserve textarea values, selected
+single-select values, and every initially selected enabled option of a
+multi-select in document order. Interactive multi-select actions, `optgroup`
+disabled inheritance, File/Blob parts, and full FormData Web IDL identity
+remain open.
+
 The next bounded workstream is full task ordering and navigation edge cases,
 followed by file/blob FormData support, remaining full pattern-regex/file
 constraint validation, target contexts, and the remaining browser-context

@@ -674,6 +674,13 @@ HTML invalid-pattern fallback and is ignored. Full JavaScript RegExp `v`-flag
 and Unicode-set parity, file constraints, picker/UI behavior, and full live
 `ValidityState` Web IDL identity remain open.
 
+The completed native-engine-browser-062 batch completes the text-only
+FormData control set for textarea, single-select, and initially selected
+multi-select controls. Local and child-owned constructors preserve the
+Rust-owned values and option order, while interactive multi-select actions,
+`optgroup` disabled inheritance, File/Blob parts, and full FormData Web IDL
+identity remain open.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature

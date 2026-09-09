@@ -28,6 +28,13 @@ const MAX_ATTRIBUTE_BYTES: usize = 1024;
 const MAX_LOCATOR_BYTES: usize = crate::browser_backend::MAX_TEXT_BYTES;
 const MAX_FORM_CONTROLS: usize = 128;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeFormEncoding {
+    UrlEncoded,
+    Multipart,
+    TextPlain,
+}
+
 const SUPPORTED_ROLES: [&str; 8] = [
     "button", "link", "textbox", "checkbox", "radio", "combobox", "option", "heading",
 ];
@@ -1928,17 +1935,25 @@ impl NativeDocument {
                 reason: "native form submission supports only GET and POST".into(),
             });
         };
-        if method == super::resource_loader::NativeNavigationMethod::Post {
+        let encoding = if method == super::resource_loader::NativeNavigationMethod::Post {
             let enctype = form
                 .attribute("enctype")
                 .unwrap_or("application/x-www-form-urlencoded");
             let media_type = enctype.split(';').next().unwrap_or_default().trim();
-            if !media_type.eq_ignore_ascii_case("application/x-www-form-urlencoded") {
+            if media_type.eq_ignore_ascii_case("application/x-www-form-urlencoded") {
+                NativeFormEncoding::UrlEncoded
+            } else if media_type.eq_ignore_ascii_case("multipart/form-data") {
+                NativeFormEncoding::Multipart
+            } else if media_type.eq_ignore_ascii_case("text/plain") {
+                NativeFormEncoding::TextPlain
+            } else {
                 return Err(NativeEngineError::UnsupportedUrl {
-                    reason: "native POST form submission supports only application/x-www-form-urlencoded".into(),
+                    reason: "native POST form submission supports only urlencoded, multipart, or text/plain encoding".into(),
                 });
             }
-        }
+        } else {
+            NativeFormEncoding::UrlEncoded
+        };
         let action = form.attribute("action").unwrap_or(document_url);
         validate_url_text("form action", action)?;
         let base = Url::parse(without_fragment(document_url)).map_err(|_| {
@@ -1961,20 +1976,9 @@ impl NativeDocument {
         }
         let mut pairs = Vec::new();
         self.collect_form_data(form_id, &mut pairs, submitter)?;
-        let mut query = url::form_urlencoded::Serializer::new(String::new());
-        for (name, value) in pairs {
-            query.append_pair(&name, &value);
-        }
-        let query = query.finish();
-        if query.len() > MAX_LOCATOR_BYTES {
-            return Err(NativeEngineError::limit(
-                "form submission data",
-                MAX_LOCATOR_BYTES,
-                query.len(),
-            ));
-        }
         match method {
             super::resource_loader::NativeNavigationMethod::Get => {
+                let query = encode_urlencoded_form_data(&pairs)?;
                 if query.is_empty() {
                     target.set_query(None);
                 } else {
@@ -1987,7 +1991,8 @@ impl NativeDocument {
             super::resource_loader::NativeNavigationMethod::Post => {
                 let target = target.to_string();
                 validate_url_text("form submission URL", &target)?;
-                NativeNavigationRequest::post(target, query)
+                let (body, content_type) = encode_form_data(&pairs, encoding)?;
+                NativeNavigationRequest::post_with_content_type(target, body, content_type)
             }
         }
     }
@@ -2671,6 +2676,97 @@ impl NativeDocument {
                 }
             }
             NativeNodeKind::Text(_) => {}
+        }
+    }
+}
+
+fn encode_urlencoded_form_data(pairs: &[(String, String)]) -> Result<String, NativeEngineError> {
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    for (name, value) in pairs {
+        query.append_pair(name, value);
+    }
+    let query = query.finish();
+    if query.len() > MAX_LOCATOR_BYTES {
+        return Err(NativeEngineError::limit(
+            "form submission data",
+            MAX_LOCATOR_BYTES,
+            query.len(),
+        ));
+    }
+    Ok(query)
+}
+
+fn encode_form_data(
+    pairs: &[(String, String)],
+    encoding: NativeFormEncoding,
+) -> Result<(String, String), NativeEngineError> {
+    match encoding {
+        NativeFormEncoding::UrlEncoded => Ok((
+            encode_urlencoded_form_data(pairs)?,
+            "application/x-www-form-urlencoded".into(),
+        )),
+        NativeFormEncoding::TextPlain => {
+            let mut body = String::new();
+            for (name, value) in pairs {
+                body.push_str(name);
+                body.push('=');
+                body.push_str(value);
+                body.push_str("\r\n");
+            }
+            if body.len() > MAX_LOCATOR_BYTES {
+                return Err(NativeEngineError::limit(
+                    "form submission data",
+                    MAX_LOCATOR_BYTES,
+                    body.len(),
+                ));
+            }
+            Ok((body, "text/plain".into()))
+        }
+        NativeFormEncoding::Multipart => {
+            if pairs.iter().any(|(name, _)| name.contains(['\r', '\n'])) {
+                return Err(NativeEngineError::UnsupportedUrl {
+                    reason: "multipart form field names must not contain line breaks".into(),
+                });
+            }
+            let boundary = (0..16).find_map(|suffix| {
+                let candidate = if suffix == 0 {
+                    "----glass-native-form-boundary".to_owned()
+                } else {
+                    format!("----glass-native-form-boundary-{suffix}")
+                };
+                pairs
+                    .iter()
+                    .all(|(name, value)| !name.contains(&candidate) && !value.contains(&candidate))
+                    .then_some(candidate)
+            });
+            let Some(boundary) = boundary else {
+                return Err(NativeEngineError::limit(
+                    "multipart form boundary attempts",
+                    16,
+                    17,
+                ));
+            };
+            let mut body = String::new();
+            for (name, value) in pairs {
+                body.push_str("--");
+                body.push_str(&boundary);
+                body.push_str("\r\nContent-Disposition: form-data; name=\"");
+                body.push_str(&name.replace('\\', "\\\\").replace('"', "\\\""));
+                body.push_str("\"\r\n\r\n");
+                body.push_str(value);
+                body.push_str("\r\n");
+            }
+            body.push_str("--");
+            body.push_str(&boundary);
+            body.push_str("--\r\n");
+            if body.len() > MAX_LOCATOR_BYTES {
+                return Err(NativeEngineError::limit(
+                    "form submission data",
+                    MAX_LOCATOR_BYTES,
+                    body.len(),
+                ));
+            }
+            Ok((body, format!("multipart/form-data; boundary={boundary}")))
         }
     }
 }

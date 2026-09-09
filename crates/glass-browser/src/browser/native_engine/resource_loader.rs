@@ -58,6 +58,7 @@ pub(crate) struct NativeNavigationRequest {
     pub(crate) method: NativeNavigationMethod,
     pub(crate) url: String,
     pub(crate) body: Option<String>,
+    pub(crate) body_content_type: Option<String>,
 }
 
 impl NativeNavigationRequest {
@@ -66,10 +67,15 @@ impl NativeNavigationRequest {
             method: NativeNavigationMethod::Get,
             url: url.into(),
             body: None,
+            body_content_type: None,
         }
     }
 
-    pub(crate) fn post(url: impl Into<String>, body: String) -> Result<Self, NativeEngineError> {
+    pub(crate) fn post_with_content_type(
+        url: impl Into<String>,
+        body: String,
+        content_type: String,
+    ) -> Result<Self, NativeEngineError> {
         if body.len() > MAX_NATIVE_FORM_BODY_BYTES {
             return Err(NativeEngineError::limit(
                 "form submission body",
@@ -77,10 +83,17 @@ impl NativeNavigationRequest {
                 body.len(),
             ));
         }
+        if content_type.is_empty() || content_type.len() > MAX_NATIVE_FORM_BODY_BYTES {
+            return Err(NativeEngineError::invalid(
+                "form submission content type",
+                "must be a non-empty bounded value",
+            ));
+        }
         Ok(Self {
             method: NativeNavigationMethod::Post,
             url: url.into(),
             body: Some(body),
+            body_content_type: Some(content_type),
         })
     }
 }
@@ -306,6 +319,12 @@ impl NativeResourceLoader {
                         "must be absent",
                     ));
                 }
+                if navigation.body_content_type.is_some() {
+                    return Err(NativeEngineError::invalid(
+                        "GET navigation content type",
+                        "must be absent",
+                    ));
+                }
                 None
             }
             NativeNavigationMethod::Post => {
@@ -324,6 +343,16 @@ impl NativeResourceLoader {
                 }
                 Some(body.to_owned())
             }
+        };
+        let request_content_type = match request_method {
+            NativeNavigationMethod::Get => None,
+            NativeNavigationMethod::Post => Some(
+                navigation
+                    .body_content_type
+                    .as_deref()
+                    .unwrap_or("application/x-www-form-urlencoded")
+                    .to_owned(),
+            ),
         };
         let url = navigation.url.as_str();
         validate_url_text("navigation URL", url)?;
@@ -350,6 +379,7 @@ impl NativeResourceLoader {
         let mut request_referrer = referrer;
         let mut current_method = request_method;
         let mut current_body = request_body;
+        let mut current_content_type = request_content_type;
         let mut redirects = 0;
         let mut pending_cookies = Vec::new();
         let response = loop {
@@ -361,7 +391,9 @@ impl NativeResourceLoader {
                     .post(request_url)
                     .header(
                         reqwest::header::CONTENT_TYPE,
-                        "application/x-www-form-urlencoded",
+                        current_content_type
+                            .as_deref()
+                            .unwrap_or("application/x-www-form-urlencoded"),
                     )
                     .body(current_body.clone().unwrap_or_default()),
             }
@@ -425,6 +457,7 @@ impl NativeResourceLoader {
             {
                 current_method = NativeNavigationMethod::Get;
                 current_body = None;
+                current_content_type = None;
             }
             current_url = next_url;
             redirects += 1;

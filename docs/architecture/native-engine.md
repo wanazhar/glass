@@ -542,6 +542,14 @@ preserve document order. External submit buttons use the typed
 validation, target contexts, and the remaining browser-context primitives
 remain open.
 
+The completed native-engine-browser-045 batch adds bounded POST encodings.
+`multipart/form-data` text fields use deterministic collision-checked
+boundaries and `text/plain` uses CRLF-delimited `name=value` records; the
+selected content type crosses the parent/content-process request boundary and
+survives redirects that retain POST. File parts, FormData/Web IDL identity,
+submitter encoding overrides, full constraint validation, target contexts, and
+the remaining browser-context primitives remain open.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature

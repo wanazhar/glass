@@ -202,6 +202,7 @@ impl NativeContentProcess {
                     NativeNavigationMethod::Post => "POST",
                 },
                 "body": navigation.body,
+                "content_type": navigation.body_content_type,
                 "referrer": referrer,
                 "max_document_bytes": limits.max_document_bytes,
                 "max_nodes": limits.max_nodes,
@@ -1620,6 +1621,18 @@ async fn load_content_resource(
             })
         })
         .transpose()?;
+    let content_type = request
+        .get("content_type")
+        .and_then(|value| (!value.is_null()).then_some(value))
+        .map(|value| {
+            value.as_str().ok_or_else(|| {
+                NativeEngineError::invalid(
+                    "content-process navigation content type",
+                    "must be text or null",
+                )
+            })
+        })
+        .transpose()?;
     let navigation = match method {
         NativeNavigationMethod::Get => {
             if body.is_some() {
@@ -1628,14 +1641,23 @@ async fn load_content_resource(
                     "must be null",
                 ));
             }
+            if content_type.is_some() {
+                return Err(NativeEngineError::invalid(
+                    "content-process GET content type",
+                    "must be null",
+                ));
+            }
             NativeNavigationRequest::get(url)
         }
-        NativeNavigationMethod::Post => NativeNavigationRequest::post(
+        NativeNavigationMethod::Post => NativeNavigationRequest::post_with_content_type(
             url,
             body.ok_or_else(|| {
                 NativeEngineError::invalid("content-process POST body", "must be present")
             })?
             .to_owned(),
+            content_type
+                .unwrap_or_else(|| "application/x-www-form-urlencoded".into())
+                .to_owned(),
         )?,
     };
     let max_document_bytes = request

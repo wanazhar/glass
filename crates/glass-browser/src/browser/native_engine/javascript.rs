@@ -368,6 +368,11 @@ impl NativeJavaScriptRuntime {
                     });
                 }
             };
+            for _ in 0..MAX_NATIVE_MODULE_IMPORTS {
+                if !ctx.execute_pending_job() {
+                    break;
+                }
+            }
             let commands = read_script_commands(ctx.clone())?;
             let json = ctx
                 .json_stringify(value)
@@ -807,6 +812,35 @@ fn document_bootstrap(
     if (target.length >= {max_commands}) throw new RangeError("native host command limit exceeded");
     target.push(command);
   }};
+  const timers = globalThis.__glassTimers instanceof Map
+    ? globalThis.__glassTimers
+    : new Map();
+  let nextTimerId = Number.isSafeInteger(globalThis.__glassNextTimerId)
+    ? globalThis.__glassNextTimerId
+    : 1;
+  const setTimeoutNative = (callback, _delay, ...args) => {{
+    if (typeof callback !== "function") throw new TypeError("timer callback must be callable");
+    if (timers.size >= {max_timers}) throw new RangeError("native timer limit exceeded");
+    const id = nextTimerId;
+    nextTimerId += 1;
+    globalThis.__glassNextTimerId = nextTimerId;
+    timers.set(id, {{ callback, args }});
+    return id;
+  }};
+  const clearTimeoutNative = (id) => {{ timers.delete(Number(id)); }};
+  globalThis.__glassTimers = timers;
+  globalThis.__glassNextTimerId = nextTimerId;
+  globalThis.setTimeout = setTimeoutNative;
+  globalThis.clearTimeout = clearTimeoutNative;
+  globalThis.queueMicrotask = (callback) => {{
+    if (typeof callback !== "function") throw new TypeError("microtask callback must be callable");
+    Promise.resolve().then(callback);
+  }};
+  globalThis.__glassRunTimers = () => {{
+    const pending = Array.from(timers.values());
+    timers.clear();
+    for (const timer of pending) timer.callback(...timer.args);
+  }};
   const listeners = globalThis.__glassHostListeners instanceof Map
     ? globalThis.__glassHostListeners
     : new Map();
@@ -1134,10 +1168,12 @@ fn document_bootstrap(
   globalThis.console = globalThis.console || {{
     log() {{}}, info() {{}}, warn() {{}}, error() {{}}
   }};
+  globalThis.__glassRunTimers();
 }})();"###,
         serialized = serialized,
         max_commands = super::interaction::MAX_NATIVE_EFFECTS,
         max_listeners = super::interaction::MAX_NATIVE_EFFECTS,
+        max_timers = super::interaction::MAX_NATIVE_EFFECTS,
         width = viewport.width,
         height = viewport.height,
     ))

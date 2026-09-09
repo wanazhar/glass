@@ -2005,6 +2005,13 @@ pending-job drain, preserving module namespace/export resolution and promise
 callback effects. Computed specifiers, bare packages/import maps, parser
 timing, non-HTTP(S) modules, and full Web IDL identity remain open.
 
+The completed bounded task-turn follow-up is
+[native-engine-browser-032](../tasks/native-engine-browser-032.md). The local
+and child-owned realms expose bounded `queueMicrotask` and next-host-turn
+`setTimeout` semantics, with pending QuickJS jobs drained after evaluation and
+event callback turns. Wall-clock scheduling, intervals, animation/idle
+callbacks, parser timing, and full browser task-source ordering remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

@@ -336,9 +336,17 @@ effects. Computed specifiers, bare packages/import maps, parser timing,
 POST/submission lifecycle/default-action ordering, target contexts, timers,
 Fetch/XHR, and the remaining resource classes remain open.
 
-The next BE-02/BE-03/BE-04 gate is parser-blocking/defer/async timing and
-bounded task/microtask ordering, alongside the remaining form and browser-
-context primitives.
+The completed bounded task-turn batch is
+[native-engine-browser-032](tasks/native-engine-browser-032.md). Native page
+realms now drain `queueMicrotask` jobs per evaluation/event turn and retain
+bounded `setTimeout` callbacks for the next deterministic host turn in both
+local and child-owned realms. Wall-clock delays, `setInterval`, animation/idle
+callbacks, parser timing, POST/submission lifecycle/default-action ordering,
+target contexts, Fetch/XHR, and the remaining resource classes remain open.
+
+The next BE-02/BE-03/BE-04 gate is parser-blocking/defer/async ordering and
+submission lifecycle/default actions, alongside the remaining browser-context
+primitives.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

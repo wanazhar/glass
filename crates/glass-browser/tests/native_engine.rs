@@ -153,6 +153,25 @@ async fn native_local_inline_modules_run_in_document_order() {
 }
 
 #[tokio::test]
+async fn native_local_scripts_drain_microtasks_and_next_turn_timers() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://script-tasks",
+            "<script>globalThis.taskOrder = 'script'; queueMicrotask(() => { globalThis.taskOrder += '-micro'; }); setTimeout(() => { globalThis.taskOrder += '-timer'; }, 0);</script>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://script-tasks");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine.evaluate_async("globalThis.taskOrder").await.unwrap(),
+        serde_json::json!("script-micro-timer")
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_script_applies_bounded_dom_commands_once() {
     let config = NativeEngineConfig::default()
         .with_fixture(

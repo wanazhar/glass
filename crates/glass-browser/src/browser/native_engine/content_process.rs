@@ -956,7 +956,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         resource_load_nodes,
                     )) => {
                         let mut script_runtime = None;
-                        let response = match execute_page_scripts(
+                        let prepared = match execute_page_scripts(
                             &mut parsed,
                             &mut script_runtime,
                             &script_sources,
@@ -965,7 +965,45 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             loaded_viewport,
                             &resource_load_nodes,
                         ) {
-                            Ok(()) => {
+                            Ok(pending_fetches) if pending_fetches.is_empty() => Ok(parsed),
+                            Ok(pending_fetches) => {
+                                match (script_runtime.as_ref(), resource_loader.as_mut()) {
+                                    (Some(runtime), Some(loader)) => {
+                                        match resolve_script_fetches(
+                                            &parsed,
+                                            runtime,
+                                            loader,
+                                            &resource.url,
+                                            &resource.origin,
+                                            loaded_viewport,
+                                            NativeScriptEvaluation {
+                                                value: Value::Null,
+                                                commands: pending_fetches,
+                                            },
+                                        )
+                                        .await
+                                        {
+                                            Ok((next, mutation)) if mutation.navigation.is_none() => {
+                                                Ok(next)
+                                            }
+                                            Ok((_next, _mutation)) => Err(
+                                                NativeEngineError::TargetNotActionable {
+                                                    reason: "page-load fetch callback navigation is not available".into(),
+                                                },
+                                            ),
+                                            Err(error) => Err(error),
+                                        }
+                                    }
+                                    _ => Err(NativeEngineError::Worker {
+                                        operation: "page-load fetch scheduling".into(),
+                                        reason: "content process fetch state is unavailable".into(),
+                                    }),
+                                }
+                            }
+                            Err(error) => Err(error),
+                        };
+                        match prepared {
+                            Ok(parsed) => {
                                 let document_wire = parsed.to_content_wire();
                                 document = Some(parsed);
                                 document_url = Some(resource.url.clone());
@@ -981,8 +1019,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 })
                             }
                             Err(error) => content_error_response(id, error),
-                        };
-                        response
+                        }
                     }
                     Err(error) => content_error_response(id, error),
                 }

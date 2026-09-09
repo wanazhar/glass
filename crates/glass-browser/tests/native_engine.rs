@@ -101,6 +101,71 @@ async fn native_runtime_session_uses_explicit_local_constructor() {
 }
 
 #[tokio::test]
+async fn native_local_script_applies_bounded_dom_commands_once() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://script-commands",
+            "<input id='name' type='text'><input id='toggle' type='checkbox'><select id='choice'><option id='one' value='one'>One</option><option id='two' value='two'>Two</option></select>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://script-commands");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    let initial_revision = engine.revision();
+
+    let value = engine
+        .evaluate_async(
+            "(() => { const input = document.getElementById('name'); input.value = 'local-value'; input.setAttribute('data-source', 'script'); return input.value; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(value, serde_json::json!("local-value"));
+    assert_eq!(engine.revision(), initial_revision + 1);
+    assert_eq!(
+        engine
+            .evaluate_async("document.getElementById('name').getAttribute('data-source')")
+            .await
+            .unwrap(),
+        serde_json::json!("script")
+    );
+    assert_eq!(engine.revision(), initial_revision + 1);
+
+    let checked = engine
+        .evaluate_async(
+            "(() => { const toggle = document.getElementById('toggle'); toggle.click(); return toggle.checked; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(checked, serde_json::json!(true));
+    assert_eq!(engine.revision(), initial_revision + 2);
+
+    let state = engine
+        .evaluate_async(
+            "(() => { const toggle = document.getElementById('toggle'); const input = document.getElementById('name'); toggle.checked = false; input.removeAttribute('data-source'); return { checked: toggle.checked, source: input.getAttribute('data-source') }; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        state,
+        serde_json::json!({
+            "checked": false,
+            "source": null,
+        })
+    );
+    assert_eq!(engine.revision(), initial_revision + 3);
+
+    assert_eq!(
+        engine
+            .evaluate_async("(() => { const option = document.getElementById('two'); option.selected = true; return option.selected; })()")
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(engine.revision(), initial_revision + 4);
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_runtime_session_loads_bounded_external_http_html_without_cdp() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -769,6 +834,35 @@ async fn native_content_process_owns_external_form_mutations_and_effects() {
     );
     let encoded_effects = format!("{:?}", effects.effects);
     assert!(!encoded_effects.contains("secret-value"));
+
+    let scripted = engine
+        .evaluate_async(
+            "const toggle = document.getElementById('toggle'); const input = document.getElementById('name'); toggle.click(); input.value = 'child-value'; input.setAttribute('data-source', 'script'); ({ checked: toggle.checked, value: input.value, source: input.getAttribute('data-source') })",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        scripted,
+        serde_json::json!({
+            "checked": false,
+            "value": "child-value",
+            "source": "script",
+        })
+    );
+    assert_eq!(engine.revision(), typed.revision + 1);
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({ checked: document.getElementById('toggle').checked, value: document.getElementById('name').value, source: document.getElementById('name').getAttribute('data-source') })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "checked": false,
+            "value": "child-value",
+            "source": "script",
+        })
+    );
 
     engine.close_async().await.unwrap();
     server.await.unwrap();

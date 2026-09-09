@@ -216,6 +216,20 @@ The next BE-02/BE-04 gate is transactional JavaScript-driven DOM mutation and
 event integration, followed by the broader Fetch request/response model
 through the existing child policy boundary.
 
+The completed JavaScript DOM-mutation batch is
+[native-engine-browser-018](tasks/native-engine-browser-018.md). JavaScript
+can now emit bounded `click()`, form-state, and attribute commands. Glass
+validates and applies each script batch to a cloned native document, commits
+one revision, and refreshes the host view; the child process performs the same
+ownership and transfer sequence for external pages. Live object identity,
+event listeners/default actions, navigation from script, timers, modules,
+Fetch/XHR, page-script loading, remaining resource classes, and browser parity
+remain open.
+
+The next BE-03/BE-04 gate is a real event and Web IDL owner: listener
+registration, dispatch/default-action ordering, focus/blur, mutation
+invalidation, and script-visible effects, followed by Fetch/XHR integration.
+
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,
 fixture/data-URL-only, one-context engine kernel and explicit semantic backend.

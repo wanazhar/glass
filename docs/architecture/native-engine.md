@@ -305,6 +305,15 @@ identity or mutation path yet. DOM mutation, event dispatch, timers, modules,
 page-script loading, Fetch/XHR, service workers, and the remaining resource
 classes stay open.
 
+The completed native-engine-browser-018 batch connects the projection to a
+bounded owner-command bridge. `click()`, form-state setters, and attribute
+set/remove emit typed commands; Glass validates them against a cloned native
+document, commits the batch as one revision, and reuses the child process for
+external pages. The next host refresh observes the committed state. Live Web
+IDL identity, listener/event dispatch, default actions, script navigation,
+timers, modules, page-script loading, Fetch/XHR, service workers, and remaining
+resource classes stay open.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature
@@ -3360,7 +3369,7 @@ The native profile is `experimental` and declares:
 | evidence | available | bounded URL, title, visible text, revision; native semantic projection is Rust-only |
 | action | available | semantic click/type, bounded vertical root scrolling, plus native point targets for supported local controls; no nested scrolling or default browser behavior |
 | effects | available | current revision and changed signal; bounded event metadata is Rust-only |
-| script | available | bounded QuickJS ECMAScript with a refreshed read-only `window`/`document` snapshot and JSON results; no live Web IDL identity, DOM mutation, timers, modules, or page-script loading |
+| script | available | bounded QuickJS ECMAScript with a refreshed `window`/`document` snapshot, typed click/form/attribute mutation commands, and JSON results; no live Web IDL identity, listeners/default actions, timers, modules, or page-script loading |
 | capture | available | bounded PNG of the current logical RGBA surface; JPEG/PDF and screenshot-containing evidence are unavailable |
 | storage | partial | process-owned session cookies and bounded document cache; no local/session/IndexedDB storage or persistence |
 | prompts | omitted | no dialogs |
@@ -3429,6 +3438,10 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
   rejection of unsupported multi-select behavior;
 - hidden-subtree text exclusion, semantic hidden metadata, and pre-mutation
   rejection of hidden controls.
+- local and child-owned QuickJS host projection, persistent globals, opaque and
+  tuple origins, bounded top-level `await`, typed JavaScript DOM commands,
+  one-revision command batches, form/option state, attributes, effects, and
+  fresh host re-projection.
 - raw-text/RCDATA containment for script, style, title, and textarea content,
   including unterminated-element behavior.
 - bounded stylesheet/inline selector matching and display/visibility cascade

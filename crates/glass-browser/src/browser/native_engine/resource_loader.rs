@@ -652,10 +652,15 @@ impl NativeResourceLoader {
                     .as_deref()
                     .is_some_and(|content_type| !is_simple_fetch_content_type(content_type))
             {
-                return Err(NativeEngineError::Network {
-                    operation: "fetch preflight".into(),
-                    reason: "cross-origin non-simple POST fetch requires a preflight".into(),
-                });
+                self.verify_cors_preflight(
+                    &client,
+                    &document_url,
+                    &request_url,
+                    current_method,
+                    current_content_type.as_deref(),
+                    credentials,
+                )
+                .await?;
             }
             let mut request = match current_method {
                 NativeNavigationMethod::Get => client.get(request_url),
@@ -786,6 +791,52 @@ impl NativeResourceLoader {
             content_type,
             body,
         })
+    }
+
+    async fn verify_cors_preflight(
+        &self,
+        client: &reqwest::Client,
+        document_url: &Url,
+        target_url: &Url,
+        method: NativeNavigationMethod,
+        content_type: Option<&str>,
+        credentials: bool,
+    ) -> Result<(), NativeEngineError> {
+        let Some(origin) = cors_origin_header(document_url, target_url, NativeCorsMode::Cors)
+        else {
+            return Ok(());
+        };
+        let method = match method {
+            NativeNavigationMethod::Get => "GET",
+            NativeNavigationMethod::Post => "POST",
+        };
+        let mut request = client
+            .request(reqwest::Method::OPTIONS, target_url.clone())
+            .header("Origin", origin)
+            .header("Access-Control-Request-Method", method);
+        if content_type.is_some() {
+            request = request.header("Access-Control-Request-Headers", "content-type");
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|error| network_error("fetch preflight request", error))?;
+        if !response.status().is_success()
+            || !cors_preflight_response_allowed(
+                response.headers(),
+                document_url,
+                target_url,
+                method,
+                content_type.is_some().then_some("content-type"),
+                credentials,
+            )
+        {
+            return Err(NativeEngineError::Network {
+                operation: "fetch preflight".into(),
+                reason: "cross-origin preflight did not authorize the request".into(),
+            });
+        }
+        Ok(())
     }
 
     pub(crate) async fn load_stylesheet_async(
@@ -1207,6 +1258,51 @@ fn is_simple_fetch_content_type(value: &str) -> bool {
             .as_str(),
         "application/x-www-form-urlencoded" | "multipart/form-data" | "text/plain"
     )
+}
+
+fn cors_preflight_response_allowed(
+    headers: &HeaderMap,
+    document_url: &Url,
+    resource_url: &Url,
+    method: &str,
+    requested_header: Option<&str>,
+    credentials: bool,
+) -> bool {
+    if !cors_response_allowed(headers, document_url, resource_url, credentials) {
+        return false;
+    }
+    let method_allowed = header_contains_token(
+        headers,
+        "access-control-allow-methods",
+        method,
+        !credentials,
+    );
+    let header_allowed = requested_header.is_none_or(|header| {
+        header_contains_token(
+            headers,
+            "access-control-allow-headers",
+            header,
+            !credentials,
+        )
+    });
+    method_allowed && header_allowed
+}
+
+fn header_contains_token(
+    headers: &HeaderMap,
+    name: &str,
+    expected: &str,
+    allow_wildcard: bool,
+) -> bool {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value.split(',').any(|token| {
+                let token = token.trim();
+                token.eq_ignore_ascii_case(expected) || (allow_wildcard && token == "*")
+            })
+        })
 }
 
 pub(crate) fn cors_response_allowed(
@@ -1859,11 +1955,12 @@ mod tests {
     use super::{
         MAX_NATIVE_CACHE_ENTRIES, NativeCorsMode, NativeNetworkState, NativeResource,
         NativeSubresourceKind, cacheable_response, content_security_policy, cors_origin_header,
-        cors_response_allowed, decode_html_body, mixed_content_allowed, referrer_for_navigation,
-        resolve_subresource_url,
+        cors_preflight_response_allowed, cors_response_allowed, decode_html_body,
+        mixed_content_allowed, referrer_for_navigation, resolve_subresource_url,
     };
     use reqwest::header::{
-        ACCESS_CONTROL_ALLOW_CREDENTIALS, ACCESS_CONTROL_ALLOW_ORIGIN, CACHE_CONTROL,
+        ACCESS_CONTROL_ALLOW_CREDENTIALS, ACCESS_CONTROL_ALLOW_HEADERS,
+        ACCESS_CONTROL_ALLOW_METHODS, ACCESS_CONTROL_ALLOW_ORIGIN, CACHE_CONTROL,
         CONTENT_SECURITY_POLICY, HeaderMap, HeaderValue, PRAGMA, VARY,
     };
     use url::Url;
@@ -2044,6 +2141,58 @@ mod tests {
             &document,
             &document,
             true
+        ));
+    }
+
+    #[test]
+    fn cors_preflight_requires_allowed_method_and_requested_header() {
+        let document = Url::parse("https://app.test/index.html").unwrap();
+        let resource = Url::parse("https://api.test/data.json").unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            ACCESS_CONTROL_ALLOW_ORIGIN,
+            HeaderValue::from_static("https://app.test"),
+        );
+        headers.insert(
+            ACCESS_CONTROL_ALLOW_METHODS,
+            HeaderValue::from_static("POST"),
+        );
+        headers.insert(
+            ACCESS_CONTROL_ALLOW_HEADERS,
+            HeaderValue::from_static("content-type"),
+        );
+        assert!(cors_preflight_response_allowed(
+            &headers,
+            &document,
+            &resource,
+            "POST",
+            Some("content-type"),
+            false,
+        ));
+        headers.remove(ACCESS_CONTROL_ALLOW_HEADERS);
+        assert!(!cors_preflight_response_allowed(
+            &headers,
+            &document,
+            &resource,
+            "POST",
+            Some("content-type"),
+            false,
+        ));
+        headers.insert(
+            ACCESS_CONTROL_ALLOW_HEADERS,
+            HeaderValue::from_static("content-type"),
+        );
+        headers.insert(
+            ACCESS_CONTROL_ALLOW_METHODS,
+            HeaderValue::from_static("GET"),
+        );
+        assert!(!cors_preflight_response_allowed(
+            &headers,
+            &document,
+            &resource,
+            "POST",
+            Some("content-type"),
+            false,
         ));
     }
 }

@@ -460,6 +460,11 @@ impl NativeJavaScriptRuntime {
                     operation: "evaluate JavaScript module".into(),
                     reason: "JavaScript module evaluation failed".into(),
                 })?;
+            for _ in 0..MAX_NATIVE_MODULE_IMPORTS {
+                if !ctx.execute_pending_job() {
+                    break;
+                }
+            }
             let commands = read_script_commands(ctx.clone())?;
             Ok(NativeScriptEvaluation {
                 value: serde_json::Value::Null,
@@ -614,6 +619,49 @@ pub(crate) fn static_module_specifiers(source: &str) -> Result<Vec<String>, Nati
         }
     }
     Ok(specifiers)
+}
+
+/// Extract literal dynamic-import specifiers. Computed expressions remain
+/// unresolved and therefore fail through the bounded module loader instead of
+/// receiving an implicit network capability.
+pub(crate) fn literal_dynamic_module_specifiers(source: &str) -> Vec<String> {
+    let bytes = source.as_bytes();
+    let mut index = 0;
+    let mut specifiers = Vec::new();
+    while index < bytes.len() {
+        index = skip_javascript_space_and_comments(bytes, index);
+        if index >= bytes.len() {
+            break;
+        }
+        if matches!(bytes[index], b'\'' | b'"' | b'`') {
+            index = skip_javascript_string(bytes, index);
+            continue;
+        }
+        if !is_javascript_identifier_start(bytes[index]) {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        index += 1;
+        while index < bytes.len() && is_javascript_identifier_continue(bytes[index]) {
+            index += 1;
+        }
+        if &bytes[start..index] != b"import" {
+            continue;
+        }
+        let argument = skip_javascript_space_and_comments(bytes, index);
+        if bytes.get(argument) != Some(&b'(') {
+            continue;
+        }
+        let specifier_start = skip_javascript_space_and_comments(bytes, argument + 1);
+        if let Some((specifier, _)) = read_javascript_string(bytes, specifier_start) {
+            specifiers.push(specifier);
+            if specifiers.len() >= MAX_NATIVE_MODULE_IMPORTS {
+                break;
+            }
+        }
+    }
+    specifiers
 }
 
 fn module_specifier_after_keyword(

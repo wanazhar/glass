@@ -816,6 +816,53 @@ async fn native_content_process_prefetches_static_module_graphs() {
 }
 
 #[tokio::test]
+async fn native_content_process_resolves_literal_dynamic_imports() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/app.js", "/dep.js"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 4096];
+            let read = stream.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..read]);
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let (content_type, body) = match expected_path {
+                "/page" => ("text/html", "<script type='module' src='/app.js'></script>"),
+                "/app.js" => (
+                    "application/javascript",
+                    "globalThis.dynamicValue = 'pending'; import('./dep.js').then(module => { globalThis.dynamicValue = module.value; });",
+                ),
+                _ => (
+                    "application/javascript",
+                    "export const value = 'dynamic-dep';",
+                ),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.dynamicValue")
+            .await
+            .unwrap(),
+        serde_json::json!("dynamic-dep")
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_script_form_submit_navigates_with_get_controls() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

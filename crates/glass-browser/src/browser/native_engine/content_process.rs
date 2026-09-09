@@ -1097,14 +1097,40 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         json!({"kind":"evaluated","id":id,"value":value})
                     }
                     Ok(NativeScriptEvaluation { value, commands }) => {
-                        match mutate_script_document(
-                            current,
-                            runtime,
-                            document_url,
-                            document_origin,
-                            viewport,
-                            &commands,
-                        ) {
+                        let has_fetch = !fetch_commands(&commands).is_empty();
+                        let result = if has_fetch {
+                            match resource_loader.as_mut() {
+                                Some(loader) => {
+                                    resolve_script_fetches(
+                                        current,
+                                        runtime,
+                                        loader,
+                                        document_url,
+                                        document_origin,
+                                        viewport,
+                                        NativeScriptEvaluation {
+                                            value: value.clone(),
+                                            commands,
+                                        },
+                                    )
+                                    .await
+                                }
+                                None => Err(NativeEngineError::Worker {
+                                    operation: "content process script fetch".into(),
+                                    reason: "content process has no resource loader".into(),
+                                }),
+                            }
+                        } else {
+                            mutate_script_document(
+                                current,
+                                runtime,
+                                document_url,
+                                document_origin,
+                                viewport,
+                                &commands,
+                            )
+                        };
+                        match result {
                             Ok((next, mutation)) => {
                                 document = Some(next);
                                 json!({
@@ -2614,6 +2640,100 @@ fn mutate_script_document(
             .transpose()?,
         allowed: true,
     };
+    Ok((next, mutation))
+}
+
+fn fetch_commands(commands: &[NativeScriptCommand]) -> Vec<(u32, String, bool)> {
+    commands
+        .iter()
+        .filter_map(|command| match command {
+            NativeScriptCommand::Fetch {
+                request_id,
+                href,
+                credentials,
+            } => Some((*request_id, href.clone(), *credentials)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn fetch_response_payload(result: Result<NativeFetchResponse, NativeEngineError>) -> Value {
+    match result {
+        Ok(response) => json!({
+            "url": response.url,
+            "status": response.status,
+            "contentType": response.content_type,
+            "body": String::from_utf8_lossy(&response.body),
+        }),
+        Err(error) => json!({"error": error.to_string()}),
+    }
+}
+
+async fn resolve_script_fetches(
+    current: &NativeDocument,
+    runtime: &NativeJavaScriptRuntime,
+    loader: &mut NativeResourceLoader,
+    document_url: &str,
+    document_origin: &NativeOrigin,
+    viewport: Viewport,
+    evaluation: NativeScriptEvaluation,
+) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
+    let (mut next, mut mutation) = mutate_script_document(
+        current,
+        runtime,
+        document_url,
+        document_origin,
+        viewport,
+        &evaluation.commands,
+    )?;
+    let mut pending = fetch_commands(&evaluation.commands);
+    let mut resolved_count = 0usize;
+    while let Some((request_id, href, credentials)) = pending.pop() {
+        resolved_count = resolved_count.saturating_add(1);
+        if resolved_count > MAX_NATIVE_EFFECTS {
+            return Err(NativeEngineError::limit(
+                "script fetch requests",
+                MAX_NATIVE_EFFECTS,
+                resolved_count,
+            ));
+        }
+        let payload =
+            fetch_response_payload(loader.fetch_async(document_url, &href, credentials).await);
+        let resolved = runtime.resolve_fetch(
+            request_id,
+            &payload,
+            &next,
+            document_url,
+            document_origin,
+            viewport,
+        )?;
+        let (resolved_next, resolved_mutation) = mutate_script_document(
+            &next,
+            runtime,
+            document_url,
+            document_origin,
+            viewport,
+            &resolved.commands,
+        )?;
+        next = resolved_next;
+        mutation.events.extend(resolved_mutation.events);
+        if mutation.navigation.is_none() {
+            mutation.navigation = resolved_mutation.navigation;
+        } else if resolved_mutation.navigation.is_some() {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "one script fetch batch cannot activate multiple navigations".into(),
+            });
+        }
+        pending.extend(fetch_commands(&resolved.commands));
+    }
+    if mutation.events.len() > MAX_NATIVE_EFFECTS {
+        return Err(NativeEngineError::limit(
+            "script fetch effects",
+            MAX_NATIVE_EFFECTS,
+            mutation.events.len(),
+        ));
+    }
+    mutation.document = next.to_content_wire();
     Ok((next, mutation))
 }
 

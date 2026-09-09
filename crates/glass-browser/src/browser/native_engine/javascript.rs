@@ -48,6 +48,11 @@ pub(crate) enum NativeScriptCommand {
         #[serde(default)]
         submitter_index: Option<u32>,
     },
+    Fetch {
+        request_id: u32,
+        href: String,
+        credentials: bool,
+    },
     SetValue {
         node_index: u32,
         value: String,
@@ -246,6 +251,16 @@ pub(crate) fn execute_page_scripts(
                 NativePageScript::ModuleDependency { .. } => continue,
             }
         };
+        if evaluation
+            .commands
+            .iter()
+            .any(|command| matches!(command, NativeScriptCommand::Fetch { .. }))
+        {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "page-script fetch scheduling is not available during document commit"
+                    .into(),
+            });
+        }
         if evaluation.commands.is_empty() {
             continue;
         }
@@ -267,6 +282,16 @@ pub(crate) fn execute_page_scripts(
                 document_origin,
                 viewport,
             )?;
+        if evaluation
+            .commands
+            .iter()
+            .any(|command| matches!(command, NativeScriptCommand::Fetch { .. }))
+        {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "page-event fetch scheduling is not available during document commit"
+                    .into(),
+            });
+        }
         if evaluation.commands.is_empty() {
             continue;
         }
@@ -661,6 +686,39 @@ impl NativeJavaScriptRuntime {
             *current = None;
         }
         result
+    }
+
+    pub(crate) fn resolve_fetch(
+        &self,
+        request_id: u32,
+        payload: &serde_json::Value,
+        document: &NativeDocument,
+        document_url: &str,
+        origin: &NativeOrigin,
+        viewport: Viewport,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        let serialized = serde_json::to_string(payload).map_err(|_| NativeEngineError::Worker {
+            operation: "serialize JavaScript fetch response".into(),
+            reason: "native fetch response could not be serialized".into(),
+        })?;
+        if serialized.len() > MAX_NATIVE_SCRIPT_BYTES {
+            return self.evaluate(
+                &format!(
+                    "globalThis.__glassResolveFetch({request_id}, {{ error: \"fetch response exceeded the script transfer limit\" }});"
+                ),
+                document,
+                document_url,
+                origin,
+                viewport,
+            );
+        }
+        self.evaluate(
+            &format!("globalThis.__glassResolveFetch({request_id}, {serialized});"),
+            document,
+            document_url,
+            origin,
+            viewport,
+        )
     }
 
     pub(crate) fn evaluate_module(
@@ -1115,6 +1173,50 @@ fn document_bootstrap(
   globalThis.setInterval = setIntervalNative;
   globalThis.clearTimeout = clearTimer;
   globalThis.clearInterval = clearTimer;
+  const fetchRequests = globalThis.__glassFetchRequests instanceof Map
+    ? globalThis.__glassFetchRequests
+    : new Map();
+  let nextFetchRequestId = Number.isSafeInteger(globalThis.__glassNextFetchRequestId)
+    ? globalThis.__glassNextFetchRequestId
+    : 1;
+  const fetchNative = (input, options) => {{
+    if (typeof input !== "string") throw new TypeError("native fetch requires a URL string");
+    const settings = options && typeof options === "object" ? options : {{}};
+    const method = settings.method === undefined ? "GET" : String(settings.method).toUpperCase();
+    if (method !== "GET" || settings.body !== undefined) {{
+      return Promise.reject(new TypeError("native fetch currently supports only GET requests"));
+    }}
+    const requestId = nextFetchRequestId;
+    nextFetchRequestId += 1;
+    globalThis.__glassNextFetchRequestId = nextFetchRequestId;
+    const credentials = settings.credentials !== "omit";
+    return new Promise((resolve, reject) => {{
+      fetchRequests.set(requestId, {{ resolve, reject }});
+      pushCommand({{ kind: "fetch", request_id: requestId, href: input, credentials }});
+    }});
+  }};
+  const responseFromFetch = (payload) => Object.freeze({{
+    ok: payload.status >= 200 && payload.status < 300,
+    status: payload.status,
+    url: payload.url,
+    headers: Object.freeze({{
+      get(name) {{
+        return String(name).toLowerCase() === "content-type" ? payload.contentType : null;
+      }}
+    }}),
+    text() {{ return Promise.resolve(payload.body); }},
+    json() {{ return Promise.resolve(JSON.parse(payload.body)); }},
+  }});
+  globalThis.__glassFetchRequests = fetchRequests;
+  globalThis.__glassNextFetchRequestId = nextFetchRequestId;
+  globalThis.fetch = fetchNative;
+  globalThis.__glassResolveFetch = (requestId, payload) => {{
+    const pending = fetchRequests.get(Number(requestId));
+    if (!pending) return;
+    fetchRequests.delete(Number(requestId));
+    if (payload && payload.error) pending.reject(new Error(String(payload.error)));
+    else pending.resolve(responseFromFetch(payload));
+  }};
   globalThis.queueMicrotask = (callback) => {{
     if (typeof callback !== "function") throw new TypeError("microtask callback must be callable");
     Promise.resolve().then(callback);

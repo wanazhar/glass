@@ -1,12 +1,12 @@
 use super::config::{
     NativeEngineLimits, Viewport, is_network_url, validate_url_text, without_fragment,
 };
-use super::dom::{NativeDocument, NativeDocumentWire, NativeNodeId};
+use super::dom::{NativeDocument, NativeDocumentWire, NativeNodeId, NativePageScriptSource};
 use super::error::{NativeEngineError, NativeWorkerFailureKind};
 use super::interaction::{MAX_NATIVE_EFFECTS, NativeEventKind};
 use super::javascript::{
-    NativeJavaScriptRuntime, NativeScriptCommand, NativeScriptEvaluation, execute_inline_scripts,
-    host_event_script,
+    MAX_NATIVE_SCRIPT_BYTES, NativeJavaScriptRuntime, NativeScriptCommand, NativeScriptEvaluation,
+    execute_script_sources, host_event_script,
 };
 use super::origin::NativeOrigin;
 use super::resource_loader::{NativeFetchResponse, NativeResourceLoader};
@@ -861,11 +861,12 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             }
             "load" if protocol_matches(&request) && running => {
                 match load_content_resource(&request, &mut resource_loader).await {
-                    Ok((resource, mut parsed, loaded_viewport)) => {
+                    Ok((resource, mut parsed, loaded_viewport, script_sources)) => {
                         let mut script_runtime = None;
-                        let response = match execute_inline_scripts(
+                        let response = match execute_script_sources(
                             &mut parsed,
                             &mut script_runtime,
+                            &script_sources,
                             &resource.url,
                             &resource.origin,
                             loaded_viewport,
@@ -1212,7 +1213,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
 async fn load_content_resource(
     request: &Value,
     resource_loader: &mut Option<NativeResourceLoader>,
-) -> Result<(NativeContentLoad, NativeDocument, Viewport), NativeEngineError> {
+) -> Result<(NativeContentLoad, NativeDocument, Viewport, Vec<String>), NativeEngineError> {
     let url = request
         .get("url")
         .and_then(Value::as_str)
@@ -1322,6 +1323,7 @@ async fn load_content_resource(
     }
     let document =
         NativeDocument::parse_with_stylesheets(&resource.body, &limits, &external_stylesheets, 1)?;
+    let script_sources = load_page_script_sources(&document, loader, &resource.url).await?;
     let wire = document.to_content_wire();
     Ok((
         NativeContentLoad {
@@ -1331,7 +1333,33 @@ async fn load_content_resource(
         },
         document,
         viewport,
+        script_sources,
     ))
+}
+
+async fn load_page_script_sources(
+    document: &NativeDocument,
+    loader: &mut NativeResourceLoader,
+    document_url: &str,
+) -> Result<Vec<String>, NativeEngineError> {
+    let mut sources = Vec::new();
+    for script in document.page_script_sources(
+        super::javascript::MAX_NATIVE_INLINE_SCRIPTS,
+        MAX_NATIVE_SCRIPT_BYTES,
+    ) {
+        match script {
+            NativePageScriptSource::Inline(source) => sources.push(source),
+            NativePageScriptSource::External(href) => {
+                if let Some(source) = loader
+                    .load_script_async(document_url, &href, MAX_NATIVE_SCRIPT_BYTES)
+                    .await?
+                {
+                    sources.push(source);
+                }
+            }
+        }
+    }
+    Ok(sources)
 }
 
 fn mutate_click_with_event_preflight(

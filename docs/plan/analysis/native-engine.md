@@ -1962,6 +1962,16 @@ transferring executable state over IPC. External `src` scripts, modules,
 parser timing, timers, Fetch/XHR, CSP script enforcement, and full Web IDL
 identity remain open.
 
+The completed classic external-script follow-up is
+[native-engine-browser-027](../tasks/native-engine-browser-027.md). HTTP(S)
+content loads now resolve accepted classic `src` scripts in DOM order through
+the existing child resource-policy owner and execute them in the same realm as
+inline sources. Script CSP/default-src, mixed content, redirects,
+referrer/cookies, MIME, and byte quotas are enforced before execution;
+module/unknown types are not requested. Local subresource ownership, module
+graphs, parser timing, timers, Fetch/XHR, and full Web IDL identity remain
+open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

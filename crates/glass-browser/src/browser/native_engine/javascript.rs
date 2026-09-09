@@ -79,6 +79,24 @@ pub(crate) fn execute_inline_scripts(
 ) -> Result<(), NativeEngineError> {
     let sources =
         document.inline_script_sources(MAX_NATIVE_INLINE_SCRIPTS, MAX_NATIVE_SCRIPT_BYTES);
+    execute_script_sources(
+        document,
+        runtime,
+        &sources,
+        document_url,
+        document_origin,
+        viewport,
+    )
+}
+
+pub(crate) fn execute_script_sources(
+    document: &mut NativeDocument,
+    runtime: &mut Option<NativeJavaScriptRuntime>,
+    sources: &[String],
+    document_url: &str,
+    document_origin: &NativeOrigin,
+    viewport: Viewport,
+) -> Result<(), NativeEngineError> {
     if sources.is_empty() {
         return Ok(());
     }

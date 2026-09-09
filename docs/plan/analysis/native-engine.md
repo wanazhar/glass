@@ -1747,12 +1747,14 @@ execution isolation or hostile-content safety.
 
 The completed resource-transfer follow-up is
 [`native-engine-browser-005`](../tasks/native-engine-browser-005.md). The child
-now invokes the shared bounded HTTP(S) loader and transfers only final URL and
-base64-encoded HTML under the existing frame/document quotas. The parent
-validates the transfer and origin before parsing; load deadlines and malformed
-responses poison the child, while ordinary child-side HTTP rejections remain
-typed failures. The parser/DOM is still parent-owned, so the next process gate
-must move document construction and its recovery boundary into the child.
+now invokes the shared bounded HTTP(S) loader, parses the HTML tree, and
+transfers only final URL and a base64-encoded typed DOM snapshot under bounded
+frame/document quotas. The parent validates the transfer and origin before
+reconstructing the arena; load deadlines and malformed responses poison the
+child, while ordinary child-side HTTP rejections remain typed failures.
+Stylesheet parsing, computed style, and DOM mutation remain parent-owned, so
+the next process gate must move those owners and their recovery boundary into
+the child.
 
 ## Baseline and constraints
 

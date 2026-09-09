@@ -1,7 +1,8 @@
-use super::config::{is_network_url, validate_url_text, without_fragment};
+use super::config::{NativeEngineLimits, is_network_url, validate_url_text, without_fragment};
+use super::dom::{NativeDocument, NativeDocumentWire};
 use super::error::NativeEngineError;
 use super::origin::NativeOrigin;
-use super::resource_loader::{NativeResource, NativeResourceLoader};
+use super::resource_loader::NativeResourceLoader;
 use base64::Engine as _;
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -11,9 +12,16 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::time::timeout;
 
-const MAX_CONTENT_IPC_FRAME_BYTES: usize = 1024 * 1024;
+const MAX_CONTENT_IPC_FRAME_BYTES: usize = 4 * 1024 * 1024;
+const MAX_CONTENT_DOCUMENT_WIRE_BYTES: usize = 2 * 1024 * 1024;
 const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 1;
 const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
+
+pub(crate) struct NativeContentLoad {
+    pub(crate) url: String,
+    pub(crate) origin: NativeOrigin,
+    pub(crate) document: NativeDocumentWire,
+}
 
 /// Process-backed lifecycle and bounded document-transfer channel for one
 /// native content runtime.
@@ -106,8 +114,8 @@ impl NativeContentProcess {
     pub(crate) async fn load(
         &mut self,
         url: &str,
-        max_document_bytes: usize,
-    ) -> Result<NativeResource, NativeEngineError> {
+        limits: &NativeEngineLimits,
+    ) -> Result<NativeContentLoad, NativeEngineError> {
         let id = self.next_id();
         let response = match timeout(
             CONTENT_PROCESS_LOAD_TIMEOUT,
@@ -116,7 +124,10 @@ impl NativeContentProcess {
                 "id": id,
                 "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
                 "url": url,
-                "max_document_bytes": max_document_bytes,
+                "max_document_bytes": limits.max_document_bytes,
+                "max_nodes": limits.max_nodes,
+                "max_dom_depth": limits.max_dom_depth,
+                "max_text_bytes": limits.max_text_bytes,
             })),
         )
         .await
@@ -141,7 +152,7 @@ impl NativeContentProcess {
                     .into(),
             });
         }
-        let result = decode_loaded_response(&response, id, max_document_bytes);
+        let result = decode_loaded_response(&response, id);
         if result.is_err() {
             self.healthy = false;
             let _ = self.child.start_kill();
@@ -292,8 +303,7 @@ fn require_response_kind(
 fn decode_loaded_response(
     response: &Value,
     id: u64,
-    max_document_bytes: usize,
-) -> Result<NativeResource, NativeEngineError> {
+) -> Result<NativeContentLoad, NativeEngineError> {
     require_response_kind(response, "loaded", id, "content process load")?;
     let url =
         response
@@ -310,40 +320,41 @@ fn decode_loaded_response(
             reason: "content process returned a non-HTTP(S) final URL".into(),
         });
     }
-    let encoded_body = response
-        .get("body_base64")
+    let encoded_document = response
+        .get("document_base64")
         .and_then(Value::as_str)
         .ok_or_else(|| NativeEngineError::Worker {
             operation: "decode content process load".into(),
-            reason: "content process omitted the document body".into(),
+            reason: "content process omitted the document snapshot".into(),
         })?;
-    let body = base64::engine::general_purpose::STANDARD
-        .decode(encoded_body)
+    let document_bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded_document)
         .map_err(|_| NativeEngineError::Worker {
             operation: "decode content process load".into(),
-            reason: "content process returned an invalid document body".into(),
+            reason: "content process returned an invalid document snapshot".into(),
         })?;
-    if body.len() > max_document_bytes {
+    if document_bytes.len() > MAX_CONTENT_DOCUMENT_WIRE_BYTES {
         return Err(NativeEngineError::limit(
-            "content-process document",
-            max_document_bytes,
-            body.len(),
+            "content-process document snapshot",
+            MAX_CONTENT_DOCUMENT_WIRE_BYTES,
+            document_bytes.len(),
         ));
     }
-    let body = String::from_utf8(body).map_err(|_| NativeEngineError::Worker {
-        operation: "decode content process load".into(),
-        reason: "content process returned non-UTF-8 document bytes".into(),
-    })?;
+    let document: NativeDocumentWire =
+        serde_json::from_slice(&document_bytes).map_err(|_| NativeEngineError::Worker {
+            operation: "decode content process load".into(),
+            reason: "content process returned an invalid document snapshot".into(),
+        })?;
     let origin_url =
         url::Url::parse(without_fragment(url)).map_err(|_| NativeEngineError::Worker {
             operation: "decode content process load".into(),
             reason: "content process returned invalid final URL syntax".into(),
         })?;
     let origin = NativeOrigin::from_url(&origin_url)?;
-    Ok(NativeResource {
+    Ok(NativeContentLoad {
         url: url.into(),
         origin,
-        body,
+        document,
     })
 }
 
@@ -381,8 +392,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         "kind": "loaded",
                         "id": id,
                         "url": resource.url,
-                        "body_base64": base64::engine::general_purpose::STANDARD
-                            .encode(resource.body.as_bytes()),
+                        "document_base64": base64::engine::general_purpose::STANDARD
+                            .encode(serde_json::to_vec(&resource.document).unwrap_or_default()),
                     }),
                     Err(error) => content_error_response(id, error),
                 }
@@ -403,7 +414,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     }
 }
 
-async fn load_content_resource(request: &Value) -> Result<NativeResource, NativeEngineError> {
+async fn load_content_resource(request: &Value) -> Result<NativeContentLoad, NativeEngineError> {
     let url = request
         .get("url")
         .and_then(Value::as_str)
@@ -424,9 +435,34 @@ async fn load_content_resource(request: &Value) -> Result<NativeResource, Native
                 "must be a positive integer",
             )
         })?;
-    NativeResourceLoader::for_content_process(max_document_bytes)?
+    let limits = NativeEngineLimits {
+        max_document_bytes,
+        max_nodes: request
+            .get("max_nodes")
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(NativeEngineLimits::default().max_nodes),
+        max_dom_depth: request
+            .get("max_dom_depth")
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(NativeEngineLimits::default().max_dom_depth),
+        max_text_bytes: request
+            .get("max_text_bytes")
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(NativeEngineLimits::default().max_text_bytes),
+        ..NativeEngineLimits::default()
+    };
+    let resource = NativeResourceLoader::for_content_process(max_document_bytes)?
         .load_async(url)
-        .await
+        .await?;
+    let document = NativeDocument::parse(&resource.body, &limits)?.to_content_wire();
+    Ok(NativeContentLoad {
+        url: resource.url,
+        origin: resource.origin,
+        document,
+    })
 }
 
 async fn write_value_frame(

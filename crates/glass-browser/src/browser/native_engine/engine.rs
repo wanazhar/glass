@@ -3,7 +3,7 @@ use super::config::{
     NativeEngineConfig, decode_percent_encoded_fragment, decode_text_fragment_terms,
     is_network_url, resolve_fixture_relative_url, validate_url_text, without_fragment,
 };
-use super::content_process::NativeContentProcess;
+use super::content_process::{NativeContentLoad, NativeContentProcess};
 use super::diagnostics::NativeDiagnostic;
 use super::dom::NativeDocument;
 use super::error::NativeEngineError;
@@ -157,10 +157,8 @@ impl NativeEngine {
             process.start().await?;
         }
         let prepared = if let Some(process) = content_process.as_mut() {
-            let resource = process
-                .load(&initial_url, self.config.limits.max_document_bytes)
-                .await?;
-            self.prepare_navigation_resource(resource)?
+            let resource = process.load(&initial_url, &self.config.limits).await?;
+            self.prepare_navigation_content(resource)?
         } else {
             self.prepare_navigation_async(&initial_url).await?
         };
@@ -243,21 +241,22 @@ impl NativeEngine {
         let url = url.into();
         if is_network_url(&url) {
             self.ensure_content_process().await?;
+            let content = self
+                .content_process
+                .as_mut()
+                .ok_or_else(|| NativeEngineError::Worker {
+                    operation: "content process load".into(),
+                    reason: "native content process is not running".into(),
+                })?
+                .load(&url, &self.config.limits)
+                .await?;
+            self.commit_content_process().await?;
+            if let Some(worker) = self.runtime_worker.clone() {
+                return self.navigate_content_async(content, &worker).await;
+            }
+            return self.navigate_content(content);
         }
-        let resource = if is_network_url(&url) {
-            let process =
-                self.content_process
-                    .as_mut()
-                    .ok_or_else(|| NativeEngineError::Worker {
-                        operation: "content process load".into(),
-                        reason: "native content process is not running".into(),
-                    })?;
-            process
-                .load(&url, self.config.limits.max_document_bytes)
-                .await?
-        } else {
-            self.loader.load_async(&url).await?
-        };
+        let resource = self.loader.load_async(&url).await?;
         if let Some(worker) = self.runtime_worker.clone() {
             self.navigate_resource_async(resource, &worker).await
         } else {
@@ -320,6 +319,34 @@ impl NativeEngine {
                 .await?;
         } else {
             let prepared = self.prepare_navigation_resource(resource)?;
+            self.commit_navigation_async(prepared, worker).await?;
+        }
+        Ok(self.snapshot_unchecked())
+    }
+
+    fn navigate_content(
+        &mut self,
+        content: NativeContentLoad,
+    ) -> Result<NativeEngineSnapshot, NativeEngineError> {
+        if self.is_same_document_navigation(&content.url) {
+            self.commit_same_document_navigation(content.url, HistoryCommit::Push)?;
+        } else {
+            let prepared = self.prepare_navigation_content(content)?;
+            self.commit_navigation(prepared)?;
+        }
+        Ok(self.snapshot_unchecked())
+    }
+
+    async fn navigate_content_async(
+        &mut self,
+        content: NativeContentLoad,
+        worker: &NativeRuntimeWorker,
+    ) -> Result<NativeEngineSnapshot, NativeEngineError> {
+        if self.is_same_document_navigation(&content.url) {
+            self.commit_same_document_navigation_async(content.url, HistoryCommit::Push, worker)
+                .await?;
+        } else {
+            let prepared = self.prepare_navigation_content(content)?;
             self.commit_navigation_async(prepared, worker).await?;
         }
         Ok(self.snapshot_unchecked())
@@ -589,6 +616,26 @@ impl NativeEngine {
     ) -> Result<PreparedNavigation, NativeEngineError> {
         let resource = self.loader.load_async(url).await?;
         self.prepare_navigation_resource(resource)
+    }
+
+    fn prepare_navigation_content(
+        &self,
+        content: NativeContentLoad,
+    ) -> Result<PreparedNavigation, NativeEngineError> {
+        let next_revision = self.next_revision()?;
+        let generation = u32::try_from(next_revision).map_err(|_| {
+            NativeEngineError::limit("document generations", u32::MAX as usize, usize::MAX)
+        })?;
+        let document =
+            NativeDocument::from_content_wire(content.document, &self.config.limits, generation)?;
+        Ok(PreparedNavigation {
+            resource: NativeResource {
+                url: content.url,
+                origin: content.origin,
+                body: String::new(),
+            },
+            document,
+        })
     }
 
     fn prepare_navigation_resource(

@@ -1212,6 +1212,78 @@ fn document_bootstrap(
     text() {{ return Promise.resolve(payload.body); }},
     json() {{ return Promise.resolve(JSON.parse(payload.body)); }},
   }});
+  const XMLHttpRequestNative = function() {{
+    this.readyState = 0;
+    this.status = 0;
+    this.statusText = "";
+    this.responseText = "";
+    this.responseURL = "";
+    this.response = "";
+    this.withCredentials = false;
+    this.onreadystatechange = null;
+    this.onload = null;
+    this.onerror = null;
+    this._method = "GET";
+    this._url = "";
+    this._headers = {{}};
+    this._responseContentType = null;
+  }};
+  XMLHttpRequestNative.prototype._notifyReadyState = function() {{
+    if (typeof this.onreadystatechange === "function") this.onreadystatechange.call(this);
+  }};
+  XMLHttpRequestNative.prototype.open = function(method, url, async) {{
+    if (async === false) throw new TypeError("native XMLHttpRequest requires async mode");
+    const normalizedMethod = String(method).toUpperCase();
+    if (normalizedMethod !== "GET" && normalizedMethod !== "POST")
+      throw new TypeError("native XMLHttpRequest supports only GET and POST");
+    if (typeof url !== "string") throw new TypeError("native XMLHttpRequest URL must be text");
+    this._method = normalizedMethod;
+    this._url = url;
+    this._headers = {{}};
+    this.readyState = 1;
+    this._notifyReadyState();
+  }};
+  XMLHttpRequestNative.prototype.setRequestHeader = function(name, value) {{
+    if (String(name).toLowerCase() !== "content-type")
+      throw new TypeError("native XMLHttpRequest only supports the Content-Type header");
+    this._headers["Content-Type"] = String(value);
+  }};
+  XMLHttpRequestNative.prototype.getResponseHeader = function(name) {{
+    return String(name).toLowerCase() === "content-type" ? this._responseContentType : null;
+  }};
+  XMLHttpRequestNative.prototype.getAllResponseHeaders = function() {{
+    return this._responseContentType
+      ? "content-type: " + this._responseContentType + "\\r\\n"
+      : "";
+  }};
+  XMLHttpRequestNative.prototype.send = function(body) {{
+    if (this.readyState !== 1) throw new TypeError("native XMLHttpRequest is not open");
+    const requestBody = body === undefined || body === null ? null : String(body);
+    const request = fetchNative(this._url, {{
+      method: this._method,
+      body: requestBody,
+      headers: this._headers,
+      credentials: this.withCredentials ? "include" : "omit",
+    }});
+    request.then(response => {{
+      this.status = response.status;
+      this.statusText = String(response.status);
+      this.responseURL = response.url;
+      this._responseContentType = response.headers.get("content-type");
+      return response.text();
+    }}).then(text => {{
+      this.responseText = text;
+      this.response = text;
+      this.readyState = 4;
+      this._notifyReadyState();
+      if (typeof this.onload === "function") this.onload.call(this, {{ type: "load", target: this }});
+    }}).catch(error => {{
+      this.readyState = 4;
+      this._notifyReadyState();
+      if (typeof this.onerror === "function") this.onerror.call(this, {{ type: "error", target: this, error }});
+    }});
+  }};
+  globalThis.XMLHttpRequest = XMLHttpRequestNative;
   globalThis.__glassFetchRequests = fetchRequests;
   globalThis.__glassNextFetchRequestId = nextFetchRequestId;
   globalThis.fetch = fetchNative;

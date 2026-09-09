@@ -530,6 +530,15 @@ custom headers, private-network access, opaque `no-cors` responses,
 multipart/FormData/blob/stream bodies, XHR/WebSocket, and full Fetch Web IDL
 identity remain open.
 
+The completed bounded XHR bridge is
+[native-engine-browser-055](tasks/native-engine-browser-055.md). The persistent
+page realm now exposes asynchronous `XMLHttpRequest` GET/POST with string
+bodies, the supported `Content-Type` header, bounded response status/text/URL/
+header access, and `readystatechange`/`load`/`error` callbacks routed through
+the existing fetch and CORS owner. Synchronous XHR, upload/progress,
+binary-response, timeout/abort, streaming, WebSocket/EventSource, and full Web
+IDL identity remain open.
+
 The next BE-02/BE-03/BE-04 gate is full task ordering and navigation edge cases,
 followed by file/FormData support, full constraint validation, target contexts,
 and the remaining browser-context primitives.

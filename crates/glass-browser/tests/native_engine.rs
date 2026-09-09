@@ -28823,6 +28823,80 @@ async fn native_local_web_storage_delivers_origin_filtered_events_to_other_docum
 }
 
 #[tokio::test]
+async fn native_content_process_delivers_local_storage_events_between_documents() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let profile_path = std::env::temp_dir().join(format!(
+        "glass-native-web-storage-{}-content-events.json",
+        std::process::id()
+    ));
+    let _ = fs::remove_file(&profile_path);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+            let body = "<p>Content storage owner</p>";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+    let url = format!("http://{address}/page");
+    let config = NativeEngineConfig::default()
+        .with_storage_path(profile_path.clone())
+        .with_initial_url(url.clone());
+    let mut owner = NativeEngine::new(config.clone()).unwrap();
+    let mut observer = NativeEngine::new(config).unwrap();
+    owner.initialize_async().await.unwrap();
+    observer.initialize_async().await.unwrap();
+
+    for engine in [&mut owner, &mut observer] {
+        engine
+            .evaluate_async(
+                "globalThis.storageEvents = []; addEventListener('storage', event => storageEvents.push({ key: event.key, oldValue: event.oldValue, newValue: event.newValue, url: event.url, local: event.storageArea === localStorage })); true",
+            )
+            .await
+            .unwrap();
+    }
+
+    owner
+        .evaluate_async("localStorage.setItem('theme', 'dark'); true")
+        .await
+        .unwrap();
+    assert_eq!(
+        observer
+            .evaluate_async(
+                "({ events: storageEvents.splice(0), value: localStorage.getItem('theme') })"
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "events": [{
+                "key": "theme",
+                "oldValue": null,
+                "newValue": "dark",
+                "url": url,
+                "local": true,
+            }],
+            "value": "dark",
+        })
+    );
+    assert_eq!(
+        owner.evaluate_async("storageEvents").await.unwrap(),
+        serde_json::json!([])
+    );
+
+    observer.close_async().await.unwrap();
+    owner.close_async().await.unwrap();
+    server.await.unwrap();
+    let _ = fs::remove_file(profile_path);
+}
+
+#[tokio::test]
 async fn native_content_process_web_storage_persists_through_profile_restart() {
     let _guard = native_content_process_test_lock().lock().await;
     let profile_path = std::env::temp_dir().join(format!(

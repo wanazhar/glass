@@ -5,6 +5,7 @@ use super::config::{
 };
 use super::content_process::{
     NativeContentLoad, NativeContentMutation, NativeContentNavigation, NativeContentProcess,
+    NativeContentScriptResult,
 };
 use super::diagnostics::NativeDiagnostic;
 use super::dom::{NativeDocument, NativeNodeId};
@@ -15,7 +16,7 @@ use super::interaction::{
     MAX_NATIVE_EFFECTS, NativeAction, NativeEffect, NativeEventKind, validate_native_edit_key,
 };
 use super::javascript::{
-    NativeJavaScriptRuntime, NativeScriptEvaluation, NativeStorageCoordinator,
+    NativeJavaScriptRuntime, NativeScriptEvaluation, NativeStorageCoordinator, NativeStorageEvent,
     NativeStorageEventQueue, NativeWebStorageState, execute_inline_scripts, host_event_script,
     host_hash_change_event_script, host_key_event_script, host_submit_event_script,
     load_web_storage_profile, save_web_storage_profile, storage_coordinator_for, storage_key,
@@ -83,6 +84,7 @@ pub struct NativeEngine {
     web_storage: NativeWebStorageState,
     storage_coordinator: Option<Arc<NativeStorageCoordinator>>,
     storage_event_queue: Option<NativeStorageEventQueue>,
+    pending_external_storage_events: Vec<NativeStorageEvent>,
     history: NativeHistory,
     lifecycle: NativeLifecycleState,
     document: NativeDocument,
@@ -123,6 +125,7 @@ impl NativeEngine {
             web_storage,
             storage_coordinator,
             storage_event_queue,
+            pending_external_storage_events: Vec::new(),
             history: NativeHistory::new(max_history_entries),
             lifecycle: NativeLifecycleState::New,
             document: NativeDocument::empty(),
@@ -200,6 +203,7 @@ impl NativeEngine {
                     None,
                 )
                 .await?;
+            self.publish_content_storage_events(&resource.storage_events)?;
             self.prepare_navigation_content(resource)?
         } else {
             self.prepare_navigation_async(&initial_url).await?
@@ -298,6 +302,8 @@ impl NativeEngine {
     ) -> Result<NativeEngineSnapshot, NativeEngineError> {
         self.require_running("navigate")?;
         self.pending_lifecycle_effects.clear();
+        self.sync_external_storage_events()?;
+        self.deliver_pending_external_storage_events().await?;
         let url = navigation.url.as_str();
         let same_document = self.is_same_document_navigation(url);
         if !same_document && !self.dispatch_navigation_lifecycle_async().await? {
@@ -420,6 +426,7 @@ impl NativeEngine {
         &mut self,
         content: NativeContentLoad,
     ) -> Result<NativeEngineSnapshot, NativeEngineError> {
+        self.publish_content_storage_events(&content.storage_events)?;
         if self.is_same_document_navigation(&content.url) {
             self.commit_same_document_navigation(content.url, HistoryCommit::Push)?;
         } else {
@@ -434,6 +441,7 @@ impl NativeEngine {
         content: NativeContentLoad,
         worker: &NativeRuntimeWorker,
     ) -> Result<NativeEngineSnapshot, NativeEngineError> {
+        self.publish_content_storage_events(&content.storage_events)?;
         let same_document = self.is_same_document_navigation(&content.url);
         if same_document {
             self.commit_same_document_navigation_async(content.url, HistoryCommit::Push, worker)
@@ -593,32 +601,46 @@ impl NativeEngine {
     ) -> Result<serde_json::Value, NativeEngineError> {
         self.require_running("script")?;
         let source = source.into();
-        if let Some(process) = self.content_process.as_mut() {
-            if !process.is_healthy() {
-                return Err(NativeEngineError::worker_failure(
-                    "content process script",
-                    process
-                        .failure_kind()
-                        .unwrap_or(NativeWorkerFailureKind::Exited),
-                    "content process is unavailable after a failed operation; navigate to recover it",
-                ));
-            }
-            let evaluation = process.evaluate(&source).await?;
-            if let Some(mutation) = evaluation.mutation {
+        self.sync_external_storage_events()?;
+        if self.content_process.is_some() {
+            self.deliver_pending_external_storage_events().await?;
+            let NativeContentScriptResult {
+                value,
+                mutation,
+                storage_events,
+            } = {
+                let process = self
+                    .content_process
+                    .as_mut()
+                    .expect("content process presence was checked");
+                if !process.is_healthy() {
+                    return Err(NativeEngineError::worker_failure(
+                        "content process script",
+                        process
+                            .failure_kind()
+                            .unwrap_or(NativeWorkerFailureKind::Exited),
+                        "content process is unavailable after a failed operation; navigate to recover it",
+                    ));
+                }
+                process.evaluate(&source).await?
+            };
+            if let Some(mutation) = mutation {
                 let navigation = mutation.navigation.clone();
                 self.apply_content_process_mutation(mutation)?;
                 if let Some(navigation) = navigation {
                     self.navigate_script_navigation_async(navigation).await?;
                 }
+            } else {
+                self.publish_content_storage_events(&storage_events)?;
             }
-            return Ok(evaluation.value);
+            return Ok(value);
         }
         if self.javascript.is_none() {
             let javascript = NativeJavaScriptRuntime::new()?;
             javascript.set_storage_state(self.web_storage.clone());
             self.javascript = Some(javascript);
         }
-        self.sync_external_storage_events()?;
+        self.deliver_pending_external_storage_events().await?;
         let cookie = self.loader.document_cookie(&self.url)?;
         self.javascript
             .as_ref()
@@ -778,6 +800,10 @@ impl NativeEngine {
         action: NativeAction,
     ) -> Result<NativeActionResult, NativeEngineError> {
         self.require_running("action")?;
+        self.sync_external_storage_events()?;
+        if self.content_process.is_some() {
+            self.deliver_pending_external_storage_events().await?;
+        }
         let Some(process) = self.content_process.as_ref() else {
             return self.action(action);
         };
@@ -1113,6 +1139,59 @@ impl NativeEngine {
         if let Some(javascript) = self.javascript.as_ref() {
             javascript.set_storage_state(self.web_storage.clone());
             javascript.set_storage_events(events)?;
+        } else {
+            let next_len = self
+                .pending_external_storage_events
+                .len()
+                .saturating_add(events.len());
+            if next_len > MAX_NATIVE_EFFECTS {
+                return Err(NativeEngineError::limit(
+                    "native pending storage events",
+                    MAX_NATIVE_EFFECTS,
+                    next_len,
+                ));
+            }
+            self.pending_external_storage_events.extend(events);
+        }
+        Ok(())
+    }
+
+    async fn deliver_pending_external_storage_events(&mut self) -> Result<(), NativeEngineError> {
+        if self.pending_external_storage_events.is_empty() {
+            return Ok(());
+        }
+        let events = std::mem::take(&mut self.pending_external_storage_events);
+        if let Some(process) = self.content_process.as_mut() {
+            if !process.is_healthy() {
+                return Err(NativeEngineError::worker_failure(
+                    "content process storage events",
+                    process
+                        .failure_kind()
+                        .unwrap_or(NativeWorkerFailureKind::Exited),
+                    "content process is unavailable after a failed operation; navigate to recover it",
+                ));
+            }
+            process.sync_storage_events(&events).await
+        } else if let Some(javascript) = self.javascript.as_ref() {
+            javascript.set_storage_state(self.web_storage.clone());
+            javascript.set_storage_events(events)
+        } else {
+            self.pending_external_storage_events = events;
+            Ok(())
+        }
+    }
+
+    fn publish_content_storage_events(
+        &mut self,
+        events: &[NativeStorageEvent],
+    ) -> Result<(), NativeEngineError> {
+        let coordinator = self.storage_coordinator.clone();
+        let queue = self.storage_event_queue.clone();
+        for event in events.iter().filter(|event| event.scope == "local") {
+            self.web_storage.apply_storage_event(event)?;
+            if let (Some(coordinator), Some(queue)) = (coordinator.as_ref(), queue.as_ref()) {
+                coordinator.publish(queue, event.clone())?;
+            }
         }
         Ok(())
     }
@@ -1605,6 +1684,7 @@ impl NativeEngine {
         next_revision: u64,
         mutation: NativeContentMutation,
     ) -> Result<NativeActionResult, NativeEngineError> {
+        self.publish_content_storage_events(&mutation.storage_events)?;
         let generation = self.document.generation();
         let mut document = match NativeDocument::from_content_wire(
             mutation.document,

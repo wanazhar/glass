@@ -9,8 +9,8 @@ use super::error::{NativeEngineError, NativeWorkerFailureKind};
 use super::interaction::{MAX_NATIVE_EFFECTS, NativeEventKind, validate_native_edit_key};
 use super::javascript::{
     MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_SCRIPT_BYTES, NativeJavaScriptRuntime, NativePageScript,
-    NativeScriptCommand, NativeScriptEvaluation, NativeWebStorageState, execute_page_scripts,
-    host_event_script, host_hash_change_event_script, host_key_event_script,
+    NativeScriptCommand, NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState,
+    execute_page_scripts, host_event_script, host_hash_change_event_script, host_key_event_script,
     host_submit_event_script, literal_dynamic_module_specifiers, load_web_storage_profile,
     order_page_scripts, save_web_storage_profile, static_module_specifiers,
 };
@@ -45,6 +45,7 @@ pub(crate) struct NativeContentLoad {
     pub(crate) url: String,
     pub(crate) origin: NativeOrigin,
     pub(crate) document: NativeDocumentWire,
+    pub(crate) storage_events: Vec<NativeStorageEvent>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -65,11 +66,13 @@ pub(crate) struct NativeContentMutation {
     pub(crate) events: Vec<NativeContentEvent>,
     pub(crate) navigation: Option<NativeContentNavigation>,
     pub(crate) allowed: bool,
+    pub(crate) storage_events: Vec<NativeStorageEvent>,
 }
 
 pub(crate) struct NativeContentScriptResult {
     pub(crate) value: Value,
     pub(crate) mutation: Option<NativeContentMutation>,
+    pub(crate) storage_events: Vec<NativeStorageEvent>,
 }
 
 /// Process-backed lifecycle and bounded document-transfer channel for one
@@ -424,6 +427,49 @@ impl NativeContentProcess {
         decode_script_response(&response, id)
     }
 
+    pub(crate) async fn sync_storage_events(
+        &mut self,
+        events: &[NativeStorageEvent],
+    ) -> Result<(), NativeEngineError> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        let id = self.next_id();
+        let response = match timeout(
+            CONTENT_PROCESS_SCRIPT_TIMEOUT,
+            self.exchange(json!({
+                "kind": "storage_events",
+                "id": id,
+                "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
+                "events": events,
+            })),
+        )
+        .await
+        {
+            Ok(response) => response?,
+            Err(_) => {
+                self.mark_failed(NativeWorkerFailureKind::Timeout);
+                let _ = self.child.start_kill();
+                return Err(NativeEngineError::worker_failure(
+                    "content process storage events",
+                    NativeWorkerFailureKind::Timeout,
+                    "content process storage-event synchronization exceeded its deadline",
+                ));
+            }
+        };
+        let result = require_response_kind(
+            &response,
+            "storage_events_synced",
+            id,
+            "content process storage events",
+        );
+        if result.is_err() {
+            self.mark_failed(NativeWorkerFailureKind::Protocol);
+            let _ = self.child.start_kill();
+        }
+        result
+    }
+
     async fn mutate_with_request_kind(
         &mut self,
         id: u64,
@@ -684,10 +730,12 @@ fn decode_loaded_response(
             reason: "content process returned invalid final URL syntax".into(),
         })?;
     let origin = NativeOrigin::from_url(&origin_url)?;
+    let storage_events = decode_storage_events(response, "decode content process load")?;
     Ok(NativeContentLoad {
         url: url.into(),
         origin,
         document,
+        storage_events,
     })
 }
 
@@ -789,6 +837,7 @@ fn decode_mutation_payload(
             })
         })
         .transpose()?;
+    let storage_events = decode_storage_events(response, operation)?;
     Ok(NativeContentMutation {
         document,
         events,
@@ -797,6 +846,7 @@ fn decode_mutation_payload(
             .get("allowed")
             .and_then(Value::as_bool)
             .unwrap_or(true),
+        storage_events,
     })
 }
 
@@ -892,6 +942,7 @@ fn decode_script_response(
             encoded.len(),
         ));
     }
+    let storage_events = decode_storage_events(response, "decode content process script")?;
     let has_document = response.get("document_base64").is_some();
     let has_events = response.get("events").is_some();
     let mutation = if has_document || has_events {
@@ -902,7 +953,91 @@ fn decode_script_response(
     } else {
         None
     };
-    Ok(NativeContentScriptResult { value, mutation })
+    Ok(NativeContentScriptResult {
+        value,
+        storage_events: if mutation.is_some() {
+            Vec::new()
+        } else {
+            storage_events
+        },
+        mutation,
+    })
+}
+
+fn decode_storage_events(
+    response: &Value,
+    operation: &str,
+) -> Result<Vec<NativeStorageEvent>, NativeEngineError> {
+    let Some(value) = response.get("storage_events") else {
+        return Ok(Vec::new());
+    };
+    decode_storage_event_value(value, operation)
+}
+
+fn decode_storage_event_value(
+    value: &Value,
+    operation: &str,
+) -> Result<Vec<NativeStorageEvent>, NativeEngineError> {
+    let values = value.as_array().ok_or_else(|| NativeEngineError::Worker {
+        operation: operation.into(),
+        reason: "content process returned invalid storage events".into(),
+    })?;
+    if values.len() > MAX_NATIVE_EFFECTS {
+        return Err(NativeEngineError::limit(
+            "content-process storage events",
+            MAX_NATIVE_EFFECTS,
+            values.len(),
+        ));
+    }
+    let events =
+        serde_json::from_value::<Vec<NativeStorageEvent>>(value.clone()).map_err(|_| {
+            NativeEngineError::Worker {
+                operation: operation.into(),
+                reason: "content process returned malformed storage events".into(),
+            }
+        })?;
+    for event in &events {
+        if !matches!(event.scope.as_str(), "local" | "session") {
+            return Err(NativeEngineError::invalid(
+                "content-process storage event scope",
+                "must be local or session",
+            ));
+        }
+        if event.storage_key.is_empty() || event.storage_key.len() > MAX_NATIVE_SCRIPT_BYTES {
+            return Err(NativeEngineError::limit(
+                "content-process storage event key",
+                MAX_NATIVE_SCRIPT_BYTES,
+                event.storage_key.len(),
+            ));
+        }
+        if event.url.len() > MAX_NATIVE_SCRIPT_BYTES {
+            return Err(NativeEngineError::limit(
+                "content-process storage event URL",
+                MAX_NATIVE_SCRIPT_BYTES,
+                event.url.len(),
+            ));
+        }
+        for (field, value) in [
+            ("key", event.key.as_deref()),
+            ("old value", event.old_value.as_deref()),
+            ("new value", event.new_value.as_deref()),
+        ] {
+            if value.is_some_and(|value| value.len() > MAX_NATIVE_SCRIPT_BYTES) {
+                return Err(NativeEngineError::limit(
+                    format!("content-process storage event {field}"),
+                    MAX_NATIVE_SCRIPT_BYTES,
+                    value.map_or(0, str::len),
+                ));
+            }
+        }
+        if event.key.is_none() && event.new_value.is_some() {
+            return Err(NativeEngineError::invalid(
+                "content-process storage event",
+                "a clear event must not contain a new value",
+            ));
+        }
+    }
+    Ok(events)
 }
 
 fn decode_document_wire(
@@ -952,7 +1087,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             resource_loader.as_ref(),
             document_url.as_deref(),
         )?;
-        let response = match kind {
+        let mut response = match kind {
             "ping" if protocol_matches(&request) => {
                 json!({"kind":"pong","id":id,"protocol":CONTENT_WORKER_PROTOCOL_VERSION})
             }
@@ -979,6 +1114,21 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             }
             "commit" if protocol_matches(&request) && running => {
                 json!({"kind":"committed","id":id})
+            }
+            "storage_events" if protocol_matches(&request) && running => {
+                let values = request.get("events").ok_or_else(|| {
+                    NativeEngineError::invalid("content-process storage events", "must be an array")
+                })?;
+                let events =
+                    decode_storage_event_value(values, "decode content process storage events")?;
+                for event in &events {
+                    storage_state.apply_storage_event(event)?;
+                }
+                if let Some(runtime) = javascript_runtime.as_ref() {
+                    runtime.set_storage_state(storage_state.clone());
+                    runtime.set_storage_events(events)?;
+                }
+                json!({"kind":"storage_events_synced","id":id})
             }
             "load" if protocol_matches(&request) && running => {
                 if let Some(runtime) = javascript_runtime.as_ref() {
@@ -1772,7 +1922,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 }
             }
             "close" if protocol_matches(&request) => {
-                sync_content_runtime_state(
+                let _storage_events = sync_content_runtime_state(
                     javascript_runtime.as_ref(),
                     &mut storage_state,
                     &mut resource_loader,
@@ -1792,7 +1942,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 },
             ),
         };
-        sync_content_runtime_state(
+        let storage_events = sync_content_runtime_state(
             javascript_runtime.as_ref(),
             &mut storage_state,
             &mut resource_loader,
@@ -1800,6 +1950,15 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
         )?;
         if let Some(path) = storage_profile_path.as_deref() {
             save_web_storage_profile(Some(path), &storage_state)?;
+        }
+        if let Some(object) = response.as_object_mut() {
+            object.insert(
+                "storage_events".into(),
+                serde_json::to_value(storage_events).map_err(|_| NativeEngineError::Worker {
+                    operation: "encode content process storage events".into(),
+                    reason: "content process storage events could not be encoded".into(),
+                })?,
+            );
         }
         write_value_frame(&mut stdout, &response).await?;
     }
@@ -1810,9 +1969,9 @@ fn sync_content_runtime_state(
     storage_state: &mut NativeWebStorageState,
     resource_loader: &mut Option<NativeResourceLoader>,
     document_url: Option<&str>,
-) -> Result<(), NativeEngineError> {
+) -> Result<Vec<NativeStorageEvent>, NativeEngineError> {
     let Some(runtime) = runtime else {
-        return Ok(());
+        return Ok(Vec::new());
     };
     *storage_state = runtime.storage_state();
     if let (Some(loader), Some(document_url)) = (resource_loader.as_mut(), document_url) {
@@ -1820,7 +1979,7 @@ fn sync_content_runtime_state(
             loader.set_document_cookie(document_url, &value)?;
         }
     }
-    Ok(())
+    Ok(runtime.take_storage_changes())
 }
 
 fn refresh_content_runtime_cookie(
@@ -2038,6 +2197,7 @@ async fn load_content_resource(
             url: resource.url,
             origin: resource.origin,
             document: wire,
+            storage_events: Vec::new(),
         },
         document,
         viewport,
@@ -2344,6 +2504,7 @@ fn mutate_click_with_event_preflight(
             .collect(),
         navigation,
         allowed: true,
+        storage_events: Vec::new(),
     };
     Ok((next, mutation))
 }
@@ -2447,6 +2608,7 @@ fn mutate_type_with_event_bridge(
             .collect(),
         navigation: None,
         allowed: true,
+        storage_events: Vec::new(),
     };
     Ok((next, mutation))
 }
@@ -2544,6 +2706,7 @@ fn mutate_key_with_event_bridge(
             .collect(),
         navigation: None,
         allowed: true,
+        storage_events: Vec::new(),
     };
     Ok((next, mutation))
 }
@@ -2599,6 +2762,7 @@ fn mutate_before_unload(
             events,
             navigation: None,
             allowed,
+            storage_events: Vec::new(),
         },
     ))
 }
@@ -2619,6 +2783,7 @@ fn mutate_lifecycle_events(
                 events: Vec::new(),
                 navigation: None,
                 allowed: true,
+                storage_events: Vec::new(),
             },
         ));
     }
@@ -2659,6 +2824,7 @@ fn mutate_lifecycle_events(
             events,
             navigation: None,
             allowed: true,
+            storage_events: Vec::new(),
         },
     ))
 }
@@ -2705,6 +2871,7 @@ fn mutate_hash_change(
             events,
             navigation: None,
             allowed: true,
+            storage_events: Vec::new(),
         },
     ))
 }
@@ -2809,6 +2976,7 @@ fn mutate_script_document(
             })
             .transpose()?,
         allowed: true,
+        storage_events: Vec::new(),
     };
     Ok((next, mutation))
 }

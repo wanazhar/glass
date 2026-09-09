@@ -20,6 +20,7 @@ pub enum NativeEventKind {
     Focus,
     DomContentLoaded,
     Load,
+    Invalid,
     KeyDown,
     KeyUp,
     Submit,

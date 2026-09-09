@@ -45,6 +45,8 @@ pub(crate) enum NativeScriptCommand {
     },
     RequestSubmitForm {
         node_index: u32,
+        #[serde(default)]
+        submitter_index: Option<u32>,
     },
     SetValue {
         node_index: u32,
@@ -281,17 +283,35 @@ pub(crate) fn execute_page_scripts(
 pub(crate) fn host_event_script(
     events: &[(u32, NativeEventKind)],
 ) -> Result<Option<String>, NativeEngineError> {
+    let events = events
+        .iter()
+        .map(|(node_index, kind)| (*node_index, *kind, None))
+        .collect::<Vec<_>>();
+    host_event_script_with_submitters(&events)
+}
+
+pub(crate) fn host_submit_event_script(
+    form_index: u32,
+    submitter_index: Option<u32>,
+) -> Result<Option<String>, NativeEngineError> {
+    host_event_script_with_submitters(&[(form_index, NativeEventKind::Submit, submitter_index)])
+}
+
+fn host_event_script_with_submitters(
+    events: &[(u32, NativeEventKind, Option<u32>)],
+) -> Result<Option<String>, NativeEngineError> {
     if events.is_empty() {
         return Ok(None);
     }
     let descriptors = events
         .iter()
-        .map(|(node_index, kind)| {
+        .map(|(node_index, kind, submitter_index)| {
             let (event_type, bubbles, cancelable) = match kind {
                 NativeEventKind::Blur => ("blur", false, false),
                 NativeEventKind::Focus => ("focus", false, false),
                 NativeEventKind::DomContentLoaded => ("DOMContentLoaded", false, false),
                 NativeEventKind::Load => ("load", false, false),
+                NativeEventKind::Invalid => ("invalid", false, true),
                 NativeEventKind::KeyDown => ("keydown", true, true),
                 NativeEventKind::KeyUp => ("keyup", true, false),
                 NativeEventKind::Submit => ("submit", true, true),
@@ -305,6 +325,7 @@ pub(crate) fn host_event_script(
                 "type": event_type,
                 "bubbles": bubbles,
                 "cancelable": cancelable,
+                "submitter_node_index": submitter_index,
             })
         })
         .collect::<Vec<_>>();
@@ -1004,6 +1025,7 @@ fn document_bootstrap(
       currentTarget: null,
       eventPhase: 0,
       defaultPrevented: false,
+      submitter: settings.submitter === undefined ? null : settings.submitter,
       preventDefault() {{
         if (this.cancelable) this.defaultPrevented = true;
       }},
@@ -1137,7 +1159,11 @@ fn document_bootstrap(
       }},
       requestSubmit() {{
         if (this.tagName !== "FORM") throw new TypeError("requestSubmit requires a form");
-        pushCommand({{ kind: "requestSubmitForm", node_index: entry.nodeIndex }});
+        const submitter = arguments.length === 0 ? null : arguments[0];
+        if (submitter !== null && (typeof submitter !== "object" || typeof submitter.nodeIndex !== "number")) {{
+          throw new TypeError("requestSubmit submitter must be an element");
+        }}
+        pushCommand({{ kind: "requestSubmitForm", node_index: entry.nodeIndex, submitter_index: submitter === null ? null : submitter.nodeIndex }});
       }},
       setAttribute(name, value) {{
         const key = String(name).toLowerCase();
@@ -1300,6 +1326,9 @@ fn document_bootstrap(
       cancelable: Boolean(descriptor.cancelable),
       key: descriptor.key,
       code: descriptor.code,
+      submitter: descriptor.submitter_node_index == null
+        ? null
+        : elements.find((element) => element.nodeIndex === descriptor.submitter_node_index) || null,
     }});
     return dispatchTarget(target, event);
   }});

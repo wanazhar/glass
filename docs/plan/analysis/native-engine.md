@@ -2034,8 +2034,8 @@ child owners now serialize accepted `method="post"` forms into one bounded
 navigation loader and content-process IPC. Existing submit cancellation,
 cookie/referrer/redirect policy, response parsing, and no-POST-cache behavior
 remain in force; unsupported methods and multipart/text/plain encodings fail
-explicitly. Validation, submitter metadata, target contexts, multipart bodies,
-and unload/navigation task ordering remain open.
+explicitly. Full constraint validation, submitter serialization, target
+contexts, multipart bodies, and unload/navigation task ordering remain open.
 
 The completed bounded parser-time script-ordering follow-up is
 [native-engine-browser-036](../tasks/native-engine-browser-036.md). DOM script
@@ -2052,6 +2052,15 @@ document and then `load` on the window through the typed event bridge, so
 listener mutations remain inside the existing clone-and-commit path. Ready
 state transitions, resource-specific events, unload/pagehide, completion
 races, dynamic insertion, and full task-source timing remain open.
+
+The completed bounded form-validation follow-up is
+[native-engine-browser-038](../tasks/native-engine-browser-038.md). Both
+owners now validate the bounded required-control set before interactive
+submission, dispatch non-bubbling `invalid` events for blocked controls, and
+expose the initiating button as `event.submitter` for valid submit callbacks.
+Direct `form.submit()` remains validation-free. Full constraint-validation
+APIs, submitter serialization, multipart encoding, external form association,
+and target contexts remain open.
 
 ## Baseline and constraints
 

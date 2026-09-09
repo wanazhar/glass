@@ -403,8 +403,9 @@ The completed native-engine-browser-028 batch adds bounded GET form submission.
 The persistent realm exposes `submit()` and `requestSubmit()`, submit-button
 clicks use the same typed path, and enabled named controls are URL-encoded
 before local or child-owned navigation. Child form mutations transfer only a
-validated node/URL handoff; POST/multipart, constraint validation, submission
-events, target contexts, unload ordering, and full form parity remain open.
+validated node/URL handoff; POST/multipart, full constraint validation,
+complete submission-event parity, target contexts, unload ordering, and full
+form parity remain open.
 
 The completed native-engine-browser-029 batch adds bounded page-module roots.
 The parser classifies inline and external `type="module"` sources separately
@@ -458,8 +459,9 @@ bounded `method="post"` forms using
 `application/x-www-form-urlencoded`. The encoded body travels through the
 same typed parent/content-process request path, preserves the submit event and
 callback-mutation contract, and keeps the existing redirect, referrer, cookie,
-MIME, and response limits. Multipart/text/plain encoding, validation,
-submitter metadata, target contexts, and unload ordering remain open.
+MIME, and response limits. Multipart/text/plain encoding, full constraint
+validation, submitter serialization, target contexts, and unload ordering
+remain open.
 
 The completed native-engine-browser-036 batch adds bounded parser-time script
 ordering. Classic parser-blocking scripts, external `async` scripts, deferred
@@ -475,6 +477,16 @@ Listener mutations retain the existing typed clone-and-commit boundary.
 Ready-state transitions, resource-specific events, unload/pagehide,
 completion-order races, dynamic insertion, and full task-source timing remain
 open.
+
+The completed native-engine-browser-038 batch adds bounded interactive-form
+validation and submitter metadata in both owners. Required text controls,
+checkboxes, radio groups, textareas, and single-select controls dispatch
+non-bubbling `invalid` events and block `submit`/navigation until valid;
+`requestSubmit(button)` and submit-button activation expose the bounded button
+snapshot as `event.submitter`, while direct `form.submit()` remains the
+validation-free path. Full `ValidityState`, type-specific constraints,
+`formnovalidate`, external form association, submitter name/value
+serialization, multipart encoding, and target contexts remain open.
 
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
@@ -3535,7 +3547,7 @@ The native profile is `experimental` and declares:
 | evidence | available | bounded URL, title, visible text, revision; native semantic projection is Rust-only |
 | action | available | semantic click/type, focused-text printable/Backspace/Delete key input, bounded vertical root scrolling, bounded GET or urlencoded-POST form defaults, plus native point targets for supported local controls; no selection/IME or nested scrolling |
 | effects | available | current revision and changed signal; bounded event metadata is Rust-only |
-| script | available | bounded QuickJS ECMAScript with a refreshed `window`/`document` snapshot, bounded inline/classic/module-root page-script loading and parser/lifecycle ordering, HTTP(S) static module graphs, literal dynamic imports, and deterministic microtask/next-turn timer callbacks, typed click/form-submit/attribute/focus commands, persistent listener records, bounded Event/CustomEvent capture/target/bubble dispatch, cancelable click preflight, transactional type/input/change event re-entry, top-level link/form navigation handoff, and relative HTTP(S)/same-document resolution; no live Web IDL identity, target contexts, ready-state/resource lifecycle parity, beforeinput/composition, multipart/text/plain forms, validation/submitter parity, intervals/animation/idle callbacks, wall-clock timer semantics, computed imports, bare specifiers/import maps, local external subresources, or general page loading |
+| script | available | bounded QuickJS ECMAScript with a refreshed `window`/`document` snapshot, bounded inline/classic/module-root page-script loading and parser/lifecycle ordering, HTTP(S) static module graphs, literal dynamic imports, and deterministic microtask/next-turn timer callbacks, typed click/form-submit/attribute/focus commands, persistent listener records, bounded Event/CustomEvent capture/target/bubble dispatch, cancelable click preflight, transactional type/input/change event re-entry, bounded required-control validation and submitter event metadata, top-level link/form navigation handoff, and relative HTTP(S)/same-document resolution; no live Web IDL identity, target contexts, ready-state/resource lifecycle parity, beforeinput/composition, full constraint validation, submitter serialization parity, multipart/text/plain forms, intervals/animation/idle callbacks, wall-clock timer semantics, computed imports, bare specifiers/import maps, local external subresources, or general page loading |
 | capture | available | bounded PNG of the current logical RGBA surface; JPEG/PDF and screenshot-containing evidence are unavailable |
 | storage | partial | process-owned session cookies and bounded document cache; no local/session/IndexedDB storage or persistence |
 | prompts | omitted | no dialogs |

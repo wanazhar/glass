@@ -16,7 +16,7 @@ use super::interaction::{
 };
 use super::javascript::{
     NativeJavaScriptRuntime, NativeScriptEvaluation, execute_inline_scripts, host_event_script,
-    host_key_event_script,
+    host_key_event_script, host_submit_event_script,
 };
 use super::layout::{NativeLayoutSnapshot, NativePoint};
 use super::lifecycle::NativeLifecycleState;
@@ -745,26 +745,41 @@ impl NativeEngine {
         if let Some(ScriptNavigationTarget::Form {
             form_id,
             dispatch_submit: true,
+            submitter,
         }) = navigation.as_ref()
         {
-            let evaluation =
-                self.evaluate_local_events(&document, &[(*form_id, NativeEventKind::Submit)])?;
-            let evaluation = evaluation.ok_or_else(|| NativeEngineError::Worker {
-                operation: "native submit event".into(),
-                reason: "native JavaScript realm disappeared during submit dispatch".into(),
-            })?;
-            let allowed = evaluation
-                .value
-                .as_array()
-                .and_then(|values| values.first())
-                .and_then(serde_json::Value::as_bool)
-                .ok_or_else(|| NativeEngineError::Worker {
-                    operation: "native submit event".into(),
-                    reason: "native submit event result was invalid".into(),
-                })?;
-            events.push((*form_id, NativeEventKind::Submit));
-            events.extend(document.apply_script_commands(&evaluation.commands)?);
-            if !allowed {
+            let invalid = document.invalid_form_controls(*form_id)?;
+            if invalid.is_empty() {
+                let evaluation = self
+                    .evaluate_local_submit_event(&document, *form_id, *submitter)?
+                    .ok_or_else(|| NativeEngineError::Worker {
+                        operation: "native submit event".into(),
+                        reason: "native JavaScript realm disappeared during submit dispatch".into(),
+                    })?;
+                let allowed = evaluation
+                    .value
+                    .as_array()
+                    .and_then(|values| values.first())
+                    .and_then(serde_json::Value::as_bool)
+                    .ok_or_else(|| NativeEngineError::Worker {
+                        operation: "native submit event".into(),
+                        reason: "native submit event result was invalid".into(),
+                    })?;
+                events.push((*form_id, NativeEventKind::Submit));
+                events.extend(document.apply_script_commands(&evaluation.commands)?);
+                if !allowed {
+                    navigation = None;
+                }
+            } else {
+                let invalid_events = invalid
+                    .iter()
+                    .copied()
+                    .map(|id| (id, NativeEventKind::Invalid))
+                    .collect::<Vec<_>>();
+                if let Some(evaluation) = self.evaluate_local_events(&document, &invalid_events)? {
+                    events.extend(invalid_events);
+                    events.extend(document.apply_script_commands(&evaluation.commands)?);
+                }
                 navigation = None;
             }
         }
@@ -808,6 +823,7 @@ impl NativeEngine {
                         Some(ScriptNavigationTarget::Form {
                             form_id,
                             dispatch_submit: true,
+                            submitter: Some(id),
                         })
                     } else {
                         None
@@ -819,14 +835,29 @@ impl NativeEngine {
                     Some(ScriptNavigationTarget::Form {
                         form_id: id,
                         dispatch_submit: false,
+                        submitter: None,
                     })
                 }
-                super::javascript::NativeScriptCommand::RequestSubmitForm { node_index } => {
+                super::javascript::NativeScriptCommand::RequestSubmitForm {
+                    node_index,
+                    submitter_index,
+                } => {
                     let id = NativeNodeId::from_parts(document.generation(), *node_index);
                     document.form_submission_request(id, &self.url)?;
+                    let submitter = submitter_index
+                        .map(|index| NativeNodeId::from_parts(document.generation(), index));
+                    if let Some(submitter) = submitter
+                        && document.submit_control_form(submitter) != Some(id)
+                    {
+                        return Err(NativeEngineError::TargetNotActionable {
+                            reason: "requestSubmit submitter must be a submit control for the form"
+                                .into(),
+                        });
+                    }
                     Some(ScriptNavigationTarget::Form {
                         form_id: id,
                         dispatch_submit: true,
+                        submitter,
                     })
                 }
                 _ => None,
@@ -914,6 +945,29 @@ impl NativeEngine {
         )?))
     }
 
+    fn evaluate_local_submit_event(
+        &self,
+        document: &NativeDocument,
+        form_id: NativeNodeId,
+        submitter: Option<NativeNodeId>,
+    ) -> Result<Option<NativeScriptEvaluation>, NativeEngineError> {
+        let Some(source) =
+            host_submit_event_script(form_id.index(), submitter.map(NativeNodeId::index))?
+        else {
+            return Ok(None);
+        };
+        let Some(javascript) = self.javascript.as_ref() else {
+            return Ok(None);
+        };
+        Ok(Some(javascript.evaluate(
+            &source,
+            document,
+            &self.url,
+            &self.origin,
+            self.config.viewport,
+        )?))
+    }
+
     fn evaluate_local_key_event(
         &self,
         document: &NativeDocument,
@@ -966,25 +1020,41 @@ impl NativeEngine {
         if click_allowed {
             events.extend(document.apply_click(id)?);
             if let Some(form_id) = document.submit_control_form(id) {
-                let submit_evaluation = self
-                    .evaluate_local_events(&document, &[(form_id, NativeEventKind::Submit)])?
-                    .ok_or_else(|| NativeEngineError::Worker {
-                        operation: "native submit event".into(),
-                        reason: "native JavaScript realm disappeared during submit dispatch".into(),
-                    })?;
-                let submit_allowed = submit_evaluation
-                    .value
-                    .as_array()
-                    .and_then(|values| values.first())
-                    .and_then(serde_json::Value::as_bool)
-                    .ok_or_else(|| NativeEngineError::Worker {
-                        operation: "native submit event".into(),
-                        reason: "native submit event result was invalid".into(),
-                    })?;
-                events.push((form_id, NativeEventKind::Submit));
-                events.extend(document.apply_script_commands(&submit_evaluation.commands)?);
-                if submit_allowed {
-                    navigation = Some(form_id);
+                let invalid = document.invalid_form_controls(form_id)?;
+                if invalid.is_empty() {
+                    let submit_evaluation = self
+                        .evaluate_local_submit_event(&document, form_id, Some(id))?
+                        .ok_or_else(|| NativeEngineError::Worker {
+                            operation: "native submit event".into(),
+                            reason: "native JavaScript realm disappeared during submit dispatch"
+                                .into(),
+                        })?;
+                    let submit_allowed = submit_evaluation
+                        .value
+                        .as_array()
+                        .and_then(|values| values.first())
+                        .and_then(serde_json::Value::as_bool)
+                        .ok_or_else(|| NativeEngineError::Worker {
+                            operation: "native submit event".into(),
+                            reason: "native submit event result was invalid".into(),
+                        })?;
+                    events.push((form_id, NativeEventKind::Submit));
+                    events.extend(document.apply_script_commands(&submit_evaluation.commands)?);
+                    if submit_allowed {
+                        navigation = Some(form_id);
+                    }
+                } else {
+                    let invalid_events = invalid
+                        .iter()
+                        .copied()
+                        .map(|invalid_id| (invalid_id, NativeEventKind::Invalid))
+                        .collect::<Vec<_>>();
+                    if let Some(evaluation) =
+                        self.evaluate_local_events(&document, &invalid_events)?
+                    {
+                        events.extend(invalid_events);
+                        events.extend(document.apply_script_commands(&evaluation.commands)?);
+                    }
                 }
             }
         } else {
@@ -1024,6 +1094,17 @@ impl NativeEngine {
         form_id: NativeNodeId,
     ) -> Result<NativeActionResult, NativeEngineError> {
         let events = self.document.apply_click(id)?;
+        if !self.document.invalid_form_controls(form_id)?.is_empty() {
+            let next_revision = self.next_revision()?;
+            self.document.set_revision(next_revision);
+            self.revision = next_revision;
+            self.history.update_current_scroll(self.scroll_offset);
+            self.record_effects(events);
+            return Ok(NativeActionResult {
+                revision: next_revision,
+                accepted: true,
+            });
+        }
         let next_revision = self.next_revision()?;
         self.document.set_revision(next_revision);
         self.revision = next_revision;
@@ -1793,6 +1874,7 @@ enum ScriptNavigationTarget {
     Form {
         form_id: NativeNodeId,
         dispatch_submit: bool,
+        submitter: Option<NativeNodeId>,
     },
 }
 

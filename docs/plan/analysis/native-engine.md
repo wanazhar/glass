@@ -1745,6 +1745,15 @@ acknowledgement with a bounded wait. The parent still owns HTTP(S) fetching,
 decoding, and document construction, so this is not yet content-process
 execution isolation or hostile-content safety.
 
+The completed resource-transfer follow-up is
+[`native-engine-browser-005`](../tasks/native-engine-browser-005.md). The child
+now invokes the shared bounded HTTP(S) loader and transfers only final URL and
+base64-encoded HTML under the existing frame/document quotas. The parent
+validates the transfer and origin before parsing; load deadlines and malformed
+responses poison the child, while ordinary child-side HTTP rejections remain
+typed failures. The parser/DOM is still parent-owned, so the next process gate
+must move document construction and its recovery boundary into the child.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine
@@ -1791,7 +1800,7 @@ real edit touching the native module, and target-directory growth separately.
 | `native_engine::lifecycle` | lifecycle state | transitions | `New`, `Running`, `Closed` | none |
 | `native_engine::runtime` | runtime lifecycle, cancellation, typed microtasks, bounded trace, and scheduler ownership | lifecycle events, typed work, delay, cancellation | runtime state, task/microtask readiness, trace events | scheduler + native error |
 | `native_engine::worker` | bounded async command ownership over the single runtime state | typed runtime commands and cancellation | serialized task/microtask results, traces, and worker failures | Tokio sync/task + runtime |
-| `native_engine::content_process` | child-helper discovery, bounded framed lifecycle IPC, request correlation, and fail-closed process shutdown | protocol frames and helper executable | typed process liveness/commit/close acknowledgements or worker errors | Tokio process/io + serde JSON |
+| `native_engine::content_process` | child-helper discovery, bounded framed lifecycle/document-transfer IPC, request correlation, response validation, and fail-closed process shutdown | protocol frames, helper executable, and bounded HTTP(S) requests | typed process liveness/load/commit/close acknowledgements or worker errors | Tokio process/io + serde JSON + resource loader |
 | `native_engine::scheduler` | logical clock and bounded ordered tasks | task kind, delay | deterministic task IDs/order | native limits; owned by runtime |
 | `native_engine::history` | current local history and per-entry root scroll state | committed URL/revision/scroll offset | bounded entries/current index | native limits + layout point |
 | `native_engine::origin` | opaque local origins and normalized HTTP(S) tuple origins | loaded URL | origin state/serialization | `url`, typed native error |

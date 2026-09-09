@@ -1,5 +1,6 @@
 use super::config::{
-    NativeEngineConfig, canonical_fixture_url, is_network_url, validate_url_text, without_fragment,
+    MAX_NATIVE_DOCUMENT_BYTES, NativeEngineConfig, canonical_fixture_url, is_network_url,
+    validate_url_text, without_fragment,
 };
 use super::error::NativeEngineError;
 use super::origin::NativeOrigin;
@@ -38,6 +39,21 @@ impl NativeResourceLoader {
         Ok(Self {
             fixtures,
             max_document_bytes: config.limits.max_document_bytes,
+        })
+    }
+
+    pub(crate) fn for_content_process(
+        max_document_bytes: usize,
+    ) -> Result<Self, NativeEngineError> {
+        if max_document_bytes == 0 || max_document_bytes > MAX_NATIVE_DOCUMENT_BYTES {
+            return Err(NativeEngineError::invalid(
+                "content-process document limit",
+                format!("must be between 1 and {MAX_NATIVE_DOCUMENT_BYTES}"),
+            ));
+        }
+        Ok(Self {
+            fixtures: BTreeMap::new(),
+            max_document_bytes,
         })
     }
 

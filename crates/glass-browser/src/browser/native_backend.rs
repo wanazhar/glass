@@ -63,14 +63,14 @@ impl NativeEngineBackend {
         for capability in supported {
             let limitations = match capability {
                 BrowserCapability::Navigation => {
-                    vec!["bounded HTTP(S) HTML documents with redirects, policy-checked stylesheets/scripts/modules, bounded parser-blocking/async/defer script ordering, and GET or urlencoded-POST form navigation; broader subresources and full parser/task timing remain open".into()]
+                    vec!["bounded HTTP(S) HTML documents with redirects, policy-checked stylesheets/scripts/modules, bounded parser-blocking/async/defer script ordering, GET or urlencoded-POST form navigation, bounded form validation, and the implemented string-only fetch/FormData/URLSearchParams/XHR paths; broader subresources and full parser/task timing remain open".into()]
                 }
                 BrowserCapability::Evidence => {
                     vec!["bounded URL, title, and visible text only; no DOM or pixels".into()]
                 }
                 BrowserCapability::Action => {
                     vec![
-                        "semantic click/type, focused-text printable/Backspace/Delete key input, bounded GET or urlencoded-POST form defaults, bounded vertical root scrolling, and native point targets for supported local controls; selection, IME, and nested scrolling remain open".into(),
+                        "semantic click/type, focused-text printable/Backspace/Delete key input, bounded single- and multi-select option interaction, bounded GET or urlencoded-POST form defaults, bounded vertical root scrolling, and native point targets for supported local controls; text selection, IME, and nested scrolling remain open".into(),
                     ]
                 }
                 BrowserCapability::Effects => {
@@ -80,7 +80,7 @@ impl NativeEngineBackend {
                     ]
                 }
                 BrowserCapability::Script => vec![
-                    "bounded QuickJS evaluation with refreshed window/document snapshots, typed DOM/event commands, page scripts, modules, and deterministic task turns; live Web IDL identity, Fetch/XHR, workers, and full task timing remain open".into(),
+                    "bounded QuickJS evaluation with refreshed window/document snapshots, typed DOM/event commands, page scripts, modules, deterministic task turns, policy-owned fetch/CORS, string-only FormData and URLSearchParams, and asynchronous XHR; live Web IDL identity, workers, broad subresources, and full task timing remain open".into(),
                 ],
                 BrowserCapability::Capture => {
                     vec![
@@ -120,8 +120,8 @@ impl NativeEngineBackend {
                     limitations: vec![
                         "network navigation and scripting are bounded web-platform slices, not browser parity".into(),
                         "in-process local execution is not a security boundary for hostile content; external documents use the sandboxed content worker".into(),
-                        "live Web IDL identity, Fetch/XHR, workers, broad subresources, parser timing, general CSS/layout, font/image fidelity, storage classes beyond session cookies/cache, and full browser default behavior remain unavailable".into(),
-                        "actions are limited to semantic click/type, focused-text printable/Backspace/Delete key input, bounded GET or urlencoded-POST form defaults, bounded vertical root scrolling, and native point targets for supported local controls".into(),
+                        "live Web IDL identity, workers, broad subresources, parser timing, general CSS/layout, font/image fidelity, storage classes beyond session cookies/cache, and full browser default behavior remain unavailable".into(),
+                        "actions are limited to semantic click/type, focused-text printable/Backspace/Delete key input, bounded single- and multi-select option interaction, bounded GET or urlencoded-POST form defaults, bounded vertical root scrolling, and native point targets for supported local controls".into(),
                     ],
                 },
             },

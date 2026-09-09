@@ -2258,6 +2258,15 @@ multi-select in document order. Interactive multi-select actions, `optgroup`
 disabled inheritance, File/Blob parts, and full FormData Web IDL identity
 remain open.
 
+The completed bounded multi-select interaction follow-up is
+[native-engine-browser-063](../tasks/native-engine-browser-063.md). Local and
+child-owned option clicks toggle multiple selections, script `option.selected`
+writes preserve them, `select.value` deterministically selects the first
+matching option, and the host view exposes bounded `multiple`, `options`, and
+`selectedOptions`. Modifier-key/range selection, keyboard listbox behavior,
+text selection/IME, `optgroup` disabled inheritance, and option-collection Web
+IDL identity remain open.
+
 The next bounded workstream is full task ordering and navigation edge cases,
 followed by file/blob FormData support, remaining full pattern-regex/file
 constraint validation, target contexts, and the remaining browser-context

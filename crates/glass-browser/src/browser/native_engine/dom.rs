@@ -913,19 +913,10 @@ impl NativeDocument {
             });
         }
         let option_select_id = if semantic.role == "option" {
-            Some(self.single_select_for_option(id)?)
+            Some(self.select_for_option(id)?)
         } else {
             None
         };
-        if semantic.role == "combobox"
-            && self
-                .node(id)
-                .is_some_and(|node| node.attribute("multiple").is_some())
-        {
-            return Err(NativeEngineError::TargetNotActionable {
-                reason: "multiple select controls are not supported".into(),
-            });
-        }
 
         let mut events = self.focus_element(id);
         events.push((id, NativeEventKind::Click));
@@ -971,9 +962,27 @@ impl NativeDocument {
             "option" => {
                 let select_id = option_select_id.ok_or(NativeEngineError::DetachedTarget)?;
                 let option_ids = self.select_option_ids(select_id);
+                let multiple = self
+                    .node(select_id)
+                    .is_some_and(|node| node.attribute("multiple").is_some());
                 let mut selection_changed = false;
                 for option_id in option_ids {
-                    let should_be_selected = option_id == id;
+                    let should_be_selected = if multiple {
+                        if option_id == id {
+                            !self
+                                .node(option_id)
+                                .ok_or(NativeEngineError::DetachedTarget)?
+                                .state
+                                .selected
+                        } else {
+                            self.node(option_id)
+                                .ok_or(NativeEngineError::DetachedTarget)?
+                                .state
+                                .selected
+                        }
+                    } else {
+                        option_id == id
+                    };
                     let was_selected = self
                         .node(option_id)
                         .ok_or(NativeEngineError::DetachedTarget)?
@@ -1333,9 +1342,14 @@ impl NativeDocument {
         &mut self,
         id: NativeNodeId,
     ) -> Result<Vec<(NativeNodeId, NativeEventKind)>, NativeEngineError> {
-        let semantic = self
-            .semantic_node(id)
-            .ok_or(NativeEngineError::DetachedTarget)?;
+        let Some(_node) = self.node(id) else {
+            return Err(NativeEngineError::DetachedTarget);
+        };
+        let semantic =
+            self.semantic_node(id)
+                .ok_or_else(|| NativeEngineError::TargetNotActionable {
+                    reason: "target has no supported semantic control role".into(),
+                })?;
         if semantic.hidden {
             return Err(NativeEngineError::TargetNotActionable {
                 reason: "hidden targets cannot receive focus".into(),
@@ -1382,12 +1396,29 @@ impl NativeDocument {
                 value.len(),
             ));
         }
-        let node = self.node_mut(id).ok_or(NativeEngineError::DetachedTarget)?;
-        if !matches!(node.element_name(), Some("input" | "textarea")) {
+        let element_name = self
+            .node(id)
+            .and_then(NativeNode::element_name)
+            .ok_or(NativeEngineError::DetachedTarget)?;
+        if element_name == "select" {
+            let matching = self.select_option_ids(id).into_iter().find(|option_id| {
+                self.option_value(*option_id)
+                    .is_some_and(|option_value| option_value == value)
+            });
+            for option_id in self.select_option_ids(id) {
+                self.node_mut(option_id)
+                    .ok_or(NativeEngineError::DetachedTarget)?
+                    .state
+                    .selected = matching == Some(option_id);
+            }
+            return Ok(());
+        }
+        if !matches!(element_name, "input" | "textarea") {
             return Err(NativeEngineError::TargetNotActionable {
                 reason: "script value requires an input or textarea".into(),
             });
         }
+        let node = self.node_mut(id).ok_or(NativeEngineError::DetachedTarget)?;
         node.state.value = Some(value.to_owned());
         Ok(())
     }
@@ -1450,8 +1481,16 @@ impl NativeDocument {
                 reason: "script selected state requires an option".into(),
             });
         }
-        let select_id = self.single_select_for_option(id)?;
-        if selected {
+        let select_id = self.select_for_option(id)?;
+        let multiple = self
+            .node(select_id)
+            .is_some_and(|node| node.attribute("multiple").is_some());
+        if selected && multiple {
+            self.node_mut(id)
+                .ok_or(NativeEngineError::DetachedTarget)?
+                .state
+                .selected = true;
+        } else if selected {
             for option_id in self.select_option_ids(select_id) {
                 self.node_mut(option_id)
                     .ok_or(NativeEngineError::DetachedTarget)?
@@ -1606,24 +1645,22 @@ impl NativeDocument {
         }
     }
 
-    fn single_select_for_option(
+    fn select_for_option(
         &self,
         option_id: NativeNodeId,
     ) -> Result<NativeNodeId, NativeEngineError> {
-        let select_id = self
-            .find_ancestor_element(option_id, "select")
+        self.find_ancestor_element(option_id, "select")
             .ok_or_else(|| NativeEngineError::TargetNotActionable {
-                reason: "option must belong to a single-select control".into(),
-            })?;
-        if self
-            .node(select_id)
-            .is_some_and(|node| node.attribute("multiple").is_some())
-        {
-            return Err(NativeEngineError::TargetNotActionable {
-                reason: "multiple select controls are not supported".into(),
-            });
-        }
-        Ok(select_id)
+                reason: "option must belong to a select control".into(),
+            })
+    }
+
+    fn option_value(&self, option_id: NativeNodeId) -> Option<String> {
+        let option = self.node(option_id)?;
+        option.attribute("value").map(str::to_owned).or_else(|| {
+            self.element_text(option_id, MAX_LOCATOR_BYTES)
+                .map(|(value, _)| value)
+        })
     }
 
     fn select_option_ids(&self, select_id: NativeNodeId) -> Vec<NativeNodeId> {

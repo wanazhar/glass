@@ -376,8 +376,16 @@ default-deferred module roots now use one deterministic local/child ordering
 contract. Incremental parsing, completion-order races, script event timing,
 and dynamic insertion remain open.
 
+The completed bounded page-lifecycle batch is
+[native-engine-browser-037](tasks/native-engine-browser-037.md). Local and
+child-owned realms now deliver `DOMContentLoaded` to the document and then
+`load` to the window after the accepted script schedule, retaining callback
+mutations through the existing typed owner path. Ready-state transitions,
+resource-specific events, unload/pagehide, completion races, and full
+task-source timing remain open.
+
 The next BE-02/BE-03/BE-04 gate is full parser/task timing and script lifecycle
-events, followed by multipart/validation/submitter behavior and the remaining
+ordering, followed by multipart/validation/submitter behavior and the remaining
 browser-context primitives.
 
 The first dependency-ordered checkpoint is

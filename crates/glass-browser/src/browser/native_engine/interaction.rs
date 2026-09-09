@@ -18,6 +18,8 @@ pub enum NativeAction {
 pub enum NativeEventKind {
     Blur,
     Focus,
+    DomContentLoaded,
+    Load,
     KeyDown,
     KeyUp,
     Submit,

@@ -2045,6 +2045,14 @@ deterministic ordering helper. Incremental parsing, wall-clock completion
 races, script lifecycle events, dynamic insertion, and full task-source timing
 remain open.
 
+The completed bounded page-lifecycle follow-up is
+[native-engine-browser-037](../tasks/native-engine-browser-037.md). After the
+accepted script schedule, both owners dispatch `DOMContentLoaded` on the
+document and then `load` on the window through the typed event bridge, so
+listener mutations remain inside the existing clone-and-commit path. Ready
+state transitions, resource-specific events, unload/pagehide, completion
+races, dynamic insertion, and full task-source timing remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

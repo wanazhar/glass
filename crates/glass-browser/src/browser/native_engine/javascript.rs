@@ -248,6 +248,30 @@ pub(crate) fn execute_page_scripts(
         next.apply_script_commands(&evaluation.commands)?;
         *document = next;
     }
+    for (target, kind) in [
+        (0, NativeEventKind::DomContentLoaded),
+        (u32::MAX, NativeEventKind::Load),
+    ] {
+        let Some(event_source) = host_event_script(&[(target, kind)])? else {
+            continue;
+        };
+        let evaluation = runtime
+            .as_ref()
+            .expect("page script runtime initialized")
+            .evaluate(
+                &event_source,
+                document,
+                document_url,
+                document_origin,
+                viewport,
+            )?;
+        if evaluation.commands.is_empty() {
+            continue;
+        }
+        let mut next = document.clone();
+        next.apply_script_commands(&evaluation.commands)?;
+        *document = next;
+    }
     Ok(())
 }
 
@@ -266,6 +290,8 @@ pub(crate) fn host_event_script(
             let (event_type, bubbles, cancelable) = match kind {
                 NativeEventKind::Blur => ("blur", false, false),
                 NativeEventKind::Focus => ("focus", false, false),
+                NativeEventKind::DomContentLoaded => ("DOMContentLoaded", false, false),
+                NativeEventKind::Load => ("load", false, false),
                 NativeEventKind::KeyDown => ("keydown", true, true),
                 NativeEventKind::KeyUp => ("keyup", true, false),
                 NativeEventKind::Submit => ("submit", true, true),
@@ -1265,7 +1291,9 @@ fn document_bootstrap(
   globalThis.__glassDispatchHostEvents = (events) => events.map((descriptor) => {{
     const target = descriptor.node_index === 0
       ? document
-      : elements.find((element) => element.nodeIndex === descriptor.node_index) || null;
+      : descriptor.node_index === 4294967295
+        ? globalThis
+        : elements.find((element) => element.nodeIndex === descriptor.node_index) || null;
     if (!target) throw new TypeError("native event target is detached");
     const event = createEvent(descriptor.type, {{
       bubbles: Boolean(descriptor.bubbles),

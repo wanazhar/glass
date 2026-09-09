@@ -68,6 +68,7 @@ pub(crate) struct NativeElementState {
     checked: bool,
     focused: bool,
     selected: bool,
+    custom_validity: String,
 }
 
 impl NativeElementState {
@@ -77,6 +78,7 @@ impl NativeElementState {
             checked: attributes.contains_key("checked"),
             focused: false,
             selected: attributes.contains_key("selected"),
+            custom_validity: String::new(),
         }
     }
 }
@@ -122,6 +124,7 @@ pub(crate) struct NativeElementStateWire {
     pub(crate) checked: bool,
     pub(crate) focused: bool,
     pub(crate) selected: bool,
+    pub(crate) custom_validity: String,
 }
 
 /// One arena-owned node with parent and child links.
@@ -223,6 +226,26 @@ pub(crate) struct NativeScriptElementSnapshot {
     pub(crate) disabled: bool,
     pub(crate) hidden: bool,
     pub(crate) focused: bool,
+    pub(crate) validity: NativeValiditySnapshot,
+    pub(crate) validation_message: String,
+    pub(crate) custom_validity: String,
+    pub(crate) will_validate: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NativeValiditySnapshot {
+    pub(crate) bad_input: bool,
+    pub(crate) custom_error: bool,
+    pub(crate) pattern_mismatch: bool,
+    pub(crate) range_overflow: bool,
+    pub(crate) range_underflow: bool,
+    pub(crate) step_mismatch: bool,
+    pub(crate) too_long: bool,
+    pub(crate) too_short: bool,
+    pub(crate) type_mismatch: bool,
+    pub(crate) valid: bool,
+    pub(crate) value_missing: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -482,6 +505,7 @@ impl NativeDocument {
                     checked: node.state.checked,
                     focused: node.state.focused,
                     selected: node.state.selected,
+                    custom_validity: node.state.custom_validity.clone(),
                 },
             })
             .collect();
@@ -572,6 +596,7 @@ impl NativeDocument {
                     checked: wire_node.state.checked,
                     focused: wire_node.state.focused,
                     selected: wire_node.state.selected,
+                    custom_validity: wire_node.state.custom_validity.clone(),
                 },
             });
         }
@@ -694,6 +719,8 @@ impl NativeDocument {
                 let (text, _) = self
                     .element_text(node.id(), max_text_bytes)
                     .unwrap_or_default();
+                let (validity, validation_message, will_validate) =
+                    self.script_validation_snapshot(node.id());
                 Some(NativeScriptElementSnapshot {
                     node_index: node.id().index(),
                     parent_index: self.parent_element_index(node.id()),
@@ -706,6 +733,10 @@ impl NativeDocument {
                     disabled: self.is_disabled(node.id()),
                     hidden: self.is_hidden(node.id()),
                     focused: node.state.focused,
+                    validity,
+                    validation_message,
+                    custom_validity: node.state.custom_validity.clone(),
+                    will_validate,
                 })
             })
             .collect();
@@ -1228,6 +1259,18 @@ impl NativeDocument {
                     let id = NativeNodeId::from_parts(self.generation, *node_index);
                     self.remove_script_attribute(id, name)?;
                 }
+                NativeScriptCommand::SetCustomValidity {
+                    node_index,
+                    message,
+                } => {
+                    let id = NativeNodeId::from_parts(self.generation, *node_index);
+                    self.apply_script_custom_validity(id, message)?;
+                }
+                NativeScriptCommand::CheckValidity { node_index }
+                | NativeScriptCommand::ReportValidity { node_index } => {
+                    let id = NativeNodeId::from_parts(self.generation, *node_index);
+                    events.extend(self.validation_events(id)?);
+                }
             }
             if events.len() > super::interaction::MAX_NATIVE_EFFECTS {
                 return Err(NativeEngineError::limit(
@@ -1238,6 +1281,50 @@ impl NativeDocument {
             }
         }
         Ok(events)
+    }
+
+    fn apply_script_custom_validity(
+        &mut self,
+        id: NativeNodeId,
+        message: &str,
+    ) -> Result<(), NativeEngineError> {
+        if message.len() > MAX_LOCATOR_BYTES {
+            return Err(NativeEngineError::limit(
+                "custom validity message",
+                MAX_LOCATOR_BYTES,
+                message.len(),
+            ));
+        }
+        let node = self.node_mut(id).ok_or(NativeEngineError::DetachedTarget)?;
+        if !matches!(
+            node.element_name(),
+            Some("button" | "input" | "select" | "textarea")
+        ) {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "custom validity requires a form-associated control".into(),
+            });
+        }
+        node.state.custom_validity = message.to_owned();
+        Ok(())
+    }
+
+    fn validation_events(
+        &self,
+        id: NativeNodeId,
+    ) -> Result<Vec<(NativeNodeId, NativeEventKind)>, NativeEngineError> {
+        let node = self.node(id).ok_or(NativeEngineError::DetachedTarget)?;
+        if node.element_name() == Some("form") {
+            return Ok(self
+                .invalid_form_controls_for_api(id)?
+                .into_iter()
+                .map(|id| (id, NativeEventKind::Invalid))
+                .collect());
+        }
+        let (validity, _, will_validate) = self.script_validation_snapshot(id);
+        if !will_validate || validity.valid {
+            return Ok(Vec::new());
+        }
+        Ok(vec![(id, NativeEventKind::Invalid)])
     }
 
     pub(crate) fn apply_script_focus(
@@ -2033,6 +2120,22 @@ impl NativeDocument {
         form_id: NativeNodeId,
         submitter: Option<NativeNodeId>,
     ) -> Result<Vec<NativeNodeId>, NativeEngineError> {
+        self.invalid_form_controls_with_policy(form_id, submitter, true)
+    }
+
+    pub(crate) fn invalid_form_controls_for_api(
+        &self,
+        form_id: NativeNodeId,
+    ) -> Result<Vec<NativeNodeId>, NativeEngineError> {
+        self.invalid_form_controls_with_policy(form_id, None, false)
+    }
+
+    fn invalid_form_controls_with_policy(
+        &self,
+        form_id: NativeNodeId,
+        submitter: Option<NativeNodeId>,
+        honor_submit_bypass: bool,
+    ) -> Result<Vec<NativeNodeId>, NativeEngineError> {
         let form = self
             .node(form_id)
             .ok_or(NativeEngineError::DetachedTarget)?;
@@ -2041,72 +2144,25 @@ impl NativeDocument {
                 reason: "form validation target is not a form".into(),
             });
         }
-        if form.attribute("novalidate").is_some()
-            || submitter.is_some_and(|id| {
-                self.node(id)
-                    .is_some_and(|node| node.attribute("formnovalidate").is_some())
-            })
+        if honor_submit_bypass
+            && (form.attribute("novalidate").is_some()
+                || submitter.is_some_and(|id| {
+                    self.node(id)
+                        .is_some_and(|node| node.attribute("formnovalidate").is_some())
+                }))
         {
             return Ok(Vec::new());
         }
         let controls = self.form_controls_in_document_order(form_id)?;
         let mut invalid = Vec::new();
         for id in controls {
-            let Some(node) = self.node(id) else {
+            let Some(_node) = self.node(id) else {
                 continue;
             };
             if self.is_disabled(id) || self.is_read_only(id) {
                 continue;
             }
-            let valid = match node.element_name() {
-                Some("input") => {
-                    let input_type = node.attribute("type").unwrap_or("text");
-                    if input_type.eq_ignore_ascii_case("hidden")
-                        || input_type.eq_ignore_ascii_case("button")
-                        || input_type.eq_ignore_ascii_case("submit")
-                        || input_type.eq_ignore_ascii_case("reset")
-                        || input_type.eq_ignore_ascii_case("image")
-                    {
-                        true
-                    } else if input_type.eq_ignore_ascii_case("checkbox") {
-                        node.attribute("required")
-                            .is_none_or(|_| node.state.checked)
-                    } else if input_type.eq_ignore_ascii_case("radio") {
-                        node.attribute("required")
-                            .is_none_or(|_| self.radio_group_has_checked(form_id, id))
-                    } else {
-                        let value = self.current_value(id).unwrap_or_default();
-                        valid_text_input_value(node, &value)
-                    }
-                }
-                Some("textarea") => {
-                    let value = self.current_value(id).unwrap_or_default();
-                    valid_textarea_value(node, &value)
-                }
-                Some("select") => {
-                    if node.attribute("required").is_none() {
-                        true
-                    } else {
-                        self.select_option_ids(id)
-                            .into_iter()
-                            .filter(|option_id| {
-                                self.node(*option_id)
-                                    .is_some_and(|option| option.state.selected)
-                            })
-                            .any(|option_id| {
-                                self.node(option_id)
-                                    .and_then(|option| option.attribute("value"))
-                                    .map(str::to_owned)
-                                    .or_else(|| {
-                                        self.element_text(option_id, MAX_LOCATOR_BYTES)
-                                            .map(|(value, _)| value)
-                                    })
-                                    .is_some_and(|value| !value.is_empty())
-                            })
-                    }
-                }
-                _ => true,
-            };
+            let valid = self.control_validity(id).0.valid;
             if !valid {
                 if invalid.len() >= MAX_FORM_CONTROLS {
                     return Err(NativeEngineError::limit(
@@ -2119,6 +2175,95 @@ impl NativeDocument {
             }
         }
         Ok(invalid)
+    }
+
+    fn script_validation_snapshot(
+        &self,
+        id: NativeNodeId,
+    ) -> (NativeValiditySnapshot, String, bool) {
+        let Some(node) = self.node(id) else {
+            return (NativeValiditySnapshot::default(), String::new(), false);
+        };
+        if node.element_name() == Some("form") {
+            let valid = self
+                .invalid_form_controls_for_api(id)
+                .map_or(false, |invalid| invalid.is_empty());
+            let mut validity = NativeValiditySnapshot::default();
+            validity.valid = valid;
+            return (validity, String::new(), false);
+        }
+        let (validity, will_validate, message) = self.control_validity(id);
+        (validity, message, will_validate)
+    }
+
+    fn control_validity(&self, id: NativeNodeId) -> (NativeValiditySnapshot, bool, String) {
+        let Some(node) = self.node(id) else {
+            return (NativeValiditySnapshot::default(), false, String::new());
+        };
+        let will_validate = match node.element_name() {
+            Some("input") => {
+                let input_type = node.attribute("type").unwrap_or("text");
+                !matches!(
+                    input_type.to_ascii_lowercase().as_str(),
+                    "hidden" | "button" | "submit" | "reset" | "image"
+                ) && !self.is_disabled(id)
+                    && !self.is_read_only(id)
+            }
+            Some("select") | Some("textarea") => !self.is_disabled(id) && !self.is_read_only(id),
+            Some("button") => !self.is_disabled(id),
+            _ => false,
+        };
+        if !will_validate {
+            let mut validity = NativeValiditySnapshot::default();
+            validity.valid = true;
+            return (validity, false, String::new());
+        }
+        let mut validity = match node.element_name() {
+            Some("input") => {
+                let input_type = node.attribute("type").unwrap_or("text");
+                if input_type.eq_ignore_ascii_case("checkbox") {
+                    let mut validity = NativeValiditySnapshot::default();
+                    validity.value_missing =
+                        node.attribute("required").is_some() && !node.state.checked;
+                    validity
+                } else if input_type.eq_ignore_ascii_case("radio") {
+                    let mut validity = NativeValiditySnapshot::default();
+                    let checked = self
+                        .form_owner(id)
+                        .is_some_and(|form_id| self.radio_group_has_checked(form_id, id))
+                        || node.state.checked;
+                    validity.value_missing = node.attribute("required").is_some() && !checked;
+                    validity
+                } else {
+                    let value = self.current_value(id).unwrap_or_default();
+                    text_input_validity(node, &value)
+                }
+            }
+            Some("textarea") => {
+                let value = self.current_value(id).unwrap_or_default();
+                textarea_validity(node, &value)
+            }
+            Some("select") => {
+                let mut validity = NativeValiditySnapshot::default();
+                validity.value_missing = node.attribute("required").is_some()
+                    && self.current_value(id).is_none_or(|value| value.is_empty());
+                validity
+            }
+            _ => NativeValiditySnapshot::default(),
+        };
+        validity.custom_error = !node.state.custom_validity.is_empty();
+        validity.valid = !validity.bad_input
+            && !validity.custom_error
+            && !validity.pattern_mismatch
+            && !validity.range_overflow
+            && !validity.range_underflow
+            && !validity.step_mismatch
+            && !validity.too_long
+            && !validity.too_short
+            && !validity.type_mismatch
+            && !validity.value_missing;
+        let message = validation_message(&validity, &node.state.custom_validity);
+        (validity, true, message)
     }
 
     fn collect_form_controls(
@@ -2696,13 +2841,14 @@ impl NativeDocument {
     }
 }
 
-fn valid_text_input_value(node: &NativeNode, value: &str) -> bool {
+fn text_input_validity(node: &NativeNode, value: &str) -> NativeValiditySnapshot {
+    let mut validity = NativeValiditySnapshot::default();
     let required = node.attribute("required").is_some();
     if required && value.is_empty() {
-        return false;
+        validity.value_missing = true;
     }
     if value.is_empty() {
-        return true;
+        return finalize_validity(validity);
     }
     let input_type = node.attribute("type").unwrap_or("text");
     if input_type.eq_ignore_ascii_case("email") {
@@ -2712,41 +2858,98 @@ fn valid_text_input_value(node: &NativeNode, value: &str) -> bool {
             vec![value]
         };
         if values.is_empty() || values.iter().any(|item| !valid_email_value(item)) {
-            return false;
+            validity.type_mismatch = true;
         }
     } else if input_type.eq_ignore_ascii_case("url") && url::Url::parse(value).is_err() {
-        return false;
+        validity.type_mismatch = true;
     }
     match input_type.to_ascii_lowercase().as_str() {
-        "date" if !valid_temporal_constraints(node, value, TemporalInputKind::Date) => {
-            return false;
-        }
-        "month" if !valid_temporal_constraints(node, value, TemporalInputKind::Month) => {
-            return false;
-        }
-        "time" if !valid_temporal_constraints(node, value, TemporalInputKind::Time) => {
-            return false;
-        }
-        "datetime-local"
-            if !valid_temporal_constraints(node, value, TemporalInputKind::DateTimeLocal) =>
-        {
-            return false;
-        }
+        "date" => merge_validity(
+            &mut validity,
+            temporal_validity(node, value, TemporalInputKind::Date),
+        ),
+        "month" => merge_validity(
+            &mut validity,
+            temporal_validity(node, value, TemporalInputKind::Month),
+        ),
+        "time" => merge_validity(
+            &mut validity,
+            temporal_validity(node, value, TemporalInputKind::Time),
+        ),
+        "datetime-local" => merge_validity(
+            &mut validity,
+            temporal_validity(node, value, TemporalInputKind::DateTimeLocal),
+        ),
+        "number" | "range" => merge_validity(&mut validity, numeric_validity(node, value)),
         _ => {}
     }
-    if matches!(input_type.to_ascii_lowercase().as_str(), "number" | "range")
-        && !valid_numeric_constraints(node, value)
-    {
-        return false;
-    }
-    valid_length_constraints(node, value)
+    merge_validity(&mut validity, length_validity(node, value));
+    finalize_validity(validity)
 }
 
-fn valid_textarea_value(node: &NativeNode, value: &str) -> bool {
-    if node.attribute("required").is_some() && value.is_empty() {
-        return false;
+fn textarea_validity(node: &NativeNode, value: &str) -> NativeValiditySnapshot {
+    let mut validity = NativeValiditySnapshot::default();
+    validity.value_missing = node.attribute("required").is_some() && value.is_empty();
+    merge_validity(&mut validity, length_validity(node, value));
+    finalize_validity(validity)
+}
+
+fn finalize_validity(mut validity: NativeValiditySnapshot) -> NativeValiditySnapshot {
+    validity.valid = !validity.bad_input
+        && !validity.custom_error
+        && !validity.pattern_mismatch
+        && !validity.range_overflow
+        && !validity.range_underflow
+        && !validity.step_mismatch
+        && !validity.too_long
+        && !validity.too_short
+        && !validity.type_mismatch
+        && !validity.value_missing;
+    validity
+}
+
+fn merge_validity(target: &mut NativeValiditySnapshot, source: NativeValiditySnapshot) {
+    target.bad_input |= source.bad_input;
+    target.custom_error |= source.custom_error;
+    target.pattern_mismatch |= source.pattern_mismatch;
+    target.range_overflow |= source.range_overflow;
+    target.range_underflow |= source.range_underflow;
+    target.step_mismatch |= source.step_mismatch;
+    target.too_long |= source.too_long;
+    target.too_short |= source.too_short;
+    target.type_mismatch |= source.type_mismatch;
+    target.value_missing |= source.value_missing;
+}
+
+fn validation_message(validity: &NativeValiditySnapshot, custom_validity: &str) -> String {
+    if !custom_validity.is_empty() {
+        return custom_validity.to_owned();
     }
-    valid_length_constraints(node, value)
+    if validity.value_missing {
+        return "Please fill out this field.".into();
+    }
+    if validity.type_mismatch || validity.bad_input {
+        return "Please enter a valid value.".into();
+    }
+    if validity.too_short {
+        return "Value is too short.".into();
+    }
+    if validity.too_long {
+        return "Value is too long.".into();
+    }
+    if validity.range_underflow {
+        return "Value is below the minimum.".into();
+    }
+    if validity.range_overflow {
+        return "Value is above the maximum.".into();
+    }
+    if validity.step_mismatch {
+        return "Value does not match the required step.".into();
+    }
+    if validity.pattern_mismatch {
+        return "Please match the requested format.".into();
+    }
+    String::new()
 }
 
 fn valid_email_value(value: &str) -> bool {
@@ -2765,7 +2968,7 @@ fn valid_email_value(value: &str) -> bool {
         && !domain.ends_with('.')
 }
 
-fn valid_length_constraints(node: &NativeNode, value: &str) -> bool {
+fn length_validity(node: &NativeNode, value: &str) -> NativeValiditySnapshot {
     let length = value.encode_utf16().count();
     let min_length = node
         .attribute("minlength")
@@ -2773,16 +2976,24 @@ fn valid_length_constraints(node: &NativeNode, value: &str) -> bool {
     let max_length = node
         .attribute("maxlength")
         .and_then(|value| value.parse::<usize>().ok());
-    min_length.is_none_or(|minimum| value.is_empty() || length >= minimum)
-        && max_length.is_none_or(|maximum| length <= maximum)
+    let mut validity = NativeValiditySnapshot::default();
+    validity.too_short = min_length.is_some_and(|minimum| !value.is_empty() && length < minimum);
+    validity.too_long = max_length.is_some_and(|maximum| length > maximum);
+    finalize_validity(validity)
 }
 
-fn valid_numeric_constraints(node: &NativeNode, value: &str) -> bool {
+fn numeric_validity(node: &NativeNode, value: &str) -> NativeValiditySnapshot {
+    let mut validity = NativeValiditySnapshot::default();
+    if value.is_empty() {
+        return finalize_validity(validity);
+    }
     let Ok(number) = value.parse::<f64>() else {
-        return false;
+        validity.bad_input = true;
+        return finalize_validity(validity);
     };
     if !number.is_finite() {
-        return false;
+        validity.bad_input = true;
+        return finalize_validity(validity);
     }
     let minimum = node
         .attribute("min")
@@ -2792,14 +3003,11 @@ fn valid_numeric_constraints(node: &NativeNode, value: &str) -> bool {
         .attribute("max")
         .and_then(|value| value.parse::<f64>().ok())
         .filter(|value| value.is_finite());
-    if minimum.is_some_and(|minimum| number < minimum)
-        || maximum.is_some_and(|maximum| number > maximum)
-    {
-        return false;
-    }
+    validity.range_underflow = minimum.is_some_and(|minimum| number < minimum);
+    validity.range_overflow = maximum.is_some_and(|maximum| number > maximum);
     let step_value = node.attribute("step").unwrap_or("1");
     if step_value.eq_ignore_ascii_case("any") {
-        return true;
+        return finalize_validity(validity);
     }
     let step = step_value
         .parse::<f64>()
@@ -2808,7 +3016,9 @@ fn valid_numeric_constraints(node: &NativeNode, value: &str) -> bool {
         .unwrap_or(1.0);
     let base = minimum.unwrap_or(0.0);
     let remainder = ((number - base) / step).fract().abs();
-    remainder <= f64::EPSILON * 32.0 || (1.0 - remainder) <= f64::EPSILON * 32.0
+    validity.step_mismatch =
+        remainder > f64::EPSILON * 32.0 && (1.0 - remainder) > f64::EPSILON * 32.0;
+    finalize_validity(validity)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2819,9 +3029,18 @@ enum TemporalInputKind {
     DateTimeLocal,
 }
 
-fn valid_temporal_constraints(node: &NativeNode, value: &str, kind: TemporalInputKind) -> bool {
+fn temporal_validity(
+    node: &NativeNode,
+    value: &str,
+    kind: TemporalInputKind,
+) -> NativeValiditySnapshot {
+    let mut validity = NativeValiditySnapshot::default();
+    if value.is_empty() {
+        return finalize_validity(validity);
+    }
     let Some(number) = parse_temporal_value(value, kind) else {
-        return false;
+        validity.bad_input = true;
+        return finalize_validity(validity);
     };
     let minimum = node
         .attribute("min")
@@ -2829,11 +3048,8 @@ fn valid_temporal_constraints(node: &NativeNode, value: &str, kind: TemporalInpu
     let maximum = node
         .attribute("max")
         .and_then(|value| parse_temporal_value(value, kind));
-    if minimum.is_some_and(|minimum| number < minimum)
-        || maximum.is_some_and(|maximum| number > maximum)
-    {
-        return false;
-    }
+    validity.range_underflow = minimum.is_some_and(|minimum| number < minimum);
+    validity.range_overflow = maximum.is_some_and(|maximum| number > maximum);
     let default_step = match kind {
         TemporalInputKind::Date => 86_400.0,
         TemporalInputKind::Month => 1.0,
@@ -2845,7 +3061,7 @@ fn valid_temporal_constraints(node: &NativeNode, value: &str, kind: TemporalInpu
     };
     let step_value = node.attribute("step").unwrap_or_default();
     if step_value.eq_ignore_ascii_case("any") {
-        return true;
+        return finalize_validity(validity);
     }
     let step = if step_value.is_empty() {
         default_step
@@ -2872,7 +3088,9 @@ fn valid_temporal_constraints(node: &NativeNode, value: &str, kind: TemporalInpu
         TemporalInputKind::Time => 0.0,
     });
     let remainder = ((number - base) / step).fract().abs();
-    remainder <= f64::EPSILON * 32.0 || (1.0 - remainder) <= f64::EPSILON * 32.0
+    validity.step_mismatch =
+        remainder > f64::EPSILON * 32.0 && (1.0 - remainder) > f64::EPSILON * 32.0;
+    finalize_validity(validity)
 }
 
 fn parse_temporal_value(value: &str, kind: TemporalInputKind) -> Option<f64> {

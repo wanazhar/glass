@@ -2611,6 +2611,23 @@ fn mutate_script_document(
 ) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
     let mut next = current.clone();
     let mut events = next.apply_script_commands_allowing_links(commands)?;
+    let validation_ids = events
+        .iter()
+        .filter(|(_, kind)| *kind == NativeEventKind::Invalid)
+        .map(|(id, _)| *id)
+        .collect::<Vec<_>>();
+    if !validation_ids.is_empty()
+        && let Some(source) = host_event_script(
+            &validation_ids
+                .iter()
+                .map(|id| (id.index(), NativeEventKind::Invalid))
+                .collect::<Vec<_>>(),
+        )?
+    {
+        let evaluation =
+            runtime.evaluate(&source, &next, document_url, document_origin, viewport)?;
+        events.extend(next.apply_script_commands(&evaluation.commands)?);
+    }
     let mut navigation = script_navigation_target(&next, document_url, commands)?;
     if let Some(ScriptNavigationTarget::Form {
         form_id,

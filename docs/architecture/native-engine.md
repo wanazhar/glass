@@ -484,8 +484,9 @@ non-bubbling `invalid` events and block `submit`/navigation until valid;
 `requestSubmit(button)` and submit-button activation expose the bounded button
 snapshot as `event.submitter`, while direct `form.submit()` remains the
 validation-free path. Full `ValidityState`, type-specific constraints,
-`formnovalidate`, external form association, submitter name/value
-serialization, multipart encoding, and target contexts remain open.
+`formnovalidate`, multipart encoding, and target contexts remain open; bounded
+external form association and submitter name/value serialization are covered
+by the later browser-form slices.
 
 The completed native-engine-browser-039 batch makes the lifecycle phase
 observable in both owners: `document.readyState` is `loading` during the
@@ -501,7 +502,7 @@ control through bounded GET and urlencoded-POST successful-control
 serialization. Both owners honor form `novalidate` and submitter
 `formnovalidate` while retaining submit-event and callback mutation behavior;
 the parent validates the typed submitter handoff before navigation. Image
-submit coordinates, external form association, target contexts, multipart or
+submit coordinates, target contexts, multipart or
 `text/plain` encoding, full constraint-validation APIs, and FormData/Web IDL
 parity remain open.
 
@@ -531,6 +532,15 @@ dispatch a non-bubbling, non-cancelable window `hashchange` with `oldURL` and
 `newURL`; callback mutations remain typed and bounded. `beforeunload`,
 `popstate`, bfcache/history traversal lifecycle parity, and the full HTML
 navigation task model remain open.
+
+The completed native-engine-browser-044 batch adds bounded external form
+ownership. Controls with `form="id"` associate with the matching form even
+outside it, explicit ownership overrides ancestry, unresolved references do not
+fall back, and local/child validation plus GET/urlencoded-POST serialization
+preserve document order. External submit buttons use the typed
+`requestSubmit(button)` path. Multipart/text/plain, full constraint
+validation, target contexts, and the remaining browser-context primitives
+remain open.
 
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
@@ -3591,7 +3601,7 @@ The native profile is `experimental` and declares:
 | evidence | available | bounded URL, title, visible text, revision; native semantic projection is Rust-only |
 | action | available | semantic click/type, focused-text printable/Backspace/Delete key input, bounded vertical root scrolling, bounded GET or urlencoded-POST form defaults, plus native point targets for supported local controls; no selection/IME or nested scrolling |
 | effects | available | current revision and changed signal; bounded event metadata is Rust-only |
-| script | available | bounded QuickJS ECMAScript with a refreshed `window`/`document` snapshot, bounded inline/classic/module-root page-script loading and parser/lifecycle ordering, HTTP(S) static module graphs, literal dynamic imports, and deterministic microtask/next-turn timer callbacks, typed click/form-submit/attribute/focus commands, persistent listener records, bounded Event/CustomEvent capture/target/bubble dispatch, cancelable click preflight, transactional type/input/change event re-entry, bounded required-control validation, submitter event metadata and successful-control serialization, bounded `readyState`/`readystatechange`/DOMContentLoaded/load phase ordering, form `novalidate`/`formnovalidate` bypass, top-level link/form navigation handoff, and relative HTTP(S)/same-document resolution; no live Web IDL identity, target contexts, resource-specific lifecycle parity, beforeinput/composition, full constraint validation, image/external-form/FormData parity, multipart/text/plain forms, intervals/animation/idle callbacks, wall-clock timer semantics, computed imports, bare specifiers/import maps, local external subresources, or general page loading |
+| script | available | bounded QuickJS ECMAScript with a refreshed `window`/`document` snapshot, bounded inline/classic/module-root page-script loading and parser/lifecycle ordering, HTTP(S) static module graphs, literal dynamic imports, and deterministic microtask/next-turn timer callbacks, typed click/form-submit/attribute/focus commands, persistent listener records, bounded Event/CustomEvent capture/target/bubble dispatch, cancelable click preflight, transactional type/input/change event re-entry, bounded required-control validation, submitter event metadata and successful-control serialization, bounded external form ownership, bounded `readyState`/`readystatechange`/DOMContentLoaded/load phase ordering, form `novalidate`/`formnovalidate` bypass, top-level link/form navigation handoff, and relative HTTP(S)/same-document resolution; no live Web IDL identity, target contexts, resource-specific lifecycle parity, beforeinput/composition, full constraint validation, image/FormData parity, multipart/text/plain forms, intervals/animation/idle callbacks, wall-clock timer semantics, computed imports, bare specifiers/import maps, local external subresources, or general page loading |
 | capture | available | bounded PNG of the current logical RGBA surface; JPEG/PDF and screenshot-containing evidence are unavailable |
 | storage | partial | process-owned session cookies and bounded document cache; no local/session/IndexedDB storage or persistence |
 | prompts | omitted | no dialogs |

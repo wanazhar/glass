@@ -987,6 +987,36 @@ async fn native_local_formnovalidate_serializes_submitter_value() {
 }
 
 #[tokio::test]
+async fn native_local_form_attribute_associates_external_controls_in_document_order() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://external-form-owner",
+            "<input form='search' name='before' value='one'><form id='search' action='fixture://external-form-result'><input name='inside' value='two'></form><input form='search' name='after' value='three'><button id='go' form='search' name='action' value='submit' type='submit'>Submit</button>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://external-form-result?before=one&inside=two&after=three&action=submit",
+            "<title>External form result</title><p>Submitted</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://external-form-owner");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            "document.getElementById('search').requestSubmit(document.getElementById('go'))",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        "fixture://external-form-result?before=one&inside=two&after=three&action=submit"
+    );
+    assert_eq!(engine.snapshot().unwrap().title, "External form result");
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_child_script_click_owns_external_navigation() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1609,6 +1639,52 @@ async fn native_content_process_resolves_literal_dynamic_imports() {
             .unwrap(),
         serde_json::json!("dynamic-dep")
     );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_form_attribute_associates_external_controls() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in [
+            "/form",
+            "/result?before=one&inside=two&after=three&action=submit",
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let body = if expected_path == "/form" {
+                "<input form='search' name='before' value='one'><form id='search' action='/result'><input name='inside' value='two'></form><input form='search' name='after' value='three'><button id='go' form='search' name='action' value='submit' type='submit'>Submit</button>"
+            } else {
+                "<title>External form result</title><p>Submitted</p>"
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/form")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            "document.getElementById('search').requestSubmit(document.getElementById('go'))",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        format!("http://{address}/result?before=one&inside=two&after=three&action=submit")
+    );
+    assert_eq!(engine.snapshot().unwrap().title, "External form result");
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }

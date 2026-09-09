@@ -2007,17 +2007,7 @@ impl NativeDocument {
         if !is_submit {
             return None;
         }
-        let mut parent = node.parent();
-        while let Some(parent_id) = parent {
-            if self
-                .node(parent_id)
-                .is_some_and(|candidate| candidate.element_name() == Some("form"))
-            {
-                return Some(parent_id);
-            }
-            parent = self.node(parent_id).and_then(NativeNode::parent);
-        }
-        None
+        self.form_owner(id)
     }
 
     /// Return required controls that block an interactive form submission.
@@ -2045,8 +2035,7 @@ impl NativeDocument {
         {
             return Ok(Vec::new());
         }
-        let mut controls = Vec::new();
-        self.collect_form_controls(form_id, &mut controls)?;
+        let controls = self.form_controls_in_document_order(form_id)?;
         let mut invalid = Vec::new();
         for id in controls {
             let Some(node) = self.node(id) else {
@@ -2116,15 +2105,11 @@ impl NativeDocument {
         parent_id: NativeNodeId,
         controls: &mut Vec<NativeNodeId>,
     ) -> Result<(), NativeEngineError> {
-        let children = self
-            .node(parent_id)
-            .ok_or(NativeEngineError::DetachedTarget)?
-            .children()
-            .to_vec();
-        for child_id in children {
-            if self.node(child_id).is_some_and(|node| {
-                matches!(node.element_name(), Some("input" | "textarea" | "select"))
-            }) {
+        self.node(parent_id)
+            .ok_or(NativeEngineError::DetachedTarget)?;
+        for node in &self.nodes {
+            if self.form_owner(node.id()) == Some(parent_id) {
+                let child_id = node.id();
                 controls.push(child_id);
                 if controls.len() > MAX_FORM_CONTROLS {
                     return Err(NativeEngineError::limit(
@@ -2134,9 +2119,35 @@ impl NativeDocument {
                     ));
                 }
             }
-            self.collect_form_controls(child_id, controls)?;
         }
         Ok(())
+    }
+
+    fn form_controls_in_document_order(
+        &self,
+        form_id: NativeNodeId,
+    ) -> Result<Vec<NativeNodeId>, NativeEngineError> {
+        let mut controls = Vec::new();
+        self.collect_form_controls(form_id, &mut controls)?;
+        Ok(controls)
+    }
+
+    fn form_owner(&self, id: NativeNodeId) -> Option<NativeNodeId> {
+        let node = self.node(id)?;
+        if !matches!(
+            node.element_name(),
+            Some("button" | "input" | "select" | "textarea")
+        ) {
+            return None;
+        }
+        if let Some(form_reference) = node.attribute("form") {
+            return self.nodes.iter().find_map(|candidate| {
+                (candidate.element_name() == Some("form")
+                    && candidate.attribute("id") == Some(form_reference))
+                .then_some(candidate.id())
+            });
+        }
+        self.find_ancestor_element(id, "form")
     }
 
     fn radio_group_has_checked(&self, form_id: NativeNodeId, radio_id: NativeNodeId) -> bool {
@@ -2149,7 +2160,7 @@ impl NativeDocument {
                 && candidate
                     .attribute("type")
                     .is_some_and(|kind| kind.eq_ignore_ascii_case("radio"))
-                && self.is_descendant_of(candidate.id(), form_id)
+                && self.form_owner(candidate.id()) == Some(form_id)
                 && candidate.attribute("name") == name
                 && !self.is_disabled(candidate.id())
                 && candidate.state.checked
@@ -2162,12 +2173,7 @@ impl NativeDocument {
         pairs: &mut Vec<(String, String)>,
         submitter: Option<NativeNodeId>,
     ) -> Result<(), NativeEngineError> {
-        let children = self
-            .node(form_id)
-            .ok_or(NativeEngineError::DetachedTarget)?
-            .children()
-            .to_vec();
-        for child_id in children {
+        for child_id in self.form_controls_in_document_order(form_id)? {
             let Some(child) = self.node(child_id) else {
                 continue;
             };
@@ -2263,7 +2269,6 @@ impl NativeDocument {
                 }
                 _ => {}
             }
-            self.collect_form_data(child_id, pairs, submitter)?;
         }
         Ok(())
     }

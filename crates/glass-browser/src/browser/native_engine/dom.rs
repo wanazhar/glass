@@ -2865,6 +2865,9 @@ fn text_input_validity(node: &NativeNode, value: &str) -> NativeValiditySnapshot
     } else if input_type.eq_ignore_ascii_case("url") && url::Url::parse(value).is_err() {
         validity.type_mismatch = true;
     }
+    if pattern_applies(input_type) {
+        merge_validity(&mut validity, pattern_validity(node, value));
+    }
     match input_type.to_ascii_lowercase().as_str() {
         "date" => merge_validity(
             &mut validity,
@@ -2893,6 +2896,41 @@ fn textarea_validity(node: &NativeNode, value: &str) -> NativeValiditySnapshot {
     let mut validity = NativeValiditySnapshot::default();
     validity.value_missing = node.attribute("required").is_some() && value.is_empty();
     merge_validity(&mut validity, length_validity(node, value));
+    finalize_validity(validity)
+}
+
+fn pattern_applies(input_type: &str) -> bool {
+    !matches!(
+        input_type.to_ascii_lowercase().as_str(),
+        "hidden"
+            | "button"
+            | "submit"
+            | "reset"
+            | "image"
+            | "checkbox"
+            | "radio"
+            | "file"
+            | "date"
+            | "month"
+            | "week"
+            | "time"
+            | "datetime-local"
+            | "number"
+            | "range"
+            | "color"
+    )
+}
+
+fn pattern_validity(node: &NativeNode, value: &str) -> NativeValiditySnapshot {
+    let Some(pattern) = node.attribute("pattern") else {
+        return NativeValiditySnapshot::default();
+    };
+    let expression = format!(r"\A(?:{pattern})\z");
+    let Ok(regex) = regex::Regex::new(&expression) else {
+        return NativeValiditySnapshot::default();
+    };
+    let mut validity = NativeValiditySnapshot::default();
+    validity.pattern_mismatch = !regex.is_match(value);
     finalize_validity(validity)
 }
 

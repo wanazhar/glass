@@ -1133,6 +1133,45 @@ async fn native_local_form_validation_covers_common_constraints() {
 }
 
 #[tokio::test]
+async fn native_local_form_validation_covers_pattern_constraints() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://pattern-validation",
+            "<form id='search'><input id='code' name='code' pattern='[A-Z]{3}' value='AB1'><input id='ignored' name='ignored' pattern='[' value='accepted'><button id='go' type='submit'>Go</button></form>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://pattern-validation");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const code = document.getElementById('code'); const ignored = document.getElementById('ignored'); const form = document.getElementById('search'); return { mismatch: code.validity.patternMismatch, message: code.validationMessage, ignored: ignored.validity.valid, form: form.checkValidity() }; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "mismatch": true,
+            "message": "Please match the requested format.",
+            "ignored": true,
+            "form": false,
+        })
+    );
+    engine
+        .evaluate_async("document.getElementById('code').value = 'ABC'")
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("document.getElementById('code').checkValidity()")
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_form_validation_covers_temporal_constraints() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -2637,6 +2676,55 @@ async fn native_content_process_form_validation_covers_common_constraints() {
         format!("http://{address}/result?email=user%40example.com")
     );
     assert_eq!(engine.snapshot().unwrap().title, "Validated result");
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_form_validation_covers_pattern_constraints() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/form"));
+        let body = "<form id='search'><input id='code' name='code' pattern='[A-Z]{3}' value='AB1'><button id='go' type='submit'>Go</button></form>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/form")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const code = document.getElementById('code'); return { mismatch: code.validity.patternMismatch, message: code.validationMessage }; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "mismatch": true,
+            "message": "Please match the requested format.",
+        })
+    );
+    engine
+        .evaluate_async("document.getElementById('code').value = 'ABC'")
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("document.getElementById('code').checkValidity()")
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }

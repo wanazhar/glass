@@ -2203,6 +2203,13 @@ through the existing fetch/CORS command path. Synchronous XHR,
 upload/progress, binary response types, timeout/abort, streaming,
 WebSocket/EventSource, and full Web IDL identity remain open.
 
+The completed bounded text FormData follow-up is
+[native-engine-browser-056](../tasks/native-engine-browser-056.md). The page
+realm now serializes string-only `FormData` through the existing fetch/XHR
+owner with deterministic bounded multipart boundaries and matching content
+types. File/blob parts, chooser/upload progress, streaming, URLSearchParams,
+and full FormData/Web IDL iterator identity remain open.
+
 The next bounded workstream is full task ordering and navigation edge cases,
 followed by file/FormData support, full constraint validation, target contexts,
 and the remaining browser-context primitives.

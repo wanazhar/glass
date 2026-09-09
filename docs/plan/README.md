@@ -539,6 +539,14 @@ the existing fetch and CORS owner. Synchronous XHR, upload/progress,
 binary-response, timeout/abort, streaming, WebSocket/EventSource, and full Web
 IDL identity remain open.
 
+The completed bounded text FormData slice is
+[native-engine-browser-056](tasks/native-engine-browser-056.md). `fetch()` and
+XHR now accept string-only `FormData`, serialize bounded deterministic
+multipart bodies, and generate the matching boundary-bearing `Content-Type`;
+the existing network and CORS policy remains the sole request owner. File/blob
+parts, file chooser/upload progress, streaming, URLSearchParams, and full
+FormData/Web IDL iterator identity remain open.
+
 The next BE-02/BE-03/BE-04 gate is full task ordering and navigation edge cases,
 followed by file/FormData support, full constraint validation, target contexts,
 and the remaining browser-context primitives.

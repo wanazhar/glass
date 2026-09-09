@@ -2147,6 +2147,13 @@ effective POST content type across the process boundary. Form target contexts,
 dialog submission, file parts, and general form-control/Web IDL identity remain
 open.
 
+The completed bounded repeating-timer follow-up is
+[native-engine-browser-049](../tasks/native-engine-browser-049.md). Local and
+child-owned realms now expose `setInterval`/`clearInterval`; due callbacks run
+at most once per supplied host turn, reschedule from that turn's monotonic
+time, and can cancel themselves. There is no background page loop or
+task-source fairness; animation and idle callbacks remain open.
+
 The next bounded workstream is full task ordering and navigation edge cases,
 followed by file/FormData support, full constraint validation, target contexts,
 and the remaining browser-context primitives.

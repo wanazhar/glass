@@ -259,9 +259,17 @@ The completed cancelable-click batch is
 child-owned semantic clicks now preflight focus and click listeners on a clone,
 apply callback commands, honor `preventDefault()`, and commit the final state
 and effects exactly once. Pages without a JavaScript realm retain the Rust-only
-path. The next BE-03/BE-04 gate is transactional input/change and focus event
-ordering for Rust-owned type actions, followed by link navigation/default
-actions, timers, modules, and Fetch/XHR.
+path.
+
+The completed transactional type-event batch is
+[native-engine-browser-023](tasks/native-engine-browser-023.md). Local and
+child-owned type actions now apply the value on a clone, dispatch focus,
+input, and change in order, apply callback commands, and commit one revision.
+The current host command sink also keeps captured callback setters connected to
+the current bounded evaluation buffer without claiming full live Web IDL
+identity. The next BE-03/BE-04 gate is link navigation/default-action
+ownership and script-driven navigation, followed by timers, modules,
+page-script loading, and Fetch/XHR.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

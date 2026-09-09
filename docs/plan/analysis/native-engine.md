@@ -1922,6 +1922,17 @@ the parent never evaluates the external page. Pages without a local realm keep
 the Rust-only click path. Type/input/change ordering, link navigation/default
 actions, timers, modules, Fetch/XHR, and remaining resource classes stay open.
 
+The completed transactional type-event follow-up is
+[native-engine-browser-023](../tasks/native-engine-browser-023.md). Local and
+child type actions now update a clone, dispatch focus/blur, input, and change
+in order, apply callback commands, and publish one revision. The bootstrap's
+active command sink also lets persistent callbacks use previously captured
+element methods without writing to a detached evaluation buffer. This is not
+full live Web IDL identity: snapshot properties/tree links remain refresh
+bound, and insertion/removal, `beforeinput`, composition, keyboard input,
+submission, link navigation/default actions, timers, modules, Fetch/XHR, and
+remaining resource classes stay open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

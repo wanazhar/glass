@@ -310,6 +310,35 @@ async fn native_local_script_owns_event_listeners_and_focus_order() {
             .unwrap(),
         serde_json::json!(false)
     );
+    let before_type = engine.revision();
+    engine
+        .evaluate_async(
+            "(() => { const field = document.getElementById('name'); globalThis.typeEvents = []; field.addEventListener('focus', (event) => globalThis.typeEvents.push(event.type)); field.addEventListener('input', (event) => { globalThis.typeEvents.push(event.type); field.setAttribute('data-input', 'seen'); }); field.addEventListener('change', (event) => globalThis.typeEvents.push(event.type)); })()",
+        )
+        .await
+        .unwrap();
+    let typed = engine
+        .action(NativeAction::Type {
+            target: "id=name".into(),
+            text: "typed-by-action".into(),
+        })
+        .unwrap();
+    assert!(typed.accepted);
+    assert_eq!(typed.revision, before_type + 1);
+    assert_eq!(engine.revision(), before_type + 1);
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({ value: document.getElementById('name').value, marker: document.getElementById('name').getAttribute('data-input'), events: globalThis.typeEvents })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "value": "typed-by-action",
+            "marker": "seen",
+            "events": ["focus", "input", "change"],
+        })
+    );
     engine.close_async().await.unwrap();
 }
 
@@ -1088,6 +1117,36 @@ async fn native_content_process_owns_external_form_mutations_and_effects() {
             .await
             .unwrap(),
         serde_json::json!(false)
+    );
+    let before_type = engine.revision();
+    engine
+        .evaluate_async(
+            "(() => { const field = document.getElementById('name'); globalThis.childTypeEvents = []; field.addEventListener('focus', (event) => globalThis.childTypeEvents.push(event.type)); field.addEventListener('input', (event) => { globalThis.childTypeEvents.push(event.type); field.setAttribute('data-input', 'seen'); }); field.addEventListener('change', (event) => globalThis.childTypeEvents.push(event.type)); })()",
+        )
+        .await
+        .unwrap();
+    let typed = engine
+        .action_async(NativeAction::Type {
+            target: "id=name".into(),
+            text: "typed-by-child-action".into(),
+        })
+        .await
+        .unwrap();
+    assert!(typed.accepted);
+    assert_eq!(typed.revision, before_type + 1);
+    assert_eq!(engine.revision(), before_type + 1);
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({ value: document.getElementById('name').value, marker: document.getElementById('name').getAttribute('data-input'), events: globalThis.childTypeEvents })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "value": "typed-by-child-action",
+            "marker": "seen",
+            "events": ["focus", "input", "change"],
+        })
     );
 
     engine.close_async().await.unwrap();

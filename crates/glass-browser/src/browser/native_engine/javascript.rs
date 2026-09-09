@@ -351,9 +351,13 @@ fn document_bootstrap(
   const host = {serialized};
   const state = host.state;
   const commands = [];
+  const activeCommands = () => Array.isArray(globalThis.__glassHostCommandBuffer)
+    ? globalThis.__glassHostCommandBuffer
+    : commands;
   const pushCommand = (command) => {{
-    if (commands.length >= {max_commands}) throw new RangeError("native host command limit exceeded");
-    commands.push(command);
+    const target = activeCommands();
+    if (target.length >= {max_commands}) throw new RangeError("native host command limit exceeded");
+    target.push(command);
   }};
   const listeners = globalThis.__glassHostListeners instanceof Map
     ? globalThis.__glassHostListeners
@@ -657,6 +661,7 @@ fn document_bootstrap(
   }});
   globalThis.window = globalThis;
   globalThis.__glassHostCommands = commands;
+  globalThis.__glassHostCommandBuffer = commands;
   globalThis.document = document;
   globalThis.location = Object.freeze({{ href: host.url, origin: host.origin }});
   globalThis.innerWidth = {width};

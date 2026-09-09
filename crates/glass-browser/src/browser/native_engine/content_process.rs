@@ -36,11 +36,6 @@ pub(crate) struct NativeContentLoad {
     pub(crate) document: NativeDocumentWire,
 }
 
-#[derive(Debug, Clone)]
-pub(crate) enum NativeContentAction {
-    Type { node_index: u32, text: String },
-}
-
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct NativeContentEvent {
     pub(crate) node_index: u32,
@@ -225,19 +220,6 @@ impl NativeContentProcess {
         result
     }
 
-    pub(crate) async fn mutate(
-        &mut self,
-        action: NativeContentAction,
-    ) -> Result<NativeContentMutation, NativeEngineError> {
-        let id = self.next_id();
-        let action = match action {
-            NativeContentAction::Type { node_index, text } => {
-                json!({"kind":"type","node_index":node_index,"text":text})
-            }
-        };
-        self.mutate_with_request(id, action).await
-    }
-
     pub(crate) async fn mutate_click_with_event_preflight(
         &mut self,
         node_index: u32,
@@ -247,6 +229,20 @@ impl NativeContentProcess {
             id,
             "mutate_click_preflight",
             json!({"node_index": node_index}),
+        )
+        .await
+    }
+
+    pub(crate) async fn mutate_type_with_event_bridge(
+        &mut self,
+        node_index: u32,
+        text: String,
+    ) -> Result<NativeContentMutation, NativeEngineError> {
+        let id = self.next_id();
+        self.mutate_with_request_kind(
+            id,
+            "mutate_type_events",
+            json!({"node_index": node_index, "text": text}),
         )
         .await
     }
@@ -338,14 +334,6 @@ impl NativeContentProcess {
             });
         }
         decode_script_response(&response, id)
-    }
-
-    async fn mutate_with_request(
-        &mut self,
-        id: u64,
-        action: Value,
-    ) -> Result<NativeContentMutation, NativeEngineError> {
-        self.mutate_with_request_kind(id, "mutate", action).await
     }
 
     async fn mutate_with_request_kind(
@@ -1064,19 +1052,76 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     Err(error) => content_error_response(id, error),
                 }
             }
-            "mutate" if protocol_matches(&request) && running => {
+            "mutate_type_events" if protocol_matches(&request) && running => {
                 let Some(current) = document.as_ref() else {
                     let response = content_error_response(
                         id,
                         NativeEngineError::Worker {
-                            operation: "content process mutation".into(),
+                            operation: "content process type event bridge".into(),
                             reason: "content process has no committed document".into(),
                         },
                     );
                     write_value_frame(&mut stdout, &response).await?;
                     continue;
                 };
-                match mutate_content_document(current, &request) {
+                let action = request.get("action").ok_or_else(|| {
+                    NativeEngineError::invalid("content-process type action", "is required")
+                })?;
+                let node_index = action
+                    .get("node_index")
+                    .and_then(Value::as_u64)
+                    .and_then(|value| u32::try_from(value).ok())
+                    .ok_or_else(|| {
+                        NativeEngineError::invalid(
+                            "content-process type target",
+                            "must be a uint32",
+                        )
+                    })?;
+                let text = action.get("text").and_then(Value::as_str).ok_or_else(|| {
+                    NativeEngineError::invalid("content-process type text", "must be text")
+                })?;
+                let Some(document_url) = document_url.as_deref() else {
+                    let response = content_error_response(
+                        id,
+                        NativeEngineError::Worker {
+                            operation: "content process type event bridge".into(),
+                            reason: "content process has no committed URL".into(),
+                        },
+                    );
+                    write_value_frame(&mut stdout, &response).await?;
+                    continue;
+                };
+                let Some(document_origin) = document_origin.as_ref() else {
+                    let response = content_error_response(
+                        id,
+                        NativeEngineError::Worker {
+                            operation: "content process type event bridge".into(),
+                            reason: "content process has no committed origin".into(),
+                        },
+                    );
+                    write_value_frame(&mut stdout, &response).await?;
+                    continue;
+                };
+                if javascript_runtime.is_none() {
+                    match NativeJavaScriptRuntime::new() {
+                        Ok(runtime) => javascript_runtime = Some(runtime),
+                        Err(error) => {
+                            let response = content_error_response(id, error);
+                            write_value_frame(&mut stdout, &response).await?;
+                            continue;
+                        }
+                    }
+                }
+                let runtime = javascript_runtime.as_ref().expect("runtime initialized");
+                match mutate_type_with_event_bridge(
+                    current,
+                    runtime,
+                    document_url,
+                    document_origin,
+                    viewport,
+                    node_index,
+                    text,
+                ) {
                     Ok((next, mutation)) => {
                         document = Some(next);
                         json!({
@@ -1234,55 +1279,6 @@ async fn load_content_resource(
     ))
 }
 
-fn mutate_content_document(
-    current: &NativeDocument,
-    request: &Value,
-) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
-    let action = request
-        .get("action")
-        .ok_or_else(|| NativeEngineError::invalid("content-process action", "is required"))?;
-    let node_index = action
-        .get("node_index")
-        .and_then(Value::as_u64)
-        .and_then(|value| u32::try_from(value).ok())
-        .ok_or_else(|| NativeEngineError::invalid("content-process node", "must be a uint32"))?;
-    let node_id = NativeNodeId::from_parts(current.generation(), node_index);
-    let mut next = current.clone();
-    let events = match action.get("kind").and_then(Value::as_str) {
-        Some("click") => next.apply_click(node_id)?,
-        Some("type") => {
-            let text = action.get("text").and_then(Value::as_str).ok_or_else(|| {
-                NativeEngineError::invalid("content-process text", "must be text")
-            })?;
-            next.apply_type(node_id, text)?
-        }
-        _ => {
-            return Err(NativeEngineError::invalid(
-                "content-process action",
-                "must be click or type",
-            ));
-        }
-    };
-    if events.len() > MAX_NATIVE_EFFECTS {
-        return Err(NativeEngineError::limit(
-            "content-process mutation effects",
-            MAX_NATIVE_EFFECTS,
-            events.len(),
-        ));
-    }
-    let mutation = NativeContentMutation {
-        document: next.to_content_wire(),
-        events: events
-            .into_iter()
-            .map(|(node, kind)| NativeContentEvent {
-                node_index: node.index(),
-                kind,
-            })
-            .collect(),
-    };
-    Ok((next, mutation))
-}
-
 fn mutate_click_with_event_preflight(
     current: &NativeDocument,
     runtime: &NativeJavaScriptRuntime,
@@ -1339,6 +1335,48 @@ fn mutate_click_with_event_preflight(
             MAX_NATIVE_EFFECTS,
             events.len(),
         ));
+    }
+    let mutation = NativeContentMutation {
+        document: next.to_content_wire(),
+        events: events
+            .into_iter()
+            .map(|(node, kind)| NativeContentEvent {
+                node_index: node.index(),
+                kind,
+            })
+            .collect(),
+    };
+    Ok((next, mutation))
+}
+
+fn mutate_type_with_event_bridge(
+    current: &NativeDocument,
+    runtime: &NativeJavaScriptRuntime,
+    document_url: &str,
+    document_origin: &NativeOrigin,
+    viewport: Viewport,
+    node_index: u32,
+    text: &str,
+) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
+    let node_id = NativeNodeId::from_parts(current.generation(), node_index);
+    let mut next = current.clone();
+    let mut events = next.apply_type(node_id, text)?;
+    let default_events = events.clone();
+    for (event_node, event_kind) in default_events {
+        let source = host_event_script(&[(event_node.index(), event_kind)])?;
+        let Some(source) = source else {
+            continue;
+        };
+        let evaluation =
+            runtime.evaluate(&source, &next, document_url, document_origin, viewport)?;
+        events.extend(next.apply_script_commands(&evaluation.commands)?);
+        if events.len() > MAX_NATIVE_EFFECTS {
+            return Err(NativeEngineError::limit(
+                "content-process type event effects",
+                MAX_NATIVE_EFFECTS,
+                events.len(),
+            ));
+        }
     }
     let mutation = NativeContentMutation {
         document: next.to_content_wire(),

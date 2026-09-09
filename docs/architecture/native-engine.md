@@ -300,19 +300,33 @@ The completed native-engine-browser-017 batch refreshes a bounded read-only
 child-owned realms. It exposes location/origin, viewport, title/text, form
 state, and explicit ID/class/tag element finders; synchronous completion values
 remain direct JSON, while top-level `await` drives bounded QuickJS jobs before
-the same result conversion. The projection deliberately has no live Web IDL
-identity or mutation path yet. DOM mutation, event dispatch, timers, modules,
-page-script loading, Fetch/XHR, service workers, and the remaining resource
-classes stay open.
+the same result conversion. The projection remains a bounded snapshot rather
+than live Web IDL identity, but the following mutation and event-owner slices
+now cross explicit typed boundaries. DOM insertion/removal, ancestor event
+propagation, Rust-action listener dispatch, default-action ordering, timers,
+modules, page-script loading, Fetch/XHR, service workers, and the remaining
+resource classes stay open.
 
 The completed native-engine-browser-018 batch connects the projection to a
 bounded owner-command bridge. `click()`, form-state setters, and attribute
 set/remove emit typed commands; Glass validates them against a cloned native
 document, commits the batch as one revision, and reuses the child process for
 external pages. The next host refresh observes the committed state. Live Web
-IDL identity, listener/event dispatch, default actions, script navigation,
-timers, modules, page-script loading, Fetch/XHR, service workers, and remaining
-resource classes stay open.
+IDL identity, ancestor event propagation, Rust-action listener dispatch,
+script navigation, timers, modules, page-script loading, Fetch/XHR, service
+workers, and remaining resource classes stay open.
+
+The completed native-engine-browser-019 batch adds a bounded event/focus owner
+inside the same persistent realm. Elements, `document`, and `window` retain
+deduplicated target-local listeners across evaluations; bounded `Event` and
+`CustomEvent` values support synchronous dispatch and cancellation. Scripted
+focus/blur transitions emit typed commands, and scripted click activation is
+suppressed when a target listener calls `preventDefault()`. The parent and
+child owners validate and commit focus transitions with the same one-revision
+batch contract. Ancestor propagation/capture, listeners for Rust semantic
+actions, default-action ordering, mutation invalidation, timers, modules,
+page-script loading, Fetch/XHR, service workers, and remaining resource
+classes stay open.
 
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
@@ -3369,7 +3383,7 @@ The native profile is `experimental` and declares:
 | evidence | available | bounded URL, title, visible text, revision; native semantic projection is Rust-only |
 | action | available | semantic click/type, bounded vertical root scrolling, plus native point targets for supported local controls; no nested scrolling or default browser behavior |
 | effects | available | current revision and changed signal; bounded event metadata is Rust-only |
-| script | available | bounded QuickJS ECMAScript with a refreshed `window`/`document` snapshot, typed click/form/attribute mutation commands, and JSON results; no live Web IDL identity, listeners/default actions, timers, modules, or page-script loading |
+| script | available | bounded QuickJS ECMAScript with a refreshed `window`/`document` snapshot, typed click/form/attribute/focus commands, target-local persistent listeners, bounded Event/CustomEvent dispatch, and JSON results; no live Web IDL identity, ancestor propagation, Rust-action listener dispatch, timers, modules, or page-script loading |
 | capture | available | bounded PNG of the current logical RGBA surface; JPEG/PDF and screenshot-containing evidence are unavailable |
 | storage | partial | process-owned session cookies and bounded document cache; no local/session/IndexedDB storage or persistence |
 | prompts | omitted | no dialogs |

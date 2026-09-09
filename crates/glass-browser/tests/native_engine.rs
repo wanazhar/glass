@@ -1281,6 +1281,78 @@ async fn native_local_form_validation_api_exposes_validity_and_custom_errors() {
 }
 
 #[tokio::test]
+async fn native_local_form_data_constructor_collects_text_controls() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://form-data-constructor",
+            "<form id='search'><input name='first' value='one'><input name='unchecked' type='checkbox' value='no'><input name='checked' type='checkbox' value='yes' checked><button type='submit'>Go</button></form><input form='search' name='outside' value='two'><form id='files'><input name='upload' type='file'></form>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://form-data-constructor");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const data = new FormData(document.getElementById('search')); data.append('extra', 'three'); const fileRejected = (() => { try { new FormData(document.getElementById('files')); return false; } catch (error) { return error instanceof TypeError && String(error).includes('file controls are unsupported'); } })(); return { entries: data.entries(), first: data.get('first'), checked: data.get('checked'), unchecked: data.has('unchecked'), outside: data.get('outside'), extra: data.get('extra'), fileRejected }; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "entries": [["first", "one"], ["checked", "yes"], ["outside", "two"], ["extra", "three"]],
+            "first": "one",
+            "checked": "yes",
+            "unchecked": false,
+            "outside": "two",
+            "extra": "three",
+            "fileRejected": true,
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_form_data_constructor_collects_text_controls() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/form"));
+        let body = "<form id='search'><input name='first' value='one'><input name='unchecked' type='checkbox' value='no'><input name='checked' type='checkbox' value='yes' checked><button type='submit'>Go</button></form><input form='search' name='outside' value='two'>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/form")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const data = new FormData(document.getElementById('search')); return { entries: data.entries(), first: data.get('first'), checked: data.get('checked'), unchecked: data.has('unchecked'), outside: data.get('outside') }; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "entries": [["first", "one"], ["checked", "yes"], ["outside", "two"]],
+            "first": "one",
+            "checked": "yes",
+            "unchecked": false,
+            "outside": "two",
+        })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_semantic_submit_button_navigates_without_script_realm() {
     let config = NativeEngineConfig::default()
         .with_fixture(

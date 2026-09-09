@@ -19,6 +19,7 @@ use glass_browser::browser_backend::{
 use glass_browser::{BackendFactory, BrowserRuntime, BrowserRuntimeSession, NativeEngineBackend};
 use std::io::Cursor;
 use std::sync::OnceLock;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
@@ -231,6 +232,116 @@ async fn native_content_process_reduces_cross_origin_referrer_to_origin() {
     engine.close_async().await.unwrap();
     source_server.await.unwrap();
     target_server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_loads_same_origin_stylesheet_under_csp() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/style.css"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 4096];
+            let read = stream.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..read]);
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            if expected_path == "/style.css" {
+                let referrer = request.lines().find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.eq_ignore_ascii_case("referer")
+                            .then_some(value.trim().to_owned())
+                    })
+                });
+                assert_eq!(referrer, Some(format!("http://{address}/page")));
+            }
+            let (content_type, extra_headers, body) = if expected_path == "/page" {
+                (
+                    "text/html",
+                    "Content-Security-Policy: default-src 'none'; style-src 'self'\r\n",
+                    "<link rel='stylesheet' href='/style.css'><button id='target'>Styled</button>",
+                )
+            } else {
+                ("text/css", "", "#target { width: 80px; height: 24px; }")
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\n{extra_headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let target = engine
+        .semantic_nodes()
+        .unwrap()
+        .into_iter()
+        .find(|node| node.name == "Styled")
+        .unwrap();
+    assert_eq!(
+        engine.layout().unwrap().box_for(target.node_id),
+        Some(NativeRect {
+            x: 8,
+            y: 0,
+            width: 80,
+            height: 24,
+        })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_blocks_csp_disallowed_stylesheet_before_request() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let target_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let target_address = target_listener.local_addr().unwrap();
+    let (target_request, target_request_rx) = tokio::sync::oneshot::channel();
+    let target_server = tokio::spawn(async move {
+        if tokio::time::timeout(Duration::from_secs(1), target_listener.accept())
+            .await
+            .is_ok()
+        {
+            let _ = target_request.send(());
+        }
+    });
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0_u8; 4096];
+        let _ = stream.read(&mut request).await.unwrap();
+        let body = format!(
+            "<link rel='stylesheet' href='http://{target_address}/style.css'><p id='target'>Unstyled</p>"
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: default-src 'none'; style-src 'self'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(250), target_request_rx)
+            .await
+            .is_err(),
+        "CSP-disallowed stylesheet was requested"
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+    target_server.abort();
+    let _ = target_server.await;
 }
 
 #[tokio::test]

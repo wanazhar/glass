@@ -42,6 +42,10 @@ impl fmt::Debug for NativeResourceLoader {
             .field("max_document_bytes", &self.max_document_bytes)
             .field("cached_document_count", &self.network.cache.len())
             .field("cookie_count", &self.network.cookies.len())
+            .field(
+                "document_policy_count",
+                &self.network.document_policies.len(),
+            )
             .finish()
     }
 }
@@ -50,6 +54,7 @@ impl fmt::Debug for NativeResourceLoader {
 struct NativeNetworkState {
     cache: BTreeMap<String, NativeResource>,
     cookies: Vec<NativeCookie>,
+    document_policies: BTreeMap<String, NativeCspPolicy>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,6 +66,51 @@ struct NativeCookie {
     host_only: bool,
     secure: bool,
     expires_at: Option<Instant>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct NativeCspPolicy {
+    style_sources: Option<Vec<String>>,
+    default_sources: Option<Vec<String>>,
+}
+
+impl NativeCspPolicy {
+    fn allows_style(&self, document_url: &Url, resource_url: &Url) -> bool {
+        let Some(sources) = self
+            .style_sources
+            .as_ref()
+            .or(self.default_sources.as_ref())
+        else {
+            return true;
+        };
+        if sources.is_empty() {
+            return false;
+        }
+        let document_origin = document_url.origin();
+        for source in sources {
+            if source == "'none'" {
+                return false;
+            }
+            if source == "*" {
+                return true;
+            }
+            if source == "'self'" && resource_url.origin() == document_origin {
+                return true;
+            }
+            if source.ends_with(':')
+                && source[..source.len().saturating_sub(1)]
+                    .eq_ignore_ascii_case(resource_url.scheme())
+            {
+                return true;
+            }
+            if Url::parse(source)
+                .is_ok_and(|source_url| source_url.origin() == resource_url.origin())
+            {
+                return true;
+            }
+        }
+        false
+    }
 }
 
 impl NativeResourceLoader {
@@ -253,6 +303,7 @@ impl NativeResourceLoader {
                 reason: "HTTP(S) navigation redirected to a non-HTTP(S) URL".into(),
             });
         }
+        let response_headers = response.headers().clone();
         let mut stream = response.bytes_stream();
         let mut bytes = Vec::with_capacity(
             content_length
@@ -293,10 +344,175 @@ impl NativeResourceLoader {
         for (cookie_url, cookie) in pending_cookies {
             self.network.store_cookie(&cookie_url, &cookie);
         }
+        self.network.store_document_policy(
+            cache_key(&final_url),
+            content_security_policy(&response_headers),
+        );
         if cacheable && !has_set_cookie {
             self.network.store_cache(cache_key(&parsed), cache_resource);
         }
         Ok(resource)
+    }
+
+    pub(crate) async fn load_stylesheet_async(
+        &mut self,
+        document_url: &str,
+        href: &str,
+    ) -> Result<Option<String>, NativeEngineError> {
+        validate_url_text("document URL", document_url)?;
+        validate_url_text("stylesheet URL", href)?;
+        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "stylesheet owner URL is not valid HTTP(S) syntax".into(),
+            }
+        })?;
+        if !is_network_url(document_url.as_str()) {
+            return Ok(None);
+        }
+        reject_credentials(&document_url)?;
+        let target_url =
+            document_url
+                .join(href)
+                .map_err(|_| NativeEngineError::UnsupportedUrl {
+                    reason: "stylesheet URL could not be resolved against the document".into(),
+                })?;
+        reject_credentials(&target_url)?;
+        if !is_network_url(without_fragment(target_url.as_str()))
+            || (document_url.scheme().eq_ignore_ascii_case("https")
+                && target_url.scheme().eq_ignore_ascii_case("http"))
+        {
+            return Ok(None);
+        }
+        let policy = self
+            .network
+            .document_policies
+            .get(&cache_key(&document_url))
+            .cloned()
+            .unwrap_or_default();
+        if !policy.allows_style(&document_url, &target_url) {
+            return Ok(None);
+        }
+
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(NATIVE_NETWORK_TIMEOUT)
+            .build()
+            .map_err(|error| network_error("CSS client construction", error))?;
+        let mut current_url = target_url;
+        let mut request_referrer = normalize_referrer(Some(document_url.as_str()), &current_url)?;
+        let mut redirects = 0;
+        let mut pending_cookies = Vec::new();
+        let response = loop {
+            let mut request_url = current_url.clone();
+            request_url.set_fragment(None);
+            let mut request = client
+                .get(request_url)
+                .header(reqwest::header::ACCEPT, "text/css");
+            if let Some(referrer) = request_referrer.as_deref() {
+                request = request.header(reqwest::header::REFERER, referrer);
+            }
+            if let Some(cookie) = self.network.cookie_header(&current_url) {
+                request = request.header(reqwest::header::COOKIE, cookie);
+            }
+            let response = request
+                .send()
+                .await
+                .map_err(|error| network_error("CSS subresource request", error))?;
+            for value in response
+                .headers()
+                .get_all(reqwest::header::SET_COOKIE)
+                .iter()
+            {
+                if let Ok(cookie) = value.to_str() {
+                    pending_cookies.push((current_url.clone(), cookie.to_owned()));
+                }
+            }
+            if !is_http_redirect(response.status()) {
+                break response;
+            }
+            if redirects >= MAX_NATIVE_NETWORK_REDIRECTS {
+                return Err(NativeEngineError::Network {
+                    operation: "CSS redirect".into(),
+                    reason: "CSS subresource redirect chain exceeded the native limit".into(),
+                });
+            }
+            let location = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| NativeEngineError::Network {
+                    operation: "CSS redirect".into(),
+                    reason: "CSS subresource redirect did not provide a valid location".into(),
+                })?;
+            let next_url = current_url
+                .join(location)
+                .map_err(|_| NativeEngineError::Network {
+                    operation: "CSS redirect".into(),
+                    reason: "CSS subresource redirect location is not valid URL syntax".into(),
+                })?;
+            reject_credentials(&next_url)?;
+            if !is_network_url(without_fragment(next_url.as_str()))
+                || (document_url.scheme().eq_ignore_ascii_case("https")
+                    && next_url.scheme().eq_ignore_ascii_case("http"))
+                || !policy.allows_style(&document_url, &next_url)
+            {
+                return Ok(None);
+            }
+            request_referrer = normalize_referrer(Some(current_url.as_str()), &next_url)?;
+            current_url = next_url;
+            redirects += 1;
+        };
+        if !response.status().is_success() {
+            return Err(NativeEngineError::Network {
+                operation: "CSS subresource request".into(),
+                reason: format!("server returned HTTP {}", response.status().as_u16()),
+            });
+        }
+        if !content_type_is(
+            response.headers().get(reqwest::header::CONTENT_TYPE),
+            "text/css",
+        )? {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "CSS subresource returned an unsupported content type".into(),
+            });
+        }
+        let content_length = response.content_length();
+        if content_length.is_some_and(|length| length > self.max_document_bytes as u64) {
+            return Err(NativeEngineError::limit(
+                "CSS subresource",
+                self.max_document_bytes,
+                content_length
+                    .and_then(|length| usize::try_from(length).ok())
+                    .unwrap_or(usize::MAX),
+            ));
+        }
+        let mut stream = response.bytes_stream();
+        let mut bytes = Vec::with_capacity(
+            content_length
+                .unwrap_or_default()
+                .min(self.max_document_bytes as u64) as usize,
+        );
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|error| network_error("CSS subresource body", error))?;
+            let next_len = bytes.len().saturating_add(chunk.len());
+            if next_len > self.max_document_bytes {
+                return Err(NativeEngineError::limit(
+                    "CSS subresource",
+                    self.max_document_bytes,
+                    next_len,
+                ));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let body = String::from_utf8(bytes).map_err(|_| NativeEngineError::Network {
+            operation: "CSS subresource decoding".into(),
+            reason: "CSS subresource is not valid UTF-8".into(),
+        })?;
+        for (cookie_url, cookie) in pending_cookies {
+            self.network.store_cookie(&cookie_url, &cookie);
+        }
+        Ok(Some(body))
     }
 
     fn load_data_url(&self, url: &str, data: &str) -> Result<NativeResource, NativeEngineError> {
@@ -330,6 +546,51 @@ impl NativeResourceLoader {
             body,
         })
     }
+}
+
+fn content_security_policy(headers: &HeaderMap) -> NativeCspPolicy {
+    let mut policy = NativeCspPolicy::default();
+    for value in headers
+        .get_all(reqwest::header::CONTENT_SECURITY_POLICY)
+        .iter()
+    {
+        let Ok(value) = value.to_str() else {
+            policy.style_sources = Some(Vec::new());
+            continue;
+        };
+        for directive in value.split(';') {
+            let mut parts = directive.split_ascii_whitespace();
+            let Some(name) = parts.next() else {
+                continue;
+            };
+            let sources = parts.map(str::to_ascii_lowercase).collect::<Vec<_>>();
+            match name.to_ascii_lowercase().as_str() {
+                "style-src" => policy.style_sources = Some(sources),
+                "default-src" => policy.default_sources = Some(sources),
+                _ => {}
+            }
+        }
+    }
+    policy
+}
+
+fn content_type_is(
+    value: Option<&reqwest::header::HeaderValue>,
+    expected: &str,
+) -> Result<bool, NativeEngineError> {
+    let Some(value) = value else {
+        return Ok(false);
+    };
+    let value = value.to_str().map_err(|_| NativeEngineError::Network {
+        operation: "HTTP content-type validation".into(),
+        reason: "HTTP content type is not valid ASCII".into(),
+    })?;
+    Ok(value
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .eq_ignore_ascii_case(expected))
 }
 
 pub(crate) fn referrer_for_navigation(
@@ -592,6 +853,17 @@ impl NativeNetworkState {
             }
         }
         self.cache.insert(key, resource);
+    }
+
+    fn store_document_policy(&mut self, key: String, policy: NativeCspPolicy) {
+        if !self.document_policies.contains_key(&key)
+            && self.document_policies.len() >= MAX_NATIVE_CACHE_ENTRIES
+        {
+            if let Some(oldest) = self.document_policies.keys().next().cloned() {
+                self.document_policies.remove(&oldest);
+            }
+        }
+        self.document_policies.insert(key, policy);
     }
 }
 

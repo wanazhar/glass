@@ -1818,6 +1818,15 @@ suppression, and child-wire validation are covered. CORS/CSP, mixed content,
 service workers, permissions, subresources, full cache semantics, script
 request mediation, and browser parity remain open.
 
+The completed stylesheet-subresource follow-up is
+[native-engine-browser-013](../tasks/native-engine-browser-013.md). The child
+now discovers a bounded set of link stylesheets, mediates them with the
+document CSP and HTTPS mixed-content policy, fetches validated text/css
+resources under the shared cookie/redirect/referrer quotas, and reparses
+accepted rules before the child snapshot transfer. Images, media, fonts,
+scripts, fetch/XHR, service workers, permissions, broad CORS/CSP, and browser
+parity remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

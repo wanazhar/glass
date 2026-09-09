@@ -21,6 +21,8 @@ const MAX_CONTENT_DOCUMENT_WIRE_BYTES: usize = 2 * 1024 * 1024;
 const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 1;
 const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_CONTENT_STYLESHEETS: usize = 16;
+const MAX_CONTENT_STYLESHEET_BYTES: usize = 512 * 1024;
 
 pub(crate) struct NativeContentLoad {
     pub(crate) url: String,
@@ -724,7 +726,31 @@ async fn load_content_resource(
         }
     };
     let resource = loader.load_async_with_referrer(url, referrer).await?;
-    let document = NativeDocument::parse(&resource.body, &limits)?;
+    let discovery = NativeDocument::parse(&resource.body, &limits)?;
+    let mut external_stylesheets = Vec::new();
+    for href in discovery
+        .external_stylesheet_hrefs()
+        .into_iter()
+        .take(MAX_CONTENT_STYLESHEETS)
+    {
+        if let Some(stylesheet) = loader.load_stylesheet_async(&resource.url, &href).await? {
+            let next_len = external_stylesheets
+                .iter()
+                .map(String::len)
+                .sum::<usize>()
+                .saturating_add(stylesheet.len());
+            if next_len > MAX_CONTENT_STYLESHEET_BYTES {
+                return Err(NativeEngineError::limit(
+                    "CSS subresources",
+                    MAX_CONTENT_STYLESHEET_BYTES,
+                    next_len,
+                ));
+            }
+            external_stylesheets.push(stylesheet);
+        }
+    }
+    let document =
+        NativeDocument::parse_with_stylesheets(&resource.body, &limits, &external_stylesheets, 1)?;
     let wire = document.to_content_wire();
     Ok((
         NativeContentLoad {

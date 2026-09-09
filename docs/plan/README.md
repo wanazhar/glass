@@ -155,8 +155,20 @@ referrers, HTTPS downgrade suppression, and child-wire policy validation are
 covered. CORS/CSP, mixed content, service workers, permissions, subresources,
 full HTTP cache semantics, script execution, and browser parity remain open.
 
-The next dependency gate is BE-02d: CORS/CSP, mixed-content, and initial
-subresource mediation for the native document path.
+The BE-02d scope was CORS/CSP, mixed-content, and initial subresource
+mediation for the native document path.
+
+The completed stylesheet-subresource batch is
+[native-engine-browser-013](tasks/native-engine-browser-013.md). The child
+now discovers a bounded number of link stylesheets, applies CSP
+style-src/default-src and HTTPS mixed-content checks before request, fetches
+validated text/css resources with the shared cookie/redirect/referrer limits,
+and includes accepted rules in the child-owned computed-style snapshot.
+Images, media, fonts, scripts, fetch/XHR, service workers, permissions,
+complete CSP/CORS, and browser parity remain open.
+
+The next dependency gate is BE-02e: broad CORS/CSP and mixed-content
+mediation for script/fetch and the remaining resource classes.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

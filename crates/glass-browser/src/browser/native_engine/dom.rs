@@ -215,6 +215,12 @@ pub(crate) struct NativeScriptElementSnapshot {
     pub(crate) focused: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum NativePageScriptSource {
+    Inline(String),
+    External(String),
+}
+
 /// A parsed document owned by one engine generation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeDocument {
@@ -679,22 +685,40 @@ impl NativeDocument {
         max_scripts: usize,
         max_source_bytes: usize,
     ) -> Vec<String> {
+        self.page_script_sources(max_scripts, max_source_bytes)
+            .into_iter()
+            .filter_map(|source| match source {
+                NativePageScriptSource::Inline(source) => Some(source),
+                NativePageScriptSource::External(_) => None,
+            })
+            .collect()
+    }
+
+    pub(crate) fn page_script_sources(
+        &self,
+        max_scripts: usize,
+        max_source_bytes: usize,
+    ) -> Vec<NativePageScriptSource> {
         self.nodes
             .iter()
             .filter(|node| node.element_name() == Some("script"))
             .filter(|node| {
-                node.attribute("src").is_none()
-                    && node.attribute("type").is_none_or(|value| {
-                        value.is_empty()
-                            || value.eq_ignore_ascii_case("text/javascript")
-                            || value.eq_ignore_ascii_case("application/javascript")
-                    })
+                node.attribute("type").is_none_or(|value| {
+                    value.is_empty()
+                        || value.eq_ignore_ascii_case("text/javascript")
+                        || value.eq_ignore_ascii_case("application/javascript")
+                })
             })
             .take(max_scripts)
             .filter_map(|node| {
+                if let Some(source) = node.attribute("src") {
+                    return (!source.is_empty())
+                        .then(|| NativePageScriptSource::External(source.to_owned()));
+                }
                 let mut source = String::new();
                 self.collect_raw_text(node.id(), &mut source);
-                (!source.is_empty() && source.len() <= max_source_bytes).then_some(source)
+                (source.len() <= max_source_bytes && !source.is_empty())
+                    .then_some(NativePageScriptSource::Inline(source))
             })
             .collect()
     }

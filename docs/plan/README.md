@@ -294,9 +294,18 @@ activation is rejected, and failed local scripts do not publish a partial
 navigation. External `src` scripts, modules, parser timing, timers, Fetch/XHR,
 and full Web IDL identity remain open.
 
-The next BE-02/BE-03/BE-04 gate is external script/module request policy and
-navigation lifecycle/default-action ordering, followed by target contexts,
-timers, Fetch/XHR, and the remaining resource classes.
+The completed classic external-script batch is
+[native-engine-browser-027](tasks/native-engine-browser-027.md). HTTP(S)
+content processes now resolve accepted classic `src` scripts in document order,
+apply the existing script CSP/default-src, mixed-content, redirect,
+referrer/cookie, MIME, and byte policies, and execute them in the persistent
+child realm alongside inline sources. Module/unknown types are not fetched;
+local fixture/data subresources, parser timing, timers, Fetch/XHR, and full Web
+IDL identity remain open.
+
+The next BE-02/BE-03/BE-04 gate is module/dynamic-import and parser-timing
+policy alongside navigation lifecycle/default-action ordering, followed by
+target contexts, timers, Fetch/XHR, and the remaining resource classes.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

@@ -1,4 +1,6 @@
-use super::config::{NativeEngineLimits, is_network_url, validate_url_text, without_fragment};
+use super::config::{
+    NativeEngineLimits, Viewport, is_network_url, validate_url_text, without_fragment,
+};
 use super::dom::{NativeDocument, NativeDocumentWire, NativeNodeId};
 use super::error::{NativeEngineError, NativeWorkerFailureKind};
 use super::interaction::{MAX_NATIVE_EFFECTS, NativeEventKind};
@@ -165,6 +167,7 @@ impl NativeContentProcess {
         &mut self,
         url: &str,
         limits: &NativeEngineLimits,
+        viewport: Viewport,
         referrer: Option<&str>,
     ) -> Result<NativeContentLoad, NativeEngineError> {
         let id = self.next_id();
@@ -180,6 +183,9 @@ impl NativeContentProcess {
                 "max_nodes": limits.max_nodes,
                 "max_dom_depth": limits.max_dom_depth,
                 "max_text_bytes": limits.max_text_bytes,
+                "viewport_width": viewport.width,
+                "viewport_height": viewport.height,
+                "viewport_device_scale_factor_milli": viewport.device_scale_factor_milli,
             })),
         )
         .await
@@ -752,6 +758,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut stdout = tokio::io::stdout();
     let mut running = false;
     let mut document = None;
+    let mut document_url = None;
+    let mut document_origin = None;
+    let mut viewport = Viewport::default();
     let mut resource_loader = None;
     let mut javascript_runtime = None;
     loop {
@@ -779,8 +788,11 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             }
             "load" if protocol_matches(&request) && running => {
                 match load_content_resource(&request, &mut resource_loader).await {
-                    Ok((resource, parsed)) => {
+                    Ok((resource, parsed, loaded_viewport)) => {
                         document = Some(parsed);
+                        document_url = Some(resource.url.clone());
+                        document_origin = Some(resource.origin.clone());
+                        viewport = loaded_viewport;
                         javascript_runtime = None;
                         json!({
                             "kind": "loaded",
@@ -848,7 +860,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 }
             }
             "script" if protocol_matches(&request) && running => {
-                let Some(_current) = document.as_ref() else {
+                let Some(current) = document.as_ref() else {
                     let response = content_error_response(
                         id,
                         NativeEngineError::Worker {
@@ -876,7 +888,29 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     }
                 }
                 let runtime = javascript_runtime.as_ref().expect("runtime initialized");
-                match runtime.evaluate(source) {
+                let Some(document_url) = document_url.as_deref() else {
+                    let response = content_error_response(
+                        id,
+                        NativeEngineError::Worker {
+                            operation: "content process script".into(),
+                            reason: "content process has no committed URL".into(),
+                        },
+                    );
+                    write_value_frame(&mut stdout, &response).await?;
+                    continue;
+                };
+                let Some(document_origin) = document_origin.as_ref() else {
+                    let response = content_error_response(
+                        id,
+                        NativeEngineError::Worker {
+                            operation: "content process script".into(),
+                            reason: "content process has no committed origin".into(),
+                        },
+                    );
+                    write_value_frame(&mut stdout, &response).await?;
+                    continue;
+                };
+                match runtime.evaluate(source, current, document_url, document_origin, viewport) {
                     Ok(value) => json!({"kind":"evaluated","id":id,"value":value}),
                     Err(error) => content_error_response(id, error),
                 }
@@ -929,7 +963,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
 async fn load_content_resource(
     request: &Value,
     resource_loader: &mut Option<NativeResourceLoader>,
-) -> Result<(NativeContentLoad, NativeDocument), NativeEngineError> {
+) -> Result<(NativeContentLoad, NativeDocument, Viewport), NativeEngineError> {
     let url = request
         .get("url")
         .and_then(Value::as_str)
@@ -969,6 +1003,24 @@ async fn load_content_resource(
             .unwrap_or(NativeEngineLimits::default().max_text_bytes),
         ..NativeEngineLimits::default()
     };
+    let viewport = Viewport {
+        width: request
+            .get("viewport_width")
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap_or_else(|| Viewport::default().width),
+        height: request
+            .get("viewport_height")
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap_or_else(|| Viewport::default().height),
+        device_scale_factor_milli: request
+            .get("viewport_device_scale_factor_milli")
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap_or_else(|| Viewport::default().device_scale_factor_milli),
+    };
+    viewport.validate()?;
     let referrer = request
         .get("referrer")
         .and_then(|value| (!value.is_null()).then_some(value))
@@ -1029,6 +1081,7 @@ async fn load_content_resource(
             document: wire,
         },
         document,
+        viewport,
     ))
 }
 

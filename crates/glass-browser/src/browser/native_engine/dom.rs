@@ -186,6 +186,31 @@ pub struct NativeSemanticNode {
     pub focused: bool,
 }
 
+/// Bounded document data used to refresh the native JavaScript host view.
+/// These are snapshots, not live DOM identities; mutation and event ownership
+/// remain explicit engine operations until the Web IDL bridge is complete.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NativeScriptDocumentSnapshot {
+    pub(crate) title: String,
+    pub(crate) visible_text: String,
+    pub(crate) elements: Vec<NativeScriptElementSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NativeScriptElementSnapshot {
+    pub(crate) node_index: u32,
+    pub(crate) tag_name: String,
+    pub(crate) attributes: BTreeMap<String, String>,
+    pub(crate) text: String,
+    pub(crate) value: Option<String>,
+    pub(crate) checked: bool,
+    pub(crate) selected: bool,
+    pub(crate) disabled: bool,
+    pub(crate) hidden: bool,
+}
+
 /// A parsed document owned by one engine generation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeDocument {
@@ -610,6 +635,37 @@ impl NativeDocument {
             .iter()
             .filter_map(|node| self.semantic_node(node.id))
             .collect()
+    }
+
+    pub(crate) fn script_snapshot(&self, max_text_bytes: usize) -> NativeScriptDocumentSnapshot {
+        let (title, _) = self.title(max_text_bytes);
+        let (visible_text, _) = self.visible_text(max_text_bytes);
+        let elements = self
+            .nodes
+            .iter()
+            .filter_map(|node| {
+                let tag_name = node.element_name()?.to_owned();
+                let (text, _) = self
+                    .element_text(node.id(), max_text_bytes)
+                    .unwrap_or_default();
+                Some(NativeScriptElementSnapshot {
+                    node_index: node.id().index(),
+                    tag_name,
+                    attributes: node.attributes()?.clone(),
+                    text,
+                    value: self.current_value(node.id()),
+                    checked: node.state.checked,
+                    selected: node.state.selected,
+                    disabled: self.is_disabled(node.id()),
+                    hidden: self.is_hidden(node.id()),
+                })
+            })
+            .collect();
+        NativeScriptDocumentSnapshot {
+            title,
+            visible_text,
+            elements,
+        }
     }
 
     /// Derive the current document's bounded integer-pixel layout.

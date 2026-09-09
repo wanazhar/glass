@@ -1,5 +1,6 @@
 #![cfg(feature = "native-engine")]
 
+use fs2::FileExt;
 use glass_browser::browser::native_backend::NATIVE_ENGINE_BACKEND_ID;
 use glass_browser::browser::native_engine::{
     MAX_NATIVE_DIAGNOSTIC_DETAIL_BYTES, MAX_NATIVE_DIAGNOSTICS, NativeAction, NativeBorderRadius,
@@ -17,7 +18,7 @@ use glass_browser::browser_backend::{
     SemanticAction, StorageOperation, StorageRequest, StorageScope, SupportLevel,
 };
 use glass_browser::{BackendFactory, BrowserRuntime, BrowserRuntimeSession, NativeEngineBackend};
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::io::Cursor;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -28676,6 +28677,40 @@ async fn native_local_web_storage_persists_through_profile_restart() {
         engine.close().unwrap();
     }
     let _ = fs::remove_file(profile_path);
+}
+
+#[test]
+fn native_web_storage_profile_rejects_an_active_writer() {
+    let profile_path = std::env::temp_dir().join(format!(
+        "glass-native-web-storage-{}-active-writer.json",
+        std::process::id()
+    ));
+    let lock_path = profile_path.with_extension("lock");
+    let _ = fs::remove_file(&profile_path);
+    let _ = fs::remove_file(&lock_path);
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .unwrap();
+    lock.lock_exclusive().unwrap();
+
+    let error = match NativeEngine::new(
+        NativeEngineConfig::default().with_storage_path(profile_path.clone()),
+    ) {
+        Ok(_) => panic!("an active profile writer must reject a second reader"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        NativeEngineError::StorageProfileLocked { path } if path == profile_path.to_string_lossy()
+    ));
+
+    drop(lock);
+    let _ = fs::remove_file(profile_path);
+    let _ = fs::remove_file(lock_path);
 }
 
 #[tokio::test]

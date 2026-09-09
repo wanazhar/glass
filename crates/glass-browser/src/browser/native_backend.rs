@@ -396,6 +396,10 @@ fn native_error(error: NativeEngineError) -> BrowserBackendError {
             operation,
             reason: format!("{kind:?}: {reason}"),
         },
+        NativeEngineError::StorageProfileLocked { path } => BrowserBackendError::Connection {
+            operation: "storage".into(),
+            reason: format!("native Web Storage profile is already owned: {path}"),
+        },
         NativeEngineError::Parse { offset, reason } => BrowserBackendError::InvalidConfiguration {
             field: "native HTML document".into(),
             reason: format!("parse failure at byte {offset}: {reason}"),

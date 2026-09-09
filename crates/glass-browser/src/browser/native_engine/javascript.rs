@@ -9,11 +9,13 @@ use super::dom::{NativeDocument, NativePageScriptSource, NativePageScriptTiming}
 use super::error::NativeEngineError;
 use super::interaction::{MAX_NATIVE_EFFECTS, NativeEventKind};
 use super::origin::NativeOrigin;
+use fs2::FileExt;
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::{Context, Error, Module, Runtime, Value};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
+use std::io::ErrorKind;
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
@@ -32,6 +34,8 @@ const NATIVE_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_WEB_STORAGE_PROFILE_BYTES: usize = 4 * 1024 * 1024;
 const WEB_STORAGE_PROFILE_VERSION: u64 = 1;
 const MAX_NATIVE_STORAGE_EVENTS: usize = 64;
+const NATIVE_STORAGE_PROFILE_LOCK_TIMEOUT: Duration = Duration::from_millis(500);
+const NATIVE_STORAGE_PROFILE_LOCK_RETRY: Duration = Duration::from_millis(10);
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -267,12 +271,88 @@ struct NativeWebStorageProfile {
     local: BTreeMap<String, BTreeMap<String, String>>,
 }
 
+/// Cross-process ownership of one bounded Web Storage profile I/O operation.
+///
+/// The lock file is retained after release. The operating system owns the
+/// advisory lock on the open handle, so a crashed worker cannot leave a stale
+/// path that blocks a later profile read or write.
+struct NativeStorageProfileLock {
+    file: File,
+}
+
+impl Drop for NativeStorageProfileLock {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.file);
+    }
+}
+
+fn lock_web_storage_profile(
+    path: &Path,
+    exclusive: bool,
+) -> Result<NativeStorageProfileLock, NativeEngineError> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent).map_err(|_| NativeEngineError::Worker {
+            operation: "open native Web Storage profile lock".into(),
+            reason: "native Web Storage profile directory cannot be created".into(),
+        })?;
+    }
+    let lock_path = path.with_extension("lock");
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|_| NativeEngineError::Worker {
+            operation: "open native Web Storage profile lock".into(),
+            reason: "native Web Storage profile lock cannot be opened".into(),
+        })?;
+    let deadline = Instant::now() + NATIVE_STORAGE_PROFILE_LOCK_TIMEOUT;
+    loop {
+        let result = if exclusive {
+            FileExt::try_lock_exclusive(&file)
+        } else {
+            FileExt::try_lock_shared(&file)
+        };
+        match result {
+            Ok(()) => return Ok(NativeStorageProfileLock { file }),
+            Err(error) if profile_lock_is_contended(&error) => {
+                if Instant::now() >= deadline {
+                    return Err(NativeEngineError::StorageProfileLocked {
+                        path: path.to_string_lossy().into_owned(),
+                    });
+                }
+                std::thread::sleep(NATIVE_STORAGE_PROFILE_LOCK_RETRY);
+            }
+            Err(_) => {
+                return Err(NativeEngineError::Worker {
+                    operation: if exclusive {
+                        "write native Web Storage profile"
+                    } else {
+                        "read native Web Storage profile"
+                    }
+                    .into(),
+                    reason: "native Web Storage profile lock cannot be acquired".into(),
+                });
+            }
+        }
+    }
+}
+
+fn profile_lock_is_contended(error: &std::io::Error) -> bool {
+    error.kind() == ErrorKind::WouldBlock || (cfg!(windows) && error.raw_os_error() == Some(33))
+}
+
 pub(crate) fn load_web_storage_profile(
     path: Option<&Path>,
 ) -> Result<NativeWebStorageState, NativeEngineError> {
     let Some(path) = path else {
         return Ok(NativeWebStorageState::default());
     };
+    let _lock = lock_web_storage_profile(path, false)?;
     let metadata = match fs::metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -355,6 +435,7 @@ pub(crate) fn save_web_storage_profile(
             reason: "native Web Storage profile directory cannot be created".into(),
         })?;
     }
+    let _lock = lock_web_storage_profile(path, true)?;
     let temporary_path = path.with_extension(format!("tmp-{}", std::process::id()));
     fs::write(&temporary_path, &bytes).map_err(|_| NativeEngineError::Worker {
         operation: "save native Web Storage profile".into(),

@@ -724,6 +724,13 @@ existing fetch owner emits deterministic multipart filename and content-type
 parts. Binary buffers, streams, file pickers and disk file controls, upload
 progress, and full Blob/File/FormData Web IDL identity remain open.
 
+The completed native-engine-browser-068 batch adds an explicit opt-in,
+bounded JSON profile path for page `localStorage`. The engine owner and
+sandboxed content worker load and save the same origin-keyed local map;
+`sessionStorage` is intentionally not serialized and starts empty for each
+engine. Profile locking, storage events, cookie synchronization, IndexedDB,
+quota policy, and full Storage Web IDL identity remain open.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature

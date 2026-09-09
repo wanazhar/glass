@@ -2303,11 +2303,18 @@ local and child realms. Binary buffers, streams, file pickers, disk file
 controls, upload progress, and full Blob/File/FormData Web IDL identity remain
 open.
 
-The next bounded workstream is durable profile storage and storage
-event/cookie synchronization, followed by IndexedDB, full binary/stream
-FormData support, full task ordering/navigation edge cases, remaining full
-pattern-regex/file constraint validation, target contexts, and the remaining
-browser-context primitives.
+The completed opt-in durable page-storage profile follow-up is
+[native-engine-browser-068](../tasks/native-engine-browser-068.md). A bounded
+JSON profile path restores origin-keyed page `localStorage` in local and
+child-owned realms, persists mutations through navigation and close, and
+keeps `sessionStorage` session-scoped. The path is explicit, with no
+concurrent-writer coordination; storage events, cookie synchronization,
+IndexedDB, quota policy, and full Storage Web IDL identity remain open.
+
+The next bounded workstream is storage-event/cookie synchronization, followed
+by IndexedDB, full binary/stream FormData support, full task
+ordering/navigation edge cases, remaining full pattern-regex/file constraint
+validation, target contexts, and the remaining browser-context primitives.
 
 ## Baseline and constraints
 

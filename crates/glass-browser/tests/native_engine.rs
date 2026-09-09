@@ -17,6 +17,7 @@ use glass_browser::browser_backend::{
     SemanticAction, StorageOperation, StorageRequest, StorageScope, SupportLevel,
 };
 use glass_browser::{BackendFactory, BrowserRuntime, BrowserRuntimeSession, NativeEngineBackend};
+use std::fs;
 use std::io::Cursor;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -28531,6 +28532,142 @@ async fn native_content_process_exposes_page_web_storage_realm() {
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_local_web_storage_persists_through_profile_restart() {
+    let profile_path = std::env::temp_dir().join(format!(
+        "glass-native-web-storage-{}-local-restart.json",
+        std::process::id()
+    ));
+    let _ = fs::remove_file(&profile_path);
+    let config = NativeEngineConfig::default()
+        .with_storage_path(profile_path.clone())
+        .with_fixture("fixture://persistent-storage", "<p>Persistent storage</p>")
+        .unwrap()
+        .with_initial_url("fixture://persistent-storage");
+
+    {
+        let mut engine = NativeEngine::new(config.clone()).unwrap();
+        engine.initialize().unwrap();
+        assert_eq!(
+            engine
+                .evaluate_async(
+                    "localStorage.setItem('theme', 'dark'); sessionStorage.setItem('tab', 'one'); true",
+                )
+                .await
+                .unwrap(),
+            serde_json::json!(true)
+        );
+        engine
+            .navigate("fixture://persistent-storage#next")
+            .unwrap();
+        assert_eq!(
+            engine
+                .evaluate_async(
+                    "({ local: localStorage.getItem('theme'), session: sessionStorage.getItem('tab') })",
+                )
+                .await
+                .unwrap(),
+            serde_json::json!({"local":"dark","session":"one"})
+        );
+        engine.close().unwrap();
+    }
+
+    let profile = fs::read_to_string(&profile_path).unwrap();
+    assert!(profile.contains("theme"));
+    assert!(!profile.contains("tab"));
+
+    {
+        let mut engine = NativeEngine::new(config).unwrap();
+        engine.initialize().unwrap();
+        assert_eq!(
+            engine
+                .evaluate_async(
+                    "({ local: localStorage.getItem('theme'), session: sessionStorage.getItem('tab') })",
+                )
+                .await
+                .unwrap(),
+            serde_json::json!({"local":"dark","session":null})
+        );
+        engine.close().unwrap();
+    }
+    let _ = fs::remove_file(profile_path);
+}
+
+#[tokio::test]
+async fn native_content_process_web_storage_persists_through_profile_restart() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let profile_path = std::env::temp_dir().join(format!(
+        "glass-native-web-storage-{}-content-restart.json",
+        std::process::id()
+    ));
+    let _ = fs::remove_file(&profile_path);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+            let body = "<p>Persistent content storage</p>";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+    let url = format!("http://{address}/page");
+
+    {
+        let mut engine = NativeEngine::new(
+            NativeEngineConfig::default()
+                .with_storage_path(profile_path.clone())
+                .with_initial_url(url.clone()),
+        )
+        .unwrap();
+        engine.initialize_async().await.unwrap();
+        assert_eq!(
+            engine
+                .evaluate_async(
+                    "localStorage.setItem('theme', 'dark'); sessionStorage.setItem('tab', 'one'); true",
+                )
+                .await
+                .unwrap(),
+            serde_json::json!(true)
+        );
+        engine.close_async().await.unwrap();
+    }
+
+    let profile = fs::read_to_string(&profile_path).unwrap();
+    assert!(
+        profile.contains("theme"),
+        "profile after child close: {profile}"
+    );
+
+    {
+        let mut engine = NativeEngine::new(
+            NativeEngineConfig::default()
+                .with_storage_path(profile_path.clone())
+                .with_initial_url(url),
+        )
+        .unwrap();
+        engine.initialize_async().await.unwrap();
+        assert_eq!(
+            engine
+                .evaluate_async(
+                    "({ local: localStorage.getItem('theme'), session: sessionStorage.getItem('tab') })",
+                )
+                .await
+                .unwrap(),
+            serde_json::json!({"local":"dark","session":null})
+        );
+        engine.close_async().await.unwrap();
+    }
+
+    server.await.unwrap();
+    let _ = fs::remove_file(profile_path);
 }
 
 #[tokio::test]

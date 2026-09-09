@@ -11,8 +11,8 @@ use super::javascript::{
     MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_SCRIPT_BYTES, NativeJavaScriptRuntime, NativePageScript,
     NativeScriptCommand, NativeScriptEvaluation, NativeWebStorageState, execute_page_scripts,
     host_event_script, host_hash_change_event_script, host_key_event_script,
-    host_submit_event_script, literal_dynamic_module_specifiers, order_page_scripts,
-    static_module_specifiers,
+    host_submit_event_script, literal_dynamic_module_specifiers, load_web_storage_profile,
+    order_page_scripts, save_web_storage_profile, static_module_specifiers,
 };
 use super::origin::NativeOrigin;
 use super::resource_loader::{
@@ -24,7 +24,7 @@ use super::sandbox::prepare_worker_command;
 use base64::Engine as _;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -86,9 +86,14 @@ pub(crate) struct NativeContentProcess {
 }
 
 impl NativeContentProcess {
-    pub(crate) async fn spawn() -> Result<Self, NativeEngineError> {
+    pub(crate) async fn spawn(storage_path: Option<&Path>) -> Result<Self, NativeEngineError> {
         let path = worker_binary_path()?;
-        let (mut command, mut sandbox) = prepare_worker_command(&path)?;
+        if let Some(storage_path) = storage_path
+            && !storage_path.exists()
+        {
+            save_web_storage_profile(Some(storage_path), &NativeWebStorageState::default())?;
+        }
+        let (mut command, mut sandbox) = prepare_worker_command(&path, storage_path)?;
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -150,13 +155,17 @@ impl NativeContentProcess {
         Ok(process)
     }
 
-    pub(crate) async fn start(&mut self) -> Result<(), NativeEngineError> {
+    pub(crate) async fn start(
+        &mut self,
+        storage_path: Option<&Path>,
+    ) -> Result<(), NativeEngineError> {
         let id = self.next_id();
         let response = self
             .exchange(json!({
                 "kind": "start",
                 "id": id,
                 "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
+                "storage_path": storage_path.map(|path| path.to_string_lossy().into_owned()),
             }))
             .await?;
         let result = require_response_kind(&response, "started", id, "content process start");
@@ -925,6 +934,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut resource_loader = None;
     let mut javascript_runtime: Option<NativeJavaScriptRuntime> = None;
     let mut storage_state = NativeWebStorageState::default();
+    let mut storage_profile_path: Option<PathBuf> = None;
     loop {
         let payload = read_frame(&mut stdin).await?;
         let request: Value =
@@ -942,8 +952,25 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 json!({"kind":"pong","id":id,"protocol":CONTENT_WORKER_PROTOCOL_VERSION})
             }
             "start" if protocol_matches(&request) && !running => {
-                running = true;
-                json!({"kind":"started","id":id})
+                let requested_path = request
+                    .get("storage_path")
+                    .and_then(Value::as_str)
+                    .map(PathBuf::from);
+                match requested_path
+                    .as_deref()
+                    .map(|path| load_web_storage_profile(Some(path)))
+                    .transpose()
+                {
+                    Ok(loaded) => {
+                        if let Some(loaded) = loaded {
+                            storage_state = loaded;
+                        }
+                        storage_profile_path = requested_path;
+                        running = true;
+                        json!({"kind":"started","id":id})
+                    }
+                    Err(error) => content_error_response(id, error),
+                }
             }
             "commit" if protocol_matches(&request) && running => {
                 json!({"kind":"committed","id":id})
@@ -1734,6 +1761,12 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 }
             }
             "close" if protocol_matches(&request) => {
+                if let Some(runtime) = javascript_runtime.as_ref() {
+                    storage_state = runtime.storage_state();
+                }
+                if let Some(path) = storage_profile_path.as_deref() {
+                    save_web_storage_profile(Some(path), &storage_state)?;
+                }
                 write_value_frame(&mut stdout, &json!({"kind":"closed","id":id})).await?;
                 return Ok(());
             }
@@ -1745,6 +1778,12 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 },
             ),
         };
+        if let Some(runtime) = javascript_runtime.as_ref() {
+            storage_state = runtime.storage_state();
+        }
+        if let Some(path) = storage_profile_path.as_deref() {
+            save_web_storage_profile(Some(path), &storage_state)?;
+        }
         write_value_frame(&mut stdout, &response).await?;
     }
 }

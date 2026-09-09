@@ -640,11 +640,19 @@ owner in local and child realms. Binary buffers, streams, file pickers, disk
 file controls, upload progress, and full Blob/File/FormData Web IDL identity
 remain open.
 
-The next BE-02/BE-03/BE-04/BE-07 gate is durable profile storage and storage
-event/cookie synchronization, followed by IndexedDB, full binary/stream
-FormData support, full task ordering/navigation edge cases, remaining full
-pattern-regex/file constraint validation, target contexts, and the remaining
-browser-context primitives.
+The completed opt-in durable page-storage profile slice is
+[native-engine-browser-068](tasks/native-engine-browser-068.md). A bounded
+JSON profile path now restores origin-keyed page `localStorage` for both the
+local runtime and the sandboxed content worker, persists updates through
+navigation and close, and deliberately starts each engine with empty
+`sessionStorage`. The path is explicit rather than implicit, and concurrent
+writers, storage events, cookie synchronization, IndexedDB, quota policy, and
+full Storage Web IDL identity remain open.
+
+The next BE-02/BE-03/BE-04/BE-07 gate is storage-event/cookie synchronization,
+followed by IndexedDB, full binary/stream FormData support, full task
+ordering/navigation edge cases, remaining full pattern-regex/file constraint
+validation, target contexts, and the remaining browser-context primitives.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

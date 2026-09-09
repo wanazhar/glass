@@ -286,6 +286,17 @@ unchanged. The operation has no custom methods, headers, body, streams,
 preflights, JavaScript/Web IDL binding, service-worker route, or remaining
 resource caller, so it is not `window.fetch` or browser-complete networking.
 
+The completed native-engine-browser-016 batch adds the first real JavaScript
+owner. The native backend now dispatches bounded script requests into a
+persistent QuickJS realm: local documents use an owner-side realm, while
+HTTP(S) documents execute in the sandboxed content worker. Full navigation
+replaces the realm, same-document navigation retains it, and results cross the
+semantic boundary only as bounded JSON. Source, result, memory, stack, and
+five-second execution limits are explicit. This is ECMAScript execution, not
+yet a browser host: DOM/Web IDL objects, promises/timers/modules, page-script
+loading, Fetch/XHR, service workers, and the remaining resource classes stay
+open.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature
@@ -2563,7 +2574,8 @@ cargo test -p glass-browser --features native-engine --test native_engine --lock
 ```
 
 The default feature set does not compile or enable the native engine. The
-feature adds no dependency. The first public construction path is:
+feature adds the optional `rquickjs` dependency and enables it only for
+native-engine builds. The first public construction path is:
 
 ```rust,no_run
 use glass_browser::browser::native_engine::NativeEngineConfig;
@@ -3322,7 +3334,7 @@ visibility gate recognizes `hidden`, `aria-hidden="true"`, and computed
 `display:none`/`visibility:hidden`; hidden subtrees are omitted from text,
 layout, and hit testing. Supported local links perform the bounded default
 navigation described above; unsupported links fail closed. No action performs
-keyboard navigation, multi-select, or JavaScript execution.
+keyboard navigation, multi-select, or script-driven default browser behavior.
 Each accepted mutating action advances the document revision exactly once, so
 earlier references must be re-observed. The effects operation returns the current
 revision and changed bit; bounded native event metadata remains an internal
@@ -3335,12 +3347,12 @@ The native profile is `experimental` and declares:
 | Capability | Level | Current contract |
 |---|---|---|
 | lifecycle | available | initialize and explicit close |
-| navigation | available | local resources plus bounded external HTTP(S) HTML navigation; no subresources or script |
+| navigation | available | local resources plus bounded external HTTP(S) HTML navigation; no page-script loading or general subresources |
 | contexts | available | one active context |
 | evidence | available | bounded URL, title, visible text, revision; native semantic projection is Rust-only |
 | action | available | semantic click/type, bounded vertical root scrolling, plus native point targets for supported local controls; no nested scrolling or default browser behavior |
 | effects | available | current revision and changed signal; bounded event metadata is Rust-only |
-| script | omitted | JavaScript is unavailable |
+| script | available | bounded QuickJS ECMAScript with JSON results; no DOM/Web IDL host surface, timers, modules, or page-script loading |
 | capture | available | bounded PNG of the current logical RGBA surface; JPEG/PDF and screenshot-containing evidence are unavailable |
 | storage | partial | process-owned session cookies and bounded document cache; no local/session/IndexedDB storage or persistence |
 | prompts | omitted | no dialogs |

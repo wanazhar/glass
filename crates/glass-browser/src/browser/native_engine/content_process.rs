@@ -2,6 +2,7 @@ use super::config::{NativeEngineLimits, is_network_url, validate_url_text, witho
 use super::dom::{NativeDocument, NativeDocumentWire, NativeNodeId};
 use super::error::{NativeEngineError, NativeWorkerFailureKind};
 use super::interaction::{MAX_NATIVE_EFFECTS, NativeEventKind};
+use super::javascript::NativeJavaScriptRuntime;
 use super::origin::NativeOrigin;
 use super::resource_loader::{NativeFetchResponse, NativeResourceLoader};
 #[cfg(windows)]
@@ -21,6 +22,7 @@ const MAX_CONTENT_DOCUMENT_WIRE_BYTES: usize = 2 * 1024 * 1024;
 const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 1;
 const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
+const CONTENT_PROCESS_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_CONTENT_STYLESHEETS: usize = 16;
 const MAX_CONTENT_STYLESHEET_BYTES: usize = 512 * 1024;
 
@@ -274,6 +276,43 @@ impl NativeContentProcess {
             let _ = self.child.start_kill();
         }
         result
+    }
+
+    pub(crate) async fn evaluate(&mut self, source: &str) -> Result<Value, NativeEngineError> {
+        let id = self.next_id();
+        let response = match timeout(
+            CONTENT_PROCESS_SCRIPT_TIMEOUT,
+            self.exchange(json!({
+                "kind": "script",
+                "id": id,
+                "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
+                "source": source,
+            })),
+        )
+        .await
+        {
+            Ok(response) => response?,
+            Err(_) => {
+                self.mark_failed(NativeWorkerFailureKind::Timeout);
+                let _ = self.child.start_kill();
+                return Err(NativeEngineError::worker_failure(
+                    "content process script",
+                    NativeWorkerFailureKind::Timeout,
+                    "content process script exceeded its deadline",
+                ));
+            }
+        };
+        if response.get("kind").and_then(Value::as_str) == Some("error") {
+            return Err(NativeEngineError::Worker {
+                operation: "content process script".into(),
+                reason: response
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("content process rejected the script")
+                    .into(),
+            });
+        }
+        decode_script_response(&response, id)
     }
 
     async fn mutate_with_request(
@@ -667,6 +706,29 @@ fn decode_fetch_response(
     })
 }
 
+fn decode_script_response(response: &Value, id: u64) -> Result<Value, NativeEngineError> {
+    require_response_kind(response, "evaluated", id, "content process script")?;
+    let value = response
+        .get("value")
+        .cloned()
+        .ok_or_else(|| NativeEngineError::Worker {
+            operation: "decode content process script".into(),
+            reason: "content process omitted the script result".into(),
+        })?;
+    let encoded = serde_json::to_vec(&value).map_err(|_| NativeEngineError::Worker {
+        operation: "decode content process script".into(),
+        reason: "content process returned an unserializable script result".into(),
+    })?;
+    if encoded.len() > super::javascript::MAX_NATIVE_SCRIPT_RESULT_BYTES {
+        return Err(NativeEngineError::limit(
+            "content-process script result",
+            super::javascript::MAX_NATIVE_SCRIPT_RESULT_BYTES,
+            encoded.len(),
+        ));
+    }
+    Ok(value)
+}
+
 fn decode_document_wire(
     document_bytes: &[u8],
     operation: &str,
@@ -691,6 +753,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut running = false;
     let mut document = None;
     let mut resource_loader = None;
+    let mut javascript_runtime = None;
     loop {
         let payload = read_frame(&mut stdin).await?;
         let request: Value =
@@ -718,6 +781,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 match load_content_resource(&request, &mut resource_loader).await {
                     Ok((resource, parsed)) => {
                         document = Some(parsed);
+                        javascript_runtime = None;
                         json!({
                             "kind": "loaded",
                             "id": id,
@@ -780,6 +844,40 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 .encode(fetch.body),
                         })
                     }
+                    Err(error) => content_error_response(id, error),
+                }
+            }
+            "script" if protocol_matches(&request) && running => {
+                let Some(_current) = document.as_ref() else {
+                    let response = content_error_response(
+                        id,
+                        NativeEngineError::Worker {
+                            operation: "content process script".into(),
+                            reason: "content process has no committed document".into(),
+                        },
+                    );
+                    write_value_frame(&mut stdout, &response).await?;
+                    continue;
+                };
+                let source = request
+                    .get("source")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        NativeEngineError::invalid("content-process script source", "must be text")
+                    })?;
+                if javascript_runtime.is_none() {
+                    match NativeJavaScriptRuntime::new() {
+                        Ok(runtime) => javascript_runtime = Some(runtime),
+                        Err(error) => {
+                            let response = content_error_response(id, error);
+                            write_value_frame(&mut stdout, &response).await?;
+                            continue;
+                        }
+                    }
+                }
+                let runtime = javascript_runtime.as_ref().expect("runtime initialized");
+                match runtime.evaluate(source) {
+                    Ok(value) => json!({"kind":"evaluated","id":id,"value":value}),
                     Err(error) => content_error_response(id, error),
                 }
             }

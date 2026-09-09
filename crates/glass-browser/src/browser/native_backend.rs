@@ -12,7 +12,7 @@ use crate::browser_backend::{
     BackendRequest, BackendResponse, BrowserBackend, BrowserBackendError, BrowserCapability,
     BrowsingContext, CapabilityDescriptor, CaptureFormat, CaptureResult, CertificationLevel,
     CertificationProfile, EffectsResult, EvidenceLevel, EvidenceResult, NavigationResult,
-    Portability, SemanticAction, SupportLevel,
+    Portability, ScriptResult, SemanticAction, SupportLevel,
 };
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -56,6 +56,7 @@ impl NativeEngineBackend {
             BrowserCapability::Evidence,
             BrowserCapability::Action,
             BrowserCapability::Effects,
+            BrowserCapability::Script,
             BrowserCapability::Capture,
         ];
         let mut capabilities = BTreeMap::new();
@@ -78,6 +79,9 @@ impl NativeEngineBackend {
                             .into(),
                     ]
                 }
+                BrowserCapability::Script => vec![
+                    "bounded ECMAScript evaluation with JSON-serializable results; DOM and Web APIs are not wired yet".into(),
+                ],
                 BrowserCapability::Capture => {
                     vec![
                         "bounded PNG of the current logical RGBA surface; JPEG/PDF and screenshot-containing evidence are unavailable".into(),
@@ -116,7 +120,7 @@ impl NativeEngineBackend {
                     limitations: vec![
                         "network navigation is a bounded HTML-document slice, not browser parity".into(),
                         "in-process execution is not a security boundary for hostile content".into(),
-                        "JavaScript, subresources, network security policy, general CSS, scrolling/stacking layout, font/image fidelity, storage, and default browser behavior are unavailable".into(),
+                        "DOM/Web APIs, script-driven event loop/timers, subresources beyond the current loader slice, general CSS, scrolling/stacking layout, font/image fidelity, storage, and default browser behavior are unavailable".into(),
                         "actions are limited to semantic click/type, bounded vertical root scrolling, and native point targets for supported local controls".into(),
                     ],
                 },
@@ -242,6 +246,14 @@ impl BrowserBackend for NativeEngineBackend {
                         revision: snapshot.revision,
                         changed: snapshot.changed,
                     }))
+                }
+                (BackendOperation::Script, BackendRequest::Script(request)) => {
+                    require_context_id(&request.context_id)?;
+                    let value = engine
+                        .evaluate_async(request.source)
+                        .await
+                        .map_err(native_error)?;
+                    Ok(BackendResponse::Script(ScriptResult { value }))
                 }
                 (BackendOperation::Capture, BackendRequest::Capture(request)) => {
                     require_context_id(&request.context_id)?;

@@ -70,8 +70,15 @@ async fn native_runtime_session_uses_explicit_local_constructor() {
     assert_eq!(evidence.title, "Runtime");
     assert_eq!(evidence.visible_text, "Native session");
 
-    let script_error = session.script("1 + 1").await.unwrap_err().to_string();
-    assert!(script_error.contains("capability"));
+    let script = session.script("1 + 1").await.unwrap();
+    assert_eq!(script.value, serde_json::json!(2));
+    let persisted = session
+        .script("globalThis.answer = (globalThis.answer || 0) + 1; globalThis.answer")
+        .await
+        .unwrap();
+    assert_eq!(persisted.value, serde_json::json!(1));
+    let persisted = session.script("globalThis.answer").await.unwrap();
+    assert_eq!(persisted.value, serde_json::json!(1));
     session.close().await.unwrap();
 }
 
@@ -127,6 +134,47 @@ async fn native_runtime_session_loads_bounded_external_http_html_without_cdp() {
         .to_string();
     assert!(error.contains("unsupported content type"), "{error}");
     session.close().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_evaluates_persistent_script_realm() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0_u8; 4096];
+        let _ = stream.read(&mut request).await.unwrap();
+        let body = "<title>Script</title><p>Native script page</p>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine.evaluate_async("6 * 7").await.unwrap(),
+        serde_json::json!(42)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.answer = (globalThis.answer || 0) + 1; answer")
+            .await
+            .unwrap(),
+        serde_json::json!(1)
+    );
+    assert_eq!(
+        engine.evaluate_async("answer").await.unwrap(),
+        serde_json::json!(1)
+    );
+    engine.close_async().await.unwrap();
     server.await.unwrap();
 }
 
@@ -22028,7 +22076,7 @@ async fn fixture_navigation_projects_through_the_real_backend_dispatcher() {
 }
 
 #[tokio::test]
-async fn unsupported_resources_and_capabilities_fail_without_state_mutation() {
+async fn unsupported_resources_fail_without_state_mutation() {
     let backend = NativeEngineBackend::new(NativeEngineConfig::default()).unwrap();
     let dispatcher = BrowserBackendDispatcher::new(&backend);
     dispatcher.initialize().await.unwrap();
@@ -22042,7 +22090,7 @@ async fn unsupported_resources_and_capabilities_fail_without_state_mutation() {
 
     let network = dispatcher
         .navigate(NavigationRequest {
-            url: "https://example.com".into(),
+            url: "ftp://example.com".into(),
         })
         .await
         .unwrap_err();
@@ -22066,16 +22114,8 @@ async fn unsupported_resources_and_capabilities_fail_without_state_mutation() {
             source: "1 + 1".into(),
         })
         .await
-        .unwrap_err();
-    assert!(matches!(
-        script,
-        glass_browser::browser_backend::BrowserBackendError::CapabilityUnavailable {
-            capability: BrowserCapability::Script,
-            actual: SupportLevel::Unavailable,
-            declared: false,
-            ..
-        }
-    ));
+        .unwrap();
+    assert_eq!(script.value, serde_json::json!(2));
     dispatcher.close().await.unwrap();
 }
 

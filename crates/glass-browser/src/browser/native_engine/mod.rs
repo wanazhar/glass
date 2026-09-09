@@ -15,6 +15,7 @@ mod engine;
 mod error;
 mod history;
 mod interaction;
+mod javascript;
 mod layout;
 mod lifecycle;
 mod origin;

@@ -192,9 +192,19 @@ not `window.fetch`: custom methods/headers/bodies, preflights, streams,
 service workers, JavaScript/Web IDL, remaining resource classes, and browser
 parity remain open.
 
-The next BE-02/BE-04 gate is to define the broader Fetch request/response
-model and connect it to a real JavaScript/Web IDL runtime without bypassing
-the child policy boundary.
+The completed JavaScript-realm batch is
+[native-engine-browser-016](tasks/native-engine-browser-016.md). The native
+backend now exposes bounded ECMAScript evaluation through an optional,
+feature-gated QuickJS realm. Local documents use an owner-side persistent
+realm; external documents use the sandboxed content worker, and full
+navigation resets page globals. Results are bounded JSON with explicit
+source, result, memory, stack, and execution limits. DOM/Web IDL host objects,
+Promise driving, timers, modules, script loading, Fetch/XHR integration,
+service workers, remaining resource classes, and browser parity remain open.
+
+The next BE-02/BE-04 gate is to bind the page-owned `window`/`document` and
+Web IDL surface, then route the broader Fetch request/response model through
+the existing child policy boundary.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

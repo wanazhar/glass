@@ -203,12 +203,21 @@ impl NativeDocument {
     /// Parse one bounded HTML document using the initial Glass-owned tree
     /// builder. This parser is intentionally not an HTML5 conformance claim.
     pub fn parse(source: &str, limits: &NativeEngineLimits) -> Result<Self, NativeEngineError> {
-        Self::parse_with_generation(source, limits, 1)
+        Self::parse_with_stylesheets(source, limits, &[], 1)
     }
 
     pub(crate) fn parse_with_generation(
         source: &str,
         limits: &NativeEngineLimits,
+        generation: u32,
+    ) -> Result<Self, NativeEngineError> {
+        Self::parse_with_stylesheets(source, limits, &[], generation)
+    }
+
+    pub(crate) fn parse_with_stylesheets(
+        source: &str,
+        limits: &NativeEngineLimits,
+        external_stylesheets: &[String],
         generation: u32,
     ) -> Result<Self, NativeEngineError> {
         limits.validate()?;
@@ -325,7 +334,7 @@ impl NativeDocument {
                 }
             }
         }
-        let style_sources = document
+        let mut style_sources = document
             .nodes
             .iter()
             .filter(|node| node.element_name() == Some("style"))
@@ -335,6 +344,7 @@ impl NativeDocument {
                 source
             })
             .collect::<Vec<_>>();
+        style_sources.extend(external_stylesheets.iter().cloned());
         let mut diagnostics = NativeDiagnosticSink::default();
         document.stylesheet =
             NativeStylesheet::from_sources_with_diagnostics(style_sources, &mut diagnostics)?;
@@ -356,6 +366,21 @@ impl NativeDocument {
         document.diagnostics_truncated = diagnostics_truncated;
         document.normalize_select_defaults();
         Ok(document)
+    }
+
+    pub(crate) fn external_stylesheet_hrefs(&self) -> Vec<String> {
+        self.nodes
+            .iter()
+            .filter_map(|node| {
+                (node.element_name() == Some("link")
+                    && node.attribute("rel").is_some_and(|rel| {
+                        rel.split_ascii_whitespace()
+                            .any(|token| token.eq_ignore_ascii_case("stylesheet"))
+                    }))
+                .then(|| node.attribute("href").map(str::to_owned))
+                .flatten()
+            })
+            .collect()
     }
 
     pub(crate) fn to_content_wire(&self) -> NativeDocumentWire {

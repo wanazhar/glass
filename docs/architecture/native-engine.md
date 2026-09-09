@@ -254,6 +254,14 @@ transactional until final document validation. CORS/CSP, mixed content,
 service workers, permissions, subresources, full cache semantics, and script
 request mediation remain open.
 
+The completed native-engine-browser-013 batch adds the first subresource
+owner: bounded link stylesheet discovery and child-side text/css loading.
+Relative URLs, CSP style-src/default-src, HTTPS mixed-content blocking,
+per-hop redirect checks, cookies, referrers, response MIME, and byte quotas
+are enforced before accepted CSS enters a child-owned reparse. Images,
+media, fonts, scripts, fetch/XHR, service workers, permissions, broad
+CORS/CSP, and browser security promotion remain open.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature
@@ -2622,10 +2630,12 @@ The current resource boundary supports:
   document-size enforcement, HTML MIME validation, bounded charset decoding,
   process-owned session cookies, and a bounded in-memory document cache.
 
-Filesystem, custom schemes, CORS/CSP, mixed-content policy, service workers,
-permissions, and all other resource schemes fail closed. Cookie/cache state
-is session-only and process-owned; full HTTP cache freshness, persistence,
-and cross-origin policy remain outside this boundary. Subresources are not
+Filesystem, custom schemes, CORS/CSP outside the bounded stylesheet policy,
+mixed-content violations, service workers, permissions, and all other
+resource schemes fail closed. Cookie/cache state is session-only and
+process-owned; full HTTP cache freshness, persistence, and cross-origin
+policy remain outside this boundary. Only bounded link stylesheets are
+fetched as subresources; images, media, fonts, scripts, and imports are not
 fetched. A raw fragment is removed for resource lookup and decoding but is
 retained in the successful navigation URL;
 percent-encoded fragment markers remain payload data. Local resources have an

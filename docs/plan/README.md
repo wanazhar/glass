@@ -658,10 +658,29 @@ the transport owner. Storage events, cookie profile persistence, IndexedDB,
 full binary/stream FormData support, and the remaining browser-context gates
 are still open.
 
-The next BE-02/BE-03/BE-04/BE-07 gate is cross-document storage-event delivery,
-followed by IndexedDB, full binary/stream FormData support, full task
+The `7ac4c39d` navigation-semantics correction repaired revision allocation,
+nonfatal page-script exceptions, POST form handoff, hidden-action rejection,
+timer-clock determinism, and lifecycle effect ordering; the native integration
+gate was re-run at 359 passed before the next feature slice.
+
+The completed bounded same-profile local storage-event slice is
+[native-engine-browser-070](tasks/native-engine-browser-070.md). Concurrently
+alive local native documents that share the same explicit profile path now
+receive origin-filtered `storage` events for effective `localStorage` changes;
+the source document is excluded, no-op writes/removes/clears are suppressed,
+and the receiving Rust and JavaScript storage state is synchronized before
+dispatch. The bounded coordinator is in-process only: session-storage
+browsing-context routing, sandboxed HTTP(S) content-worker transport, profile
+writer locking, IndexedDB, full binary/stream FormData support, full task
 ordering/navigation edge cases, remaining full pattern-regex/file constraint
-validation, target contexts, and the remaining browser-context primitives.
+validation, target contexts, and the remaining browser-context primitives
+remain open.
+
+The next BE-02/BE-03/BE-04/BE-07 gate is session-storage and child-process /
+multi-context event transport, followed by IndexedDB, full binary/stream
+FormData support, full task ordering/navigation edge cases, remaining full
+pattern-regex/file constraint validation, target contexts, and the remaining
+browser-context primitives.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

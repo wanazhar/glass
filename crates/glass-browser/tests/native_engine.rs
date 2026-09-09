@@ -446,6 +446,55 @@ async fn native_local_delayed_timer_waits_for_due_host_turn() {
 }
 
 #[tokio::test]
+async fn native_local_interval_reschedules_until_cleared() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://interval-timer",
+            "<script>globalThis.intervalCount = 0; globalThis.intervalId = setInterval(() => { globalThis.intervalCount += 1; }, 40);</script>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://interval-timer");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.intervalCount")
+            .await
+            .unwrap(),
+        serde_json::json!(0)
+    );
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.intervalCount")
+            .await
+            .unwrap(),
+        serde_json::json!(1)
+    );
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.intervalCount")
+            .await
+            .unwrap(),
+        serde_json::json!(2)
+    );
+    engine
+        .evaluate_async("clearInterval(globalThis.intervalId)")
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.intervalCount")
+            .await
+            .unwrap(),
+        serde_json::json!(2)
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_script_applies_bounded_dom_commands_once() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -1538,6 +1587,67 @@ async fn native_content_process_delayed_timer_waits_for_due_host_turn() {
     assert_eq!(
         engine.evaluate_async("globalThis.taskOrder").await.unwrap(),
         serde_json::json!("script-timer")
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_interval_reschedules_until_cleared() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = "<script>globalThis.intervalCount = 0; globalThis.intervalId = setInterval(() => { globalThis.intervalCount += 1; }, 40);</script>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.intervalCount")
+            .await
+            .unwrap(),
+        serde_json::json!(0)
+    );
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.intervalCount")
+            .await
+            .unwrap(),
+        serde_json::json!(1)
+    );
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.intervalCount")
+            .await
+            .unwrap(),
+        serde_json::json!(2)
+    );
+    engine
+        .evaluate_async("clearInterval(globalThis.intervalId)")
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.intervalCount")
+            .await
+            .unwrap(),
+        serde_json::json!(2)
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

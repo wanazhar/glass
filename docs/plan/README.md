@@ -483,6 +483,13 @@ POST content type across the content-process boundary. Form target contexts,
 dialog submission, file parts, and general form-control/Web IDL identity
 remain open.
 
+The completed bounded repeating-timer slice is
+[native-engine-browser-049](tasks/native-engine-browser-049.md). Local and
+child-owned realms now expose `setInterval`/`clearInterval`; each due callback
+runs at most once on a supplied host turn, reschedules from that turn's
+monotonic time, and can cancel itself. There is no background page loop or
+task-source fairness; animation and idle callbacks remain open.
+
 The next BE-02/BE-03/BE-04 gate is full task ordering and navigation edge cases,
 followed by file/FormData support, full constraint validation, target contexts,
 and the remaining browser-context primitives.

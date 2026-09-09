@@ -1073,10 +1073,13 @@ fn document_bootstrap(
   const timers = globalThis.__glassTimers instanceof Map
     ? globalThis.__glassTimers
     : new Map();
+  const runningTimers = globalThis.__glassRunningTimers instanceof Map
+    ? globalThis.__glassRunningTimers
+    : new Map();
   let nextTimerId = Number.isSafeInteger(globalThis.__glassNextTimerId)
     ? globalThis.__glassNextTimerId
     : 1;
-  const setTimeoutNative = (callback, delay, ...args) => {{
+  const scheduleTimer = (callback, delay, args, repeating) => {{
     if (typeof callback !== "function") throw new TypeError("timer callback must be callable");
     if (timers.size >= {max_timers}) throw new RangeError("native timer limit exceeded");
     const id = nextTimerId;
@@ -1086,14 +1089,32 @@ fn document_bootstrap(
     const normalizedDelay = Number.isFinite(numericDelay)
       ? Math.max(0, Math.min(2147483647, numericDelay))
       : 0;
-    timers.set(id, {{ callback, args, dueAt: host.now_ms + normalizedDelay }});
+    timers.set(id, {{
+      callback,
+      args,
+      dueAt: host.now_ms + normalizedDelay,
+      intervalMs: repeating ? Math.max(1, normalizedDelay) : 0,
+      cancelled: false,
+    }});
     return id;
   }};
-  const clearTimeoutNative = (id) => {{ timers.delete(Number(id)); }};
+  const setTimeoutNative = (callback, delay, ...args) =>
+    scheduleTimer(callback, delay, args, false);
+  const setIntervalNative = (callback, delay, ...args) =>
+    scheduleTimer(callback, delay, args, true);
+  const clearTimer = (id) => {{
+    const timerId = Number(id);
+    const timer = timers.get(timerId) || runningTimers.get(timerId);
+    if (timer) timer.cancelled = true;
+    timers.delete(timerId);
+  }};
   globalThis.__glassTimers = timers;
+  globalThis.__glassRunningTimers = runningTimers;
   globalThis.__glassNextTimerId = nextTimerId;
   globalThis.setTimeout = setTimeoutNative;
-  globalThis.clearTimeout = clearTimeoutNative;
+  globalThis.setInterval = setIntervalNative;
+  globalThis.clearTimeout = clearTimer;
+  globalThis.clearInterval = clearTimer;
   globalThis.queueMicrotask = (callback) => {{
     if (typeof callback !== "function") throw new TypeError("microtask callback must be callable");
     Promise.resolve().then(callback);
@@ -1106,10 +1127,20 @@ fn document_bootstrap(
         const due = Number(left[1].dueAt === undefined ? 0 : left[1].dueAt)
           - Number(right[1].dueAt === undefined ? 0 : right[1].dueAt);
         return due || left[0] - right[0];
-      }});
+    }});
     for (const [id, timer] of pending) {{
+      if (!timers.has(id)) continue;
       timers.delete(id);
-      timer.callback(...timer.args);
+      runningTimers.set(id, timer);
+      try {{
+        timer.callback(...timer.args);
+      }} finally {{
+        runningTimers.delete(id);
+        if (timer.intervalMs > 0 && !timer.cancelled) {{
+          timer.dueAt = now + timer.intervalMs;
+          timers.set(id, timer);
+        }}
+      }}
     }}
   }};
   const listeners = globalThis.__glassHostListeners instanceof Map

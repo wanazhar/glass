@@ -2347,11 +2347,24 @@ support, full task ordering/navigation edge cases, remaining full
 pattern-regex/file constraint validation, target contexts, and the remaining
 browser-context primitives remain open.
 
-The next bounded workstream is session-storage browsing-context routing and
-profile-writer coordination, followed by IndexedDB, full binary/stream FormData
-support, full task ordering/navigation edge cases, remaining full
+The completed bounded Web Storage profile-I/O locking follow-up is
+[native-engine-browser-072](../tasks/native-engine-browser-072.md). Profile
+reads use shared retained OS locks and complete bounded snapshot writes use
+exclusive retained locks through rename or the verified platform fallback;
+contention returns a typed error after a short bounded retry, and the Linux
+sandbox exposes the lock file to the worker. This serializes physical profile
+I/O but does not merge stale independent full-state snapshots. Session-storage
+browsing-context routing, cross-process event delivery, IndexedDB, full
+binary/stream FormData support, full task ordering/navigation edge cases,
+remaining full pattern-regex/file constraint validation, target contexts, and
+the remaining browser-context primitives remain open.
+
+The next bounded workstream is session-storage browsing-context routing and an
+explicit stale-snapshot ownership or merge protocol, followed by cross-process
+event delivery, IndexedDB, full binary/stream FormData support, full task
+ordering/navigation edge cases, remaining full
 pattern-regex/file constraint validation, target contexts, and the remaining
-browser-context primitives.
+browser-context primitives remain open.
 
 ## Baseline and constraints
 

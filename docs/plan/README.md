@@ -27,7 +27,8 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
-the browser-complete expansion is now active. The versioned
+the browser-complete expansion is now active through
+`native-engine-browser-072` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -688,8 +689,21 @@ support, full task ordering/navigation edge cases, remaining full
 pattern-regex/file constraint validation, target contexts, and the remaining
 browser-context primitives remain open.
 
+The completed bounded Web Storage profile-I/O locking slice is
+[native-engine-browser-072](tasks/native-engine-browser-072.md). Profile
+reads now use shared retained OS locks and complete profile snapshot writes
+use exclusive retained locks, including the platform-specific commit fallback;
+contended access returns a typed error after a bounded retry window, and the
+Linux sandbox exposes the lock file to the worker. This serializes physical
+profile I/O but does not merge stale independent full-state snapshots. Session-
+storage browsing-context routing, cross-process event delivery, IndexedDB, full
+binary/stream FormData support, full task ordering/navigation edge cases,
+remaining full pattern-regex/file constraint validation, target contexts, and
+the remaining browser-context primitives remain open.
+
 The next BE-02/BE-03/BE-04/BE-07 gate is session-storage browsing-context
-routing and profile-writer coordination, followed by IndexedDB, full
+routing and an explicit stale-snapshot ownership or merge protocol, followed
+by cross-process event delivery, IndexedDB, full
 binary/stream FormData support, full task ordering/navigation edge cases,
 remaining full pattern-regex/file constraint validation, target contexts, and
 the remaining browser-context primitives.

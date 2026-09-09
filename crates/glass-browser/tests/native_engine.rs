@@ -130,6 +130,110 @@ async fn native_runtime_session_loads_bounded_external_http_html_without_cdp() {
 }
 
 #[tokio::test]
+async fn native_content_process_applies_same_origin_referrer_policy() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/source", "/same"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 4096];
+            let read = stream.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..read]);
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let referrer = request.lines().find_map(|line| {
+                line.split_once(':').and_then(|(name, value)| {
+                    name.eq_ignore_ascii_case("referer")
+                        .then_some(value.trim().to_owned())
+                })
+            });
+            if expected_path == "/source" {
+                assert_eq!(referrer, None);
+            } else {
+                assert_eq!(referrer, Some(format!("http://{address}/source")));
+            }
+            let body = if expected_path == "/source" {
+                "<title>Source</title><p>Source page</p>"
+            } else {
+                "<title>Same origin</title><p>Same-origin destination</p>"
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/source#fragment")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .navigate_async(format!("http://{address}/same"))
+        .await
+        .unwrap();
+    assert_eq!(engine.snapshot().unwrap().title, "Same origin");
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_reduces_cross_origin_referrer_to_origin() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let source_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let source_address = source_listener.local_addr().unwrap();
+    let target_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let target_address = target_listener.local_addr().unwrap();
+    let source_server = tokio::spawn(async move {
+        let (mut stream, _) = source_listener.accept().await.unwrap();
+        let mut request = [0_u8; 4096];
+        let _ = stream.read(&mut request).await.unwrap();
+        let body = "<title>Source</title><p>Source page</p>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+    let target_server = tokio::spawn(async move {
+        let (mut stream, _) = target_listener.accept().await.unwrap();
+        let mut request = [0_u8; 4096];
+        let read = stream.read(&mut request).await.unwrap();
+        let request = String::from_utf8_lossy(&request[..read]);
+        assert_eq!(request.split_whitespace().nth(1), Some("/target"));
+        let referrer = request.lines().find_map(|line| {
+            line.split_once(':').and_then(|(name, value)| {
+                name.eq_ignore_ascii_case("referer")
+                    .then_some(value.trim().to_owned())
+            })
+        });
+        assert_eq!(referrer, Some(format!("http://{source_address}")));
+        let body = "<title>Cross origin</title><p>Target page</p>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{source_address}/source")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .navigate_async(format!("http://{target_address}/target"))
+        .await
+        .unwrap();
+    assert_eq!(engine.snapshot().unwrap().title, "Cross origin");
+    engine.close_async().await.unwrap();
+    source_server.await.unwrap();
+    target_server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_decodes_declared_external_html_charset() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -2161,6 +2161,13 @@ min/max/step constraints before ordered `invalid` events and submit handoff.
 Pattern/date/file constraints, custom validity, and
 `ValidityState`/`checkValidity` Web IDL identity remain open.
 
+The completed bounded script-fetch follow-up is
+[native-engine-browser-051](../tasks/native-engine-browser-051.md). Explicit
+evaluations in process-backed HTTP(S) documents can issue policy-owned GET
+`fetch()` requests and resolve bounded text/JSON promises, including typed DOM
+callback mutations. Page-load fetch scheduling, non-GET uploads, XHR/WebSocket,
+and full Fetch Web IDL identity remain open.
+
 The next bounded workstream is full task ordering and navigation edge cases,
 followed by file/FormData support, full constraint validation, target contexts,
 and the remaining browser-context primitives.

@@ -846,6 +846,16 @@ impl NativeEngine {
         if commands.is_empty() {
             return Ok(());
         }
+        if commands.iter().any(|command| {
+            matches!(
+                command,
+                super::javascript::NativeScriptCommand::Fetch { .. }
+            )
+        }) {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "script fetch requires a process-backed HTTP(S) document".into(),
+            });
+        }
         let mut document = self.document.clone();
         let mut events = if allow_script_navigation {
             document.apply_script_commands_allowing_links(commands)?

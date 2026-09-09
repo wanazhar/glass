@@ -36,6 +36,9 @@ pub(crate) enum NativeScriptCommand {
     Click {
         node_index: u32,
     },
+    SubmitForm {
+        node_index: u32,
+    },
     SetValue {
         node_index: u32,
         value: String,
@@ -591,6 +594,11 @@ fn document_bootstrap(
         }}
         pushCommand({{ kind: "click", node_index: entry.nodeIndex }});
       }},
+      submit() {{
+        if (this.tagName !== "FORM") throw new TypeError("submit requires a form");
+        pushCommand({{ kind: "submitForm", node_index: entry.nodeIndex }});
+      }},
+      requestSubmit() {{ this.submit(); }},
       setAttribute(name, value) {{
         const key = String(name).toLowerCase();
         const stringValue = String(value);

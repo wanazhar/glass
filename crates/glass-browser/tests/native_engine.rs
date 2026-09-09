@@ -430,6 +430,34 @@ async fn native_local_script_click_owns_same_document_fragment() {
 }
 
 #[tokio::test]
+async fn native_local_script_form_submit_navigates_with_get_controls() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://form-start",
+            "<form id='search' action='fixture://form-result'><input name='query' value='hello'><input name='checked' type='checkbox' checked value='yes'></form>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://form-result?query=hello&checked=yes",
+            "<title>Result</title><p>Submitted</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://form-start");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async("document.getElementById('search').submit()")
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        "fixture://form-result?query=hello&checked=yes"
+    );
+    assert_eq!(engine.snapshot().unwrap().title, "Result");
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_child_script_click_owns_external_navigation() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -670,6 +698,49 @@ async fn native_content_process_loads_classic_external_scripts_in_document_order
         engine.evaluate_async("globalThis.order").await.unwrap(),
         serde_json::json!("external-inline")
     );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_script_form_submit_navigates_with_get_controls() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/form", "/result?query=hello"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 4096];
+            let read = stream.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..read]);
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let body = if expected_path == "/form" {
+                "<form id='search' action='/result'><input name='query' value='hello'><button id='go' type='submit'>Go</button></form>"
+            } else {
+                "<title>Result</title><p>Submitted</p>"
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/form")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async("document.getElementById('go').click()")
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        format!("http://{address}/result?query=hello")
+    );
+    assert_eq!(engine.snapshot().unwrap().title, "Result");
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }

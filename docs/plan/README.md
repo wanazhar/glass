@@ -303,9 +303,17 @@ child realm alongside inline sources. Module/unknown types are not fetched;
 local fixture/data subresources, parser timing, timers, Fetch/XHR, and full Web
 IDL identity remain open.
 
+The completed bounded GET-form batch is
+[native-engine-browser-028](tasks/native-engine-browser-028.md). Local and
+child-owned forms now encode named enabled controls into a bounded query,
+support `form.submit()`/`requestSubmit()`, and route submit-button script clicks
+through the same navigation owner. POST/multipart, constraint validation,
+submission lifecycle/events, target contexts, module timing, timers, Fetch/XHR,
+and the remaining resource classes remain open.
+
 The next BE-02/BE-03/BE-04 gate is module/dynamic-import and parser-timing
-policy alongside navigation lifecycle/default-action ordering, followed by
-target contexts, timers, Fetch/XHR, and the remaining resource classes.
+policy alongside POST/submission lifecycle/default-action ordering and target
+contexts, followed by timers, Fetch/XHR, and the remaining resource classes.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

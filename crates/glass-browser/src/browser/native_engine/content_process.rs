@@ -1003,7 +1003,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         json!({"kind":"evaluated","id":id,"value":value})
                     }
                     Ok(NativeScriptEvaluation { value, commands }) => {
-                        match mutate_script_document(current, &commands) {
+                        match mutate_script_document(current, document_url, &commands) {
                             Ok((next, mutation)) => {
                                 document = Some(next);
                                 json!({
@@ -1478,11 +1478,12 @@ fn mutate_type_with_event_bridge(
 
 fn mutate_script_document(
     current: &NativeDocument,
+    document_url: &str,
     commands: &[NativeScriptCommand],
 ) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
-    let navigation = script_navigation_target(current, commands)?;
     let mut next = current.clone();
     let events = next.apply_script_commands_allowing_links(commands)?;
+    let navigation = script_navigation_target(&next, document_url, commands)?;
     if events.len() > MAX_NATIVE_EFFECTS {
         return Err(NativeEngineError::limit(
             "content-process script mutation effects",
@@ -1507,23 +1508,41 @@ fn mutate_script_document(
 
 fn script_navigation_target(
     document: &NativeDocument,
+    document_url: &str,
     commands: &[NativeScriptCommand],
 ) -> Result<Option<(u32, String)>, NativeEngineError> {
     let mut navigation = None;
     for command in commands {
-        let NativeScriptCommand::Click { node_index } = command else {
-            continue;
+        let target = match command {
+            NativeScriptCommand::Click { node_index } => {
+                let node_id = NativeNodeId::from_parts(document.generation(), *node_index);
+                if let Some(href) = document.link_href(node_id).filter(|href| !href.is_empty()) {
+                    Some((*node_index, href.to_owned()))
+                } else if document.submit_control_form(node_id).is_some() {
+                    Some((
+                        *node_index,
+                        document.form_submission_url(node_id, document_url)?,
+                    ))
+                } else {
+                    None
+                }
+            }
+            NativeScriptCommand::SubmitForm { node_index } => {
+                let node_id = NativeNodeId::from_parts(document.generation(), *node_index);
+                Some((
+                    *node_index,
+                    document.form_submission_url(node_id, document_url)?,
+                ))
+            }
+            _ => None,
         };
-        let node_id = NativeNodeId::from_parts(document.generation(), *node_index);
-        let Some(href) = document.link_href(node_id).filter(|href| !href.is_empty()) else {
-            continue;
-        };
+        let Some(target) = target else { continue };
         if navigation.is_some() {
             return Err(NativeEngineError::TargetNotActionable {
-                reason: "one script batch cannot activate multiple links".into(),
+                reason: "one script batch cannot activate multiple navigations".into(),
             });
         }
-        navigation = Some((*node_index, href.to_owned()));
+        navigation = Some(target);
     }
     Ok(navigation)
 }

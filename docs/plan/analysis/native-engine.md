@@ -1972,6 +1972,14 @@ module/unknown types are not requested. Local subresource ownership, module
 graphs, parser timing, timers, Fetch/XHR, and full Web IDL identity remain
 open.
 
+The completed bounded form follow-up is
+[native-engine-browser-028](../tasks/native-engine-browser-028.md). Local and
+child-owned realms now emit typed form submission commands, encode bounded
+named controls for GET, and route both explicit `submit()` calls and submit
+button clicks through the existing local/history or parent/content navigation
+owner. POST/multipart, validation and submit events, target contexts, module
+timing, timers, Fetch/XHR, and full Web IDL identity remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

@@ -1,4 +1,4 @@
-use super::config::NativeEngineLimits;
+use super::config::{NativeEngineLimits, validate_url_text, without_fragment};
 use super::css::NativeStylesheet;
 use super::diagnostics::{NativeDiagnostic, NativeDiagnosticSink, NativeDiagnosticSource};
 use super::error::NativeEngineError;
@@ -21,9 +21,11 @@ use super::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use url::Url;
 
 const MAX_ATTRIBUTE_BYTES: usize = 1024;
 const MAX_LOCATOR_BYTES: usize = crate::browser_backend::MAX_TEXT_BYTES;
+const MAX_FORM_CONTROLS: usize = 128;
 
 const SUPPORTED_ROLES: [&str; 8] = [
     "button", "link", "textbox", "checkbox", "radio", "combobox", "option", "heading",
@@ -1005,6 +1007,24 @@ impl NativeDocument {
                     }
                     events.extend(self.apply_click(id)?);
                 }
+                NativeScriptCommand::SubmitForm { node_index } => {
+                    if !allow_script_navigation {
+                        return Err(NativeEngineError::TargetNotActionable {
+                            reason:
+                                "script-driven form submission is not available in this event phase"
+                                    .into(),
+                        });
+                    }
+                    let id = NativeNodeId::from_parts(self.generation, *node_index);
+                    if self
+                        .node(id)
+                        .is_none_or(|node| node.element_name() != Some("form"))
+                    {
+                        return Err(NativeEngineError::TargetNotActionable {
+                            reason: "script form submission target is not a form".into(),
+                        });
+                    }
+                }
                 NativeScriptCommand::SetValue { node_index, value } => {
                     let id = NativeNodeId::from_parts(self.generation, *node_index);
                     self.apply_script_value(id, value)?;
@@ -1693,6 +1713,209 @@ impl NativeDocument {
         (node.element_name() == Some("a") && self.semantic_role(id) == Some("link"))
             .then(|| node.attribute("href"))
             .flatten()
+    }
+
+    pub(crate) fn form_submission_url(
+        &self,
+        id: NativeNodeId,
+        document_url: &str,
+    ) -> Result<String, NativeEngineError> {
+        let form_id = if self
+            .node(id)
+            .is_some_and(|node| node.element_name() == Some("form"))
+        {
+            id
+        } else {
+            self.submit_control_form(id)
+                .ok_or(NativeEngineError::DetachedTarget)?
+        };
+        let form = self
+            .node(form_id)
+            .ok_or(NativeEngineError::DetachedTarget)?;
+        if form.element_name() != Some("form") {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "script form submission target is not a form".into(),
+            });
+        }
+        if form
+            .attribute("method")
+            .is_some_and(|method| !method.eq_ignore_ascii_case("get"))
+        {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "native form submission currently supports only GET".into(),
+            });
+        }
+        let action = form.attribute("action").unwrap_or(document_url);
+        validate_url_text("form action", action)?;
+        let base = Url::parse(without_fragment(document_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "form submission owner URL is not valid URL syntax".into(),
+            }
+        })?;
+        let mut target = if let Ok(absolute) = Url::parse(action) {
+            absolute
+        } else {
+            base.join(action)
+                .map_err(|_| NativeEngineError::UnsupportedUrl {
+                    reason: "form action could not be resolved against the document".into(),
+                })?
+        };
+        if !target.username().is_empty() || target.password().is_some() {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "form action must not contain userinfo credentials".into(),
+            });
+        }
+        let mut pairs = Vec::new();
+        self.collect_form_data(form_id, &mut pairs)?;
+        let mut query = url::form_urlencoded::Serializer::new(String::new());
+        for (name, value) in pairs {
+            query.append_pair(&name, &value);
+        }
+        let query = query.finish();
+        if query.len() > MAX_LOCATOR_BYTES {
+            return Err(NativeEngineError::limit(
+                "form submission query",
+                MAX_LOCATOR_BYTES,
+                query.len(),
+            ));
+        }
+        if query.is_empty() {
+            target.set_query(None);
+        } else {
+            target.set_query(Some(&query));
+        }
+        let target = target.to_string();
+        validate_url_text("form submission URL", &target)?;
+        Ok(target)
+    }
+
+    pub(crate) fn submit_control_form(&self, id: NativeNodeId) -> Option<NativeNodeId> {
+        let node = self.node(id)?;
+        let tag_name = node.element_name()?;
+        let is_submit = match tag_name {
+            "button" => node
+                .attribute("type")
+                .is_none_or(|kind| kind.eq_ignore_ascii_case("submit")),
+            "input" => node.attribute("type").is_some_and(|kind| {
+                kind.eq_ignore_ascii_case("submit") || kind.eq_ignore_ascii_case("image")
+            }),
+            _ => false,
+        };
+        if !is_submit {
+            return None;
+        }
+        let mut parent = node.parent();
+        while let Some(parent_id) = parent {
+            if self
+                .node(parent_id)
+                .is_some_and(|candidate| candidate.element_name() == Some("form"))
+            {
+                return Some(parent_id);
+            }
+            parent = self.node(parent_id).and_then(NativeNode::parent);
+        }
+        None
+    }
+
+    fn collect_form_data(
+        &self,
+        form_id: NativeNodeId,
+        pairs: &mut Vec<(String, String)>,
+    ) -> Result<(), NativeEngineError> {
+        let children = self
+            .node(form_id)
+            .ok_or(NativeEngineError::DetachedTarget)?
+            .children()
+            .to_vec();
+        for child_id in children {
+            let Some(child) = self.node(child_id) else {
+                continue;
+            };
+            if self.is_disabled(child_id) {
+                continue;
+            }
+            let name = child.attribute("name").filter(|name| !name.is_empty());
+            match child.element_name() {
+                Some("input") => {
+                    let input_type = child.attribute("type").unwrap_or("text");
+                    if input_type.eq_ignore_ascii_case("submit")
+                        || input_type.eq_ignore_ascii_case("button")
+                        || input_type.eq_ignore_ascii_case("reset")
+                        || input_type.eq_ignore_ascii_case("image")
+                    {
+                        continue;
+                    }
+                    if (input_type.eq_ignore_ascii_case("checkbox")
+                        || input_type.eq_ignore_ascii_case("radio"))
+                        && !child.state.checked
+                    {
+                        continue;
+                    }
+                    if let Some(name) = name {
+                        if pairs.len() >= MAX_FORM_CONTROLS {
+                            return Err(NativeEngineError::limit(
+                                "form controls",
+                                MAX_FORM_CONTROLS,
+                                pairs.len().saturating_add(1),
+                            ));
+                        }
+                        let value = child
+                            .state
+                            .value
+                            .clone()
+                            .or_else(|| child.attribute("value").map(str::to_owned))
+                            .unwrap_or_default();
+                        pairs.push((name.to_owned(), value));
+                    }
+                }
+                Some("textarea") => {
+                    if let Some(name) = name {
+                        if pairs.len() >= MAX_FORM_CONTROLS {
+                            return Err(NativeEngineError::limit(
+                                "form controls",
+                                MAX_FORM_CONTROLS,
+                                pairs.len().saturating_add(1),
+                            ));
+                        }
+                        pairs.push((
+                            name.to_owned(),
+                            self.current_value(child_id).unwrap_or_default(),
+                        ));
+                    }
+                }
+                Some("select") => {
+                    if let Some(name) = name {
+                        for option_id in self.select_option_ids(child_id) {
+                            let Some(option) = self.node(option_id) else {
+                                continue;
+                            };
+                            if !option.state.selected {
+                                continue;
+                            }
+                            if pairs.len() >= MAX_FORM_CONTROLS {
+                                return Err(NativeEngineError::limit(
+                                    "form controls",
+                                    MAX_FORM_CONTROLS,
+                                    pairs.len().saturating_add(1),
+                                ));
+                            }
+                            let value = option
+                                .attribute("value")
+                                .map(str::to_owned)
+                                .or_else(|| {
+                                    self.element_text(option_id, MAX_LOCATOR_BYTES)
+                                        .map(|(value, _)| value)
+                                })
+                                .unwrap_or_default();
+                            pairs.push((name.to_owned(), value));
+                        }
+                    }
+                }
+                _ => {}
+            }
+            self.collect_form_data(child_id, pairs)?;
+        }
+        Ok(())
     }
 
     /// Resolve one decoded, exact local fragment target. A unique `id` wins;

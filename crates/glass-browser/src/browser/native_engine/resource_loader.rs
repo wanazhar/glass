@@ -18,6 +18,24 @@ const MAX_NATIVE_CACHE_ENTRIES: usize = 32;
 const MAX_NATIVE_COOKIES: usize = 128;
 const MAX_NATIVE_COOKIE_BYTES: usize = 4096;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NativeSubresourceKind {
+    Style,
+    Script,
+    Image,
+    Font,
+    Media,
+    Frame,
+    Connect,
+    Worker,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NativeCorsMode {
+    NoCors,
+    Cors,
+}
+
 /// A bounded HTML resource accepted by the native engine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeResource {
@@ -71,16 +89,20 @@ struct NativeCookie {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct NativeCspPolicy {
     style_sources: Option<Vec<String>>,
+    script_sources: Option<Vec<String>>,
+    image_sources: Option<Vec<String>>,
+    font_sources: Option<Vec<String>>,
+    media_sources: Option<Vec<String>>,
+    frame_sources: Option<Vec<String>>,
+    connect_sources: Option<Vec<String>>,
+    worker_sources: Option<Vec<String>>,
     default_sources: Option<Vec<String>>,
 }
 
 impl NativeCspPolicy {
-    fn allows_style(&self, document_url: &Url, resource_url: &Url) -> bool {
-        let Some(sources) = self
-            .style_sources
-            .as_ref()
-            .or(self.default_sources.as_ref())
-        else {
+    fn allows(&self, kind: NativeSubresourceKind, document_url: &Url, resource_url: &Url) -> bool {
+        let sources = self.sources_for(kind).or(self.default_sources.as_ref());
+        let Some(sources) = sources else {
             return true;
         };
         if sources.is_empty() {
@@ -110,6 +132,19 @@ impl NativeCspPolicy {
             }
         }
         false
+    }
+
+    fn sources_for(&self, kind: NativeSubresourceKind) -> Option<&Vec<String>> {
+        match kind {
+            NativeSubresourceKind::Style => self.style_sources.as_ref(),
+            NativeSubresourceKind::Script => self.script_sources.as_ref(),
+            NativeSubresourceKind::Image => self.image_sources.as_ref(),
+            NativeSubresourceKind::Font => self.font_sources.as_ref(),
+            NativeSubresourceKind::Media => self.media_sources.as_ref(),
+            NativeSubresourceKind::Frame => self.frame_sources.as_ref(),
+            NativeSubresourceKind::Connect => self.connect_sources.as_ref(),
+            NativeSubresourceKind::Worker => self.worker_sources.as_ref(),
+        }
     }
 }
 
@@ -370,17 +405,10 @@ impl NativeResourceLoader {
             return Ok(None);
         }
         reject_credentials(&document_url)?;
-        let target_url =
-            document_url
-                .join(href)
-                .map_err(|_| NativeEngineError::UnsupportedUrl {
-                    reason: "stylesheet URL could not be resolved against the document".into(),
-                })?;
-        reject_credentials(&target_url)?;
-        if !is_network_url(without_fragment(target_url.as_str()))
-            || (document_url.scheme().eq_ignore_ascii_case("https")
-                && target_url.scheme().eq_ignore_ascii_case("http"))
-        {
+        let Some(target_url) = resolve_subresource_url(&document_url, href)? else {
+            return Ok(None);
+        };
+        if !mixed_content_allowed(&document_url, &target_url) {
             return Ok(None);
         }
         let policy = self
@@ -389,7 +417,7 @@ impl NativeResourceLoader {
             .get(&cache_key(&document_url))
             .cloned()
             .unwrap_or_default();
-        if !policy.allows_style(&document_url, &target_url) {
+        if !policy.allows(NativeSubresourceKind::Style, &document_url, &target_url) {
             return Ok(None);
         }
 
@@ -453,9 +481,8 @@ impl NativeResourceLoader {
                 })?;
             reject_credentials(&next_url)?;
             if !is_network_url(without_fragment(next_url.as_str()))
-                || (document_url.scheme().eq_ignore_ascii_case("https")
-                    && next_url.scheme().eq_ignore_ascii_case("http"))
-                || !policy.allows_style(&document_url, &next_url)
+                || !mixed_content_allowed(&document_url, &next_url)
+                || !policy.allows(NativeSubresourceKind::Style, &document_url, &next_url)
             {
                 return Ok(None);
             }
@@ -566,12 +593,75 @@ fn content_security_policy(headers: &HeaderMap) -> NativeCspPolicy {
             let sources = parts.map(str::to_ascii_lowercase).collect::<Vec<_>>();
             match name.to_ascii_lowercase().as_str() {
                 "style-src" => policy.style_sources = Some(sources),
+                "script-src" => policy.script_sources = Some(sources),
+                "img-src" => policy.image_sources = Some(sources),
+                "font-src" => policy.font_sources = Some(sources),
+                "media-src" => policy.media_sources = Some(sources),
+                "frame-src" | "child-src" => policy.frame_sources = Some(sources),
+                "connect-src" => policy.connect_sources = Some(sources),
+                "worker-src" => policy.worker_sources = Some(sources),
                 "default-src" => policy.default_sources = Some(sources),
                 _ => {}
             }
         }
     }
     policy
+}
+
+pub(crate) fn resolve_subresource_url(
+    document_url: &Url,
+    href: &str,
+) -> Result<Option<Url>, NativeEngineError> {
+    let target_url = document_url
+        .join(href)
+        .map_err(|_| NativeEngineError::UnsupportedUrl {
+            reason: "subresource URL could not be resolved against the document".into(),
+        })?;
+    reject_credentials(&target_url)?;
+    if !is_network_url(without_fragment(target_url.as_str())) {
+        return Ok(None);
+    }
+    Ok(Some(target_url))
+}
+
+pub(crate) fn mixed_content_allowed(document_url: &Url, resource_url: &Url) -> bool {
+    !(document_url.scheme().eq_ignore_ascii_case("https")
+        && resource_url.scheme().eq_ignore_ascii_case("http"))
+}
+
+pub(crate) fn cors_origin_header(
+    document_url: &Url,
+    resource_url: &Url,
+    mode: NativeCorsMode,
+) -> Option<String> {
+    (mode == NativeCorsMode::Cors && document_url.origin() != resource_url.origin())
+        .then(|| document_url.origin().ascii_serialization())
+}
+
+pub(crate) fn cors_response_allowed(
+    headers: &HeaderMap,
+    document_url: &Url,
+    resource_url: &Url,
+    credentials: bool,
+) -> bool {
+    if document_url.origin() == resource_url.origin() {
+        return true;
+    }
+    let Some(allow_origin) = headers
+        .get(reqwest::header::ACCESS_CONTROL_ALLOW_ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+    else {
+        return false;
+    };
+    let expected_origin = document_url.origin().ascii_serialization();
+    let origin_allowed = allow_origin == expected_origin || (!credentials && allow_origin == "*");
+    origin_allowed
+        && (!credentials
+            || headers
+                .get(reqwest::header::ACCESS_CONTROL_ALLOW_CREDENTIALS)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value.trim().eq_ignore_ascii_case("true")))
 }
 
 fn content_type_is(
@@ -1170,10 +1260,15 @@ fn hex_value(value: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_NATIVE_CACHE_ENTRIES, NativeNetworkState, NativeResource, cacheable_response,
-        decode_html_body, referrer_for_navigation,
+        MAX_NATIVE_CACHE_ENTRIES, NativeCorsMode, NativeNetworkState, NativeResource,
+        NativeSubresourceKind, cacheable_response, content_security_policy, cors_origin_header,
+        cors_response_allowed, decode_html_body, mixed_content_allowed, referrer_for_navigation,
+        resolve_subresource_url,
     };
-    use reqwest::header::{CACHE_CONTROL, HeaderMap, HeaderValue, PRAGMA, VARY};
+    use reqwest::header::{
+        ACCESS_CONTROL_ALLOW_CREDENTIALS, ACCESS_CONTROL_ALLOW_ORIGIN, CACHE_CONTROL,
+        CONTENT_SECURITY_POLICY, HeaderMap, HeaderValue, PRAGMA, VARY,
+    };
     use url::Url;
 
     #[test]
@@ -1275,5 +1370,83 @@ mod tests {
                 .unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn csp_source_lists_cover_resource_families_and_default_fallback() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(
+                "default-src 'none'; script-src https://scripts.test; img-src *; connect-src 'self'",
+            ),
+        );
+        let policy = content_security_policy(&headers);
+        let document = Url::parse("https://app.test/index.html").unwrap();
+        let script = Url::parse("https://scripts.test/app.js").unwrap();
+        let image = Url::parse("https://images.test/logo.png").unwrap();
+        let socket = Url::parse("https://api.test/data").unwrap();
+
+        assert!(policy.allows(NativeSubresourceKind::Script, &document, &script));
+        assert!(policy.allows(NativeSubresourceKind::Image, &document, &image));
+        assert!(!policy.allows(NativeSubresourceKind::Style, &document, &document));
+        assert!(policy.allows(NativeSubresourceKind::Connect, &document, &document));
+        assert!(!policy.allows(NativeSubresourceKind::Connect, &document, &socket));
+        assert!(!policy.allows(NativeSubresourceKind::Font, &document, &document));
+    }
+
+    #[test]
+    fn subresource_resolution_and_mixed_content_fail_closed() {
+        let document = Url::parse("https://app.test/path/index.html").unwrap();
+        let same_origin = resolve_subresource_url(&document, "../styles/site.css")
+            .unwrap()
+            .unwrap();
+        assert_eq!(same_origin.as_str(), "https://app.test/styles/site.css");
+        let insecure = resolve_subresource_url(&document, "http://cdn.test/site.css")
+            .unwrap()
+            .unwrap();
+        assert!(!mixed_content_allowed(&document, &insecure));
+        assert!(
+            resolve_subresource_url(&document, "data:text/css,body%7B%7D")
+                .unwrap()
+                .is_none()
+        );
+        assert!(resolve_subresource_url(&document, "https://user:pass@cdn.test/site.css").is_err());
+    }
+
+    #[test]
+    fn cors_response_requires_explicit_cross_origin_authorization() {
+        let document = Url::parse("https://app.test/index.html").unwrap();
+        let resource = Url::parse("https://api.test/data.json").unwrap();
+        assert_eq!(
+            cors_origin_header(&document, &resource, NativeCorsMode::Cors),
+            Some("https://app.test".into())
+        );
+        assert_eq!(
+            cors_origin_header(&document, &resource, NativeCorsMode::NoCors),
+            None
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
+        assert!(cors_response_allowed(&headers, &document, &resource, false));
+        assert!(!cors_response_allowed(&headers, &document, &resource, true));
+
+        headers.insert(
+            ACCESS_CONTROL_ALLOW_ORIGIN,
+            HeaderValue::from_static("https://app.test"),
+        );
+        assert!(!cors_response_allowed(&headers, &document, &resource, true));
+        headers.insert(
+            ACCESS_CONTROL_ALLOW_CREDENTIALS,
+            HeaderValue::from_static("true"),
+        );
+        assert!(cors_response_allowed(&headers, &document, &resource, true));
+        assert!(cors_response_allowed(
+            &HeaderMap::new(),
+            &document,
+            &document,
+            true
+        ));
     }
 }

@@ -1116,6 +1116,24 @@ impl NativeDocument {
                         });
                     }
                 }
+                NativeScriptCommand::RequestSubmitForm { node_index } => {
+                    if !allow_script_navigation {
+                        return Err(NativeEngineError::TargetNotActionable {
+                            reason:
+                                "script-driven form submission is not available in this event phase"
+                                    .into(),
+                        });
+                    }
+                    let id = NativeNodeId::from_parts(self.generation, *node_index);
+                    if self
+                        .node(id)
+                        .is_none_or(|node| node.element_name() != Some("form"))
+                    {
+                        return Err(NativeEngineError::TargetNotActionable {
+                            reason: "script form submission target is not a form".into(),
+                        });
+                    }
+                }
                 NativeScriptCommand::SetValue { node_index, value } => {
                     let id = NativeNodeId::from_parts(self.generation, *node_index);
                     self.apply_script_value(id, value)?;

@@ -536,6 +536,11 @@ impl NativeEngine {
                 {
                     return self.activate_link(id, &href, false);
                 }
+                if let Some(form_id) = self.document.submit_control_form(id)
+                    && self.javascript.is_none()
+                {
+                    return self.action_local_submit_click_without_script(id, form_id);
+                }
                 if self.javascript.is_some() {
                     return self.action_local_click_with_event_preflight(id);
                 }
@@ -638,8 +643,17 @@ impl NativeEngine {
                         .mutate_click_with_event_preflight(id.index())
                         .await?
                 };
+                let navigation = mutation.navigation.clone();
                 let next_revision = self.next_revision()?;
-                self.apply_content_process_mutation_at(next_revision, mutation)
+                let outcome = self.apply_content_process_mutation_at(next_revision, mutation)?;
+                if let Some(navigation) = navigation {
+                    self.navigate_script_navigation_async(navigation).await?;
+                    return Ok(NativeActionResult {
+                        revision: self.revision,
+                        accepted: outcome.accepted,
+                    });
+                }
+                Ok(outcome)
             }
             NativeAction::Type { target, text } => {
                 let id = self.document.resolve_target(&target)?;
@@ -696,16 +710,42 @@ impl NativeEngine {
             return Ok(());
         }
         let mut document = self.document.clone();
-        let events = if allow_script_navigation {
+        let mut events = if allow_script_navigation {
             document.apply_script_commands_allowing_links(commands)?
         } else {
             document.apply_script_commands(commands)?
         };
-        let navigation = if allow_script_navigation {
+        let mut navigation = if allow_script_navigation {
             self.script_navigation_target(&document, commands)?
         } else {
             None
         };
+        if let Some(ScriptNavigationTarget::Form {
+            form_id,
+            dispatch_submit: true,
+        }) = navigation.as_ref()
+        {
+            let evaluation =
+                self.evaluate_local_events(&document, &[(*form_id, NativeEventKind::Submit)])?;
+            let evaluation = evaluation.ok_or_else(|| NativeEngineError::Worker {
+                operation: "native submit event".into(),
+                reason: "native JavaScript realm disappeared during submit dispatch".into(),
+            })?;
+            let allowed = evaluation
+                .value
+                .as_array()
+                .and_then(|values| values.first())
+                .and_then(serde_json::Value::as_bool)
+                .ok_or_else(|| NativeEngineError::Worker {
+                    operation: "native submit event".into(),
+                    reason: "native submit event result was invalid".into(),
+                })?;
+            events.push((*form_id, NativeEventKind::Submit));
+            events.extend(document.apply_script_commands(&evaluation.commands)?);
+            if !allowed {
+                navigation = None;
+            }
+        }
         let next_revision = self.next_revision()?;
         document.set_revision(next_revision);
         self.document = document;
@@ -717,7 +757,8 @@ impl NativeEngine {
                 ScriptNavigationTarget::Link { id, href } => {
                     self.activate_link(id, &href, true)?;
                 }
-                ScriptNavigationTarget::Form { href } => {
+                ScriptNavigationTarget::Form { form_id, .. } => {
+                    let href = self.document.form_submission_url(form_id, &self.url)?;
                     self.navigate(href)?;
                 }
             }
@@ -740,9 +781,11 @@ impl NativeEngine {
                             id,
                             href: href.to_owned(),
                         })
-                    } else if document.submit_control_form(id).is_some() {
+                    } else if let Some(form_id) = document.submit_control_form(id) {
+                        document.form_submission_url(form_id, &self.url)?;
                         Some(ScriptNavigationTarget::Form {
-                            href: document.form_submission_url(id, &self.url)?,
+                            form_id,
+                            dispatch_submit: true,
                         })
                     } else {
                         None
@@ -750,8 +793,18 @@ impl NativeEngine {
                 }
                 super::javascript::NativeScriptCommand::SubmitForm { node_index } => {
                     let id = NativeNodeId::from_parts(document.generation(), *node_index);
+                    document.form_submission_url(id, &self.url)?;
                     Some(ScriptNavigationTarget::Form {
-                        href: document.form_submission_url(id, &self.url)?,
+                        form_id: id,
+                        dispatch_submit: false,
+                    })
+                }
+                super::javascript::NativeScriptCommand::RequestSubmitForm { node_index } => {
+                    let id = NativeNodeId::from_parts(document.generation(), *node_index);
+                    document.form_submission_url(id, &self.url)?;
+                    Some(ScriptNavigationTarget::Form {
+                        form_id: id,
+                        dispatch_submit: true,
                     })
                 }
                 _ => None,
@@ -883,8 +936,31 @@ impl NativeEngine {
                 reason: "native click event result was invalid".into(),
             })?;
         events.extend(document.apply_script_commands(&click_evaluation.commands)?);
+        let mut navigation = None;
         if click_allowed {
             events.extend(document.apply_click(id)?);
+            if let Some(form_id) = document.submit_control_form(id) {
+                let submit_evaluation = self
+                    .evaluate_local_events(&document, &[(form_id, NativeEventKind::Submit)])?
+                    .ok_or_else(|| NativeEngineError::Worker {
+                        operation: "native submit event".into(),
+                        reason: "native JavaScript realm disappeared during submit dispatch".into(),
+                    })?;
+                let submit_allowed = submit_evaluation
+                    .value
+                    .as_array()
+                    .and_then(|values| values.first())
+                    .and_then(serde_json::Value::as_bool)
+                    .ok_or_else(|| NativeEngineError::Worker {
+                        operation: "native submit event".into(),
+                        reason: "native submit event result was invalid".into(),
+                    })?;
+                events.push((form_id, NativeEventKind::Submit));
+                events.extend(document.apply_script_commands(&submit_evaluation.commands)?);
+                if submit_allowed {
+                    navigation = Some(form_id);
+                }
+            }
         } else {
             events.push((id, NativeEventKind::Click));
         }
@@ -902,8 +978,35 @@ impl NativeEngine {
         self.revision = next_revision;
         self.history.update_current_scroll(self.scroll_offset);
         self.record_effects(events);
+        if let Some(form_id) = navigation {
+            let href = self.document.form_submission_url(form_id, &self.url)?;
+            let snapshot = self.navigate(href)?;
+            return Ok(NativeActionResult {
+                revision: snapshot.revision,
+                accepted: true,
+            });
+        }
         Ok(NativeActionResult {
             revision: next_revision,
+            accepted: true,
+        })
+    }
+
+    fn action_local_submit_click_without_script(
+        &mut self,
+        id: NativeNodeId,
+        form_id: NativeNodeId,
+    ) -> Result<NativeActionResult, NativeEngineError> {
+        let events = self.document.apply_click(id)?;
+        let next_revision = self.next_revision()?;
+        self.document.set_revision(next_revision);
+        self.revision = next_revision;
+        self.history.update_current_scroll(self.scroll_offset);
+        self.record_effects(events);
+        let href = self.document.form_submission_url(form_id, &self.url)?;
+        let snapshot = self.navigate(href)?;
+        Ok(NativeActionResult {
+            revision: snapshot.revision,
             accepted: true,
         })
     }
@@ -1657,8 +1760,14 @@ struct PreparedNavigation {
 }
 
 enum ScriptNavigationTarget {
-    Link { id: NativeNodeId, href: String },
-    Form { href: String },
+    Link {
+        id: NativeNodeId,
+        href: String,
+    },
+    Form {
+        form_id: NativeNodeId,
+        dispatch_submit: bool,
+    },
 }
 
 enum HistoryCommit {

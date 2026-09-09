@@ -43,6 +43,9 @@ pub(crate) enum NativeScriptCommand {
     SubmitForm {
         node_index: u32,
     },
+    RequestSubmitForm {
+        node_index: u32,
+    },
     SetValue {
         node_index: u32,
         value: String,
@@ -240,6 +243,7 @@ pub(crate) fn host_event_script(
                 NativeEventKind::Focus => ("focus", false, false),
                 NativeEventKind::KeyDown => ("keydown", true, true),
                 NativeEventKind::KeyUp => ("keyup", true, false),
+                NativeEventKind::Submit => ("submit", true, true),
                 NativeEventKind::Click => ("click", true, true),
                 NativeEventKind::Input => ("input", true, false),
                 NativeEventKind::Change => ("change", true, false),
@@ -1080,7 +1084,10 @@ fn document_bootstrap(
         if (this.tagName !== "FORM") throw new TypeError("submit requires a form");
         pushCommand({{ kind: "submitForm", node_index: entry.nodeIndex }});
       }},
-      requestSubmit() {{ this.submit(); }},
+      requestSubmit() {{
+        if (this.tagName !== "FORM") throw new TypeError("requestSubmit requires a form");
+        pushCommand({{ kind: "requestSubmitForm", node_index: entry.nodeIndex }});
+      }},
       setAttribute(name, value) {{
         const key = String(name).toLowerCase();
         const stringValue = String(value);

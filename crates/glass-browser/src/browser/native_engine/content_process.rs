@@ -1020,7 +1020,14 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         json!({"kind":"evaluated","id":id,"value":value})
                     }
                     Ok(NativeScriptEvaluation { value, commands }) => {
-                        match mutate_script_document(current, document_url, &commands) {
+                        match mutate_script_document(
+                            current,
+                            runtime,
+                            document_url,
+                            document_origin,
+                            viewport,
+                            &commands,
+                        ) {
                             Ok((next, mutation)) => {
                                 document = Some(next);
                                 json!({
@@ -1120,6 +1127,10 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 "node_index": event.node_index,
                                 "kind": event_kind_text(event.kind),
                             })).collect::<Vec<_>>(),
+                            "navigation": mutation.navigation.as_ref().map(|navigation| json!({
+                                "node_index": navigation.node_index,
+                                "href": navigation.href,
+                            })),
                         })
                     }
                     Err(error) => content_error_response(id, error),
@@ -1661,8 +1672,25 @@ fn mutate_click_with_event_preflight(
             reason: "native click event result was invalid".into(),
         })?;
     events.extend(next.apply_script_commands(&click_evaluation.commands)?);
+    let mut navigation = None;
     if click_allowed {
         events.extend(next.apply_click(node_id)?);
+        if let Some(form_id) = next.submit_control_form(node_id) {
+            if dispatch_submit_event(
+                &mut next,
+                runtime,
+                document_url,
+                document_origin,
+                viewport,
+                form_id,
+                &mut events,
+            )? {
+                navigation = Some(NativeContentNavigation {
+                    node_index: form_id.index(),
+                    href: next.form_submission_url(form_id, document_url)?,
+                });
+            }
+        }
     } else {
         events.push((node_id, NativeEventKind::Click));
     }
@@ -1682,9 +1710,41 @@ fn mutate_click_with_event_preflight(
                 kind,
             })
             .collect(),
-        navigation: None,
+        navigation,
     };
     Ok((next, mutation))
+}
+
+fn dispatch_submit_event(
+    document: &mut NativeDocument,
+    runtime: &NativeJavaScriptRuntime,
+    document_url: &str,
+    document_origin: &NativeOrigin,
+    viewport: Viewport,
+    form_id: NativeNodeId,
+    events: &mut Vec<(NativeNodeId, NativeEventKind)>,
+) -> Result<bool, NativeEngineError> {
+    let source =
+        host_event_script(&[(form_id.index(), NativeEventKind::Submit)])?.ok_or_else(|| {
+            NativeEngineError::Worker {
+                operation: "content process submit event".into(),
+                reason: "native submit event source was empty".into(),
+            }
+        })?;
+    let evaluation =
+        runtime.evaluate(&source, document, document_url, document_origin, viewport)?;
+    let allowed = evaluation
+        .value
+        .as_array()
+        .and_then(|values| values.first())
+        .and_then(Value::as_bool)
+        .ok_or_else(|| NativeEngineError::Worker {
+            operation: "content process submit event".into(),
+            reason: "native submit event result was invalid".into(),
+        })?;
+    events.push((form_id, NativeEventKind::Submit));
+    events.extend(document.apply_script_commands(&evaluation.commands)?);
+    Ok(allowed)
 }
 
 fn mutate_type_with_event_bridge(
@@ -1828,12 +1888,33 @@ fn mutate_key_with_event_bridge(
 
 fn mutate_script_document(
     current: &NativeDocument,
+    runtime: &NativeJavaScriptRuntime,
     document_url: &str,
+    document_origin: &NativeOrigin,
+    viewport: Viewport,
     commands: &[NativeScriptCommand],
 ) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
     let mut next = current.clone();
-    let events = next.apply_script_commands_allowing_links(commands)?;
-    let navigation = script_navigation_target(&next, document_url, commands)?;
+    let mut events = next.apply_script_commands_allowing_links(commands)?;
+    let mut navigation = script_navigation_target(&next, document_url, commands)?;
+    if let Some(ScriptNavigationTarget::Form {
+        form_id,
+        dispatch_submit: true,
+        ..
+    }) = navigation.as_ref()
+    {
+        if !dispatch_submit_event(
+            &mut next,
+            runtime,
+            document_url,
+            document_origin,
+            viewport,
+            *form_id,
+            &mut events,
+        )? {
+            navigation = None;
+        }
+    }
     if events.len() > MAX_NATIVE_EFFECTS {
         return Err(NativeEngineError::limit(
             "content-process script mutation effects",
@@ -1851,38 +1932,79 @@ fn mutate_script_document(
             })
             .collect(),
         navigation: navigation
-            .map(|(node_index, href)| NativeContentNavigation { node_index, href }),
+            .map(|navigation| match navigation {
+                ScriptNavigationTarget::Link { node_index, href } => {
+                    Ok(NativeContentNavigation { node_index, href })
+                }
+                ScriptNavigationTarget::Form {
+                    form_id,
+                    node_index,
+                    ..
+                } => Ok(NativeContentNavigation {
+                    node_index,
+                    href: next.form_submission_url(form_id, document_url)?,
+                }),
+            })
+            .transpose()?,
     };
     Ok((next, mutation))
+}
+
+enum ScriptNavigationTarget {
+    Link {
+        node_index: u32,
+        href: String,
+    },
+    Form {
+        node_index: u32,
+        form_id: NativeNodeId,
+        dispatch_submit: bool,
+    },
 }
 
 fn script_navigation_target(
     document: &NativeDocument,
     document_url: &str,
     commands: &[NativeScriptCommand],
-) -> Result<Option<(u32, String)>, NativeEngineError> {
+) -> Result<Option<ScriptNavigationTarget>, NativeEngineError> {
     let mut navigation = None;
     for command in commands {
         let target = match command {
             NativeScriptCommand::Click { node_index } => {
                 let node_id = NativeNodeId::from_parts(document.generation(), *node_index);
                 if let Some(href) = document.link_href(node_id).filter(|href| !href.is_empty()) {
-                    Some((*node_index, href.to_owned()))
-                } else if document.submit_control_form(node_id).is_some() {
-                    Some((
-                        *node_index,
-                        document.form_submission_url(node_id, document_url)?,
-                    ))
+                    Some(ScriptNavigationTarget::Link {
+                        node_index: *node_index,
+                        href: href.to_owned(),
+                    })
+                } else if let Some(form_id) = document.submit_control_form(node_id) {
+                    document.form_submission_url(form_id, document_url)?;
+                    Some(ScriptNavigationTarget::Form {
+                        node_index: form_id.index(),
+                        form_id,
+                        dispatch_submit: true,
+                    })
                 } else {
                     None
                 }
             }
             NativeScriptCommand::SubmitForm { node_index } => {
                 let node_id = NativeNodeId::from_parts(document.generation(), *node_index);
-                Some((
-                    *node_index,
-                    document.form_submission_url(node_id, document_url)?,
-                ))
+                document.form_submission_url(node_id, document_url)?;
+                Some(ScriptNavigationTarget::Form {
+                    node_index: *node_index,
+                    form_id: node_id,
+                    dispatch_submit: false,
+                })
+            }
+            NativeScriptCommand::RequestSubmitForm { node_index } => {
+                let node_id = NativeNodeId::from_parts(document.generation(), *node_index);
+                document.form_submission_url(node_id, document_url)?;
+                Some(ScriptNavigationTarget::Form {
+                    node_index: *node_index,
+                    form_id: node_id,
+                    dispatch_submit: true,
+                })
             }
             _ => None,
         };
@@ -1903,6 +2025,7 @@ fn event_kind_text(kind: NativeEventKind) -> &'static str {
         NativeEventKind::Focus => "focus",
         NativeEventKind::KeyDown => "keydown",
         NativeEventKind::KeyUp => "keyup",
+        NativeEventKind::Submit => "submit",
         NativeEventKind::Click => "click",
         NativeEventKind::Input => "input",
         NativeEventKind::Change => "change",
@@ -1916,6 +2039,7 @@ fn parse_event_kind(value: &str) -> Option<NativeEventKind> {
         "focus" => Some(NativeEventKind::Focus),
         "keydown" => Some(NativeEventKind::KeyDown),
         "keyup" => Some(NativeEventKind::KeyUp),
+        "submit" => Some(NativeEventKind::Submit),
         "click" => Some(NativeEventKind::Click),
         "input" => Some(NativeEventKind::Input),
         "change" => Some(NativeEventKind::Change),

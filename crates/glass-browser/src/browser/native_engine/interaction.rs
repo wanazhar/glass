@@ -4,7 +4,7 @@ use super::dom::NativeNodeId;
 pub const MAX_NATIVE_EFFECTS: usize = 256;
 pub(crate) const MAX_NATIVE_KEY_BYTES: usize = 64;
 
-/// Semantic actions understood by the first native interaction slice.
+/// Semantic actions understood by the bounded native interaction layer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativeAction {
     Click { target: String },
@@ -20,6 +20,7 @@ pub enum NativeEventKind {
     Focus,
     KeyDown,
     KeyUp,
+    Submit,
     Click,
     Input,
     Change,

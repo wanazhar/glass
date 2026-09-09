@@ -28504,6 +28504,65 @@ async fn native_content_process_exposes_page_web_storage_realm() {
 }
 
 #[tokio::test]
+async fn native_content_process_preserves_origin_keyed_web_storage_across_navigation() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/next"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let body = if expected_path == "/page" {
+                "<p>First page</p>"
+            } else {
+                "<p>Second page</p>"
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "localStorage.setItem('theme', 'dark'); sessionStorage.setItem('tab', 'one'); true",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    engine
+        .navigate_async(format!("http://{address}/next"))
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({ local: localStorage.getItem('theme'), session: sessionStorage.getItem('tab'), localLength: localStorage.length, sessionLength: sessionStorage.length })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "local": "dark",
+            "session": "one",
+            "localLength": 1,
+            "sessionLength": 1,
+        })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_resolves_page_script_fetch_before_publish() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -175,6 +175,16 @@ cancellation, trace access, and crashed-channel errors are explicit. This is
 still an in-process boundary; content-process isolation, OS sandboxing,
 supervisor restart, and cross-process quotas remain open.
 
+The completed process-control batch is recorded in
+[`native-engine-browser-004`](../plan/tasks/native-engine-browser-004.md). It
+adds a second `glass-browser` binary, `glass-native-content-worker`, and a
+bounded request-ID-correlated length-framed IPC channel. External HTTP(S)
+initialization/navigation now requires ping/start/commit acknowledgements and
+backend shutdown uses a bounded close acknowledgement. This is a liveness and
+ownership boundary only: the parent still fetches and constructs the document,
+so resource transfer, content execution isolation, OS sandboxing, supervisor
+recovery, and cross-process quotas remain open.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature

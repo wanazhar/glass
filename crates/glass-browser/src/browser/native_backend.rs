@@ -162,7 +162,7 @@ impl BrowserBackend for NativeEngineBackend {
                     Ok(BackendResponse::Unit)
                 }
                 (BackendOperation::Close, BackendRequest::Close) => {
-                    engine.close().map_err(native_error)?;
+                    engine.close_async().await.map_err(native_error)?;
                     Ok(BackendResponse::Unit)
                 }
                 (BackendOperation::Navigate, BackendRequest::Navigate(request)) => {

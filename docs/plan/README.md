@@ -65,6 +65,15 @@ worker cancellation/crash failures explicitly. It is still in-process and does
 not yet claim content-process isolation, OS sandboxing, supervisor restart, or
 browser parity.
 
+The completed process-control batch is
+[native-engine-browser-004](tasks/native-engine-browser-004.md). It adds the
+`glass-native-content-worker` helper inside the existing `glass-browser` crate,
+bounded request-ID-correlated framed IPC, explicit ping/start/commit/close
+acknowledgements, and a fail-closed requirement that external HTTP(S)
+initialization/navigation have a live helper. The parent still owns bounded
+resource loading and document construction; resource transfer, content
+execution, OS sandboxing, supervisor recovery, and browser parity remain open.
+
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,
 fixture/data-URL-only, one-context engine kernel and explicit semantic backend.

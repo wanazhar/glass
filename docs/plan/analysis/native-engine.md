@@ -1735,6 +1735,16 @@ asynchronous initialization/navigation commits through that worker. It is an
 in-process BE-01b slice only; process isolation, supervisor restart, and the
 remaining hostile-content gates are still required.
 
+The completed process-control follow-up is
+[`native-engine-browser-004`](../tasks/native-engine-browser-004.md). It keeps
+the two-crate boundary while adding the `glass-native-content-worker` helper
+binary and a bounded request-ID-correlated length-framed IPC protocol. Native
+external initialization/navigation requires a live helper and explicit
+ping/start/commit acknowledgements; backend shutdown uses an explicit close
+acknowledgement with a bounded wait. The parent still owns HTTP(S) fetching,
+decoding, and document construction, so this is not yet content-process
+execution isolation or hostile-content safety.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine
@@ -1781,6 +1791,7 @@ real edit touching the native module, and target-directory growth separately.
 | `native_engine::lifecycle` | lifecycle state | transitions | `New`, `Running`, `Closed` | none |
 | `native_engine::runtime` | runtime lifecycle, cancellation, typed microtasks, bounded trace, and scheduler ownership | lifecycle events, typed work, delay, cancellation | runtime state, task/microtask readiness, trace events | scheduler + native error |
 | `native_engine::worker` | bounded async command ownership over the single runtime state | typed runtime commands and cancellation | serialized task/microtask results, traces, and worker failures | Tokio sync/task + runtime |
+| `native_engine::content_process` | child-helper discovery, bounded framed lifecycle IPC, request correlation, and fail-closed process shutdown | protocol frames and helper executable | typed process liveness/commit/close acknowledgements or worker errors | Tokio process/io + serde JSON |
 | `native_engine::scheduler` | logical clock and bounded ordered tasks | task kind, delay | deterministic task IDs/order | native limits; owned by runtime |
 | `native_engine::history` | current local history and per-entry root scroll state | committed URL/revision/scroll offset | bounded entries/current index | native limits + layout point |
 | `native_engine::origin` | opaque local origins and normalized HTTP(S) tuple origins | loaded URL | origin state/serialization | `url`, typed native error |

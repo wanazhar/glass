@@ -14,7 +14,7 @@ use glass_browser::browser_backend::{
     ActionRequest, BROWSER_BACKEND_SCHEMA_VERSION, BackendSelectionRequest,
     BrowserBackendDispatcher, BrowserCapability, CaptureFormat, CaptureRequest, CertificationLevel,
     EffectsRequest, EvidenceLevel, EvidenceRequest, NavigationRequest, ScriptRequest,
-    SemanticAction, SupportLevel,
+    SemanticAction, StorageOperation, StorageRequest, StorageScope, SupportLevel,
 };
 use glass_browser::{BackendFactory, BrowserRuntime, BrowserRuntimeSession, NativeEngineBackend};
 use std::io::Cursor;
@@ -126,6 +126,18 @@ async fn native_runtime_session_uses_explicit_local_constructor() {
     assert_eq!(persisted.value, serde_json::json!(1));
     let persisted = session.script("globalThis.answer").await.unwrap();
     assert_eq!(persisted.value, serde_json::json!(1));
+    let stored = session
+        .storage(StorageRequest {
+            context_id: "native-context".into(),
+            scope: StorageScope::Session,
+            operation: StorageOperation::Write {
+                key: "answer".into(),
+                value: "one".into(),
+            },
+        })
+        .await
+        .unwrap();
+    assert_eq!(stored.entries.get("answer"), Some(&"one".to_owned()));
     session.close().await.unwrap();
 }
 
@@ -27364,6 +27376,82 @@ async fn semantic_actions_and_effects_use_the_backend_contract() {
         future,
         glass_browser::browser_backend::BrowserBackendError::InvalidConfiguration { field, .. }
             if field == "since revision"
+    ));
+    dispatcher.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn semantic_storage_uses_bounded_native_backend_state() {
+    let backend = NativeEngineBackend::new(NativeEngineConfig::default()).unwrap();
+    assert_eq!(
+        backend
+            .profile()
+            .capability(BrowserCapability::Storage)
+            .level,
+        SupportLevel::Available
+    );
+    let dispatcher = BrowserBackendDispatcher::new(&backend);
+    dispatcher.initialize().await.unwrap();
+
+    let written = dispatcher
+        .storage(StorageRequest {
+            context_id: "native-context".into(),
+            scope: StorageScope::Local,
+            operation: StorageOperation::Write {
+                key: "theme".into(),
+                value: "dark".into(),
+            },
+        })
+        .await
+        .unwrap();
+    assert_eq!(written.entries.get("theme"), Some(&"dark".to_owned()));
+
+    let session = dispatcher
+        .storage(StorageRequest {
+            context_id: "native-context".into(),
+            scope: StorageScope::Session,
+            operation: StorageOperation::Write {
+                key: "tab".into(),
+                value: "one".into(),
+            },
+        })
+        .await
+        .unwrap();
+    assert_eq!(session.entries.get("tab"), Some(&"one".to_owned()));
+
+    let local = dispatcher
+        .storage(StorageRequest {
+            context_id: "native-context".into(),
+            scope: StorageScope::Local,
+            operation: StorageOperation::Read,
+        })
+        .await
+        .unwrap();
+    assert_eq!(local.entries.get("theme"), Some(&"dark".to_owned()));
+    assert!(!local.entries.contains_key("tab"));
+
+    let cleared = dispatcher
+        .storage(StorageRequest {
+            context_id: "native-context".into(),
+            scope: StorageScope::Local,
+            operation: StorageOperation::Clear,
+        })
+        .await
+        .unwrap();
+    assert!(cleared.entries.is_empty());
+
+    let cookie_error = dispatcher
+        .storage(StorageRequest {
+            context_id: "native-context".into(),
+            scope: StorageScope::Cookies,
+            operation: StorageOperation::Read,
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        cookie_error,
+        glass_browser::browser_backend::BrowserBackendError::UnsupportedOperation { operation, .. }
+            if operation == "storage"
     ));
     dispatcher.close().await.unwrap();
 }

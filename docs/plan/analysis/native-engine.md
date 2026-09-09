@@ -2267,10 +2267,18 @@ matching option, and the host view exposes bounded `multiple`, `options`, and
 text selection/IME, `optgroup` disabled inheritance, and option-collection Web
 IDL identity remain open.
 
-The next bounded workstream is full task ordering and navigation edge cases,
-followed by file/blob FormData support, remaining full pattern-regex/file
-constraint validation, target contexts, and the remaining browser-context
-primitives.
+The completed bounded semantic storage-contract follow-up is
+[native-engine-browser-064](../tasks/native-engine-browser-064.md). The native
+dispatcher and `BrowserRuntimeSession` execute bounded local/session key-value
+read, write, and clear operations with active-context validation. The state is
+backend-instance scoped and intentionally not page-visible, durable,
+origin-keyed, cookie-synchronized, or IndexedDB-backed; cookie-scope requests
+remain explicitly unsupported.
+
+The next bounded workstream is page-visible origin-keyed storage and full task
+ordering/navigation edge cases, followed by file/blob FormData support,
+remaining full pattern-regex/file constraint validation, target contexts, and
+the remaining browser-context primitives.
 
 ## Baseline and constraints
 

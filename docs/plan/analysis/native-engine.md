@@ -2062,6 +2062,16 @@ Direct `form.submit()` remains validation-free. Full constraint-validation
 APIs, submitter serialization, multipart encoding, external form association,
 and target contexts remain open.
 
+The completed bounded ready-state lifecycle follow-up is
+[native-engine-browser-039](../tasks/native-engine-browser-039.md). Both
+owners now expose `loading`, `interactive`, and `complete` at deterministic
+script/lifecycle boundaries, dispatch document `readystatechange` at the
+interactive and complete transitions, and preserve the order
+`DOMContentLoaded` then window `load`. Pages without scripts still retain a
+persistent realm with final `document.readyState === "complete"`. Resource
+specific completion events, wall-clock races, incremental parsing,
+unload/pagehide/pageshow, and full task-source timing remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

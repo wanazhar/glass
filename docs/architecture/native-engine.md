@@ -145,6 +145,11 @@ backend contract. “From scratch” does not require reimplementing every
 cryptographic primitive or JavaScript VM if doing so would make the engine
 less safe or less interoperable.
 
+The versioned implementation contract is
+[`GCWP-0.1`](../plan/native-engine-browser-profile.md). New work must name the
+profile capability family and milestone it advances; a bounded fixture slice
+cannot claim browser-complete status by itself.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature

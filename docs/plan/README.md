@@ -26,13 +26,21 @@ version claims.
 
 ## Active plan: Glass native browser engine (issue #40)
 
-Status: Phase 0/Phase 1 checkpoint and the first Phase 2 semantic/action slices
-are complete locally; later engine phases remain in progress. The
-authoritative epic is
+Status: the bounded foundation through `native-engine-234` is complete locally;
+the browser-complete expansion is now active. The versioned
+[Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
+the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
 module decomposition, integration enumeration, and tradeoffs are in the
 [native-engine architecture](../architecture/native-engine.md) and
 [native-engine analysis](analysis/native-engine.md).
+
+The completed profile/contract task is
+[native-engine-browser-000](tasks/native-engine-browser-000.md). It freezes
+external HTTP(S) navigation, standards/web-platform ownership, Glass API
+parity, security boundaries, supported platforms, conformance thresholds,
+performance budgets, and explicit exclusions. It is a scope gate, not a claim
+that the current native backend already implements those capabilities.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

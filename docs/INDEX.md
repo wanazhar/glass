@@ -180,9 +180,10 @@ current user instructions.
 - [Browser Host RFC](browser-host-rfc.md) and
   [backend capability matrix](backend-capability-matrix.json) — backend
   registration, capability evidence, BiDi boundary, and survivability.
-- [Native browser engine](architecture/native-engine.md) — the feature-gated
-  Glass-owned engine kernel, fixture resource boundary, limits, and promotion
-  gates for issue #40.
+- [Native browser engine](architecture/native-engine.md) — the Glass-owned
+  engine kernel, browser-complete expansion, fixture foundation, limits, and
+  promotion gates for issue #40. Its versioned contract is the [Glass Core Web
+  Profile](plan/native-engine-browser-profile.md).
 - [Alternative browser runtimes](browser-host-rfc.md#current-browser-runtime-mapping) —
   experimental Firefox BiDi and Safari WebDriver support, plus the native
   browser feasibility boundary.

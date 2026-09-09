@@ -333,10 +333,17 @@ non-enumerable `parentElement`/`parentNode` links. Listener records retain
 capture and once options; dispatch walks a snapshot-based
 window/document/ancestor path through capture, target, and bubble phases with
 `stopPropagation()` and `stopImmediatePropagation()`. Rust semantic actions
-still do not re-enter the page realm. The next owner bridge must dispatch
-click/input/change/focus/blur into the correct local or child realm, define
-cancellation/default-action ordering, and commit callback mutations without
-bypassing child ownership.
+still do not re-enter the page realm.
+
+The completed native-engine-browser-021 batch routes committed Rust semantic
+action effects back into the existing local or sandboxed child realm as
+bounded typed host-event source. Callback commands return through the existing
+clone-and-transfer owner path; no executable callback crosses IPC and the
+parent never evaluates an external page. This first bridge is post-action:
+the action and callback mutation use separate revisions, callback errors cannot
+undo the action, and `preventDefault()` does not yet suppress it. The next
+owner slice must preflight cancelable clicks, preserve default-action ordering,
+and make action plus callback mutation atomic in local and child documents.
 
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
@@ -3393,7 +3400,7 @@ The native profile is `experimental` and declares:
 | evidence | available | bounded URL, title, visible text, revision; native semantic projection is Rust-only |
 | action | available | semantic click/type, bounded vertical root scrolling, plus native point targets for supported local controls; no nested scrolling or default browser behavior |
 | effects | available | current revision and changed signal; bounded event metadata is Rust-only |
-| script | available | bounded QuickJS ECMAScript with a refreshed `window`/`document` snapshot, typed click/form/attribute/focus commands, persistent listener records, bounded Event/CustomEvent capture/target/bubble dispatch, and JSON results; no live Web IDL identity, Rust-action listener dispatch, timers, modules, or page-script loading |
+| script | available | bounded QuickJS ECMAScript with a refreshed `window`/`document` snapshot, typed click/form/attribute/focus commands, persistent listener records, bounded Event/CustomEvent capture/target/bubble dispatch, and Rust-action event re-entry; no live Web IDL identity, atomic default-action cancellation, timers, modules, or page-script loading |
 | capture | available | bounded PNG of the current logical RGBA surface; JPEG/PDF and screenshot-containing evidence are unavailable |
 | storage | partial | process-owned session cookies and bounded document cache; no local/session/IndexedDB storage or persistence |
 | prompts | omitted | no dialogs |

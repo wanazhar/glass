@@ -243,10 +243,20 @@ The completed JavaScript event-graph batch is
 elements now expose bounded parent links, and dispatch runs snapshot-based
 capture, target, and bubble phases with `stopPropagation()`,
 `stopImmediatePropagation()`, and `once` handling. Rust semantic actions still
-do not re-enter the page realm. The next BE-03/BE-04 gate is the Rust-action
-owner bridge: dispatch click/input/change/focus/blur into the correct local or
-child realm with cancellation and default-action ordering, then commit
-callback mutations without bypassing child ownership.
+do not re-enter the page realm.
+
+The completed Rust-action event bridge is
+[native-engine-browser-021](tasks/native-engine-browser-021.md). Committed
+semantic action effects now re-enter the existing local or sandboxed child
+realm as typed host-event metadata; callback mutations return through the same
+clone-and-transfer owner path. The first bridge is deliberately post-action:
+callback mutations receive an additional revision, and `preventDefault()` does
+not yet roll back or suppress an already-committed Rust default action.
+
+The next BE-03/BE-04 gate is action preflight: run cancelable click listeners
+before activation, preserve default-action ordering, and fold callback
+mutations with accepted/rejected actions into one atomic owner revision in local
+and child documents.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

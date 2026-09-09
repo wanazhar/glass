@@ -7,6 +7,7 @@
 use super::config::Viewport;
 use super::dom::NativeDocument;
 use super::error::NativeEngineError;
+use super::interaction::NativeEventKind;
 use super::origin::NativeOrigin;
 use rquickjs::{Context, Runtime, Value};
 use serde::Deserialize;
@@ -59,6 +60,49 @@ pub(crate) enum NativeScriptCommand {
 pub(crate) struct NativeScriptEvaluation {
     pub(crate) value: serde_json::Value,
     pub(crate) commands: Vec<NativeScriptCommand>,
+}
+
+/// Build the internal source used to deliver Rust-owned semantic events into
+/// the persistent page realm. The source is generated from typed, bounded
+/// event metadata and never contains page-provided strings.
+pub(crate) fn host_event_script(
+    events: &[(u32, NativeEventKind)],
+) -> Result<Option<String>, NativeEngineError> {
+    if events.is_empty() {
+        return Ok(None);
+    }
+    let descriptors = events
+        .iter()
+        .map(|(node_index, kind)| {
+            let (event_type, bubbles, cancelable) = match kind {
+                NativeEventKind::Blur => ("blur", false, false),
+                NativeEventKind::Focus => ("focus", false, false),
+                NativeEventKind::Click => ("click", true, true),
+                NativeEventKind::Input => ("input", true, false),
+                NativeEventKind::Change => ("change", true, false),
+                NativeEventKind::Scroll => ("scroll", true, false),
+            };
+            serde_json::json!({
+                "node_index": node_index,
+                "type": event_type,
+                "bubbles": bubbles,
+                "cancelable": cancelable,
+            })
+        })
+        .collect::<Vec<_>>();
+    let encoded = serde_json::to_string(&descriptors).map_err(|_| NativeEngineError::Worker {
+        operation: "serialize native event dispatch".into(),
+        reason: "native event dispatch metadata could not be serialized".into(),
+    })?;
+    let source = format!("globalThis.__glassDispatchHostEvents({encoded})");
+    if source.len() > MAX_NATIVE_SCRIPT_BYTES {
+        return Err(NativeEngineError::limit(
+            "native event dispatch",
+            MAX_NATIVE_SCRIPT_BYTES,
+            source.len(),
+        ));
+    }
+    Ok(Some(source))
 }
 
 /// One persistent ECMAScript realm. A full navigation creates a new value;
@@ -600,6 +644,17 @@ fn document_bootstrap(
       return elements.filter((element) => element.className.split(/\s+/).includes(value));
     }}
   }};
+  globalThis.__glassDispatchHostEvents = (events) => events.map((descriptor) => {{
+    const target = descriptor.node_index === 0
+      ? document
+      : elements.find((element) => element.nodeIndex === descriptor.node_index) || null;
+    if (!target) throw new TypeError("native event target is detached");
+    const event = createEvent(descriptor.type, {{
+      bubbles: Boolean(descriptor.bubbles),
+      cancelable: Boolean(descriptor.cancelable),
+    }});
+    return dispatchTarget(target, event);
+  }});
   globalThis.window = globalThis;
   globalThis.__glassHostCommands = commands;
   globalThis.document = document;

@@ -1900,10 +1900,19 @@ snapshot now carries nearest-element parent indices and non-enumerable
 `parentElement`/`parentNode` links. Listener records retain capture and once
 options; dispatch walks a bounded window/document/ancestor path through
 capture, target, and bubble phases with propagation controls. Rust semantic
-actions still do not re-enter the page realm. The next owner bridge must
-dispatch click/input/change/focus/blur into the correct local or child realm,
-define cancellation/default-action ordering, and commit callback mutations
-without bypassing child ownership.
+actions still do not re-enter the page realm.
+
+The completed Rust-action event bridge is
+[native-engine-browser-021](../tasks/native-engine-browser-021.md). After a
+Rust semantic action commits, bounded event metadata is converted to internal
+host-event source and delivered to the existing local realm or sandboxed child
+realm. Callback commands return through the existing clone/typed-transfer
+owner path, with no executable callback ABI or parent-side evaluation of
+external pages. The action and callback mutation currently use separate
+revisions; callback errors cannot undo the action, and `preventDefault()` does
+not yet suppress it. The next owner slice must preflight cancelable clicks,
+preserve default-action ordering, and make accepted/rejected action plus
+callback mutation atomic in local and child documents.
 
 ## Baseline and constraints
 

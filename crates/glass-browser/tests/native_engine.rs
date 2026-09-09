@@ -260,6 +260,34 @@ async fn native_local_script_owns_event_listeners_and_focus_order() {
             .iter()
             .any(|effect| effect.kind == NativeEventKind::Click)
     );
+    let before_action = engine.revision();
+    engine
+        .evaluate_async(
+            "(() => { globalThis.onActionClick = (event) => { globalThis.events.push('action:' + event.target.id); document.getElementById('name').value = 'from-action'; }; document.getElementById('toggle').addEventListener('click', globalThis.onActionClick); })()",
+        )
+        .await
+        .unwrap();
+    let action = engine
+        .action(NativeAction::Click {
+            target: "id=toggle".into(),
+        })
+        .unwrap();
+    assert!(action.accepted);
+    assert_eq!(action.revision, before_action + 1);
+    assert_eq!(engine.revision(), before_action + 2);
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({ checked: document.getElementById('toggle').checked, value: document.getElementById('name').value, action: globalThis.events.includes('action:toggle') })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "checked": false,
+            "value": "from-action",
+            "action": true,
+        })
+    );
     engine.close_async().await.unwrap();
 }
 
@@ -987,6 +1015,35 @@ async fn native_content_process_owns_external_form_mutations_and_effects() {
         .unwrap();
     assert_eq!(accepted, serde_json::json!(true));
     assert_eq!(engine.revision(), listener_revision + 2);
+
+    let before_action = engine.revision();
+    engine
+        .evaluate_async(
+            "(() => { globalThis.onChildAction = (event) => { document.getElementById('name').value = 'action-child'; }; document.getElementById('toggle').addEventListener('click', globalThis.onChildAction); })()",
+        )
+        .await
+        .unwrap();
+    let action = engine
+        .action_async(NativeAction::Click {
+            target: "id=toggle".into(),
+        })
+        .await
+        .unwrap();
+    assert!(action.accepted);
+    assert_eq!(action.revision, before_action + 1);
+    assert_eq!(engine.revision(), before_action + 2);
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({ checked: document.getElementById('toggle').checked, value: document.getElementById('name').value })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "checked": false,
+            "value": "action-child",
+        })
+    );
 
     engine.close_async().await.unwrap();
     server.await.unwrap();

@@ -128,7 +128,7 @@ impl NativeEngineBackend {
                     ]
                 }
                 BrowserCapability::Script => vec![
-                    "bounded QuickJS DOM/event scripting with modules, deterministic tasks, policy-owned fetch/CORS, string FormData/URLSearchParams, and async XHR; workers, subresources, Web IDL identity, and full timing remain open".into(),
+                    "bounded QuickJS DOM/event scripting with modules, tasks, policy-owned fetch/CORS, text-backed FormData/File/Blob/URLSearchParams, and async XHR; binary/stream parity, workers, subresources, and Web IDL identity remain open".into(),
                 ],
                 BrowserCapability::Capture => {
                     vec![

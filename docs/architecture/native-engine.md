@@ -341,9 +341,17 @@ bounded typed host-event source. Callback commands return through the existing
 clone-and-transfer owner path; no executable callback crosses IPC and the
 parent never evaluates an external page. This first bridge is post-action:
 the action and callback mutation use separate revisions, callback errors cannot
-undo the action, and `preventDefault()` does not yet suppress it. The next
-owner slice must preflight cancelable clicks, preserve default-action ordering,
-and make action plus callback mutation atomic in local and child documents.
+undo the action, and `preventDefault()` does not yet suppress it. The
+transactional click preflight is the next refinement.
+
+The completed native-engine-browser-022 batch moves cancelable click delivery
+ahead of activation. Local and child-owned semantic clicks clone the document,
+run focus and click listeners, apply callback commands, honor
+`preventDefault()`, and commit one final state/effect revision. The child uses
+one typed preflight request and transfers only its validated result; the parent
+never evaluates the network page. Pages without an initialized local realm
+retain the Rust-only path. Type/input/change ordering, link navigation/default
+actions, timers, modules, Fetch/XHR, and remaining resource classes stay open.
 
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
@@ -3400,7 +3408,7 @@ The native profile is `experimental` and declares:
 | evidence | available | bounded URL, title, visible text, revision; native semantic projection is Rust-only |
 | action | available | semantic click/type, bounded vertical root scrolling, plus native point targets for supported local controls; no nested scrolling or default browser behavior |
 | effects | available | current revision and changed signal; bounded event metadata is Rust-only |
-| script | available | bounded QuickJS ECMAScript with a refreshed `window`/`document` snapshot, typed click/form/attribute/focus commands, persistent listener records, bounded Event/CustomEvent capture/target/bubble dispatch, and Rust-action event re-entry; no live Web IDL identity, atomic default-action cancellation, timers, modules, or page-script loading |
+| script | available | bounded QuickJS ECMAScript with a refreshed `window`/`document` snapshot, typed click/form/attribute/focus commands, persistent listener records, bounded Event/CustomEvent capture/target/bubble dispatch, Rust-action event re-entry, and cancelable click preflight; no live Web IDL identity, transactional type/input ordering, timers, modules, or page-script loading |
 | capture | available | bounded PNG of the current logical RGBA surface; JPEG/PDF and screenshot-containing evidence are unavailable |
 | storage | partial | process-owned session cookies and bounded document cache; no local/session/IndexedDB storage or persistence |
 | prompts | omitted | no dialogs |

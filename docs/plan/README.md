@@ -251,12 +251,17 @@ semantic action effects now re-enter the existing local or sandboxed child
 realm as typed host-event metadata; callback mutations return through the same
 clone-and-transfer owner path. The first bridge is deliberately post-action:
 callback mutations receive an additional revision, and `preventDefault()` does
-not yet roll back or suppress an already-committed Rust default action.
+not yet roll back or suppress an already-committed Rust default action. The
+transactional click preflight is recorded separately below.
 
-The next BE-03/BE-04 gate is action preflight: run cancelable click listeners
-before activation, preserve default-action ordering, and fold callback
-mutations with accepted/rejected actions into one atomic owner revision in local
-and child documents.
+The completed cancelable-click batch is
+[native-engine-browser-022](tasks/native-engine-browser-022.md). Local and
+child-owned semantic clicks now preflight focus and click listeners on a clone,
+apply callback commands, honor `preventDefault()`, and commit the final state
+and effects exactly once. Pages without a JavaScript realm retain the Rust-only
+path. The next BE-03/BE-04 gate is transactional input/change and focus event
+ordering for Rust-owned type actions, followed by link navigation/default
+actions, timers, modules, and Fetch/XHR.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

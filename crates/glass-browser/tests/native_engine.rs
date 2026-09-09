@@ -274,7 +274,7 @@ async fn native_local_script_owns_event_listeners_and_focus_order() {
         .unwrap();
     assert!(action.accepted);
     assert_eq!(action.revision, before_action + 1);
-    assert_eq!(engine.revision(), before_action + 2);
+    assert_eq!(engine.revision(), before_action + 1);
     assert_eq!(
         engine
             .evaluate_async(
@@ -287,6 +287,28 @@ async fn native_local_script_owns_event_listeners_and_focus_order() {
             "value": "from-action",
             "action": true,
         })
+    );
+    let before_cancel = engine.revision();
+    engine
+        .evaluate_async(
+            "(() => { const toggle = document.getElementById('toggle'); toggle.removeEventListener('click', globalThis.onActionClick); globalThis.onCancelClick = (event) => { globalThis.events.push('cancel:' + event.target.id); event.preventDefault(); }; toggle.addEventListener('click', globalThis.onCancelClick); })()",
+        )
+        .await
+        .unwrap();
+    let canceled = engine
+        .action(NativeAction::Click {
+            target: "id=toggle".into(),
+        })
+        .unwrap();
+    assert!(canceled.accepted);
+    assert_eq!(canceled.revision, before_cancel + 1);
+    assert_eq!(engine.revision(), before_cancel + 1);
+    assert_eq!(
+        engine
+            .evaluate_async("document.getElementById('toggle').checked")
+            .await
+            .unwrap(),
+        serde_json::json!(false)
     );
     engine.close_async().await.unwrap();
 }
@@ -1031,7 +1053,7 @@ async fn native_content_process_owns_external_form_mutations_and_effects() {
         .unwrap();
     assert!(action.accepted);
     assert_eq!(action.revision, before_action + 1);
-    assert_eq!(engine.revision(), before_action + 2);
+    assert_eq!(engine.revision(), before_action + 1);
     assert_eq!(
         engine
             .evaluate_async(
@@ -1043,6 +1065,29 @@ async fn native_content_process_owns_external_form_mutations_and_effects() {
             "checked": false,
             "value": "action-child",
         })
+    );
+    let before_cancel = engine.revision();
+    engine
+        .evaluate_async(
+            "(() => { const toggle = document.getElementById('toggle'); toggle.removeEventListener('click', globalThis.onChildAction); globalThis.onChildCancel = (event) => event.preventDefault(); toggle.addEventListener('click', globalThis.onChildCancel); })()",
+        )
+        .await
+        .unwrap();
+    let canceled = engine
+        .action_async(NativeAction::Click {
+            target: "id=toggle".into(),
+        })
+        .await
+        .unwrap();
+    assert!(canceled.accepted);
+    assert_eq!(canceled.revision, before_cancel + 1);
+    assert_eq!(engine.revision(), before_cancel + 1);
+    assert_eq!(
+        engine
+            .evaluate_async("document.getElementById('toggle').checked")
+            .await
+            .unwrap(),
+        serde_json::json!(false)
     );
 
     engine.close_async().await.unwrap();

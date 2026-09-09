@@ -494,7 +494,7 @@ The completed bounded common-constraint slice is
 [native-engine-browser-050](tasks/native-engine-browser-050.md). Local and
 child-owned forms now validate required, email/URL, UTF-16 length, and numeric
 min/max/step constraints before the existing ordered `invalid` events and
-submit handoff. Pattern/date/file constraints, custom validity, and
+submit handoff. Pattern/file constraints, custom validity, and
 `ValidityState`/`checkValidity` Web IDL identity remain open.
 
 The completed bounded script-fetch slice is
@@ -554,9 +554,16 @@ POST bodies with `+` spaces and the matching charset-bearing content type, and
 retain the existing network/CORS owner. Full constructor, sorting, iterator,
 streaming, and Web IDL identity remain open.
 
+The completed bounded temporal-validation slice is
+[native-engine-browser-058](tasks/native-engine-browser-058.md). Local and
+child-owned forms now strictly validate `date`, `month`, `time`, and
+`datetime-local` values, including calendar validity and bounded `min`/`max`/
+`step` checks in the correct temporal units. Pattern/file constraints, custom
+validity, and `ValidityState`/`checkValidity` Web IDL identity remain open.
+
 The next BE-02/BE-03/BE-04 gate is full task ordering and navigation edge cases,
-followed by file/FormData support, full constraint validation, target contexts,
-and the remaining browser-context primitives.
+followed by file/FormData support, the remaining pattern/file/custom constraint
+validation, target contexts, and the remaining browser-context primitives.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

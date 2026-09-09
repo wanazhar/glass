@@ -5,11 +5,11 @@
 //! capability has an explicit resource and security contract.
 
 use super::config::Viewport;
-use super::dom::NativeDocument;
+use super::dom::{NativeDocument, NativePageScriptSource};
 use super::error::NativeEngineError;
 use super::interaction::NativeEventKind;
 use super::origin::NativeOrigin;
-use rquickjs::{Context, Runtime, Value};
+use rquickjs::{Context, Module, Runtime, Value};
 use serde::Deserialize;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -67,6 +67,12 @@ pub(crate) struct NativeScriptEvaluation {
     pub(crate) commands: Vec<NativeScriptCommand>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum NativePageScript {
+    Classic { source: String },
+    Module { name: String, source: String },
+}
+
 /// Execute the bounded inline scripts discovered in one parsed document.
 ///
 /// The caller owns the realm so local documents and the child content process
@@ -80,9 +86,20 @@ pub(crate) fn execute_inline_scripts(
     document_origin: &NativeOrigin,
     viewport: Viewport,
 ) -> Result<(), NativeEngineError> {
-    let sources =
-        document.inline_script_sources(MAX_NATIVE_INLINE_SCRIPTS, MAX_NATIVE_SCRIPT_BYTES);
-    execute_script_sources(
+    let sources = document
+        .page_script_sources(MAX_NATIVE_INLINE_SCRIPTS, MAX_NATIVE_SCRIPT_BYTES)
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, source)| match source {
+            NativePageScriptSource::Inline(source) => Some(NativePageScript::Classic { source }),
+            NativePageScriptSource::ModuleInline(source) => Some(NativePageScript::Module {
+                name: format!("{document_url}#glass-inline-module-{index}"),
+                source,
+            }),
+            NativePageScriptSource::External(_) | NativePageScriptSource::ModuleExternal(_) => None,
+        })
+        .collect::<Vec<_>>();
+    execute_page_scripts(
         document,
         runtime,
         &sources,
@@ -92,10 +109,10 @@ pub(crate) fn execute_inline_scripts(
     )
 }
 
-pub(crate) fn execute_script_sources(
+pub(crate) fn execute_page_scripts(
     document: &mut NativeDocument,
     runtime: &mut Option<NativeJavaScriptRuntime>,
-    sources: &[String],
+    sources: &[NativePageScript],
     document_url: &str,
     document_origin: &NativeOrigin,
     viewport: Viewport,
@@ -108,8 +125,24 @@ pub(crate) fn execute_script_sources(
     }
     for source in sources {
         let evaluation = {
-            let script_runtime = runtime.as_ref().expect("inline script runtime initialized");
-            script_runtime.evaluate(&source, document, document_url, document_origin, viewport)?
+            let script_runtime = runtime.as_ref().expect("page script runtime initialized");
+            match source {
+                NativePageScript::Classic { source } => script_runtime.evaluate(
+                    source,
+                    document,
+                    document_url,
+                    document_origin,
+                    viewport,
+                )?,
+                NativePageScript::Module { name, source } => script_runtime.evaluate_module(
+                    name,
+                    source,
+                    document,
+                    document_url,
+                    document_origin,
+                    viewport,
+                )?,
+            }
         };
         if evaluation.commands.is_empty() {
             continue;
@@ -289,6 +322,63 @@ impl NativeJavaScriptRuntime {
             }
             Ok(NativeScriptEvaluation {
                 value: result,
+                commands,
+            })
+        });
+        if let Ok(mut current) = self.deadline.lock() {
+            *current = None;
+        }
+        result
+    }
+
+    pub(crate) fn evaluate_module(
+        &self,
+        name: &str,
+        source: &str,
+        document: &NativeDocument,
+        document_url: &str,
+        origin: &NativeOrigin,
+        viewport: Viewport,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        if name.is_empty() {
+            return Err(NativeEngineError::invalid(
+                "module name",
+                "must not be empty",
+            ));
+        }
+        if source.is_empty() {
+            return Err(NativeEngineError::invalid(
+                "module source",
+                "must not be empty",
+            ));
+        }
+        if source.len() > MAX_NATIVE_SCRIPT_BYTES {
+            return Err(NativeEngineError::limit(
+                "module source",
+                MAX_NATIVE_SCRIPT_BYTES,
+                source.len(),
+            ));
+        }
+        let bootstrap = document_bootstrap(document, document_url, origin, viewport)?;
+        let deadline = Instant::now() + NATIVE_SCRIPT_TIMEOUT;
+        if let Ok(mut current) = self.deadline.lock() {
+            *current = Some(deadline);
+        }
+        let result = self.context.with(|ctx| {
+            ctx.eval::<(), _>(bootstrap.as_str())
+                .map_err(|_| NativeEngineError::Worker {
+                    operation: "install JavaScript host view".into(),
+                    reason: "native JavaScript host view could not be installed".into(),
+                })?;
+            Module::evaluate(ctx.clone(), name, source)
+                .and_then(|promise| promise.finish::<()>())
+                .map_err(|_| NativeEngineError::Worker {
+                    operation: "evaluate JavaScript module".into(),
+                    reason: "JavaScript module evaluation failed".into(),
+                })?;
+            let commands = read_script_commands(ctx.clone())?;
+            Ok(NativeScriptEvaluation {
+                value: serde_json::Value::Null,
                 commands,
             })
         });

@@ -46,6 +46,12 @@ pub struct NativeResource {
     pub body: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeScriptResource {
+    pub(crate) url: String,
+    pub(crate) body: String,
+}
+
 /// A bounded response returned by the native GET/fetch primitive.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeFetchResponse {
@@ -731,7 +737,7 @@ impl NativeResourceLoader {
         document_url: &str,
         href: &str,
         max_source_bytes: usize,
-    ) -> Result<Option<String>, NativeEngineError> {
+    ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
         validate_url_text("document URL", document_url)?;
         validate_url_text("script URL", href)?;
         if max_source_bytes == 0 {
@@ -879,7 +885,10 @@ impl NativeResourceLoader {
         for (cookie_url, cookie) in pending_cookies {
             self.network.store_cookie(&cookie_url, &cookie);
         }
-        Ok(Some(body))
+        Ok(Some(NativeScriptResource {
+            url: current_url.to_string(),
+            body,
+        }))
     }
 
     fn load_data_url(&self, url: &str, data: &str) -> Result<NativeResource, NativeEngineError> {

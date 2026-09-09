@@ -5,8 +5,8 @@ use super::dom::{NativeDocument, NativeDocumentWire, NativeNodeId, NativePageScr
 use super::error::{NativeEngineError, NativeWorkerFailureKind};
 use super::interaction::{MAX_NATIVE_EFFECTS, NativeEventKind};
 use super::javascript::{
-    MAX_NATIVE_SCRIPT_BYTES, NativeJavaScriptRuntime, NativeScriptCommand, NativeScriptEvaluation,
-    execute_script_sources, host_event_script,
+    MAX_NATIVE_SCRIPT_BYTES, NativeJavaScriptRuntime, NativePageScript, NativeScriptCommand,
+    NativeScriptEvaluation, execute_page_scripts, host_event_script,
 };
 use super::origin::NativeOrigin;
 use super::resource_loader::{NativeFetchResponse, NativeResourceLoader};
@@ -863,7 +863,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 match load_content_resource(&request, &mut resource_loader).await {
                     Ok((resource, mut parsed, loaded_viewport, script_sources)) => {
                         let mut script_runtime = None;
-                        let response = match execute_script_sources(
+                        let response = match execute_page_scripts(
                             &mut parsed,
                             &mut script_runtime,
                             &script_sources,
@@ -1213,7 +1213,15 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
 async fn load_content_resource(
     request: &Value,
     resource_loader: &mut Option<NativeResourceLoader>,
-) -> Result<(NativeContentLoad, NativeDocument, Viewport, Vec<String>), NativeEngineError> {
+) -> Result<
+    (
+        NativeContentLoad,
+        NativeDocument,
+        Viewport,
+        Vec<NativePageScript>,
+    ),
+    NativeEngineError,
+> {
     let url = request
         .get("url")
         .and_then(Value::as_str)
@@ -1341,20 +1349,45 @@ async fn load_page_script_sources(
     document: &NativeDocument,
     loader: &mut NativeResourceLoader,
     document_url: &str,
-) -> Result<Vec<String>, NativeEngineError> {
+) -> Result<Vec<NativePageScript>, NativeEngineError> {
     let mut sources = Vec::new();
-    for script in document.page_script_sources(
-        super::javascript::MAX_NATIVE_INLINE_SCRIPTS,
-        MAX_NATIVE_SCRIPT_BYTES,
-    ) {
+    for (index, script) in document
+        .page_script_sources(
+            super::javascript::MAX_NATIVE_INLINE_SCRIPTS,
+            MAX_NATIVE_SCRIPT_BYTES,
+        )
+        .into_iter()
+        .enumerate()
+    {
         match script {
-            NativePageScriptSource::Inline(source) => sources.push(source),
+            NativePageScriptSource::Inline(source) => {
+                sources.push(NativePageScript::Classic { source });
+            }
+            NativePageScriptSource::ModuleInline(source) => {
+                sources.push(NativePageScript::Module {
+                    name: format!("{document_url}#glass-inline-module-{index}"),
+                    source,
+                })
+            }
             NativePageScriptSource::External(href) => {
-                if let Some(source) = loader
+                if let Some(resource) = loader
                     .load_script_async(document_url, &href, MAX_NATIVE_SCRIPT_BYTES)
                     .await?
                 {
-                    sources.push(source);
+                    sources.push(NativePageScript::Classic {
+                        source: resource.body,
+                    });
+                }
+            }
+            NativePageScriptSource::ModuleExternal(href) => {
+                if let Some(resource) = loader
+                    .load_script_async(document_url, &href, MAX_NATIVE_SCRIPT_BYTES)
+                    .await?
+                {
+                    sources.push(NativePageScript::Module {
+                        name: resource.url,
+                        source: resource.body,
+                    });
                 }
             }
         }

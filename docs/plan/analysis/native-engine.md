@@ -1774,6 +1774,16 @@ silent fallback. Scroll and link navigation remain parent-owned handoffs.
 CSS diagnostic transfer, script/event-loop execution, sandboxing, supervisor
 recovery, and browser parity remain open.
 
+The completed recovery follow-up is
+[`native-engine-browser-008`](../tasks/native-engine-browser-008.md). The
+content channel now classifies spawn, exit, transport, timeout, protocol,
+rejection, and invalid-transfer failures. A failed mutation cannot be retried
+through another owner; external navigation is the deliberate fresh-worker
+recovery boundary, while shutdown remains idempotent after child exit. The
+remaining BE-01 gate is OS-specific sandboxing and cross-platform process
+containment; diagnostics transfer, script/event-loop execution, network
+security, and browser parity remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

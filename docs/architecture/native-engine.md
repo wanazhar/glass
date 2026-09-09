@@ -212,6 +212,15 @@ false success or CDP fallback. Scroll and link navigation remain explicit
 parent-owned handoffs. Diagnostics transfer, script execution, OS sandboxing,
 supervisor recovery, and full content recovery remain open.
 
+The completed recovery batch is recorded in
+[`native-engine-browser-008`](../plan/tasks/native-engine-browser-008.md).
+Content-worker spawn, exit, transport, timeout, protocol, rejection, and
+invalid-transfer failures now have a typed class. A poisoned worker is never
+reused or hidden behind a parent/CDP retry; external navigation is the explicit
+fresh-worker recovery boundary and closing an already-exited worker is
+idempotent. This is still not an OS sandbox, site-isolation boundary, or
+cross-platform crash/restart certification.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature

@@ -8,7 +8,7 @@ use glass_browser::browser::native_engine::{
     NativeEngineLimits, NativeEventKind, NativeLifecycleState, NativeNodeId, NativePoint,
     NativeRect, NativeRuntimeState, NativeRuntimeTraceKind, NativeSurface,
     NativeTextDecorationSkipInk, NativeTextDecorationSkipSpaces, NativeTextDecorationStyle,
-    Viewport,
+    NativeWorkerFailureKind, Viewport,
 };
 use glass_browser::browser_backend::{
     ActionRequest, BROWSER_BACKEND_SCHEMA_VERSION, BackendSelectionRequest,
@@ -321,6 +321,57 @@ async fn native_content_process_owns_external_form_mutations_and_effects() {
     let encoded_effects = format!("{:?}", effects.effects);
     assert!(!encoded_effects.contains("secret-value"));
 
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn native_content_process_recovers_after_worker_exit_during_startup() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0_u8; 4096];
+        let _ = stream.read(&mut request).await.unwrap();
+        let body = "<title>Recovered</title><p>Fresh child</p>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let previous_worker = std::env::var_os("GLASS_NATIVE_CONTENT_WORKER");
+    // `/bin/false` exits before answering the first ping. This is an isolated
+    // startup-failure injection; the test restores the process environment
+    // before asking the still-New engine to initialize again.
+    unsafe {
+        std::env::set_var("GLASS_NATIVE_CONTENT_WORKER", "/bin/false");
+    }
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/recover")),
+    )
+    .unwrap();
+    let first_error = engine.initialize_async().await.unwrap_err();
+    assert!(matches!(
+        first_error,
+        NativeEngineError::WorkerFailure {
+            kind: NativeWorkerFailureKind::Exited | NativeWorkerFailureKind::Transport,
+            ..
+        }
+    ));
+    unsafe {
+        if let Some(previous_worker) = previous_worker {
+            std::env::set_var("GLASS_NATIVE_CONTENT_WORKER", previous_worker);
+        } else {
+            std::env::remove_var("GLASS_NATIVE_CONTENT_WORKER");
+        }
+    }
+
+    engine.initialize_async().await.unwrap();
+    let evidence = engine.snapshot().unwrap();
+    assert_eq!(evidence.title, "Recovered");
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }

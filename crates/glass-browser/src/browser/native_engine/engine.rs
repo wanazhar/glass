@@ -7,6 +7,7 @@ use super::content_process::{NativeContentAction, NativeContentLoad, NativeConte
 use super::diagnostics::NativeDiagnostic;
 use super::dom::{NativeDocument, NativeNodeId};
 use super::error::NativeEngineError;
+use super::error::NativeWorkerFailureKind;
 use super::history::{NativeHistory, NativeHistoryDirection};
 use super::interaction::{MAX_NATIVE_EFFECTS, NativeAction, NativeEffect, NativeEventKind};
 use super::layout::{NativeLayoutSnapshot, NativePoint};
@@ -496,12 +497,13 @@ impl NativeEngine {
             return self.action(action);
         };
         if !process.is_healthy() {
-            return Err(NativeEngineError::Worker {
-                operation: "content process mutation".into(),
-                reason:
-                    "content process is unavailable after a failed mutation; navigate to recover it"
-                        .into(),
-            });
+            return Err(NativeEngineError::worker_failure(
+                "content process mutation",
+                process
+                    .failure_kind()
+                    .unwrap_or(NativeWorkerFailureKind::Exited),
+                "content process is unavailable after a failed mutation; navigate to recover it",
+            ));
         }
         match action {
             NativeAction::Click { target } => {

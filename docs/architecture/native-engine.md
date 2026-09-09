@@ -231,6 +231,15 @@ than silently running an ordinary child. Network mediation, origin/site
 isolation, restricted tokens, and complete cross-platform security evidence
 remain separate promotion gates.
 
+The completed redirect/charset batch is recorded in
+[`native-engine-browser-010`](../plan/tasks/native-engine-browser-010.md).
+The shared resource loader now applies strict HTTP(S)-only, credential-free,
+eight-hop redirects, revalidates the final tuple origin, and decodes bounded
+UTF-8, UTF-16, Latin-1, and Windows-1252 HTML responses. The child and parent
+share the policy. Cookies/cache, CORS/CSP, mixed content, service workers,
+permissions, subresources, complete encoding sniffing, and browser security
+promotion remain open.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature

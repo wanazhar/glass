@@ -122,6 +122,35 @@ async fn native_runtime_session_loads_bounded_external_http_html_without_cdp() {
 }
 
 #[tokio::test]
+async fn native_content_process_decodes_declared_external_html_charset() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0_u8; 4096];
+        let _ = stream.read(&mut request).await.unwrap();
+        let body = b"<title>caf\xe9</title><p>Latin page</p>";
+        let headers = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=windows-1252\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(headers.as_bytes()).await.unwrap();
+        stream.write_all(body).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/latin")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let snapshot = engine.snapshot().unwrap();
+    assert_eq!(snapshot.title, "café");
+    assert_eq!(snapshot.visible_text, "Latin page");
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_enforces_child_owned_document_limit() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

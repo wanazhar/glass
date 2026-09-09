@@ -1221,6 +1221,56 @@ fn document_bootstrap(
     return {{ body, contentType: "multipart/form-data; boundary=" + boundary }};
   }};
   globalThis.FormData = FormDataNative;
+  const URLSearchParamsNative = function(init) {{
+    this.__glassUrlSearchParams = true;
+    this._entries = [];
+    if (init === undefined || init === null) return;
+    if (typeof init === "string") {{
+      for (const part of init.split("&")) {{
+        if (!part) continue;
+        const pieces = part.split("=");
+        const decode = value => decodeURIComponent(String(value).replace(/\+/g, " "));
+        this._entries.push([decode(pieces.shift()), decode(pieces.join("="))]);
+      }}
+      return;
+    }}
+    if (init.__glassUrlSearchParams === true) {{
+      this._entries = init._entries.map(entry => [entry[0], entry[1]]);
+      return;
+    }}
+    throw new TypeError("native URLSearchParams accepts only text or URLSearchParams");
+  }};
+  URLSearchParamsNative.prototype.append = function(name, value) {{
+    this._entries.push([String(name), String(value)]);
+  }};
+  URLSearchParamsNative.prototype.set = function(name, value) {{
+    const key = String(name);
+    this._entries = this._entries.filter(entry => entry[0] !== key);
+    this._entries.push([key, String(value)]);
+  }};
+  URLSearchParamsNative.prototype.delete = function(name) {{
+    const key = String(name);
+    this._entries = this._entries.filter(entry => entry[0] !== key);
+  }};
+  URLSearchParamsNative.prototype.get = function(name) {{
+    const key = String(name);
+    const entry = this._entries.find(candidate => candidate[0] === key);
+    return entry ? entry[1] : null;
+  }};
+  URLSearchParamsNative.prototype.getAll = function(name) {{
+    const key = String(name);
+    return this._entries.filter(entry => entry[0] === key).map(entry => entry[1]);
+  }};
+  URLSearchParamsNative.prototype.has = function(name) {{
+    const key = String(name);
+    return this._entries.some(entry => entry[0] === key);
+  }};
+  URLSearchParamsNative.prototype.entries = function() {{ return this._entries.slice(); }};
+  URLSearchParamsNative.prototype.toString = function() {{
+    const encode = value => encodeURIComponent(String(value)).replace(/%20/g, "+");
+    return this._entries.map(entry => encode(entry[0]) + "=" + encode(entry[1])).join("&");
+  }};
+  globalThis.URLSearchParams = URLSearchParamsNative;
   const fetchNative = (input, options) => {{
     if (typeof input !== "string") throw new TypeError("native fetch requires a URL string");
     const settings = options && typeof options === "object" ? options : {{}};
@@ -1229,6 +1279,9 @@ fn document_bootstrap(
       ? null
       : String(settings.body);
     const formData = settings.body && settings.body.__glassFormData === true
+      ? settings.body
+      : null;
+    const urlSearchParams = settings.body && settings.body.__glassUrlSearchParams === true
       ? settings.body
       : null;
     let body = rawBody;
@@ -1251,6 +1304,11 @@ fn document_bootstrap(
       const serialized = serializeFormData(formData, requestId);
       body = serialized.body;
       contentType = serialized.contentType;
+    }}
+    if (urlSearchParams) {{
+      if (contentType !== null) return Promise.reject(new TypeError("URLSearchParams chooses its own Content-Type"));
+      body = urlSearchParams.toString();
+      contentType = "application/x-www-form-urlencoded;charset=UTF-8";
     }}
     if (method === "GET" && body !== null) {{
       return Promise.reject(new TypeError("GET fetch requests must not have a body"));
@@ -1321,7 +1379,7 @@ fn document_bootstrap(
   }};
   XMLHttpRequestNative.prototype.send = function(body) {{
     if (this.readyState !== 1) throw new TypeError("native XMLHttpRequest is not open");
-    const requestBody = body && body.__glassFormData === true
+    const requestBody = body && (body.__glassFormData === true || body.__glassUrlSearchParams === true)
       ? body
       : body === undefined || body === null ? null : String(body);
     const request = fetchNative(this._url, {{

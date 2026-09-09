@@ -1933,6 +1933,17 @@ bound, and insertion/removal, `beforeinput`, composition, keyboard input,
 submission, link navigation/default actions, timers, modules, Fetch/XHR, and
 remaining resource classes stay open.
 
+The completed script-navigation follow-up is
+[native-engine-browser-024](../tasks/native-engine-browser-024.md). Top-level
+script link clicks now emit a validated navigation handoff: local documents
+reuse the existing resource/history owner, while external documents transfer
+the request from the child and the parent performs the next child-owned load.
+Full navigation resets the realm and same-document navigation retains it. The
+click and navigation commits currently use separate revisions; relative
+external links, target contexts, form submission, unload/navigation task
+ordering, timers, modules, Fetch/XHR, and remaining resource classes stay
+open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

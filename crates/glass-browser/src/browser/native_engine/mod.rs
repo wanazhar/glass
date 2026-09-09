@@ -7,6 +7,7 @@
 
 mod browsing_context;
 mod config;
+mod content_process;
 mod css;
 mod diagnostics;
 mod dom;

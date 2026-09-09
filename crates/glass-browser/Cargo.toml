@@ -20,6 +20,12 @@ name = "glass-browser"
 path = "src/main.rs"
 doc = false
 
+[[bin]]
+name = "glass-native-content-worker"
+path = "src/bin/glass_native_content_worker.rs"
+required-features = ["native-engine"]
+doc = false
+
 [lib]
 name = "glass_browser"
 path = "src/lib.rs"

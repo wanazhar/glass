@@ -3,6 +3,7 @@ use super::config::{
     NativeEngineConfig, decode_percent_encoded_fragment, decode_text_fragment_terms,
     is_network_url, resolve_fixture_relative_url, validate_url_text, without_fragment,
 };
+use super::content_process::NativeContentProcess;
 use super::diagnostics::NativeDiagnostic;
 use super::dom::NativeDocument;
 use super::error::NativeEngineError;
@@ -62,6 +63,7 @@ pub struct NativeEngine {
     loader: NativeResourceLoader,
     runtime: NativeRuntimeShared,
     runtime_worker: Option<NativeRuntimeWorker>,
+    content_process: Option<NativeContentProcess>,
     history: NativeHistory,
     lifecycle: NativeLifecycleState,
     document: NativeDocument,
@@ -87,6 +89,7 @@ impl NativeEngine {
             loader,
             runtime,
             runtime_worker: None,
+            content_process: None,
             history: NativeHistory::new(max_history_entries),
             lifecycle: NativeLifecycleState::New,
             document: NativeDocument::empty(),
@@ -145,14 +148,26 @@ impl NativeEngine {
             NativeLifecycleState::New => {}
         }
         let initial_url = self.config.initial_url.clone();
+        let mut content_process = if is_network_url(&initial_url) {
+            Some(NativeContentProcess::spawn().await?)
+        } else {
+            None
+        };
+        if let Some(process) = content_process.as_mut() {
+            process.start().await?;
+        }
         let prepared = self.prepare_navigation_async(&initial_url).await?;
         let worker = NativeRuntimeWorker::spawn_shared(self.runtime.clone())?;
         worker.start().await?;
+        if let Some(process) = content_process.as_mut() {
+            process.commit().await?;
+        }
         if let Err(error) = self.commit_navigation_async(prepared, &worker).await {
             worker.rollback_start().await?;
             return Err(error);
         }
         self.runtime_worker = Some(worker);
+        self.content_process = content_process;
         self.lifecycle = NativeLifecycleState::Running;
         Ok(())
     }
@@ -162,7 +177,29 @@ impl NativeEngine {
             NativeLifecycleState::Running => {
                 self.runtime.close()?;
                 self.runtime_worker.take();
+                self.content_process.take();
                 self.lifecycle = NativeLifecycleState::Closed;
+                Ok(())
+            }
+            NativeLifecycleState::New => Err(self.lifecycle_error(
+                "close",
+                "the native engine must be initialized before close",
+            )),
+            NativeLifecycleState::Closed => {
+                Err(self.lifecycle_error("close", "the native engine is already closed"))
+            }
+        }
+    }
+
+    pub async fn close_async(&mut self) -> Result<(), NativeEngineError> {
+        match self.lifecycle {
+            NativeLifecycleState::Running => {
+                self.runtime.close()?;
+                self.runtime_worker.take();
+                self.lifecycle = NativeLifecycleState::Closed;
+                if let Some(process) = self.content_process.take() {
+                    process.close().await?;
+                }
                 Ok(())
             }
             NativeLifecycleState::New => Err(self.lifecycle_error(
@@ -196,10 +233,17 @@ impl NativeEngine {
         url: impl Into<String>,
     ) -> Result<NativeEngineSnapshot, NativeEngineError> {
         self.require_running("navigate")?;
-        let resource = self.loader.load_async(&url.into()).await?;
+        let url = url.into();
+        if is_network_url(&url) {
+            self.ensure_content_process().await?;
+        }
+        let resource = self.loader.load_async(&url).await?;
         if let Some(worker) = self.runtime_worker.clone() {
             self.navigate_resource_async(resource, &worker).await
         } else {
+            if is_network_url(&resource.url) {
+                self.commit_content_process().await?;
+            }
             self.navigate_resource(resource)
         }
     }
@@ -217,11 +261,33 @@ impl NativeEngine {
         Ok(self.snapshot_unchecked())
     }
 
+    async fn ensure_content_process(&mut self) -> Result<(), NativeEngineError> {
+        if self.content_process.is_none() {
+            let mut process = NativeContentProcess::spawn().await?;
+            process.start().await?;
+            self.content_process = Some(process);
+        }
+        Ok(())
+    }
+
+    async fn commit_content_process(&mut self) -> Result<(), NativeEngineError> {
+        let Some(process) = self.content_process.as_mut() else {
+            return Err(NativeEngineError::Worker {
+                operation: "commit content process".into(),
+                reason: "native content process is not running".into(),
+            });
+        };
+        process.commit().await
+    }
+
     async fn navigate_resource_async(
         &mut self,
         resource: NativeResource,
         worker: &NativeRuntimeWorker,
     ) -> Result<NativeEngineSnapshot, NativeEngineError> {
+        if is_network_url(&resource.url) {
+            self.commit_content_process().await?;
+        }
         if self.is_same_document_navigation(&resource.url) {
             self.commit_same_document_navigation_async(resource.url, HistoryCommit::Push, worker)
                 .await?;

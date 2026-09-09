@@ -425,7 +425,15 @@ document-order delivery and callback mutation commit. Failed resource error
 events, dynamic insertion, resource timing, and full task-source concurrency
 remain separate gates.
 
-The next BE-02/BE-03/BE-04 gate is full task ordering and navigation lifecycle,
+The completed bounded replacement-navigation lifecycle slice is
+[native-engine-browser-042](tasks/native-engine-browser-042.md). Full
+replacement navigations now deliver window `pagehide` then `unload` before
+resource replacement and `pageshow` after the new page is published; local and
+child owners expose the same order through bounded effects and typed callback
+mutation. Cancelable `beforeunload`, same-document `hashchange`, bfcache/history
+traversal parity, and full HTML navigation task ordering remain open.
+
+The next BE-02/BE-03/BE-04 gate is full task ordering and navigation edge cases,
 followed by multipart/full constraint validation, external form ownership and
 target contexts, and the remaining browser-context primitives.
 

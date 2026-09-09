@@ -1917,6 +1917,9 @@ impl NativeEngine {
         self.revision = revision;
         self.history.push(self.url.clone(), revision, scroll_offset);
         self.flush_pending_lifecycle_effects();
+        if let Some(javascript) = self.javascript.as_mut() {
+            javascript.reset_timer_clock();
+        }
         self.dispatch_local_page_show()?;
         self.persist_local_web_storage()?;
         Ok(())
@@ -1960,6 +1963,9 @@ impl NativeEngine {
         self.history.push(self.url.clone(), revision, scroll_offset);
         self.flush_pending_lifecycle_effects();
         if execute_page_scripts {
+            if let Some(javascript) = self.javascript.as_mut() {
+                javascript.reset_timer_clock();
+            }
             self.dispatch_local_page_show()?;
             self.persist_local_web_storage()?;
         }

@@ -1827,6 +1827,19 @@ accepted rules before the child snapshot transfer. Images, media, fonts,
 scripts, fetch/XHR, service workers, permissions, broad CORS/CSP, and browser
 parity remain open.
 
+The completed network-policy foundation is
+[native-engine-browser-014](../tasks/native-engine-browser-014.md). A typed
+resource-family vocabulary now selects `default-src` fallback and the
+directive lists for style, script, image, font, media, frame, connect, and
+worker candidates. Shared HTTP(S) subresource resolution rejects credentials
+and unsupported schemes, one mixed-content helper blocks HTTPS-to-HTTP
+subresources at every stylesheet redirect hop, and a private CORS helper
+produces cross-origin `Origin` values and validates wildcard/exact and
+credentialed response authorization. The stylesheet caller is migrated to
+the shared URL/CSP/mixed-content helpers. No script/fetch/XHR or other
+resource caller exists yet, so the remaining BE-02e gate is executable
+request mediation rather than policy-only coverage.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

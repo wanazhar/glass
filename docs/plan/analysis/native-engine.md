@@ -1728,6 +1728,13 @@ backend integration coverage. It deliberately stops before subresources,
 charset sniffing, cookies/cache, CORS/CSP, JavaScript, process isolation, and
 browser parity.
 
+The runtime follow-up is
+[`native-engine-browser-003`](../tasks/native-engine-browser-003.md). It adds a
+bounded typed Tokio worker over the single runtime state and routes
+asynchronous initialization/navigation commits through that worker. It is an
+in-process BE-01b slice only; process isolation, supervisor restart, and the
+remaining hostile-content gates are still required.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine
@@ -1773,6 +1780,7 @@ real edit touching the native module, and target-directory growth separately.
 | `native_engine::config` | public startup configuration, hard limits, and bounded local URL policy | URLs, viewport, fixtures, limits | validated `NativeEngineConfig` and local URL helpers | `url`, typed native error |
 | `native_engine::lifecycle` | lifecycle state | transitions | `New`, `Running`, `Closed` | none |
 | `native_engine::runtime` | runtime lifecycle, cancellation, typed microtasks, bounded trace, and scheduler ownership | lifecycle events, typed work, delay, cancellation | runtime state, task/microtask readiness, trace events | scheduler + native error |
+| `native_engine::worker` | bounded async command ownership over the single runtime state | typed runtime commands and cancellation | serialized task/microtask results, traces, and worker failures | Tokio sync/task + runtime |
 | `native_engine::scheduler` | logical clock and bounded ordered tasks | task kind, delay | deterministic task IDs/order | native limits; owned by runtime |
 | `native_engine::history` | current local history and per-entry root scroll state | committed URL/revision/scroll offset | bounded entries/current index | native limits + layout point |
 | `native_engine::origin` | opaque local origins and normalized HTTP(S) tuple origins | loaded URL | origin state/serialization | `url`, typed native error |

@@ -167,6 +167,14 @@ BE-02 security milestone: subresources, charset sniffing, cookies/cache,
 CORS/CSP, mixed-content policy, permissions, and process isolation remain
 open.
 
+The following runtime batch is recorded in
+[`native-engine-browser-003`](../plan/tasks/native-engine-browser-003.md). It
+adds a bounded typed Tokio worker over the single runtime state and routes
+asynchronous native initialization/navigation commits through it. Worker
+cancellation, trace access, and crashed-channel errors are explicit. This is
+still an in-process boundary; content-process isolation, OS sandboxing,
+supervisor restart, and cross-process quotas remain open.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature

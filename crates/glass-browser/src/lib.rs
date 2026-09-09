@@ -273,11 +273,11 @@ pub use browser::{
     NATIVE_CONTEXT_ID, NativeBorderPaint, NativeBorderPaintSide, NativeBorderRadius,
     NativeBorderStyle, NativeBrowsingContext, NativeColor, NativeDisplayCommand, NativeDisplayList,
     NativeDocument, NativeEngine, NativeEngineBackend, NativeEngineConfig, NativeEngineError,
-    NativeEngineLimits, NativeEngineSnapshot, NativeFixture, NativeHistory, NativeHistoryDirection,
-    NativeHistoryEntry, NativeLayoutBox, NativeLayoutSnapshot, NativeLifecycleState, NativeNode,
-    NativeNodeId, NativeNodeKind, NativeOrigin, NativePoint, NativeRect, NativeResource,
-    NativeResourceLoader, NativeSurface, NativeTask, NativeTextDecorationStyle,
-    NativeWorkerFailureKind, ScheduledTask, Viewport,
+    NativeEngineLimits, NativeEngineSnapshot, NativeFetchResponse, NativeFixture, NativeHistory,
+    NativeHistoryDirection, NativeHistoryEntry, NativeLayoutBox, NativeLayoutSnapshot,
+    NativeLifecycleState, NativeNode, NativeNodeId, NativeNodeKind, NativeOrigin, NativePoint,
+    NativeRect, NativeResource, NativeResourceLoader, NativeSurface, NativeTask,
+    NativeTextDecorationStyle, NativeWorkerFailureKind, ScheduledTask, Viewport,
 };
 
 pub use task_protocol::{

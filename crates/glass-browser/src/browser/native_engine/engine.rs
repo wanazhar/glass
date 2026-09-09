@@ -15,7 +15,9 @@ use super::lifecycle::NativeLifecycleState;
 use super::origin::NativeOrigin;
 use super::paint::NativeDisplayList;
 use super::raster::NativeSurface;
-use super::resource_loader::{NativeResource, NativeResourceLoader, referrer_for_navigation};
+use super::resource_loader::{
+    NativeFetchResponse, NativeResource, NativeResourceLoader, referrer_for_navigation,
+};
 use super::runtime::{NativeRuntimeState, NativeRuntimeTraceEvent};
 use super::scheduler::{DeterministicScheduler, NativeTask};
 use super::worker::{NativeRuntimeShared, NativeRuntimeWorker};
@@ -378,6 +380,33 @@ impl NativeEngine {
     pub fn snapshot(&self) -> Result<NativeEngineSnapshot, NativeEngineError> {
         self.require_running("evidence")?;
         Ok(self.snapshot_unchecked())
+    }
+
+    /// Execute one bounded native GET/fetch request from the current external
+    /// document. This is the first executable consumer of the shared
+    /// connect/CSP/CORS policy; it is deliberately narrower than the eventual
+    /// JavaScript Fetch/Web IDL surface and accepts no custom headers or body.
+    pub async fn fetch_async(
+        &mut self,
+        href: impl Into<String>,
+        credentials: bool,
+    ) -> Result<NativeFetchResponse, NativeEngineError> {
+        self.require_running("fetch")?;
+        if !is_network_url(&self.url) {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "native fetch requires an HTTP(S) document".into(),
+            });
+        }
+        let href = href.into();
+        self.ensure_content_process().await?;
+        self.content_process
+            .as_mut()
+            .ok_or_else(|| NativeEngineError::Worker {
+                operation: "content process fetch".into(),
+                reason: "native content process is not running".into(),
+            })?
+            .fetch(&self.url, &href, credentials)
+            .await
     }
 
     /// Return diagnostics for CSS that the bounded native presentation model

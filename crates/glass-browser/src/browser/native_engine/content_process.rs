@@ -3,7 +3,7 @@ use super::dom::{NativeDocument, NativeDocumentWire, NativeNodeId};
 use super::error::{NativeEngineError, NativeWorkerFailureKind};
 use super::interaction::{MAX_NATIVE_EFFECTS, NativeEventKind};
 use super::origin::NativeOrigin;
-use super::resource_loader::NativeResourceLoader;
+use super::resource_loader::{NativeFetchResponse, NativeResourceLoader};
 #[cfg(windows)]
 use super::sandbox::NativeContentSandbox;
 use super::sandbox::prepare_worker_command;
@@ -225,6 +225,55 @@ impl NativeContentProcess {
             }
         };
         self.mutate_with_request(id, action).await
+    }
+
+    pub(crate) async fn fetch(
+        &mut self,
+        document_url: &str,
+        href: &str,
+        credentials: bool,
+    ) -> Result<NativeFetchResponse, NativeEngineError> {
+        let id = self.next_id();
+        let response = match timeout(
+            CONTENT_PROCESS_LOAD_TIMEOUT,
+            self.exchange(json!({
+                "kind": "fetch",
+                "id": id,
+                "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
+                "document_url": document_url,
+                "href": href,
+                "credentials": credentials,
+            })),
+        )
+        .await
+        {
+            Ok(response) => response?,
+            Err(_) => {
+                self.mark_failed(NativeWorkerFailureKind::Timeout);
+                let _ = self.child.start_kill();
+                return Err(NativeEngineError::worker_failure(
+                    "content process fetch",
+                    NativeWorkerFailureKind::Timeout,
+                    "content process fetch exceeded its deadline",
+                ));
+            }
+        };
+        if response.get("kind").and_then(Value::as_str) == Some("error") {
+            return Err(NativeEngineError::Worker {
+                operation: "content process fetch".into(),
+                reason: response
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("content process rejected the fetch")
+                    .into(),
+            });
+        }
+        let result = decode_fetch_response(&response, id);
+        if result.is_err() {
+            self.mark_failed(NativeWorkerFailureKind::InvalidTransfer);
+            let _ = self.child.start_kill();
+        }
+        result
     }
 
     async fn mutate_with_request(
@@ -549,6 +598,75 @@ fn decode_mutated_response(
     Ok(NativeContentMutation { document, events })
 }
 
+fn decode_fetch_response(
+    response: &Value,
+    id: u64,
+) -> Result<NativeFetchResponse, NativeEngineError> {
+    require_response_kind(response, "fetched", id, "content process fetch")?;
+    let url =
+        response
+            .get("url")
+            .and_then(Value::as_str)
+            .ok_or_else(|| NativeEngineError::Worker {
+                operation: "decode content process fetch".into(),
+                reason: "content process omitted the fetch URL".into(),
+            })?;
+    validate_url_text("content process fetch URL", url)?;
+    if !is_network_url(without_fragment(url)) {
+        return Err(NativeEngineError::Worker {
+            operation: "decode content process fetch".into(),
+            reason: "content process returned a non-HTTP(S) fetch URL".into(),
+        });
+    }
+    let status = response
+        .get("status")
+        .and_then(Value::as_u64)
+        .and_then(|value| u16::try_from(value).ok())
+        .ok_or_else(|| NativeEngineError::Worker {
+            operation: "decode content process fetch".into(),
+            reason: "content process returned an invalid HTTP status".into(),
+        })?;
+    let content_type = response
+        .get("content_type")
+        .filter(|value| !value.is_null())
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| NativeEngineError::Worker {
+                    operation: "decode content process fetch".into(),
+                    reason: "content process returned an invalid content type".into(),
+                })
+        })
+        .transpose()?;
+    let encoded_body = response
+        .get("body_base64")
+        .and_then(Value::as_str)
+        .ok_or_else(|| NativeEngineError::Worker {
+            operation: "decode content process fetch".into(),
+            reason: "content process omitted the fetch body".into(),
+        })?;
+    let body = base64::engine::general_purpose::STANDARD
+        .decode(encoded_body)
+        .map_err(|_| NativeEngineError::Worker {
+            operation: "decode content process fetch".into(),
+            reason: "content process returned an invalid fetch body".into(),
+        })?;
+    if body.len() > MAX_CONTENT_DOCUMENT_WIRE_BYTES {
+        return Err(NativeEngineError::limit(
+            "content-process fetch response",
+            MAX_CONTENT_DOCUMENT_WIRE_BYTES,
+            body.len(),
+        ));
+    }
+    Ok(NativeFetchResponse {
+        url: url.to_owned(),
+        status,
+        content_type,
+        body,
+    })
+}
+
 fn decode_document_wire(
     document_bytes: &[u8],
     operation: &str,
@@ -606,6 +724,60 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             "url": resource.url,
                             "document_base64": base64::engine::general_purpose::STANDARD
                                 .encode(serde_json::to_vec(&resource.document).unwrap_or_default()),
+                        })
+                    }
+                    Err(error) => content_error_response(id, error),
+                }
+            }
+            "fetch" if protocol_matches(&request) && running => {
+                let Some(_current) = document.as_ref() else {
+                    let response = content_error_response(
+                        id,
+                        NativeEngineError::Worker {
+                            operation: "content process fetch".into(),
+                            reason: "content process has no committed document".into(),
+                        },
+                    );
+                    write_value_frame(&mut stdout, &response).await?;
+                    continue;
+                };
+                let document_url = request
+                    .get("document_url")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        NativeEngineError::invalid(
+                            "content-process fetch owner URL",
+                            "must be text",
+                        )
+                    })?;
+                let href = request.get("href").and_then(Value::as_str).ok_or_else(|| {
+                    NativeEngineError::invalid("content-process fetch URL", "must be text")
+                })?;
+                let credentials = request
+                    .get("credentials")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let Some(loader) = resource_loader.as_mut() else {
+                    let response = content_error_response(
+                        id,
+                        NativeEngineError::Worker {
+                            operation: "content process fetch".into(),
+                            reason: "content process has no resource loader".into(),
+                        },
+                    );
+                    write_value_frame(&mut stdout, &response).await?;
+                    continue;
+                };
+                match loader.fetch_async(document_url, href, credentials).await {
+                    Ok(fetch) => {
+                        json!({
+                            "kind": "fetched",
+                            "id": id,
+                            "url": fetch.url,
+                            "status": fetch.status,
+                            "content_type": fetch.content_type,
+                            "body_base64": base64::engine::general_purpose::STANDARD
+                                .encode(fetch.body),
                         })
                     }
                     Err(error) => content_error_response(id, error),

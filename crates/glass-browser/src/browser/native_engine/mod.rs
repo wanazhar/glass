@@ -64,7 +64,7 @@ pub use raster::{
     MAX_NATIVE_OPACITY_GROUP_DEPTH, MAX_NATIVE_OPACITY_LAYER_PIXELS, MAX_NATIVE_SURFACE_PIXELS,
     NativeSurface,
 };
-pub use resource_loader::{NativeResource, NativeResourceLoader};
+pub use resource_loader::{NativeFetchResponse, NativeResource, NativeResourceLoader};
 pub use runtime::{
     MAX_NATIVE_MICROTASKS, MAX_NATIVE_RUNTIME_TRACE, NativeCancellationToken, NativeMicrotask,
     NativeRuntime, NativeRuntimeState, NativeRuntimeTraceEvent, NativeRuntimeTraceKind,

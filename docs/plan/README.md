@@ -570,8 +570,16 @@ existing ordered `invalid` events; and `setCustomValidity()` persists through
 the typed owner boundary. Pattern/file validation, picker/UI behavior, and
 full live `ValidityState` Web IDL identity remain open.
 
+The completed bounded FormData-constructor slice is
+[native-engine-browser-060](tasks/native-engine-browser-060.md). Local and
+child-owned `new FormData(form)` now collect named, enabled text controls in
+document order, including controls associated through an external `form`
+attribute, while submitter-only controls and unchecked checkbox/radio controls
+are excluded. File controls fail closed with a `TypeError`; File/Blob parts,
+picker/upload behavior, and full FormData Web IDL identity remain open.
+
 The next BE-02/BE-03/BE-04 gate is full task ordering and navigation edge cases,
-followed by file/FormData support, the remaining pattern/file constraint
+followed by file/blob FormData support, the remaining pattern/file constraint
 validation, target contexts, and the remaining browser-context primitives.
 
 The first dependency-ordered checkpoint is

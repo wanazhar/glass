@@ -1178,9 +1178,28 @@ fn document_bootstrap(
   let nextFetchRequestId = Number.isSafeInteger(globalThis.__glassNextFetchRequestId)
     ? globalThis.__glassNextFetchRequestId
     : 1;
-  const FormDataNative = function() {{
+  const formDataEntries = (form) => {{
+    if (!form || form.tagName !== "FORM") {{
+      throw new TypeError("FormData constructor requires a form element");
+    }}
+    const entries = [];
+    for (const control of elements) {{
+      if (control.formOwnerIndex !== form.nodeIndex || control.disabled) continue;
+      const name = String(control.getAttribute("name") || "");
+      if (!name) continue;
+      const type = String(control.getAttribute("type") || "text").toLowerCase();
+      if (["button", "reset", "submit", "image"].includes(type)) continue;
+      if (type === "file") throw new TypeError("native FormData file controls are unsupported");
+      if (["checkbox", "radio"].includes(type) && !control.checked) continue;
+      if (control.tagName === "OPTION") continue;
+      entries.push([name, String(control.value)]);
+    }}
+    return entries;
+  }};
+  const FormDataNative = function(form) {{
     this.__glassFormData = true;
     this._entries = [];
+    if (form !== undefined && form !== null) this._entries = formDataEntries(form);
   }};
   FormDataNative.prototype.append = function(name, value, filename) {{
     if (filename !== undefined) throw new TypeError("native FormData file parts are unsupported");
@@ -1627,6 +1646,7 @@ fn document_bootstrap(
     const element = {{
       nodeIndex: entry.nodeIndex,
       parentIndex: entry.parentIndex,
+      formOwnerIndex: entry.formOwnerIndex,
       tagName: entry.tagName.toUpperCase(),
       id: entry.attributes.id || "",
       className: entry.attributes.class || "",

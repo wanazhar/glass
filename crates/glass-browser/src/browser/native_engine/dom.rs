@@ -217,6 +217,7 @@ pub(crate) struct NativeScriptDocumentSnapshot {
 pub(crate) struct NativeScriptElementSnapshot {
     pub(crate) node_index: u32,
     pub(crate) parent_index: Option<u32>,
+    pub(crate) form_owner_index: Option<u32>,
     pub(crate) tag_name: String,
     pub(crate) attributes: BTreeMap<String, String>,
     pub(crate) text: String,
@@ -724,6 +725,7 @@ impl NativeDocument {
                 Some(NativeScriptElementSnapshot {
                     node_index: node.id().index(),
                     parent_index: self.parent_element_index(node.id()),
+                    form_owner_index: self.form_owner(node.id()).map(NativeNodeId::index),
                     tag_name,
                     attributes: node.attributes()?.clone(),
                     text,

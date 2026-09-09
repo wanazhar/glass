@@ -1372,7 +1372,7 @@ async fn native_content_process_form_data_constructor_collects_text_controls() {
         let (mut stream, _) = listener.accept().await.unwrap();
         let request = read_http_request(&mut stream).await;
         assert_eq!(request.split_whitespace().nth(1), Some("/form"));
-        let body = "<form id='search'><input name='first' value='one'><textarea name='notes'>hello</textarea><select name='single'><option value='a'>A</option><option value='b' selected>B</option></select><select name='many' multiple><option value='x' selected>X</option><option selected>Y</option><option value='z'>Z</option></select><input name='unchecked' type='checkbox' value='no'><input name='checked' type='checkbox' value='yes' checked><button type='submit'>Go</button></form><input form='search' name='outside' value='two'>";
+        let body = "<form id='search'><input name='first' value='one'><textarea name='notes'>hello</textarea><select name='single'><option value='a'>A</option><option value='b' selected>B</option></select><select id='many' name='many' multiple><option value='x' selected>X</option><option selected>Y</option><option value='z'>Z</option></select><input name='unchecked' type='checkbox' value='no'><input name='checked' type='checkbox' value='yes' checked><button type='submit'>Go</button></form><input form='search' name='outside' value='two'>";
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
@@ -1388,16 +1388,17 @@ async fn native_content_process_form_data_constructor_collects_text_controls() {
     assert_eq!(
         engine
             .evaluate_async(
-                "(() => { const data = new FormData(document.getElementById('search')); return { entries: data.entries(), first: data.get('first'), checked: data.get('checked'), unchecked: data.has('unchecked'), outside: data.get('outside') }; })()",
+                "(() => { const many = document.getElementById('many'); many.options[2].selected = true; const data = new FormData(document.getElementById('search')); return { entries: data.entries(), first: data.get('first'), checked: data.get('checked'), unchecked: data.has('unchecked'), outside: data.get('outside'), selected: many.selectedOptions.map(option => option.value) }; })()",
             )
             .await
             .unwrap(),
         serde_json::json!({
-            "entries": [["first", "one"], ["notes", "hello"], ["single", "b"], ["many", "x"], ["many", "Y"], ["checked", "yes"], ["outside", "two"]],
+            "entries": [["first", "one"], ["notes", "hello"], ["single", "b"], ["many", "x"], ["many", "Y"], ["many", "z"], ["checked", "yes"], ["outside", "two"]],
             "first": "one",
             "checked": "yes",
             "unchecked": false,
             "outside": "two",
+            "selected": ["x", "Y", "z"],
         })
     );
     engine.close_async().await.unwrap();

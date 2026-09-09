@@ -721,6 +721,19 @@ impl NativeEngine {
             });
         }
         let target_url = self.resolve_link_href(href)?;
+        if self.is_same_document_navigation(&target_url) {
+            if let Some(worker) = self.runtime_worker.clone() {
+                self.commit_same_document_navigation_async(
+                    target_url,
+                    HistoryCommit::Push,
+                    &worker,
+                )
+                .await?;
+            } else {
+                self.commit_same_document_navigation(target_url, HistoryCommit::Push)?;
+            }
+            return Ok(());
+        }
         self.navigate_async(target_url).await.map(|_| ())
     }
 
@@ -960,6 +973,18 @@ impl NativeEngine {
         }
         if url::Url::parse(href).is_ok() {
             return Ok(href.to_owned());
+        }
+        if let Ok(base) = url::Url::parse(without_fragment(&self.url))
+            && is_network_url(base.as_str())
+        {
+            let resolved = base
+                .join(href)
+                .map_err(|_| NativeEngineError::UnsupportedUrl {
+                    reason: "relative network link reference is malformed".into(),
+                })?;
+            let resolved = resolved.to_string();
+            validate_url_text("link target URL", &resolved)?;
+            return Ok(resolved);
         }
         resolve_fixture_relative_url(&self.url, href)
     }

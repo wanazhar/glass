@@ -368,9 +368,17 @@ clicks to navigation ownership. Local clicks reuse resource/history handling;
 external child clicks transfer a bounded link request after child-owned
 validation and the parent performs the next child-owned load. Full navigation
 resets the realm and same-document navigation retains it. Click and navigation
-currently use separate revisions; relative external links, target contexts,
-form submission, unload/navigation task ordering, timers, modules, Fetch/XHR,
-and remaining resource classes stay open.
+currently use separate revisions; target contexts, form submission,
+unload/navigation task ordering, timers, modules, Fetch/XHR, and remaining
+resource classes stay open.
+
+The completed native-engine-browser-025 batch resolves relative and
+root-relative HTTP(S) link references against the current document and keeps
+fragment navigation same-document in the history/revision owner. Local and
+external fragment links retain the page realm without a redundant fetch;
+external non-fragment links remain child-owned. Target contexts, form
+submission, lifecycle/default-action ordering, timers, modules, Fetch/XHR, and
+remaining resource classes stay open.
 
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
@@ -3427,7 +3435,7 @@ The native profile is `experimental` and declares:
 | evidence | available | bounded URL, title, visible text, revision; native semantic projection is Rust-only |
 | action | available | semantic click/type, bounded vertical root scrolling, plus native point targets for supported local controls; no nested scrolling or default browser behavior |
 | effects | available | current revision and changed signal; bounded event metadata is Rust-only |
-| script | available | bounded QuickJS ECMAScript with a refreshed `window`/`document` snapshot, typed click/form/attribute/focus commands, persistent listener records, bounded Event/CustomEvent capture/target/bubble dispatch, cancelable click preflight, transactional type/input/change event re-entry, and top-level link navigation handoff; no live Web IDL identity, relative external navigation, beforeinput/composition, timers, modules, or page-script loading |
+| script | available | bounded QuickJS ECMAScript with a refreshed `window`/`document` snapshot, typed click/form/attribute/focus commands, persistent listener records, bounded Event/CustomEvent capture/target/bubble dispatch, cancelable click preflight, transactional type/input/change event re-entry, top-level link navigation handoff, and relative HTTP(S)/same-document resolution; no live Web IDL identity, target contexts, beforeinput/composition, timers, modules, or page-script loading |
 | capture | available | bounded PNG of the current logical RGBA surface; JPEG/PDF and screenshot-containing evidence are unavailable |
 | storage | partial | process-owned session cookies and bounded document cache; no local/session/IndexedDB storage or persistence |
 | prompts | omitted | no dialogs |

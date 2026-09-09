@@ -375,6 +375,31 @@ async fn native_local_script_click_owns_fixture_navigation() {
 }
 
 #[tokio::test]
+async fn native_local_script_click_owns_same_document_fragment() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://script-fragment",
+            "<title>Fragment</title><a id='jump' href='#part'>Jump</a><p id='part'>Part</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://script-fragment");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    let initial_revision = engine.revision();
+    engine
+        .evaluate_async("document.getElementById('jump').click()")
+        .await
+        .unwrap();
+    assert_eq!(engine.revision(), initial_revision + 2);
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        "fixture://script-fragment#part"
+    );
+    assert_eq!(engine.snapshot().unwrap().title, "Fragment");
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_child_script_click_owns_external_navigation() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -387,9 +412,7 @@ async fn native_child_script_click_owns_external_navigation() {
             let request = String::from_utf8_lossy(&request[..read]);
             assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
             let body = if expected_path == "/start" {
-                format!(
-                    "<title>Start</title><a id='next' href='http://{address}/destination'>Next</a>"
-                )
+                "<title>Start</title><a id='next' href='/destination'>Next</a>".to_owned()
             } else {
                 "<title>Destination</title><p>Arrived</p>".to_owned()
             };

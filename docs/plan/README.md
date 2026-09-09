@@ -275,12 +275,19 @@ script link clicks now hand off one validated navigation request to the local
 history/resource owner or to the parent after child-owned validation and
 transfer. Full navigations reset the realm, same-document navigation retains
 it, and no path silently falls back to CDP. Click and navigation currently use
-separate revisions; relative external navigation, target contexts, form
-submission, timers, modules, page-script loading, and Fetch/XHR remain open.
+separate revisions; target contexts, form submission, timers, modules,
+page-script loading, and Fetch/XHR remain open.
 
-The next BE-03/BE-04 gate is navigation task ordering and remaining
-link/default-action coverage, followed by timers, modules, page-script loading,
-and Fetch/XHR.
+The completed relative-URL/history batch is
+[native-engine-browser-025](tasks/native-engine-browser-025.md). Relative and
+root-relative HTTP(S) links now resolve against the current document, while
+local and external fragment links stay same-document and retain their page
+realm without a redundant fetch. Target contexts, form submission, unload
+ordering, timers, modules, page-script loading, and Fetch/XHR remain open.
+
+The next BE-03/BE-04 gate is navigation lifecycle/default-action ordering and
+target contexts, followed by timers, modules, page-script loading, and
+Fetch/XHR.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

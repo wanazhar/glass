@@ -5,7 +5,8 @@ use super::dom::{NativeDocument, NativeDocumentWire, NativeNodeId};
 use super::error::{NativeEngineError, NativeWorkerFailureKind};
 use super::interaction::{MAX_NATIVE_EFFECTS, NativeEventKind};
 use super::javascript::{
-    NativeJavaScriptRuntime, NativeScriptCommand, NativeScriptEvaluation, host_event_script,
+    NativeJavaScriptRuntime, NativeScriptCommand, NativeScriptEvaluation, execute_inline_scripts,
+    host_event_script,
 };
 use super::origin::NativeOrigin;
 use super::resource_loader::{NativeFetchResponse, NativeResourceLoader};
@@ -860,19 +861,33 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             }
             "load" if protocol_matches(&request) && running => {
                 match load_content_resource(&request, &mut resource_loader).await {
-                    Ok((resource, parsed, loaded_viewport)) => {
-                        document = Some(parsed);
-                        document_url = Some(resource.url.clone());
-                        document_origin = Some(resource.origin.clone());
-                        viewport = loaded_viewport;
-                        javascript_runtime = None;
-                        json!({
-                            "kind": "loaded",
-                            "id": id,
-                            "url": resource.url,
-                            "document_base64": base64::engine::general_purpose::STANDARD
-                                .encode(serde_json::to_vec(&resource.document).unwrap_or_default()),
-                        })
+                    Ok((resource, mut parsed, loaded_viewport)) => {
+                        let mut script_runtime = None;
+                        let response = match execute_inline_scripts(
+                            &mut parsed,
+                            &mut script_runtime,
+                            &resource.url,
+                            &resource.origin,
+                            loaded_viewport,
+                        ) {
+                            Ok(()) => {
+                                let document_wire = parsed.to_content_wire();
+                                document = Some(parsed);
+                                document_url = Some(resource.url.clone());
+                                document_origin = Some(resource.origin.clone());
+                                viewport = loaded_viewport;
+                                javascript_runtime = script_runtime;
+                                json!({
+                                    "kind": "loaded",
+                                    "id": id,
+                                    "url": resource.url,
+                                    "document_base64": base64::engine::general_purpose::STANDARD
+                                        .encode(serde_json::to_vec(&document_wire).unwrap_or_default()),
+                                })
+                            }
+                            Err(error) => content_error_response(id, error),
+                        };
+                        response
                     }
                     Err(error) => content_error_response(id, error),
                 }

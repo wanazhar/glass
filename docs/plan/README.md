@@ -285,9 +285,18 @@ local and external fragment links stay same-document and retain their page
 realm without a redundant fetch. Target contexts, form submission, unload
 ordering, timers, modules, page-script loading, and Fetch/XHR remain open.
 
-The next BE-03/BE-04 gate is navigation lifecycle/default-action ordering and
-target contexts, followed by timers, modules, page-script loading, and
-Fetch/XHR.
+The completed bounded inline-page-script batch is
+[native-engine-browser-026](tasks/native-engine-browser-026.md). Local
+prepared navigations and HTTP(S) content-process loads now execute up to 32
+bounded inline JavaScript sources in the owning persistent realm. Typed DOM
+commands apply against the parsed document before publication, load-time link
+activation is rejected, and failed local scripts do not publish a partial
+navigation. External `src` scripts, modules, parser timing, timers, Fetch/XHR,
+and full Web IDL identity remain open.
+
+The next BE-02/BE-03/BE-04 gate is external script/module request policy and
+navigation lifecycle/default-action ordering, followed by target contexts,
+timers, Fetch/XHR, and the remaining resource classes.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

@@ -674,6 +674,31 @@ impl NativeDocument {
         }
     }
 
+    pub(crate) fn inline_script_sources(
+        &self,
+        max_scripts: usize,
+        max_source_bytes: usize,
+    ) -> Vec<String> {
+        self.nodes
+            .iter()
+            .filter(|node| node.element_name() == Some("script"))
+            .filter(|node| {
+                node.attribute("src").is_none()
+                    && node.attribute("type").is_none_or(|value| {
+                        value.is_empty()
+                            || value.eq_ignore_ascii_case("text/javascript")
+                            || value.eq_ignore_ascii_case("application/javascript")
+                    })
+            })
+            .take(max_scripts)
+            .filter_map(|node| {
+                let mut source = String::new();
+                self.collect_raw_text(node.id(), &mut source);
+                (!source.is_empty() && source.len() <= max_source_bytes).then_some(source)
+            })
+            .collect()
+    }
+
     fn parent_element_index(&self, id: NativeNodeId) -> Option<u32> {
         let mut parent = self.node(id).and_then(NativeNode::parent);
         while let Some(parent_id) = parent {

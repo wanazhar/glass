@@ -18,6 +18,8 @@ use std::time::{Duration, Instant};
 pub(crate) const MAX_NATIVE_SCRIPT_BYTES: usize = crate::browser_backend::MAX_TEXT_BYTES;
 /// Maximum JSON representation returned to the semantic backend.
 pub(crate) const MAX_NATIVE_SCRIPT_RESULT_BYTES: usize = crate::browser_backend::MAX_JSON_BYTES;
+/// Maximum inline page scripts executed while committing one document.
+pub(crate) const MAX_NATIVE_INLINE_SCRIPTS: usize = 32;
 const NATIVE_SCRIPT_MEMORY_BYTES: usize = 32 * 1024 * 1024;
 const NATIVE_SCRIPT_STACK_BYTES: usize = 1024 * 1024;
 const NATIVE_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -60,6 +62,42 @@ pub(crate) enum NativeScriptCommand {
 pub(crate) struct NativeScriptEvaluation {
     pub(crate) value: serde_json::Value,
     pub(crate) commands: Vec<NativeScriptCommand>,
+}
+
+/// Execute the bounded inline scripts discovered in one parsed document.
+///
+/// The caller owns the realm so local documents and the child content process
+/// can both retain globals and listeners after the document commit. Script
+/// navigation is intentionally rejected during parsing; navigation only has a
+/// defined owner after the document has been committed.
+pub(crate) fn execute_inline_scripts(
+    document: &mut NativeDocument,
+    runtime: &mut Option<NativeJavaScriptRuntime>,
+    document_url: &str,
+    document_origin: &NativeOrigin,
+    viewport: Viewport,
+) -> Result<(), NativeEngineError> {
+    let sources =
+        document.inline_script_sources(MAX_NATIVE_INLINE_SCRIPTS, MAX_NATIVE_SCRIPT_BYTES);
+    if sources.is_empty() {
+        return Ok(());
+    }
+    if runtime.is_none() {
+        *runtime = Some(NativeJavaScriptRuntime::new()?);
+    }
+    for source in sources {
+        let evaluation = {
+            let script_runtime = runtime.as_ref().expect("inline script runtime initialized");
+            script_runtime.evaluate(&source, document, document_url, document_origin, viewport)?
+        };
+        if evaluation.commands.is_empty() {
+            continue;
+        }
+        let mut next = document.clone();
+        next.apply_script_commands(&evaluation.commands)?;
+        *document = next;
+    }
+    Ok(())
 }
 
 /// Build the internal source used to deliver Rust-owned semantic events into

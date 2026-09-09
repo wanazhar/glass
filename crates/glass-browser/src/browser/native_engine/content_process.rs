@@ -7,7 +7,7 @@ use super::interaction::{MAX_NATIVE_EFFECTS, NativeEventKind};
 use super::javascript::{
     MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_SCRIPT_BYTES, NativeJavaScriptRuntime, NativePageScript,
     NativeScriptCommand, NativeScriptEvaluation, execute_page_scripts, host_event_script,
-    static_module_specifiers,
+    literal_dynamic_module_specifiers, static_module_specifiers,
 };
 use super::origin::NativeOrigin;
 use super::resource_loader::{NativeFetchResponse, NativeResourceLoader};
@@ -1438,7 +1438,9 @@ async fn load_module_dependencies(
 ) -> Result<(), NativeEngineError> {
     let mut pending = vec![(module_url.to_owned(), source.to_owned())];
     while let Some((current_url, current_source)) = pending.pop() {
-        for specifier in static_module_specifiers(&current_source)? {
+        let mut specifiers = static_module_specifiers(&current_source)?;
+        specifiers.extend(literal_dynamic_module_specifiers(&current_source));
+        for specifier in specifiers {
             let Some(target) = resolve_module_specifier(&current_url, &specifier)? else {
                 continue;
             };

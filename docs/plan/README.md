@@ -328,8 +328,17 @@ dynamic `import()`, import maps, parser timing, POST/submission
 lifecycle/default-action ordering, target contexts, timers, Fetch/XHR, and the
 remaining resource classes remain open.
 
-The next BE-02/BE-03/BE-04 gate is dynamic-import policy and parser-timing/task
-ordering, alongside the remaining form and browser-context primitives.
+The completed bounded literal-dynamic-import batch is
+[native-engine-browser-031](tasks/native-engine-browser-031.md). Literal
+`import("...")` calls now reuse the policy-checked module graph and a bounded
+QuickJS job drain, preserving module namespace resolution and promise callback
+effects. Computed specifiers, bare packages/import maps, parser timing,
+POST/submission lifecycle/default-action ordering, target contexts, timers,
+Fetch/XHR, and the remaining resource classes remain open.
+
+The next BE-02/BE-03/BE-04 gate is parser-blocking/defer/async timing and
+bounded task/microtask ordering, alongside the remaining form and browser-
+context primitives.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

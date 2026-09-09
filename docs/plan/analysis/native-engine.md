@@ -1998,6 +1998,13 @@ in-memory loader. Bare specifiers, import maps, dynamic `import()`, parser
 timing, local external module subresources, and full Web IDL identity remain
 open.
 
+The completed bounded literal-dynamic-import follow-up is
+[native-engine-browser-031](../tasks/native-engine-browser-031.md). Literal
+`import("...")` calls reuse the admitted module graph and a bounded QuickJS
+pending-job drain, preserving module namespace/export resolution and promise
+callback effects. Computed specifiers, bare packages/import maps, parser
+timing, non-HTTP(S) modules, and full Web IDL identity remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

@@ -1980,6 +1980,15 @@ button clicks through the existing local/history or parent/content navigation
 owner. POST/multipart, validation and submit events, target contexts, module
 timing, timers, Fetch/XHR, and full Web IDL identity remain open.
 
+The completed bounded module-root follow-up is
+[native-engine-browser-029](../tasks/native-engine-browser-029.md). Local and
+HTTP(S) documents now classify inline and external `type="module"` roots and
+execute them through QuickJS's module evaluator in document order. External
+module source retains its validated final URL, and both local and child-owned
+realms keep the resulting globals/listeners while typed commands remain
+clone-and-commit operations. Static import graphs, dynamic `import()`, local
+external subresources, parser timing, and full Web IDL identity remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

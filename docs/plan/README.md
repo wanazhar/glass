@@ -311,9 +311,17 @@ through the same navigation owner. POST/multipart, constraint validation,
 submission lifecycle/events, target contexts, module timing, timers, Fetch/XHR,
 and the remaining resource classes remain open.
 
-The next BE-02/BE-03/BE-04 gate is module/dynamic-import and parser-timing
-policy alongside POST/submission lifecycle/default-action ordering and target
-contexts, followed by timers, Fetch/XHR, and the remaining resource classes.
+The completed bounded module-root batch is
+[native-engine-browser-029](tasks/native-engine-browser-029.md). Local and
+HTTP(S) documents now classify and execute bounded inline/external module roots
+through QuickJS's module evaluator in document order, retaining the owning
+realm and typed command boundary. Static import graphs, dynamic `import()`,
+parser timing, POST/submission lifecycle/default-action ordering, target
+contexts, timers, Fetch/XHR, and the remaining resource classes remain open.
+
+The next BE-02/BE-03/BE-04 gate is bounded static module-graph loading and
+dynamic-import policy, alongside parser-timing/default-action ordering and the
+remaining form and browser-context primitives.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

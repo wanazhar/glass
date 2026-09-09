@@ -221,6 +221,8 @@ pub(crate) struct NativeScriptElementSnapshot {
 pub(crate) enum NativePageScriptSource {
     Inline(String),
     External(String),
+    ModuleInline(String),
+    ModuleExternal(String),
 }
 
 /// A parsed document owned by one engine generation.
@@ -682,20 +684,6 @@ impl NativeDocument {
         }
     }
 
-    pub(crate) fn inline_script_sources(
-        &self,
-        max_scripts: usize,
-        max_source_bytes: usize,
-    ) -> Vec<String> {
-        self.page_script_sources(max_scripts, max_source_bytes)
-            .into_iter()
-            .filter_map(|source| match source {
-                NativePageScriptSource::Inline(source) => Some(source),
-                NativePageScriptSource::External(_) => None,
-            })
-            .collect()
-    }
-
     pub(crate) fn page_script_sources(
         &self,
         max_scripts: usize,
@@ -704,23 +692,38 @@ impl NativeDocument {
         self.nodes
             .iter()
             .filter(|node| node.element_name() == Some("script"))
-            .filter(|node| {
-                node.attribute("type").is_none_or(|value| {
-                    value.is_empty()
-                        || value.eq_ignore_ascii_case("text/javascript")
-                        || value.eq_ignore_ascii_case("application/javascript")
-                })
+            .filter_map(|node| {
+                let module = match node.attribute("type") {
+                    None | Some("") => false,
+                    Some(value) if value.eq_ignore_ascii_case("module") => true,
+                    Some(value)
+                        if value.eq_ignore_ascii_case("text/javascript")
+                            || value.eq_ignore_ascii_case("application/javascript") =>
+                    {
+                        false
+                    }
+                    Some(_) => return None,
+                };
+                Some((node, module))
             })
             .take(max_scripts)
-            .filter_map(|node| {
+            .filter_map(|(node, module)| {
                 if let Some(source) = node.attribute("src") {
-                    return (!source.is_empty())
-                        .then(|| NativePageScriptSource::External(source.to_owned()));
+                    return (!source.is_empty()).then(|| {
+                        if module {
+                            NativePageScriptSource::ModuleExternal(source.to_owned())
+                        } else {
+                            NativePageScriptSource::External(source.to_owned())
+                        }
+                    });
                 }
                 let mut source = String::new();
                 self.collect_raw_text(node.id(), &mut source);
-                (source.len() <= max_source_bytes && !source.is_empty())
-                    .then_some(NativePageScriptSource::Inline(source))
+                (source.len() <= max_source_bytes && !source.is_empty()).then_some(if module {
+                    NativePageScriptSource::ModuleInline(source)
+                } else {
+                    NativePageScriptSource::Inline(source)
+                })
             })
             .collect()
     }

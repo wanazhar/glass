@@ -63,6 +63,7 @@ pub(crate) struct NativeContentMutation {
     pub(crate) document: NativeDocumentWire,
     pub(crate) events: Vec<NativeContentEvent>,
     pub(crate) navigation: Option<NativeContentNavigation>,
+    pub(crate) allowed: bool,
 }
 
 pub(crate) struct NativeContentScriptResult {
@@ -300,6 +301,14 @@ impl NativeContentProcess {
             json!({"events": event_names}),
         )
         .await
+    }
+
+    pub(crate) async fn dispatch_before_unload(
+        &mut self,
+    ) -> Result<NativeContentMutation, NativeEngineError> {
+        let id = self.next_id();
+        self.mutate_with_request_kind(id, "mutate_before_unload", Value::Null)
+            .await
     }
 
     pub(crate) async fn dispatch_hash_change(
@@ -774,6 +783,10 @@ fn decode_mutation_payload(
         document,
         events,
         navigation,
+        allowed: response
+            .get("allowed")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
     })
 }
 
@@ -1376,6 +1389,76 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     Err(error) => content_error_response(id, error),
                 }
             }
+            "mutate_before_unload" if protocol_matches(&request) && running => {
+                let Some(current) = document.as_ref() else {
+                    let response = content_error_response(
+                        id,
+                        NativeEngineError::Worker {
+                            operation: "content process beforeunload".into(),
+                            reason: "content process has no committed document".into(),
+                        },
+                    );
+                    write_value_frame(&mut stdout, &response).await?;
+                    continue;
+                };
+                let Some(document_url) = document_url.as_deref() else {
+                    let response = content_error_response(
+                        id,
+                        NativeEngineError::Worker {
+                            operation: "content process beforeunload".into(),
+                            reason: "content process has no committed URL".into(),
+                        },
+                    );
+                    write_value_frame(&mut stdout, &response).await?;
+                    continue;
+                };
+                let Some(document_origin) = document_origin.as_ref() else {
+                    let response = content_error_response(
+                        id,
+                        NativeEngineError::Worker {
+                            operation: "content process beforeunload".into(),
+                            reason: "content process has no committed origin".into(),
+                        },
+                    );
+                    write_value_frame(&mut stdout, &response).await?;
+                    continue;
+                };
+                let Some(runtime) = javascript_runtime.as_ref() else {
+                    let response = content_error_response(
+                        id,
+                        NativeEngineError::Worker {
+                            operation: "content process beforeunload".into(),
+                            reason: "content process has no JavaScript runtime".into(),
+                        },
+                    );
+                    write_value_frame(&mut stdout, &response).await?;
+                    continue;
+                };
+                match mutate_before_unload(
+                    current,
+                    runtime,
+                    document_url,
+                    document_origin,
+                    viewport,
+                ) {
+                    Ok((next, mutation)) => {
+                        let allowed = mutation.allowed;
+                        document = Some(next);
+                        json!({
+                            "kind": "mutated",
+                            "id": id,
+                            "allowed": allowed,
+                            "document_base64": base64::engine::general_purpose::STANDARD
+                                .encode(serde_json::to_vec(&mutation.document).unwrap_or_default()),
+                            "events": mutation.events.iter().map(|event| json!({
+                                "node_index": event.node_index,
+                                "kind": event_kind_text(event.kind),
+                            })).collect::<Vec<_>>(),
+                        })
+                    }
+                    Err(error) => content_error_response(id, error),
+                }
+            }
             "mutate_lifecycle_events" if protocol_matches(&request) && running => {
                 let Some(current) = document.as_ref() else {
                     let response = content_error_response(
@@ -1411,10 +1494,11 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         NativeEventKind::PageHide
                             | NativeEventKind::Unload
                             | NativeEventKind::PageShow
+                            | NativeEventKind::PopState
                     ) {
                         return Err(NativeEngineError::invalid(
                             "content-process lifecycle event",
-                            "must be pagehide, unload, or pageshow",
+                            "must be pagehide, unload, pageshow, or popstate",
                         ));
                     }
                     events.push(event);
@@ -2080,6 +2164,7 @@ fn mutate_click_with_event_preflight(
             })
             .collect(),
         navigation,
+        allowed: true,
     };
     Ok((next, mutation))
 }
@@ -2182,6 +2267,7 @@ fn mutate_type_with_event_bridge(
             })
             .collect(),
         navigation: None,
+        allowed: true,
     };
     Ok((next, mutation))
 }
@@ -2278,8 +2364,64 @@ fn mutate_key_with_event_bridge(
             })
             .collect(),
         navigation: None,
+        allowed: true,
     };
     Ok((next, mutation))
+}
+
+fn mutate_before_unload(
+    current: &NativeDocument,
+    runtime: &NativeJavaScriptRuntime,
+    document_url: &str,
+    document_origin: &NativeOrigin,
+    viewport: Viewport,
+) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
+    let source =
+        host_event_script(&[(u32::MAX, NativeEventKind::BeforeUnload)])?.ok_or_else(|| {
+            NativeEngineError::Worker {
+                operation: "content process beforeunload".into(),
+                reason: "beforeunload event source was empty".into(),
+            }
+        })?;
+    let evaluation = runtime.evaluate(&source, current, document_url, document_origin, viewport)?;
+    let allowed = evaluation
+        .value
+        .as_array()
+        .and_then(|values| values.first())
+        .and_then(Value::as_bool)
+        .ok_or_else(|| NativeEngineError::Worker {
+            operation: "content process beforeunload".into(),
+            reason: "beforeunload event result was invalid".into(),
+        })?;
+    let mut next = current.clone();
+    let mut events = vec![NativeContentEvent {
+        node_index: 0,
+        kind: NativeEventKind::BeforeUnload,
+    }];
+    events.extend(
+        next.apply_script_commands(&evaluation.commands)?
+            .into_iter()
+            .map(|(node, kind)| NativeContentEvent {
+                node_index: node.index(),
+                kind,
+            }),
+    );
+    if events.len() > MAX_NATIVE_EFFECTS {
+        return Err(NativeEngineError::limit(
+            "native beforeunload effects",
+            MAX_NATIVE_EFFECTS,
+            events.len(),
+        ));
+    }
+    Ok((
+        next.clone(),
+        NativeContentMutation {
+            document: next.to_content_wire(),
+            events,
+            navigation: None,
+            allowed,
+        },
+    ))
 }
 
 fn mutate_lifecycle_events(
@@ -2297,6 +2439,7 @@ fn mutate_lifecycle_events(
                 document: current.to_content_wire(),
                 events: Vec::new(),
                 navigation: None,
+                allowed: true,
             },
         ));
     }
@@ -2336,6 +2479,7 @@ fn mutate_lifecycle_events(
             document: next.to_content_wire(),
             events,
             navigation: None,
+            allowed: true,
         },
     ))
 }
@@ -2381,6 +2525,7 @@ fn mutate_hash_change(
             document: next.to_content_wire(),
             events,
             navigation: None,
+            allowed: true,
         },
     ))
 }
@@ -2467,6 +2612,7 @@ fn mutate_script_document(
                 }),
             })
             .transpose()?,
+        allowed: true,
     };
     Ok((next, mutation))
 }
@@ -2567,7 +2713,9 @@ fn event_kind_text(kind: NativeEventKind) -> &'static str {
         NativeEventKind::PageHide => "pagehide",
         NativeEventKind::Unload => "unload",
         NativeEventKind::PageShow => "pageshow",
+        NativeEventKind::BeforeUnload => "beforeunload",
         NativeEventKind::HashChange => "hashchange",
+        NativeEventKind::PopState => "popstate",
         NativeEventKind::Invalid => "invalid",
         NativeEventKind::KeyDown => "keydown",
         NativeEventKind::KeyUp => "keyup",
@@ -2589,7 +2737,9 @@ fn parse_event_kind(value: &str) -> Option<NativeEventKind> {
         "pagehide" => Some(NativeEventKind::PageHide),
         "unload" => Some(NativeEventKind::Unload),
         "pageshow" => Some(NativeEventKind::PageShow),
+        "beforeunload" => Some(NativeEventKind::BeforeUnload),
         "hashchange" => Some(NativeEventKind::HashChange),
+        "popstate" => Some(NativeEventKind::PopState),
         "invalid" => Some(NativeEventKind::Invalid),
         "keydown" => Some(NativeEventKind::KeyDown),
         "keyup" => Some(NativeEventKind::KeyUp),

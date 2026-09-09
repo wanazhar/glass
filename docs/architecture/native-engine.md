@@ -550,6 +550,15 @@ survives redirects that retain POST. File parts, FormData/Web IDL identity,
 submitter encoding overrides, full constraint validation, target contexts, and
 the remaining browser-context primitives remain open.
 
+The completed native-engine-browser-046 batch adds bounded navigation
+cancellation and history events. Replacement navigation dispatches cancelable
+window `beforeunload` before `pagehide`/`unload` and resource loading, honors
+`preventDefault()` and non-empty `returnValue`, and leaves the current page
+intact when canceled. Same-document history traversal dispatches window
+`popstate` before `hashchange` through the local/child typed owner paths.
+Prompts, bfcache/session-history parity, cross-document restoration, popup/
+opener contexts, and full HTML task-source semantics remain open.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature

@@ -250,6 +250,80 @@ async fn native_local_full_navigation_orders_page_lifecycle_events() {
 }
 
 #[tokio::test]
+async fn native_local_beforeunload_can_cancel_replacement_navigation() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://beforeunload-start",
+            "<script>globalThis.lifecycle = []; globalThis.guard = event => { lifecycle.push(event.type); event.preventDefault(); }; addEventListener('beforeunload', globalThis.guard);</script><title>Start</title>",
+        )
+        .unwrap()
+        .with_fixture("fixture://beforeunload-next", "<title>Next</title>")
+        .unwrap()
+        .with_initial_url("fixture://beforeunload-start");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .navigate_async("fixture://beforeunload-next")
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        "fixture://beforeunload-start"
+    );
+    assert_eq!(engine.snapshot().unwrap().title, "Start");
+    assert_eq!(
+        engine.evaluate_async("globalThis.lifecycle").await.unwrap(),
+        serde_json::json!(["beforeunload"])
+    );
+
+    engine
+        .evaluate_async("removeEventListener('beforeunload', globalThis.guard)")
+        .await
+        .unwrap();
+    engine
+        .navigate_async("fixture://beforeunload-next")
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        "fixture://beforeunload-next"
+    );
+    assert_eq!(engine.snapshot().unwrap().title, "Next");
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_local_history_traversal_orders_popstate_before_hashchange() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://popstate-page",
+            "<script>globalThis.events = []; addEventListener('popstate', event => events.push(event.type)); addEventListener('hashchange', event => events.push(event.type));</script><p id='one'>One</p><p id='two'>Two</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://popstate-page#one");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .navigate_async("fixture://popstate-page#two")
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.evaluate_async("globalThis.events").await.unwrap(),
+        serde_json::json!(["hashchange"])
+    );
+    engine.go_back().unwrap().unwrap();
+    assert_eq!(
+        engine.evaluate_async("globalThis.events").await.unwrap(),
+        serde_json::json!(["hashchange", "popstate", "hashchange"])
+    );
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        "fixture://popstate-page#one"
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_fragment_navigation_dispatches_hashchange_without_reload() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -1337,6 +1411,45 @@ async fn native_content_process_orders_navigation_lifecycle_events() {
             NativeEventKind::Unload,
             NativeEventKind::PageShow
         ]
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_beforeunload_can_cancel_replacement_navigation() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/start"));
+        let body = "<script>globalThis.lifecycle = []; addEventListener('beforeunload', event => { lifecycle.push(event.type); event.preventDefault(); });</script><title>Start</title>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/start")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .navigate_async(format!("http://{address}/next"))
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        format!("http://{address}/start")
+    );
+    assert_eq!(engine.snapshot().unwrap().title, "Start");
+    assert_eq!(
+        engine.evaluate_async("globalThis.lifecycle").await.unwrap(),
+        serde_json::json!(["beforeunload"])
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

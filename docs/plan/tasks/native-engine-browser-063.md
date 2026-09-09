@@ -54,6 +54,7 @@ automation can build a set without depending on platform-specific modifiers.
 - `cargo check --quiet -p glass-browser --features native-engine --test native_engine`
 - `cargo test --quiet -p glass-browser --features native-engine --test native_engine native_actions_update_state_and_reject_unsafe_targets_before_mutation -- --nocapture` — 1 passed
 - `cargo test --quiet -p glass-browser --features native-engine --test native_engine native_local_script_applies_bounded_dom_commands_once -- --nocapture` — 1 passed
+- `cargo test --quiet -p glass-browser --features native-engine --test native_engine native_content_process_form_data_constructor_collects_text_controls -- --nocapture` — 1 passed
 
 Remote CI, source push, release, tag, registry publication, browser parity,
 and issue-closure claims remain pending the wider browser-complete gates.

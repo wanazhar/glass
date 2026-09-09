@@ -445,6 +445,15 @@ callbacks, so retained element references observe current values. Selection,
 caret movement, IME/composition, navigation keys, modifier shortcuts,
 `beforeinput`, and form-submit defaults remain open.
 
+The completed native-engine-browser-034 batch closes the bounded GET-form
+submit lifecycle. `requestSubmit()` and submit-button defaults dispatch a
+bubbling, cancelable `submit` event before query serialization; callback
+mutations are included in the resulting URL, while direct `form.submit()`
+remains event-free. Local and child semantic submit-button clicks use their
+existing navigation owners, and child click IPC now transfers the navigation
+record explicitly. POST/multipart, validation, submitter metadata, target
+contexts, and unload ordering remain open.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature
@@ -3485,8 +3494,8 @@ bounded visibility gate recognizes `hidden`, `aria-hidden="true"`, and computed
 `display:none`/`visibility:hidden`; hidden subtrees are omitted from text,
 layout, and hit testing. Supported local links perform the bounded default
 navigation described above; unsupported links fail closed. No action performs
-selection, IME, keyboard navigation, multi-select, or script-driven default
-browser behavior.
+selection, IME, keyboard navigation, or multi-select; form defaults are
+limited to the bounded GET submission path above.
 Each accepted mutating action advances the document revision exactly once, so
 earlier references must be re-observed. The effects operation returns the current
 revision and changed bit; bounded native event metadata remains an internal
@@ -3502,7 +3511,7 @@ The native profile is `experimental` and declares:
 | navigation | available | local resources plus bounded external HTTP(S) HTML navigation, inline/classic/module-root/static-graph/literal-dynamic-import child scripts, bounded task turns, and bounded GET-form navigation; no computed module loading or general subresources |
 | contexts | available | one active context |
 | evidence | available | bounded URL, title, visible text, revision; native semantic projection is Rust-only |
-| action | available | semantic click/type, focused-text printable/Backspace/Delete key input, bounded vertical root scrolling, plus native point targets for supported local controls; no selection/IME, nested scrolling, or default browser behavior |
+| action | available | semantic click/type, focused-text printable/Backspace/Delete key input, bounded vertical root scrolling, bounded GET form defaults, plus native point targets for supported local controls; no selection/IME or nested scrolling |
 | effects | available | current revision and changed signal; bounded event metadata is Rust-only |
 | script | available | bounded QuickJS ECMAScript with a refreshed `window`/`document` snapshot, bounded inline/classic/module-root page-script loading, HTTP(S) static module graphs, literal dynamic imports, and deterministic microtask/next-turn timer callbacks, typed click/form-submit/attribute/focus commands, persistent listener records, bounded Event/CustomEvent capture/target/bubble dispatch, cancelable click preflight, transactional type/input/change event re-entry, top-level link/form navigation handoff, and relative HTTP(S)/same-document resolution; no live Web IDL identity, target contexts, beforeinput/composition, POST/multipart forms, intervals/animation/idle callbacks, wall-clock timer semantics, computed imports, bare specifiers/import maps, local external subresources, or general page loading |
 | capture | available | bounded PNG of the current logical RGBA surface; JPEG/PDF and screenshot-containing evidence are unavailable |

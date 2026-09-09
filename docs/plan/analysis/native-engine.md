@@ -2020,6 +2020,15 @@ input/keyup callbacks with key metadata, and refresh retained host wrappers
 before callbacks. Selection/caret ranges, IME/composition, navigation keys,
 beforeinput, modifier shortcuts, and form-submit defaults remain open.
 
+The completed bounded GET-form lifecycle follow-up is
+[native-engine-browser-034](../tasks/native-engine-browser-034.md). Local and
+child owners now distinguish direct `form.submit()` from `requestSubmit()`,
+dispatch a cancelable bubbling `submit` event before GET query serialization,
+retain listener mutations, and transfer semantic submit-button navigation
+through the existing owner path. POST/multipart bodies, validation,
+submitter metadata, target contexts, and unload/navigation task ordering remain
+open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

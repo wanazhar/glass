@@ -353,9 +353,17 @@ Printable keys append, `Backspace` removes the final scalar, and `Delete` is a
 bounded end-of-value no-op. Selection, IME, navigation keys, `beforeinput`,
 form defaults, and modifier shortcuts remain open.
 
+The completed bounded GET-form lifecycle batch is
+[native-engine-browser-034](tasks/native-engine-browser-034.md). Cancellable
+`submit` events now run before GET query serialization for `requestSubmit()`
+and submit-button defaults, callback mutations are retained, direct
+`form.submit()` remains event-free, and local/child semantic submit buttons
+hand off navigation through their existing owners. POST/multipart, validation,
+submitter metadata, target contexts, and unload ordering remain open.
+
 The next BE-02/BE-03/BE-04 gate is parser-blocking/defer/async ordering and
-submission lifecycle/default actions, alongside selection/input lifecycle and
-the remaining browser-context primitives.
+parser timing, POST/multipart form behavior, validation, and the remaining
+browser-context primitives.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

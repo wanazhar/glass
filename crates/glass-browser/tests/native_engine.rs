@@ -576,6 +576,84 @@ async fn native_local_script_form_submit_navigates_with_get_controls() {
 }
 
 #[tokio::test]
+async fn native_local_form_submit_event_can_cancel_request_submit() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://form-events",
+            "<form id='search' action='fixture://form-result'><input name='query' value='hello'></form>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://form-result?query=hello",
+            "<title>Result</title><p>Submitted</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://form-events");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            "(() => { const form = document.getElementById('search'); globalThis.submitEvents = []; globalThis.onSubmit = event => { submitEvents.push(event.type); event.preventDefault(); }; form.addEventListener('submit', globalThis.onSubmit); })()",
+        )
+        .await
+        .unwrap();
+    engine
+        .evaluate_async("document.getElementById('search').requestSubmit()")
+        .await
+        .unwrap();
+    assert_eq!(engine.snapshot().unwrap().url, "fixture://form-events");
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.submitEvents")
+            .await
+            .unwrap(),
+        serde_json::json!(["submit"])
+    );
+
+    engine
+        .evaluate_async(
+            "(() => { const form = document.getElementById('search'); form.removeEventListener('submit', globalThis.onSubmit); form.submit(); })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        "fixture://form-result?query=hello"
+    );
+    assert_eq!(engine.snapshot().unwrap().title, "Result");
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_local_semantic_submit_button_navigates_without_script_realm() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://semantic-form",
+            "<form action='fixture://semantic-result'><input name='query' value='hello'><button id='go' type='submit' style='width:80px;height:20px'>Go</button></form>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://semantic-result?query=hello",
+            "<title>Result</title><p>Submitted</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://semantic-form");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize().unwrap();
+    let result = engine
+        .action(NativeAction::Click {
+            target: "id=go".into(),
+        })
+        .unwrap();
+    assert!(result.accepted);
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        "fixture://semantic-result?query=hello"
+    );
+    assert_eq!(engine.snapshot().unwrap().title, "Result");
+}
+
+#[tokio::test]
 async fn native_child_script_click_owns_external_navigation() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -964,7 +1042,7 @@ async fn native_content_process_script_form_submit_navigates_with_get_controls()
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
-        for expected_path in ["/form", "/result?query=hello"] {
+        for expected_path in ["/form", "/result?query=child-event"] {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut request = [0_u8; 4096];
             let read = stream.read(&mut request).await.unwrap();
@@ -989,9 +1067,61 @@ async fn native_content_process_script_form_submit_navigates_with_get_controls()
     .unwrap();
     engine.initialize_async().await.unwrap();
     engine
+        .evaluate_async(
+            "(() => { const form = document.getElementById('search'); form.addEventListener('submit', event => { document.querySelector('input').value = 'child-event'; }); })()",
+        )
+        .await
+        .unwrap();
+    engine
         .evaluate_async("document.getElementById('go').click()")
         .await
         .unwrap();
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        format!("http://{address}/result?query=child-event")
+    );
+    assert_eq!(engine.snapshot().unwrap().title, "Result");
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_semantic_submit_button_owns_get_navigation() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/form", "/result?query=hello"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 4096];
+            let read = stream.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..read]);
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let body = if expected_path == "/form" {
+                "<form action='/result'><input name='query' value='hello'><button id='go' type='submit' style='width:80px;height:20px'>Go</button></form>"
+            } else {
+                "<title>Result</title><p>Submitted</p>"
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/form")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let result = engine
+        .action_async(NativeAction::Click {
+            target: "id=go".into(),
+        })
+        .await
+        .unwrap();
+    assert!(result.accepted);
     assert_eq!(
         engine.snapshot().unwrap().url,
         format!("http://{address}/result?query=hello")

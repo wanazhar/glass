@@ -72,6 +72,24 @@ async fn native_runtime_session_uses_explicit_local_constructor() {
 
     let script = session.script("1 + 1").await.unwrap();
     assert_eq!(script.value, serde_json::json!(2));
+    let promise = session.script("await Promise.resolve(42)").await.unwrap();
+    assert_eq!(promise.value, serde_json::json!(42));
+    let host = session
+        .script(
+            "({ title: document.title, text: document.querySelector('p').innerText, tag: document.querySelector('p').tagName, width: window.innerWidth, origin: location.origin })",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        host.value,
+        serde_json::json!({
+            "title": "Runtime",
+            "text": "Native session",
+            "tag": "P",
+            "width": 1280,
+            "origin": "null",
+        })
+    );
     let persisted = session
         .script("globalThis.answer = (globalThis.answer || 0) + 1; globalThis.answer")
         .await
@@ -161,6 +179,28 @@ async fn native_content_process_evaluates_persistent_script_realm() {
     engine.initialize_async().await.unwrap();
     assert_eq!(
         engine.evaluate_async("6 * 7").await.unwrap(),
+        serde_json::json!(42)
+    );
+    assert_eq!(
+        engine.evaluate_async("document.title").await.unwrap(),
+        serde_json::json!("Script")
+    );
+    assert_eq!(
+        engine.evaluate_async("location.origin").await.unwrap(),
+        serde_json::json!(format!("http://{address}"))
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("document.querySelector('p').textContent")
+            .await
+            .unwrap(),
+        serde_json::json!("Native script page")
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("await Promise.resolve(42)")
+            .await
+            .unwrap(),
         serde_json::json!(42)
     );
     assert_eq!(

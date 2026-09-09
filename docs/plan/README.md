@@ -198,13 +198,23 @@ backend now exposes bounded ECMAScript evaluation through an optional,
 feature-gated QuickJS realm. Local documents use an owner-side persistent
 realm; external documents use the sandboxed content worker, and full
 navigation resets page globals. Results are bounded JSON with explicit
-source, result, memory, stack, and execution limits. DOM/Web IDL host objects,
-Promise driving, timers, modules, script loading, Fetch/XHR integration,
-service workers, remaining resource classes, and browser parity remain open.
+source, result, memory, stack, and execution limits. Timers, modules, script
+loading, Fetch/XHR integration, service workers, remaining resource classes,
+and browser parity remain open.
 
-The next BE-02/BE-04 gate is to bind the page-owned `window`/`document` and
-Web IDL surface, then route the broader Fetch request/response model through
-the existing child policy boundary.
+The completed JavaScript host-view batch is
+[native-engine-browser-017](tasks/native-engine-browser-017.md). Each
+evaluation now refreshes a bounded read-only `window`/`document` projection
+with location/origin, viewport, title/text, form state, and explicit element
+finders in both local and child-owned realms. Synchronous results retain their
+direct JSON value, and top-level `await` completes bounded QuickJS jobs before
+the same result conversion. Live Web IDL identity, DOM mutation, event
+dispatch, timers, modules, page-script loading, Fetch/XHR, remaining resource
+classes, and browser parity remain open.
+
+The next BE-02/BE-04 gate is transactional JavaScript-driven DOM mutation and
+event integration, followed by the broader Fetch request/response model
+through the existing child policy boundary.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

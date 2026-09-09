@@ -163,8 +163,9 @@ impl NativeEngine {
             process.start().await?;
         }
         let prepared = if let Some(process) = content_process.as_mut() {
+            let viewport = self.config.viewport;
             let resource = process
-                .load(&initial_url, &self.config.limits, None)
+                .load(&initial_url, &self.config.limits, viewport, None)
                 .await?;
             self.prepare_navigation_content(resource)?
         } else {
@@ -252,6 +253,7 @@ impl NativeEngine {
         if is_network_url(&url) {
             let referrer = referrer_for_navigation(&self.url, &url)?;
             self.ensure_content_process().await?;
+            let viewport = self.config.viewport;
             let content = self
                 .content_process
                 .as_mut()
@@ -259,7 +261,7 @@ impl NativeEngine {
                     operation: "content process load".into(),
                     reason: "native content process is not running".into(),
                 })?
-                .load(&url, &self.config.limits, referrer.as_deref())
+                .load(&url, &self.config.limits, viewport, referrer.as_deref())
                 .await?;
             self.commit_content_process().await?;
             if let Some(worker) = self.runtime_worker.clone() {
@@ -436,7 +438,13 @@ impl NativeEngine {
         let javascript = self
             .javascript
             .get_or_insert(NativeJavaScriptRuntime::new()?);
-        javascript.evaluate(&source)
+        javascript.evaluate(
+            &source,
+            &self.document,
+            &self.url,
+            &self.origin,
+            self.config.viewport,
+        )
     }
 
     /// Return diagnostics for CSS that the bounded native presentation model

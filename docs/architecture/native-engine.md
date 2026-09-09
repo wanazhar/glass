@@ -292,10 +292,18 @@ persistent QuickJS realm: local documents use an owner-side realm, while
 HTTP(S) documents execute in the sandboxed content worker. Full navigation
 replaces the realm, same-document navigation retains it, and results cross the
 semantic boundary only as bounded JSON. Source, result, memory, stack, and
-five-second execution limits are explicit. This is ECMAScript execution, not
-yet a browser host: DOM/Web IDL objects, promises/timers/modules, page-script
-loading, Fetch/XHR, service workers, and the remaining resource classes stay
-open.
+five-second execution limits are explicit. The following host-view batch adds
+the first page-owned surface without changing that boundary.
+
+The completed native-engine-browser-017 batch refreshes a bounded read-only
+`window`/`document` projection before each evaluation in both local and
+child-owned realms. It exposes location/origin, viewport, title/text, form
+state, and explicit ID/class/tag element finders; synchronous completion values
+remain direct JSON, while top-level `await` drives bounded QuickJS jobs before
+the same result conversion. The projection deliberately has no live Web IDL
+identity or mutation path yet. DOM mutation, event dispatch, timers, modules,
+page-script loading, Fetch/XHR, service workers, and the remaining resource
+classes stay open.
 
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
@@ -3352,7 +3360,7 @@ The native profile is `experimental` and declares:
 | evidence | available | bounded URL, title, visible text, revision; native semantic projection is Rust-only |
 | action | available | semantic click/type, bounded vertical root scrolling, plus native point targets for supported local controls; no nested scrolling or default browser behavior |
 | effects | available | current revision and changed signal; bounded event metadata is Rust-only |
-| script | available | bounded QuickJS ECMAScript with JSON results; no DOM/Web IDL host surface, timers, modules, or page-script loading |
+| script | available | bounded QuickJS ECMAScript with a refreshed read-only `window`/`document` snapshot and JSON results; no live Web IDL identity, DOM mutation, timers, modules, or page-script loading |
 | capture | available | bounded PNG of the current logical RGBA surface; JPEG/PDF and screenshot-containing evidence are unavailable |
 | storage | partial | process-owned session cookies and bounded document cache; no local/session/IndexedDB storage or persistence |
 | prompts | omitted | no dialogs |

@@ -1753,6 +1753,11 @@ impl NativeEngine {
             }
             self.dispatch_local_navigation_lifecycle()?;
         }
+        let storage_state = self
+            .javascript
+            .as_ref()
+            .map(NativeJavaScriptRuntime::storage_state)
+            .unwrap_or_default();
         let mut javascript = None;
         if prepared.execute_inline_scripts {
             execute_inline_scripts(
@@ -1761,6 +1766,7 @@ impl NativeEngine {
                 &prepared.resource.url,
                 &prepared.resource.origin,
                 self.config.viewport,
+                &storage_state,
             )?;
         }
         let scroll_offset = self.fragment_scroll_offset_for_document(
@@ -1787,6 +1793,11 @@ impl NativeEngine {
         worker: &NativeRuntimeWorker,
     ) -> Result<(), NativeEngineError> {
         let execute_page_scripts = prepared.execute_inline_scripts;
+        let storage_state = self
+            .javascript
+            .as_ref()
+            .map(NativeJavaScriptRuntime::storage_state)
+            .unwrap_or_default();
         let mut javascript = None;
         if execute_page_scripts {
             execute_inline_scripts(
@@ -1795,6 +1806,7 @@ impl NativeEngine {
                 &prepared.resource.url,
                 &prepared.resource.origin,
                 self.config.viewport,
+                &storage_state,
             )?;
         }
         let scroll_offset = self.fragment_scroll_offset_for_document(

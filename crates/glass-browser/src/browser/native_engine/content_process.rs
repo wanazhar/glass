@@ -9,9 +9,10 @@ use super::error::{NativeEngineError, NativeWorkerFailureKind};
 use super::interaction::{MAX_NATIVE_EFFECTS, NativeEventKind, validate_native_edit_key};
 use super::javascript::{
     MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_SCRIPT_BYTES, NativeJavaScriptRuntime, NativePageScript,
-    NativeScriptCommand, NativeScriptEvaluation, execute_page_scripts, host_event_script,
-    host_hash_change_event_script, host_key_event_script, host_submit_event_script,
-    literal_dynamic_module_specifiers, order_page_scripts, static_module_specifiers,
+    NativeScriptCommand, NativeScriptEvaluation, NativeWebStorageState, execute_page_scripts,
+    host_event_script, host_hash_change_event_script, host_key_event_script,
+    host_submit_event_script, literal_dynamic_module_specifiers, order_page_scripts,
+    static_module_specifiers,
 };
 use super::origin::NativeOrigin;
 use super::resource_loader::{
@@ -922,7 +923,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut document_origin = None;
     let mut viewport = Viewport::default();
     let mut resource_loader = None;
-    let mut javascript_runtime = None;
+    let mut javascript_runtime: Option<NativeJavaScriptRuntime> = None;
+    let mut storage_state = NativeWebStorageState::default();
     loop {
         let payload = read_frame(&mut stdin).await?;
         let request: Value =
@@ -947,6 +949,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 json!({"kind":"committed","id":id})
             }
             "load" if protocol_matches(&request) && running => {
+                if let Some(runtime) = javascript_runtime.as_ref() {
+                    storage_state = runtime.storage_state();
+                }
                 match load_content_resource(&request, &mut resource_loader).await {
                     Ok((
                         resource,
@@ -963,6 +968,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             &resource.url,
                             &resource.origin,
                             loaded_viewport,
+                            &storage_state,
                             &resource_load_nodes,
                         ) {
                             Ok(pending_fetches) if pending_fetches.is_empty() => Ok(parsed),
@@ -1004,6 +1010,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         };
                         match prepared {
                             Ok(parsed) => {
+                                if let Some(runtime) = script_runtime.as_ref() {
+                                    storage_state = runtime.storage_state();
+                                }
                                 let document_wire = parsed.to_content_wire();
                                 document = Some(parsed);
                                 document_url = Some(resource.url.clone());
@@ -1098,7 +1107,10 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     })?;
                 if javascript_runtime.is_none() {
                     match NativeJavaScriptRuntime::new() {
-                        Ok(runtime) => javascript_runtime = Some(runtime),
+                        Ok(runtime) => {
+                            runtime.set_storage_state(storage_state.clone());
+                            javascript_runtime = Some(runtime);
+                        }
                         Err(error) => {
                             let response = content_error_response(id, error);
                             write_value_frame(&mut stdout, &response).await?;
@@ -1248,7 +1260,10 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 };
                 if javascript_runtime.is_none() {
                     match NativeJavaScriptRuntime::new() {
-                        Ok(runtime) => javascript_runtime = Some(runtime),
+                        Ok(runtime) => {
+                            runtime.set_storage_state(storage_state.clone());
+                            javascript_runtime = Some(runtime);
+                        }
                         Err(error) => {
                             let response = content_error_response(id, error);
                             write_value_frame(&mut stdout, &response).await?;
@@ -1338,7 +1353,10 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 };
                 if javascript_runtime.is_none() {
                     match NativeJavaScriptRuntime::new() {
-                        Ok(runtime) => javascript_runtime = Some(runtime),
+                        Ok(runtime) => {
+                            runtime.set_storage_state(storage_state.clone());
+                            javascript_runtime = Some(runtime);
+                        }
                         Err(error) => {
                             let response = content_error_response(id, error);
                             write_value_frame(&mut stdout, &response).await?;
@@ -1426,7 +1444,10 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 };
                 if javascript_runtime.is_none() {
                     match NativeJavaScriptRuntime::new() {
-                        Ok(runtime) => javascript_runtime = Some(runtime),
+                        Ok(runtime) => {
+                            runtime.set_storage_state(storage_state.clone());
+                            javascript_runtime = Some(runtime);
+                        }
                         Err(error) => {
                             let response = content_error_response(id, error);
                             write_value_frame(&mut stdout, &response).await?;

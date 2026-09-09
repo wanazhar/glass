@@ -2284,10 +2284,21 @@ stores are covered; origin navigation persistence, durable profiles, storage
 events, cookie synchronization, IndexedDB, and full Storage Web IDL identity
 remain open.
 
-The next bounded workstream is origin-keyed storage across navigation and full
-task ordering/navigation edge cases, followed by file/blob FormData support,
-remaining full pattern-regex/file constraint validation, target contexts, and
-the remaining browser-context primitives.
+The completed origin-keyed page Web Storage transfer follow-up is
+[native-engine-browser-066](../tasks/native-engine-browser-066.md). Bounded
+local/session mutations are consumed by the runtime owner and transferred into
+fresh local realms and the sandboxed content worker. Tuple origins share state
+across navigation, while opaque local documents use a fragment-free document
+key; local and session stores remain independent. State is volatile and
+separate from the semantic `StorageRequest` maps. Durable profiles, storage
+events, cookie synchronization, IndexedDB, quota policy, and full Storage Web
+IDL identity remain open.
+
+The next bounded workstream is durable profile storage and storage
+event/cookie synchronization, followed by IndexedDB, full task
+ordering/navigation edge cases, file/blob FormData support, remaining full
+pattern-regex/file constraint validation, target contexts, and the remaining
+browser-context primitives.
 
 ## Baseline and constraints
 

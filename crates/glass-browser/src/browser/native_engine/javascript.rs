@@ -11,7 +11,7 @@ use super::interaction::NativeEventKind;
 use super::origin::NativeOrigin;
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::{Context, Error, Module, Runtime, Value};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -58,6 +58,18 @@ pub(crate) enum NativeScriptCommand {
         #[serde(default)]
         content_type: Option<String>,
     },
+    StorageSet {
+        scope: String,
+        key: String,
+        value: String,
+    },
+    StorageRemove {
+        scope: String,
+        key: String,
+    },
+    StorageClear {
+        scope: String,
+    },
     SetValue {
         node_index: u32,
         value: String,
@@ -94,6 +106,19 @@ pub(crate) enum NativeScriptCommand {
 pub(crate) struct NativeScriptEvaluation {
     pub(crate) value: serde_json::Value,
     pub(crate) commands: Vec<NativeScriptCommand>,
+}
+
+/// Origin-keyed page storage retained by the native runtime owner.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct NativeWebStorageState {
+    local: BTreeMap<String, BTreeMap<String, String>>,
+    session: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+struct NativeWebStorageView {
+    local: BTreeMap<String, String>,
+    session: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -182,6 +207,7 @@ pub(crate) fn execute_inline_scripts(
     document_url: &str,
     document_origin: &NativeOrigin,
     viewport: Viewport,
+    storage_state: &NativeWebStorageState,
 ) -> Result<(), NativeEngineError> {
     let sources = document
         .page_script_sources(MAX_NATIVE_INLINE_SCRIPTS, MAX_NATIVE_SCRIPT_BYTES)
@@ -210,6 +236,7 @@ pub(crate) fn execute_inline_scripts(
         document_url,
         document_origin,
         viewport,
+        storage_state,
         &[],
     )
     .map(|_| ())
@@ -222,11 +249,16 @@ pub(crate) fn execute_page_scripts(
     document_url: &str,
     document_origin: &NativeOrigin,
     viewport: Viewport,
+    storage_state: &NativeWebStorageState,
     resource_load_nodes: &[u32],
 ) -> Result<Vec<NativeScriptCommand>, NativeEngineError> {
     if runtime.is_none() {
         *runtime = Some(NativeJavaScriptRuntime::new()?);
     }
+    runtime
+        .as_mut()
+        .expect("page script runtime initialized")
+        .set_storage_state(storage_state.clone());
     runtime
         .as_mut()
         .expect("page script runtime initialized")
@@ -518,6 +550,7 @@ pub(crate) struct NativeJavaScriptRuntime {
     context: Context,
     deadline: Arc<Mutex<Option<Instant>>>,
     module_sources: Arc<Mutex<BTreeMap<String, String>>>,
+    storage: Arc<Mutex<NativeWebStorageState>>,
     ready_state: String,
     clock_origin: Instant,
 }
@@ -555,9 +588,23 @@ impl NativeJavaScriptRuntime {
             context,
             deadline,
             module_sources,
+            storage: Arc::new(Mutex::new(NativeWebStorageState::default())),
             ready_state: "complete".into(),
             clock_origin: Instant::now(),
         })
+    }
+
+    pub(crate) fn set_storage_state(&self, state: NativeWebStorageState) {
+        if let Ok(mut current) = self.storage.lock() {
+            *current = state;
+        }
+    }
+
+    pub(crate) fn storage_state(&self) -> NativeWebStorageState {
+        self.storage
+            .lock()
+            .map(|state| state.clone())
+            .unwrap_or_default()
     }
 
     fn now_ms(&self) -> u64 {
@@ -570,6 +617,95 @@ impl NativeJavaScriptRuntime {
     pub(crate) fn set_ready_state(&mut self, ready_state: &str) {
         self.ready_state.clear();
         self.ready_state.push_str(ready_state);
+    }
+
+    fn storage_view(&self, document_url: &str, origin: &NativeOrigin) -> NativeWebStorageView {
+        let key = storage_key(document_url, origin);
+        let Ok(state) = self.storage.lock() else {
+            return NativeWebStorageView::default();
+        };
+        NativeWebStorageView {
+            local: state.local.get(&key).cloned().unwrap_or_default(),
+            session: state.session.get(&key).cloned().unwrap_or_default(),
+        }
+    }
+
+    fn apply_storage_command(
+        &self,
+        command: &NativeScriptCommand,
+        document_url: &str,
+        origin: &NativeOrigin,
+    ) -> Result<bool, NativeEngineError> {
+        let (scope, entry_key, value, operation) = match command {
+            NativeScriptCommand::StorageSet { scope, key, value } => (
+                scope.as_str(),
+                Some(key.as_str()),
+                Some(value.as_str()),
+                "set",
+            ),
+            NativeScriptCommand::StorageRemove { scope, key } => {
+                (scope.as_str(), Some(key.as_str()), None, "remove")
+            }
+            NativeScriptCommand::StorageClear { scope } => (scope.as_str(), None, None, "clear"),
+            _ => return Ok(false),
+        };
+        let mut state = self.storage.lock().map_err(|_| NativeEngineError::Worker {
+            operation: "native Web Storage".into(),
+            reason: "native Web Storage state lock is unavailable".into(),
+        })?;
+        let storage = match scope {
+            "local" => &mut state.local,
+            "session" => &mut state.session,
+            _ => {
+                return Err(NativeEngineError::invalid(
+                    "native Web Storage scope",
+                    "must be local or session",
+                ));
+            }
+        };
+        let origin_key = storage_key(document_url, origin);
+        let entries = storage.entry(origin_key).or_default();
+        if let Some(entry_key) = entry_key {
+            if entry_key.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES {
+                return Err(NativeEngineError::limit(
+                    "native Web Storage key",
+                    crate::browser_backend::MAX_BACKEND_ID_BYTES,
+                    entry_key.len(),
+                ));
+            }
+        }
+        if let Some(value) = value {
+            if value.len() > crate::browser_backend::MAX_TEXT_BYTES {
+                return Err(NativeEngineError::limit(
+                    "native Web Storage value",
+                    crate::browser_backend::MAX_TEXT_BYTES,
+                    value.len(),
+                ));
+            }
+        }
+        match operation {
+            "set" => {
+                if entries.len() >= crate::browser_backend::MAX_STORAGE_ENTRIES
+                    && entry_key.is_some_and(|key| !entries.contains_key(key))
+                {
+                    return Err(NativeEngineError::limit(
+                        "native Web Storage entries",
+                        crate::browser_backend::MAX_STORAGE_ENTRIES,
+                        entries.len().saturating_add(1),
+                    ));
+                }
+                entries.insert(
+                    entry_key.expect("storage set key").to_owned(),
+                    value.expect("storage set value").to_owned(),
+                );
+            }
+            "remove" => {
+                entries.remove(entry_key.expect("storage remove key"));
+            }
+            "clear" => entries.clear(),
+            _ => unreachable!("storage operation matched above"),
+        }
+        Ok(true)
     }
 
     fn set_module_sources(&self, sources: BTreeMap<String, String>) {
@@ -606,6 +742,7 @@ impl NativeJavaScriptRuntime {
             viewport,
             &self.ready_state,
             self.now_ms(),
+            &self.storage_view(document_url, origin),
         )?;
         let deadline = Instant::now() + NATIVE_SCRIPT_TIMEOUT;
         if let Ok(mut current) = self.deadline.lock() {
@@ -641,6 +778,14 @@ impl NativeJavaScriptRuntime {
                 }
             }
             let commands = read_script_commands(ctx.clone())?;
+            let mut document_commands = Vec::with_capacity(commands.len());
+            for command in commands {
+                if self.apply_storage_command(&command, document_url, origin)? {
+                    continue;
+                }
+                document_commands.push(command);
+            }
+            let commands = document_commands;
             let json = ctx
                 .json_stringify(value)
                 .map_err(|_| NativeEngineError::Worker {
@@ -755,6 +900,7 @@ impl NativeJavaScriptRuntime {
             viewport,
             &self.ready_state,
             self.now_ms(),
+            &self.storage_view(document_url, origin),
         )?;
         let deadline = Instant::now() + NATIVE_SCRIPT_TIMEOUT;
         if let Ok(mut current) = self.deadline.lock() {
@@ -778,9 +924,16 @@ impl NativeJavaScriptRuntime {
                 }
             }
             let commands = read_script_commands(ctx.clone())?;
+            let mut document_commands = Vec::with_capacity(commands.len());
+            for command in commands {
+                if self.apply_storage_command(&command, document_url, origin)? {
+                    continue;
+                }
+                document_commands.push(command);
+            }
             Ok(NativeScriptEvaluation {
                 value: serde_json::Value::Null,
-                commands,
+                commands: document_commands,
             })
         });
         if let Ok(mut current) = self.deadline.lock() {
@@ -1090,6 +1243,18 @@ fn is_javascript_identifier_continue(byte: u8) -> bool {
     is_javascript_identifier_start(byte) || byte.is_ascii_digit()
 }
 
+fn storage_key(document_url: &str, origin: &NativeOrigin) -> String {
+    if matches!(origin, NativeOrigin::Opaque) {
+        return format!(
+            "opaque:{}",
+            document_url
+                .split_once('#')
+                .map_or(document_url, |(url, _)| url)
+        );
+    }
+    origin.serialized()
+}
+
 fn document_bootstrap(
     document: &NativeDocument,
     document_url: &str,
@@ -1097,6 +1262,7 @@ fn document_bootstrap(
     viewport: Viewport,
     ready_state: &str,
     now_ms: u64,
+    storage: &NativeWebStorageView,
 ) -> Result<String, NativeEngineError> {
     let state = document.script_snapshot(crate::browser_backend::MAX_TEXT_BYTES);
     let serialized = serde_json::to_string(&serde_json::json!({
@@ -1104,6 +1270,7 @@ fn document_bootstrap(
         "origin": origin.serialized(),
         "state": state,
         "now_ms": now_ms,
+        "storage": storage,
     }))
     .map_err(|_| NativeEngineError::Worker {
         operation: "serialize JavaScript host view".into(),
@@ -1173,10 +1340,14 @@ fn document_bootstrap(
     if (text.length > limit) throw new RangeError("native storage " + field + " exceeds its limit");
     return text;
   }};
-  const createStorage = (mapSlot, objectSlot) => {{
-    const values = globalThis[mapSlot] instanceof Map
-      ? globalThis[mapSlot]
-      : new Map();
+  const createStorage = (mapSlot, objectSlot, initialValues) => {{
+    const hasExistingValues = globalThis[mapSlot] instanceof Map;
+    const values = hasExistingValues ? globalThis[mapSlot] : new Map();
+    if (!hasExistingValues && initialValues && typeof initialValues === "object") {{
+      for (const key of Object.keys(initialValues)) {{
+        values.set(key, String(initialValues[key]));
+      }}
+    }}
     globalThis[mapSlot] = values;
     const existing = globalThis[objectSlot];
     if (existing && existing.__glassNativeStorage === true) return existing;
@@ -1198,9 +1369,18 @@ fn document_bootstrap(
           throw new RangeError("native storage entry limit exceeded");
         }}
         values.set(normalizedKey, normalizedValue);
+        pushCommand({{ kind: "storageSet", scope: mapSlot === "__glassLocalStorageValues" ? "local" : "session", key: normalizedKey, value: normalizedValue }});
       }},
-      removeItem(key) {{ values.delete(String(key)); }},
-      clear() {{ values.clear(); }},
+      removeItem(key) {{
+        const normalizedKey = String(key);
+        if (!values.delete(normalizedKey)) return;
+        pushCommand({{ kind: "storageRemove", scope: mapSlot === "__glassLocalStorageValues" ? "local" : "session", key: normalizedKey }});
+      }},
+      clear() {{
+        if (values.size === 0) return;
+        values.clear();
+        pushCommand({{ kind: "storageClear", scope: mapSlot === "__glassLocalStorageValues" ? "local" : "session" }});
+      }},
     }};
     Object.defineProperty(store, "__glassNativeStorage", {{
       value: true,
@@ -1210,8 +1390,8 @@ fn document_bootstrap(
     globalThis[objectSlot] = store;
     return store;
   }};
-  globalThis.localStorage = createStorage("__glassLocalStorageValues", "__glassLocalStorageObject");
-  globalThis.sessionStorage = createStorage("__glassSessionStorageValues", "__glassSessionStorageObject");
+  globalThis.localStorage = createStorage("__glassLocalStorageValues", "__glassLocalStorageObject", host.storage.local);
+  globalThis.sessionStorage = createStorage("__glassSessionStorageValues", "__glassSessionStorageObject", host.storage.session);
   globalThis.__glassTimers = timers;
   globalThis.__glassRunningTimers = runningTimers;
   globalThis.__glassNextTimerId = nextTimerId;

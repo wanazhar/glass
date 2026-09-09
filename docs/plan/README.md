@@ -621,11 +621,21 @@ independent stores are covered; origin navigation persistence, durable
 profiles, storage events, cookie synchronization, IndexedDB, and full Storage
 Web IDL identity remain open.
 
-The next BE-02/BE-03/BE-04/BE-07 gate is origin-keyed storage across navigation
-and
-full task ordering/navigation edge cases, followed by file/blob FormData
-support, remaining full pattern-regex/file constraint validation, target
-contexts, and the remaining browser-context primitives.
+The completed origin-keyed page Web Storage transfer slice is
+[native-engine-browser-066](tasks/native-engine-browser-066.md). Bounded
+local/session mutations are consumed by the runtime owner and carried into
+fresh local realms and the sandboxed content worker. Tuple origins share their
+state across navigation, while opaque local documents use a fragment-free
+document key; the two stores remain independent. State is still volatile and
+separate from the semantic `StorageRequest` maps; durable profiles, storage
+events, cookie synchronization, IndexedDB, quota policy, and full Storage Web
+IDL identity remain open.
+
+The next BE-02/BE-03/BE-04/BE-07 gate is durable profile storage and storage
+event/cookie synchronization, followed by IndexedDB, full task
+ordering/navigation edge cases, file/blob FormData support, remaining full
+pattern-regex/file constraint validation, target contexts, and the remaining
+browser-context primitives.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

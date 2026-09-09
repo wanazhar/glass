@@ -152,6 +152,7 @@ struct NativeCookie {
     path: String,
     host_only: bool,
     secure: bool,
+    http_only: bool,
     expires_at: Option<Instant>,
 }
 
@@ -250,6 +251,50 @@ impl NativeResourceLoader {
 
     pub(crate) fn max_document_bytes(&self) -> usize {
         self.max_document_bytes
+    }
+
+    pub(crate) fn document_cookie(&self, document_url: &str) -> Result<String, NativeEngineError> {
+        validate_url_text("document URL", document_url)?;
+        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "document.cookie owner URL is not valid URL syntax".into(),
+            }
+        })?;
+        if !is_network_url(document_url.as_str()) {
+            return Ok(String::new());
+        }
+        reject_credentials(&document_url)?;
+        Ok(self
+            .network
+            .document_cookie_header(&document_url)
+            .unwrap_or_default())
+    }
+
+    pub(crate) fn set_document_cookie(
+        &mut self,
+        document_url: &str,
+        value: &str,
+    ) -> Result<(), NativeEngineError> {
+        validate_url_text("document URL", document_url)?;
+        validate_url_text("document.cookie value", value)?;
+        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "document.cookie owner URL is not valid URL syntax".into(),
+            }
+        })?;
+        if !is_network_url(document_url.as_str()) {
+            return Ok(());
+        }
+        reject_credentials(&document_url)?;
+        if value
+            .split(';')
+            .skip(1)
+            .any(|attribute| attribute.trim().eq_ignore_ascii_case("httponly"))
+        {
+            return Ok(());
+        }
+        self.network.store_cookie(&document_url, value);
+        Ok(())
     }
 
     /// Load one supported local resource without filesystem or network access.
@@ -1487,7 +1532,15 @@ fn cacheable_response(headers: &HeaderMap) -> bool {
 }
 
 impl NativeNetworkState {
-    fn cookie_header(&mut self, url: &Url) -> Option<String> {
+    fn cookie_header(&self, url: &Url) -> Option<String> {
+        self.cookie_header_with_visibility(url, true)
+    }
+
+    fn document_cookie_header(&self, url: &Url) -> Option<String> {
+        self.cookie_header_with_visibility(url, false)
+    }
+
+    fn cookie_header_with_visibility(&self, url: &Url, include_http_only: bool) -> Option<String> {
         let host = url.host_str()?.to_ascii_lowercase();
         let request_path = if url.path().is_empty() {
             "/"
@@ -1496,9 +1549,6 @@ impl NativeNetworkState {
         };
         let secure_request = url.scheme().eq_ignore_ascii_case("https");
         let now = Instant::now();
-        self.cookies
-            .retain(|cookie| cookie.expires_at.is_none_or(|expires_at| expires_at > now));
-
         let mut matching = self
             .cookies
             .iter()
@@ -1506,6 +1556,8 @@ impl NativeNetworkState {
                 domain_matches(cookie, &host)
                     && path_matches(request_path, &cookie.path)
                     && (!cookie.secure || secure_request)
+                    && (include_http_only || !cookie.http_only)
+                    && cookie.expires_at.is_none_or(|expires_at| expires_at > now)
             })
             .collect::<Vec<_>>();
         matching.sort_by(|left, right| {
@@ -1562,10 +1614,15 @@ impl NativeNetworkState {
         let mut host_only = true;
         let mut path = default_cookie_path(url);
         let mut secure = false;
+        let mut http_only = false;
         let mut max_age = None;
         for attribute in attributes.split(';').map(str::trim) {
             if attribute.eq_ignore_ascii_case("secure") {
                 secure = true;
+                continue;
+            }
+            if attribute.eq_ignore_ascii_case("httponly") {
+                http_only = true;
                 continue;
             }
             let Some((key, attribute_value)) = attribute.split_once('=') else {
@@ -1625,6 +1682,7 @@ impl NativeNetworkState {
             path,
             host_only,
             secure,
+            http_only,
             expires_at,
         });
     }
@@ -1986,9 +2044,10 @@ mod tests {
         state.store_cookie(&page, "session=alpha; Path=/account");
         let secure_page = Url::parse("https://example.test/account/login").unwrap();
         state.store_cookie(&secure_page, "secure=secret; Secure; Path=/");
+        state.store_cookie(&page, "hidden=value; HttpOnly; Path=/account");
         assert_eq!(
             state.cookie_header(&Url::parse("http://example.test/account/home").unwrap()),
-            Some("session=alpha".into())
+            Some("hidden=value; session=alpha".into())
         );
         assert_eq!(
             state.cookie_header(&Url::parse("http://example.test/public").unwrap()),
@@ -1996,13 +2055,17 @@ mod tests {
         );
         assert_eq!(
             state.cookie_header(&Url::parse("https://example.test/account/home").unwrap()),
+            Some("hidden=value; session=alpha; secure=secret".into())
+        );
+        assert_eq!(
+            state.document_cookie_header(&Url::parse("https://example.test/account/home").unwrap()),
             Some("session=alpha; secure=secret".into())
         );
 
         state.store_cookie(&page, "session=gone; Path=/account; Max-Age=0");
         assert_eq!(
             state.cookie_header(&Url::parse("http://example.test/account/home").unwrap()),
-            None
+            Some("hidden=value".into())
         );
 
         for index in 0..(MAX_NATIVE_CACHE_ENTRIES + 1) {

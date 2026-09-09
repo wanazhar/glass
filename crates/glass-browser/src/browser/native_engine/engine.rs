@@ -600,6 +600,11 @@ impl NativeEngine {
             javascript.set_storage_state(self.web_storage.clone());
             self.javascript = Some(javascript);
         }
+        let cookie = self.loader.document_cookie(&self.url)?;
+        self.javascript
+            .as_ref()
+            .expect("local JavaScript runtime initialized")
+            .set_cookie_state(cookie);
         let evaluation = self
             .javascript
             .as_ref()
@@ -1077,15 +1082,30 @@ impl NativeEngine {
         let Some(javascript) = self.javascript.as_ref() else {
             return Ok(());
         };
+        let cookie_updates = javascript.take_cookie_updates();
         self.web_storage = javascript.storage_state();
+        for value in cookie_updates {
+            self.loader.set_document_cookie(&self.url, &value)?;
+        }
         save_web_storage_profile(self.config.storage_path.as_deref(), &self.web_storage)
+    }
+
+    fn sync_local_cookie_state(&mut self) -> Result<(), NativeEngineError> {
+        let Some(javascript) = self.javascript.as_ref() else {
+            return Ok(());
+        };
+        for value in javascript.take_cookie_updates() {
+            self.loader.set_document_cookie(&self.url, &value)?;
+        }
+        Ok(())
     }
 
     fn dispatch_local_events(
         &mut self,
         events: &[(NativeNodeId, NativeEventKind)],
     ) -> Result<(), NativeEngineError> {
-        let Some(evaluation) = self.evaluate_local_events(&self.document, events)? else {
+        let document = self.document.clone();
+        let Some(evaluation) = self.evaluate_local_events(&document, events)? else {
             return Ok(());
         };
         self.apply_local_script_commands(&evaluation.commands, false)
@@ -1097,8 +1117,8 @@ impl NativeEngine {
             (window, NativeEventKind::PageHide),
             (window, NativeEventKind::Unload),
         ];
-        let Some(evaluation) = self.evaluate_local_events(&self.document, &lifecycle_events)?
-        else {
+        let document = self.document.clone();
+        let Some(evaluation) = self.evaluate_local_events(&document, &lifecycle_events)? else {
             return Ok(());
         };
         let mut document = self.document.clone();
@@ -1115,8 +1135,9 @@ impl NativeEngine {
 
     fn dispatch_local_before_unload(&mut self) -> Result<bool, NativeEngineError> {
         let window = NativeNodeId::from_parts(self.document.generation(), u32::MAX);
+        let document = self.document.clone();
         let Some(evaluation) =
-            self.evaluate_local_events(&self.document, &[(window, NativeEventKind::BeforeUnload)])?
+            self.evaluate_local_events(&document, &[(window, NativeEventKind::BeforeUnload)])?
         else {
             return Ok(true);
         };
@@ -1192,6 +1213,7 @@ impl NativeEngine {
                 &self.origin,
                 self.config.viewport,
             )?;
+        self.sync_local_cookie_state()?;
         let event = (
             NativeNodeId::from_parts(self.document.generation(), u32::MAX),
             NativeEventKind::HashChange,
@@ -1213,7 +1235,7 @@ impl NativeEngine {
     }
 
     fn evaluate_local_events(
-        &self,
+        &mut self,
         document: &NativeDocument,
         events: &[(NativeNodeId, NativeEventKind)],
     ) -> Result<Option<NativeScriptEvaluation>, NativeEngineError> {
@@ -1227,17 +1249,19 @@ impl NativeEngine {
         let Some(javascript) = self.javascript.as_ref() else {
             return Ok(None);
         };
-        Ok(Some(javascript.evaluate(
+        let evaluation = javascript.evaluate(
             &source,
             document,
             &self.url,
             &self.origin,
             self.config.viewport,
-        )?))
+        )?;
+        self.sync_local_cookie_state()?;
+        Ok(Some(evaluation))
     }
 
     fn evaluate_local_submit_event(
-        &self,
+        &mut self,
         document: &NativeDocument,
         form_id: NativeNodeId,
         submitter: Option<NativeNodeId>,
@@ -1250,17 +1274,19 @@ impl NativeEngine {
         let Some(javascript) = self.javascript.as_ref() else {
             return Ok(None);
         };
-        Ok(Some(javascript.evaluate(
+        let evaluation = javascript.evaluate(
             &source,
             document,
             &self.url,
             &self.origin,
             self.config.viewport,
-        )?))
+        )?;
+        self.sync_local_cookie_state()?;
+        Ok(Some(evaluation))
     }
 
     fn evaluate_local_key_event(
-        &self,
+        &mut self,
         document: &NativeDocument,
         node_id: NativeNodeId,
         kind: NativeEventKind,
@@ -1272,13 +1298,15 @@ impl NativeEngine {
         let Some(javascript) = self.javascript.as_ref() else {
             return Ok(None);
         };
-        Ok(Some(javascript.evaluate(
+        let evaluation = javascript.evaluate(
             &source,
             document,
             &self.url,
             &self.origin,
             self.config.viewport,
-        )?))
+        )?;
+        self.sync_local_cookie_state()?;
+        Ok(Some(evaluation))
     }
 
     fn action_local_click_with_event_preflight(
@@ -1778,6 +1806,7 @@ impl NativeEngine {
         }
         self.persist_local_web_storage()?;
         let storage_state = self.web_storage.clone();
+        let cookie = self.loader.document_cookie(&prepared.resource.url)?;
         let mut javascript = None;
         if prepared.execute_inline_scripts {
             execute_inline_scripts(
@@ -1787,6 +1816,7 @@ impl NativeEngine {
                 &prepared.resource.origin,
                 self.config.viewport,
                 &storage_state,
+                &cookie,
             )?;
         }
         let scroll_offset = self.fragment_scroll_offset_for_document(
@@ -1816,6 +1846,7 @@ impl NativeEngine {
         let execute_page_scripts = prepared.execute_inline_scripts;
         self.persist_local_web_storage()?;
         let storage_state = self.web_storage.clone();
+        let cookie = self.loader.document_cookie(&prepared.resource.url)?;
         let mut javascript = None;
         if execute_page_scripts {
             execute_inline_scripts(
@@ -1825,6 +1856,7 @@ impl NativeEngine {
                 &prepared.resource.origin,
                 self.config.viewport,
                 &storage_state,
+                &cookie,
             )?;
         }
         let scroll_offset = self.fragment_scroll_offset_for_document(

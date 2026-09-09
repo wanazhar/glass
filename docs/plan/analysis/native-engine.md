@@ -1705,6 +1705,13 @@ micro-slices alone cannot make the engine a browser. Validation is therefore
 batched at completed behavioral boundaries. WPT, differential runs, and the
 real-site corpus are milestone gates, not commands to run after every edit.
 
+The checked-in profile contract is
+[`GCWP-0.1`](../native-engine-browser-profile.md), with its M0 delivery record
+in [`native-engine-browser-000`](../tasks/native-engine-browser-000.md). The
+next implementation batch must advance one declared profile family and retain
+the profile's native-only, no-silent-fallback, two-crate, and security-boundary
+constraints.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

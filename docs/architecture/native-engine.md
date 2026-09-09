@@ -689,6 +689,14 @@ selects the first matching option, and the host view exposes bounded
 keyboard listbox behavior, text selection/IME, `optgroup` disabled inheritance,
 and option-collection Web IDL identity remain open.
 
+The completed native-engine-browser-064 batch wires the existing semantic
+storage contract through the native dispatcher and `BrowserRuntimeSession` for
+bounded local/session key-value read, write, and clear operations. State is
+backend-instance scoped and deliberately not page-visible, durable,
+origin-keyed, cookie-synchronized, or IndexedDB-backed; cookie-scope requests
+remain explicitly unsupported. This removes a backend-contract denial without
+claiming browser storage parity.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature

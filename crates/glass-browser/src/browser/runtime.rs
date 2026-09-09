@@ -13,6 +13,7 @@ use crate::browser_backend::{
     ActionRequest, ActionResult, BackendProfile, BrowserBackendDispatcher, BrowsingContext,
     ContextRequest, EffectsRequest, EffectsResult, EvidenceLevel, EvidenceRequest, EvidenceResult,
     NavigationRequest, NavigationResult, ScriptRequest, ScriptResult, SemanticAction,
+    StorageRequest, StorageResult,
 };
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
@@ -157,6 +158,12 @@ impl BrowserRuntimeSession {
                 context_id,
                 since_revision,
             })
+            .await?)
+    }
+
+    pub async fn storage(&self, request: StorageRequest) -> BrowserResult<StorageResult> {
+        Ok(BrowserBackendDispatcher::new(&self.backend)
+            .storage(request)
             .await?)
     }
 

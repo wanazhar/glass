@@ -604,10 +604,18 @@ and the bounded host view exposes `multiple`, `options`, and
 text selection/IME, `optgroup` disabled inheritance, and option-collection Web
 IDL identity remain open.
 
-The next BE-02/BE-03/BE-04 gate is full task ordering and navigation edge cases,
-followed by file/blob FormData support, remaining full pattern-regex/file
-constraint validation, target contexts, and the remaining browser-context
-primitives.
+The completed bounded semantic storage-contract slice is
+[native-engine-browser-064](tasks/native-engine-browser-064.md). The native
+dispatcher and `BrowserRuntimeSession` now execute bounded local/session
+key-value read, write, and clear calls with active-context validation. The
+state is backend-instance scoped and deliberately not page-visible, durable,
+origin-keyed, cookie-synchronized, or IndexedDB-backed; cookie-scope requests
+remain explicitly unsupported.
+
+The next BE-02/BE-03/BE-04/BE-07 gate is page-visible origin-keyed storage and
+full task ordering/navigation edge cases, followed by file/blob FormData
+support, remaining full pattern-regex/file constraint validation, target
+contexts, and the remaining browser-context primitives.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

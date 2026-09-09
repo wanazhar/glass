@@ -12,7 +12,8 @@ use crate::browser_backend::{
     BackendRequest, BackendResponse, BrowserBackend, BrowserBackendError, BrowserCapability,
     BrowsingContext, CapabilityDescriptor, CaptureFormat, CaptureResult, CertificationLevel,
     CertificationProfile, EffectsResult, EvidenceLevel, EvidenceResult, NavigationResult,
-    Portability, ScriptResult, SemanticAction, SupportLevel,
+    Portability, ScriptResult, SemanticAction, StorageOperation, StorageResult, StorageScope,
+    SupportLevel,
 };
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -26,6 +27,51 @@ const NATIVE_ENGINE_BROWSER_FAMILY: &str = "native";
 pub struct NativeEngineBackend {
     profile: BackendProfile,
     engine: Mutex<NativeEngine>,
+    storage: Mutex<NativeBackendStorage>,
+}
+
+/// Bounded state for explicit semantic backend storage calls.
+///
+/// This is intentionally separate from the page realm and resource loader.
+/// It makes the backend contract executable without implying that page-visible
+/// Web Storage, durable profile persistence, or the network cookie jar has
+/// already been wired through the native engine.
+#[derive(Debug, Default)]
+struct NativeBackendStorage {
+    local: BTreeMap<String, String>,
+    session: BTreeMap<String, String>,
+}
+
+impl NativeBackendStorage {
+    fn entries(
+        &self,
+        scope: &StorageScope,
+    ) -> Result<&BTreeMap<String, String>, BrowserBackendError> {
+        match scope {
+            StorageScope::Local => Ok(&self.local),
+            StorageScope::Session => Ok(&self.session),
+            StorageScope::Cookies => Err(BrowserBackendError::UnsupportedOperation {
+                operation: "storage".into(),
+                reason: "native cookie storage is not yet exposed through the semantic backend map"
+                    .into(),
+            }),
+        }
+    }
+
+    fn entries_mut(
+        &mut self,
+        scope: &StorageScope,
+    ) -> Result<&mut BTreeMap<String, String>, BrowserBackendError> {
+        match scope {
+            StorageScope::Local => Ok(&mut self.local),
+            StorageScope::Session => Ok(&mut self.session),
+            StorageScope::Cookies => Err(BrowserBackendError::UnsupportedOperation {
+                operation: "storage".into(),
+                reason: "native cookie storage is not yet exposed through the semantic backend map"
+                    .into(),
+            }),
+        }
+    }
 }
 
 impl NativeEngineBackend {
@@ -35,6 +81,7 @@ impl NativeEngineBackend {
         Ok(Self {
             profile,
             engine: Mutex::new(engine),
+            storage: Mutex::new(NativeBackendStorage::default()),
         })
     }
 
@@ -58,19 +105,20 @@ impl NativeEngineBackend {
             BrowserCapability::Effects,
             BrowserCapability::Script,
             BrowserCapability::Capture,
+            BrowserCapability::Storage,
         ];
         let mut capabilities = BTreeMap::new();
         for capability in supported {
             let limitations = match capability {
                 BrowserCapability::Navigation => {
-                    vec!["bounded HTTP(S) HTML documents with redirects, policy-checked stylesheets/scripts/modules, bounded parser-blocking/async/defer script ordering, GET or urlencoded-POST form navigation, bounded form validation, and the implemented string-only fetch/FormData/URLSearchParams/XHR paths; broader subresources and full parser/task timing remain open".into()]
+                    vec!["bounded HTTP(S) navigation, scripts, forms, validation, and string fetch/FormData/URLSearchParams/XHR; broad subresources and full parser timing remain open".into()]
                 }
                 BrowserCapability::Evidence => {
                     vec!["bounded URL, title, and visible text only; no DOM or pixels".into()]
                 }
                 BrowserCapability::Action => {
                     vec![
-                        "semantic click/type, focused-text printable/Backspace/Delete key input, bounded single- and multi-select option interaction, bounded GET or urlencoded-POST form defaults, bounded vertical root scrolling, and native point targets for supported local controls; text selection, IME, and nested scrolling remain open".into(),
+                        "bounded click/type/key/scroll, single/multi-select, form defaults, root scrolling, and native point targets; selection, IME, and nested scrolling remain open".into(),
                     ]
                 }
                 BrowserCapability::Effects => {
@@ -80,7 +128,7 @@ impl NativeEngineBackend {
                     ]
                 }
                 BrowserCapability::Script => vec![
-                    "bounded QuickJS evaluation with refreshed window/document snapshots, typed DOM/event commands, page scripts, modules, deterministic task turns, policy-owned fetch/CORS, string-only FormData and URLSearchParams, and asynchronous XHR; live Web IDL identity, workers, broad subresources, and full task timing remain open".into(),
+                    "bounded QuickJS DOM/event scripting with modules, deterministic tasks, policy-owned fetch/CORS, string FormData/URLSearchParams, and async XHR; workers, subresources, Web IDL identity, and full timing remain open".into(),
                 ],
                 BrowserCapability::Capture => {
                     vec![
@@ -88,6 +136,9 @@ impl NativeEngineBackend {
                     ]
                 }
                 BrowserCapability::Contexts => vec!["one active context only".into()],
+                BrowserCapability::Storage => vec![
+                    "backend-only local/session maps; page Web Storage, persistence, cookie sync, and IndexedDB remain open".into(),
+                ],
                 BrowserCapability::Lifecycle => {
                     vec!["close is terminal for the engine instance".into()]
                 }
@@ -120,8 +171,8 @@ impl NativeEngineBackend {
                     limitations: vec![
                         "network navigation and scripting are bounded web-platform slices, not browser parity".into(),
                         "in-process local execution is not a security boundary for hostile content; external documents use the sandboxed content worker".into(),
-                        "live Web IDL identity, workers, broad subresources, parser timing, general CSS/layout, font/image fidelity, storage classes beyond session cookies/cache, and full browser default behavior remain unavailable".into(),
-                        "actions are limited to semantic click/type, focused-text printable/Backspace/Delete key input, bounded single- and multi-select option interaction, bounded GET or urlencoded-POST form defaults, bounded vertical root scrolling, and native point targets for supported local controls".into(),
+                        "page Web Storage, durable profiles, cookie sync, and IndexedDB remain unavailable".into(),
+                        "actions are limited to bounded click/type/key/scroll, select controls, form defaults, root scrolling, and native point targets".into(),
                     ],
                 },
             },
@@ -141,6 +192,19 @@ impl NativeEngineBackend {
                 operation: operation_name(operation).into(),
                 state: "poisoned".into(),
                 reason: "native engine state lock is unavailable".into(),
+            })
+    }
+
+    fn lock_storage(
+        &self,
+        operation: BackendOperation,
+    ) -> Result<std::sync::MutexGuard<'_, NativeBackendStorage>, BrowserBackendError> {
+        self.storage
+            .lock()
+            .map_err(|_| BrowserBackendError::Lifecycle {
+                operation: operation_name(operation).into(),
+                state: "poisoned".into(),
+                reason: "native backend storage state lock is unavailable".into(),
             })
     }
 }
@@ -261,6 +325,25 @@ impl BrowserBackend for NativeEngineBackend {
                         format: CaptureFormat::Png,
                         bytes,
                     }))
+                }
+                (BackendOperation::Storage, BackendRequest::Storage(request)) => {
+                    require_context_id(&request.context_id)?;
+                    drop(engine);
+                    let mut storage = self.lock_storage(operation)?;
+                    let entries = match request.operation {
+                        StorageOperation::Read => storage.entries(&request.scope)?.clone(),
+                        StorageOperation::Write { key, value } => {
+                            let entries = storage.entries_mut(&request.scope)?;
+                            entries.insert(key, value);
+                            entries.clone()
+                        }
+                        StorageOperation::Clear => {
+                            let entries = storage.entries_mut(&request.scope)?;
+                            entries.clear();
+                            entries.clone()
+                        }
+                    };
+                    Ok(BackendResponse::Storage(StorageResult { entries }))
                 }
                 (operation, _) => Err(BrowserBackendError::UnsupportedOperation {
                     operation: operation_name(operation).into(),

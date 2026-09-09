@@ -49,6 +49,14 @@ ordering, bounded privacy-safe traces, startup rollback, and terminal close—
 while keeping the current deterministic local engine boundary. It does not yet
 claim network, JavaScript, process isolation, or browser parity.
 
+The next executable network batch is
+[native-engine-browser-002](tasks/native-engine-browser-002.md). It adds
+bounded external HTTP(S) HTML navigation through the native backend, including
+redirect limits, response-size and HTML MIME checks, UTF-8 decoding, normalized
+HTTP(S) origins, and native-only integration coverage. It does not yet claim
+subresources, JavaScript, cookies/cache, CORS/CSP, charset sniffing, process
+isolation, or browser parity.
+
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,
 fixture/data-URL-only, one-context engine kernel and explicit semantic backend.

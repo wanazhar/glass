@@ -94,7 +94,10 @@ impl NativeCancellationToken {
 ///
 /// This is intentionally synchronous and deterministic at this stage. It
 /// establishes typed task/microtask ordering, cancellation, and privacy-safe
-/// trace ownership before network, script, and content-process work is added.
+/// trace ownership before script, worker, and content-process work is added.
+/// The bounded HTTP(S) loader currently runs as an asynchronous navigation
+/// stage outside this runtime owner; later BE-01 work must bring resource and
+/// page work under the worker/IPC lifecycle.
 #[derive(Debug, Clone)]
 pub struct NativeRuntime {
     state: NativeRuntimeState,

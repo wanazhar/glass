@@ -12,9 +12,9 @@
 //! postconditions. CDP is the production backend for the full session. The
 //! portable [`BrowserRuntimeSession`] covers the bounded semantic slice for
 //! Firefox BiDi and Safari WebDriver. The default-off `native-engine` feature
-//! exposes a deterministic local-content kernel through explicit Rust and
-//! feature-gated CLI runtime paths; it is not a browser-parity or hostile-
-//! content security boundary.
+//! exposes a deterministic local kernel plus bounded asynchronous HTTP(S)
+//! document navigation through explicit Rust and feature-gated CLI runtime
+//! paths; it is not a browser-parity or hostile-content security boundary.
 //!
 //! The docs.rs page documents the Rust library API; installed command behavior
 //! is specified in the [CLI reference](https://github.com/wanazhar/glass/blob/main/docs/cli.md).

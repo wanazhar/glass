@@ -1,16 +1,63 @@
-/// Origin state carried by a Phase 1 native document.
+use super::error::NativeEngineError;
+use url::Url;
+
+/// Origin state carried by a native document.
 ///
-/// Local fixture and data documents intentionally use an opaque placeholder.
-/// A tuple-origin model belongs to the later resource/security workstream.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Local fixture and data documents intentionally use an opaque origin. HTTP
+/// and HTTPS documents retain a normalized scheme/host/effective-port tuple;
+/// this is the first origin primitive for the later security workstream.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativeOrigin {
     Opaque,
+    Tuple {
+        scheme: String,
+        host: String,
+        port: u16,
+    },
 }
 
 impl NativeOrigin {
-    pub const fn as_str(self) -> &'static str {
+    pub fn from_url(url: &Url) -> Result<Self, NativeEngineError> {
+        let scheme = url.scheme();
+        if !matches!(scheme, "http" | "https") {
+            return Ok(Self::Opaque);
+        }
+        let host = url.host_str().ok_or_else(|| NativeEngineError::Network {
+            operation: "origin construction".into(),
+            reason: "HTTP(S) URL is missing a host".into(),
+        })?;
+        let port = url
+            .port_or_known_default()
+            .ok_or_else(|| NativeEngineError::Network {
+                operation: "origin construction".into(),
+                reason: "HTTP(S) URL is missing an effective port".into(),
+            })?;
+        Ok(Self::Tuple {
+            scheme: scheme.into(),
+            host: host.into(),
+            port,
+        })
+    }
+
+    pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Opaque => "opaque",
+            Self::Tuple { .. } => "tuple",
+        }
+    }
+
+    pub fn serialized(&self) -> String {
+        match self {
+            Self::Opaque => "null".into(),
+            Self::Tuple { scheme, host, port } => {
+                let default_port =
+                    matches!((scheme.as_str(), *port), ("http", 80) | ("https", 443));
+                if default_port {
+                    format!("{scheme}://{host}")
+                } else {
+                    format!("{scheme}://{host}:{port}")
+                }
+            }
         }
     }
 }

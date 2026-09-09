@@ -2072,6 +2072,15 @@ persistent realm with final `document.readyState === "complete"`. Resource
 specific completion events, wall-clock races, incremental parsing,
 unload/pagehide/pageshow, and full task-source timing remain open.
 
+The completed bounded submitter-serialization follow-up is
+[native-engine-browser-040](../tasks/native-engine-browser-040.md). Local and
+child owners now carry the initiating submit control through bounded GET and
+urlencoded-POST serialization, validate the typed handoff at the parent, and
+honor form `novalidate`/submitter `formnovalidate` without suppressing normal
+submit events. Image coordinates, external form ownership, target contexts,
+multipart/text/plain, full constraint validation, and FormData/Web IDL parity
+remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

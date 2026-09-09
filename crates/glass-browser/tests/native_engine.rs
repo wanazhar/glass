@@ -872,6 +872,35 @@ async fn native_local_semantic_submit_button_navigates_without_script_realm() {
 }
 
 #[tokio::test]
+async fn native_local_formnovalidate_serializes_submitter_value() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://formnovalidate-start",
+            "<form action='fixture://formnovalidate-result'><input name='query' required><button id='skip' name='action' value='skip' type='submit' formnovalidate>Skip validation</button></form>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://formnovalidate-result?query=&action=skip",
+            "<title>Submitter result</title><p>Submitted</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://formnovalidate-start");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            "document.querySelector('form').requestSubmit(document.getElementById('skip'))",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        "fixture://formnovalidate-result?query=&action=skip"
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_child_script_click_owns_external_navigation() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1337,14 +1366,14 @@ async fn native_content_process_script_form_submit_navigates_with_get_controls()
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
-        for expected_path in ["/form", "/result?query=go"] {
+        for expected_path in ["/form", "/result?query=go&action=search"] {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut request = [0_u8; 4096];
             let read = stream.read(&mut request).await.unwrap();
             let request = String::from_utf8_lossy(&request[..read]);
             assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
             let body = if expected_path == "/form" {
-                "<form id='search' action='/result'><input name='query' value='hello'><button id='go' type='submit'>Go</button></form>"
+                "<form id='search' action='/result'><input name='query' value='hello'><button id='go' name='action' value='search' type='submit'>Go</button></form>"
             } else {
                 "<title>Result</title><p>Submitted</p>"
             };
@@ -1373,7 +1402,7 @@ async fn native_content_process_script_form_submit_navigates_with_get_controls()
         .unwrap();
     assert_eq!(
         engine.snapshot().unwrap().url,
-        format!("http://{address}/result?query=go")
+        format!("http://{address}/result?query=go&action=search")
     );
     assert_eq!(engine.snapshot().unwrap().title, "Result");
     engine.close_async().await.unwrap();
@@ -1448,12 +1477,12 @@ async fn native_content_process_script_form_submit_sends_post_controls() {
                 assert!(request.lines().any(|line| {
                     line.eq_ignore_ascii_case("content-type: application/x-www-form-urlencoded")
                 }));
-                assert!(request.ends_with("query=hello"));
+                assert!(request.ends_with("query=hello&action=search"));
             } else {
                 assert_eq!(request.split_whitespace().next(), Some("GET"));
             }
             let body = if expected_path == "/form" {
-                "<form id='search' method='post' action='/result'><input name='query' value='hello'></form>"
+                "<form id='search' method='post' action='/result'><input name='query' value='hello'><button id='go' name='action' value='search' type='submit'>Go</button></form>"
             } else {
                 "<title>Post result</title><p>Submitted</p>"
             };
@@ -1471,7 +1500,9 @@ async fn native_content_process_script_form_submit_sends_post_controls() {
     .unwrap();
     engine.initialize_async().await.unwrap();
     engine
-        .evaluate_async("document.getElementById('search').submit()")
+        .evaluate_async(
+            "document.getElementById('search').requestSubmit(document.getElementById('go'))",
+        )
         .await
         .unwrap();
     assert_eq!(

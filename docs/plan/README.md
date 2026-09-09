@@ -403,10 +403,19 @@ final `document.readyState === "complete"`. Resource-specific completion,
 unload/pagehide/pageshow, wall-clock races, and full task-source timing remain
 open.
 
-The next BE-02/BE-03/BE-04 gate is ready-state/resource lifecycle timing and
-resource completion/task ordering, followed by multipart, full constraint-validation, and
-submitter serialization behavior plus the remaining browser-context
-primitives.
+The completed bounded submitter-serialization batch is
+[native-engine-browser-040](tasks/native-engine-browser-040.md). Successful
+submit buttons now contribute bounded `name`/`value` pairs to local and
+child-owned GET and urlencoded-POST requests, with the typed submitter checked
+again by the navigation owner. Form `novalidate` and submitter
+`formnovalidate` bypass the bounded required-control check while preserving
+submit events and serialization. Image coordinates, external form ownership,
+target contexts, multipart/text/plain, full constraint validation, and
+FormData/Web IDL parity remain open.
+
+The next BE-02/BE-03/BE-04 gate is resource-specific completion and full task
+ordering, followed by multipart, full constraint-validation, external form
+ownership, and the remaining browser-context primitives.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

@@ -1,7 +1,7 @@
 use super::error::NativeEngineError;
 use url::Url;
 
-/// Maximum source document size accepted by the native Phase 1 loader.
+/// Maximum source document size accepted by the native resource loader.
 pub const MAX_NATIVE_DOCUMENT_BYTES: usize = 256 * 1024;
 /// Maximum DOM nodes accepted by the initial arena.
 pub const MAX_NATIVE_NODES: usize = 4_096;
@@ -197,8 +197,7 @@ impl NativeEngineConfig {
         validate_url_text("initial URL", &self.initial_url)?;
         if !is_supported_url_shape(&self.initial_url) {
             return Err(NativeEngineError::UnsupportedUrl {
-                reason: "Phase 1 accepts only about:blank, data:text/html, or fixture:// URLs"
-                    .into(),
+                reason: "native navigation accepts about:blank, data:text/html, fixture://, or HTTP(S) URLs".into(),
             });
         }
         if self.fixtures.len() > self.limits.max_fixtures {
@@ -251,6 +250,11 @@ pub(crate) fn is_supported_url_shape(value: &str) -> bool {
     resource_url == "about:blank"
         || resource_url.starts_with("data:")
         || resource_url.starts_with("fixture:")
+        || is_network_url(resource_url)
+}
+
+pub(crate) fn is_network_url(value: &str) -> bool {
+    Url::parse(without_fragment(value)).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
 }
 
 /// Return the resource portion of a URL, excluding raw fragment metadata.

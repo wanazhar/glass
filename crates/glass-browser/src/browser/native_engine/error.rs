@@ -16,6 +16,10 @@ pub enum NativeEngineError {
     UnsupportedUrl {
         reason: String,
     },
+    Network {
+        operation: String,
+        reason: String,
+    },
     Parse {
         offset: usize,
         reason: String,
@@ -72,6 +76,9 @@ impl fmt::Display for NativeEngineError {
                 "lifecycle failure during {operation} ({state}): {reason}"
             ),
             Self::UnsupportedUrl { reason } => write!(formatter, "unsupported URL: {reason}"),
+            Self::Network { operation, reason } => {
+                write!(formatter, "network failure during {operation}: {reason}")
+            }
             Self::Parse { offset, reason } => {
                 write!(formatter, "HTML parse failure at byte {offset}: {reason}")
             }

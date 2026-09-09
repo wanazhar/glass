@@ -90,7 +90,7 @@ impl BrowserRuntimeSession {
         Ok(session)
     }
 
-    /// Construct and initialize the explicit, local-only native runtime.
+    /// Construct and initialize the explicit native runtime.
     #[cfg(feature = "native-engine")]
     pub async fn connect_native(config: NativeEngineConfig) -> BrowserResult<Self> {
         let backend = BackendFactory::native(config)?;

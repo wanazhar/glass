@@ -62,7 +62,7 @@ impl NativeEngineBackend {
         for capability in supported {
             let limitations = match capability {
                 BrowserCapability::Navigation => {
-                    vec!["about:blank, data:text/html, and registered fixture:// URLs only".into()]
+                    vec!["bounded HTTP(S) HTML documents with redirects; no subresources, scripts, or browser security policy yet".into()]
                 }
                 BrowserCapability::Evidence => {
                     vec!["bounded URL, title, and visible text only; no DOM or pixels".into()]
@@ -114,9 +114,9 @@ impl NativeEngineBackend {
                     glass_version: glass_version.into(),
                     tested_capabilities: supported.to_vec(),
                     limitations: vec![
-                        "Phase 2 and initial Phase 3 are deterministic local-content slices, not browser parity".into(),
+                        "network navigation is a bounded HTML-document slice, not browser parity".into(),
                         "in-process execution is not a security boundary for hostile content".into(),
-                        "network, JavaScript, general CSS, scrolling/stacking layout, font/image fidelity, storage, and default browser behavior are unavailable".into(),
+                        "JavaScript, subresources, network security policy, general CSS, scrolling/stacking layout, font/image fidelity, storage, and default browser behavior are unavailable".into(),
                         "actions are limited to semantic click/type, bounded vertical root scrolling, and native point targets for supported local controls".into(),
                     ],
                 },
@@ -158,7 +158,7 @@ impl BrowserBackend for NativeEngineBackend {
             let mut engine = self.lock_engine(operation)?;
             match (operation, request) {
                 (BackendOperation::Initialize, BackendRequest::Initialize) => {
-                    engine.initialize().map_err(native_error)?;
+                    engine.initialize_async().await.map_err(native_error)?;
                     Ok(BackendResponse::Unit)
                 }
                 (BackendOperation::Close, BackendRequest::Close) => {
@@ -166,7 +166,10 @@ impl BrowserBackend for NativeEngineBackend {
                     Ok(BackendResponse::Unit)
                 }
                 (BackendOperation::Navigate, BackendRequest::Navigate(request)) => {
-                    let snapshot = engine.navigate(request.url).map_err(native_error)?;
+                    let snapshot = engine
+                        .navigate_async(request.url)
+                        .await
+                        .map_err(native_error)?;
                     Ok(BackendResponse::Navigation(NavigationResult {
                         url: snapshot.url,
                         revision: snapshot.revision,
@@ -291,6 +294,9 @@ fn native_error(error: NativeEngineError) -> BrowserBackendError {
             field: "navigation URL".into(),
             reason,
         },
+        NativeEngineError::Network { operation, reason } => {
+            BrowserBackendError::Connection { operation, reason }
+        }
         NativeEngineError::Parse { offset, reason } => BrowserBackendError::InvalidConfiguration {
             field: "native HTML document".into(),
             reason: format!("parse failure at byte {offset}: {reason}"),

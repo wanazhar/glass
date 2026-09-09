@@ -1,7 +1,7 @@
 use super::browsing_context::{NATIVE_CONTEXT_ID, NativeBrowsingContext};
 use super::config::{
     NativeEngineConfig, decode_percent_encoded_fragment, decode_text_fragment_terms,
-    resolve_fixture_relative_url, validate_url_text, without_fragment,
+    is_network_url, resolve_fixture_relative_url, validate_url_text, without_fragment,
 };
 use super::diagnostics::NativeDiagnostic;
 use super::dom::NativeDocument;
@@ -74,7 +74,9 @@ impl NativeEngine {
     pub fn new(config: NativeEngineConfig) -> Result<Self, NativeEngineError> {
         config.validate()?;
         let loader = NativeResourceLoader::new(&config)?;
-        loader.load(&config.initial_url)?;
+        if !is_network_url(&config.initial_url) {
+            loader.load(&config.initial_url)?;
+        }
         let runtime = NativeRuntime::new(config.limits.max_scheduler_tasks)?;
         let max_history_entries = config.limits.max_history_entries;
         Ok(Self {
@@ -129,6 +131,27 @@ impl NativeEngine {
         Ok(())
     }
 
+    pub async fn initialize_async(&mut self) -> Result<(), NativeEngineError> {
+        match self.lifecycle {
+            NativeLifecycleState::Running => return Ok(()),
+            NativeLifecycleState::Closed => {
+                return Err(
+                    self.lifecycle_error("initialize", "a closed native engine cannot be reopened")
+                );
+            }
+            NativeLifecycleState::New => {}
+        }
+        let initial_url = self.config.initial_url.clone();
+        let prepared = self.prepare_navigation_async(&initial_url).await?;
+        self.runtime.start()?;
+        if let Err(error) = self.commit_navigation(prepared) {
+            self.runtime.rollback_start()?;
+            return Err(error);
+        }
+        self.lifecycle = NativeLifecycleState::Running;
+        Ok(())
+    }
+
     pub fn close(&mut self) -> Result<(), NativeEngineError> {
         match self.lifecycle {
             NativeLifecycleState::Running => {
@@ -153,6 +176,28 @@ impl NativeEngine {
         self.require_running("navigate")?;
         let url = url.into();
         let resource = self.loader.load(&url)?;
+        if self.is_same_document_navigation(&resource.url) {
+            self.commit_same_document_navigation(resource.url, HistoryCommit::Push)?;
+        } else {
+            let prepared = self.prepare_navigation_resource(resource)?;
+            self.commit_navigation(prepared)?;
+        }
+        Ok(self.snapshot_unchecked())
+    }
+
+    pub async fn navigate_async(
+        &mut self,
+        url: impl Into<String>,
+    ) -> Result<NativeEngineSnapshot, NativeEngineError> {
+        self.require_running("navigate")?;
+        let resource = self.loader.load_async(&url.into()).await?;
+        self.navigate_resource(resource)
+    }
+
+    fn navigate_resource(
+        &mut self,
+        resource: NativeResource,
+    ) -> Result<NativeEngineSnapshot, NativeEngineError> {
         if self.is_same_document_navigation(&resource.url) {
             self.commit_same_document_navigation(resource.url, HistoryCommit::Push)?;
         } else {
@@ -379,7 +424,7 @@ impl NativeEngine {
         NativeEngineSnapshot {
             lifecycle: self.lifecycle,
             url: self.url.clone(),
-            origin: self.origin,
+            origin: self.origin.clone(),
             title,
             title_truncated,
             visible_text,
@@ -394,7 +439,7 @@ impl NativeEngine {
         Ok(NativeBrowsingContext {
             context_id: NATIVE_CONTEXT_ID.into(),
             url: self.url.clone(),
-            origin: self.origin,
+            origin: self.origin.clone(),
             active: true,
         })
     }
@@ -417,6 +462,14 @@ impl NativeEngine {
 
     fn prepare_navigation(&self, url: &str) -> Result<PreparedNavigation, NativeEngineError> {
         let resource = self.loader.load(url)?;
+        self.prepare_navigation_resource(resource)
+    }
+
+    async fn prepare_navigation_async(
+        &self,
+        url: &str,
+    ) -> Result<PreparedNavigation, NativeEngineError> {
+        let resource = self.loader.load_async(url).await?;
         self.prepare_navigation_resource(resource)
     }
 

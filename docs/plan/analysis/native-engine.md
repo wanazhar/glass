@@ -1660,9 +1660,10 @@ pending because the checkout is local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
-DOM/interaction slices and initial Phase 3 presentation slices. Those slices
-are the foundation of the expanded browser-complete program; they do not yet
-claim external-web compatibility or CDP replacement.
+DOM/interaction slices, initial Phase 3 presentation slices, and a bounded
+HTTP(S) document-navigation slice. Those slices are the foundation of the
+expanded browser-complete program; they do not yet claim general external-web
+compatibility or CDP replacement.
 
 ## Browser-complete expansion analysis
 
@@ -1719,6 +1720,14 @@ with typed microtasks, one-shot cancellation, bounded privacy-safe traces,
 startup rollback, and terminal close. It deliberately stops before network,
 JavaScript, asynchronous Web APIs, IPC, or process isolation.
 
+The next executable network batch is
+[`native-engine-browser-002`](../tasks/native-engine-browser-002.md). It adds a
+bounded asynchronous HTTP(S) HTML-document loader, redirect and response-size
+limits, HTML MIME checks, UTF-8 decoding, normalized tuple origins, and native
+backend integration coverage. It deliberately stops before subresources,
+charset sniffing, cookies/cache, CORS/CSP, JavaScript, process isolation, and
+browser parity.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine
@@ -1766,8 +1775,8 @@ real edit touching the native module, and target-directory growth separately.
 | `native_engine::runtime` | runtime lifecycle, cancellation, typed microtasks, bounded trace, and scheduler ownership | lifecycle events, typed work, delay, cancellation | runtime state, task/microtask readiness, trace events | scheduler + native error |
 | `native_engine::scheduler` | logical clock and bounded ordered tasks | task kind, delay | deterministic task IDs/order | native limits; owned by runtime |
 | `native_engine::history` | current local history and per-entry root scroll state | committed URL/revision/scroll offset | bounded entries/current index | native limits + layout point |
-| `native_engine::origin` | Phase 1 origin placeholder | loaded URL | opaque origin | none |
-| `native_engine::resource_loader` | fixture/data/about resource boundary | validated URL | bounded local HTML resource | `url`, config fixtures |
+| `native_engine::origin` | opaque local origins and normalized HTTP(S) tuple origins | loaded URL | origin state/serialization | `url`, typed native error |
+| `native_engine::resource_loader` | fixture/data/about resources plus bounded HTTP(S) HTML document loading | validated URL, async transport response | bounded HTML resource | `url`, `reqwest`, `futures-util`, config limits |
 | `native_engine::css` | bounded selector/rule parsing, display/visibility presentation, inherited color, positive-pixel line-height, pixel dimensions, physical solid/dashed/dotted borders, circular border radii, physical padding/margin edges, local opacity alpha, inherited `font-weight:normal|bold|400|700`, inherited `font-style:normal|italic`, inherited `word-break:normal|break-all`, inherited `vertical-align:baseline|top|middle|bottom`, bounded author-origin `!important` priority for the supported text-flow and text-decoration declarations, and bounded local flex-row `justify-content:normal|flex-start|center|flex-end|space-between|space-around|space-evenly|stretch`, explicit `justify-content:inherit` parent propagation, flex-item `order`, flex cross-axis `align-items`, explicit `align-items:inherit` parent propagation, `align-self:auto|flex-start|center|flex-end`, explicit `align-self:inherit` parent propagation, `flex-direction`, `flex-wrap`, `flex-flow`, `align-content:flex-start|center|flex-end|space-between|space-around|space-evenly|stretch|normal`, explicit `align-content:inherit` parent propagation, integer `flex-grow`, integer `flex-shrink`, `flex-basis:auto|Npx`, and `flex` shorthand | style text, inline style, native element attributes, ancestor styles | deterministic computed presentation values | native DOM element surface |
 | `native_engine::layout` | viewport-bounded block/inline normal-flow geometry, bounded outer/content box model, side-specific border insets, rounded-box metadata, preflight inline line placement, inherited fixed line-height floors, direct-text fragments, whitespace-boundary flow, source-order paint entries, aligned line-item ranges with bounded vertical offsets, opacity group boundaries, root scroll projection, rounded point hit testing, bounded inherited word-break wrapping, bounded fixed-width flex-row free-space placement, stable visual flex-item order sorting, complete flex cross-axis alignment with explicit/auto line sizing and per-item `align-self` overrides, bounded physical flex wrapping and wrap-reverse line stacking, bounded cross-line alignment, `justify-content:normal|stretch|space-around|space-evenly` through the flex-start placement owner, explicit `align-content:normal` line distribution, bounded positive flex-grow allocation with max-width freeze/redistribution, base-width-weighted flex-shrink allocation with min-width freezing, explicit flex-basis base sizing, and flex shorthand/flow component reuse | DOM, computed presentation, viewport, scroll offset | document-space layout boxes/text fragments, paint order, scroll metadata, and deterministic hit target | native DOM + CSS presentation |
 | `native_engine::paint` | revisioned clear/fill/text-fragment/physical-border display-list derivation, bounded rounded paint masks, source-order entries, opacity group markers, ancestor clips, and scroll metadata | current layout, bounded computed colors/text/borders/radii/opacity/font presentation, and overflow presentation | immutable document-space display-list commands | native DOM + layout |
@@ -2326,7 +2335,7 @@ visual stacking.
 | Decision | Benefit | Cost / what we miss | Mitigation |
 |---|---|---|---|
 | custom small HTML parser | owns the DOM boundary and keeps the default graph unchanged | not HTML5-conformant yet; malformed markup coverage is narrow | explicit Phase 2 conformance work and parser fixtures |
-| fixture/data-only loader | deterministic, no SSRF/filesystem risk, fast tests | no real web navigation or network behavior | typed unsupported URL errors and later security workstream |
+| bounded local plus HTTP(S) document loader | real external HTML navigation enters the native document owner while local fixtures remain deterministic | no subresources, charset/security policy, cache/cookies, or hostile-content isolation | explicit async path, redirect/size/MIME bounds, UTF-8-only decoding, typed failures, and later BE-01/BE-02 promotion gates |
 | in-process single owner | simple revision/history invariants and reproducible tests | no crash isolation or hostile-content safety | keep content local-only; process isolation is a promotion gate |
 | no async task callbacks | deterministic scheduler with no hidden sleeps/threads | no script/event-loop realism | typed task kinds and test clock establish the future seam |
 | single-select only | useful basic form semantics with a small deterministic state model | no keyboard, multi-select, or submission behavior | reject unsupported variants explicitly and keep values private |

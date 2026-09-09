@@ -1,12 +1,18 @@
 use super::config::{
-    NativeEngineConfig, canonical_fixture_url, validate_url_text, without_fragment,
+    NativeEngineConfig, canonical_fixture_url, is_network_url, validate_url_text, without_fragment,
 };
 use super::error::NativeEngineError;
 use super::origin::NativeOrigin;
 use base64::Engine as _;
+use futures_util::StreamExt;
 use std::collections::BTreeMap;
+use std::time::Duration;
+use url::Url;
 
-/// A bounded HTML resource accepted by the Phase 1 engine.
+const MAX_NATIVE_NETWORK_REDIRECTS: usize = 8;
+const NATIVE_NETWORK_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// A bounded HTML resource accepted by the native engine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeResource {
     pub url: String,
@@ -14,7 +20,7 @@ pub struct NativeResource {
     pub body: String,
 }
 
-/// Local-only resource loader for about, data, and registered fixture URLs.
+/// Bounded resource loader for local documents and HTTP(S) HTML responses.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeResourceLoader {
     fixtures: BTreeMap<String, String>,
@@ -36,6 +42,8 @@ impl NativeResourceLoader {
     }
 
     /// Load one supported local resource without filesystem or network access.
+    /// HTTP(S) resources use [`Self::load_async`] so blocking transport never
+    /// enters the synchronous deterministic path.
     pub fn load(&self, url: &str) -> Result<NativeResource, NativeEngineError> {
         validate_url_text("navigation URL", url)?;
         let resource_url = without_fragment(url);
@@ -63,7 +71,97 @@ impl NativeResourceLoader {
             });
         }
         Err(NativeEngineError::UnsupportedUrl {
-            reason: "Phase 1 does not load network, filesystem, or other URL schemes".into(),
+            reason: "HTTP(S) loading requires asynchronous native navigation; filesystem and other URL schemes are unsupported".into(),
+        })
+    }
+
+    /// Load one bounded HTML document over HTTP(S).
+    ///
+    /// This is deliberately a document-only network slice: it follows a
+    /// bounded redirect chain, rejects credentials and non-HTML responses,
+    /// enforces the configured document limit while streaming, and does not
+    /// fetch subresources or execute page code.
+    pub async fn load_async(&self, url: &str) -> Result<NativeResource, NativeEngineError> {
+        validate_url_text("navigation URL", url)?;
+        let resource_url = without_fragment(url);
+        if !is_network_url(resource_url) {
+            return self.load(url);
+        }
+        let parsed = Url::parse(resource_url).map_err(|_| NativeEngineError::UnsupportedUrl {
+            reason: "HTTP(S) navigation URL is not valid URL syntax".into(),
+        })?;
+        reject_credentials(&parsed)?;
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::limited(
+                MAX_NATIVE_NETWORK_REDIRECTS,
+            ))
+            .timeout(NATIVE_NETWORK_TIMEOUT)
+            .build()
+            .map_err(|error| network_error("HTTP client construction", error))?;
+        let response = client
+            .get(parsed)
+            .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml")
+            .send()
+            .await
+            .map_err(|error| network_error("HTTP document request", error))?;
+        if !response.status().is_success() {
+            return Err(NativeEngineError::Network {
+                operation: "HTTP document request".into(),
+                reason: format!("server returned HTTP {}", response.status().as_u16()),
+            });
+        }
+        validate_html_content_type(response.headers().get(reqwest::header::CONTENT_TYPE))?;
+        let content_length = response.content_length();
+        if content_length.is_some_and(|length| length > self.max_document_bytes as u64) {
+            return Err(NativeEngineError::limit(
+                "HTTP document",
+                self.max_document_bytes,
+                content_length
+                    .and_then(|length| usize::try_from(length).ok())
+                    .unwrap_or(usize::MAX),
+            ));
+        }
+        let final_url = response.url().clone();
+        reject_credentials(&final_url)?;
+        if !is_network_url(final_url.as_str()) {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "HTTP(S) navigation redirected to a non-HTTP(S) URL".into(),
+            });
+        }
+        let mut stream = response.bytes_stream();
+        let mut bytes = Vec::with_capacity(
+            content_length
+                .unwrap_or_default()
+                .min(self.max_document_bytes as u64) as usize,
+        );
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|error| network_error("HTTP document body", error))?;
+            let next_len = bytes.len().saturating_add(chunk.len());
+            if next_len > self.max_document_bytes {
+                return Err(NativeEngineError::limit(
+                    "HTTP document",
+                    self.max_document_bytes,
+                    next_len,
+                ));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let body = String::from_utf8(bytes).map_err(|_| NativeEngineError::Network {
+            operation: "HTTP document decoding".into(),
+            reason: "HTTP(S) document is not valid UTF-8; charset decoding is not yet implemented"
+                .into(),
+        })?;
+        let navigation_url = append_original_fragment(final_url, url);
+        let origin =
+            NativeOrigin::from_url(&Url::parse(without_fragment(&navigation_url)).map_err(
+                |_| NativeEngineError::UnsupportedUrl {
+                    reason: "HTTP(S) navigation produced invalid final URL syntax".into(),
+                },
+            )?)?;
+        Ok(NativeResource {
+            url: navigation_url,
+            origin,
+            body,
         })
     }
 
@@ -97,6 +195,52 @@ impl NativeResourceLoader {
             origin: NativeOrigin::Opaque,
             body,
         })
+    }
+}
+
+fn reject_credentials(url: &Url) -> Result<(), NativeEngineError> {
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(NativeEngineError::UnsupportedUrl {
+            reason: "HTTP(S) navigation URLs must not contain userinfo credentials".into(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_html_content_type(
+    value: Option<&reqwest::header::HeaderValue>,
+) -> Result<(), NativeEngineError> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    let value = value.to_str().map_err(|_| NativeEngineError::Network {
+        operation: "HTTP content-type validation".into(),
+        reason: "HTTP content type is not valid ASCII".into(),
+    })?;
+    let media_type = value.split(';').next().unwrap_or_default().trim();
+    if media_type.eq_ignore_ascii_case("text/html")
+        || media_type.eq_ignore_ascii_case("application/xhtml+xml")
+    {
+        return Ok(());
+    }
+    Err(NativeEngineError::UnsupportedUrl {
+        reason: format!("HTTP(S) navigation returned unsupported content type {media_type:?}"),
+    })
+}
+
+fn append_original_fragment(final_url: Url, original_url: &str) -> String {
+    let Some((_, fragment)) = original_url.split_once('#') else {
+        return final_url.to_string();
+    };
+    let mut final_url = final_url;
+    final_url.set_fragment(Some(fragment));
+    final_url.to_string()
+}
+
+fn network_error(operation: &str, _error: impl std::fmt::Display) -> NativeEngineError {
+    NativeEngineError::Network {
+        operation: operation.into(),
+        reason: "request failed without exposing response data".into(),
     }
 }
 

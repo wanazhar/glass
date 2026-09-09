@@ -18,6 +18,8 @@ use glass_browser::browser_backend::{
 };
 use glass_browser::{BackendFactory, BrowserRuntime, BrowserRuntimeSession, NativeEngineBackend};
 use std::io::Cursor;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 
 fn find_element_with_attribute(
     document: &NativeDocument,
@@ -63,6 +65,60 @@ async fn native_runtime_session_uses_explicit_local_constructor() {
     let script_error = session.script("1 + 1").await.unwrap_err().to_string();
     assert!(script_error.contains("capability"));
     session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_session_loads_bounded_external_http_html_without_cdp() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..3 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 4096];
+            let read = stream.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..read]);
+            let path = request.split_whitespace().nth(1).unwrap_or("/");
+            let (status, content_type, location, body) = if path.starts_with("/redirect") {
+                ("302 Found", "text/plain", Some("/page"), "")
+            } else if path.starts_with("/page") {
+                (
+                    "200 OK",
+                    "text/html; charset=utf-8",
+                    None,
+                    "<title>Native HTTP</title><p>External native page</p>",
+                )
+            } else {
+                ("200 OK", "application/json", None, "{\"not\":\"html\"}")
+            };
+            let location_header =
+                location.map_or_else(String::new, |value| format!("Location: {value}\r\n"));
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\n{location_header}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let initial_url = format!("http://{address}/redirect#section");
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(initial_url),
+    )
+    .await
+    .unwrap();
+    let evidence = session.evidence(EvidenceLevel::Compact).await.unwrap();
+    assert_eq!(evidence.url, format!("http://{address}/page#section"));
+    assert_eq!(evidence.title, "Native HTTP");
+    assert_eq!(evidence.visible_text, "External native page");
+
+    let error = session
+        .navigate(format!("http://{address}/not-html"))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("unsupported content type"), "{error}");
+    session.close().await.unwrap();
+    server.await.unwrap();
 }
 
 #[test]

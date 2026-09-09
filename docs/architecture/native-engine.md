@@ -157,6 +157,16 @@ bounded privacy-safe traces, startup rollback, and terminal close. It is still
 synchronous and in-process; later BE-01 work must add asynchronous workers,
 IPC, crash recovery, and the production content-process boundary.
 
+The next executable network batch is recorded in
+[`native-engine-browser-002`](../plan/tasks/native-engine-browser-002.md). It
+adds an asynchronous, bounded HTTP(S) HTML document loader and routes native
+session initialization/navigation through it. Redirects, HTML MIME checks,
+UTF-8 decoding, response-size limits, credential rejection, final URL
+preservation, and tuple-origin construction are covered. This is not yet the
+BE-02 security milestone: subresources, charset sniffing, cookies/cache,
+CORS/CSP, mixed-content policy, permissions, and process isolation remain
+open.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature
@@ -166,7 +176,8 @@ remains available as the production compatibility path.
 ## Purpose and boundary
 
 The native engine owns a deterministic, headless browser-platform kernel. The
-current slices own lifecycle, one browsing context, local document resources,
+current slices own lifecycle, one browsing context, local document resources
+plus bounded external HTTP(S) HTML documents,
 HTML-to-DOM parsing, history, revisions, bounded semantic evidence, and a small
 revisioned semantic interaction/effects model for text, checkbox, radio, and
 single-select controls, plus bounded visibility/actionability and raw-text/RCDATA
@@ -2392,7 +2403,8 @@ general CSS, nested/smooth/keyboard scrolling, scrollbars, nested overflow
 scrolling, or scrolling/stacking layout,
 screenshot semantics, font/image
 fidelity, hit-test visuals, JavaScript,
-network access, storage, downloads, prompts, or platform windows. Unsupported
+subresource loading and network security policy, storage, downloads, prompts,
+or platform windows. Unsupported
 CSS is not silently indistinguishable from supported CSS: the native Rust API
 exposes bounded revisioned diagnostics for ignored selectors, properties,
 values, and malformed rules without echoing raw stylesheet content.
@@ -2511,20 +2523,26 @@ document's explicitly bounded evidence projection.
 
 ## Resource model
 
-The current resource boundary (the Phase 1 loader) supports only:
+The current resource boundary supports:
 
 - `about:blank`, which loads an empty document;
 - `data:text/html,...` with UTF-8 percent-decoded HTML;
 - `data:text/html;base64,...` with standard padded RFC 4648 base64 decoding to
   UTF-8 HTML; and
-- exact `fixture://...` URLs registered in `NativeEngineConfig`.
+- exact `fixture://...` URLs registered in `NativeEngineConfig`; and
+- HTTP(S) HTML documents through the asynchronous native navigation path,
+  with an eight-redirect limit, a 30-second request timeout, configured
+  document-size enforcement, optional HTML MIME validation, and UTF-8 body
+  decoding.
 
-HTTP, HTTPS, filesystem, custom network, redirects, cookies, and all other
-resource schemes fail closed. The resource loader has no filesystem or network
-capability. A raw fragment is removed for resource lookup and decoding but is
-retained in the successful navigation URL; percent-encoded fragment markers
-remain payload data. Every successful resource has an opaque origin placeholder until
-the origin and security workstream defines a stronger model.
+Filesystem, custom schemes, cookies, cache, CORS/CSP, mixed-content policy,
+service workers, permissions, and all other resource schemes fail closed.
+Subresources are not fetched. A raw fragment is removed for resource lookup
+and decoding but is retained in the successful navigation URL;
+percent-encoded fragment markers remain payload data. Local resources have an
+opaque origin; HTTP(S) resources have a normalized tuple origin. This boundary
+is not a hostile-content security boundary until the runtime/process and
+network-security workstreams are complete.
 
 ## Lifecycle and state ownership
 
@@ -3213,23 +3231,25 @@ resource loader.
 ## Errors and recovery
 
 `NativeEngineError` distinguishes invalid configuration, lifecycle misuse,
-unsupported resources, parser failures, resource limits, scheduler failure,
-target resolution/actionability failures, and effect-query revision errors.
+unsupported resources, bounded network failures, parser failures, resource
+limits, scheduler failure, target resolution/actionability failures, and
+effect-query revision errors.
 The backend translates those errors to the existing bounded
 `BrowserBackendError` variants.
 
 Navigation follows this transaction boundary:
 
 ```text
-validate URL -> load local resource -> parse new DOM -> schedule commit
+validate URL -> load resource -> parse new DOM -> schedule commit
       |                 |                    |              |
       +-- error: no engine mutation --------+--------------+
                                       commit revision/history/document
 ```
 
 The engine never logs source HTML, evaluated input, credentials, cookies, form
-values, or full documents. Later network and scripting work must preserve the
-same transaction, origin, cancellation, and redaction boundaries.
+values, or full documents. The bounded network slice and later scripting work
+must preserve the same transaction, origin, cancellation, and redaction
+boundaries.
 
 ## Tests and promotion boundary
 

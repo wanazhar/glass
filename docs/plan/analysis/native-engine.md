@@ -1,6 +1,6 @@
-# Native engine Phase 1/Phase 2, initial Phase 3, and runtime integration analysis
+# Native engine browser-complete expansion analysis
 
-Status: Active implementation analysis for issue #40; Phase 0/1 and the first
+Status: Active implementation analysis for issue #40. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
 committed locally, including the bounded 010 display-list seed and the bounded
@@ -1660,8 +1660,50 @@ pending because the checkout is local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
-DOM/interaction slices and initial Phase 3 presentation slices, not an attempt
-to implement a complete browser in one change.
+DOM/interaction slices and initial Phase 3 presentation slices. Those slices
+are the foundation of the expanded browser-complete program; they do not yet
+claim external-web compatibility or CDP replacement.
+
+## Browser-complete expansion analysis
+
+The expanded target is a Glass Core Web Profile that can run ordinary
+external web pages and all Glass-supported automation operations through the
+native backend alone. The profile is versioned rather than pretending that
+“complete browser” is an infinite, moving target. Its conformance anchors are
+the WHATWG HTML and Fetch standards, the stable CSS profile, ECMAScript/Web
+IDL, and a pinned Web Platform Tests manifest. The implementation may use
+mature lower-level components, but it must not delegate browser ownership to
+Chromium/CDP, Gecko, WebKit, or a remote browser.
+
+The critical path is intentionally ordered around dependencies:
+
+1. runtime substrate: process model, IPC, cancellation, task/microtask
+   scheduling, crash recovery, quotas, and deterministic observability;
+2. URL/network/origin security: HTTP(S), TLS, redirects, MIME/charset, cache,
+   cookies, CORS, CSP, mixed content, service workers, permissions, and
+   site/process isolation;
+3. standards HTML/DOM: tokenizer/tree builder and error recovery, document
+   lifecycle, DOM mutation/selection/ranges, events, forms, focus, shadow DOM,
+   custom elements, frames, and the accessibility tree;
+4. ECMAScript and Web IDL: realms, bindings, promises, timers, modules,
+   structured clone, fetch/XHR, workers, and the DOM API surface;
+5. CSS/style/layout: tokenization, cascade, selectors, inheritance, custom
+   properties, media/container queries, block/inline/flex/grid/table/position,
+   overflow/scrolling, writing modes/bidi, animation, and fragmentation;
+6. rendering/compositing: fonts/shaping, images/SVG/canvas, clipping,
+   transforms, filters, layers, hit testing, software/headless/GPU surfaces,
+   and deterministic screenshot/print output;
+7. browser primitives: tabs/windows, frames/popups, opener/history topology,
+   keyboard/pointer/touch/IME/selection/drag/drop/clipboard, uploads,
+   downloads, dialogs, permissions, profiles, storage, and recovery;
+8. Glass parity and promotion: every normal BrowserBackend/CLI/MCP/TUI path,
+   cross-platform packaging, real-site compatibility, WPT, security, and
+   performance gates.
+
+JavaScript and network are prerequisites for useful external browsing; CSS
+micro-slices alone cannot make the engine a browser. Validation is therefore
+batched at completed behavioral boundaries. WPT, differential runs, and the
+real-site corpus are milestone gates, not commands to run after every edit.
 
 ## Baseline and constraints
 

@@ -1,6 +1,8 @@
 # Native browser engine
 
-Status: Experimental Phase 2 semantic DOM/interaction slices, initial Phase 3
+Status: Browser-complete expansion planned; the bounded Phase 2/initial Phase 3
+foundation below remains experimental until the issue #40 production gates pass.
+Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
 viewport-scroll/side-specific-border/bounded-pattern-border/bounded-corner-radius/
 bounded-inline-flow/bounded-fixed-line-height/bounded-direct-text-flow/
@@ -109,8 +111,45 @@ boundary.
 
 This document is the repository contract for the Glass-owned native browser
 engine described by [issue #40](https://github.com/wanazhar/glass/issues/40).
-The engine is an experimental backend inside `glass-browser`; it is not a
+The current implementation is an experimental backend inside `glass-browser`;
+the expanded goal is a production-capable native browser engine that can
+replace the CDP path for the declared Glass Core Web Profile. It is not a
 third crate, a protocol adapter, or an embedded copy of another browser.
+
+## Browser-complete expansion target
+
+Issue #40 now has two explicit boundaries. The completed bounded slices are
+the kernel and evidence-producing foundation. The new completion boundary is
+normal web browsing and Glass automation without a Chromium process, a CDP
+endpoint, or a silent fallback when the native backend is selected.
+
+“Browser-complete” means complete for a versioned Glass Core Web Profile, not
+an unbounded promise to implement every obsolete, proprietary, experimental,
+or vendor-service feature. The profile must cover external HTTP(S) navigation,
+standards HTML parsing and DOM behavior, ECMAScript execution and Web IDL
+bindings, the selected stable CSS/layout profile, rendering and hit testing,
+accessibility, input, frames/tabs/popups, history, storage, cookies,
+downloads/uploads, prompts, permissions, and the origin/security model needed
+to run hostile web content. Unsupported features outside the profile must be
+typed, documented, versioned, and never silently treated as supported.
+
+The standards and compatibility anchors are the
+[WHATWG HTML Standard](https://html.spec.whatwg.org/multipage/),
+[WHATWG Fetch Standard](https://fetch.spec.whatwg.org/),
+[W3C CSS Snapshot](https://www.w3.org/TR/css/),
+[ECMAScript](https://tc39.es/ecma262/), and the
+[Web Platform Tests](https://web-platform-tests.org/). Mature Rust or isolated
+system components may provide primitives, but Glass must own the browser
+integration, security policy, lifecycle, observable semantics, and stable
+backend contract. “From scratch” does not require reimplementing every
+cryptographic primitive or JavaScript VM if doing so would make the engine
+less safe or less interoperable.
+
+The engine remains inside the existing two-crate workspace. Internal modules,
+helper binaries, and an out-of-process content worker are allowed; a third
+installable crate is not. Until the production gates pass, the native feature
+and backend remain explicitly experimental/default-off and Chromium/CDP
+remains available as the production compatibility path.
 
 ## Purpose and boundary
 

@@ -1668,9 +1668,14 @@ fn document_bootstrap(
       className: entry.attributes.class || "",
       textContent: entry.text,
       innerText: entry.text,
-      value: entry.value === null ? "" : entry.value,
+      value: entry.value === null
+        ? (entry.tagName.toLowerCase() === "option"
+          ? (entry.attributes.value === undefined ? entry.text : entry.attributes.value)
+          : "")
+        : entry.value,
       checked: entry.checked,
       selected: entry.selected,
+      multiple: Object.prototype.hasOwnProperty.call(entry.attributes, "multiple"),
       disabled: entry.disabled,
       hidden: entry.hidden,
       focused: entry.focused,
@@ -1813,7 +1818,12 @@ fn document_bootstrap(
         element.disabled = nextEntry.disabled;
         element.hidden = nextEntry.hidden;
         element.focused = nextEntry.focused;
-        value = nextEntry.value === null ? "" : nextEntry.value;
+        element.multiple = Object.prototype.hasOwnProperty.call(nextEntry.attributes, "multiple");
+        value = nextEntry.value === null
+          ? (nextEntry.tagName.toLowerCase() === "option"
+            ? (nextEntry.attributes.value === undefined ? nextEntry.text : nextEntry.attributes.value)
+            : "")
+          : nextEntry.value;
         checked = nextEntry.checked;
         selected = nextEntry.selected;
       }}
@@ -1834,21 +1844,40 @@ fn document_bootstrap(
   const elementsByIndex = new Map(elements.map((element) => [element.nodeIndex, element]));
   globalThis.__glassHostElements = elementsByIndex;
   for (const element of elements) {{
-    if (Object.prototype.hasOwnProperty.call(element, "parentElement")) continue;
-    Object.defineProperty(element, "parentElement", {{
-      enumerable: false,
-      configurable: false,
-      get() {{
-        if (element.parentIndex === null) return null;
-        const current = globalThis.__glassHostElements;
-        return current instanceof Map ? current.get(element.parentIndex) || null : null;
-      }},
-    }});
-    Object.defineProperty(element, "parentNode", {{
-      enumerable: false,
-      configurable: false,
-      get() {{ return element.parentElement; }},
-    }});
+    if (!Object.prototype.hasOwnProperty.call(element, "parentElement")) {{
+      Object.defineProperty(element, "parentElement", {{
+        enumerable: false,
+        configurable: false,
+        get() {{
+          if (element.parentIndex === null) return null;
+          const current = globalThis.__glassHostElements;
+          return current instanceof Map ? current.get(element.parentIndex) || null : null;
+        }},
+      }});
+      Object.defineProperty(element, "parentNode", {{
+        enumerable: false,
+        configurable: false,
+        get() {{ return element.parentElement; }},
+      }});
+    }}
+    if (element.tagName === "SELECT" && !Object.prototype.hasOwnProperty.call(element, "options")) {{
+      Object.defineProperty(element, "options", {{
+        enumerable: false,
+        configurable: false,
+        get() {{
+          const current = globalThis.__glassHostElements;
+          if (!(current instanceof Map)) return [];
+          return Array.from(current.values()).filter(option =>
+            option.tagName === "OPTION" && option.parentIndex === element.nodeIndex
+          );
+        }},
+      }});
+      Object.defineProperty(element, "selectedOptions", {{
+        enumerable: false,
+        configurable: false,
+        get() {{ return element.options.filter(option => option.selected); }},
+      }});
+    }}
   }}
   const setLocalFocus = (target) => {{
     const current = elements.find((element) => element.focused && element !== target) || null;

@@ -499,7 +499,7 @@ async fn native_local_script_applies_bounded_dom_commands_once() {
     let config = NativeEngineConfig::default()
         .with_fixture(
             "fixture://script-commands",
-            "<input id='name' type='text'><input id='toggle' type='checkbox'><select id='choice'><option id='one' value='one'>One</option><option id='two' value='two'>Two</option></select>",
+            "<input id='name' type='text'><input id='toggle' type='checkbox'><select id='choice'><option id='one' value='one'>One</option><option id='two' value='two'>Two</option></select><select id='many' multiple><option id='many-one' value='one' selected>One</option><option id='many-two' value='two'>Two</option></select>",
         )
         .unwrap()
         .with_initial_url("fixture://script-commands");
@@ -556,6 +556,19 @@ async fn native_local_script_applies_bounded_dom_commands_once() {
         serde_json::json!(true)
     );
     assert_eq!(engine.revision(), initial_revision + 4);
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const select = document.getElementById('many'); select.options[1].selected = true; return { multiple: select.multiple, options: select.options.map(option => option.selected), selected: select.selectedOptions.map(option => option.value) }; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "multiple": true,
+            "options": [true, true],
+            "selected": ["one", "two"],
+        })
+    );
     engine.close_async().await.unwrap();
 }
 
@@ -27569,7 +27582,6 @@ fn native_actions_update_state_and_reject_unsafe_targets_before_mutation() {
         Some(true)
     );
 
-    let revision_before_rejections = engine.revision();
     assert!(matches!(
         engine.action(NativeAction::Click {
             target: "role=button".into(),
@@ -27582,12 +27594,23 @@ fn native_actions_update_state_and_reject_unsafe_targets_before_mutation() {
         }),
         Err(glass_browser::NativeEngineError::TargetNotActionable { .. })
     ));
-    assert!(matches!(
-        engine.action(NativeAction::Click {
+    let multi_selected = engine
+        .action(NativeAction::Click {
             target: "id=many-one".into(),
-        }),
-        Err(glass_browser::NativeEngineError::TargetNotActionable { .. })
-    ));
+        })
+        .unwrap();
+    assert_eq!(multi_selected.revision, 6);
+    assert_eq!(
+        engine
+            .semantic_nodes()
+            .unwrap()
+            .iter()
+            .filter(|node| node.role == "option")
+            .nth(2)
+            .and_then(|node| node.selected),
+        Some(true)
+    );
+    let revision_before_rejections = engine.revision();
     assert!(matches!(
         engine.action(NativeAction::Click {
             target: remember_reference,

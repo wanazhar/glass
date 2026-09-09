@@ -80,7 +80,7 @@ pub enum NativeNodeKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct NativeDocumentWire {
     pub(crate) nodes: Vec<NativeNodeWire>,
-    pub(crate) stylesheet_sources: Vec<String>,
+    pub(crate) computed_styles: Vec<NativeComputedStyle>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -190,6 +190,7 @@ pub struct NativeDocument {
     root: NativeNodeId,
     nodes: Vec<NativeNode>,
     stylesheet: NativeStylesheet,
+    computed_styles: Option<Vec<NativeComputedStyle>>,
     diagnostics: Vec<NativeDiagnostic>,
     diagnostics_truncated: bool,
 }
@@ -231,6 +232,7 @@ impl NativeDocument {
                 state: NativeElementState::default(),
             }],
             stylesheet: NativeStylesheet::default(),
+            computed_styles: None,
             diagnostics: Vec::new(),
             diagnostics_truncated: false,
         };
@@ -353,14 +355,12 @@ impl NativeDocument {
     }
 
     pub(crate) fn to_content_wire(&self) -> NativeDocumentWire {
-        let stylesheet_sources = self
-            .nodes
-            .iter()
-            .filter(|node| node.element_name() == Some("style"))
-            .map(|node| {
-                let mut source = String::new();
-                self.collect_raw_text(node.id(), &mut source);
-                source
+        let computed_styles = (0..self.nodes.len())
+            .map(|index| {
+                self.computed_style_for_layout(NativeNodeId {
+                    generation: self.generation,
+                    index: u32::try_from(index).unwrap_or(u32::MAX),
+                })
             })
             .collect();
         let nodes = self
@@ -387,7 +387,7 @@ impl NativeDocument {
             .collect();
         NativeDocumentWire {
             nodes,
-            stylesheet_sources,
+            computed_styles,
         }
     }
 
@@ -409,6 +409,12 @@ impl NativeDocument {
                 limits.max_nodes,
                 wire.nodes.len(),
             ));
+        }
+        if wire.computed_styles.len() != wire.nodes.len() {
+            return Err(NativeEngineError::Parse {
+                offset: 0,
+                reason: "content process returned incomplete computed styles".into(),
+            });
         }
         let node_id = |index: u32| -> Result<NativeNodeId, NativeEngineError> {
             let index_usize = usize::try_from(index).map_err(|_| NativeEngineError::Parse {
@@ -480,10 +486,6 @@ impl NativeDocument {
             index: 0,
         };
         let mut diagnostics = NativeDiagnosticSink::default();
-        let stylesheet = NativeStylesheet::from_sources_with_diagnostics(
-            wire.stylesheet_sources,
-            &mut diagnostics,
-        )?;
         for node in &nodes {
             let Some(inline_style) = node.attribute("style") else {
                 continue;
@@ -503,7 +505,8 @@ impl NativeDocument {
             revision: u64::from(generation),
             root,
             nodes,
-            stylesheet,
+            stylesheet: NativeStylesheet::default(),
+            computed_styles: Some(wire.computed_styles),
             diagnostics,
             diagnostics_truncated,
         };
@@ -528,6 +531,7 @@ impl NativeDocument {
                 state: NativeElementState::default(),
             }],
             stylesheet: NativeStylesheet::default(),
+            computed_styles: None,
             diagnostics: Vec::new(),
             diagnostics_truncated: false,
         }
@@ -1033,6 +1037,15 @@ impl NativeDocument {
     }
 
     pub(crate) fn computed_style_for_layout(&self, id: NativeNodeId) -> NativeComputedStyle {
+        if self.node(id).is_none() {
+            return NativeComputedStyle::default();
+        }
+        if let Some(computed_styles) = &self.computed_styles {
+            return computed_styles
+                .get(id.index as usize)
+                .copied()
+                .unwrap_or_default();
+        }
         let mut chain = Vec::new();
         let mut current = Some(id);
         for _ in 0..=MAX_NATIVE_DOM_DEPTH {
@@ -1527,11 +1540,7 @@ impl NativeDocument {
             {
                 return true;
             }
-            if self
-                .stylesheet
-                .computed_for_in_document(self, current_id, None)
-                .hidden()
-            {
+            if self.computed_style_for_layout(current_id).hidden() {
                 return true;
             }
             current = node.parent();

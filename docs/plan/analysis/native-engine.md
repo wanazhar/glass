@@ -1756,6 +1756,14 @@ Stylesheet parsing, computed style, and DOM mutation remain parent-owned, so
 the next process gate must move those owners and their recovery boundary into
 the child.
 
+The completed computed-style follow-up is
+[`native-engine-browser-006`](../tasks/native-engine-browser-006.md). The child
+now serializes one typed computed-style record per parsed node; the parent
+validates the bounded record set and uses it for external layout/visibility
+without reparsing stylesheet sources. Local/data/fixture documents retain the
+direct stylesheet owner. DOM mutation, CSS diagnostic transfer, script
+execution, sandboxing, and supervisor recovery remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

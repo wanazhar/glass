@@ -195,6 +195,15 @@ malformed-transfer failures poison the child without CDP fallback. Stylesheet
 source parsing, computed style, and DOM mutation still run in the parent, so
 this remains a partial content-process boundary rather than full isolation.
 
+The completed computed-style batch is recorded in
+[`native-engine-browser-006`](../plan/tasks/native-engine-browser-006.md).
+External child snapshots now include one typed computed-style record per DOM
+node. The parent validates the cardinality and uses the immutable cache for
+layout, paint, hit testing, and visibility without reparsing stylesheet
+sources; local resources keep the direct stylesheet path. DOM mutation,
+diagnostics transfer, script execution, OS sandboxing, and full content
+recovery remain open.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature

@@ -111,6 +111,16 @@ boundary, and shutdown tolerates an already-exited child. OS-specific
 sandboxing, cross-platform crash/restart coverage, standards events, script
 execution, network security, and browser parity remain open.
 
+The completed sandbox-launch batch is
+[native-engine-browser-009](tasks/native-engine-browser-009.md). Linux now
+requires Bubblewrap with isolated user/PID/UTS/IPC namespaces, read-only
+runtime mounts, private `/tmp`, parent-death cleanup, and `no_new_privs`;
+macOS uses a deny-by-default Seatbelt profile; Windows uses a retained Job
+Object with process-count and kill-on-close limits. Missing policy support is a
+typed startup failure, never an implicit unsandboxed fallback. Full origin/site
+isolation, network mediation, restricted Windows tokens, cross-platform
+containment evidence, and the remaining browser gates remain open.
+
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,
 fixture/data-URL-only, one-context engine kernel and explicit semantic backend.

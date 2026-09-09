@@ -221,6 +221,16 @@ fresh-worker recovery boundary and closing an already-exited worker is
 idempotent. This is still not an OS sandbox, site-isolation boundary, or
 cross-platform crash/restart certification.
 
+The completed sandbox-launch batch is recorded in
+[`native-engine-browser-009`](../plan/tasks/native-engine-browser-009.md).
+Linux launches through required Bubblewrap namespaces and read-only runtime
+mounts with private `/tmp` and `no_new_privs`; macOS uses a deny-by-default
+Seatbelt profile; Windows uses a retained Job Object with active-process and
+kill-on-close limits. Missing policy support returns a typed failure rather
+than silently running an ordinary child. Network mediation, origin/site
+isolation, restricted tokens, and complete cross-platform security evidence
+remain separate promotion gates.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature

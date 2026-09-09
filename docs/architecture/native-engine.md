@@ -353,6 +353,16 @@ never evaluates the network page. Pages without an initialized local realm
 retain the Rust-only path. Type/input/change ordering, link navigation/default
 actions, timers, modules, Fetch/XHR, and remaining resource classes stay open.
 
+The completed native-engine-browser-023 batch gives Rust-owned type actions the
+same clone-and-owner discipline. Local and child type paths apply the value,
+dispatch focus/blur, input, and change in order, apply callback commands, and
+commit one final revision. The active host command sink lets persistent
+callbacks use captured element methods without writing to an old evaluation
+buffer, while snapshot properties/tree links remain refresh-bound rather than
+claiming live Web IDL identity. Insertion/removal, `beforeinput`, composition,
+keyboard input, submission, link navigation/default actions, timers, modules,
+Fetch/XHR, and remaining resource classes stay open.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature
@@ -3408,7 +3418,7 @@ The native profile is `experimental` and declares:
 | evidence | available | bounded URL, title, visible text, revision; native semantic projection is Rust-only |
 | action | available | semantic click/type, bounded vertical root scrolling, plus native point targets for supported local controls; no nested scrolling or default browser behavior |
 | effects | available | current revision and changed signal; bounded event metadata is Rust-only |
-| script | available | bounded QuickJS ECMAScript with a refreshed `window`/`document` snapshot, typed click/form/attribute/focus commands, persistent listener records, bounded Event/CustomEvent capture/target/bubble dispatch, Rust-action event re-entry, and cancelable click preflight; no live Web IDL identity, transactional type/input ordering, timers, modules, or page-script loading |
+| script | available | bounded QuickJS ECMAScript with a refreshed `window`/`document` snapshot, typed click/form/attribute/focus commands, persistent listener records, bounded Event/CustomEvent capture/target/bubble dispatch, cancelable click preflight, and transactional type/input/change event re-entry; no live Web IDL identity, beforeinput/composition, timers, modules, or page-script loading |
 | capture | available | bounded PNG of the current logical RGBA surface; JPEG/PDF and screenshot-containing evidence are unavailable |
 | storage | partial | process-owned session cookies and bounded document cache; no local/session/IndexedDB storage or persistence |
 | prompts | omitted | no dialogs |

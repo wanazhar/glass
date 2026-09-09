@@ -3,9 +3,7 @@ use super::config::{
     NativeEngineConfig, decode_percent_encoded_fragment, decode_text_fragment_terms,
     is_network_url, resolve_fixture_relative_url, validate_url_text, without_fragment,
 };
-use super::content_process::{
-    NativeContentAction, NativeContentLoad, NativeContentMutation, NativeContentProcess,
-};
+use super::content_process::{NativeContentLoad, NativeContentMutation, NativeContentProcess};
 use super::diagnostics::NativeDiagnostic;
 use super::dom::{NativeDocument, NativeNodeId};
 use super::error::NativeEngineError;
@@ -537,6 +535,9 @@ impl NativeEngine {
                 if !self.document.is_hidden_for_layout(id) {
                     self.require_layout_actionable(id)?;
                 }
+                if self.javascript.is_some() {
+                    return self.action_local_type_with_event_transaction(id, &text);
+                }
                 (self.document.apply_type(id, &text)?, true)
             }
             NativeAction::Scroll { delta_x, delta_y } => {
@@ -625,40 +626,23 @@ impl NativeEngine {
                 }
                 let mut preview = self.document.clone();
                 preview.apply_type(id, &text)?;
-                self.apply_content_process_action(NativeContentAction::Type {
-                    node_index: id.index(),
-                    text,
-                })
-                .await
+                let mutation = {
+                    let process =
+                        self.content_process
+                            .as_mut()
+                            .ok_or_else(|| NativeEngineError::Worker {
+                                operation: "content process type event bridge".into(),
+                                reason: "native content process is not running".into(),
+                            })?;
+                    process
+                        .mutate_type_with_event_bridge(id.index(), text)
+                        .await?
+                };
+                let next_revision = self.next_revision()?;
+                self.apply_content_process_mutation_at(next_revision, mutation)
             }
             NativeAction::Scroll { .. } => self.action(action),
         }
-    }
-
-    async fn apply_content_process_action(
-        &mut self,
-        action: NativeContentAction,
-    ) -> Result<NativeActionResult, NativeEngineError> {
-        let mutation = {
-            let process =
-                self.content_process
-                    .as_mut()
-                    .ok_or_else(|| NativeEngineError::Worker {
-                        operation: "content process mutation".into(),
-                        reason: "native content process is not running".into(),
-                    })?;
-            process.mutate(action).await?
-        };
-        let event_metadata = mutation
-            .events
-            .iter()
-            .map(|event| (event.node_index, event.kind))
-            .collect::<Vec<_>>();
-        let next_revision = self.next_revision()?;
-        let result = self.apply_content_process_mutation_at(next_revision, mutation)?;
-        self.dispatch_content_process_events(&event_metadata)
-            .await?;
-        Ok(result)
     }
 
     fn apply_local_script_commands(
@@ -764,27 +748,36 @@ impl NativeEngine {
         })
     }
 
-    async fn dispatch_content_process_events(
+    fn action_local_type_with_event_transaction(
         &mut self,
-        events: &[(u32, NativeEventKind)],
-    ) -> Result<(), NativeEngineError> {
-        let Some(source) = host_event_script(events)? else {
-            return Ok(());
-        };
-        let evaluation = {
-            let process =
-                self.content_process
-                    .as_mut()
-                    .ok_or_else(|| NativeEngineError::Worker {
-                        operation: "content process event dispatch".into(),
-                        reason: "native content process is not running".into(),
-                    })?;
-            process.evaluate(&source).await?
-        };
-        if let Some(mutation) = evaluation.mutation {
-            self.apply_content_process_mutation(mutation)?;
+        id: NativeNodeId,
+        text: &str,
+    ) -> Result<NativeActionResult, NativeEngineError> {
+        let mut document = self.document.clone();
+        let mut events = document.apply_type(id, text)?;
+        let default_events = events.clone();
+        for event in default_events {
+            if let Some(evaluation) = self.evaluate_local_events(&document, &[event])? {
+                events.extend(document.apply_script_commands(&evaluation.commands)?);
+            }
+            if events.len() > MAX_NATIVE_EFFECTS {
+                return Err(NativeEngineError::limit(
+                    "native type event effects",
+                    MAX_NATIVE_EFFECTS,
+                    events.len(),
+                ));
+            }
         }
-        Ok(())
+        let next_revision = self.next_revision()?;
+        document.set_revision(next_revision);
+        self.document = document;
+        self.revision = next_revision;
+        self.history.update_current_scroll(self.scroll_offset);
+        self.record_effects(events);
+        Ok(NativeActionResult {
+            revision: next_revision,
+            accepted: true,
+        })
     }
 
     fn apply_content_process_mutation(

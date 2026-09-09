@@ -1794,6 +1794,15 @@ typed and fail-closed. The shared network namespace, origin/site policy,
 restricted Windows tokens, and full cross-platform containment evidence remain
 open for BE-02 and later security gates.
 
+The completed redirect/charset follow-up is
+[`native-engine-browser-010`](../tasks/native-engine-browser-010.md). The
+shared loader rejects credential-bearing and non-HTTP(S) redirects before
+follow, caps the chain at eight hops, rebuilds final tuple origins, and
+supports bounded UTF-8, UTF-16, Latin-1, and Windows-1252 document decoding.
+Cookies/cache, CORS/CSP, mixed content, service workers, permissions,
+subresources, complete WHATWG encoding sniffing, and script/browser parity
+remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

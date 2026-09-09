@@ -7,6 +7,7 @@ use super::origin::NativeOrigin;
 use base64::Engine as _;
 use futures_util::StreamExt;
 use std::collections::BTreeMap;
+use std::io;
 use std::time::Duration;
 use url::Url;
 
@@ -108,9 +109,7 @@ impl NativeResourceLoader {
         })?;
         reject_credentials(&parsed)?;
         let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::limited(
-                MAX_NATIVE_NETWORK_REDIRECTS,
-            ))
+            .redirect(reqwest::redirect::Policy::custom(native_redirect_policy))
             .timeout(NATIVE_NETWORK_TIMEOUT)
             .build()
             .map_err(|error| network_error("HTTP client construction", error))?;
@@ -126,7 +125,7 @@ impl NativeResourceLoader {
                 reason: format!("server returned HTTP {}", response.status().as_u16()),
             });
         }
-        validate_html_content_type(response.headers().get(reqwest::header::CONTENT_TYPE))?;
+        let charset = content_type_charset(response.headers().get(reqwest::header::CONTENT_TYPE))?;
         let content_length = response.content_length();
         if content_length.is_some_and(|length| length > self.max_document_bytes as u64) {
             return Err(NativeEngineError::limit(
@@ -162,11 +161,7 @@ impl NativeResourceLoader {
             }
             bytes.extend_from_slice(&chunk);
         }
-        let body = String::from_utf8(bytes).map_err(|_| NativeEngineError::Network {
-            operation: "HTTP document decoding".into(),
-            reason: "HTTP(S) document is not valid UTF-8; charset decoding is not yet implemented"
-                .into(),
-        })?;
+        let body = decode_html_body(&bytes, charset.as_deref(), self.max_document_bytes)?;
         let navigation_url = append_original_fragment(final_url, url);
         let origin =
             NativeOrigin::from_url(&Url::parse(without_fragment(&navigation_url)).map_err(
@@ -223,11 +218,11 @@ fn reject_credentials(url: &Url) -> Result<(), NativeEngineError> {
     Ok(())
 }
 
-fn validate_html_content_type(
+fn content_type_charset(
     value: Option<&reqwest::header::HeaderValue>,
-) -> Result<(), NativeEngineError> {
+) -> Result<Option<String>, NativeEngineError> {
     let Some(value) = value else {
-        return Ok(());
+        return Ok(None);
     };
     let value = value.to_str().map_err(|_| NativeEngineError::Network {
         operation: "HTTP content-type validation".into(),
@@ -237,11 +232,126 @@ fn validate_html_content_type(
     if media_type.eq_ignore_ascii_case("text/html")
         || media_type.eq_ignore_ascii_case("application/xhtml+xml")
     {
-        return Ok(());
+        let charset = value
+            .split(';')
+            .skip(1)
+            .filter_map(|part| part.split_once('='))
+            .find_map(|(name, value)| {
+                name.trim()
+                    .eq_ignore_ascii_case("charset")
+                    .then(|| value.trim().trim_matches(['"', '\'']).to_ascii_lowercase())
+            });
+        return Ok(charset);
     }
     Err(NativeEngineError::UnsupportedUrl {
         reason: format!("HTTP(S) navigation returned unsupported content type {media_type:?}"),
     })
+}
+
+fn native_redirect_policy(attempt: reqwest::redirect::Attempt<'_>) -> reqwest::redirect::Action {
+    if attempt.previous().len() >= MAX_NATIVE_NETWORK_REDIRECTS {
+        return attempt.stop();
+    }
+    let url = attempt.url();
+    if !is_network_url(without_fragment(url.as_str()))
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return attempt.error(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "native navigation redirect violates the HTTP(S) URL policy",
+        ));
+    }
+    attempt.follow()
+}
+
+fn decode_html_body(
+    bytes: &[u8],
+    charset: Option<&str>,
+    max_document_bytes: usize,
+) -> Result<String, NativeEngineError> {
+    let label = charset.unwrap_or_default().trim().to_ascii_lowercase();
+    let decoded = if label.is_empty() {
+        if bytes.starts_with(&[0xef, 0xbb, 0xbf]) {
+            String::from_utf8(bytes[3..].to_vec()).map_err(|_| ())
+        } else if bytes.starts_with(&[0xff, 0xfe]) {
+            decode_utf16(&bytes[2..], true)
+        } else if bytes.starts_with(&[0xfe, 0xff]) {
+            decode_utf16(&bytes[2..], false)
+        } else {
+            String::from_utf8(bytes.to_vec()).map_err(|_| ())
+        }
+    } else {
+        match label.as_str() {
+            "utf-8" | "utf8" => String::from_utf8(bytes.to_vec()).map_err(|_| ()),
+            "utf-16" | "utf-16le" => decode_utf16(bytes, true),
+            "utf-16be" => decode_utf16(bytes, false),
+            "us-ascii" => {
+                if bytes.iter().any(|byte| *byte > 0x7f) {
+                    return Err(charset_error(&label));
+                }
+                String::from_utf8(bytes.to_vec()).map_err(|_| ())
+            }
+            "iso-8859-1" | "latin1" | "latin-1" => {
+                Ok(bytes.iter().map(|byte| char::from(*byte)).collect())
+            }
+            "windows-1252" | "cp1252" => Ok(decode_windows_1252(bytes)),
+            _ => return Err(charset_error(&label)),
+        }
+    }
+    .map_err(|_| charset_error(if label.is_empty() { "utf-8" } else { &label }))?;
+    if decoded.len() > max_document_bytes {
+        return Err(NativeEngineError::limit(
+            "decoded HTML document",
+            max_document_bytes,
+            decoded.len(),
+        ));
+    }
+    Ok(decoded)
+}
+
+fn decode_utf16(bytes: &[u8], little_endian: bool) -> Result<String, ()> {
+    if !bytes.len().is_multiple_of(2) {
+        return Err(());
+    }
+    let units = bytes
+        .chunks_exact(2)
+        .map(|chunk| {
+            if little_endian {
+                u16::from_le_bytes([chunk[0], chunk[1]])
+            } else {
+                u16::from_be_bytes([chunk[0], chunk[1]])
+            }
+        })
+        .collect::<Vec<_>>();
+    String::from_utf16(&units).map_err(|_| ())
+}
+
+fn decode_windows_1252(bytes: &[u8]) -> String {
+    const SPECIAL: [char; 32] = [
+        '\u{20ac}', '\u{0081}', '\u{201a}', '\u{0192}', '\u{201e}', '\u{2026}', '\u{2020}',
+        '\u{2021}', '\u{02c6}', '\u{2030}', '\u{0160}', '\u{2039}', '\u{0152}', '\u{008d}',
+        '\u{017d}', '\u{008f}', '\u{0090}', '\u{2018}', '\u{2019}', '\u{201c}', '\u{201d}',
+        '\u{2022}', '\u{2013}', '\u{2014}', '\u{02dc}', '\u{2122}', '\u{0161}', '\u{203a}',
+        '\u{0153}', '\u{009d}', '\u{017e}', '\u{0178}',
+    ];
+    bytes
+        .iter()
+        .map(|byte| {
+            if (0x80..=0x9f).contains(byte) {
+                SPECIAL[usize::from(*byte - 0x80)]
+            } else {
+                char::from(*byte)
+            }
+        })
+        .collect()
+}
+
+fn charset_error(charset: &str) -> NativeEngineError {
+    NativeEngineError::Network {
+        operation: "HTTP document decoding".into(),
+        reason: format!("HTTP(S) document charset {charset:?} is unsupported or invalid"),
+    }
 }
 
 fn append_original_fragment(final_url: Url, original_url: &str) -> String {
@@ -332,5 +442,24 @@ fn hex_value(value: u8) -> Option<u8> {
         b'a'..=b'f' => Some(value - b'a' + 10),
         b'A'..=b'F' => Some(value - b'A' + 10),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_html_body;
+
+    #[test]
+    fn decodes_bounded_declared_html_charsets() {
+        assert_eq!(
+            decode_html_body(b"caf\xe9", Some("windows-1252"), 32).unwrap(),
+            "café"
+        );
+        assert_eq!(
+            decode_html_body(&[0xff, 0xfe, b'c', 0, b'a', 0, b'f', 0], None, 32).unwrap(),
+            "caf"
+        );
+        assert!(decode_html_body(b"\xff", Some("us-ascii"), 32).is_err());
+        assert!(decode_html_body(b"text", Some("x-unknown"), 32).is_err());
     }
 }

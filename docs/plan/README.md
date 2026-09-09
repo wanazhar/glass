@@ -121,6 +121,15 @@ typed startup failure, never an implicit unsandboxed fallback. Full origin/site
 isolation, network mediation, restricted Windows tokens, cross-platform
 containment evidence, and the remaining browser gates remain open.
 
+The completed redirect/charset batch is
+[native-engine-browser-010](tasks/native-engine-browser-010.md). The shared
+loader now rejects credential-bearing or non-HTTP(S) redirects before follow,
+keeps the eight-hop limit and final-origin validation, and decodes bounded
+UTF-8, UTF-16, Latin-1, and Windows-1252 HTML responses. The child and parent
+share this policy; cookies/cache, CORS/CSP, mixed content, service workers,
+permissions, subresources, full WHATWG encoding sniffing, script execution,
+and browser parity remain open.
+
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,
 fixture/data-URL-only, one-context engine kernel and explicit semantic backend.

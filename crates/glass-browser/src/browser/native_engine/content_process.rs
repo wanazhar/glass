@@ -284,6 +284,23 @@ impl NativeContentProcess {
         .await
     }
 
+    pub(crate) async fn dispatch_lifecycle_events(
+        &mut self,
+        events: &[NativeEventKind],
+    ) -> Result<NativeContentMutation, NativeEngineError> {
+        let event_names = events
+            .iter()
+            .map(|kind| event_kind_text(*kind))
+            .collect::<Vec<_>>();
+        let id = self.next_id();
+        self.mutate_with_request_kind(
+            id,
+            "mutate_lifecycle_events",
+            json!({"events": event_names}),
+        )
+        .await
+    }
+
     pub(crate) async fn fetch(
         &mut self,
         document_url: &str,
@@ -1344,6 +1361,106 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     Err(error) => content_error_response(id, error),
                 }
             }
+            "mutate_lifecycle_events" if protocol_matches(&request) && running => {
+                let Some(current) = document.as_ref() else {
+                    let response = content_error_response(
+                        id,
+                        NativeEngineError::Worker {
+                            operation: "content process lifecycle events".into(),
+                            reason: "content process has no committed document".into(),
+                        },
+                    );
+                    write_value_frame(&mut stdout, &response).await?;
+                    continue;
+                };
+                let event_values = request
+                    .get("action")
+                    .and_then(|action| action.get("events"))
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| {
+                        NativeEngineError::invalid(
+                            "content-process lifecycle events",
+                            "must be an array",
+                        )
+                    })?;
+                let mut events = Vec::with_capacity(event_values.len());
+                for value in event_values {
+                    let event = value.as_str().and_then(parse_event_kind).ok_or_else(|| {
+                        NativeEngineError::invalid(
+                            "content-process lifecycle event",
+                            "must be a supported lifecycle event",
+                        )
+                    })?;
+                    if !matches!(
+                        event,
+                        NativeEventKind::PageHide
+                            | NativeEventKind::Unload
+                            | NativeEventKind::PageShow
+                    ) {
+                        return Err(NativeEngineError::invalid(
+                            "content-process lifecycle event",
+                            "must be pagehide, unload, or pageshow",
+                        ));
+                    }
+                    events.push(event);
+                }
+                let Some(document_url) = document_url.as_deref() else {
+                    let response = content_error_response(
+                        id,
+                        NativeEngineError::Worker {
+                            operation: "content process lifecycle events".into(),
+                            reason: "content process has no committed URL".into(),
+                        },
+                    );
+                    write_value_frame(&mut stdout, &response).await?;
+                    continue;
+                };
+                let Some(document_origin) = document_origin.as_ref() else {
+                    let response = content_error_response(
+                        id,
+                        NativeEngineError::Worker {
+                            operation: "content process lifecycle events".into(),
+                            reason: "content process has no committed origin".into(),
+                        },
+                    );
+                    write_value_frame(&mut stdout, &response).await?;
+                    continue;
+                };
+                let Some(runtime) = javascript_runtime.as_ref() else {
+                    let response = content_error_response(
+                        id,
+                        NativeEngineError::Worker {
+                            operation: "content process lifecycle events".into(),
+                            reason: "content process has no JavaScript runtime".into(),
+                        },
+                    );
+                    write_value_frame(&mut stdout, &response).await?;
+                    continue;
+                };
+                match mutate_lifecycle_events(
+                    current,
+                    runtime,
+                    document_url,
+                    document_origin,
+                    viewport,
+                    &events,
+                ) {
+                    Ok((next, mutation)) => {
+                        document = Some(next);
+                        json!({
+                            "kind": "mutated",
+                            "id": id,
+                            "document_base64": base64::engine::general_purpose::STANDARD
+                                .encode(serde_json::to_vec(&mutation.document).unwrap_or_default()),
+                            "events": mutation.events.iter().map(|event| json!({
+                                "node_index": event.node_index,
+                                "kind": event_kind_text(event.kind),
+                            })).collect::<Vec<_>>(),
+                        })
+                    }
+                    Err(error) => content_error_response(id, error),
+                }
+            }
             "close" if protocol_matches(&request) => {
                 write_value_frame(&mut stdout, &json!({"kind":"closed","id":id})).await?;
                 return Ok(());
@@ -2048,6 +2165,64 @@ fn mutate_key_with_event_bridge(
     Ok((next, mutation))
 }
 
+fn mutate_lifecycle_events(
+    current: &NativeDocument,
+    runtime: &NativeJavaScriptRuntime,
+    document_url: &str,
+    document_origin: &NativeOrigin,
+    viewport: Viewport,
+    kinds: &[NativeEventKind],
+) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
+    if kinds.is_empty() {
+        return Ok((
+            current.clone(),
+            NativeContentMutation {
+                document: current.to_content_wire(),
+                events: Vec::new(),
+                navigation: None,
+            },
+        ));
+    }
+    let metadata = kinds
+        .iter()
+        .map(|kind| (u32::MAX, *kind))
+        .collect::<Vec<_>>();
+    let source = host_event_script(&metadata)?.ok_or_else(|| NativeEngineError::Worker {
+        operation: "content process lifecycle events".into(),
+        reason: "lifecycle event metadata was empty".into(),
+    })?;
+    let evaluation = runtime.evaluate(&source, current, document_url, document_origin, viewport)?;
+    let mut next = current.clone();
+    let effects = next.apply_script_commands(&evaluation.commands)?;
+    let mut events = kinds
+        .iter()
+        .copied()
+        .map(|kind| NativeContentEvent {
+            node_index: 0,
+            kind,
+        })
+        .collect::<Vec<_>>();
+    events.extend(effects.into_iter().map(|(node, kind)| NativeContentEvent {
+        node_index: node.index(),
+        kind,
+    }));
+    if events.len() > MAX_NATIVE_EFFECTS {
+        return Err(NativeEngineError::limit(
+            "native lifecycle effects",
+            MAX_NATIVE_EFFECTS,
+            events.len(),
+        ));
+    }
+    Ok((
+        next.clone(),
+        NativeContentMutation {
+            document: next.to_content_wire(),
+            events,
+            navigation: None,
+        },
+    ))
+}
+
 fn mutate_script_document(
     current: &NativeDocument,
     runtime: &NativeJavaScriptRuntime,
@@ -2227,6 +2402,9 @@ fn event_kind_text(kind: NativeEventKind) -> &'static str {
         NativeEventKind::ReadyStateChange => "readystatechange",
         NativeEventKind::DomContentLoaded => "DOMContentLoaded",
         NativeEventKind::Load => "load",
+        NativeEventKind::PageHide => "pagehide",
+        NativeEventKind::Unload => "unload",
+        NativeEventKind::PageShow => "pageshow",
         NativeEventKind::Invalid => "invalid",
         NativeEventKind::KeyDown => "keydown",
         NativeEventKind::KeyUp => "keyup",
@@ -2245,6 +2423,9 @@ fn parse_event_kind(value: &str) -> Option<NativeEventKind> {
         "readystatechange" => Some(NativeEventKind::ReadyStateChange),
         "DOMContentLoaded" => Some(NativeEventKind::DomContentLoaded),
         "load" => Some(NativeEventKind::Load),
+        "pagehide" => Some(NativeEventKind::PageHide),
+        "unload" => Some(NativeEventKind::Unload),
+        "pageshow" => Some(NativeEventKind::PageShow),
         "invalid" => Some(NativeEventKind::Invalid),
         "keydown" => Some(NativeEventKind::KeyDown),
         "keyup" => Some(NativeEventKind::KeyUp),

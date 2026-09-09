@@ -194,8 +194,12 @@ impl NativeEngine {
             return Err(error);
         }
         self.runtime_worker = Some(worker);
+        let has_content_process = content_process.is_some();
         self.content_process = content_process;
         self.lifecycle = NativeLifecycleState::Running;
+        if has_content_process {
+            self.dispatch_content_page_show_async().await?;
+        }
         Ok(())
     }
 
@@ -271,6 +275,9 @@ impl NativeEngine {
     ) -> Result<NativeEngineSnapshot, NativeEngineError> {
         self.require_running("navigate")?;
         let url = navigation.url.as_str();
+        if !self.is_same_document_navigation(url) {
+            self.dispatch_navigation_lifecycle_async().await?;
+        }
         if is_network_url(&url) {
             let referrer = referrer_for_navigation(&self.url, &url)?;
             self.ensure_content_process().await?;
@@ -394,7 +401,48 @@ impl NativeEngine {
             let prepared = self.prepare_navigation_content(content)?;
             self.commit_navigation_async(prepared, worker).await?;
         }
+        self.dispatch_content_page_show_async().await?;
         Ok(self.snapshot_unchecked())
+    }
+
+    async fn dispatch_navigation_lifecycle_async(&mut self) -> Result<(), NativeEngineError> {
+        let events = [NativeEventKind::PageHide, NativeEventKind::Unload];
+        let mutation = if self
+            .content_process
+            .as_ref()
+            .is_some_and(NativeContentProcess::is_healthy)
+        {
+            match self.content_process.as_mut() {
+                Some(process) => Some(process.dispatch_lifecycle_events(&events).await?),
+                None => None,
+            }
+        } else {
+            None
+        };
+        if let Some(mutation) = mutation {
+            let next_revision = self.next_revision()?;
+            self.apply_content_process_mutation_at(next_revision, mutation)?;
+            return Ok(());
+        }
+        if self.javascript.is_some() {
+            self.dispatch_local_navigation_lifecycle()?;
+        }
+        Ok(())
+    }
+
+    async fn dispatch_content_page_show_async(&mut self) -> Result<(), NativeEngineError> {
+        let Some(process) = self.content_process.as_mut() else {
+            return Ok(());
+        };
+        if !process.is_healthy() {
+            return Ok(());
+        }
+        let mutation = process
+            .dispatch_lifecycle_events(&[NativeEventKind::PageShow])
+            .await?;
+        let next_revision = self.next_revision()?;
+        self.apply_content_process_mutation_at(next_revision, mutation)?;
+        Ok(())
     }
 
     /// Move to the previous bounded local history entry.
@@ -927,6 +975,39 @@ impl NativeEngine {
             return Ok(());
         };
         self.apply_local_script_commands(&evaluation.commands, false)
+    }
+
+    fn dispatch_local_navigation_lifecycle(&mut self) -> Result<(), NativeEngineError> {
+        let window = NativeNodeId::from_parts(self.document.generation(), u32::MAX);
+        let lifecycle_events = [
+            (window, NativeEventKind::PageHide),
+            (window, NativeEventKind::Unload),
+        ];
+        let Some(evaluation) = self.evaluate_local_events(&self.document, &lifecycle_events)?
+        else {
+            return Ok(());
+        };
+        let mut document = self.document.clone();
+        let mut effects = document.apply_script_commands_allowing_links(&evaluation.commands)?;
+        effects.extend(lifecycle_events);
+        let next_revision = self.next_revision()?;
+        document.set_revision(next_revision);
+        self.document = document;
+        self.revision = next_revision;
+        self.history.update_current_scroll(self.scroll_offset);
+        self.record_effects(effects);
+        Ok(())
+    }
+
+    fn dispatch_local_page_show(&mut self) -> Result<(), NativeEngineError> {
+        if self.javascript.is_none() {
+            return Ok(());
+        }
+        let window = NativeNodeId::from_parts(self.document.generation(), u32::MAX);
+        let event = (window, NativeEventKind::PageShow);
+        self.dispatch_local_events(&[event])?;
+        self.record_effects(vec![event]);
+        Ok(())
     }
 
     fn evaluate_local_events(
@@ -1487,6 +1568,9 @@ impl NativeEngine {
         &mut self,
         mut prepared: PreparedNavigation,
     ) -> Result<(), NativeEngineError> {
+        if self.javascript.is_some() {
+            self.dispatch_local_navigation_lifecycle()?;
+        }
         let mut javascript = None;
         if prepared.execute_inline_scripts {
             execute_inline_scripts(
@@ -1511,6 +1595,7 @@ impl NativeEngine {
         self.scroll_offset = scroll_offset;
         self.revision = revision;
         self.history.push(self.url.clone(), revision, scroll_offset);
+        self.dispatch_local_page_show()?;
         Ok(())
     }
 
@@ -1519,8 +1604,9 @@ impl NativeEngine {
         mut prepared: PreparedNavigation,
         worker: &NativeRuntimeWorker,
     ) -> Result<(), NativeEngineError> {
+        let execute_page_scripts = prepared.execute_inline_scripts;
         let mut javascript = None;
-        if prepared.execute_inline_scripts {
+        if execute_page_scripts {
             execute_inline_scripts(
                 &mut prepared.document,
                 &mut javascript,
@@ -1544,6 +1630,9 @@ impl NativeEngine {
         self.scroll_offset = scroll_offset;
         self.revision = revision;
         self.history.push(self.url.clone(), revision, scroll_offset);
+        if execute_page_scripts {
+            self.dispatch_local_page_show()?;
+        }
         Ok(())
     }
 

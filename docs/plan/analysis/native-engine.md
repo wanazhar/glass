@@ -2087,9 +2087,18 @@ process-backed owner dispatches successful external stylesheet/script `load`
 events at a deterministic post-resource boundary before `DOMContentLoaded`,
 retaining callback mutations through the existing typed realm transfer.
 Failure/error events, dynamic insertion, resource timing, network concurrency,
-unload/pagehide/pageshow, and full task-source ordering remain separate work.
+and full task-source ordering remain separate work.
 
-The next bounded workstream is full task ordering and navigation lifecycle,
+The completed bounded replacement-navigation follow-up is
+[native-engine-browser-042](../tasks/native-engine-browser-042.md). Full
+replacement navigations deliver window `pagehide` then `unload` before
+resource replacement and `pageshow` after new-page publication in both local
+and child owners. Effects and callback mutations use the existing typed
+boundary; same-document fragments remain in-place. Cancelable `beforeunload`,
+`hashchange`, bfcache/history traversal, popup/opener contexts, visibility, and
+full HTML navigation task ordering remain open.
+
+The next bounded workstream is full task ordering and navigation edge cases,
 followed by multipart/full constraint validation, external form ownership and
 target contexts, and the remaining browser-context primitives.
 

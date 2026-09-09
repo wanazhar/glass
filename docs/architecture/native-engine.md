@@ -512,7 +512,17 @@ links and classic/module scripts now dispatch non-bubbling, non-cancelable
 before `DOMContentLoaded`; callback mutations remain in the persistent realm
 and cross the existing typed owner boundary. Dynamic insertion, image/font/media
 events, resource failures/error events, network concurrency, resource timing,
-unload/pagehide/pageshow, and full task-source scheduling remain open.
+and full task-source scheduling remain open.
+
+The completed native-engine-browser-042 batch closes the bounded replacement
+navigation lifecycle boundary. Full replacement navigations now deliver
+`pagehide` then `unload` to the outgoing local or child-owned window before
+resource replacement, and `pageshow` to the newly published window after its
+accepted ready/load schedule; initial publication also delivers `pageshow`.
+Transition effects and callback mutations use the existing typed owner paths,
+while same-document fragments remain in-place. Cancelable `beforeunload`,
+`hashchange`, bfcache/history-traversal parity, popup/opener contexts,
+visibility state, and the full HTML navigation task model remain open.
 
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third

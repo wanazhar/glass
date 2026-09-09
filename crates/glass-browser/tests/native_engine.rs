@@ -201,6 +201,55 @@ async fn native_local_pages_without_scripts_retain_complete_ready_state() {
 }
 
 #[tokio::test]
+async fn native_local_full_navigation_orders_page_lifecycle_events() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://lifecycle-old",
+            "<script>addEventListener('pagehide', () => globalThis.oldPagehide = true); addEventListener('unload', () => globalThis.oldUnload = true);</script><p>Old</p>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://lifecycle-next",
+            "<script>globalThis.lifecycle = []; addEventListener('pageshow', () => lifecycle.push(document.readyState));</script><p>Next</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://lifecycle-old");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    let before_navigation = engine.revision();
+    engine
+        .navigate_async("fixture://lifecycle-next")
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.evaluate_async("globalThis.lifecycle").await.unwrap(),
+        serde_json::json!(["complete"])
+    );
+    let lifecycle_effects = engine
+        .effects_since(before_navigation)
+        .unwrap()
+        .effects
+        .into_iter()
+        .map(|effect| effect.kind)
+        .filter(|kind| {
+            matches!(
+                kind,
+                NativeEventKind::PageHide | NativeEventKind::Unload | NativeEventKind::PageShow
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lifecycle_effects,
+        vec![
+            NativeEventKind::PageHide,
+            NativeEventKind::Unload,
+            NativeEventKind::PageShow
+        ]
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_inline_modules_run_in_document_order() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -1112,6 +1161,70 @@ async fn native_content_process_runs_inline_page_scripts_in_persistent_realm() {
             "ready:complete",
             "load:complete"
         ])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_orders_navigation_lifecycle_events() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/old", "/next"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 4096];
+            let read = stream.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..read]);
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let body = if expected_path == "/old" {
+                "<script>addEventListener('pagehide', () => globalThis.oldPagehide = true); addEventListener('unload', () => globalThis.oldUnload = true);</script><p>Old</p>"
+            } else {
+                "<script>globalThis.lifecycle = []; addEventListener('pageshow', () => lifecycle.push(document.readyState));</script><p>Next</p>"
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/old")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let before_navigation = engine.revision();
+    engine
+        .navigate_async(format!("http://{address}/next"))
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.evaluate_async("globalThis.lifecycle").await.unwrap(),
+        serde_json::json!(["complete"])
+    );
+    let lifecycle_effects = engine
+        .effects_since(before_navigation)
+        .unwrap()
+        .effects
+        .into_iter()
+        .map(|effect| effect.kind)
+        .filter(|kind| {
+            matches!(
+                kind,
+                NativeEventKind::PageHide | NativeEventKind::Unload | NativeEventKind::PageShow
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lifecycle_effects,
+        vec![
+            NativeEventKind::PageHide,
+            NativeEventKind::Unload,
+            NativeEventKind::PageShow
+        ]
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

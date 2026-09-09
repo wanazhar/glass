@@ -670,17 +670,29 @@ receive origin-filtered `storage` events for effective `localStorage` changes;
 the source document is excluded, no-op writes/removes/clears are suppressed,
 and the receiving Rust and JavaScript storage state is synchronized before
 dispatch. The bounded coordinator is in-process only: session-storage
-browsing-context routing, sandboxed HTTP(S) content-worker transport, profile
-writer locking, IndexedDB, full binary/stream FormData support, full task
-ordering/navigation edge cases, remaining full pattern-regex/file constraint
-validation, target contexts, and the remaining browser-context primitives
-remain open.
+browsing-context routing, profile writer locking, IndexedDB, full
+binary/stream FormData support, full task ordering/navigation edge cases,
+remaining full pattern-regex/file constraint validation, target contexts, and
+the remaining browser-context primitives remain open.
 
-The next BE-02/BE-03/BE-04/BE-07 gate is session-storage and child-process /
-multi-context event transport, followed by IndexedDB, full binary/stream
-FormData support, full task ordering/navigation edge cases, remaining full
+The completed process-backed local storage-event slice is
+[native-engine-browser-071](tasks/native-engine-browser-071.md). Separate
+sandboxed HTTP(S) content workers now report effective page `localStorage`
+changes through bounded responses; the parent coordinator validates and fans
+them out to other live engines sharing the explicit profile path, and the
+receiving worker applies and dispatches them before its next page operation.
+The source worker remains excluded and only local-storage events cross the
+coordinator. Session-storage browsing-context routing, independent Glass
+process/profile-writer coordination, IndexedDB, full binary/stream FormData
+support, full task ordering/navigation edge cases, remaining full
 pattern-regex/file constraint validation, target contexts, and the remaining
-browser-context primitives.
+browser-context primitives remain open.
+
+The next BE-02/BE-03/BE-04/BE-07 gate is session-storage browsing-context
+routing and profile-writer coordination, followed by IndexedDB, full
+binary/stream FormData support, full task ordering/navigation edge cases,
+remaining full pattern-regex/file constraint validation, target contexts, and
+the remaining browser-context primitives.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

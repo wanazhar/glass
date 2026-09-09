@@ -2330,14 +2330,26 @@ alive local native documents sharing the same explicit profile path receive
 origin-filtered `storage` events for effective `localStorage` changes; source
 documents are excluded, no-op mutations do not publish, and the receiving Rust
 and JavaScript stores are synchronized before dispatch. This is an in-process
-coordinator only. Session-storage browsing-context routing, sandboxed HTTP(S)
-content-worker transport, profile-writer locking, IndexedDB, full
-binary/stream FormData support, full Storage Web IDL identity, and the
-remaining browser-context gates remain open.
+coordinator only. Session-storage browsing-context routing, profile-writer
+locking, IndexedDB, full binary/stream FormData support, full Storage Web IDL
+identity, and the remaining browser-context gates remain open.
 
-The next bounded workstream is session-storage and child-process /
-multi-context event transport, followed by IndexedDB, full binary/stream
-FormData support, full task ordering/navigation edge cases, remaining full
+The completed process-backed local storage-event follow-up is
+[native-engine-browser-071](../tasks/native-engine-browser-071.md). Separate
+sandboxed HTTP(S) content workers report effective page `localStorage` changes
+through bounded IPC responses; the parent coordinator validates and fans them
+out to other live engines sharing the explicit profile path, and a receiving
+worker applies and dispatches the event before its next page operation. The
+source worker remains excluded and session-storage events never enter the
+cross-document coordinator. Independent Glass process/profile-writer
+coordination, browsing-context routing, IndexedDB, full binary/stream FormData
+support, full task ordering/navigation edge cases, remaining full
+pattern-regex/file constraint validation, target contexts, and the remaining
+browser-context primitives remain open.
+
+The next bounded workstream is session-storage browsing-context routing and
+profile-writer coordination, followed by IndexedDB, full binary/stream FormData
+support, full task ordering/navigation edge cases, remaining full
 pattern-regex/file constraint validation, target contexts, and the remaining
 browser-context primitives.
 

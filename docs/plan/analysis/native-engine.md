@@ -2132,6 +2132,13 @@ the local and child owners. Prompts, bfcache/session-history parity,
 cross-document restoration, target contexts, and full HTML task-source
 semantics remain open.
 
+The completed bounded due-time timer-turn follow-up is
+[native-engine-browser-047](../tasks/native-engine-browser-047.md). Local and
+child realms now retain normalized `setTimeout` due times, drain only due
+callbacks on a later host turn in due-time/ID order, and honor `clearTimeout`.
+There is no background page event loop yet; intervals, animation/idle
+callbacks, task-source fairness, and full wall-clock scheduling remain open.
+
 The next bounded workstream is full task ordering and navigation edge cases,
 followed by file/FormData support, full constraint validation, target contexts,
 and the remaining browser-context primitives.

@@ -423,6 +423,29 @@ async fn native_local_scripts_drain_microtasks_and_next_turn_timers() {
 }
 
 #[tokio::test]
+async fn native_local_delayed_timer_waits_for_due_host_turn() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://delayed-timer",
+            "<script>globalThis.taskOrder = 'script'; setTimeout(() => { globalThis.taskOrder += '-timer'; }, 200);</script>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://delayed-timer");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine.evaluate_async("globalThis.taskOrder").await.unwrap(),
+        serde_json::json!("script")
+    );
+    tokio::time::sleep(Duration::from_millis(220)).await;
+    assert_eq!(
+        engine.evaluate_async("globalThis.taskOrder").await.unwrap(),
+        serde_json::json!("script-timer")
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_script_applies_bounded_dom_commands_once() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -1450,6 +1473,41 @@ async fn native_content_process_beforeunload_can_cancel_replacement_navigation()
     assert_eq!(
         engine.evaluate_async("globalThis.lifecycle").await.unwrap(),
         serde_json::json!(["beforeunload"])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_delayed_timer_waits_for_due_host_turn() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = "<script>globalThis.taskOrder = 'script'; setTimeout(() => { globalThis.taskOrder += '-timer'; }, 200);</script>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine.evaluate_async("globalThis.taskOrder").await.unwrap(),
+        serde_json::json!("script")
+    );
+    tokio::time::sleep(Duration::from_millis(220)).await;
+    assert_eq!(
+        engine.evaluate_async("globalThis.taskOrder").await.unwrap(),
+        serde_json::json!("script-timer")
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

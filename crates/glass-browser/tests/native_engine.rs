@@ -166,6 +166,97 @@ async fn native_local_script_applies_bounded_dom_commands_once() {
 }
 
 #[tokio::test]
+async fn native_local_script_owns_event_listeners_and_focus_order() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://script-events",
+            "<input id='toggle' type='checkbox'><input id='name' type='text'>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://script-events");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    let initial_revision = engine.revision();
+
+    let registered = engine
+        .evaluate_async(
+            "(() => { const toggle = document.getElementById('toggle'); globalThis.events = []; globalThis.onToggleClick = (event) => { globalThis.events.push(event.type + ':' + event.target.id + ':' + event.currentTarget.id); document.getElementById('name').value = 'from-listener'; event.preventDefault(); }; globalThis.onProbe = (event) => { globalThis.events.push(event.type + ':' + event.detail); }; toggle.addEventListener('click', globalThis.onToggleClick); toggle.addEventListener('probe', globalThis.onProbe); toggle.focus(); const accepted = toggle.dispatchEvent(new CustomEvent('probe', { cancelable: true, detail: 'detail' })); return { active: document.activeElement.id, accepted, eventType: new Event('probe').type, events: globalThis.events }; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        registered,
+        serde_json::json!({
+            "active": "toggle",
+            "accepted": true,
+            "eventType": "probe",
+            "events": ["probe:detail"],
+        })
+    );
+    assert_eq!(engine.revision(), initial_revision + 1);
+
+    let prevented = engine
+        .evaluate_async(
+            "(() => { const toggle = document.getElementById('toggle'); return { checked: (toggle.click(), toggle.checked), value: document.getElementById('name').value, events: globalThis.events }; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        prevented,
+        serde_json::json!({
+            "checked": false,
+            "value": "from-listener",
+            "events": ["probe:detail", "click:toggle:toggle"],
+        })
+    );
+    assert_eq!(engine.revision(), initial_revision + 2);
+
+    let accepted = engine
+        .evaluate_async(
+            "(() => { const toggle = document.getElementById('toggle'); toggle.removeEventListener('click', globalThis.onToggleClick); toggle.click(); return toggle.checked; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(accepted, serde_json::json!(true));
+    assert_eq!(engine.revision(), initial_revision + 3);
+
+    let focus = engine
+        .evaluate_async(
+            "(() => { const field = document.getElementById('name'); field.focus(); field.blur(); return { active: document.activeElement, focused: field.focused }; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        focus,
+        serde_json::json!({
+            "active": null,
+            "focused": false,
+        })
+    );
+    assert_eq!(engine.revision(), initial_revision + 4);
+    let effects = engine.effects_since(initial_revision).unwrap();
+    assert!(
+        effects
+            .effects
+            .iter()
+            .any(|effect| effect.kind == NativeEventKind::Focus)
+    );
+    assert!(
+        effects
+            .effects
+            .iter()
+            .any(|effect| effect.kind == NativeEventKind::Blur)
+    );
+    assert!(
+        effects
+            .effects
+            .iter()
+            .any(|effect| effect.kind == NativeEventKind::Click)
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_runtime_session_loads_bounded_external_http_html_without_cdp() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -863,6 +954,32 @@ async fn native_content_process_owns_external_form_mutations_and_effects() {
             "source": "script",
         })
     );
+
+    let listener_revision = engine.revision();
+    let prevented = engine
+        .evaluate_async(
+            "(() => { const toggle = document.getElementById('toggle'); globalThis.childEvents = []; globalThis.childClick = (event) => { globalThis.childEvents.push(event.type + ':' + event.target.id); document.getElementById('name').value = 'event-child'; event.preventDefault(); }; toggle.addEventListener('click', globalThis.childClick); toggle.click(); return { checked: toggle.checked, value: document.getElementById('name').value, events: globalThis.childEvents }; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        prevented,
+        serde_json::json!({
+            "checked": false,
+            "value": "event-child",
+            "events": ["click:toggle"],
+        })
+    );
+    assert_eq!(engine.revision(), listener_revision + 1);
+
+    let accepted = engine
+        .evaluate_async(
+            "(() => { const toggle = document.getElementById('toggle'); toggle.removeEventListener('click', globalThis.childClick); toggle.click(); return toggle.checked; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(accepted, serde_json::json!(true));
+    assert_eq!(engine.revision(), listener_revision + 2);
 
     engine.close_async().await.unwrap();
     server.await.unwrap();

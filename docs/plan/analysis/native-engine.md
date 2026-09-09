@@ -1877,9 +1877,22 @@ The completed JavaScript DOM-mutation follow-up is
 projection now emits bounded typed `click()`, form-state, and attribute
 commands. Glass validates the complete batch against a document clone and
 commits one revision; the child process applies the same commands before its
-typed snapshot/effects transfer. Live Web IDL identity, listener/event
-dispatch, default actions, script navigation, timers, modules, page-script
-loading, Fetch/XHR, service workers, and browser compatibility remain open.
+typed snapshot/effects transfer. Live Web IDL identity, ancestor event
+propagation, Rust-action listener dispatch, script navigation, timers, modules,
+page-script loading, Fetch/XHR, service workers, and browser compatibility
+remain open.
+
+The completed JavaScript event/focus follow-up is
+[native-engine-browser-019](../tasks/native-engine-browser-019.md). Elements,
+`document`, and `window` retain deduplicated target-local listeners across
+evaluations; bounded `Event` and `CustomEvent` values support synchronous
+dispatch and cancellation. Scripted focus/blur transitions emit typed
+commands, and scripted click activation is suppressed when a target listener
+calls `preventDefault()`. Parent and child owners validate and commit focus
+transitions with the same one-revision batch contract. Ancestor
+propagation/capture, listeners for Rust semantic actions, default-action
+ordering, mutation invalidation, timers, modules, page-script loading,
+Fetch/XHR, service workers, and remaining resource classes stay open.
 
 ## Baseline and constraints
 

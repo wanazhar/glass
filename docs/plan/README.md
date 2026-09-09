@@ -222,13 +222,25 @@ can now emit bounded `click()`, form-state, and attribute commands. Glass
 validates and applies each script batch to a cloned native document, commits
 one revision, and refreshes the host view; the child process performs the same
 ownership and transfer sequence for external pages. Live object identity,
-event listeners/default actions, navigation from script, timers, modules,
+listener dispatch, navigation from script, timers, modules, Fetch/XHR,
+page-script loading, remaining resource classes, and browser parity remain
+open.
+
+The completed JavaScript event/focus batch is
+[native-engine-browser-019](tasks/native-engine-browser-019.md). The persistent
+realm now owns bounded target-local listener registration/removal, `Event` and
+`CustomEvent` dispatch with cancellation, and script-visible `focus()`/
+`blur()` transitions. Focus and blur cross the same typed command boundary and
+are committed with one revision in both local and child-owned documents;
+scripted `click()` activation is canceled when its target listener calls
+`preventDefault()`. Ancestor propagation/capture, Rust-action listener
+dispatch, default-action ordering, mutation invalidation, timers, modules,
 Fetch/XHR, page-script loading, remaining resource classes, and browser parity
 remain open.
 
-The next BE-03/BE-04 gate is a real event and Web IDL owner: listener
-registration, dispatch/default-action ordering, focus/blur, mutation
-invalidation, and script-visible effects, followed by Fetch/XHR integration.
+The next BE-03/BE-04 gate is a document event graph and owner-action bridge:
+ancestor propagation/capture, Rust-action listener dispatch, default-action
+ordering, and mutation invalidation, followed by Fetch/XHR integration.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

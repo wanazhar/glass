@@ -188,8 +188,9 @@ pub struct NativeSemanticNode {
 }
 
 /// Bounded document data used to refresh the native JavaScript host view.
-/// These are snapshots, not live DOM identities; mutation and event ownership
-/// remain explicit engine operations until the Web IDL bridge is complete.
+/// These remain snapshots rather than live DOM identities; committed document
+/// state is still owned by Rust while target-local event callbacks execute in
+/// the persistent JavaScript realm.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct NativeScriptDocumentSnapshot {
@@ -210,6 +211,7 @@ pub(crate) struct NativeScriptElementSnapshot {
     pub(crate) selected: bool,
     pub(crate) disabled: bool,
     pub(crate) hidden: bool,
+    pub(crate) focused: bool,
 }
 
 /// A parsed document owned by one engine generation.
@@ -659,6 +661,7 @@ impl NativeDocument {
                     selected: node.state.selected,
                     disabled: self.is_disabled(node.id()),
                     hidden: self.is_hidden(node.id()),
+                    focused: node.state.focused,
                 })
             })
             .collect();
@@ -905,6 +908,14 @@ impl NativeDocument {
         let mut events = Vec::new();
         for command in commands {
             match command {
+                NativeScriptCommand::Focus { node_index } => {
+                    let id = NativeNodeId::from_parts(self.generation, *node_index);
+                    events.extend(self.apply_script_focus(id)?);
+                }
+                NativeScriptCommand::Blur { node_index } => {
+                    let id = NativeNodeId::from_parts(self.generation, *node_index);
+                    events.extend(self.apply_script_blur(id)?);
+                }
                 NativeScriptCommand::Click { node_index } => {
                     let id = NativeNodeId::from_parts(self.generation, *node_index);
                     if self.link_href(id).is_some_and(|href| !href.is_empty()) {
@@ -954,6 +965,47 @@ impl NativeDocument {
             }
         }
         Ok(events)
+    }
+
+    fn apply_script_focus(
+        &mut self,
+        id: NativeNodeId,
+    ) -> Result<Vec<(NativeNodeId, NativeEventKind)>, NativeEngineError> {
+        let semantic = self
+            .semantic_node(id)
+            .ok_or(NativeEngineError::DetachedTarget)?;
+        if semantic.hidden {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "hidden targets cannot receive focus".into(),
+            });
+        }
+        if semantic.disabled {
+            return Err(NativeEngineError::DisabledTarget);
+        }
+        if !matches!(
+            semantic.role.as_str(),
+            "button" | "link" | "checkbox" | "radio" | "textbox" | "combobox" | "option"
+        ) {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "only supported semantic controls can receive focus".into(),
+            });
+        }
+        Ok(self.focus_element(id))
+    }
+
+    fn apply_script_blur(
+        &mut self,
+        id: NativeNodeId,
+    ) -> Result<Vec<(NativeNodeId, NativeEventKind)>, NativeEngineError> {
+        let node = self.node(id).ok_or(NativeEngineError::DetachedTarget)?;
+        if !node.state.focused {
+            return Ok(Vec::new());
+        }
+        self.node_mut(id)
+            .ok_or(NativeEngineError::DetachedTarget)?
+            .state
+            .focused = false;
+        Ok(vec![(id, NativeEventKind::Blur)])
     }
 
     fn apply_script_value(

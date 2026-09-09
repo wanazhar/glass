@@ -24,6 +24,12 @@ const NATIVE_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub(crate) enum NativeScriptCommand {
+    Focus {
+        node_index: u32,
+    },
+    Blur {
+        node_index: u32,
+    },
     Click {
         node_index: u32,
     },
@@ -305,6 +311,72 @@ fn document_bootstrap(
     if (commands.length >= {max_commands}) throw new RangeError("native host command limit exceeded");
     commands.push(command);
   }};
+  const listeners = globalThis.__glassHostListeners instanceof Map
+    ? globalThis.__glassHostListeners
+    : new Map();
+  globalThis.__glassHostListeners = listeners;
+  const normalizeEventType = (type) => {{
+    const value = String(type).toLowerCase();
+    if (!value || value.length > 128) throw new TypeError("invalid native event type");
+    return value;
+  }};
+  const listenerKey = (owner, type) => String(owner) + ":" + normalizeEventType(type);
+  const listenerCount = () => {{
+    let count = 0;
+    for (const callbacks of listeners.values()) count += callbacks.length;
+    return count;
+  }};
+  const addListener = (owner, type, callback) => {{
+    if (typeof callback !== "function") throw new TypeError("event listener must be callable");
+    const key = listenerKey(owner, type);
+    const callbacks = listeners.get(key) || [];
+    if (callbacks.some((current) => current === callback)) return;
+    if (listenerCount() >= {max_listeners}) throw new RangeError("native event listener limit exceeded");
+    callbacks.push(callback);
+    listeners.set(key, callbacks);
+  }};
+  const removeListener = (owner, type, callback) => {{
+    const key = listenerKey(owner, type);
+    const callbacks = listeners.get(key);
+    if (!callbacks) return;
+    const index = callbacks.findIndex((current) => current === callback);
+    if (index < 0) return;
+    callbacks.splice(index, 1);
+    if (callbacks.length === 0) listeners.delete(key);
+  }};
+  const createEvent = (type, options) => {{
+    const settings = options && typeof options === "object" ? options : {{}};
+    const event = {{
+      type: normalizeEventType(type),
+      bubbles: Boolean(settings.bubbles),
+      cancelable: Boolean(settings.cancelable),
+      target: null,
+      currentTarget: null,
+      eventPhase: 0,
+      defaultPrevented: false,
+      preventDefault() {{
+        if (this.cancelable) this.defaultPrevented = true;
+      }},
+      stopPropagation() {{}},
+      stopImmediatePropagation() {{}},
+    }};
+    return event;
+  }};
+  const dispatchOwner = (owner, target, event) => {{
+    if (!event || typeof event.type !== "string") throw new TypeError("invalid native event");
+    const eventType = normalizeEventType(event.type);
+    if (event.target !== null && event.target !== undefined && event.target !== target) {{
+      throw new TypeError("event target is already assigned");
+    }}
+    event.target = target;
+    event.currentTarget = target;
+    event.eventPhase = 2;
+    const callbacks = (listeners.get(listenerKey(owner, eventType)) || []).slice();
+    for (const callback of callbacks) callback.call(target, event);
+    event.currentTarget = null;
+    event.eventPhase = 0;
+    return !event.defaultPrevented;
+  }};
   const makeElement = (entry) => {{
     const element = {{
       nodeIndex: entry.nodeIndex,
@@ -318,6 +390,7 @@ fn document_bootstrap(
       selected: entry.selected,
       disabled: entry.disabled,
       hidden: entry.hidden,
+      focused: entry.focused,
       getAttribute(name) {{
         const key = String(name).toLowerCase();
         for (const attr of Object.keys(entry.attributes)) {{
@@ -326,14 +399,36 @@ fn document_bootstrap(
         return null;
       }},
       hasAttribute(name) {{ return this.getAttribute(name) !== null; }},
+      addEventListener(type, callback) {{
+        addListener("node:" + entry.nodeIndex, type, callback);
+      }},
+      removeEventListener(type, callback) {{
+        removeListener("node:" + entry.nodeIndex, type, callback);
+      }},
+      dispatchEvent(event) {{
+        return dispatchOwner("node:" + entry.nodeIndex, this, event);
+      }},
+      focus() {{
+        if (this.disabled || this.hidden) return;
+        setLocalFocus(this);
+      }},
+      blur() {{
+        if (!this.focused) return;
+        this.focused = false;
+        pushCommand({{ kind: "blur", node_index: entry.nodeIndex }});
+        dispatchOwner("node:" + entry.nodeIndex, this, createEvent("blur"));
+      }},
       click() {{
-        if (this.disabled) return;
-        pushCommand({{ kind: "click", node_index: entry.nodeIndex }});
+        if (this.disabled || this.hidden) return;
+        this.focus();
+        const event = createEvent("click", {{ bubbles: true, cancelable: true }});
+        if (!dispatchOwner("node:" + entry.nodeIndex, this, event)) return;
         if (this.tagName === "INPUT") {{
           const type = String(entry.attributes.type || "text").toLowerCase();
           if (type === "checkbox") checked = !checked;
           if (type === "radio") checked = true;
         }}
+        pushCommand({{ kind: "click", node_index: entry.nodeIndex }});
       }},
       setAttribute(name, value) {{
         const key = String(name).toLowerCase();
@@ -388,6 +483,17 @@ fn document_bootstrap(
     return element;
   }};
   const elements = state.elements.map(makeElement);
+  const setLocalFocus = (target) => {{
+    const current = elements.find((element) => element.focused && element !== target) || null;
+    if (current) {{
+      current.focused = false;
+      dispatchOwner("node:" + current.nodeIndex, current, createEvent("blur"));
+    }}
+    if (target.focused) return;
+    target.focused = true;
+    pushCommand({{ kind: "focus", node_index: target.nodeIndex }});
+    dispatchOwner("node:" + target.nodeIndex, target, createEvent("focus"));
+  }};
   const matches = (element, selector) => {{
     const value = String(selector).trim();
     if (value.startsWith("#")) return element.id === value.slice(1);
@@ -401,7 +507,17 @@ fn document_bootstrap(
     title: state.title,
     body,
     documentElement,
+    get activeElement() {{ return elements.find((element) => element.focused) || null; }},
     readyState: "complete",
+    addEventListener(type, callback) {{
+      addListener("document", type, callback);
+    }},
+    removeEventListener(type, callback) {{
+      removeListener("document", type, callback);
+    }},
+    dispatchEvent(event) {{
+      return dispatchOwner("document", this, event);
+    }},
     getElementById(id) {{ return elements.find((element) => element.id === String(id)) || null; }},
     querySelector(selector) {{ return findAll(selector)[0] || null; }},
     querySelectorAll(selector) {{ return findAll(selector); }},
@@ -421,12 +537,24 @@ fn document_bootstrap(
   globalThis.innerWidth = {width};
   globalThis.innerHeight = {height};
   globalThis.navigator = globalThis.navigator || Object.freeze({{ userAgent: "GlassNative" }});
+  globalThis.Event = globalThis.Event || function Event(type, options) {{
+    return createEvent(type, options);
+  }};
+  globalThis.CustomEvent = globalThis.CustomEvent || function CustomEvent(type, options) {{
+    const event = createEvent(type, options);
+    event.detail = options && typeof options === "object" ? options.detail : undefined;
+    return event;
+  }};
+  globalThis.addEventListener = (type, callback) => addListener("window", type, callback);
+  globalThis.removeEventListener = (type, callback) => removeListener("window", type, callback);
+  globalThis.dispatchEvent = (event) => dispatchOwner("window", globalThis, event);
   globalThis.console = globalThis.console || {{
     log() {{}}, info() {{}}, warn() {{}}, error() {{}}
   }};
 }})();"###,
         serialized = serialized,
         max_commands = super::interaction::MAX_NATIVE_EFFECTS,
+        max_listeners = super::interaction::MAX_NATIVE_EFFECTS,
         width = viewport.width,
         height = viewport.height,
     ))

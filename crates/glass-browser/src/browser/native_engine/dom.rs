@@ -1878,6 +1878,15 @@ impl NativeDocument {
         id: NativeNodeId,
         document_url: &str,
     ) -> Result<NativeNavigationRequest, NativeEngineError> {
+        self.form_submission_request_with_submitter(id, document_url, None)
+    }
+
+    pub(crate) fn form_submission_request_with_submitter(
+        &self,
+        id: NativeNodeId,
+        document_url: &str,
+        submitter: Option<NativeNodeId>,
+    ) -> Result<NativeNavigationRequest, NativeEngineError> {
         let form_id = if self
             .node(id)
             .is_some_and(|node| node.element_name() == Some("form"))
@@ -1893,6 +1902,13 @@ impl NativeDocument {
         if form.element_name() != Some("form") {
             return Err(NativeEngineError::TargetNotActionable {
                 reason: "script form submission target is not a form".into(),
+            });
+        }
+        if let Some(submitter) = submitter
+            && self.submit_control_form(submitter) != Some(form_id)
+        {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "form submitter must be a submit control for the form".into(),
             });
         }
         let method = form.attribute("method").unwrap_or("get");
@@ -1937,7 +1953,7 @@ impl NativeDocument {
             });
         }
         let mut pairs = Vec::new();
-        self.collect_form_data(form_id, &mut pairs)?;
+        self.collect_form_data(form_id, &mut pairs, submitter)?;
         let mut query = url::form_urlencoded::Serializer::new(String::new());
         for (name, value) in pairs {
             query.append_pair(&name, &value);
@@ -2004,6 +2020,7 @@ impl NativeDocument {
     pub(crate) fn invalid_form_controls(
         &self,
         form_id: NativeNodeId,
+        submitter: Option<NativeNodeId>,
     ) -> Result<Vec<NativeNodeId>, NativeEngineError> {
         let form = self
             .node(form_id)
@@ -2012,6 +2029,14 @@ impl NativeDocument {
             return Err(NativeEngineError::TargetNotActionable {
                 reason: "form validation target is not a form".into(),
             });
+        }
+        if form.attribute("novalidate").is_some()
+            || submitter.is_some_and(|id| {
+                self.node(id)
+                    .is_some_and(|node| node.attribute("formnovalidate").is_some())
+            })
+        {
+            return Ok(Vec::new());
         }
         let mut controls = Vec::new();
         self.collect_form_controls(form_id, &mut controls)?;
@@ -2128,6 +2153,7 @@ impl NativeDocument {
         &self,
         form_id: NativeNodeId,
         pairs: &mut Vec<(String, String)>,
+        submitter: Option<NativeNodeId>,
     ) -> Result<(), NativeEngineError> {
         let children = self
             .node(form_id)
@@ -2150,6 +2176,10 @@ impl NativeDocument {
                         || input_type.eq_ignore_ascii_case("reset")
                         || input_type.eq_ignore_ascii_case("image")
                     {
+                        if Some(child_id) == submitter && input_type.eq_ignore_ascii_case("submit")
+                        {
+                            self.append_submitter_data(child_id, pairs)?;
+                        }
                         continue;
                     }
                     if (input_type.eq_ignore_ascii_case("checkbox")
@@ -2190,6 +2220,12 @@ impl NativeDocument {
                         ));
                     }
                 }
+                Some("button") => {
+                    let button_type = child.attribute("type").unwrap_or("submit");
+                    if Some(child_id) == submitter && button_type.eq_ignore_ascii_case("submit") {
+                        self.append_submitter_data(child_id, pairs)?;
+                    }
+                }
                 Some("select") => {
                     if let Some(name) = name {
                         for option_id in self.select_option_ids(child_id) {
@@ -2220,8 +2256,38 @@ impl NativeDocument {
                 }
                 _ => {}
             }
-            self.collect_form_data(child_id, pairs)?;
+            self.collect_form_data(child_id, pairs, submitter)?;
         }
+        Ok(())
+    }
+
+    fn append_submitter_data(
+        &self,
+        id: NativeNodeId,
+        pairs: &mut Vec<(String, String)>,
+    ) -> Result<(), NativeEngineError> {
+        let node = self.node(id).ok_or(NativeEngineError::DetachedTarget)?;
+        let Some(name) = node.attribute("name").filter(|name| !name.is_empty()) else {
+            return Ok(());
+        };
+        if pairs.len() >= MAX_FORM_CONTROLS {
+            return Err(NativeEngineError::limit(
+                "form controls",
+                MAX_FORM_CONTROLS,
+                pairs.len().saturating_add(1),
+            ));
+        }
+        let value = match node.element_name() {
+            Some("input") => node
+                .state
+                .value
+                .clone()
+                .or_else(|| node.attribute("value").map(str::to_owned))
+                .unwrap_or_default(),
+            Some("button") => node.attribute("value").unwrap_or_default().to_owned(),
+            _ => String::new(),
+        };
+        pairs.push((name.to_owned(), value));
         Ok(())
     }
 

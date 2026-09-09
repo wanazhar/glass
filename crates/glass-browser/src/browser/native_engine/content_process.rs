@@ -56,6 +56,7 @@ pub(crate) struct NativeContentEvent {
 pub(crate) struct NativeContentNavigation {
     pub(crate) node_index: u32,
     pub(crate) href: String,
+    pub(crate) submitter_node_index: Option<u32>,
 }
 
 pub(crate) struct NativeContentMutation {
@@ -718,9 +719,22 @@ fn decode_mutation_payload(
                 }
             })?;
             validate_url_text("content process navigation href", href)?;
+            let submitter_node_index = match value.get("submitter_node_index") {
+                None | Some(Value::Null) => None,
+                Some(value) => Some(
+                    value
+                        .as_u64()
+                        .and_then(|value| u32::try_from(value).ok())
+                        .ok_or_else(|| NativeEngineError::Worker {
+                            operation: operation.into(),
+                            reason: "content process returned an invalid submitter node".into(),
+                        })?,
+                ),
+            };
             Ok(NativeContentNavigation {
                 node_index,
                 href: href.to_owned(),
+                submitter_node_index,
             })
         })
         .transpose()?;
@@ -1054,6 +1068,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                     "navigation": mutation.navigation.as_ref().map(|navigation| json!({
                                         "node_index": navigation.node_index,
                                         "href": navigation.href,
+                                        "submitter_node_index": navigation.submitter_node_index,
                                     })),
                                 })
                             }
@@ -1141,6 +1156,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             "navigation": mutation.navigation.as_ref().map(|navigation| json!({
                                 "node_index": navigation.node_index,
                                 "href": navigation.href,
+                                "submitter_node_index": navigation.submitter_node_index,
                             })),
                         })
                     }
@@ -1747,7 +1763,7 @@ fn mutate_click_with_event_preflight(
     if click_allowed {
         events.extend(next.apply_click(node_id)?);
         if let Some(form_id) = next.submit_control_form(node_id) {
-            let invalid = next.invalid_form_controls(form_id)?;
+            let invalid = next.invalid_form_controls(form_id, Some(node_id))?;
             if invalid.is_empty() {
                 if dispatch_submit_event(
                     &mut next,
@@ -1761,7 +1777,14 @@ fn mutate_click_with_event_preflight(
                 )? {
                     navigation = Some(NativeContentNavigation {
                         node_index: form_id.index(),
-                        href: next.form_submission_request(form_id, document_url)?.url,
+                        href: next
+                            .form_submission_request_with_submitter(
+                                form_id,
+                                document_url,
+                                Some(node_id),
+                            )?
+                            .url,
+                        submitter_node_index: Some(node_id.index()),
                     });
                 }
             } else {
@@ -2016,7 +2039,7 @@ fn mutate_script_document(
         ..
     }) = navigation.as_ref()
     {
-        let invalid = next.invalid_form_controls(*form_id)?;
+        let invalid = next.invalid_form_controls(*form_id, *submitter)?;
         if invalid.is_empty() {
             if !dispatch_submit_event(
                 &mut next,
@@ -2061,16 +2084,22 @@ fn mutate_script_document(
             .collect(),
         navigation: navigation
             .map(|navigation| match navigation {
-                ScriptNavigationTarget::Link { node_index, href } => {
-                    Ok(NativeContentNavigation { node_index, href })
-                }
+                ScriptNavigationTarget::Link { node_index, href } => Ok(NativeContentNavigation {
+                    node_index,
+                    href,
+                    submitter_node_index: None,
+                }),
                 ScriptNavigationTarget::Form {
                     form_id,
                     node_index,
+                    submitter,
                     ..
                 } => Ok(NativeContentNavigation {
                     node_index,
-                    href: next.form_submission_request(form_id, document_url)?.url,
+                    href: next
+                        .form_submission_request_with_submitter(form_id, document_url, submitter)?
+                        .url,
+                    submitter_node_index: submitter.map(NativeNodeId::index),
                 }),
             })
             .transpose()?,

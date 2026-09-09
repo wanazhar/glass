@@ -748,7 +748,7 @@ impl NativeEngine {
             submitter,
         }) = navigation.as_ref()
         {
-            let invalid = document.invalid_form_controls(*form_id)?;
+            let invalid = document.invalid_form_controls(*form_id, *submitter)?;
             if invalid.is_empty() {
                 let evaluation = self
                     .evaluate_local_submit_event(&document, *form_id, *submitter)?
@@ -794,8 +794,12 @@ impl NativeEngine {
                 ScriptNavigationTarget::Link { id, href } => {
                     self.activate_link(id, &href, true)?;
                 }
-                ScriptNavigationTarget::Form { form_id, .. } => {
-                    let request = self.document.form_submission_request(form_id, &self.url)?;
+                ScriptNavigationTarget::Form {
+                    form_id, submitter, ..
+                } => {
+                    let request = self
+                        .document
+                        .form_submission_request_with_submitter(form_id, &self.url, submitter)?;
                     self.navigate(request.url)?;
                 }
             }
@@ -880,11 +884,15 @@ impl NativeEngine {
         navigation: NativeContentNavigation,
     ) -> Result<(), NativeEngineError> {
         let id = NativeNodeId::from_parts(self.document.generation(), navigation.node_index);
+        let submitter = navigation
+            .submitter_node_index
+            .map(|index| NativeNodeId::from_parts(self.document.generation(), index));
         let mut request =
             if let Some(href) = self.document.link_href(id).filter(|href| !href.is_empty()) {
                 NativeNavigationRequest::get(href)
             } else {
-                self.document.form_submission_request(id, &self.url)?
+                self.document
+                    .form_submission_request_with_submitter(id, &self.url, submitter)?
             };
         if request.url != navigation.href {
             return Err(NativeEngineError::TargetNotActionable {
@@ -1016,11 +1024,11 @@ impl NativeEngine {
                 reason: "native click event result was invalid".into(),
             })?;
         events.extend(document.apply_script_commands(&click_evaluation.commands)?);
-        let mut navigation = None;
+        let mut navigation: Option<(NativeNodeId, NativeNodeId)> = None;
         if click_allowed {
             events.extend(document.apply_click(id)?);
             if let Some(form_id) = document.submit_control_form(id) {
-                let invalid = document.invalid_form_controls(form_id)?;
+                let invalid = document.invalid_form_controls(form_id, Some(id))?;
                 if invalid.is_empty() {
                     let submit_evaluation = self
                         .evaluate_local_submit_event(&document, form_id, Some(id))?
@@ -1041,7 +1049,7 @@ impl NativeEngine {
                     events.push((form_id, NativeEventKind::Submit));
                     events.extend(document.apply_script_commands(&submit_evaluation.commands)?);
                     if submit_allowed {
-                        navigation = Some(form_id);
+                        navigation = Some((form_id, id));
                     }
                 } else {
                     let invalid_events = invalid
@@ -1074,8 +1082,12 @@ impl NativeEngine {
         self.revision = next_revision;
         self.history.update_current_scroll(self.scroll_offset);
         self.record_effects(events);
-        if let Some(form_id) = navigation {
-            let request = self.document.form_submission_request(form_id, &self.url)?;
+        if let Some((form_id, submitter)) = navigation {
+            let request = self.document.form_submission_request_with_submitter(
+                form_id,
+                &self.url,
+                Some(submitter),
+            )?;
             let snapshot = self.navigate(request.url)?;
             return Ok(NativeActionResult {
                 revision: snapshot.revision,
@@ -1094,7 +1106,11 @@ impl NativeEngine {
         form_id: NativeNodeId,
     ) -> Result<NativeActionResult, NativeEngineError> {
         let events = self.document.apply_click(id)?;
-        if !self.document.invalid_form_controls(form_id)?.is_empty() {
+        if !self
+            .document
+            .invalid_form_controls(form_id, Some(id))?
+            .is_empty()
+        {
             let next_revision = self.next_revision()?;
             self.document.set_revision(next_revision);
             self.revision = next_revision;
@@ -1110,7 +1126,9 @@ impl NativeEngine {
         self.revision = next_revision;
         self.history.update_current_scroll(self.scroll_offset);
         self.record_effects(events);
-        let request = self.document.form_submission_request(form_id, &self.url)?;
+        let request =
+            self.document
+                .form_submission_request_with_submitter(form_id, &self.url, Some(id))?;
         let snapshot = self.navigate(request.url)?;
         Ok(NativeActionResult {
             revision: snapshot.revision,

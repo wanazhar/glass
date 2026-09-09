@@ -75,6 +75,10 @@ impl DeterministicScheduler {
         self.tasks.len()
     }
 
+    pub(crate) fn clear(&mut self) {
+        self.tasks.clear();
+    }
+
     pub fn advance_by(&mut self, duration_ms: u64) -> Result<(), NativeEngineError> {
         self.clock.advance_by(duration_ms)
     }

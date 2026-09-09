@@ -42,6 +42,13 @@ parity, security boundaries, supported platforms, conformance thresholds,
 performance budgets, and explicit exclusions. It is a scope gate, not a claim
 that the current native backend already implements those capabilities.
 
+The first executable browser-complete batch is
+[native-engine-browser-001](tasks/native-engine-browser-001.md). It adds the
+typed runtime substrate—runtime lifecycle, cancellation, task/microtask
+ordering, bounded privacy-safe traces, startup rollback, and terminal close—
+while keeping the current deterministic local engine boundary. It does not yet
+claim network, JavaScript, process isolation, or browser parity.
+
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,
 fixture/data-URL-only, one-context engine kernel and explicit semantic backend.

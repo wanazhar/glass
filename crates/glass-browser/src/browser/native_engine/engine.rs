@@ -14,6 +14,7 @@ use super::origin::NativeOrigin;
 use super::paint::NativeDisplayList;
 use super::raster::NativeSurface;
 use super::resource_loader::{NativeResource, NativeResourceLoader};
+use super::runtime::{NativeRuntime, NativeRuntimeState, NativeRuntimeTraceEvent};
 use super::scheduler::{DeterministicScheduler, NativeTask};
 use std::collections::VecDeque;
 
@@ -58,7 +59,7 @@ pub struct NativeDiagnosticsSnapshot {
 pub struct NativeEngine {
     config: NativeEngineConfig,
     loader: NativeResourceLoader,
-    scheduler: DeterministicScheduler,
+    runtime: NativeRuntime,
     history: NativeHistory,
     lifecycle: NativeLifecycleState,
     document: NativeDocument,
@@ -74,13 +75,13 @@ impl NativeEngine {
         config.validate()?;
         let loader = NativeResourceLoader::new(&config)?;
         loader.load(&config.initial_url)?;
-        let scheduler = DeterministicScheduler::new(config.limits.max_scheduler_tasks)?;
+        let runtime = NativeRuntime::new(config.limits.max_scheduler_tasks)?;
         let max_history_entries = config.limits.max_history_entries;
         Ok(Self {
             url: config.initial_url.clone(),
             config,
             loader,
-            scheduler,
+            runtime,
             history: NativeHistory::new(max_history_entries),
             lifecycle: NativeLifecycleState::New,
             document: NativeDocument::empty(),
@@ -119,7 +120,11 @@ impl NativeEngine {
             NativeLifecycleState::New => {}
         }
         let prepared = self.prepare_navigation(&self.config.initial_url.clone())?;
-        self.commit_navigation(prepared)?;
+        self.runtime.start()?;
+        if let Err(error) = self.commit_navigation(prepared) {
+            self.runtime.rollback_start()?;
+            return Err(error);
+        }
         self.lifecycle = NativeLifecycleState::Running;
         Ok(())
     }
@@ -127,6 +132,7 @@ impl NativeEngine {
     pub fn close(&mut self) -> Result<(), NativeEngineError> {
         match self.lifecycle {
             NativeLifecycleState::Running => {
+                self.runtime.close()?;
                 self.lifecycle = NativeLifecycleState::Closed;
                 Ok(())
             }
@@ -398,7 +404,15 @@ impl NativeEngine {
     }
 
     pub fn scheduler(&self) -> &DeterministicScheduler {
-        &self.scheduler
+        self.runtime.scheduler()
+    }
+
+    pub const fn runtime_state(&self) -> NativeRuntimeState {
+        self.runtime.state()
+    }
+
+    pub fn runtime_trace(&self) -> Vec<NativeRuntimeTraceEvent> {
+        self.runtime.trace()
     }
 
     fn prepare_navigation(&self, url: &str) -> Result<PreparedNavigation, NativeEngineError> {
@@ -595,8 +609,8 @@ impl NativeEngine {
         expected: NativeTask,
         operation: &str,
     ) -> Result<(), NativeEngineError> {
-        self.scheduler.schedule(expected, 0)?;
-        let Some(task) = self.scheduler.pop_ready() else {
+        self.runtime.schedule(expected, 0)?;
+        let Some(task) = self.runtime.pop_ready()? else {
             return Err(NativeEngineError::Scheduler {
                 reason: format!("{operation} commit was not ready at the current logical time"),
             });

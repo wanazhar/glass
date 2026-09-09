@@ -6,8 +6,9 @@ use glass_browser::browser::native_engine::{
     NativeBorderStyle, NativeColor, NativeDiagnosticCode, NativeDiagnosticSource,
     NativeDisplayCommand, NativeDocument, NativeEngine, NativeEngineConfig, NativeEngineError,
     NativeEngineLimits, NativeEventKind, NativeLifecycleState, NativeNodeId, NativePoint,
-    NativeRect, NativeSurface, NativeTextDecorationSkipInk, NativeTextDecorationSkipSpaces,
-    NativeTextDecorationStyle, Viewport,
+    NativeRect, NativeRuntimeState, NativeRuntimeTraceKind, NativeSurface,
+    NativeTextDecorationSkipInk, NativeTextDecorationSkipSpaces, NativeTextDecorationStyle,
+    Viewport,
 };
 use glass_browser::browser_backend::{
     ActionRequest, BROWSER_BACKEND_SCHEMA_VERSION, BackendSelectionRequest,
@@ -23772,10 +23773,35 @@ fn native_backend_requires_explicit_factory_selection() {
 fn lifecycle_state_is_terminal_after_close() {
     let mut engine = glass_browser::NativeEngine::new(NativeEngineConfig::default()).unwrap();
     assert_eq!(engine.lifecycle(), NativeLifecycleState::New);
+    assert_eq!(engine.runtime_state(), NativeRuntimeState::New);
     engine.initialize().unwrap();
     assert_eq!(engine.lifecycle(), NativeLifecycleState::Running);
+    assert_eq!(engine.runtime_state(), NativeRuntimeState::Running);
+    let running_trace = engine.runtime_trace();
+    assert!(
+        running_trace
+            .iter()
+            .any(|event| event.kind == NativeRuntimeTraceKind::Started)
+    );
+    assert!(
+        running_trace
+            .iter()
+            .any(|event| event.kind == NativeRuntimeTraceKind::TaskReady)
+    );
     engine.close().unwrap();
     assert_eq!(engine.lifecycle(), NativeLifecycleState::Closed);
+    assert_eq!(engine.runtime_state(), NativeRuntimeState::Closed);
+    let closed_trace = engine.runtime_trace();
+    assert!(
+        closed_trace
+            .iter()
+            .any(|event| event.kind == NativeRuntimeTraceKind::CancellationRequested)
+    );
+    assert!(
+        closed_trace
+            .iter()
+            .any(|event| event.kind == NativeRuntimeTraceKind::Closed)
+    );
     assert!(engine.initialize().is_err());
     assert!(engine.close().is_err());
 }

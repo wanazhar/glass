@@ -1242,7 +1242,8 @@ impl NativeDocument {
                 NativeScriptCommand::Fetch { .. } => {}
                 NativeScriptCommand::StorageSet { .. }
                 | NativeScriptCommand::StorageRemove { .. }
-                | NativeScriptCommand::StorageClear { .. } => {}
+                | NativeScriptCommand::StorageClear { .. }
+                | NativeScriptCommand::CookieSet { .. } => {}
                 NativeScriptCommand::SetValue { node_index, value } => {
                     let id = NativeNodeId::from_parts(self.generation, *node_index);
                     self.apply_script_value(id, value)?;

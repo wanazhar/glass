@@ -947,6 +947,11 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             .get("kind")
             .and_then(Value::as_str)
             .unwrap_or_default();
+        refresh_content_runtime_cookie(
+            javascript_runtime.as_ref(),
+            resource_loader.as_ref(),
+            document_url.as_deref(),
+        )?;
         let response = match kind {
             "ping" if protocol_matches(&request) => {
                 json!({"kind":"pong","id":id,"protocol":CONTENT_WORKER_PROTOCOL_VERSION})
@@ -988,6 +993,11 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         resource_load_nodes,
                     )) => {
                         let mut script_runtime = None;
+                        let document_cookie = resource_loader
+                            .as_ref()
+                            .map(|loader| loader.document_cookie(&resource.url))
+                            .transpose()?
+                            .unwrap_or_default();
                         let prepared = match execute_page_scripts(
                             &mut parsed,
                             &mut script_runtime,
@@ -996,6 +1006,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             &resource.origin,
                             loaded_viewport,
                             &storage_state,
+                            &document_cookie,
                             &resource_load_nodes,
                         ) {
                             Ok(pending_fetches) if pending_fetches.is_empty() => Ok(parsed),
@@ -1761,9 +1772,12 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 }
             }
             "close" if protocol_matches(&request) => {
-                if let Some(runtime) = javascript_runtime.as_ref() {
-                    storage_state = runtime.storage_state();
-                }
+                sync_content_runtime_state(
+                    javascript_runtime.as_ref(),
+                    &mut storage_state,
+                    &mut resource_loader,
+                    document_url.as_deref(),
+                )?;
                 if let Some(path) = storage_profile_path.as_deref() {
                     save_web_storage_profile(Some(path), &storage_state)?;
                 }
@@ -1778,14 +1792,48 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 },
             ),
         };
-        if let Some(runtime) = javascript_runtime.as_ref() {
-            storage_state = runtime.storage_state();
-        }
+        sync_content_runtime_state(
+            javascript_runtime.as_ref(),
+            &mut storage_state,
+            &mut resource_loader,
+            document_url.as_deref(),
+        )?;
         if let Some(path) = storage_profile_path.as_deref() {
             save_web_storage_profile(Some(path), &storage_state)?;
         }
         write_value_frame(&mut stdout, &response).await?;
     }
+}
+
+fn sync_content_runtime_state(
+    runtime: Option<&NativeJavaScriptRuntime>,
+    storage_state: &mut NativeWebStorageState,
+    resource_loader: &mut Option<NativeResourceLoader>,
+    document_url: Option<&str>,
+) -> Result<(), NativeEngineError> {
+    let Some(runtime) = runtime else {
+        return Ok(());
+    };
+    *storage_state = runtime.storage_state();
+    if let (Some(loader), Some(document_url)) = (resource_loader.as_mut(), document_url) {
+        for value in runtime.take_cookie_updates() {
+            loader.set_document_cookie(document_url, &value)?;
+        }
+    }
+    Ok(())
+}
+
+fn refresh_content_runtime_cookie(
+    runtime: Option<&NativeJavaScriptRuntime>,
+    resource_loader: Option<&NativeResourceLoader>,
+    document_url: Option<&str>,
+) -> Result<(), NativeEngineError> {
+    if let (Some(runtime), Some(loader), Some(document_url)) =
+        (runtime, resource_loader, document_url)
+    {
+        runtime.set_cookie_state(loader.document_cookie(document_url)?);
+    }
+    Ok(())
 }
 
 async fn load_content_resource(

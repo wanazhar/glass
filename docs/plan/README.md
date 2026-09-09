@@ -646,10 +646,19 @@ JSON profile path now restores origin-keyed page `localStorage` for both the
 local runtime and the sandboxed content worker, persists updates through
 navigation and close, and deliberately starts each engine with empty
 `sessionStorage`. The path is explicit rather than implicit, and concurrent
-writers, storage events, cookie synchronization, IndexedDB, quota policy, and
-full Storage Web IDL identity remain open.
+writers, storage events, IndexedDB, quota policy, and full Storage Web IDL
+identity remain open.
 
-The next BE-02/BE-03/BE-04/BE-07 gate is storage-event/cookie synchronization,
+The completed bounded `document.cookie` synchronization slice is
+[native-engine-browser-069](tasks/native-engine-browser-069.md). Network page
+realms can read non-HttpOnly session cookies and set bounded cookie lines; the
+same Rust-owned jar controls subsequent navigation/fetch request headers,
+while Secure, domain, path, expiry, and HttpOnly filtering remain enforced by
+the transport owner. Storage events, cookie profile persistence, IndexedDB,
+full binary/stream FormData support, and the remaining browser-context gates
+are still open.
+
+The next BE-02/BE-03/BE-04/BE-07 gate is cross-document storage-event delivery,
 followed by IndexedDB, full binary/stream FormData support, full task
 ordering/navigation edge cases, remaining full pattern-regex/file constraint
 validation, target contexts, and the remaining browser-context primitives.

@@ -74,6 +74,9 @@ pub(crate) enum NativeScriptCommand {
     StorageClear {
         scope: String,
     },
+    CookieSet {
+        value: String,
+    },
     SetValue {
         node_index: u32,
         value: String,
@@ -378,6 +381,7 @@ pub(crate) fn execute_inline_scripts(
     document_origin: &NativeOrigin,
     viewport: Viewport,
     storage_state: &NativeWebStorageState,
+    cookie: &str,
 ) -> Result<(), NativeEngineError> {
     let sources = document
         .page_script_sources(MAX_NATIVE_INLINE_SCRIPTS, MAX_NATIVE_SCRIPT_BYTES)
@@ -407,6 +411,7 @@ pub(crate) fn execute_inline_scripts(
         document_origin,
         viewport,
         storage_state,
+        cookie,
         &[],
     )
     .map(|_| ())
@@ -420,6 +425,7 @@ pub(crate) fn execute_page_scripts(
     document_origin: &NativeOrigin,
     viewport: Viewport,
     storage_state: &NativeWebStorageState,
+    cookie: &str,
     resource_load_nodes: &[u32],
 ) -> Result<Vec<NativeScriptCommand>, NativeEngineError> {
     if runtime.is_none() {
@@ -429,6 +435,10 @@ pub(crate) fn execute_page_scripts(
         .as_mut()
         .expect("page script runtime initialized")
         .set_storage_state(storage_state.clone());
+    runtime
+        .as_ref()
+        .expect("page script runtime initialized")
+        .set_cookie_state(cookie.to_owned());
     runtime
         .as_mut()
         .expect("page script runtime initialized")
@@ -721,6 +731,8 @@ pub(crate) struct NativeJavaScriptRuntime {
     deadline: Arc<Mutex<Option<Instant>>>,
     module_sources: Arc<Mutex<BTreeMap<String, String>>>,
     storage: Arc<Mutex<NativeWebStorageState>>,
+    cookie: Arc<Mutex<String>>,
+    cookie_updates: Arc<Mutex<Vec<String>>>,
     ready_state: String,
     clock_origin: Instant,
 }
@@ -759,6 +771,8 @@ impl NativeJavaScriptRuntime {
             deadline,
             module_sources,
             storage: Arc::new(Mutex::new(NativeWebStorageState::default())),
+            cookie: Arc::new(Mutex::new(String::new())),
+            cookie_updates: Arc::new(Mutex::new(Vec::new())),
             ready_state: "complete".into(),
             clock_origin: Instant::now(),
         })
@@ -774,6 +788,30 @@ impl NativeJavaScriptRuntime {
         self.storage
             .lock()
             .map(|state| state.clone())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn set_cookie_state(&self, value: impl Into<String>) {
+        let value = value.into();
+        if value.len() > crate::browser_backend::MAX_TEXT_BYTES {
+            return;
+        }
+        if let Ok(mut current) = self.cookie.lock() {
+            *current = value;
+        }
+    }
+
+    fn cookie_state(&self) -> String {
+        self.cookie
+            .lock()
+            .map(|value| value.clone())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn take_cookie_updates(&self) -> Vec<String> {
+        self.cookie_updates
+            .lock()
+            .map(|mut updates| std::mem::take(&mut *updates))
             .unwrap_or_default()
     }
 
@@ -878,6 +916,38 @@ impl NativeJavaScriptRuntime {
         Ok(true)
     }
 
+    fn apply_cookie_command(
+        &self,
+        command: &NativeScriptCommand,
+    ) -> Result<bool, NativeEngineError> {
+        let NativeScriptCommand::CookieSet { value } = command else {
+            return Ok(false);
+        };
+        if value.len() > crate::browser_backend::MAX_TEXT_BYTES {
+            return Err(NativeEngineError::limit(
+                "native document.cookie value",
+                crate::browser_backend::MAX_TEXT_BYTES,
+                value.len(),
+            ));
+        }
+        let mut updates = self
+            .cookie_updates
+            .lock()
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "native document.cookie".into(),
+                reason: "native document.cookie update queue is unavailable".into(),
+            })?;
+        if updates.len() >= super::interaction::MAX_NATIVE_EFFECTS {
+            return Err(NativeEngineError::limit(
+                "native document.cookie updates",
+                super::interaction::MAX_NATIVE_EFFECTS,
+                updates.len().saturating_add(1),
+            ));
+        }
+        updates.push(value.clone());
+        Ok(true)
+    }
+
     fn set_module_sources(&self, sources: BTreeMap<String, String>) {
         if let Ok(mut current) = self.module_sources.lock() {
             *current = sources;
@@ -913,6 +983,7 @@ impl NativeJavaScriptRuntime {
             &self.ready_state,
             self.now_ms(),
             &self.storage_view(document_url, origin),
+            &self.cookie_state(),
         )?;
         let deadline = Instant::now() + NATIVE_SCRIPT_TIMEOUT;
         if let Ok(mut current) = self.deadline.lock() {
@@ -951,6 +1022,9 @@ impl NativeJavaScriptRuntime {
             let mut document_commands = Vec::with_capacity(commands.len());
             for command in commands {
                 if self.apply_storage_command(&command, document_url, origin)? {
+                    continue;
+                }
+                if self.apply_cookie_command(&command)? {
                     continue;
                 }
                 document_commands.push(command);
@@ -1071,6 +1145,7 @@ impl NativeJavaScriptRuntime {
             &self.ready_state,
             self.now_ms(),
             &self.storage_view(document_url, origin),
+            &self.cookie_state(),
         )?;
         let deadline = Instant::now() + NATIVE_SCRIPT_TIMEOUT;
         if let Ok(mut current) = self.deadline.lock() {
@@ -1097,6 +1172,9 @@ impl NativeJavaScriptRuntime {
             let mut document_commands = Vec::with_capacity(commands.len());
             for command in commands {
                 if self.apply_storage_command(&command, document_url, origin)? {
+                    continue;
+                }
+                if self.apply_cookie_command(&command)? {
                     continue;
                 }
                 document_commands.push(command);
@@ -1433,6 +1511,7 @@ fn document_bootstrap(
     ready_state: &str,
     now_ms: u64,
     storage: &NativeWebStorageView,
+    cookie: &str,
 ) -> Result<String, NativeEngineError> {
     let state = document.script_snapshot(crate::browser_backend::MAX_TEXT_BYTES);
     let serialized = serde_json::to_string(&serde_json::json!({
@@ -1441,6 +1520,7 @@ fn document_bootstrap(
         "state": state,
         "now_ms": now_ms,
         "storage": storage,
+        "cookie": cookie,
     }))
     .map_err(|_| NativeEngineError::Worker {
         operation: "serialize JavaScript host view".into(),
@@ -2376,11 +2456,30 @@ fn document_bootstrap(
   const findAll = (selector) => elements.filter((element) => matches(element, selector));
   const body = elements.find((element) => element.tagName === "BODY") || null;
   const documentElement = elements.find((element) => element.tagName === "HTML") || null;
+  let documentCookie = typeof host.cookie === "string" ? host.cookie : "";
+  const previewCookieSet = (current, value) => {{
+    const pair = String(value).split(";", 1)[0].trim();
+    const separator = pair.indexOf("=");
+    if (separator <= 0) return current;
+    const name = pair.slice(0, separator).trim();
+    const pairs = current ? current.split("; ").filter(Boolean) : [];
+    const existing = pairs.findIndex(candidate => candidate.slice(0, candidate.indexOf("=")).trim() === name);
+    if (existing >= 0) pairs[existing] = pair;
+    else pairs.push(pair);
+    return pairs.join("; ");
+  }};
   const document = {{
     title: state.title,
     body,
     documentElement,
     get activeElement() {{ return elements.find((element) => element.focused) || null; }},
+    get cookie() {{ return documentCookie; }},
+    set cookie(value) {{
+      const text = String(value);
+      if (text.length > storageValueLimit) throw new RangeError("native document.cookie value exceeds its limit");
+      documentCookie = previewCookieSet(documentCookie, text);
+      pushCommand({{ kind: "cookieSet", value: text }});
+    }},
     readyState: {ready_state},
     addEventListener(type, callback, options) {{
       addListener("document", type, callback, options);

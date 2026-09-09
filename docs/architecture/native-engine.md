@@ -728,8 +728,16 @@ The completed native-engine-browser-068 batch adds an explicit opt-in,
 bounded JSON profile path for page `localStorage`. The engine owner and
 sandboxed content worker load and save the same origin-keyed local map;
 `sessionStorage` is intentionally not serialized and starts empty for each
-engine. Profile locking, storage events, cookie synchronization, IndexedDB,
+engine. Profile locking, storage events, cookie profile persistence, IndexedDB,
 quota policy, and full Storage Web IDL identity remain open.
+
+The completed native-engine-browser-069 batch synchronizes bounded network
+page `document.cookie` access with the existing Rust-owned session cookie jar.
+Non-HttpOnly cookies are exposed to the page, setter lines are validated and
+stored by the transport owner, and subsequent navigation/fetch requests use
+the same domain/path/Secure/expiry rules; HttpOnly cookies remain request-only.
+Cookie persistence, cross-document storage events, and full cookie/Web IDL
+parity remain open.
 
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
@@ -3792,7 +3800,7 @@ The native profile is `experimental` and declares:
 | effects | available | current revision and changed signal; bounded event metadata is Rust-only |
 | script | available | bounded QuickJS ECMAScript with a refreshed `window`/`document` snapshot, bounded inline/classic/module-root page-script loading and parser/lifecycle ordering, HTTP(S) static module graphs, literal dynamic imports, bounded due-time `setTimeout`/`setInterval` turns, policy-owned bounded GET, same-origin string-body POST, and bounded cross-origin simple/preflighted POST `fetch()` promises, bounded text-only `FormData(form)` construction, text-backed Blob/File parts, and multipart bodies with Rust-owned form association, and string-only `URLSearchParams` URL-encoded bodies, plus asynchronous bounded GET/POST `XMLHttpRequest` with string bodies and response callbacks, from explicit evaluations and initial page scripts, typed click/form-submit/attribute/focus commands, persistent listener records, bounded Event/CustomEvent capture/target/bubble dispatch, cancelable click preflight, transactional type/input/change event re-entry, bounded common constraint validation for required/email/URL/length/numeric/date/month/time/datetime-local/pattern controls, bounded `validity`/`validationMessage`/`willValidate` snapshots with `checkValidity()`/`reportValidity()` and custom validity, submitter event metadata and successful-control serialization, bounded external form ownership, bounded multipart/text/plain form encodings and validated `formaction`/`formmethod`/`formenctype` overrides, bounded `readyState`/`readystatechange`/DOMContentLoaded/load phase ordering, form `novalidate`/`formnovalidate` bypass, top-level link/form navigation handoff, and relative HTTP(S)/same-document resolution; no live Web IDL identity, target contexts, resource-specific lifecycle parity, beforeinput/composition, full JavaScript RegExp `v`-flag/Unicode-set and file constraint validation or picker/UI parity, full live `ValidityState` identity, binary Blob/File FormData parity, FormData iterator identity, preflight caching, custom fetch headers, private-network access, opaque `no-cors` responses, binary/stream FormData body parity, URLSearchParams full constructor/sorting/iterator parity, synchronous XHR, XHR upload/progress/binary-response/timeout/abort/streaming parity, callback navigation during initial publication, AbortController, service workers, WebSocket/EventSource, animation/idle callbacks, task-source fairness, background page scheduling, computed imports, bare specifiers/import maps, local external subresources, or general page loading |
 | capture | available | bounded PNG of the current logical RGBA surface; JPEG/PDF and screenshot-containing evidence are unavailable |
-| storage | partial | process-owned session cookies, bounded document cache, and volatile origin-keyed page local/session storage; no durable profile storage, storage events, cookie sync, or IndexedDB |
+| storage | partial | process-owned session cookies with bounded `document.cookie` synchronization, bounded document cache, and origin-keyed page local/session storage with opt-in localStorage profiles; no storage events, cookie profile persistence, or IndexedDB |
 | prompts | omitted | no dialogs |
 | downloads | omitted | no download pipeline |
 

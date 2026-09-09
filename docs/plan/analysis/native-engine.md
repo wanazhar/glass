@@ -2308,11 +2308,19 @@ The completed opt-in durable page-storage profile follow-up is
 JSON profile path restores origin-keyed page `localStorage` in local and
 child-owned realms, persists mutations through navigation and close, and
 keeps `sessionStorage` session-scoped. The path is explicit, with no
-concurrent-writer coordination; storage events, cookie synchronization,
+concurrent-writer coordination; storage events, cookie profile persistence,
 IndexedDB, quota policy, and full Storage Web IDL identity remain open.
 
-The next bounded workstream is storage-event/cookie synchronization, followed
-by IndexedDB, full binary/stream FormData support, full task
+The completed bounded `document.cookie` synchronization follow-up is
+[native-engine-browser-069](../tasks/native-engine-browser-069.md). Network
+page realms read non-HttpOnly session cookies and submit bounded cookie lines;
+the Rust-owned transport jar applies Secure/domain/path/expiry and
+HttpOnly-visibility policy to later navigation and fetch requests. Storage
+events, cookie profile persistence, IndexedDB, full binary/stream FormData
+support, and full Storage Web IDL identity remain open.
+
+The next bounded workstream is cross-document storage-event delivery,
+followed by IndexedDB, full binary/stream FormData support, full task
 ordering/navigation edge cases, remaining full pattern-regex/file constraint
 validation, target contexts, and the remaining browser-context primitives.
 

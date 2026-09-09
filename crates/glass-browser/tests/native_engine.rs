@@ -28535,6 +28535,89 @@ async fn native_content_process_exposes_page_web_storage_realm() {
 }
 
 #[tokio::test]
+async fn native_content_process_synchronizes_document_cookie_with_http_session() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut page_stream, _) = listener.accept().await.unwrap();
+        let page_request = read_http_request(&mut page_stream).await;
+        assert_eq!(page_request.split_whitespace().nth(1), Some("/page"));
+        let page_body = "<p>Cookie owner</p>";
+        let page_response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nSet-Cookie: theme=dark; Path=/\r\nSet-Cookie: secret=hidden; HttpOnly; Path=/\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page_body}",
+            page_body.len()
+        );
+        page_stream
+            .write_all(page_response.as_bytes())
+            .await
+            .unwrap();
+
+        let (mut echo_stream, _) = listener.accept().await.unwrap();
+        let echo_request = read_http_request(&mut echo_stream).await;
+        assert_eq!(echo_request.split_whitespace().nth(1), Some("/echo"));
+        let cookie_header = echo_request.lines().find_map(|line| {
+            line.split_once(':').and_then(|(name, value)| {
+                name.eq_ignore_ascii_case("cookie").then_some(value.trim())
+            })
+        });
+        assert_eq!(
+            cookie_header,
+            Some("secret=hidden; session=one; theme=dark")
+        );
+        let echo_body = "cookie-ok";
+        let echo_response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{echo_body}",
+            echo_body.len()
+        );
+        echo_stream
+            .write_all(echo_response.as_bytes())
+            .await
+            .unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine.evaluate_async("document.cookie").await.unwrap(),
+        serde_json::json!("theme=dark")
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("document.cookie = 'session=one; Path=/'; document.cookie")
+            .await
+            .unwrap(),
+        serde_json::json!("theme=dark; session=one")
+    );
+    engine
+        .evaluate_async("document.cookie = 'page-secret=hidden; HttpOnly; Path=/'; true")
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.evaluate_async("document.cookie").await.unwrap(),
+        serde_json::json!("session=one; theme=dark")
+    );
+    engine
+        .evaluate_async(
+            "fetch('/echo').then(response => response.text()).then(value => { globalThis.cookieFetch = value; });",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.cookieFetch")
+            .await
+            .unwrap(),
+        serde_json::json!("cookie-ok")
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_web_storage_persists_through_profile_restart() {
     let profile_path = std::env::temp_dir().join(format!(
         "glass-native-web-storage-{}-local-restart.json",

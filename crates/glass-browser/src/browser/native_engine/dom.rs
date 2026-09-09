@@ -203,6 +203,7 @@ pub(crate) struct NativeScriptDocumentSnapshot {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct NativeScriptElementSnapshot {
     pub(crate) node_index: u32,
+    pub(crate) parent_index: Option<u32>,
     pub(crate) tag_name: String,
     pub(crate) attributes: BTreeMap<String, String>,
     pub(crate) text: String,
@@ -653,6 +654,7 @@ impl NativeDocument {
                     .unwrap_or_default();
                 Some(NativeScriptElementSnapshot {
                     node_index: node.id().index(),
+                    parent_index: self.parent_element_index(node.id()),
                     tag_name,
                     attributes: node.attributes()?.clone(),
                     text,
@@ -670,6 +672,18 @@ impl NativeDocument {
             visible_text,
             elements,
         }
+    }
+
+    fn parent_element_index(&self, id: NativeNodeId) -> Option<u32> {
+        let mut parent = self.node(id).and_then(NativeNode::parent);
+        while let Some(parent_id) = parent {
+            let parent_node = self.node(parent_id)?;
+            if parent_node.element_name().is_some() {
+                return Some(parent_id.index());
+            }
+            parent = parent_node.parent();
+        }
+        None
     }
 
     /// Derive the current document's bounded integer-pixel layout.

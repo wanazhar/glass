@@ -238,9 +238,15 @@ dispatch, default-action ordering, mutation invalidation, timers, modules,
 Fetch/XHR, page-script loading, remaining resource classes, and browser parity
 remain open.
 
-The next BE-03/BE-04 gate is a document event graph and owner-action bridge:
-ancestor propagation/capture, Rust-action listener dispatch, default-action
-ordering, and mutation invalidation, followed by Fetch/XHR integration.
+The completed JavaScript event-graph batch is
+[native-engine-browser-020](tasks/native-engine-browser-020.md). Projected
+elements now expose bounded parent links, and dispatch runs snapshot-based
+capture, target, and bubble phases with `stopPropagation()`,
+`stopImmediatePropagation()`, and `once` handling. Rust semantic actions still
+do not re-enter the page realm. The next BE-03/BE-04 gate is the Rust-action
+owner bridge: dispatch click/input/change/focus/blur into the correct local or
+child realm with cancellation and default-action ordering, then commit
+callback mutations without bypassing child ownership.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

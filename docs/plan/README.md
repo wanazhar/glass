@@ -393,8 +393,18 @@ callbacks receive `event.submitter` for button activation and
 Full constraint-validation APIs, submitter serialization, multipart encoding,
 and target contexts remain open.
 
+The completed bounded ready-state lifecycle batch is
+[native-engine-browser-039](tasks/native-engine-browser-039.md). Local and
+child-owned realms now expose `loading`, `interactive`, and `complete` at the
+corresponding parser/lifecycle boundaries, dispatch `readystatechange` at the
+interactive and complete transitions, and deliver `DOMContentLoaded` before
+window `load`. Pages without scripts still expose a persistent realm with
+final `document.readyState === "complete"`. Resource-specific completion,
+unload/pagehide/pageshow, wall-clock races, and full task-source timing remain
+open.
+
 The next BE-02/BE-03/BE-04 gate is ready-state/resource lifecycle timing and
-full task ordering, followed by multipart, full constraint-validation, and
+resource completion/task ordering, followed by multipart, full constraint-validation, and
 submitter serialization behavior plus the remaining browser-context
 primitives.
 

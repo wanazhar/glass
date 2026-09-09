@@ -201,12 +201,13 @@ pub(crate) fn execute_page_scripts(
     document_origin: &NativeOrigin,
     viewport: Viewport,
 ) -> Result<(), NativeEngineError> {
-    if sources.is_empty() {
-        return Ok(());
-    }
     if runtime.is_none() {
         *runtime = Some(NativeJavaScriptRuntime::new()?);
     }
+    runtime
+        .as_mut()
+        .expect("page script runtime initialized")
+        .set_ready_state("loading");
     let module_sources = sources
         .iter()
         .filter_map(|source| match source {
@@ -250,8 +251,40 @@ pub(crate) fn execute_page_scripts(
         next.apply_script_commands(&evaluation.commands)?;
         *document = next;
     }
+    runtime
+        .as_mut()
+        .expect("page script runtime initialized")
+        .set_ready_state("interactive");
     for (target, kind) in [
+        (0, NativeEventKind::ReadyStateChange),
         (0, NativeEventKind::DomContentLoaded),
+    ] {
+        let Some(event_source) = host_event_script(&[(target, kind)])? else {
+            continue;
+        };
+        let evaluation = runtime
+            .as_ref()
+            .expect("page script runtime initialized")
+            .evaluate(
+                &event_source,
+                document,
+                document_url,
+                document_origin,
+                viewport,
+            )?;
+        if evaluation.commands.is_empty() {
+            continue;
+        }
+        let mut next = document.clone();
+        next.apply_script_commands(&evaluation.commands)?;
+        *document = next;
+    }
+    runtime
+        .as_mut()
+        .expect("page script runtime initialized")
+        .set_ready_state("complete");
+    for (target, kind) in [
+        (0, NativeEventKind::ReadyStateChange),
         (u32::MAX, NativeEventKind::Load),
     ] {
         let Some(event_source) = host_event_script(&[(target, kind)])? else {
@@ -309,6 +342,7 @@ fn host_event_script_with_submitters(
             let (event_type, bubbles, cancelable) = match kind {
                 NativeEventKind::Blur => ("blur", false, false),
                 NativeEventKind::Focus => ("focus", false, false),
+                NativeEventKind::ReadyStateChange => ("readystatechange", false, false),
                 NativeEventKind::DomContentLoaded => ("DOMContentLoaded", false, false),
                 NativeEventKind::Load => ("load", false, false),
                 NativeEventKind::Invalid => ("invalid", false, true),
@@ -406,6 +440,7 @@ pub(crate) struct NativeJavaScriptRuntime {
     context: Context,
     deadline: Arc<Mutex<Option<Instant>>>,
     module_sources: Arc<Mutex<BTreeMap<String, String>>>,
+    ready_state: String,
 }
 
 impl NativeJavaScriptRuntime {
@@ -441,7 +476,13 @@ impl NativeJavaScriptRuntime {
             context,
             deadline,
             module_sources,
+            ready_state: "complete".into(),
         })
+    }
+
+    pub(crate) fn set_ready_state(&mut self, ready_state: &str) {
+        self.ready_state.clear();
+        self.ready_state.push_str(ready_state);
     }
 
     fn set_module_sources(&self, sources: BTreeMap<String, String>) {
@@ -471,7 +512,8 @@ impl NativeJavaScriptRuntime {
                 source.len(),
             ));
         }
-        let bootstrap = document_bootstrap(document, document_url, origin, viewport)?;
+        let bootstrap =
+            document_bootstrap(document, document_url, origin, viewport, &self.ready_state)?;
         let deadline = Instant::now() + NATIVE_SCRIPT_TIMEOUT;
         if let Ok(mut current) = self.deadline.lock() {
             *current = Some(deadline);
@@ -580,7 +622,8 @@ impl NativeJavaScriptRuntime {
                 source.len(),
             ));
         }
-        let bootstrap = document_bootstrap(document, document_url, origin, viewport)?;
+        let bootstrap =
+            document_bootstrap(document, document_url, origin, viewport, &self.ready_state)?;
         let deadline = Instant::now() + NATIVE_SCRIPT_TIMEOUT;
         if let Ok(mut current) = self.deadline.lock() {
             *current = Some(deadline);
@@ -920,6 +963,7 @@ fn document_bootstrap(
     document_url: &str,
     origin: &NativeOrigin,
     viewport: Viewport,
+    ready_state: &str,
 ) -> Result<String, NativeEngineError> {
     let state = document.script_snapshot(crate::browser_backend::MAX_TEXT_BYTES);
     let serialized = serde_json::to_string(&serde_json::json!({
@@ -931,6 +975,11 @@ fn document_bootstrap(
         operation: "serialize JavaScript host view".into(),
         reason: "native JavaScript host view could not be serialized".into(),
     })?;
+    let ready_state =
+        serde_json::to_string(ready_state).map_err(|_| NativeEngineError::Worker {
+            operation: "serialize document ready state".into(),
+            reason: "native document ready state could not be serialized".into(),
+        })?;
     Ok(format!(
         r###"(() => {{
   const host = {serialized};
@@ -1292,7 +1341,7 @@ fn document_bootstrap(
     body,
     documentElement,
     get activeElement() {{ return elements.find((element) => element.focused) || null; }},
-    readyState: "complete",
+    readyState: {ready_state},
     addEventListener(type, callback, options) {{
       addListener("document", type, callback, options);
     }},
@@ -1362,5 +1411,6 @@ fn document_bootstrap(
         max_timers = super::interaction::MAX_NATIVE_EFFECTS,
         width = viewport.width,
         height = viewport.height,
+        ready_state = ready_state,
     ))
 }

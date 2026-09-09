@@ -18,6 +18,7 @@ pub enum NativeAction {
 pub enum NativeEventKind {
     Blur,
     Focus,
+    ReadyStateChange,
     DomContentLoaded,
     Load,
     Invalid,

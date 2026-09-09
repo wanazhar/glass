@@ -164,7 +164,7 @@ async fn native_local_page_lifecycle_events_fire_after_script_schedule() {
     let config = NativeEngineConfig::default()
         .with_fixture(
             "fixture://page-lifecycle",
-            "<script>globalThis.lifecycle = []; document.addEventListener('DOMContentLoaded', () => lifecycle.push('dom')); addEventListener('load', () => lifecycle.push('load'));</script>",
+            "<script>globalThis.lifecycle = []; document.addEventListener('readystatechange', () => lifecycle.push('ready:' + document.readyState)); document.addEventListener('DOMContentLoaded', () => lifecycle.push('dom:' + document.readyState)); addEventListener('load', () => lifecycle.push('load:' + document.readyState));</script>",
         )
         .unwrap()
         .with_initial_url("fixture://page-lifecycle");
@@ -172,7 +172,30 @@ async fn native_local_page_lifecycle_events_fire_after_script_schedule() {
     engine.initialize_async().await.unwrap();
     assert_eq!(
         engine.evaluate_async("globalThis.lifecycle").await.unwrap(),
-        serde_json::json!(["dom", "load"])
+        serde_json::json!([
+            "ready:interactive",
+            "dom:interactive",
+            "ready:complete",
+            "load:complete"
+        ])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_local_pages_without_scripts_retain_complete_ready_state() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://no-scripts",
+            "<title>No scripts</title><p>Ready</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://no-scripts");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine.evaluate_async("document.readyState").await.unwrap(),
+        serde_json::json!("complete")
     );
     engine.close_async().await.unwrap();
 }
@@ -980,6 +1003,10 @@ async fn native_content_process_evaluates_persistent_script_realm() {
         serde_json::json!("Script")
     );
     assert_eq!(
+        engine.evaluate_async("document.readyState").await.unwrap(),
+        serde_json::json!("complete")
+    );
+    assert_eq!(
         engine.evaluate_async("location.origin").await.unwrap(),
         serde_json::json!(format!("http://{address}"))
     );
@@ -1021,7 +1048,7 @@ async fn native_content_process_runs_inline_page_scripts_in_persistent_realm() {
         let (mut stream, _) = listener.accept().await.unwrap();
         let mut request = [0_u8; 4096];
         let _ = stream.read(&mut request).await.unwrap();
-        let body = "<script>globalThis.inlineCount = (globalThis.inlineCount || 0) + 1; globalThis.lifecycle = []; document.addEventListener('DOMContentLoaded', () => lifecycle.push('dom')); addEventListener('load', () => lifecycle.push('load'));</script><script>globalThis.inlineCount += 1; document.getElementById('name').value = 'loaded';</script><input id='name' type='text'>";
+        let body = "<script>globalThis.inlineCount = (globalThis.inlineCount || 0) + 1; globalThis.lifecycle = []; document.addEventListener('readystatechange', () => lifecycle.push('ready:' + document.readyState)); document.addEventListener('DOMContentLoaded', () => lifecycle.push('dom:' + document.readyState)); addEventListener('load', () => lifecycle.push('load:' + document.readyState));</script><script>globalThis.inlineCount += 1; document.getElementById('name').value = 'loaded';</script><input id='name' type='text'>";
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
@@ -1050,7 +1077,12 @@ async fn native_content_process_runs_inline_page_scripts_in_persistent_realm() {
     );
     assert_eq!(
         engine.evaluate_async("globalThis.lifecycle").await.unwrap(),
-        serde_json::json!(["dom", "load"])
+        serde_json::json!([
+            "ready:interactive",
+            "dom:interactive",
+            "ready:complete",
+            "load:complete"
+        ])
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

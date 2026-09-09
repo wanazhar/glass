@@ -2168,6 +2168,7 @@ fn event_kind_text(kind: NativeEventKind) -> &'static str {
     match kind {
         NativeEventKind::Blur => "blur",
         NativeEventKind::Focus => "focus",
+        NativeEventKind::ReadyStateChange => "readystatechange",
         NativeEventKind::DomContentLoaded => "DOMContentLoaded",
         NativeEventKind::Load => "load",
         NativeEventKind::Invalid => "invalid",
@@ -2185,6 +2186,7 @@ fn parse_event_kind(value: &str) -> Option<NativeEventKind> {
     match value {
         "blur" => Some(NativeEventKind::Blur),
         "focus" => Some(NativeEventKind::Focus),
+        "readystatechange" => Some(NativeEventKind::ReadyStateChange),
         "DOMContentLoaded" => Some(NativeEventKind::DomContentLoaded),
         "load" => Some(NativeEventKind::Load),
         "invalid" => Some(NativeEventKind::Invalid),

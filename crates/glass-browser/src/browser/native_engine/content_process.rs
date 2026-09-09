@@ -5,8 +5,9 @@ use super::dom::{NativeDocument, NativeDocumentWire, NativeNodeId, NativePageScr
 use super::error::{NativeEngineError, NativeWorkerFailureKind};
 use super::interaction::{MAX_NATIVE_EFFECTS, NativeEventKind};
 use super::javascript::{
-    MAX_NATIVE_SCRIPT_BYTES, NativeJavaScriptRuntime, NativePageScript, NativeScriptCommand,
-    NativeScriptEvaluation, execute_page_scripts, host_event_script,
+    MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_SCRIPT_BYTES, NativeJavaScriptRuntime, NativePageScript,
+    NativeScriptCommand, NativeScriptEvaluation, execute_page_scripts, host_event_script,
+    static_module_specifiers,
 };
 use super::origin::NativeOrigin;
 use super::resource_loader::{NativeFetchResponse, NativeResourceLoader};
@@ -15,12 +16,14 @@ use super::sandbox::NativeContentSandbox;
 use super::sandbox::prepare_worker_command;
 use base64::Engine as _;
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::time::timeout;
+use url::Url;
 
 const MAX_CONTENT_IPC_FRAME_BYTES: usize = 4 * 1024 * 1024;
 const MAX_CONTENT_DOCUMENT_WIRE_BYTES: usize = 2 * 1024 * 1024;
@@ -1364,10 +1367,24 @@ async fn load_page_script_sources(
                 sources.push(NativePageScript::Classic { source });
             }
             NativePageScriptSource::ModuleInline(source) => {
+                let name = format!("{document_url}#glass-inline-module-{index}");
+                let mut seen = BTreeSet::new();
+                seen.insert(name.clone());
+                let mut total_bytes = source.len();
                 sources.push(NativePageScript::Module {
-                    name: format!("{document_url}#glass-inline-module-{index}"),
-                    source,
-                })
+                    name: name.clone(),
+                    source: source.clone(),
+                });
+                load_module_dependencies(
+                    document_url,
+                    &name,
+                    &source,
+                    loader,
+                    &mut sources,
+                    &mut seen,
+                    &mut total_bytes,
+                )
+                .await?;
             }
             NativePageScriptSource::External(href) => {
                 if let Some(resource) = loader
@@ -1384,15 +1401,115 @@ async fn load_page_script_sources(
                     .load_script_async(document_url, &href, MAX_NATIVE_SCRIPT_BYTES)
                     .await?
                 {
+                    let name = resource.url;
+                    let source = resource.body;
+                    let mut seen = BTreeSet::new();
+                    seen.insert(name.clone());
+                    let mut total_bytes = source.len();
                     sources.push(NativePageScript::Module {
-                        name: resource.url,
-                        source: resource.body,
+                        name: name.clone(),
+                        source: source.clone(),
                     });
+                    load_module_dependencies(
+                        document_url,
+                        &name,
+                        &source,
+                        loader,
+                        &mut sources,
+                        &mut seen,
+                        &mut total_bytes,
+                    )
+                    .await?;
                 }
             }
         }
     }
     Ok(sources)
+}
+
+async fn load_module_dependencies(
+    owner_url: &str,
+    module_url: &str,
+    source: &str,
+    loader: &mut NativeResourceLoader,
+    scripts: &mut Vec<NativePageScript>,
+    seen: &mut BTreeSet<String>,
+    total_bytes: &mut usize,
+) -> Result<(), NativeEngineError> {
+    let mut pending = vec![(module_url.to_owned(), source.to_owned())];
+    while let Some((current_url, current_source)) = pending.pop() {
+        for specifier in static_module_specifiers(&current_source)? {
+            let Some(target) = resolve_module_specifier(&current_url, &specifier)? else {
+                continue;
+            };
+            let Some(resource) = loader
+                .load_script_async(owner_url, &target, MAX_NATIVE_SCRIPT_BYTES)
+                .await?
+            else {
+                continue;
+            };
+            let name = resource.url;
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            if seen.len() > MAX_NATIVE_MODULE_IMPORTS {
+                return Err(NativeEngineError::limit(
+                    "module graph entries",
+                    MAX_NATIVE_MODULE_IMPORTS,
+                    seen.len(),
+                ));
+            }
+            let source = resource.body;
+            *total_bytes = total_bytes.saturating_add(source.len());
+            if *total_bytes > MAX_NATIVE_SCRIPT_BYTES.saturating_mul(MAX_NATIVE_MODULE_IMPORTS) {
+                return Err(NativeEngineError::limit(
+                    "module graph bytes",
+                    MAX_NATIVE_SCRIPT_BYTES.saturating_mul(MAX_NATIVE_MODULE_IMPORTS),
+                    *total_bytes,
+                ));
+            }
+            scripts.push(NativePageScript::ModuleDependency {
+                name: name.clone(),
+                source: source.clone(),
+            });
+            pending.push((name, source));
+        }
+    }
+    Ok(())
+}
+
+fn resolve_module_specifier(
+    module_url: &str,
+    specifier: &str,
+) -> Result<Option<String>, NativeEngineError> {
+    let is_absolute = specifier.starts_with("http://") || specifier.starts_with("https://");
+    if !is_absolute
+        && !specifier.starts_with("./")
+        && !specifier.starts_with("../")
+        && !specifier.starts_with('/')
+    {
+        return Err(NativeEngineError::UnsupportedUrl {
+            reason: "bare module specifiers require an import map".into(),
+        });
+    }
+    let base = Url::parse(without_fragment(module_url)).map_err(|_| {
+        NativeEngineError::UnsupportedUrl {
+            reason: "module owner URL is not valid URL syntax".into(),
+        }
+    })?;
+    let mut target = if is_absolute {
+        Url::parse(specifier)
+    } else {
+        base.join(specifier)
+    }
+    .map_err(|_| NativeEngineError::UnsupportedUrl {
+        reason: "module specifier could not be resolved against its owner".into(),
+    })?;
+    target.set_fragment(None);
+    if !is_network_url(target.as_str()) {
+        return Ok(None);
+    }
+    Ok(Some(target.to_string()))
 }
 
 fn mutate_click_with_event_preflight(

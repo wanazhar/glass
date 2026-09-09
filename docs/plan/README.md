@@ -319,9 +319,17 @@ realm and typed command boundary. Static import graphs, dynamic `import()`,
 parser timing, POST/submission lifecycle/default-action ordering, target
 contexts, timers, Fetch/XHR, and the remaining resource classes remain open.
 
-The next BE-02/BE-03/BE-04 gate is bounded static module-graph loading and
-dynamic-import policy, alongside parser-timing/default-action ordering and the
-remaining form and browser-context primitives.
+The completed bounded static-module-graph batch is
+[native-engine-browser-030](tasks/native-engine-browser-030.md). HTTP(S)
+content processes now prefetch bounded relative/absolute static module
+dependencies under the owning document's script policy and expose them through
+QuickJS's in-memory loader, including duplicate/cycle bounds. Bare specifiers,
+dynamic `import()`, import maps, parser timing, POST/submission
+lifecycle/default-action ordering, target contexts, timers, Fetch/XHR, and the
+remaining resource classes remain open.
+
+The next BE-02/BE-03/BE-04 gate is dynamic-import policy and parser-timing/task
+ordering, alongside the remaining form and browser-context primitives.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

@@ -9,10 +9,13 @@ use super::dom::{NativeDocument, NativePageScriptSource};
 use super::error::NativeEngineError;
 use super::interaction::NativeEventKind;
 use super::origin::NativeOrigin;
-use rquickjs::{Context, Module, Runtime, Value};
+use rquickjs::loader::{ImportAttributes, Loader, Resolver};
+use rquickjs::{Context, Error, Module, Runtime, Value};
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use url::Url;
 
 /// Maximum source accepted by the native script evaluator.
 pub(crate) const MAX_NATIVE_SCRIPT_BYTES: usize = crate::browser_backend::MAX_TEXT_BYTES;
@@ -20,6 +23,7 @@ pub(crate) const MAX_NATIVE_SCRIPT_BYTES: usize = crate::browser_backend::MAX_TE
 pub(crate) const MAX_NATIVE_SCRIPT_RESULT_BYTES: usize = crate::browser_backend::MAX_JSON_BYTES;
 /// Maximum inline page scripts executed while committing one document.
 pub(crate) const MAX_NATIVE_INLINE_SCRIPTS: usize = 32;
+pub(crate) const MAX_NATIVE_MODULE_IMPORTS: usize = 128;
 const NATIVE_SCRIPT_MEMORY_BYTES: usize = 32 * 1024 * 1024;
 const NATIVE_SCRIPT_STACK_BYTES: usize = 1024 * 1024;
 const NATIVE_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -71,6 +75,56 @@ pub(crate) struct NativeScriptEvaluation {
 pub(crate) enum NativePageScript {
     Classic { source: String },
     Module { name: String, source: String },
+    ModuleDependency { name: String, source: String },
+}
+
+struct NativeModuleResolver;
+
+impl Resolver for NativeModuleResolver {
+    fn resolve<'js>(
+        &mut self,
+        _ctx: &rquickjs::Ctx<'js>,
+        base: &str,
+        name: &str,
+        _attributes: Option<ImportAttributes<'js>>,
+    ) -> rquickjs::Result<String> {
+        let base = Url::parse(base)
+            .map_err(|_| Error::new_resolving_message(base, name, "module base is not a URL"))?;
+        let target = Url::parse(name).or_else(|_| base.join(name)).map_err(|_| {
+            Error::new_resolving_message(base.as_str(), name, "module URL is invalid")
+        })?;
+        if !target.username().is_empty() || target.password().is_some() {
+            return Err(Error::new_resolving_message(
+                base.as_str(),
+                name,
+                "module URL must not contain credentials",
+            ));
+        }
+        let mut target = target;
+        target.set_fragment(None);
+        Ok(target.to_string())
+    }
+}
+
+struct NativeModuleLoader {
+    sources: Arc<Mutex<BTreeMap<String, String>>>,
+}
+
+impl Loader for NativeModuleLoader {
+    fn load<'js>(
+        &mut self,
+        ctx: &rquickjs::Ctx<'js>,
+        name: &str,
+        _attributes: Option<ImportAttributes<'js>>,
+    ) -> rquickjs::Result<Module<'js>> {
+        let source = self
+            .sources
+            .lock()
+            .ok()
+            .and_then(|sources| sources.get(name).cloned())
+            .ok_or_else(|| Error::new_loading_message(name, "module was not prefetched"))?;
+        Module::declare(ctx.clone(), name, source)
+    }
 }
 
 /// Execute the bounded inline scripts discovered in one parsed document.
@@ -123,6 +177,20 @@ pub(crate) fn execute_page_scripts(
     if runtime.is_none() {
         *runtime = Some(NativeJavaScriptRuntime::new()?);
     }
+    let module_sources = sources
+        .iter()
+        .filter_map(|source| match source {
+            NativePageScript::Module { name, source }
+            | NativePageScript::ModuleDependency { name, source } => {
+                Some((name.clone(), source.clone()))
+            }
+            NativePageScript::Classic { .. } => None,
+        })
+        .collect::<BTreeMap<_, _>>();
+    runtime
+        .as_ref()
+        .expect("page script runtime initialized")
+        .set_module_sources(module_sources);
     for source in sources {
         let evaluation = {
             let script_runtime = runtime.as_ref().expect("page script runtime initialized");
@@ -142,6 +210,7 @@ pub(crate) fn execute_page_scripts(
                     document_origin,
                     viewport,
                 )?,
+                NativePageScript::ModuleDependency { .. } => continue,
             }
         };
         if evaluation.commands.is_empty() {
@@ -204,6 +273,7 @@ pub(crate) struct NativeJavaScriptRuntime {
     runtime: Runtime,
     context: Context,
     deadline: Arc<Mutex<Option<Instant>>>,
+    module_sources: Arc<Mutex<BTreeMap<String, String>>>,
 }
 
 impl NativeJavaScriptRuntime {
@@ -212,6 +282,13 @@ impl NativeJavaScriptRuntime {
             operation: "create JavaScript runtime".into(),
             reason: "native JavaScript runtime could not be created".into(),
         })?;
+        let module_sources = Arc::new(Mutex::new(BTreeMap::new()));
+        runtime.set_loader(
+            NativeModuleResolver,
+            NativeModuleLoader {
+                sources: Arc::clone(&module_sources),
+            },
+        );
         runtime.set_memory_limit(NATIVE_SCRIPT_MEMORY_BYTES);
         runtime.set_max_stack_size(NATIVE_SCRIPT_STACK_BYTES);
         let deadline = Arc::new(Mutex::new(None));
@@ -231,7 +308,14 @@ impl NativeJavaScriptRuntime {
             runtime,
             context,
             deadline,
+            module_sources,
         })
+    }
+
+    fn set_module_sources(&self, sources: BTreeMap<String, String>) {
+        if let Ok(mut current) = self.module_sources.lock() {
+            *current = sources;
+        }
     }
 
     pub(crate) fn evaluate(
@@ -477,6 +561,173 @@ fn contains_await_token(source: &str) -> bool {
         }
     }
     false
+}
+
+/// Extract the bounded static import/export specifiers from a module source.
+///
+/// This is intentionally a lexical prefetch pass, not a replacement for the
+/// JavaScript parser. QuickJS remains authoritative for module grammar and
+/// evaluation; this pass only discovers URLs that the content process must
+/// fetch before installing the in-memory module loader.
+pub(crate) fn static_module_specifiers(source: &str) -> Result<Vec<String>, NativeEngineError> {
+    let bytes = source.as_bytes();
+    let mut index = 0;
+    let mut specifiers = Vec::new();
+    while index < bytes.len() {
+        index = skip_javascript_space_and_comments(bytes, index);
+        if index >= bytes.len() {
+            break;
+        }
+        if matches!(bytes[index], b'\'' | b'"' | b'`') {
+            index = skip_javascript_string(bytes, index);
+            continue;
+        }
+        if !is_javascript_identifier_start(bytes[index]) {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        index += 1;
+        while index < bytes.len() && is_javascript_identifier_continue(bytes[index]) {
+            index += 1;
+        }
+        let keyword = &bytes[start..index];
+        if keyword != b"import" && keyword != b"export" {
+            continue;
+        }
+        if let Some(specifier) = module_specifier_after_keyword(bytes, index, keyword == b"import")
+        {
+            if specifier.is_empty() {
+                return Err(NativeEngineError::invalid(
+                    "module import",
+                    "module specifier must not be empty",
+                ));
+            }
+            specifiers.push(specifier);
+            if specifiers.len() > MAX_NATIVE_MODULE_IMPORTS {
+                return Err(NativeEngineError::limit(
+                    "module imports",
+                    MAX_NATIVE_MODULE_IMPORTS,
+                    specifiers.len(),
+                ));
+            }
+        }
+    }
+    Ok(specifiers)
+}
+
+fn module_specifier_after_keyword(
+    bytes: &[u8],
+    keyword_end: usize,
+    import_keyword: bool,
+) -> Option<String> {
+    let start = skip_javascript_space_and_comments(bytes, keyword_end);
+    if import_keyword && bytes.get(start) == Some(&b'(') {
+        return None;
+    }
+    if bytes
+        .get(start)
+        .is_some_and(|byte| matches!(byte, b'\'' | b'"'))
+    {
+        return read_javascript_string(bytes, start).map(|(value, _)| value);
+    }
+    let mut index = start;
+    while index < bytes.len() {
+        index = skip_javascript_space_and_comments(bytes, index);
+        if index >= bytes.len() || bytes[index] == b';' {
+            return None;
+        }
+        if matches!(bytes[index], b'\'' | b'"' | b'`') {
+            index = skip_javascript_string(bytes, index);
+            continue;
+        }
+        if is_javascript_identifier_start(bytes[index]) {
+            let start = index;
+            index += 1;
+            while index < bytes.len() && is_javascript_identifier_continue(bytes[index]) {
+                index += 1;
+            }
+            if &bytes[start..index] == b"from" {
+                let specifier_start = skip_javascript_space_and_comments(bytes, index);
+                return read_javascript_string(bytes, specifier_start).map(|(value, _)| value);
+            }
+            continue;
+        }
+        index += 1;
+    }
+    None
+}
+
+fn skip_javascript_space_and_comments(bytes: &[u8], mut index: usize) -> usize {
+    loop {
+        while bytes.get(index).is_some_and(u8::is_ascii_whitespace) {
+            index += 1;
+        }
+        if bytes.get(index) == Some(&b'/') && bytes.get(index + 1) == Some(&b'/') {
+            index += 2;
+            while index < bytes.len() && bytes[index] != b'\n' {
+                index += 1;
+            }
+            continue;
+        }
+        if bytes.get(index) == Some(&b'/') && bytes.get(index + 1) == Some(&b'*') {
+            index += 2;
+            while index + 1 < bytes.len() && !(bytes[index] == b'*' && bytes[index + 1] == b'/') {
+                index += 1;
+            }
+            index = (index + 2).min(bytes.len());
+            continue;
+        }
+        return index;
+    }
+}
+
+fn skip_javascript_string(bytes: &[u8], mut index: usize) -> usize {
+    let Some(&quote) = bytes.get(index) else {
+        return index;
+    };
+    index += 1;
+    while index < bytes.len() {
+        if bytes[index] == b'\\' {
+            index = index.saturating_add(2);
+        } else if bytes[index] == quote {
+            return index + 1;
+        } else {
+            index += 1;
+        }
+    }
+    index
+}
+
+fn read_javascript_string(bytes: &[u8], mut index: usize) -> Option<(String, usize)> {
+    let quote = *bytes.get(index)?;
+    if !matches!(quote, b'\'' | b'"') {
+        return None;
+    }
+    index += 1;
+    let mut value = String::new();
+    while index < bytes.len() {
+        match bytes[index] {
+            byte if byte == quote => return Some((value, index + 1)),
+            b'\\' if index + 1 < bytes.len() => {
+                value.push(bytes[index + 1] as char);
+                index += 2;
+            }
+            byte => {
+                value.push(byte as char);
+                index += 1;
+            }
+        }
+    }
+    None
+}
+
+fn is_javascript_identifier_start(byte: u8) -> bool {
+    byte.is_ascii_alphabetic() || byte == b'_' || byte == b'$'
+}
+
+fn is_javascript_identifier_continue(byte: u8) -> bool {
+    is_javascript_identifier_start(byte) || byte.is_ascii_digit()
 }
 
 fn document_bootstrap(

@@ -1989,6 +1989,15 @@ realms keep the resulting globals/listeners while typed commands remain
 clone-and-commit operations. Static import graphs, dynamic `import()`, local
 external subresources, parser timing, and full Web IDL identity remain open.
 
+The completed bounded static-module-graph follow-up is
+[native-engine-browser-030](../tasks/native-engine-browser-030.md). The child
+prefetches relative and absolute HTTP(S) static imports/exports through the
+owner-document script policy, bounds duplicate/cyclic graph entries and total
+bytes, and installs only validated final-URL/source pairs into QuickJS's
+in-memory loader. Bare specifiers, import maps, dynamic `import()`, parser
+timing, local external module subresources, and full Web IDL identity remain
+open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

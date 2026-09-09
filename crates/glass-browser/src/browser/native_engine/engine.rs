@@ -938,7 +938,11 @@ impl NativeEngine {
                             href: href.to_owned(),
                         })
                     } else if let Some(form_id) = document.submit_control_form(id) {
-                        document.form_submission_request(form_id, &self.url)?;
+                        document.form_submission_request_with_submitter(
+                            form_id,
+                            &self.url,
+                            Some(id),
+                        )?;
                         Some(ScriptNavigationTarget::Form {
                             form_id,
                             dispatch_submit: true,
@@ -962,7 +966,6 @@ impl NativeEngine {
                     submitter_index,
                 } => {
                     let id = NativeNodeId::from_parts(document.generation(), *node_index);
-                    document.form_submission_request(id, &self.url)?;
                     let submitter = submitter_index
                         .map(|index| NativeNodeId::from_parts(document.generation(), index));
                     if let Some(submitter) = submitter
@@ -973,6 +976,7 @@ impl NativeEngine {
                                 .into(),
                         });
                     }
+                    document.form_submission_request_with_submitter(id, &self.url, submitter)?;
                     Some(ScriptNavigationTarget::Form {
                         form_id: id,
                         dispatch_submit: true,

@@ -2646,7 +2646,11 @@ fn script_navigation_target(
                         href: href.to_owned(),
                     })
                 } else if let Some(form_id) = document.submit_control_form(node_id) {
-                    document.form_submission_request(form_id, document_url)?;
+                    document.form_submission_request_with_submitter(
+                        form_id,
+                        document_url,
+                        Some(node_id),
+                    )?;
                     Some(ScriptNavigationTarget::Form {
                         node_index: form_id.index(),
                         form_id,
@@ -2672,7 +2676,6 @@ fn script_navigation_target(
                 submitter_index,
             } => {
                 let node_id = NativeNodeId::from_parts(document.generation(), *node_index);
-                document.form_submission_request(node_id, document_url)?;
                 let submitter = submitter_index
                     .map(|index| NativeNodeId::from_parts(document.generation(), index));
                 if let Some(submitter) = submitter
@@ -2683,6 +2686,11 @@ fn script_navigation_target(
                             .into(),
                     });
                 }
+                document.form_submission_request_with_submitter(
+                    node_id,
+                    document_url,
+                    submitter,
+                )?;
                 Some(ScriptNavigationTarget::Form {
                     node_index: *node_index,
                     form_id: node_id,

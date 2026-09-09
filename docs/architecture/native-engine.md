@@ -547,8 +547,8 @@ The completed native-engine-browser-045 batch adds bounded POST encodings.
 boundaries and `text/plain` uses CRLF-delimited `name=value` records; the
 selected content type crosses the parent/content-process request boundary and
 survives redirects that retain POST. File parts, FormData/Web IDL identity,
-submitter encoding overrides, full constraint validation, target contexts, and
-the remaining browser-context primitives remain open.
+full constraint validation, target contexts, and the remaining
+browser-context primitives remain open.
 
 The completed native-engine-browser-046 batch adds bounded navigation
 cancellation and history events. Replacement navigation dispatches cancelable
@@ -565,6 +565,14 @@ due callbacks on a later host turn in due-time/ID order, and remove canceled
 timers through `clearTimeout`. There is no background page event loop yet;
 intervals, animation/idle callbacks, task-source fairness, and full wall-clock
 scheduling remain open.
+
+The completed native-engine-browser-048 batch applies bounded submitter
+overrides. Local and child-owned submissions now resolve `formaction`,
+`formmethod`, and `formenctype` from the validated submitter before building
+the request, so the effective method, action, and supported POST encoding are
+consistent through script preflight and the content-process boundary. Form
+target contexts, dialog submission, file parts, and general form-control/Web
+IDL identity remain open.
 
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
@@ -3620,12 +3628,12 @@ The native profile is `experimental` and declares:
 | Capability | Level | Current contract |
 |---|---|---|
 | lifecycle | available | initialize and explicit close |
-| navigation | available | local resources plus bounded external HTTP(S) HTML navigation, inline/classic/module-root/static-graph/literal-dynamic-import child scripts with bounded parser-blocking/async/defer ordering, bounded task turns, and bounded GET or urlencoded-POST form navigation; no computed module loading or general subresources |
+| navigation | available | local resources plus bounded external HTTP(S) HTML navigation, inline/classic/module-root/static-graph/literal-dynamic-import child scripts with bounded parser-blocking/async/defer ordering, bounded task turns, and bounded GET or POST form navigation with urlencoded, multipart, and text/plain encodings plus validated submitter overrides; no computed module loading or general subresources |
 | contexts | available | one active context |
 | evidence | available | bounded URL, title, visible text, revision; native semantic projection is Rust-only |
-| action | available | semantic click/type, focused-text printable/Backspace/Delete key input, bounded vertical root scrolling, bounded GET or urlencoded-POST form defaults, plus native point targets for supported local controls; no selection/IME or nested scrolling |
+| action | available | semantic click/type, focused-text printable/Backspace/Delete key input, bounded vertical root scrolling, bounded GET or POST form defaults with supported encodings and submitter overrides, plus native point targets for supported local controls; no selection/IME or nested scrolling |
 | effects | available | current revision and changed signal; bounded event metadata is Rust-only |
-| script | available | bounded QuickJS ECMAScript with a refreshed `window`/`document` snapshot, bounded inline/classic/module-root page-script loading and parser/lifecycle ordering, HTTP(S) static module graphs, literal dynamic imports, and bounded due-time `setTimeout` turns, typed click/form-submit/attribute/focus commands, persistent listener records, bounded Event/CustomEvent capture/target/bubble dispatch, cancelable click preflight, transactional type/input/change event re-entry, bounded required-control validation, submitter event metadata and successful-control serialization, bounded external form ownership, bounded `readyState`/`readystatechange`/DOMContentLoaded/load phase ordering, form `novalidate`/`formnovalidate` bypass, top-level link/form navigation handoff, and relative HTTP(S)/same-document resolution; no live Web IDL identity, target contexts, resource-specific lifecycle parity, beforeinput/composition, full constraint validation, image/FormData parity, multipart/text/plain forms, intervals/animation/idle callbacks, task-source fairness, background page scheduling, computed imports, bare specifiers/import maps, local external subresources, or general page loading |
+| script | available | bounded QuickJS ECMAScript with a refreshed `window`/`document` snapshot, bounded inline/classic/module-root page-script loading and parser/lifecycle ordering, HTTP(S) static module graphs, literal dynamic imports, and bounded due-time `setTimeout` turns, typed click/form-submit/attribute/focus commands, persistent listener records, bounded Event/CustomEvent capture/target/bubble dispatch, cancelable click preflight, transactional type/input/change event re-entry, bounded required-control validation, submitter event metadata and successful-control serialization, bounded external form ownership, bounded multipart/text/plain form encodings and validated `formaction`/`formmethod`/`formenctype` overrides, bounded `readyState`/`readystatechange`/DOMContentLoaded/load phase ordering, form `novalidate`/`formnovalidate` bypass, top-level link/form navigation handoff, and relative HTTP(S)/same-document resolution; no live Web IDL identity, target contexts, resource-specific lifecycle parity, beforeinput/composition, full constraint validation, image/FormData parity, intervals/animation/idle callbacks, task-source fairness, background page scheduling, computed imports, bare specifiers/import maps, local external subresources, or general page loading |
 | capture | available | bounded PNG of the current logical RGBA surface; JPEG/PDF and screenshot-containing evidence are unavailable |
 | storage | partial | process-owned session cookies and bounded document cache; no local/session/IndexedDB storage or persistence |
 | prompts | omitted | no dialogs |

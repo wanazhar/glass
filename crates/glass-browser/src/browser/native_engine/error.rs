@@ -11,6 +11,7 @@ pub enum NativeWorkerFailureKind {
     Protocol,
     Rejected,
     InvalidTransfer,
+    SandboxUnavailable,
 }
 
 /// Typed failures raised by the native engine kernel.

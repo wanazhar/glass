@@ -1784,6 +1784,16 @@ remaining BE-01 gate is OS-specific sandboxing and cross-platform process
 containment; diagnostics transfer, script/event-loop execution, network
 security, and browser parity remain open.
 
+The completed sandbox-launch follow-up is
+[`native-engine-browser-009`](../tasks/native-engine-browser-009.md). Linux
+requires Bubblewrap with user/PID/UTS/IPC isolation, read-only runtime mounts,
+private temporary storage, parent-death cleanup, and `no_new_privs`; macOS
+uses a deny-by-default Seatbelt profile; Windows uses an attached Job Object
+with active-process and kill-on-close limits. Sandbox construction failure is
+typed and fail-closed. The shared network namespace, origin/site policy,
+restricted Windows tokens, and full cross-platform containment evidence remain
+open for BE-02 and later security gates.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

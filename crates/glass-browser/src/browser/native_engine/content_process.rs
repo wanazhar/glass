@@ -4,13 +4,16 @@ use super::error::{NativeEngineError, NativeWorkerFailureKind};
 use super::interaction::{MAX_NATIVE_EFFECTS, NativeEventKind};
 use super::origin::NativeOrigin;
 use super::resource_loader::NativeResourceLoader;
+#[cfg(windows)]
+use super::sandbox::NativeContentSandbox;
+use super::sandbox::prepare_worker_command;
 use base64::Engine as _;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::time::timeout;
 
 const MAX_CONTENT_IPC_FRAME_BYTES: usize = 4 * 1024 * 1024;
@@ -51,13 +54,15 @@ pub(crate) struct NativeContentProcess {
     next_request_id: u64,
     healthy: bool,
     failure_kind: Option<NativeWorkerFailureKind>,
+    #[cfg(windows)]
+    sandbox: NativeContentSandbox,
 }
 
 impl NativeContentProcess {
     pub(crate) async fn spawn() -> Result<Self, NativeEngineError> {
         let path = worker_binary_path()?;
-        let mut child = Command::new(path)
-            .arg("--native-content-worker")
+        let (mut command, mut sandbox) = prepare_worker_command(&path)?;
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -70,6 +75,10 @@ impl NativeContentProcess {
                     "native content worker could not be started",
                 )
             })?;
+        if let Err(error) = sandbox.attach(&child) {
+            let _ = child.start_kill();
+            return Err(error);
+        }
         let stdin = child.stdin.take().ok_or_else(|| {
             NativeEngineError::worker_failure(
                 "spawn content process",
@@ -91,6 +100,8 @@ impl NativeContentProcess {
             next_request_id: 1,
             healthy: true,
             failure_kind: None,
+            #[cfg(windows)]
+            sandbox,
         };
         let id = process.next_id();
         let response = process

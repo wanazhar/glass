@@ -2114,9 +2114,17 @@ External submit buttons use the same typed `requestSubmit(button)` handoff.
 Multipart/text/plain, full constraint validation, target contexts, and the
 remaining browser-context primitives remain open.
 
+The completed bounded POST-encoding follow-up is
+[native-engine-browser-045](../tasks/native-engine-browser-045.md). POST forms
+now carry bounded `multipart/form-data` text fields and `text/plain` bodies
+through parent/content-process IPC with explicit content types; redirects
+clear content type when POST becomes GET. File parts, FormData/Web IDL
+identity, submitter encoding overrides, full constraint validation, target
+contexts, and the remaining browser-context primitives remain open.
+
 The next bounded workstream is full task ordering and navigation edge cases,
-followed by multipart/full constraint validation, target contexts, and the
-remaining browser-context primitives.
+followed by file/FormData support, full constraint validation, target contexts,
+and the remaining browser-context primitives.
 
 ## Baseline and constraints
 

@@ -450,9 +450,17 @@ by `requestSubmit(button)` through the typed owner path. Multipart/text/plain,
 full constraint validation, target contexts, and the remaining browser-context
 primitives remain open.
 
+The completed bounded POST-encoding slice is
+[native-engine-browser-045](tasks/native-engine-browser-045.md). POST forms now
+carry explicit bounded `multipart/form-data` and `text/plain` bodies through
+the parent/content-process request boundary, including the multipart boundary
+header and redirect method/body reset. File parts, FormData/Web IDL identity,
+submitter encoding overrides, full constraint validation, target contexts, and
+the remaining browser-context primitives remain open.
+
 The next BE-02/BE-03/BE-04 gate is full task ordering and navigation edge cases,
-followed by multipart/full constraint validation, target contexts, and the
-remaining browser-context primitives.
+followed by file/FormData support, full constraint validation, target contexts,
+and the remaining browser-context primitives.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

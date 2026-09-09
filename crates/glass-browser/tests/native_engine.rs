@@ -1017,6 +1017,51 @@ async fn native_local_form_attribute_associates_external_controls_in_document_or
 }
 
 #[tokio::test]
+async fn native_local_form_submission_supports_multipart_and_text_plain() {
+    let multipart_config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://multipart-form",
+            "<form id='form' method='post' enctype='multipart/form-data' action='fixture://multipart-result'><input name='alpha' value='one'></form>",
+        )
+        .unwrap()
+        .with_fixture("fixture://multipart-result", "<title>Multipart</title>")
+        .unwrap()
+        .with_initial_url("fixture://multipart-form");
+    let mut multipart = NativeEngine::new(multipart_config).unwrap();
+    multipart.initialize_async().await.unwrap();
+    multipart
+        .evaluate_async("document.getElementById('form').submit()")
+        .await
+        .unwrap();
+    assert_eq!(
+        multipart.snapshot().unwrap().url,
+        "fixture://multipart-result"
+    );
+    multipart.close_async().await.unwrap();
+
+    let text_plain_config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://text-plain-form",
+            "<form id='form' method='post' enctype='text/plain' action='fixture://text-plain-result'><input name='alpha' value='one'></form>",
+        )
+        .unwrap()
+        .with_fixture("fixture://text-plain-result", "<title>Text plain</title>")
+        .unwrap()
+        .with_initial_url("fixture://text-plain-form");
+    let mut text_plain = NativeEngine::new(text_plain_config).unwrap();
+    text_plain.initialize_async().await.unwrap();
+    text_plain
+        .evaluate_async("document.getElementById('form').submit()")
+        .await
+        .unwrap();
+    assert_eq!(
+        text_plain.snapshot().unwrap().url,
+        "fixture://text-plain-result"
+    );
+    text_plain.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_child_script_click_owns_external_navigation() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1686,6 +1731,94 @@ async fn native_content_process_form_attribute_associates_external_controls() {
     );
     assert_eq!(engine.snapshot().unwrap().title, "External form result");
     engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_form_submission_supports_multipart_and_text_plain() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/multipart", "/multipart-result", "/plain", "/plain-result"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            if expected_path.ends_with("-result") {
+                assert_eq!(request.split_whitespace().next(), Some("POST"));
+                let body = request
+                    .split_once("\r\n\r\n")
+                    .map(|(_, body)| body)
+                    .unwrap_or_default();
+                if expected_path == "/multipart-result" {
+                    let content_type = request.lines().find_map(|line| {
+                        line.split_once(':').and_then(|(name, value)| {
+                            name.eq_ignore_ascii_case("content-type")
+                                .then_some(value.trim())
+                        })
+                    });
+                    let boundary = content_type
+                        .and_then(|value| value.strip_prefix("multipart/form-data; boundary="))
+                        .expect("multipart boundary");
+                    assert!(body.contains(&format!("--{boundary}\r\n")));
+                    assert!(body.contains("Content-Disposition: form-data; name=\"alpha\""));
+                    assert!(body.contains("\r\n\r\none\r\n"));
+                    assert!(body.ends_with(&format!("--{boundary}--\r\n")));
+                } else {
+                    assert!(
+                        request
+                            .lines()
+                            .any(|line| { line.eq_ignore_ascii_case("content-type: text/plain") })
+                    );
+                    assert!(body.ends_with("alpha=one\r\n"));
+                }
+            }
+            let body = match expected_path {
+                "/multipart" => {
+                    "<form id='form' method='post' enctype='multipart/form-data' action='/multipart-result'><input name='alpha' value='one'></form>"
+                }
+                "/plain" => {
+                    "<form id='form' method='post' enctype='text/plain' action='/plain-result'><input name='alpha' value='one'></form>"
+                }
+                _ => "<title>Form result</title><p>Submitted</p>",
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut multipart = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/multipart")),
+    )
+    .unwrap();
+    multipart.initialize_async().await.unwrap();
+    multipart
+        .evaluate_async("document.getElementById('form').submit()")
+        .await
+        .unwrap();
+    assert_eq!(
+        multipart.snapshot().unwrap().url,
+        format!("http://{address}/multipart-result")
+    );
+    multipart.close_async().await.unwrap();
+
+    let mut text_plain = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/plain")),
+    )
+    .unwrap();
+    text_plain.initialize_async().await.unwrap();
+    text_plain
+        .evaluate_async("document.getElementById('form').submit()")
+        .await
+        .unwrap();
+    assert_eq!(
+        text_plain.snapshot().unwrap().url,
+        format!("http://{address}/plain-result")
+    );
+    text_plain.close_async().await.unwrap();
     server.await.unwrap();
 }
 

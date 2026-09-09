@@ -417,6 +417,18 @@ The next BE-02/BE-03/BE-04 gate is resource-specific completion and full task
 ordering, followed by multipart, full constraint-validation, external form
 ownership, and the remaining browser-context primitives.
 
+The completed bounded resource-lifecycle slice is
+[native-engine-browser-041](tasks/native-engine-browser-041.md). Successful
+external stylesheet/script completion events now reach their owning elements at
+the typed owner boundary before `DOMContentLoaded`, with deterministic
+document-order delivery and callback mutation commit. Failed resource error
+events, dynamic insertion, resource timing, and full task-source concurrency
+remain separate gates.
+
+The next BE-02/BE-03/BE-04 gate is full task ordering and navigation lifecycle,
+followed by multipart/full constraint validation, external form ownership and
+target contexts, and the remaining browser-context primitives.
+
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,
 fixture/data-URL-only, one-context engine kernel and explicit semantic backend.

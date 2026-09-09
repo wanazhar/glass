@@ -2081,6 +2081,18 @@ submit events. Image coordinates, external form ownership, target contexts,
 multipart/text/plain, full constraint validation, and FormData/Web IDL parity
 remain open.
 
+The completed bounded resource-lifecycle follow-up is
+[native-engine-browser-041](../tasks/native-engine-browser-041.md). The
+process-backed owner dispatches successful external stylesheet/script `load`
+events at a deterministic post-resource boundary before `DOMContentLoaded`,
+retaining callback mutations through the existing typed realm transfer.
+Failure/error events, dynamic insertion, resource timing, network concurrency,
+unload/pagehide/pageshow, and full task-source ordering remain separate work.
+
+The next bounded workstream is full task ordering and navigation lifecycle,
+followed by multipart/full constraint validation, external form ownership and
+target contexts, and the remaining browser-context primitives.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

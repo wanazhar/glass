@@ -505,6 +505,15 @@ submit coordinates, external form association, target contexts, multipart or
 `text/plain` encoding, full constraint-validation APIs, and FormData/Web IDL
 parity remain open.
 
+The native-engine-browser-041 batch adds a bounded resource completion point
+for the process-backed document path. Successfully fetched external stylesheet
+links and classic/module scripts now dispatch non-bubbling, non-cancelable
+`load` events on their owning elements after accepted resource/script work and
+before `DOMContentLoaded`; callback mutations remain in the persistent realm
+and cross the existing typed owner boundary. Dynamic insertion, image/font/media
+events, resource failures/error events, network concurrency, resource timing,
+unload/pagehide/pageshow, and full task-source scheduling remain open.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature

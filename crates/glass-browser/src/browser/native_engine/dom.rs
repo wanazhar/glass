@@ -234,6 +234,7 @@ pub(crate) enum NativePageScriptSource {
     External {
         href: String,
         timing: NativePageScriptTiming,
+        node_index: u32,
     },
     ModuleInline {
         source: String,
@@ -242,6 +243,7 @@ pub(crate) enum NativePageScriptSource {
     ModuleExternal {
         href: String,
         timing: NativePageScriptTiming,
+        node_index: u32,
     },
 }
 
@@ -427,7 +429,7 @@ impl NativeDocument {
         Ok(document)
     }
 
-    pub(crate) fn external_stylesheet_hrefs(&self) -> Vec<String> {
+    pub(crate) fn external_stylesheet_links(&self) -> Vec<(u32, String)> {
         self.nodes
             .iter()
             .filter_map(|node| {
@@ -436,7 +438,10 @@ impl NativeDocument {
                         rel.split_ascii_whitespace()
                             .any(|token| token.eq_ignore_ascii_case("stylesheet"))
                     }))
-                .then(|| node.attribute("href").map(str::to_owned))
+                .then(|| {
+                    node.attribute("href")
+                        .map(|href| (node.id().index(), href.to_owned()))
+                })
                 .flatten()
             })
             .collect()
@@ -744,11 +749,13 @@ impl NativeDocument {
                             NativePageScriptSource::ModuleExternal {
                                 href: source.to_owned(),
                                 timing,
+                                node_index: node.id().index(),
                             }
                         } else {
                             NativePageScriptSource::External {
                                 href: source.to_owned(),
                                 timing,
+                                node_index: node.id().index(),
                             }
                         }
                     });

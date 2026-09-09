@@ -898,6 +898,7 @@ dependencies = [
  "libc",
  "png",
  "ratatui",
+ "regex",
  "reqwest",
  "rquickjs",
  "serde",

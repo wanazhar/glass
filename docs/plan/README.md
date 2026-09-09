@@ -578,9 +578,19 @@ attribute, while submitter-only controls and unchecked checkbox/radio controls
 are excluded. File controls fail closed with a `TypeError`; File/Blob parts,
 picker/upload behavior, and full FormData Web IDL identity remain open.
 
+The completed bounded pattern-validation slice is
+[native-engine-browser-061](tasks/native-engine-browser-061.md). Local and
+child-owned text-like controls now apply Rust-owned whole-value `pattern`
+checks and expose `patternMismatch` through the existing validity API and
+submission preflight. Invalid or unsupported regex syntax follows the HTML
+invalid-pattern fallback and is ignored. Full JavaScript RegExp `v`-flag and
+Unicode-set parity, file constraints, picker/UI behavior, and full live
+`ValidityState` Web IDL identity remain open.
+
 The next BE-02/BE-03/BE-04 gate is full task ordering and navigation edge cases,
-followed by file/blob FormData support, the remaining pattern/file constraint
-validation, target contexts, and the remaining browser-context primitives.
+followed by file/blob FormData support, remaining full pattern-regex/file
+constraint validation, target contexts, and the remaining browser-context
+primitives.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

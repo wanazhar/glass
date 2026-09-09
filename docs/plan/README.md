@@ -467,6 +467,14 @@ dispatches window `popstate` before `hashchange` in local and child owners.
 Prompts, bfcache/session-history parity, cross-document traversal restoration,
 and full task-source semantics remain open.
 
+The completed bounded due-time timer-turn slice is
+[native-engine-browser-047](tasks/native-engine-browser-047.md). Local and
+child realms now retain normalized `setTimeout` due times, drain only timers
+that are due on a later host turn, preserve due-time/ID ordering, and honor
+`clearTimeout`. There is still no background page event loop; intervals,
+animation/idle callbacks, task-source fairness, and full wall-clock scheduling
+remain open.
+
 The next BE-02/BE-03/BE-04 gate is full task ordering and navigation edge cases,
 followed by file/FormData support, full constraint validation, target contexts,
 and the remaining browser-context primitives.

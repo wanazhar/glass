@@ -559,6 +559,13 @@ intact when canceled. Same-document history traversal dispatches window
 Prompts, bfcache/session-history parity, cross-document restoration, popup/
 opener contexts, and full HTML task-source semantics remain open.
 
+The completed native-engine-browser-047 batch makes timer turns honor due
+times. Local and child realms normalize bounded `setTimeout` delays, drain only
+due callbacks on a later host turn in due-time/ID order, and remove canceled
+timers through `clearTimeout`. There is no background page event loop yet;
+intervals, animation/idle callbacks, task-source fairness, and full wall-clock
+scheduling remain open.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature
@@ -3618,7 +3625,7 @@ The native profile is `experimental` and declares:
 | evidence | available | bounded URL, title, visible text, revision; native semantic projection is Rust-only |
 | action | available | semantic click/type, focused-text printable/Backspace/Delete key input, bounded vertical root scrolling, bounded GET or urlencoded-POST form defaults, plus native point targets for supported local controls; no selection/IME or nested scrolling |
 | effects | available | current revision and changed signal; bounded event metadata is Rust-only |
-| script | available | bounded QuickJS ECMAScript with a refreshed `window`/`document` snapshot, bounded inline/classic/module-root page-script loading and parser/lifecycle ordering, HTTP(S) static module graphs, literal dynamic imports, and deterministic microtask/next-turn timer callbacks, typed click/form-submit/attribute/focus commands, persistent listener records, bounded Event/CustomEvent capture/target/bubble dispatch, cancelable click preflight, transactional type/input/change event re-entry, bounded required-control validation, submitter event metadata and successful-control serialization, bounded external form ownership, bounded `readyState`/`readystatechange`/DOMContentLoaded/load phase ordering, form `novalidate`/`formnovalidate` bypass, top-level link/form navigation handoff, and relative HTTP(S)/same-document resolution; no live Web IDL identity, target contexts, resource-specific lifecycle parity, beforeinput/composition, full constraint validation, image/FormData parity, multipart/text/plain forms, intervals/animation/idle callbacks, wall-clock timer semantics, computed imports, bare specifiers/import maps, local external subresources, or general page loading |
+| script | available | bounded QuickJS ECMAScript with a refreshed `window`/`document` snapshot, bounded inline/classic/module-root page-script loading and parser/lifecycle ordering, HTTP(S) static module graphs, literal dynamic imports, and bounded due-time `setTimeout` turns, typed click/form-submit/attribute/focus commands, persistent listener records, bounded Event/CustomEvent capture/target/bubble dispatch, cancelable click preflight, transactional type/input/change event re-entry, bounded required-control validation, submitter event metadata and successful-control serialization, bounded external form ownership, bounded `readyState`/`readystatechange`/DOMContentLoaded/load phase ordering, form `novalidate`/`formnovalidate` bypass, top-level link/form navigation handoff, and relative HTTP(S)/same-document resolution; no live Web IDL identity, target contexts, resource-specific lifecycle parity, beforeinput/composition, full constraint validation, image/FormData parity, multipart/text/plain forms, intervals/animation/idle callbacks, task-source fairness, background page scheduling, computed imports, bare specifiers/import maps, local external subresources, or general page loading |
 | capture | available | bounded PNG of the current logical RGBA surface; JPEG/PDF and screenshot-containing evidence are unavailable |
 | storage | partial | process-owned session cookies and bounded document cache; no local/session/IndexedDB storage or persistence |
 | prompts | omitted | no dialogs |

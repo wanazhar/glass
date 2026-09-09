@@ -495,6 +495,7 @@ pub(crate) struct NativeJavaScriptRuntime {
     deadline: Arc<Mutex<Option<Instant>>>,
     module_sources: Arc<Mutex<BTreeMap<String, String>>>,
     ready_state: String,
+    clock_origin: Instant,
 }
 
 impl NativeJavaScriptRuntime {
@@ -531,7 +532,15 @@ impl NativeJavaScriptRuntime {
             deadline,
             module_sources,
             ready_state: "complete".into(),
+            clock_origin: Instant::now(),
         })
+    }
+
+    fn now_ms(&self) -> u64 {
+        self.clock_origin
+            .elapsed()
+            .as_millis()
+            .min(u128::from(u64::MAX)) as u64
     }
 
     pub(crate) fn set_ready_state(&mut self, ready_state: &str) {
@@ -566,8 +575,14 @@ impl NativeJavaScriptRuntime {
                 source.len(),
             ));
         }
-        let bootstrap =
-            document_bootstrap(document, document_url, origin, viewport, &self.ready_state)?;
+        let bootstrap = document_bootstrap(
+            document,
+            document_url,
+            origin,
+            viewport,
+            &self.ready_state,
+            self.now_ms(),
+        )?;
         let deadline = Instant::now() + NATIVE_SCRIPT_TIMEOUT;
         if let Ok(mut current) = self.deadline.lock() {
             *current = Some(deadline);
@@ -676,8 +691,14 @@ impl NativeJavaScriptRuntime {
                 source.len(),
             ));
         }
-        let bootstrap =
-            document_bootstrap(document, document_url, origin, viewport, &self.ready_state)?;
+        let bootstrap = document_bootstrap(
+            document,
+            document_url,
+            origin,
+            viewport,
+            &self.ready_state,
+            self.now_ms(),
+        )?;
         let deadline = Instant::now() + NATIVE_SCRIPT_TIMEOUT;
         if let Ok(mut current) = self.deadline.lock() {
             *current = Some(deadline);
@@ -1018,12 +1039,14 @@ fn document_bootstrap(
     origin: &NativeOrigin,
     viewport: Viewport,
     ready_state: &str,
+    now_ms: u64,
 ) -> Result<String, NativeEngineError> {
     let state = document.script_snapshot(crate::browser_backend::MAX_TEXT_BYTES);
     let serialized = serde_json::to_string(&serde_json::json!({
         "url": document_url,
         "origin": origin.serialized(),
         "state": state,
+        "now_ms": now_ms,
     }))
     .map_err(|_| NativeEngineError::Worker {
         operation: "serialize JavaScript host view".into(),
@@ -1053,13 +1076,17 @@ fn document_bootstrap(
   let nextTimerId = Number.isSafeInteger(globalThis.__glassNextTimerId)
     ? globalThis.__glassNextTimerId
     : 1;
-  const setTimeoutNative = (callback, _delay, ...args) => {{
+  const setTimeoutNative = (callback, delay, ...args) => {{
     if (typeof callback !== "function") throw new TypeError("timer callback must be callable");
     if (timers.size >= {max_timers}) throw new RangeError("native timer limit exceeded");
     const id = nextTimerId;
     nextTimerId += 1;
     globalThis.__glassNextTimerId = nextTimerId;
-    timers.set(id, {{ callback, args }});
+    const numericDelay = Number(delay);
+    const normalizedDelay = Number.isFinite(numericDelay)
+      ? Math.max(0, Math.min(2147483647, numericDelay))
+      : 0;
+    timers.set(id, {{ callback, args, dueAt: host.now_ms + normalizedDelay }});
     return id;
   }};
   const clearTimeoutNative = (id) => {{ timers.delete(Number(id)); }};
@@ -1071,10 +1098,19 @@ fn document_bootstrap(
     if (typeof callback !== "function") throw new TypeError("microtask callback must be callable");
     Promise.resolve().then(callback);
   }};
-  globalThis.__glassRunTimers = () => {{
-    const pending = Array.from(timers.values());
-    timers.clear();
-    for (const timer of pending) timer.callback(...timer.args);
+  globalThis.__glassRunTimers = (currentNow) => {{
+    const now = Number.isFinite(Number(currentNow)) ? Number(currentNow) : host.now_ms;
+    const pending = Array.from(timers.entries())
+      .filter(([, timer]) => Number(timer.dueAt === undefined ? 0 : timer.dueAt) <= now)
+      .sort((left, right) => {{
+        const due = Number(left[1].dueAt === undefined ? 0 : left[1].dueAt)
+          - Number(right[1].dueAt === undefined ? 0 : right[1].dueAt);
+        return due || left[0] - right[0];
+      }});
+    for (const [id, timer] of pending) {{
+      timers.delete(id);
+      timer.callback(...timer.args);
+    }}
   }};
   const listeners = globalThis.__glassHostListeners instanceof Map
     ? globalThis.__glassHostListeners
@@ -1463,7 +1499,7 @@ fn document_bootstrap(
   globalThis.console = globalThis.console || {{
     log() {{}}, info() {{}}, warn() {{}}, error() {{}}
   }};
-  globalThis.__glassRunTimers();
+  globalThis.__glassRunTimers(host.now_ms);
 }})();"###,
         serialized = serialized,
         max_commands = super::interaction::MAX_NATIVE_EFFECTS,

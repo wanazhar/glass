@@ -87,6 +87,7 @@ pub struct NativeEngine {
     revision: u64,
     scroll_offset: NativePoint,
     effects: VecDeque<NativeEffect>,
+    pending_lifecycle_effects: Vec<(NativeNodeId, NativeEventKind)>,
 }
 
 impl NativeEngine {
@@ -115,6 +116,7 @@ impl NativeEngine {
             revision: 0,
             scroll_offset: NativePoint { x: 0, y: 0 },
             effects: VecDeque::new(),
+            pending_lifecycle_effects: Vec::new(),
         })
     }
 
@@ -256,6 +258,7 @@ impl NativeEngine {
         url: impl Into<String>,
     ) -> Result<NativeEngineSnapshot, NativeEngineError> {
         self.require_running("navigate")?;
+        self.pending_lifecycle_effects.clear();
         let url = url.into();
         let resource = self.loader.load(&url)?;
         if self.is_same_document_navigation(&resource.url) {
@@ -280,6 +283,7 @@ impl NativeEngine {
         navigation: NativeNavigationRequest,
     ) -> Result<NativeEngineSnapshot, NativeEngineError> {
         self.require_running("navigate")?;
+        self.pending_lifecycle_effects.clear();
         let url = navigation.url.as_str();
         let same_document = self.is_same_document_navigation(url);
         if !same_document && !self.dispatch_navigation_lifecycle_async().await? {
@@ -616,8 +620,11 @@ impl NativeEngine {
                 &self.origin,
                 self.config.viewport,
             )?;
-        self.apply_local_script_commands(&evaluation.commands, true)?;
+        let navigation = self.apply_local_script_commands(&evaluation.commands, true)?;
         self.persist_local_web_storage()?;
+        if let Some(navigation) = navigation {
+            self.navigate_request_async(navigation).await?;
+        }
         Ok(evaluation.value)
     }
 
@@ -685,9 +692,7 @@ impl NativeEngine {
         let (events, accepted) = match action {
             NativeAction::Click { target } => {
                 let id = self.resolve_click_target(&target)?;
-                if !self.document.is_hidden_for_layout(id) {
-                    self.require_layout_actionable(id)?;
-                }
+                self.require_layout_actionable(id)?;
                 if let Some(href) = self.document.link_href(id).map(str::to_owned)
                     && !href.is_empty()
                 {
@@ -705,9 +710,7 @@ impl NativeEngine {
             }
             NativeAction::Type { target, text } => {
                 let id = self.document.resolve_target(&target)?;
-                if !self.document.is_hidden_for_layout(id) {
-                    self.require_layout_actionable(id)?;
-                }
+                self.require_layout_actionable(id)?;
                 if self.javascript.is_some() {
                     return self.action_local_type_with_event_transaction(id, &text);
                 }
@@ -775,9 +778,7 @@ impl NativeEngine {
         match action {
             NativeAction::Click { target } => {
                 let id = self.resolve_click_target(&target)?;
-                if !self.document.is_hidden_for_layout(id) {
-                    self.require_layout_actionable(id)?;
-                }
+                self.require_layout_actionable(id)?;
                 if self
                     .document
                     .link_href(id)
@@ -814,9 +815,7 @@ impl NativeEngine {
             }
             NativeAction::Type { target, text } => {
                 let id = self.document.resolve_target(&target)?;
-                if !self.document.is_hidden_for_layout(id) {
-                    self.require_layout_actionable(id)?;
-                }
+                self.require_layout_actionable(id)?;
                 let mut preview = self.document.clone();
                 preview.apply_type(id, &text)?;
                 let mutation = {
@@ -862,9 +861,9 @@ impl NativeEngine {
         &mut self,
         commands: &[super::javascript::NativeScriptCommand],
         allow_script_navigation: bool,
-    ) -> Result<(), NativeEngineError> {
+    ) -> Result<Option<NativeNavigationRequest>, NativeEngineError> {
         if commands.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
         if commands.iter().any(|command| {
             matches!(
@@ -944,22 +943,19 @@ impl NativeEngine {
         self.revision = next_revision;
         self.history.update_current_scroll(self.scroll_offset);
         self.record_effects(events);
-        if let Some(navigation) = navigation {
-            match navigation {
-                ScriptNavigationTarget::Link { id, href } => {
-                    self.activate_link(id, &href, true)?;
-                }
+        let navigation = navigation
+            .map(|navigation| match navigation {
+                ScriptNavigationTarget::Link { href, .. } => self
+                    .resolve_link_href(&href)
+                    .map(NativeNavigationRequest::get),
                 ScriptNavigationTarget::Form {
                     form_id, submitter, ..
-                } => {
-                    let request = self
-                        .document
-                        .form_submission_request_with_submitter(form_id, &self.url, submitter)?;
-                    self.navigate(request.url)?;
-                }
-            }
-        }
-        Ok(())
+                } => self
+                    .document
+                    .form_submission_request_with_submitter(form_id, &self.url, submitter),
+            })
+            .transpose()?;
+        Ok(navigation)
     }
 
     fn script_navigation_target(
@@ -974,7 +970,6 @@ impl NativeEngine {
                     let id = NativeNodeId::from_parts(document.generation(), *node_index);
                     if let Some(href) = document.link_href(id).filter(|href| !href.is_empty()) {
                         Some(ScriptNavigationTarget::Link {
-                            id,
                             href: href.to_owned(),
                         })
                     } else if let Some(form_id) = document.submit_control_form(id) {
@@ -1109,6 +1104,7 @@ impl NativeEngine {
             return Ok(());
         };
         self.apply_local_script_commands(&evaluation.commands, false)
+            .map(|_| ())
     }
 
     fn dispatch_local_navigation_lifecycle(&mut self) -> Result<(), NativeEngineError> {
@@ -1124,6 +1120,10 @@ impl NativeEngine {
         let mut document = self.document.clone();
         let mut effects = document.apply_script_commands_allowing_links(&evaluation.commands)?;
         effects.extend(lifecycle_events);
+        if evaluation.commands.is_empty() {
+            self.pending_lifecycle_effects.extend(effects);
+            return Ok(());
+        }
         let next_revision = self.next_revision()?;
         document.set_revision(next_revision);
         self.document = document;
@@ -1585,6 +1585,39 @@ impl NativeEngine {
                 return Err(error);
             }
         };
+        let document_changed = {
+            let mut normalized = document.clone();
+            normalized.set_revision(self.document.revision());
+            normalized != self.document
+        };
+        let lifecycle_only = events.iter().all(|(_, kind)| {
+            matches!(
+                kind,
+                NativeEventKind::ReadyStateChange
+                    | NativeEventKind::DomContentLoaded
+                    | NativeEventKind::Load
+                    | NativeEventKind::PageHide
+                    | NativeEventKind::Unload
+                    | NativeEventKind::PageShow
+                    | NativeEventKind::BeforeUnload
+                    | NativeEventKind::HashChange
+                    | NativeEventKind::PopState
+            )
+        });
+        if !document_changed && lifecycle_only {
+            let defer = events.iter().all(|(_, kind)| {
+                matches!(kind, NativeEventKind::PageHide | NativeEventKind::Unload)
+            });
+            if defer {
+                self.pending_lifecycle_effects.extend(events);
+            } else {
+                self.record_effects(events);
+            }
+            return Ok(NativeActionResult {
+                revision: self.revision,
+                accepted: true,
+            });
+        }
         document.set_revision(next_revision);
         self.document = document;
         self.revision = next_revision;
@@ -1825,7 +1858,7 @@ impl NativeEngine {
             NativePoint { x: 0, y: 0 },
         )?;
         self.run_commit_task(NativeTask::CommitNavigation, "navigation")?;
-        let revision = self.next_revision()?;
+        let revision = prepared.document.revision();
         self.document = prepared.document;
         self.javascript = javascript;
         self.url = prepared.resource.url;
@@ -1833,6 +1866,7 @@ impl NativeEngine {
         self.scroll_offset = scroll_offset;
         self.revision = revision;
         self.history.push(self.url.clone(), revision, scroll_offset);
+        self.flush_pending_lifecycle_effects();
         self.dispatch_local_page_show()?;
         self.persist_local_web_storage()?;
         Ok(())
@@ -1866,7 +1900,7 @@ impl NativeEngine {
         )?;
         self.run_commit_task_async(NativeTask::CommitNavigation, "navigation", worker)
             .await?;
-        let revision = self.next_revision()?;
+        let revision = prepared.document.revision();
         self.document = prepared.document;
         self.javascript = javascript;
         self.url = prepared.resource.url;
@@ -1874,6 +1908,7 @@ impl NativeEngine {
         self.scroll_offset = scroll_offset;
         self.revision = revision;
         self.history.push(self.url.clone(), revision, scroll_offset);
+        self.flush_pending_lifecycle_effects();
         if execute_page_scripts {
             self.dispatch_local_page_show()?;
             self.persist_local_web_storage()?;
@@ -2010,7 +2045,7 @@ impl NativeEngine {
             y: saved_scroll.y.min(max_scroll.y),
         };
         self.run_commit_task(NativeTask::TraverseHistory, "history traversal")?;
-        let revision = self.next_revision()?;
+        let revision = prepared.document.revision();
         self.document = prepared.document;
         self.javascript = None;
         self.url = prepared.resource.url;
@@ -2169,6 +2204,11 @@ impl NativeEngine {
         &self,
         id: super::dom::NativeNodeId,
     ) -> Result<(), NativeEngineError> {
+        if self.document.is_hidden_for_layout(id) {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "hidden targets are not actionable".into(),
+            });
+        }
         let layout = self.layout()?;
         let visible = layout
             .viewport_rect_for(id)
@@ -2192,6 +2232,11 @@ impl NativeEngine {
                 kind,
             });
         }
+    }
+
+    fn flush_pending_lifecycle_effects(&mut self) {
+        let effects = std::mem::take(&mut self.pending_lifecycle_effects);
+        self.record_effects(effects);
     }
 
     fn apply_scroll(&mut self, delta_x: i32, delta_y: i32) -> Result<bool, NativeEngineError> {
@@ -2246,7 +2291,6 @@ struct PreparedNavigation {
 
 enum ScriptNavigationTarget {
     Link {
-        id: NativeNodeId,
         href: String,
     },
     Form {

@@ -981,7 +981,7 @@ impl NativeDocument {
         Ok(events)
     }
 
-    fn apply_script_focus(
+    pub(crate) fn apply_script_focus(
         &mut self,
         id: NativeNodeId,
     ) -> Result<Vec<(NativeNodeId, NativeEventKind)>, NativeEngineError> {
@@ -1007,7 +1007,7 @@ impl NativeDocument {
         Ok(self.focus_element(id))
     }
 
-    fn apply_script_blur(
+    pub(crate) fn apply_script_blur(
         &mut self,
         id: NativeNodeId,
     ) -> Result<Vec<(NativeNodeId, NativeEventKind)>, NativeEngineError> {

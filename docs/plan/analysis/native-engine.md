@@ -1910,9 +1910,17 @@ realm. Callback commands return through the existing clone/typed-transfer
 owner path, with no executable callback ABI or parent-side evaluation of
 external pages. The action and callback mutation currently use separate
 revisions; callback errors cannot undo the action, and `preventDefault()` does
-not yet suppress it. The next owner slice must preflight cancelable clicks,
-preserve default-action ordering, and make accepted/rejected action plus
-callback mutation atomic in local and child documents.
+not yet suppress it. The transactional click preflight is the next refinement.
+
+The completed cancelable-click follow-up is
+[native-engine-browser-022](../tasks/native-engine-browser-022.md). When a
+JavaScript realm exists, local semantic clicks and external child clicks now
+run focus and click listeners against a clone, apply callback commands, honor
+`preventDefault()`, and commit one final document/effect revision. A child
+uses one typed preflight request and transfers only its final snapshot/effects;
+the parent never evaluates the external page. Pages without a local realm keep
+the Rust-only click path. Type/input/change ordering, link navigation/default
+actions, timers, modules, Fetch/XHR, and remaining resource classes stay open.
 
 ## Baseline and constraints
 

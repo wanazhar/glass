@@ -4,7 +4,9 @@ use super::config::{
 use super::dom::{NativeDocument, NativeDocumentWire, NativeNodeId};
 use super::error::{NativeEngineError, NativeWorkerFailureKind};
 use super::interaction::{MAX_NATIVE_EFFECTS, NativeEventKind};
-use super::javascript::{NativeJavaScriptRuntime, NativeScriptCommand, NativeScriptEvaluation};
+use super::javascript::{
+    NativeJavaScriptRuntime, NativeScriptCommand, NativeScriptEvaluation, host_event_script,
+};
 use super::origin::NativeOrigin;
 use super::resource_loader::{NativeFetchResponse, NativeResourceLoader};
 #[cfg(windows)]
@@ -36,7 +38,6 @@ pub(crate) struct NativeContentLoad {
 
 #[derive(Debug, Clone)]
 pub(crate) enum NativeContentAction {
-    Click { node_index: u32 },
     Type { node_index: u32, text: String },
 }
 
@@ -230,14 +231,24 @@ impl NativeContentProcess {
     ) -> Result<NativeContentMutation, NativeEngineError> {
         let id = self.next_id();
         let action = match action {
-            NativeContentAction::Click { node_index } => {
-                json!({"kind":"click","node_index":node_index})
-            }
             NativeContentAction::Type { node_index, text } => {
                 json!({"kind":"type","node_index":node_index,"text":text})
             }
         };
         self.mutate_with_request(id, action).await
+    }
+
+    pub(crate) async fn mutate_click_with_event_preflight(
+        &mut self,
+        node_index: u32,
+    ) -> Result<NativeContentMutation, NativeEngineError> {
+        let id = self.next_id();
+        self.mutate_with_request_kind(
+            id,
+            "mutate_click_preflight",
+            json!({"node_index": node_index}),
+        )
+        .await
     }
 
     pub(crate) async fn fetch(
@@ -334,10 +345,19 @@ impl NativeContentProcess {
         id: u64,
         action: Value,
     ) -> Result<NativeContentMutation, NativeEngineError> {
+        self.mutate_with_request_kind(id, "mutate", action).await
+    }
+
+    async fn mutate_with_request_kind(
+        &mut self,
+        id: u64,
+        request_kind: &str,
+        action: Value,
+    ) -> Result<NativeContentMutation, NativeEngineError> {
         let response = match timeout(
             CONTENT_PROCESS_MUTATION_TIMEOUT,
             self.exchange(json!({
-                "kind": "mutate",
+                "kind": request_kind,
                 "id": id,
                 "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
                 "action": action,
@@ -964,6 +984,86 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     Err(error) => content_error_response(id, error),
                 }
             }
+            "mutate_click_preflight" if protocol_matches(&request) && running => {
+                let Some(current) = document.as_ref() else {
+                    let response = content_error_response(
+                        id,
+                        NativeEngineError::Worker {
+                            operation: "content process click preflight".into(),
+                            reason: "content process has no committed document".into(),
+                        },
+                    );
+                    write_value_frame(&mut stdout, &response).await?;
+                    continue;
+                };
+                let node_index = request
+                    .get("action")
+                    .and_then(|action| action.get("node_index"))
+                    .and_then(Value::as_u64)
+                    .and_then(|value| u32::try_from(value).ok())
+                    .ok_or_else(|| {
+                        NativeEngineError::invalid(
+                            "content-process click target",
+                            "must be a uint32",
+                        )
+                    })?;
+                let Some(document_url) = document_url.as_deref() else {
+                    let response = content_error_response(
+                        id,
+                        NativeEngineError::Worker {
+                            operation: "content process click preflight".into(),
+                            reason: "content process has no committed URL".into(),
+                        },
+                    );
+                    write_value_frame(&mut stdout, &response).await?;
+                    continue;
+                };
+                let Some(document_origin) = document_origin.as_ref() else {
+                    let response = content_error_response(
+                        id,
+                        NativeEngineError::Worker {
+                            operation: "content process click preflight".into(),
+                            reason: "content process has no committed origin".into(),
+                        },
+                    );
+                    write_value_frame(&mut stdout, &response).await?;
+                    continue;
+                };
+                if javascript_runtime.is_none() {
+                    match NativeJavaScriptRuntime::new() {
+                        Ok(runtime) => javascript_runtime = Some(runtime),
+                        Err(error) => {
+                            let response = content_error_response(id, error);
+                            write_value_frame(&mut stdout, &response).await?;
+                            continue;
+                        }
+                    }
+                }
+                let runtime = javascript_runtime.as_ref().expect("runtime initialized");
+                match mutate_click_with_event_preflight(
+                    current,
+                    runtime,
+                    document_url,
+                    document_origin,
+                    viewport,
+                    node_index,
+                ) {
+                    Ok((next, mutation)) => {
+                        document = Some(next);
+                        json!({
+                            "kind": "mutated",
+                            "id": id,
+                            "document_base64": base64::engine::general_purpose::STANDARD
+                                .encode(serde_json::to_vec(&mutation.document).unwrap_or_default()),
+                            "events": mutation.events.iter().map(|event| json!({
+                                "node_index": event.node_index,
+                                "kind": event_kind_text(event.kind),
+                            })).collect::<Vec<_>>(),
+                        })
+                    }
+                    Err(error) => content_error_response(id, error),
+                }
+            }
             "mutate" if protocol_matches(&request) && running => {
                 let Some(current) = document.as_ref() else {
                     let response = content_error_response(
@@ -1166,6 +1266,76 @@ fn mutate_content_document(
     if events.len() > MAX_NATIVE_EFFECTS {
         return Err(NativeEngineError::limit(
             "content-process mutation effects",
+            MAX_NATIVE_EFFECTS,
+            events.len(),
+        ));
+    }
+    let mutation = NativeContentMutation {
+        document: next.to_content_wire(),
+        events: events
+            .into_iter()
+            .map(|(node, kind)| NativeContentEvent {
+                node_index: node.index(),
+                kind,
+            })
+            .collect(),
+    };
+    Ok((next, mutation))
+}
+
+fn mutate_click_with_event_preflight(
+    current: &NativeDocument,
+    runtime: &NativeJavaScriptRuntime,
+    document_url: &str,
+    document_origin: &NativeOrigin,
+    viewport: Viewport,
+    node_index: u32,
+) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
+    let node_id = NativeNodeId::from_parts(current.generation(), node_index);
+    let mut next = current.clone();
+    let mut events = next.apply_script_focus(node_id)?;
+    let focus_metadata = events
+        .iter()
+        .map(|(node, kind)| (node.index(), *kind))
+        .collect::<Vec<_>>();
+    if let Some(source) = host_event_script(&focus_metadata)? {
+        let evaluation =
+            runtime.evaluate(&source, &next, document_url, document_origin, viewport)?;
+        events.extend(next.apply_script_commands(&evaluation.commands)?);
+    }
+
+    let click_source =
+        host_event_script(&[(node_index, NativeEventKind::Click)])?.ok_or_else(|| {
+            NativeEngineError::Worker {
+                operation: "content process click preflight".into(),
+                reason: "native click event source was empty".into(),
+            }
+        })?;
+    let click_evaluation = runtime.evaluate(
+        &click_source,
+        &next,
+        document_url,
+        document_origin,
+        viewport,
+    )?;
+    let click_allowed = click_evaluation
+        .value
+        .as_array()
+        .and_then(|values| values.first())
+        .and_then(Value::as_bool)
+        .ok_or_else(|| NativeEngineError::Worker {
+            operation: "content process click preflight".into(),
+            reason: "native click event result was invalid".into(),
+        })?;
+    events.extend(next.apply_script_commands(&click_evaluation.commands)?);
+    if click_allowed {
+        events.extend(next.apply_click(node_id)?);
+    } else {
+        events.push((node_id, NativeEventKind::Click));
+    }
+    if events.len() > MAX_NATIVE_EFFECTS {
+        return Err(NativeEngineError::limit(
+            "content-process click event effects",
             MAX_NATIVE_EFFECTS,
             events.len(),
         ));

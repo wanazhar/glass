@@ -12,7 +12,7 @@ use super::error::NativeEngineError;
 use super::error::NativeWorkerFailureKind;
 use super::history::{NativeHistory, NativeHistoryDirection};
 use super::interaction::{MAX_NATIVE_EFFECTS, NativeAction, NativeEffect, NativeEventKind};
-use super::javascript::{NativeJavaScriptRuntime, host_event_script};
+use super::javascript::{NativeJavaScriptRuntime, NativeScriptEvaluation, host_event_script};
 use super::layout::{NativeLayoutSnapshot, NativePoint};
 use super::lifecycle::NativeLifecycleState;
 use super::origin::NativeOrigin;
@@ -527,6 +527,9 @@ impl NativeEngine {
                 {
                     return self.activate_link(id, &href);
                 }
+                if self.javascript.is_some() {
+                    return self.action_local_click_with_event_preflight(id);
+                }
                 (self.document.apply_click(id)?, true)
             }
             NativeAction::Type { target, text } => {
@@ -600,10 +603,20 @@ impl NativeEngine {
                 }
                 let mut preview = self.document.clone();
                 preview.apply_click(id)?;
-                self.apply_content_process_action(NativeContentAction::Click {
-                    node_index: id.index(),
-                })
-                .await
+                let mutation = {
+                    let process =
+                        self.content_process
+                            .as_mut()
+                            .ok_or_else(|| NativeEngineError::Worker {
+                                operation: "content process click preflight".into(),
+                                reason: "native content process is not running".into(),
+                            })?;
+                    process
+                        .mutate_click_with_event_preflight(id.index())
+                        .await?
+                };
+                let next_revision = self.next_revision()?;
+                self.apply_content_process_mutation_at(next_revision, mutation)
             }
             NativeAction::Type { target, text } => {
                 let id = self.document.resolve_target(&target)?;
@@ -670,26 +683,85 @@ impl NativeEngine {
         &mut self,
         events: &[(NativeNodeId, NativeEventKind)],
     ) -> Result<(), NativeEngineError> {
+        let Some(evaluation) = self.evaluate_local_events(&self.document, events)? else {
+            return Ok(());
+        };
+        self.apply_local_script_commands(&evaluation.commands)
+    }
+
+    fn evaluate_local_events(
+        &self,
+        document: &NativeDocument,
+        events: &[(NativeNodeId, NativeEventKind)],
+    ) -> Result<Option<NativeScriptEvaluation>, NativeEngineError> {
         let event_metadata = events
             .iter()
             .map(|(node_id, kind)| (node_id.index(), *kind))
             .collect::<Vec<_>>();
         let Some(source) = host_event_script(&event_metadata)? else {
-            return Ok(());
+            return Ok(None);
         };
         let Some(javascript) = self.javascript.as_ref() else {
-            return Ok(());
+            return Ok(None);
         };
-        let evaluation = {
-            javascript.evaluate(
-                &source,
-                &self.document,
-                &self.url,
-                &self.origin,
-                self.config.viewport,
-            )?
-        };
-        self.apply_local_script_commands(&evaluation.commands)
+        Ok(Some(javascript.evaluate(
+            &source,
+            document,
+            &self.url,
+            &self.origin,
+            self.config.viewport,
+        )?))
+    }
+
+    fn action_local_click_with_event_preflight(
+        &mut self,
+        id: NativeNodeId,
+    ) -> Result<NativeActionResult, NativeEngineError> {
+        let mut document = self.document.clone();
+        let mut events = document.apply_script_focus(id)?;
+        if let Some(evaluation) = self.evaluate_local_events(&document, &events)? {
+            events.extend(document.apply_script_commands(&evaluation.commands)?);
+        }
+
+        let click_evaluation = self
+            .evaluate_local_events(&document, &[(id, NativeEventKind::Click)])?
+            .ok_or_else(|| NativeEngineError::Worker {
+                operation: "native click event preflight".into(),
+                reason: "native JavaScript realm disappeared during click preflight".into(),
+            })?;
+        let click_allowed = click_evaluation
+            .value
+            .as_array()
+            .and_then(|values| values.first())
+            .and_then(serde_json::Value::as_bool)
+            .ok_or_else(|| NativeEngineError::Worker {
+                operation: "native click event preflight".into(),
+                reason: "native click event result was invalid".into(),
+            })?;
+        events.extend(document.apply_script_commands(&click_evaluation.commands)?);
+        if click_allowed {
+            events.extend(document.apply_click(id)?);
+        } else {
+            events.push((id, NativeEventKind::Click));
+        }
+        if events.len() > MAX_NATIVE_EFFECTS {
+            return Err(NativeEngineError::limit(
+                "native click event effects",
+                MAX_NATIVE_EFFECTS,
+                events.len(),
+            ));
+        }
+
+        let next_revision = self.next_revision()?;
+        document.set_revision(next_revision);
+        self.document = document;
+        self.revision = next_revision;
+        self.history.update_current_scroll(self.scroll_offset);
+        self.record_effects(events);
+        Ok(NativeActionResult {
+            revision: next_revision,
+            accepted: true,
+        })
     }
 
     async fn dispatch_content_process_events(

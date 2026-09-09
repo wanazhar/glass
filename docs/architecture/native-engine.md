@@ -415,6 +415,14 @@ and child globals/listeners remain child-owned. Static import graphs,
 dynamic `import()`, import maps, parser timing, local external subresources,
 and full Web IDL identity remain open.
 
+The completed native-engine-browser-030 batch adds bounded static module
+graphs. The content process discovers static import/export URLs, resolves them
+against each importing module's final URL, applies the owner-document script
+policy and existing network limits, and installs the validated graph into an
+in-memory QuickJS loader before root evaluation. Duplicate and cyclic entries
+are bounded; bare specifiers, import maps, dynamic `import()`, parser timing,
+and local external module subresources remain open.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature
@@ -3465,12 +3473,12 @@ The native profile is `experimental` and declares:
 | Capability | Level | Current contract |
 |---|---|---|
 | lifecycle | available | initialize and explicit close |
-| navigation | available | local resources plus bounded external HTTP(S) HTML navigation, inline/classic/module-root child scripts, and bounded GET-form navigation; no module graphs or general subresources |
+| navigation | available | local resources plus bounded external HTTP(S) HTML navigation, inline/classic/module-root/static-graph child scripts, and bounded GET-form navigation; no dynamic module loading or general subresources |
 | contexts | available | one active context |
 | evidence | available | bounded URL, title, visible text, revision; native semantic projection is Rust-only |
 | action | available | semantic click/type, bounded vertical root scrolling, plus native point targets for supported local controls; no nested scrolling or default browser behavior |
 | effects | available | current revision and changed signal; bounded event metadata is Rust-only |
-| script | available | bounded QuickJS ECMAScript with a refreshed `window`/`document` snapshot, bounded inline/classic/module-root page-script loading, typed click/form-submit/attribute/focus commands, persistent listener records, bounded Event/CustomEvent capture/target/bubble dispatch, cancelable click preflight, transactional type/input/change event re-entry, top-level link/form navigation handoff, and relative HTTP(S)/same-document resolution; no live Web IDL identity, target contexts, beforeinput/composition, POST/multipart forms, timers, static module graphs, dynamic `import()`, local external subresources, or general page loading |
+| script | available | bounded QuickJS ECMAScript with a refreshed `window`/`document` snapshot, bounded inline/classic/module-root page-script loading and HTTP(S) static module graphs, typed click/form-submit/attribute/focus commands, persistent listener records, bounded Event/CustomEvent capture/target/bubble dispatch, cancelable click preflight, transactional type/input/change event re-entry, top-level link/form navigation handoff, and relative HTTP(S)/same-document resolution; no live Web IDL identity, target contexts, beforeinput/composition, POST/multipart forms, timers, dynamic `import()`, bare specifiers/import maps, local external subresources, or general page loading |
 | capture | available | bounded PNG of the current logical RGBA surface; JPEG/PDF and screenshot-containing evidence are unavailable |
 | storage | partial | process-owned session cookies and bounded document cache; no local/session/IndexedDB storage or persistence |
 | prompts | omitted | no dialogs |

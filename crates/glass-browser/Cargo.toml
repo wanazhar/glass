@@ -53,7 +53,7 @@ ratatui = { version = "0.30.2", default-features = false, features = ["crossterm
 crossterm = { version = "0.29", features = ["event-stream"] }
 clap = { version = "4", features = ["derive"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
-rquickjs = { version = "0.12.2", optional = true, default-features = false, features = ["std", "futures", "parallel"] }
+rquickjs = { version = "0.12.2", optional = true, default-features = false, features = ["std", "futures", "parallel", "loader"] }
 url = "2"
 dirs = "6"
 tracing = "0.1"

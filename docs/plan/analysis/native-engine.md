@@ -2294,9 +2294,18 @@ separate from the semantic `StorageRequest` maps. Durable profiles, storage
 events, cookie synchronization, IndexedDB, quota policy, and full Storage Web
 IDL identity remain open.
 
+The completed bounded text-backed File/Blob FormData follow-up is
+[native-engine-browser-067](../tasks/native-engine-browser-067.md). The shared
+bootstrap exposes capped text-backed `Blob` and `File` values with bounded
+`text()`/`slice()` metadata, accepts them in FormData `append`/`set`, and emits
+filename/content-type multipart parts through the existing fetch owner in both
+local and child realms. Binary buffers, streams, file pickers, disk file
+controls, upload progress, and full Blob/File/FormData Web IDL identity remain
+open.
+
 The next bounded workstream is durable profile storage and storage
-event/cookie synchronization, followed by IndexedDB, full task
-ordering/navigation edge cases, file/blob FormData support, remaining full
+event/cookie synchronization, followed by IndexedDB, full binary/stream
+FormData support, full task ordering/navigation edge cases, remaining full
 pattern-regex/file constraint validation, target contexts, and the remaining
 browser-context primitives.
 

@@ -1439,20 +1439,82 @@ fn document_bootstrap(
     }}
     return entries;
   }};
+  const blobPartText = (part) => {{
+    if (part && part.__glassNativeBlob === true) return part._text;
+    if (typeof part === "string") return part;
+    throw new TypeError("native Blob supports only text or Blob parts");
+  }};
+  const boundedBlobText = (parts) => {{
+    if (parts === undefined || parts === null) return "";
+    if (!Array.isArray(parts)) throw new TypeError("native Blob parts must be an array");
+    const text = parts.map(blobPartText).join("");
+    if (text.length > storageValueLimit) throw new RangeError("native Blob size limit exceeded");
+    return text;
+  }};
+  const normalizeBlobType = (options) => {{
+    const type = options && typeof options.type === "string"
+      ? options.type.toLowerCase()
+      : "";
+    return /^[\x20-\x7e]*$/.test(type) ? type : "";
+  }};
+  const BlobNative = function(parts, options) {{
+    this.__glassNativeBlob = true;
+    this._text = boundedBlobText(parts);
+    this.size = this._text.length;
+    this.type = normalizeBlobType(options);
+  }};
+  BlobNative.prototype.text = function() {{
+    return Promise.resolve(this._text);
+  }};
+  BlobNative.prototype.slice = function(start, end, contentType) {{
+    const length = this._text.length;
+    const normalizePosition = (value, fallback) => {{
+      if (value === undefined) return fallback;
+      const number = Number(value);
+      if (!Number.isFinite(number)) return fallback;
+      return number < 0 ? Math.max(length + Math.trunc(number), 0) : Math.min(Math.trunc(number), length);
+    }};
+    const begin = normalizePosition(start, 0);
+    const finish = normalizePosition(end, length);
+    return new BlobNative([begin > finish ? "" : this._text.slice(begin, finish)], {{ type: contentType }});
+  }};
+  const FileNative = function(parts, name, options) {{
+    if (name === undefined) throw new TypeError("native File requires a name");
+    BlobNative.call(this, parts, options);
+    this.__glassNativeFile = true;
+    this.name = String(name);
+    const modified = options && Number.isFinite(Number(options.lastModified))
+      ? Number(options.lastModified)
+      : 0;
+    this.lastModified = Math.max(0, modified);
+  }};
+  FileNative.prototype = Object.create(BlobNative.prototype);
+  FileNative.prototype.constructor = FileNative;
+  globalThis.Blob = BlobNative;
+  globalThis.File = FileNative;
+  const formDataValue = (value, filename) => {{
+    if (value && value.__glassNativeBlob === true) {{
+      const defaultFilename = value.__glassNativeFile === true ? value.name : "blob";
+      return {{
+        kind: "file",
+        value,
+        filename: filename === undefined ? defaultFilename : String(filename),
+      }};
+    }}
+    return String(value);
+  }};
   const FormDataNative = function(form) {{
     this.__glassFormData = true;
     this._entries = [];
     if (form !== undefined && form !== null) this._entries = formDataEntries(form);
   }};
   FormDataNative.prototype.append = function(name, value, filename) {{
-    if (filename !== undefined) throw new TypeError("native FormData file parts are unsupported");
-    this._entries.push([String(name), String(value)]);
+    this._entries.push([String(name), formDataValue(value, filename)]);
   }};
   FormDataNative.prototype.set = function(name, value, filename) {{
-    if (filename !== undefined) throw new TypeError("native FormData file parts are unsupported");
     const key = String(name);
     this._entries = this._entries.filter(entry => entry[0] !== key);
-    this._entries.push([key, String(value)]);
+    this._entries.push([key, formDataValue(value, filename)]);
   }};
   FormDataNative.prototype.delete = function(name) {{
     const key = String(name);
@@ -1461,20 +1523,32 @@ fn document_bootstrap(
   FormDataNative.prototype.get = function(name) {{
     const key = String(name);
     const entry = this._entries.find(candidate => candidate[0] === key);
-    return entry ? entry[1] : null;
+    return entry ? (entry[1].kind === "file" ? entry[1].value : entry[1]) : null;
   }};
   FormDataNative.prototype.getAll = function(name) {{
     const key = String(name);
-    return this._entries.filter(entry => entry[0] === key).map(entry => entry[1]);
+    return this._entries
+      .filter(entry => entry[0] === key)
+      .map(entry => entry[1].kind === "file" ? entry[1].value : entry[1]);
   }};
   FormDataNative.prototype.has = function(name) {{
     const key = String(name);
     return this._entries.some(entry => entry[0] === key);
   }};
-  FormDataNative.prototype.entries = function() {{ return this._entries.slice(); }};
+  FormDataNative.prototype.entries = function() {{
+    return this._entries.map(entry => [
+      entry[0],
+      entry[1].kind === "file" ? entry[1].value : entry[1],
+    ]);
+  }};
   FormDataNative.prototype.forEach = function(callback, thisArg) {{
     if (typeof callback !== "function") throw new TypeError("FormData callback must be callable");
-    this._entries.forEach(entry => callback.call(thisArg, entry[1], entry[0], this));
+    this._entries.forEach(entry => callback.call(
+      thisArg,
+      entry[1].kind === "file" ? entry[1].value : entry[1],
+      entry[0],
+      this,
+    ));
   }};
   const escapeFormDataName = value => String(value)
     .replace(/\\/g, "\\\\")
@@ -1486,8 +1560,14 @@ fn document_bootstrap(
     let body = "";
     for (const entry of formData._entries) {{
       body += "--" + boundary + "\r\n";
-      body += "Content-Disposition: form-data; name=\"" + escapeFormDataName(entry[0]) + "\"\r\n\r\n";
-      body += entry[1] + "\r\n";
+      const file = entry[1].kind === "file" ? entry[1] : null;
+      body += "Content-Disposition: form-data; name=\"" + escapeFormDataName(entry[0]) + "\"";
+      if (file) body += "; filename=\"" + escapeFormDataName(file.filename) + "\"";
+      body += "\r\n";
+      if (file) body += "Content-Type: " + (file.value.type || "application/octet-stream") + "\r\n";
+      body += "\r\n";
+      body += file ? file.value._text : entry[1];
+      body += "\r\n";
     }}
     body += "--" + boundary + "--\r\n";
     return {{ body, contentType: "multipart/form-data; boundary=" + boundary }};

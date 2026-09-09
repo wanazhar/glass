@@ -1413,6 +1413,36 @@ async fn native_local_form_data_constructor_collects_text_controls() {
 }
 
 #[tokio::test]
+async fn native_local_file_and_blob_form_data_are_bounded_and_text_backed() {
+    let config = NativeEngineConfig::default()
+        .with_fixture("fixture://file-blob-form-data", "<p>File blob owner</p>")
+        .unwrap()
+        .with_initial_url("fixture://file-blob-form-data");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "const blob = new Blob(['hello', new Blob(['!'])], { type: 'TEXT/PLAIN' }); const file = new File(['world'], 'note.txt', { type: 'text/plain', lastModified: 7 }); const data = new FormData(); data.append('blob', blob); data.append('file', file); data.append('text', 'value'); const sliced = blob.slice(1, 4, 'text/custom'); const blobText = await blob.text(); const sliceText = await sliced.text(); const fileText = await file.text(); const limitRejected = (() => { try { new Blob(['x'.repeat(20000)]); return false; } catch (error) { return error instanceof RangeError; } })(); ({ blob: [blob.size, blob.type, blobText], slice: [sliced.size, sliced.type, sliceText], file: [file.name, file.size, file.type, file.lastModified, fileText], limitRejected, entries: data.entries().map(([name, value]) => [name, value.__glassNativeBlob ? { name: value.name || null, type: value.type, text: value._text } : value]) })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "blob": [6, "text/plain", "hello!"],
+            "slice": [3, "text/custom", "ell"],
+            "file": ["note.txt", 5, "text/plain", 7, "world"],
+            "limitRejected": true,
+            "entries": [
+                ["blob", {"name": null, "type": "text/plain", "text": "hello!"}],
+                ["file", {"name": "note.txt", "type": "text/plain", "text": "world"}],
+                ["text", "value"],
+            ],
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_form_data_constructor_collects_text_controls() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -28498,6 +28528,79 @@ async fn native_content_process_exposes_page_web_storage_realm() {
             .await
             .unwrap(),
         serde_json::json!([1, 1, "theme", "tab"])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_uploads_bounded_file_blob_form_data() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/upload"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            if expected_path == "/upload" {
+                assert_eq!(request.split_whitespace().next(), Some("POST"));
+                let content_type = request.lines().find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.eq_ignore_ascii_case("content-type")
+                            .then_some(value.trim())
+                    })
+                });
+                let boundary = content_type
+                    .and_then(|value| value.strip_prefix("multipart/form-data; boundary="))
+                    .expect("multipart boundary");
+                let body = request
+                    .split_once("\r\n\r\n")
+                    .map(|(_, body)| body)
+                    .unwrap_or_default();
+                assert!(body.contains(&format!(
+                    "--{boundary}\r\nContent-Disposition: form-data; name=\"blob\"; filename=\"blob\"\r\nContent-Type: text/plain\r\n\r\nhello!\r\n"
+                )));
+                assert!(body.contains(&format!(
+                    "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"note.txt\"\r\nContent-Type: text/plain\r\n\r\nworld\r\n"
+                )));
+                assert!(body.ends_with(&format!("--{boundary}--\r\n")));
+            }
+            let body = if expected_path == "/page" {
+                "<p>Upload owner</p>"
+            } else {
+                "uploaded"
+            };
+            let content_type = if expected_path == "/page" {
+                "text/html"
+            } else {
+                "text/plain"
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            "fetch('/upload', { method: 'POST', body: (() => { const data = new FormData(); data.append('blob', new Blob(['hello!'], { type: 'text/plain' })); data.append('file', new File(['world'], 'note.txt', { type: 'text/plain' })); return data; })() }).then(response => response.text()).then(value => { globalThis.uploadStatus = value; });",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.uploadStatus")
+            .await
+            .unwrap(),
+        serde_json::json!("uploaded")
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

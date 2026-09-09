@@ -2185,6 +2185,15 @@ preflight/simple-POST coverage, custom headers, multipart/FormData/blob/stream
 bodies, AbortController, XHR/WebSocket, and full Fetch Web IDL identity remain
 open.
 
+The completed bounded CORS preflight follow-up is
+[native-engine-browser-054](../tasks/native-engine-browser-054.md). Cross-origin
+simple POSTs use the direct Origin/response-CORS path; non-simple POSTs now
+perform a bounded OPTIONS preflight and fail closed unless the origin, method,
+and supported `content-type` request header are authorized. Preflight cache,
+custom headers, private-network access, opaque `no-cors` responses,
+multipart/FormData/blob/stream bodies, XHR/WebSocket, and full Fetch Web IDL
+identity remain open.
+
 The next bounded workstream is full task ordering and navigation edge cases,
 followed by file/FormData support, full constraint validation, target contexts,
 and the remaining browser-context primitives.

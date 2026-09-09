@@ -27695,6 +27695,170 @@ async fn native_content_process_fetches_cors_authorized_cross_origin_get() {
 }
 
 #[tokio::test]
+async fn native_content_process_fetches_cross_origin_post_after_cors_preflight() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let document_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let document_address = document_listener.local_addr().unwrap();
+    let api_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let api_address = api_listener.local_addr().unwrap();
+    let document_origin = format!("http://{document_address}");
+    let expected_origin = document_origin.clone();
+    let response_origin = document_origin.clone();
+
+    let document_server = tokio::spawn(async move {
+        let (mut stream, _) = document_listener.accept().await.unwrap();
+        let _request = read_http_request(&mut stream).await;
+        let body = "<title>Fetch owner</title><p>Native fetch</p>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: connect-src *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+    let api_server = tokio::spawn(async move {
+        let (mut stream, _) = api_listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().next(), Some("OPTIONS"));
+        assert_eq!(request.split_whitespace().nth(1), Some("/submit"));
+        assert!(request.lines().any(|line| {
+            line.split_once(':').is_some_and(|(name, value)| {
+                name.eq_ignore_ascii_case("origin") && value.trim() == expected_origin
+            })
+        }));
+        assert!(request.lines().any(|line| {
+            line.split_once(':').is_some_and(|(name, value)| {
+                name.eq_ignore_ascii_case("access-control-request-method") && value.trim() == "POST"
+            })
+        }));
+        assert!(request.lines().any(|line| {
+            line.split_once(':').is_some_and(|(name, value)| {
+                name.eq_ignore_ascii_case("access-control-request-headers")
+                    && value.trim().eq_ignore_ascii_case("content-type")
+            })
+        }));
+        let response = format!(
+            "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: {response_origin}\r\nAccess-Control-Allow-Methods: POST\r\nAccess-Control-Allow-Headers: content-type\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+
+        let (mut stream, _) = api_listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().next(), Some("POST"));
+        assert_eq!(request.split_whitespace().nth(1), Some("/submit"));
+        assert!(request.lines().any(|line| {
+            line.split_once(':').is_some_and(|(name, value)| {
+                name.eq_ignore_ascii_case("origin") && value.trim() == expected_origin
+            })
+        }));
+        let body = request
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| body)
+            .unwrap_or_default();
+        assert_eq!(body, r#"{"name":"glass"}"#);
+        let body = "{\"value\":\"cors-posted\"}";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: {response_origin}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("{document_origin}/index.html")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(&format!(
+            "fetch('http://{api_address}/submit', {{ method: 'POST', credentials: 'omit', body: '{{\"name\":\"glass\"}}', headers: {{ 'Content-Type': 'application/json' }} }}).then(response => response.json()).then(data => {{ globalThis.corsPostFetchValue = data.value; }});"
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.corsPostFetchValue")
+            .await
+            .unwrap(),
+        serde_json::json!("cors-posted")
+    );
+    engine.close_async().await.unwrap();
+    document_server.await.unwrap();
+    api_server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_fetches_cross_origin_simple_post_without_preflight() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let document_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let document_address = document_listener.local_addr().unwrap();
+    let api_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let api_address = api_listener.local_addr().unwrap();
+    let document_origin = format!("http://{document_address}");
+    let expected_origin = document_origin.clone();
+    let response_origin = document_origin.clone();
+
+    let document_server = tokio::spawn(async move {
+        let (mut stream, _) = document_listener.accept().await.unwrap();
+        let _request = read_http_request(&mut stream).await;
+        let body = "<title>Fetch owner</title><p>Native fetch</p>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: connect-src *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+    let api_server = tokio::spawn(async move {
+        let (mut stream, _) = api_listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().next(), Some("POST"));
+        assert_eq!(request.split_whitespace().nth(1), Some("/submit"));
+        assert!(request.lines().any(|line| {
+            line.split_once(':').is_some_and(|(name, value)| {
+                name.eq_ignore_ascii_case("origin") && value.trim() == expected_origin
+            })
+        }));
+        assert!(request.lines().any(|line| {
+            line.split_once(':').is_some_and(|(name, value)| {
+                name.eq_ignore_ascii_case("content-type") && value.trim() == "text/plain"
+            })
+        }));
+        let body = request
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| body)
+            .unwrap_or_default();
+        assert_eq!(body, "hello");
+        let body = "{\"value\":\"simple-posted\"}";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: {response_origin}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("{document_origin}/index.html")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(&format!(
+            "fetch('http://{api_address}/submit', {{ method: 'POST', credentials: 'omit', body: 'hello', headers: {{ 'Content-Type': 'text/plain' }} }}).then(response => response.json()).then(data => {{ globalThis.simplePostFetchValue = data.value; }});"
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.simplePostFetchValue")
+            .await
+            .unwrap(),
+        serde_json::json!("simple-posted")
+    );
+    engine.close_async().await.unwrap();
+    document_server.await.unwrap();
+    api_server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_exposes_bounded_script_fetch_promises() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

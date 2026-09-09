@@ -1075,6 +1075,64 @@ async fn native_local_form_validation_and_submitter_metadata_are_bounded() {
 }
 
 #[tokio::test]
+async fn native_local_form_validation_covers_common_constraints() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://common-validation",
+            "<form id='search' action='fixture://common-validation-result'><input id='email' name='email' type='email' value='invalid'><input id='age' name='age' type='number' min='18' max='65' step='2' value='19'><textarea id='code' name='code' minlength='3' maxlength='5'>ab</textarea><button id='go' type='submit'>Go</button></form>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://common-validation-result?email=user%40example.com&age=20&code=abc",
+            "<title>Validated result</title><p>Submitted</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://common-validation");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            "(() => { globalThis.invalidEvents = []; ['email', 'age', 'code'].forEach(id => document.getElementById(id).addEventListener('invalid', event => invalidEvents.push(event.target.id))); })()",
+        )
+        .await
+        .unwrap();
+    engine
+        .evaluate_async(
+            "document.getElementById('search').requestSubmit(document.getElementById('go'))",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        "fixture://common-validation"
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.invalidEvents")
+            .await
+            .unwrap(),
+        serde_json::json!(["email", "age", "code"])
+    );
+    engine
+        .evaluate_async(
+            "(() => { document.getElementById('email').value = 'user@example.com'; document.getElementById('age').value = '20'; document.getElementById('code').value = 'abc'; })()",
+        )
+        .await
+        .unwrap();
+    engine
+        .evaluate_async(
+            "document.getElementById('search').requestSubmit(document.getElementById('go'))",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        "fixture://common-validation-result?email=user%40example.com&age=20&code=abc"
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_semantic_submit_button_navigates_without_script_realm() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -2289,6 +2347,76 @@ async fn native_content_process_form_validation_blocks_submit() {
             .unwrap(),
         serde_json::json!([])
     );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_form_validation_covers_common_constraints() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/form", "/result?email=user%40example.com"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let body = if expected_path == "/form" {
+                "<form id='search' action='/result'><input id='email' name='email' type='email' value='invalid'><button id='go' type='submit'>Go</button></form>"
+            } else {
+                "<title>Validated result</title><p>Submitted</p>"
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/form")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            "(() => { globalThis.invalidEvents = []; document.getElementById('email').addEventListener('invalid', event => invalidEvents.push(event.target.id)); })()",
+        )
+        .await
+        .unwrap();
+    engine
+        .evaluate_async(
+            "document.getElementById('search').requestSubmit(document.getElementById('go'))",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        format!("http://{address}/form")
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.invalidEvents")
+            .await
+            .unwrap(),
+        serde_json::json!(["email"])
+    );
+    engine
+        .evaluate_async("document.getElementById('email').value = 'user@example.com'")
+        .await
+        .unwrap();
+    engine
+        .evaluate_async(
+            "document.getElementById('search').requestSubmit(document.getElementById('go'))",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        format!("http://{address}/result?email=user%40example.com")
+    );
+    assert_eq!(engine.snapshot().unwrap().title, "Validated result");
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }

@@ -2154,6 +2154,13 @@ at most once per supplied host turn, reschedule from that turn's monotonic
 time, and can cancel themselves. There is no background page loop or
 task-source fairness; animation and idle callbacks remain open.
 
+The completed bounded common-constraint follow-up is
+[native-engine-browser-050](../tasks/native-engine-browser-050.md). Local and
+child-owned forms now validate required, email/URL, UTF-16 length, and numeric
+min/max/step constraints before ordered `invalid` events and submit handoff.
+Pattern/date/file constraints, custom validity, and
+`ValidityState`/`checkValidity` Web IDL identity remain open.
+
 The next bounded workstream is full task ordering and navigation edge cases,
 followed by file/FormData support, full constraint validation, target contexts,
 and the remaining browser-context primitives.

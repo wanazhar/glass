@@ -52,6 +52,11 @@ pub(crate) enum NativeScriptCommand {
         request_id: u32,
         href: String,
         credentials: bool,
+        method: String,
+        #[serde(default)]
+        body: Option<String>,
+        #[serde(default)]
+        content_type: Option<String>,
     },
     SetValue {
         node_index: u32,
@@ -1167,8 +1172,24 @@ fn document_bootstrap(
     if (typeof input !== "string") throw new TypeError("native fetch requires a URL string");
     const settings = options && typeof options === "object" ? options : {{}};
     const method = settings.method === undefined ? "GET" : String(settings.method).toUpperCase();
-    if (method !== "GET" || settings.body !== undefined) {{
-      return Promise.reject(new TypeError("native fetch currently supports only GET requests"));
+    const body = settings.body === undefined || settings.body === null
+      ? null
+      : String(settings.body);
+    if (method !== "GET" && method !== "POST") {{
+      return Promise.reject(new TypeError("native fetch supports only GET and POST requests"));
+    }}
+    if (method === "GET" && body !== null) {{
+      return Promise.reject(new TypeError("GET fetch requests must not have a body"));
+    }}
+    const headers = settings.headers && typeof settings.headers === "object"
+      ? settings.headers
+      : {{}};
+    let contentType = null;
+    for (const name of Object.keys(headers)) {{
+      if (String(name).toLowerCase() !== "content-type") {{
+        return Promise.reject(new TypeError("native fetch only supports the Content-Type header"));
+      }}
+      contentType = String(headers[name]);
     }}
     const requestId = nextFetchRequestId;
     nextFetchRequestId += 1;
@@ -1176,7 +1197,7 @@ fn document_bootstrap(
     const credentials = settings.credentials !== "omit";
     return new Promise((resolve, reject) => {{
       fetchRequests.set(requestId, {{ resolve, reject }});
-      pushCommand({{ kind: "fetch", request_id: requestId, href: input, credentials }});
+      pushCommand({{ kind: "fetch", request_id: requestId, href: input, credentials, method, body, content_type: contentType }});
     }});
   }};
   const responseFromFetch = (payload) => Object.freeze({{

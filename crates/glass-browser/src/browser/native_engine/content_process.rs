@@ -1134,7 +1134,15 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         json!({"kind":"evaluated","id":id,"value":value})
                     }
                     Ok(NativeScriptEvaluation { value, commands }) => {
-                        let has_fetch = !fetch_commands(&commands).is_empty();
+                        let fetches = match fetch_commands(&commands) {
+                            Ok(fetches) => fetches,
+                            Err(error) => {
+                                let response = content_error_response(id, error);
+                                write_value_frame(&mut stdout, &response).await?;
+                                continue;
+                            }
+                        };
+                        let has_fetch = !fetches.is_empty();
                         let result = if has_fetch {
                             match resource_loader.as_mut() {
                                 Some(loader) => {
@@ -2680,7 +2688,19 @@ fn mutate_script_document(
     Ok((next, mutation))
 }
 
-fn fetch_commands(commands: &[NativeScriptCommand]) -> Vec<(u32, String, bool)> {
+fn fetch_commands(
+    commands: &[NativeScriptCommand],
+) -> Result<
+    Vec<(
+        u32,
+        String,
+        NativeNavigationMethod,
+        Option<String>,
+        Option<String>,
+        bool,
+    )>,
+    NativeEngineError,
+> {
     commands
         .iter()
         .filter_map(|command| match command {
@@ -2688,9 +2708,34 @@ fn fetch_commands(commands: &[NativeScriptCommand]) -> Vec<(u32, String, bool)> 
                 request_id,
                 href,
                 credentials,
-            } => Some((*request_id, href.clone(), *credentials)),
+                method,
+                body,
+                content_type,
+            } => Some((
+                *request_id,
+                href.clone(),
+                method,
+                body.clone(),
+                content_type.clone(),
+                *credentials,
+            )),
             _ => None,
         })
+        .map(
+            |(request_id, href, method, body, content_type, credentials)| {
+                let method = match method.as_str() {
+                    "GET" => NativeNavigationMethod::Get,
+                    "POST" => NativeNavigationMethod::Post,
+                    _ => {
+                        return Err(NativeEngineError::invalid(
+                            "script fetch method",
+                            "must be GET or POST",
+                        ));
+                    }
+                };
+                Ok((request_id, href, method, body, content_type, credentials))
+            },
+        )
         .collect()
 }
 
@@ -2723,9 +2768,9 @@ async fn resolve_script_fetches(
         viewport,
         &evaluation.commands,
     )?;
-    let mut pending = fetch_commands(&evaluation.commands);
+    let mut pending = fetch_commands(&evaluation.commands)?;
     let mut resolved_count = 0usize;
-    while let Some((request_id, href, credentials)) = pending.pop() {
+    while let Some((request_id, href, method, body, content_type, credentials)) = pending.pop() {
         resolved_count = resolved_count.saturating_add(1);
         if resolved_count > MAX_NATIVE_EFFECTS {
             return Err(NativeEngineError::limit(
@@ -2734,8 +2779,11 @@ async fn resolve_script_fetches(
                 resolved_count,
             ));
         }
-        let payload =
-            fetch_response_payload(loader.fetch_async(document_url, &href, credentials).await);
+        let payload = fetch_response_payload(
+            loader
+                .fetch_request_async(document_url, &href, method, body, content_type, credentials)
+                .await,
+        );
         let resolved = runtime.resolve_fetch(
             request_id,
             &payload,
@@ -2761,7 +2809,7 @@ async fn resolve_script_fetches(
                 reason: "one script fetch batch cannot activate multiple navigations".into(),
             });
         }
-        pending.extend(fetch_commands(&resolved.commands));
+        pending.extend(fetch_commands(&resolved.commands)?);
     }
     if mutation.events.len() > MAX_NATIVE_EFFECTS {
         return Err(NativeEngineError::limit(

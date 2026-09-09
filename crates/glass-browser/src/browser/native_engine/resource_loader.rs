@@ -544,8 +544,58 @@ impl NativeResourceLoader {
         href: &str,
         credentials: bool,
     ) -> Result<NativeFetchResponse, NativeEngineError> {
+        self.fetch_request_async(
+            document_url,
+            href,
+            NativeNavigationMethod::Get,
+            None,
+            None,
+            credentials,
+        )
+        .await
+    }
+
+    pub(crate) async fn fetch_request_async(
+        &mut self,
+        document_url: &str,
+        href: &str,
+        method: NativeNavigationMethod,
+        body: Option<String>,
+        content_type: Option<String>,
+        credentials: bool,
+    ) -> Result<NativeFetchResponse, NativeEngineError> {
         validate_url_text("fetch owner URL", document_url)?;
         validate_url_text("fetch URL", href)?;
+        match method {
+            NativeNavigationMethod::Get if body.is_some() || content_type.is_some() => {
+                return Err(NativeEngineError::invalid(
+                    "GET fetch body",
+                    "must be absent",
+                ));
+            }
+            NativeNavigationMethod::Post => {
+                if body
+                    .as_ref()
+                    .is_some_and(|body| body.len() > MAX_NATIVE_FORM_BODY_BYTES)
+                {
+                    return Err(NativeEngineError::limit(
+                        "fetch request body",
+                        MAX_NATIVE_FORM_BODY_BYTES,
+                        body.as_ref().map_or(0, String::len),
+                    ));
+                }
+                if content_type
+                    .as_ref()
+                    .is_some_and(|content_type| content_type.is_empty())
+                {
+                    return Err(NativeEngineError::invalid(
+                        "fetch content type",
+                        "must be non-empty when present",
+                    ));
+                }
+            }
+            NativeNavigationMethod::Get => {}
+        }
         let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
             NativeEngineError::UnsupportedUrl {
                 reason: "fetch owner URL is not valid HTTP(S) syntax".into(),
@@ -587,15 +637,37 @@ impl NativeResourceLoader {
             .build()
             .map_err(|error| network_error("fetch client construction", error))?;
         let mut current_url = target_url;
+        let mut current_method = method;
+        let mut current_body = body;
+        let mut current_content_type = content_type;
         let mut request_referrer = normalize_referrer(Some(document_url.as_str()), &current_url)?;
         let mut redirects = 0;
         let mut pending_cookies = Vec::new();
         let response = loop {
             let mut request_url = current_url.clone();
             request_url.set_fragment(None);
-            let mut request = client
-                .get(request_url)
-                .header(reqwest::header::ACCEPT, "*/*");
+            if current_method == NativeNavigationMethod::Post
+                && cors_origin_header(&document_url, &current_url, NativeCorsMode::Cors).is_some()
+                && current_content_type
+                    .as_deref()
+                    .is_some_and(|content_type| !is_simple_fetch_content_type(content_type))
+            {
+                return Err(NativeEngineError::Network {
+                    operation: "fetch preflight".into(),
+                    reason: "cross-origin non-simple POST fetch requires a preflight".into(),
+                });
+            }
+            let mut request = match current_method {
+                NativeNavigationMethod::Get => client.get(request_url),
+                NativeNavigationMethod::Post => client.post(request_url),
+            }
+            .header(reqwest::header::ACCEPT, "*/*");
+            if let Some(body) = current_body.as_deref() {
+                request = request.body(body.to_owned());
+            }
+            if let Some(content_type) = current_content_type.as_deref() {
+                request = request.header(reqwest::header::CONTENT_TYPE, content_type);
+            }
             if let Some(origin) =
                 cors_origin_header(&document_url, &current_url, NativeCorsMode::Cors)
             {
@@ -656,6 +728,11 @@ impl NativeResourceLoader {
                 });
             }
             request_referrer = normalize_referrer(Some(current_url.as_str()), &next_url)?;
+            if matches!(response.status().as_u16(), 301 | 302 | 303) {
+                current_method = NativeNavigationMethod::Get;
+                current_body = None;
+                current_content_type = None;
+            }
             current_url = next_url;
             redirects += 1;
         };
@@ -1117,6 +1194,19 @@ pub(crate) fn cors_origin_header(
 ) -> Option<String> {
     (mode == NativeCorsMode::Cors && document_url.origin() != resource_url.origin())
         .then(|| document_url.origin().ascii_serialization())
+}
+
+fn is_simple_fetch_content_type(value: &str) -> bool {
+    matches!(
+        value
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "application/x-www-form-urlencoded" | "multipart/form-data" | "text/plain"
+    )
 }
 
 pub(crate) fn cors_response_allowed(

@@ -2175,6 +2175,16 @@ publishes its first document snapshot, including typed callback DOM mutations.
 Callback navigation during initial publication, non-GET uploads, XHR/WebSocket,
 and full Fetch Web IDL identity remain open.
 
+The completed bounded same-origin POST fetch follow-up is
+[native-engine-browser-053](../tasks/native-engine-browser-053.md). Explicit
+and initial page scripts can issue bounded string-body POST requests with an
+optional `Content-Type`, while the existing document-policy, cookie, referrer,
+redirect, response-size, and CORS limits remain in force. Redirects rewrite
+POST to GET for 301/302/303 and retain POST data for 307/308. Cross-origin
+preflight/simple-POST coverage, custom headers, multipart/FormData/blob/stream
+bodies, AbortController, XHR/WebSocket, and full Fetch Web IDL identity remain
+open.
+
 The next bounded workstream is full task ordering and navigation edge cases,
 followed by file/FormData support, full constraint validation, target contexts,
 and the remaining browser-context primitives.

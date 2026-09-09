@@ -2275,8 +2275,17 @@ backend-instance scoped and intentionally not page-visible, durable,
 origin-keyed, cookie-synchronized, or IndexedDB-backed; cookie-scope requests
 remain explicitly unsupported.
 
-The next bounded workstream is page-visible origin-keyed storage and full task
-ordering/navigation edge cases, followed by file/blob FormData support,
+The completed bounded page Web Storage realm follow-up is
+[native-engine-browser-065](../tasks/native-engine-browser-065.md). The shared
+QuickJS bootstrap exposes bounded `localStorage` and `sessionStorage` objects
+with `length`, `key`, `getItem`, `setItem`, `removeItem`, and `clear` across
+local and child-owned evaluations. Realm-local persistence and independent
+stores are covered; origin navigation persistence, durable profiles, storage
+events, cookie synchronization, IndexedDB, and full Storage Web IDL identity
+remain open.
+
+The next bounded workstream is origin-keyed storage across navigation and full
+task ordering/navigation edge cases, followed by file/blob FormData support,
 remaining full pattern-regex/file constraint validation, target contexts, and
 the remaining browser-context primitives.
 

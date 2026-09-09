@@ -1165,6 +1165,53 @@ fn document_bootstrap(
     if (timer) timer.cancelled = true;
     timers.delete(timerId);
   }};
+  const storageEntryLimit = {storage_entry_limit};
+  const storageKeyLimit = {storage_key_limit};
+  const storageValueLimit = {storage_value_limit};
+  const boundedStorageText = (value, limit, field) => {{
+    const text = String(value);
+    if (text.length > limit) throw new RangeError("native storage " + field + " exceeds its limit");
+    return text;
+  }};
+  const createStorage = (mapSlot, objectSlot) => {{
+    const values = globalThis[mapSlot] instanceof Map
+      ? globalThis[mapSlot]
+      : new Map();
+    globalThis[mapSlot] = values;
+    const existing = globalThis[objectSlot];
+    if (existing && existing.__glassNativeStorage === true) return existing;
+    const store = {{
+      get length() {{ return values.size; }},
+      key(index) {{
+        const position = Number(index);
+        if (!Number.isInteger(position) || position < 0) return null;
+        return Array.from(values.keys())[position] ?? null;
+      }},
+      getItem(key) {{
+        const value = values.get(String(key));
+        return value === undefined ? null : value;
+      }},
+      setItem(key, value) {{
+        const normalizedKey = boundedStorageText(key, storageKeyLimit, "key");
+        const normalizedValue = boundedStorageText(value, storageValueLimit, "value");
+        if (!values.has(normalizedKey) && values.size >= storageEntryLimit) {{
+          throw new RangeError("native storage entry limit exceeded");
+        }}
+        values.set(normalizedKey, normalizedValue);
+      }},
+      removeItem(key) {{ values.delete(String(key)); }},
+      clear() {{ values.clear(); }},
+    }};
+    Object.defineProperty(store, "__glassNativeStorage", {{
+      value: true,
+      enumerable: false,
+      configurable: false,
+    }});
+    globalThis[objectSlot] = store;
+    return store;
+  }};
+  globalThis.localStorage = createStorage("__glassLocalStorageValues", "__glassLocalStorageObject");
+  globalThis.sessionStorage = createStorage("__glassSessionStorageValues", "__glassSessionStorageObject");
   globalThis.__glassTimers = timers;
   globalThis.__glassRunningTimers = runningTimers;
   globalThis.__glassNextTimerId = nextTimerId;
@@ -1974,6 +2021,9 @@ fn document_bootstrap(
         max_commands = super::interaction::MAX_NATIVE_EFFECTS,
         max_listeners = super::interaction::MAX_NATIVE_EFFECTS,
         max_timers = super::interaction::MAX_NATIVE_EFFECTS,
+        storage_entry_limit = crate::browser_backend::MAX_STORAGE_ENTRIES,
+        storage_key_limit = crate::browser_backend::MAX_BACKEND_ID_BYTES,
+        storage_value_limit = crate::browser_backend::MAX_TEXT_BYTES,
         width = viewport.width,
         height = viewport.height,
         ready_state = ready_state,

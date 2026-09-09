@@ -1851,12 +1851,24 @@ document revision. This is an executable network primitive, not a Fetch/Web
 IDL implementation: custom request shapes, preflights, streams, service
 workers, script execution, and remaining resource classes remain open.
 
+The completed JavaScript-realm follow-up is
+[native-engine-browser-016](../tasks/native-engine-browser-016.md). The native
+backend now dispatches bounded script requests into a persistent QuickJS
+realm. Local documents keep the realm in the engine owner; external documents
+keep it in the sandboxed content process, and full navigation resets it.
+`JSON.stringify` provides a bounded JSON result with a 16 KiB source cap,
+64 KiB result cap, 32 MiB runtime memory cap, 1 MiB stack cap, and five-second
+interrupt deadline. Script exceptions do not poison a healthy worker, while
+IPC failures and deadlines retain typed process recovery behavior. The slice
+does not yet provide DOM/Web IDL objects, promises/timers/modules, script
+loading, Fetch/XHR, service workers, or browser compatibility.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine
-must stay inside `glass-browser`, remain default-off, and add no dependency in
-these slices. Chromium/CDP remains the production path; native selection is
-explicit-only.
+must stay inside `glass-browser`, remain default-off, and keep native-only
+dependencies optional behind the `native-engine` feature. Chromium/CDP remains
+the production path; native selection is explicit-only.
 
 The normal browser-free platform matrix uses `--no-default-features`; a
 dedicated Linux `Native engine core` job owns the explicit `native-engine`
@@ -1897,11 +1909,12 @@ real edit touching the native module, and target-directory growth separately.
 | `native_engine::lifecycle` | lifecycle state | transitions | `New`, `Running`, `Closed` | none |
 | `native_engine::runtime` | runtime lifecycle, cancellation, typed microtasks, bounded trace, and scheduler ownership | lifecycle events, typed work, delay, cancellation | runtime state, task/microtask readiness, trace events | scheduler + native error |
 | `native_engine::worker` | bounded async command ownership over the single runtime state | typed runtime commands and cancellation | serialized task/microtask results, traces, and worker failures | Tokio sync/task + runtime |
-| `native_engine::content_process` | child-helper discovery, bounded framed lifecycle/document-transfer IPC, request correlation, response validation, and fail-closed process shutdown | protocol frames, helper executable, and bounded HTTP(S) requests | typed process liveness/load/commit/close acknowledgements or worker errors | Tokio process/io + serde JSON + resource loader |
+| `native_engine::content_process` | child-helper discovery, bounded framed lifecycle/document/script/fetch/document-transfer IPC, request correlation, response validation, and fail-closed process shutdown | protocol frames, helper executable, bounded HTTP(S) requests, and script source | typed process liveness/load/commit/script/fetch/close acknowledgements or worker errors | Tokio process/io + serde JSON + resource loader + JavaScript realm |
 | `native_engine::scheduler` | logical clock and bounded ordered tasks | task kind, delay | deterministic task IDs/order | native limits; owned by runtime |
 | `native_engine::history` | current local history and per-entry root scroll state | committed URL/revision/scroll offset | bounded entries/current index | native limits + layout point |
 | `native_engine::origin` | opaque local origins and normalized HTTP(S) tuple origins | loaded URL | origin state/serialization | `url`, typed native error |
 | `native_engine::resource_loader` | fixture/data/about resources plus bounded HTTP(S) HTML document loading | validated URL, async transport response | bounded HTML resource | `url`, `reqwest`, `futures-util`, config limits |
+| `native_engine::javascript` | one bounded persistent ECMAScript realm and JSON result conversion | validated script source, runtime limits | JSON-serializable script result or typed evaluation failure | optional `rquickjs` QuickJS-NG binding |
 | `native_engine::css` | bounded selector/rule parsing, display/visibility presentation, inherited color, positive-pixel line-height, pixel dimensions, physical solid/dashed/dotted borders, circular border radii, physical padding/margin edges, local opacity alpha, inherited `font-weight:normal|bold|400|700`, inherited `font-style:normal|italic`, inherited `word-break:normal|break-all`, inherited `vertical-align:baseline|top|middle|bottom`, bounded author-origin `!important` priority for the supported text-flow and text-decoration declarations, and bounded local flex-row `justify-content:normal|flex-start|center|flex-end|space-between|space-around|space-evenly|stretch`, explicit `justify-content:inherit` parent propagation, flex-item `order`, flex cross-axis `align-items`, explicit `align-items:inherit` parent propagation, `align-self:auto|flex-start|center|flex-end`, explicit `align-self:inherit` parent propagation, `flex-direction`, `flex-wrap`, `flex-flow`, `align-content:flex-start|center|flex-end|space-between|space-around|space-evenly|stretch|normal`, explicit `align-content:inherit` parent propagation, integer `flex-grow`, integer `flex-shrink`, `flex-basis:auto|Npx`, and `flex` shorthand | style text, inline style, native element attributes, ancestor styles | deterministic computed presentation values | native DOM element surface |
 | `native_engine::layout` | viewport-bounded block/inline normal-flow geometry, bounded outer/content box model, side-specific border insets, rounded-box metadata, preflight inline line placement, inherited fixed line-height floors, direct-text fragments, whitespace-boundary flow, source-order paint entries, aligned line-item ranges with bounded vertical offsets, opacity group boundaries, root scroll projection, rounded point hit testing, bounded inherited word-break wrapping, bounded fixed-width flex-row free-space placement, stable visual flex-item order sorting, complete flex cross-axis alignment with explicit/auto line sizing and per-item `align-self` overrides, bounded physical flex wrapping and wrap-reverse line stacking, bounded cross-line alignment, `justify-content:normal|stretch|space-around|space-evenly` through the flex-start placement owner, explicit `align-content:normal` line distribution, bounded positive flex-grow allocation with max-width freeze/redistribution, base-width-weighted flex-shrink allocation with min-width freezing, explicit flex-basis base sizing, and flex shorthand/flow component reuse | DOM, computed presentation, viewport, scroll offset | document-space layout boxes/text fragments, paint order, scroll metadata, and deterministic hit target | native DOM + CSS presentation |
 | `native_engine::paint` | revisioned clear/fill/text-fragment/physical-border display-list derivation, bounded rounded paint masks, source-order entries, opacity group markers, ancestor clips, and scroll metadata | current layout, bounded computed colors/text/borders/radii/opacity/font presentation, and overflow presentation | immutable document-space display-list commands | native DOM + layout |

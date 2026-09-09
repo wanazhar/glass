@@ -10,6 +10,7 @@ use super::error::NativeEngineError;
 use super::error::NativeWorkerFailureKind;
 use super::history::{NativeHistory, NativeHistoryDirection};
 use super::interaction::{MAX_NATIVE_EFFECTS, NativeAction, NativeEffect, NativeEventKind};
+use super::javascript::NativeJavaScriptRuntime;
 use super::layout::{NativeLayoutSnapshot, NativePoint};
 use super::lifecycle::NativeLifecycleState;
 use super::origin::NativeOrigin;
@@ -67,6 +68,7 @@ pub struct NativeEngine {
     runtime: NativeRuntimeShared,
     runtime_worker: Option<NativeRuntimeWorker>,
     content_process: Option<NativeContentProcess>,
+    javascript: Option<NativeJavaScriptRuntime>,
     history: NativeHistory,
     lifecycle: NativeLifecycleState,
     document: NativeDocument,
@@ -93,6 +95,7 @@ impl NativeEngine {
             runtime,
             runtime_worker: None,
             content_process: None,
+            javascript: None,
             history: NativeHistory::new(max_history_entries),
             lifecycle: NativeLifecycleState::New,
             document: NativeDocument::empty(),
@@ -407,6 +410,33 @@ impl NativeEngine {
             })?
             .fetch(&self.url, &href, credentials)
             .await
+    }
+
+    /// Evaluate bounded ECMAScript in the current page realm. Network
+    /// documents execute in the child-owned content process; local documents
+    /// use the same runtime implementation in the engine owner.
+    pub async fn evaluate_async(
+        &mut self,
+        source: impl Into<String>,
+    ) -> Result<serde_json::Value, NativeEngineError> {
+        self.require_running("script")?;
+        let source = source.into();
+        if let Some(process) = self.content_process.as_mut() {
+            if !process.is_healthy() {
+                return Err(NativeEngineError::worker_failure(
+                    "content process script",
+                    process
+                        .failure_kind()
+                        .unwrap_or(NativeWorkerFailureKind::Exited),
+                    "content process is unavailable after a failed operation; navigate to recover it",
+                ));
+            }
+            return process.evaluate(&source).await;
+        }
+        let javascript = self
+            .javascript
+            .get_or_insert(NativeJavaScriptRuntime::new()?);
+        javascript.evaluate(&source)
     }
 
     /// Return diagnostics for CSS that the bounded native presentation model
@@ -813,6 +843,7 @@ impl NativeEngine {
         self.run_commit_task(NativeTask::CommitNavigation, "navigation")?;
         let revision = self.next_revision()?;
         self.document = prepared.document;
+        self.javascript = None;
         self.url = prepared.resource.url;
         self.origin = prepared.resource.origin;
         self.scroll_offset = scroll_offset;
@@ -835,6 +866,7 @@ impl NativeEngine {
             .await?;
         let revision = self.next_revision()?;
         self.document = prepared.document;
+        self.javascript = None;
         self.url = prepared.resource.url;
         self.origin = prepared.resource.origin;
         self.scroll_offset = scroll_offset;
@@ -948,6 +980,7 @@ impl NativeEngine {
         self.run_commit_task(NativeTask::TraverseHistory, "history traversal")?;
         let revision = self.next_revision()?;
         self.document = prepared.document;
+        self.javascript = None;
         self.url = prepared.resource.url;
         self.origin = prepared.resource.origin;
         self.scroll_offset = scroll_offset;

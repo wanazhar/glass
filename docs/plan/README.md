@@ -181,6 +181,21 @@ The remaining BE-02e implementation gate is to wire the policy into real
 script/module and connect/fetch request callers, then add the remaining
 resource classes without leaking response data or bypassing process ownership.
 
+The completed bounded child-fetch batch is
+[native-engine-browser-015](tasks/native-engine-browser-015.md). A running
+native engine can now issue one child-owned, GET-only fetch from its current
+external document. The child applies `connect-src`/`default-src`, URL and
+HTTPS mixed-content checks, bounded redirects, credentials policy, CORS
+`Origin`/ACAO authorization, response-size limits, and typed IPC transfer;
+the focused process-backed filter passed 13/13. This is a kernel primitive,
+not `window.fetch`: custom methods/headers/bodies, preflights, streams,
+service workers, JavaScript/Web IDL, remaining resource classes, and browser
+parity remain open.
+
+The next BE-02/BE-04 gate is to define the broader Fetch request/response
+model and connect it to a real JavaScript/Web IDL runtime without bypassing
+the child policy boundary.
+
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,
 fixture/data-URL-only, one-context engine kernel and explicit semantic backend.

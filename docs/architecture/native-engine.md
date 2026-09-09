@@ -275,6 +275,17 @@ fetch/XHR, image, font, media, frame, worker, preflight, service-worker, or
 permission caller exists yet; policy primitives are not browser support by
 themselves.
 
+The completed native-engine-browser-015 batch gives that policy a bounded
+child-owned GET caller. `NativeEngine::fetch_async` sends a typed request over
+the existing worker IPC; the child applies `connect-src`/`default-src`, URL
+and HTTPS mixed-content checks, bounded redirects, explicit credential use,
+and cross-origin `Origin`/ACAO authorization before transferring a capped
+response. HTTP status and content-type metadata are preserved, cookies are
+committed only after successful final validation, and the document revision is
+unchanged. The operation has no custom methods, headers, body, streams,
+preflights, JavaScript/Web IDL binding, service-worker route, or remaining
+resource caller, so it is not `window.fetch` or browser-complete networking.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature
@@ -2649,7 +2660,9 @@ directive-family and CORS authorization primitives, but only bounded link
 stylesheets currently call them. Service workers, permissions, full HTTP
 cache freshness, persistence, and cross-origin request callers remain outside
 this boundary. Only bounded link stylesheets are fetched as subresources;
-images, media, fonts, scripts, and imports are not fetched. A raw fragment is
+images, media, fonts, scripts, and imports are not fetched by document
+discovery; the explicit GET primitive can fetch one bounded connect target.
+A raw fragment is
 removed for resource lookup and decoding but is retained in the successful navigation URL;
 percent-encoded fragment markers remain payload data. Local resources have an
 opaque origin; HTTP(S) resources have a normalized tuple origin. This boundary

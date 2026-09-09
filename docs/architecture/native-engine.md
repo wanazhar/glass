@@ -521,8 +521,16 @@ resource replacement, and `pageshow` to the newly published window after its
 accepted ready/load schedule; initial publication also delivers `pageshow`.
 Transition effects and callback mutations use the existing typed owner paths,
 while same-document fragments remain in-place. Cancelable `beforeunload`,
-`hashchange`, bfcache/history-traversal parity, popup/opener contexts,
+bfcache/history-traversal parity, popup/opener contexts,
 visibility state, and the full HTML navigation task model remain open.
+
+The completed native-engine-browser-043 batch makes same-document fragment
+navigation observable. GET fragment changes now retain the document and realm,
+avoid a network reload, update the child URL owner when process-backed, and
+dispatch a non-bubbling, non-cancelable window `hashchange` with `oldURL` and
+`newURL`; callback mutations remain typed and bounded. `beforeunload`,
+`popstate`, bfcache/history traversal lifecycle parity, and the full HTML
+navigation task model remain open.
 
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third

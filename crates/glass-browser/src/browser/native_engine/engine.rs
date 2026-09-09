@@ -16,7 +16,7 @@ use super::interaction::{
 };
 use super::javascript::{
     NativeJavaScriptRuntime, NativeScriptEvaluation, execute_inline_scripts, host_event_script,
-    host_key_event_script, host_submit_event_script,
+    host_hash_change_event_script, host_key_event_script, host_submit_event_script,
 };
 use super::layout::{NativeLayoutSnapshot, NativePoint};
 use super::lifecycle::NativeLifecycleState;
@@ -275,8 +275,23 @@ impl NativeEngine {
     ) -> Result<NativeEngineSnapshot, NativeEngineError> {
         self.require_running("navigate")?;
         let url = navigation.url.as_str();
-        if !self.is_same_document_navigation(url) {
+        let same_document = self.is_same_document_navigation(url);
+        if !same_document {
             self.dispatch_navigation_lifecycle_async().await?;
+        }
+        if same_document && navigation.method == NativeNavigationMethod::Get {
+            validate_url_text("navigation URL", url)?;
+            if let Some(worker) = self.runtime_worker.clone() {
+                self.commit_same_document_navigation_async(
+                    navigation.url,
+                    HistoryCommit::Push,
+                    &worker,
+                )
+                .await?;
+            } else {
+                self.commit_same_document_navigation(navigation.url, HistoryCommit::Push)?;
+            }
+            return Ok(self.snapshot_unchecked());
         }
         if is_network_url(&url) {
             let referrer = referrer_for_navigation(&self.url, &url)?;
@@ -394,14 +409,15 @@ impl NativeEngine {
         content: NativeContentLoad,
         worker: &NativeRuntimeWorker,
     ) -> Result<NativeEngineSnapshot, NativeEngineError> {
-        if self.is_same_document_navigation(&content.url) {
+        let same_document = self.is_same_document_navigation(&content.url);
+        if same_document {
             self.commit_same_document_navigation_async(content.url, HistoryCommit::Push, worker)
                 .await?;
         } else {
             let prepared = self.prepare_navigation_content(content)?;
             self.commit_navigation_async(prepared, worker).await?;
+            self.dispatch_content_page_show_async().await?;
         }
-        self.dispatch_content_page_show_async().await?;
         Ok(self.snapshot_unchecked())
     }
 
@@ -440,6 +456,23 @@ impl NativeEngine {
         let mutation = process
             .dispatch_lifecycle_events(&[NativeEventKind::PageShow])
             .await?;
+        let next_revision = self.next_revision()?;
+        self.apply_content_process_mutation_at(next_revision, mutation)?;
+        Ok(())
+    }
+
+    async fn dispatch_content_hash_change_async(
+        &mut self,
+        old_url: &str,
+        new_url: &str,
+    ) -> Result<(), NativeEngineError> {
+        let Some(process) = self.content_process.as_mut() else {
+            return Ok(());
+        };
+        if !process.is_healthy() {
+            return Ok(());
+        }
+        let mutation = process.dispatch_hash_change(old_url, new_url).await?;
         let next_revision = self.next_revision()?;
         self.apply_content_process_mutation_at(next_revision, mutation)?;
         Ok(())
@@ -990,6 +1023,10 @@ impl NativeEngine {
         let mut document = self.document.clone();
         let mut effects = document.apply_script_commands_allowing_links(&evaluation.commands)?;
         effects.extend(lifecycle_events);
+        if evaluation.commands.is_empty() {
+            self.record_effects(effects);
+            return Ok(());
+        }
         let next_revision = self.next_revision()?;
         document.set_revision(next_revision);
         self.document = document;
@@ -1007,6 +1044,51 @@ impl NativeEngine {
         let event = (window, NativeEventKind::PageShow);
         self.dispatch_local_events(&[event])?;
         self.record_effects(vec![event]);
+        Ok(())
+    }
+
+    fn dispatch_local_hash_change(
+        &mut self,
+        old_url: &str,
+        new_url: &str,
+    ) -> Result<(), NativeEngineError> {
+        if self.javascript.is_none() {
+            return Ok(());
+        }
+        let source = host_hash_change_event_script(old_url, new_url)?.ok_or_else(|| {
+            NativeEngineError::Worker {
+                operation: "native hashchange".into(),
+                reason: "hashchange event source was empty".into(),
+            }
+        })?;
+        let evaluation = self
+            .javascript
+            .as_ref()
+            .expect("local JavaScript runtime is present")
+            .evaluate(
+                &source,
+                &self.document,
+                new_url,
+                &self.origin,
+                self.config.viewport,
+            )?;
+        let event = (
+            NativeNodeId::from_parts(self.document.generation(), u32::MAX),
+            NativeEventKind::HashChange,
+        );
+        if evaluation.commands.is_empty() {
+            self.record_effects(vec![event]);
+            return Ok(());
+        }
+        let mut document = self.document.clone();
+        let mut effects = document.apply_script_commands(&evaluation.commands)?;
+        effects.push(event);
+        let next_revision = self.next_revision()?;
+        document.set_revision(next_revision);
+        self.document = document;
+        self.revision = next_revision;
+        self.history.update_current_scroll(self.scroll_offset);
+        self.record_effects(effects);
         Ok(())
     }
 
@@ -1641,6 +1723,7 @@ impl NativeEngine {
         url: String,
         history_commit: HistoryCommit,
     ) -> Result<(), NativeEngineError> {
+        let old_url = self.url.clone();
         let scroll_offset = match &history_commit {
             HistoryCommit::Push => self.fragment_scroll_offset(&url)?,
             HistoryCommit::Activate(index) => self
@@ -1670,6 +1753,7 @@ impl NativeEngine {
                 })?;
             }
         }
+        self.dispatch_local_hash_change(&old_url, &self.url.clone())?;
         Ok(())
     }
 
@@ -1679,6 +1763,7 @@ impl NativeEngine {
         history_commit: HistoryCommit,
         worker: &NativeRuntimeWorker,
     ) -> Result<(), NativeEngineError> {
+        let old_url = self.url.clone();
         let scroll_offset = match &history_commit {
             HistoryCommit::Push => self.fragment_scroll_offset(&url)?,
             HistoryCommit::Activate(index) => self
@@ -1709,6 +1794,17 @@ impl NativeEngine {
                     }
                 })?;
             }
+        }
+        let new_url = self.url.clone();
+        if self
+            .content_process
+            .as_ref()
+            .is_some_and(NativeContentProcess::is_healthy)
+        {
+            self.dispatch_content_hash_change_async(&old_url, &new_url)
+                .await?;
+        } else {
+            self.dispatch_local_hash_change(&old_url, &new_url)?;
         }
         Ok(())
     }

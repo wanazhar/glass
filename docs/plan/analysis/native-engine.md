@@ -2059,8 +2059,8 @@ owners now validate the bounded required-control set before interactive
 submission, dispatch non-bubbling `invalid` events for blocked controls, and
 expose the initiating button as `event.submitter` for valid submit callbacks.
 Direct `form.submit()` remains validation-free. Full constraint-validation
-APIs, submitter serialization, multipart encoding, external form association,
-and target contexts remain open.
+APIs, multipart encoding, and target contexts remain open; bounded submitter
+serialization and external form association are covered by later slices.
 
 The completed bounded ready-state lifecycle follow-up is
 [native-engine-browser-039](../tasks/native-engine-browser-039.md). Both
@@ -2077,7 +2077,7 @@ The completed bounded submitter-serialization follow-up is
 child owners now carry the initiating submit control through bounded GET and
 urlencoded-POST serialization, validate the typed handoff at the parent, and
 honor form `novalidate`/submitter `formnovalidate` without suppressing normal
-submit events. Image coordinates, external form ownership, target contexts,
+submit events. Image coordinates, target contexts,
 multipart/text/plain, full constraint validation, and FormData/Web IDL parity
 remain open.
 
@@ -2105,9 +2105,18 @@ URL owner, and dispatch window `hashchange` with `oldURL`/`newURL` in local and
 child paths. `beforeunload`, `popstate`, bfcache/history lifecycle parity, and
 full HTML navigation task ordering remain open.
 
+The completed bounded external form-ownership follow-up is
+[native-engine-browser-044](../tasks/native-engine-browser-044.md). Controls
+with an explicit `form="id"` now associate with the matching form outside
+ancestor traversal, unresolved references do not fall back, and local/child
+validation plus GET/urlencoded-POST serialization preserve document order.
+External submit buttons use the same typed `requestSubmit(button)` handoff.
+Multipart/text/plain, full constraint validation, target contexts, and the
+remaining browser-context primitives remain open.
+
 The next bounded workstream is full task ordering and navigation edge cases,
-followed by multipart/full constraint validation, external form ownership and
-target contexts, and the remaining browser-context primitives.
+followed by multipart/full constraint validation, target contexts, and the
+remaining browser-context primitives.
 
 ## Baseline and constraints
 

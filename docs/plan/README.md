@@ -409,8 +409,8 @@ submit buttons now contribute bounded `name`/`value` pairs to local and
 child-owned GET and urlencoded-POST requests, with the typed submitter checked
 again by the navigation owner. Form `novalidate` and submitter
 `formnovalidate` bypass the bounded required-control check while preserving
-submit events and serialization. Image coordinates, external form ownership,
-target contexts, multipart/text/plain, full constraint validation, and
+submit events and serialization. Image coordinates, target contexts,
+multipart/text/plain, full constraint validation, and
 FormData/Web IDL parity remain open.
 
 The next BE-02/BE-03/BE-04 gate is resource-specific completion and full task
@@ -440,9 +440,19 @@ and dispatch window `hashchange` with `oldURL`/`newURL` in both local and child
 paths. `beforeunload`, `popstate`, bfcache/history lifecycle parity, and full
 HTML navigation task ordering remain open.
 
+The completed bounded external form-ownership slice is
+[native-engine-browser-044](tasks/native-engine-browser-044.md). Controls with
+an explicit `form="id"` now associate with the matching form even when they
+are outside it; explicit ownership overrides ancestry, unresolved references
+do not fall back, and local/child validation and GET/urlencoded-POST
+serialization preserve document order. External submit buttons are accepted
+by `requestSubmit(button)` through the typed owner path. Multipart/text/plain,
+full constraint validation, target contexts, and the remaining browser-context
+primitives remain open.
+
 The next BE-02/BE-03/BE-04 gate is full task ordering and navigation edge cases,
-followed by multipart/full constraint validation, external form ownership and
-target contexts, and the remaining browser-context primitives.
+followed by multipart/full constraint validation, target contexts, and the
+remaining browser-context primitives.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

@@ -1,6 +1,6 @@
 use super::config::{NativeEngineLimits, is_network_url, validate_url_text, without_fragment};
 use super::dom::{NativeDocument, NativeDocumentWire, NativeNodeId};
-use super::error::NativeEngineError;
+use super::error::{NativeEngineError, NativeWorkerFailureKind};
 use super::interaction::{MAX_NATIVE_EFFECTS, NativeEventKind};
 use super::origin::NativeOrigin;
 use super::resource_loader::NativeResourceLoader;
@@ -50,6 +50,7 @@ pub(crate) struct NativeContentProcess {
     stdout: ChildStdout,
     next_request_id: u64,
     healthy: bool,
+    failure_kind: Option<NativeWorkerFailureKind>,
 }
 
 impl NativeContentProcess {
@@ -62,30 +63,34 @@ impl NativeContentProcess {
             .stderr(Stdio::null())
             .kill_on_drop(true)
             .spawn()
-            .map_err(|_| NativeEngineError::Worker {
-                operation: "spawn content process".into(),
-                reason: "native content worker could not be started".into(),
+            .map_err(|_| {
+                NativeEngineError::worker_failure(
+                    "spawn content process",
+                    NativeWorkerFailureKind::Spawn,
+                    "native content worker could not be started",
+                )
             })?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| NativeEngineError::Worker {
-                operation: "spawn content process".into(),
-                reason: "native content worker stdin is unavailable".into(),
-            })?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| NativeEngineError::Worker {
-                operation: "spawn content process".into(),
-                reason: "native content worker stdout is unavailable".into(),
-            })?;
+        let stdin = child.stdin.take().ok_or_else(|| {
+            NativeEngineError::worker_failure(
+                "spawn content process",
+                NativeWorkerFailureKind::Transport,
+                "native content worker stdin is unavailable",
+            )
+        })?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            NativeEngineError::worker_failure(
+                "spawn content process",
+                NativeWorkerFailureKind::Transport,
+                "native content worker stdout is unavailable",
+            )
+        })?;
         let mut process = Self {
             child,
             stdin,
             stdout,
             next_request_id: 1,
             healthy: true,
+            failure_kind: None,
         };
         let id = process.next_id();
         let response = process
@@ -98,10 +103,11 @@ impl NativeContentProcess {
         require_response_kind(&response, "pong", id, "content process ping")?;
         if response.get("protocol").and_then(Value::as_u64) != Some(CONTENT_WORKER_PROTOCOL_VERSION)
         {
-            return Err(NativeEngineError::Worker {
-                operation: "content process ping".into(),
-                reason: "content process protocol version is unsupported".into(),
-            });
+            return Err(NativeEngineError::worker_failure(
+                "content process ping",
+                NativeWorkerFailureKind::Protocol,
+                "content process protocol version is unsupported",
+            ));
         }
         Ok(process)
     }
@@ -115,7 +121,12 @@ impl NativeContentProcess {
                 "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
             }))
             .await?;
-        require_response_kind(&response, "started", id, "content process start")
+        let result = require_response_kind(&response, "started", id, "content process start");
+        if result.is_err() {
+            self.mark_failed(NativeWorkerFailureKind::Protocol);
+            let _ = self.child.start_kill();
+        }
+        result
     }
 
     pub(crate) async fn commit(&mut self) -> Result<(), NativeEngineError> {
@@ -127,7 +138,12 @@ impl NativeContentProcess {
                 "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
             }))
             .await?;
-        require_response_kind(&response, "committed", id, "content process commit")
+        let result = require_response_kind(&response, "committed", id, "content process commit");
+        if result.is_err() {
+            self.mark_failed(NativeWorkerFailureKind::Protocol);
+            let _ = self.child.start_kill();
+        }
+        result
     }
 
     pub(crate) async fn load(
@@ -153,12 +169,13 @@ impl NativeContentProcess {
         {
             Ok(response) => response?,
             Err(_) => {
-                self.healthy = false;
+                self.mark_failed(NativeWorkerFailureKind::Timeout);
                 let _ = self.child.start_kill();
-                return Err(NativeEngineError::Worker {
-                    operation: "content process load".into(),
-                    reason: "content process load exceeded its deadline".into(),
-                });
+                return Err(NativeEngineError::worker_failure(
+                    "content process load",
+                    NativeWorkerFailureKind::Timeout,
+                    "content process load exceeded its deadline",
+                ));
             }
         };
         if response.get("kind").and_then(Value::as_str) == Some("error") {
@@ -173,7 +190,7 @@ impl NativeContentProcess {
         }
         let result = decode_loaded_response(&response, id);
         if result.is_err() {
-            self.healthy = false;
+            self.mark_failed(NativeWorkerFailureKind::InvalidTransfer);
             let _ = self.child.start_kill();
         }
         result
@@ -213,29 +230,30 @@ impl NativeContentProcess {
         {
             Ok(response) => response?,
             Err(_) => {
-                self.healthy = false;
+                self.mark_failed(NativeWorkerFailureKind::Timeout);
                 let _ = self.child.start_kill();
-                return Err(NativeEngineError::Worker {
-                    operation: "content process mutation".into(),
-                    reason: "content process mutation exceeded its deadline".into(),
-                });
+                return Err(NativeEngineError::worker_failure(
+                    "content process mutation",
+                    NativeWorkerFailureKind::Timeout,
+                    "content process mutation exceeded its deadline",
+                ));
             }
         };
         if response.get("kind").and_then(Value::as_str) == Some("error") {
-            self.healthy = false;
+            self.mark_failed(NativeWorkerFailureKind::Rejected);
             let _ = self.child.start_kill();
-            return Err(NativeEngineError::Worker {
-                operation: "content process mutation".into(),
-                reason: response
+            return Err(NativeEngineError::worker_failure(
+                "content process mutation",
+                NativeWorkerFailureKind::Rejected,
+                response
                     .get("reason")
                     .and_then(Value::as_str)
-                    .unwrap_or("content process rejected the mutation")
-                    .into(),
-            });
+                    .unwrap_or("content process rejected the mutation"),
+            ));
         }
         let result = decode_mutated_response(&response, id);
         if result.is_err() {
-            self.healthy = false;
+            self.mark_failed(NativeWorkerFailureKind::InvalidTransfer);
             let _ = self.child.start_kill();
         }
         result
@@ -245,7 +263,15 @@ impl NativeContentProcess {
         self.healthy
     }
 
+    pub(crate) fn failure_kind(&self) -> Option<NativeWorkerFailureKind> {
+        self.failure_kind
+    }
+
     pub(crate) async fn close(mut self) -> Result<(), NativeEngineError> {
+        if let Ok(Some(_)) = self.child.try_wait() {
+            self.mark_failed(NativeWorkerFailureKind::Exited);
+            return Ok(());
+        }
         let id = self.next_id();
         let response = self
             .exchange(json!({
@@ -270,10 +296,26 @@ impl NativeContentProcess {
 
     async fn exchange(&mut self, request: Value) -> Result<Value, NativeEngineError> {
         let result = self.exchange_inner(request).await;
-        if result.is_err() {
-            self.healthy = false;
+        match result {
+            Ok(response) => Ok(response),
+            Err(error) => {
+                let kind = match self.child.try_wait() {
+                    Ok(Some(_)) => NativeWorkerFailureKind::Exited,
+                    Ok(None) | Err(_) => NativeWorkerFailureKind::Transport,
+                };
+                self.mark_failed(kind);
+                Err(NativeEngineError::worker_failure(
+                    "content process IPC",
+                    kind,
+                    error.to_string(),
+                ))
+            }
         }
-        result
+    }
+
+    fn mark_failed(&mut self, kind: NativeWorkerFailureKind) {
+        self.healthy = false;
+        self.failure_kind = Some(kind);
     }
 
     async fn exchange_inner(&mut self, request: Value) -> Result<Value, NativeEngineError> {
@@ -375,10 +417,11 @@ fn require_response_kind(
     {
         return Ok(());
     }
-    Err(NativeEngineError::Worker {
-        operation: operation.into(),
-        reason: "content process rejected the typed command".into(),
-    })
+    Err(NativeEngineError::worker_failure(
+        operation,
+        NativeWorkerFailureKind::Protocol,
+        "content process rejected the typed command",
+    ))
 }
 
 fn decode_loaded_response(
@@ -755,9 +798,12 @@ fn worker_binary_path() -> Result<PathBuf, NativeEngineError> {
             return Ok(PathBuf::from(path));
         }
     }
-    let current = std::env::current_exe().map_err(|_| NativeEngineError::Worker {
-        operation: "locate content process".into(),
-        reason: "current executable path is unavailable".into(),
+    let current = std::env::current_exe().map_err(|_| {
+        NativeEngineError::worker_failure(
+            "locate content process",
+            NativeWorkerFailureKind::Spawn,
+            "current executable path is unavailable",
+        )
     })?;
     let name = if cfg!(windows) {
         "glass-native-content-worker.exe"
@@ -775,8 +821,9 @@ fn worker_binary_path() -> Result<PathBuf, NativeEngineError> {
         }
         directory = parent.parent();
     }
-    Err(NativeEngineError::Worker {
-        operation: "locate content process".into(),
-        reason: "native content worker executable was not found; build the glass-native-content-worker binary".into(),
-    })
+    Err(NativeEngineError::worker_failure(
+        "locate content process",
+        NativeWorkerFailureKind::Spawn,
+        "native content worker executable was not found; build the glass-native-content-worker binary",
+    ))
 }

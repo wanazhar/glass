@@ -276,8 +276,8 @@ pub use browser::{
     NativeEngineLimits, NativeEngineSnapshot, NativeFixture, NativeHistory, NativeHistoryDirection,
     NativeHistoryEntry, NativeLayoutBox, NativeLayoutSnapshot, NativeLifecycleState, NativeNode,
     NativeNodeId, NativeNodeKind, NativeOrigin, NativePoint, NativeRect, NativeResource,
-    NativeResourceLoader, NativeSurface, NativeTask, NativeTextDecorationStyle, ScheduledTask,
-    Viewport,
+    NativeResourceLoader, NativeSurface, NativeTask, NativeTextDecorationStyle,
+    NativeWorkerFailureKind, ScheduledTask, Viewport,
 };
 
 pub use task_protocol::{

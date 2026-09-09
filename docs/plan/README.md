@@ -102,6 +102,15 @@ success or CDP fallback. Scroll and link navigation remain explicit
 parent-owned handoffs; standards events, script execution, diagnostics
 transfer, sandboxing, supervisor recovery, and browser parity remain open.
 
+The completed recovery batch is
+[native-engine-browser-008](tasks/native-engine-browser-008.md). Content-worker
+spawn, exit, transport, timeout, protocol, rejection, and invalid-transfer
+failures now have a typed class. A failed action is never replayed or silently
+fallen back; external navigation is the explicit fresh-worker recovery
+boundary, and shutdown tolerates an already-exited child. OS-specific
+sandboxing, cross-platform crash/restart coverage, standards events, script
+execution, network security, and browser parity remain open.
+
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,
 fixture/data-URL-only, one-context engine kernel and explicit semantic backend.

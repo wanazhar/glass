@@ -1,6 +1,18 @@
 use super::lifecycle::NativeLifecycleState;
 use std::fmt;
 
+/// Failure classes reported by the out-of-process native content worker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeWorkerFailureKind {
+    Spawn,
+    Exited,
+    Transport,
+    Timeout,
+    Protocol,
+    Rejected,
+    InvalidTransfer,
+}
+
 /// Typed failures raised by the native engine kernel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativeEngineError {
@@ -22,6 +34,11 @@ pub enum NativeEngineError {
     },
     Worker {
         operation: String,
+        reason: String,
+    },
+    WorkerFailure {
+        operation: String,
+        kind: NativeWorkerFailureKind,
         reason: String,
     },
     Parse {
@@ -63,6 +80,18 @@ impl NativeEngineError {
             actual,
         }
     }
+
+    pub(crate) fn worker_failure(
+        operation: impl Into<String>,
+        kind: NativeWorkerFailureKind,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self::WorkerFailure {
+            operation: operation.into(),
+            kind,
+            reason: reason.into(),
+        }
+    }
 }
 
 impl fmt::Display for NativeEngineError {
@@ -89,6 +118,14 @@ impl fmt::Display for NativeEngineError {
                     "runtime worker failure during {operation}: {reason}"
                 )
             }
+            Self::WorkerFailure {
+                operation,
+                kind,
+                reason,
+            } => write!(
+                formatter,
+                "native content worker {kind:?} failure during {operation}: {reason}"
+            ),
             Self::Parse { offset, reason } => {
                 write!(formatter, "HTML parse failure at byte {offset}: {reason}")
             }

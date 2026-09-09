@@ -300,6 +300,14 @@ fn native_error(error: NativeEngineError) -> BrowserBackendError {
         NativeEngineError::Worker { operation, reason } => {
             BrowserBackendError::Connection { operation, reason }
         }
+        NativeEngineError::WorkerFailure {
+            operation,
+            kind,
+            reason,
+        } => BrowserBackendError::Connection {
+            operation,
+            reason: format!("{kind:?}: {reason}"),
+        },
         NativeEngineError::Parse { offset, reason } => BrowserBackendError::InvalidConfiguration {
             field: "native HTML document".into(),
             reason: format!("parse failure at byte {offset}: {reason}"),

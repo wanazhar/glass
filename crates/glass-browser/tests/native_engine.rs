@@ -160,6 +160,24 @@ async fn native_local_inline_page_scripts_run_before_commit_and_persist_realm() 
 }
 
 #[tokio::test]
+async fn native_local_page_lifecycle_events_fire_after_script_schedule() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://page-lifecycle",
+            "<script>globalThis.lifecycle = []; document.addEventListener('DOMContentLoaded', () => lifecycle.push('dom')); addEventListener('load', () => lifecycle.push('load'));</script>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://page-lifecycle");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine.evaluate_async("globalThis.lifecycle").await.unwrap(),
+        serde_json::json!(["dom", "load"])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_inline_modules_run_in_document_order() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -922,7 +940,7 @@ async fn native_content_process_runs_inline_page_scripts_in_persistent_realm() {
         let (mut stream, _) = listener.accept().await.unwrap();
         let mut request = [0_u8; 4096];
         let _ = stream.read(&mut request).await.unwrap();
-        let body = "<script>globalThis.inlineCount = (globalThis.inlineCount || 0) + 1;</script><script>globalThis.inlineCount += 1; document.getElementById('name').value = 'loaded';</script><input id='name' type='text'>";
+        let body = "<script>globalThis.inlineCount = (globalThis.inlineCount || 0) + 1; globalThis.lifecycle = []; document.addEventListener('DOMContentLoaded', () => lifecycle.push('dom')); addEventListener('load', () => lifecycle.push('load'));</script><script>globalThis.inlineCount += 1; document.getElementById('name').value = 'loaded';</script><input id='name' type='text'>";
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
@@ -948,6 +966,10 @@ async fn native_content_process_runs_inline_page_scripts_in_persistent_realm() {
             .await
             .unwrap(),
         serde_json::json!("loaded")
+    );
+    assert_eq!(
+        engine.evaluate_async("globalThis.lifecycle").await.unwrap(),
+        serde_json::json!(["dom", "load"])
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

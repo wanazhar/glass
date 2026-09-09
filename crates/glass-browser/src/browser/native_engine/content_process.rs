@@ -3,11 +3,11 @@ use super::config::{
 };
 use super::dom::{NativeDocument, NativeDocumentWire, NativeNodeId, NativePageScriptSource};
 use super::error::{NativeEngineError, NativeWorkerFailureKind};
-use super::interaction::{MAX_NATIVE_EFFECTS, NativeEventKind};
+use super::interaction::{MAX_NATIVE_EFFECTS, NativeEventKind, validate_native_edit_key};
 use super::javascript::{
     MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_SCRIPT_BYTES, NativeJavaScriptRuntime, NativePageScript,
     NativeScriptCommand, NativeScriptEvaluation, execute_page_scripts, host_event_script,
-    literal_dynamic_module_specifiers, static_module_specifiers,
+    host_key_event_script, literal_dynamic_module_specifiers, static_module_specifiers,
 };
 use super::origin::NativeOrigin;
 use super::resource_loader::{NativeFetchResponse, NativeResourceLoader};
@@ -254,6 +254,20 @@ impl NativeContentProcess {
             id,
             "mutate_type_events",
             json!({"node_index": node_index, "text": text}),
+        )
+        .await
+    }
+
+    pub(crate) async fn mutate_key_with_event_bridge(
+        &mut self,
+        node_index: u32,
+        key: String,
+    ) -> Result<NativeContentMutation, NativeEngineError> {
+        let id = self.next_id();
+        self.mutate_with_request_kind(
+            id,
+            "mutate_key_events",
+            json!({"node_index": node_index, "key": key}),
         )
         .await
     }
@@ -1197,6 +1211,94 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     Err(error) => content_error_response(id, error),
                 }
             }
+            "mutate_key_events" if protocol_matches(&request) && running => {
+                let Some(current) = document.as_ref() else {
+                    let response = content_error_response(
+                        id,
+                        NativeEngineError::Worker {
+                            operation: "content process key event bridge".into(),
+                            reason: "content process has no committed document".into(),
+                        },
+                    );
+                    write_value_frame(&mut stdout, &response).await?;
+                    continue;
+                };
+                let action = request.get("action").ok_or_else(|| {
+                    NativeEngineError::invalid("content-process key action", "is required")
+                })?;
+                let node_index = action
+                    .get("node_index")
+                    .and_then(Value::as_u64)
+                    .and_then(|value| u32::try_from(value).ok())
+                    .ok_or_else(|| {
+                        NativeEngineError::invalid("content-process key target", "must be a uint32")
+                    })?;
+                let key = action.get("key").and_then(Value::as_str).ok_or_else(|| {
+                    NativeEngineError::invalid("content-process key", "must be text")
+                })?;
+                if let Err(error) = validate_native_edit_key(key) {
+                    let response = content_error_response(id, error);
+                    write_value_frame(&mut stdout, &response).await?;
+                    continue;
+                }
+                let Some(document_url) = document_url.as_deref() else {
+                    let response = content_error_response(
+                        id,
+                        NativeEngineError::Worker {
+                            operation: "content process key event bridge".into(),
+                            reason: "content process has no committed URL".into(),
+                        },
+                    );
+                    write_value_frame(&mut stdout, &response).await?;
+                    continue;
+                };
+                let Some(document_origin) = document_origin.as_ref() else {
+                    let response = content_error_response(
+                        id,
+                        NativeEngineError::Worker {
+                            operation: "content process key event bridge".into(),
+                            reason: "content process has no committed origin".into(),
+                        },
+                    );
+                    write_value_frame(&mut stdout, &response).await?;
+                    continue;
+                };
+                if javascript_runtime.is_none() {
+                    match NativeJavaScriptRuntime::new() {
+                        Ok(runtime) => javascript_runtime = Some(runtime),
+                        Err(error) => {
+                            let response = content_error_response(id, error);
+                            write_value_frame(&mut stdout, &response).await?;
+                            continue;
+                        }
+                    }
+                }
+                let runtime = javascript_runtime.as_ref().expect("runtime initialized");
+                match mutate_key_with_event_bridge(
+                    current,
+                    runtime,
+                    document_url,
+                    document_origin,
+                    viewport,
+                    node_index,
+                    key,
+                ) {
+                    Ok((next, mutation)) => {
+                        document = Some(next);
+                        json!({
+                            "kind": "mutated",
+                            "id": id,
+                            "document_base64": base64::engine::general_purpose::STANDARD
+                                .encode(serde_json::to_vec(&mutation.document).unwrap_or_default()),
+                            "events": mutation.events.iter().map(|event| json!({
+                                "node_index": event.node_index,
+                                "kind": event_kind_text(event.kind),
+                            })).collect::<Vec<_>>(),
+                        })
+                    }
+                    Err(error) => content_error_response(id, error),
+                }
+            }
             "close" if protocol_matches(&request) => {
                 write_value_frame(&mut stdout, &json!({"kind":"closed","id":id})).await?;
                 return Ok(());
@@ -1628,6 +1730,102 @@ fn mutate_type_with_event_bridge(
     Ok((next, mutation))
 }
 
+fn mutate_key_with_event_bridge(
+    current: &NativeDocument,
+    runtime: &NativeJavaScriptRuntime,
+    document_url: &str,
+    document_origin: &NativeOrigin,
+    viewport: Viewport,
+    node_index: u32,
+    key: &str,
+) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
+    validate_native_edit_key(key)?;
+    let node_id = NativeNodeId::from_parts(current.generation(), node_index);
+    if current.focused_text_control()? != node_id {
+        return Err(NativeEngineError::TargetNotActionable {
+            reason: "key press target is not the focused text control".into(),
+        });
+    }
+    let mut next = current.clone();
+    let mut events = vec![(node_id, NativeEventKind::KeyDown)];
+    let keydown_source = host_key_event_script(node_index, NativeEventKind::KeyDown, key)?
+        .ok_or_else(|| NativeEngineError::Worker {
+            operation: "content process keydown event bridge".into(),
+            reason: "native keydown event source was empty".into(),
+        })?;
+    let keydown = runtime.evaluate(
+        &keydown_source,
+        &next,
+        document_url,
+        document_origin,
+        viewport,
+    )?;
+    let keydown_allowed = keydown
+        .value
+        .as_array()
+        .and_then(|values| values.first())
+        .and_then(serde_json::Value::as_bool)
+        .ok_or_else(|| NativeEngineError::Worker {
+            operation: "content process keydown event bridge".into(),
+            reason: "native keydown event result was invalid".into(),
+        })?;
+    events.extend(next.apply_script_commands(&keydown.commands)?);
+
+    if keydown_allowed
+        && next
+            .focused_text_control()
+            .is_ok_and(|focused| focused == node_id)
+    {
+        let input_events = next.apply_key_press(node_id, key)?;
+        events.extend(input_events.clone());
+        for (event_node, event_kind) in input_events {
+            let source = host_event_script(&[(event_node.index(), event_kind)])?;
+            let Some(source) = source else {
+                continue;
+            };
+            let evaluation =
+                runtime.evaluate(&source, &next, document_url, document_origin, viewport)?;
+            events.extend(next.apply_script_commands(&evaluation.commands)?);
+        }
+    }
+
+    events.push((node_id, NativeEventKind::KeyUp));
+    let keyup_source =
+        host_key_event_script(node_index, NativeEventKind::KeyUp, key)?.ok_or_else(|| {
+            NativeEngineError::Worker {
+                operation: "content process keyup event bridge".into(),
+                reason: "native keyup event source was empty".into(),
+            }
+        })?;
+    let keyup = runtime.evaluate(
+        &keyup_source,
+        &next,
+        document_url,
+        document_origin,
+        viewport,
+    )?;
+    events.extend(next.apply_script_commands(&keyup.commands)?);
+    if events.len() > MAX_NATIVE_EFFECTS {
+        return Err(NativeEngineError::limit(
+            "content-process key press effects",
+            MAX_NATIVE_EFFECTS,
+            events.len(),
+        ));
+    }
+    let mutation = NativeContentMutation {
+        document: next.to_content_wire(),
+        events: events
+            .into_iter()
+            .map(|(node, kind)| NativeContentEvent {
+                node_index: node.index(),
+                kind,
+            })
+            .collect(),
+        navigation: None,
+    };
+    Ok((next, mutation))
+}
+
 fn mutate_script_document(
     current: &NativeDocument,
     document_url: &str,
@@ -1703,6 +1901,8 @@ fn event_kind_text(kind: NativeEventKind) -> &'static str {
     match kind {
         NativeEventKind::Blur => "blur",
         NativeEventKind::Focus => "focus",
+        NativeEventKind::KeyDown => "keydown",
+        NativeEventKind::KeyUp => "keyup",
         NativeEventKind::Click => "click",
         NativeEventKind::Input => "input",
         NativeEventKind::Change => "change",
@@ -1714,6 +1914,8 @@ fn parse_event_kind(value: &str) -> Option<NativeEventKind> {
     match value {
         "blur" => Some(NativeEventKind::Blur),
         "focus" => Some(NativeEventKind::Focus),
+        "keydown" => Some(NativeEventKind::KeyDown),
+        "keyup" => Some(NativeEventKind::KeyUp),
         "click" => Some(NativeEventKind::Click),
         "input" => Some(NativeEventKind::Input),
         "change" => Some(NativeEventKind::Change),

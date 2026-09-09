@@ -1929,9 +1929,9 @@ in order, apply callback commands, and publish one revision. The bootstrap's
 active command sink also lets persistent callbacks use previously captured
 element methods without writing to a detached evaluation buffer. This is not
 full live Web IDL identity: snapshot properties/tree links remain refresh
-bound, and insertion/removal, `beforeinput`, composition, keyboard input,
-submission, link navigation/default actions, timers, modules, Fetch/XHR, and
-remaining resource classes stay open.
+bound, and insertion/removal, `beforeinput`, composition, full selection and
+keyboard lifecycle, submission, link navigation/default actions, timers,
+modules, Fetch/XHR, and remaining resource classes stay open.
 
 The completed script-navigation follow-up is
 [native-engine-browser-024](../tasks/native-engine-browser-024.md). Top-level
@@ -2011,6 +2011,14 @@ and child-owned realms expose bounded `queueMicrotask` and next-host-turn
 `setTimeout` semantics, with pending QuickJS jobs drained after evaluation and
 event callback turns. Wall-clock scheduling, intervals, animation/idle
 callbacks, parser timing, and full browser task-source ordering remain open.
+
+The completed bounded keyboard-input follow-up is
+[native-engine-browser-033](../tasks/native-engine-browser-033.md). Local and
+child-owned `KeyPress` actions now edit the focused text control for printable
+keys and bounded Backspace/Delete behavior, dispatch cancelable keydown plus
+input/keyup callbacks with key metadata, and refresh retained host wrappers
+before callbacks. Selection/caret ranges, IME/composition, navigation keys,
+beforeinput, modifier shortcuts, and form-submit defaults remain open.
 
 ## Baseline and constraints
 

@@ -2,7 +2,7 @@ use super::config::{NativeEngineLimits, validate_url_text, without_fragment};
 use super::css::NativeStylesheet;
 use super::diagnostics::{NativeDiagnostic, NativeDiagnosticSink, NativeDiagnosticSource};
 use super::error::NativeEngineError;
-use super::interaction::NativeEventKind;
+use super::interaction::{NativeEventKind, validate_native_edit_key};
 use super::javascript::NativeScriptCommand;
 use super::layout::NativeLayoutSnapshot;
 use super::paint::NativeDisplayList;
@@ -964,6 +964,94 @@ impl NativeDocument {
         events.push((id, NativeEventKind::Input));
         events.push((id, NativeEventKind::Change));
         Ok(events)
+    }
+
+    pub(crate) fn focused_text_control(&self) -> Result<NativeNodeId, NativeEngineError> {
+        self.nodes
+            .iter()
+            .find(|node| {
+                node.state.focused
+                    && matches!(node.element_name(), Some("input" | "textarea"))
+                    && self
+                        .semantic_node(node.id())
+                        .is_some_and(|semantic| semantic.role == "textbox")
+            })
+            .map(NativeNode::id)
+            .ok_or_else(|| NativeEngineError::TargetNotActionable {
+                reason: "key press requires a focused text control".into(),
+            })
+    }
+
+    /// Apply the bounded default edit for one key to a focused text control.
+    /// Selection, caret movement, composition, and form submission are kept
+    /// out of this slice; printable keys append at the current value end.
+    pub(crate) fn apply_key_press(
+        &mut self,
+        id: NativeNodeId,
+        key: &str,
+    ) -> Result<Vec<(NativeNodeId, NativeEventKind)>, NativeEngineError> {
+        validate_native_edit_key(key)?;
+        let semantic = self
+            .semantic_node(id)
+            .ok_or(NativeEngineError::DetachedTarget)?;
+        if semantic.hidden {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "hidden targets cannot receive key input".into(),
+            });
+        }
+        if semantic.role != "textbox" || !matches!(semantic.tag_name.as_str(), "input" | "textarea")
+        {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "key press requires an input or textarea textbox".into(),
+            });
+        }
+        if semantic.disabled {
+            return Err(NativeEngineError::DisabledTarget);
+        }
+        if semantic.read_only {
+            return Err(NativeEngineError::ReadOnlyTarget);
+        }
+        if !self.node(id).is_some_and(|node| node.state.focused) {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "key press target is not focused".into(),
+            });
+        }
+
+        let current = self.current_value(id).unwrap_or_default();
+        let next = match key {
+            "Backspace" => {
+                let mut next = current.clone();
+                next.pop();
+                next
+            }
+            "Delete" => current.clone(),
+            _ if key.chars().count() == 1 => {
+                let mut next = current.clone();
+                next.push_str(key);
+                next
+            }
+            _ => {
+                return Err(NativeEngineError::TargetNotActionable {
+                    reason: "native key press supports printable keys, Backspace, and Delete"
+                        .into(),
+                });
+            }
+        };
+        if next.len() > MAX_LOCATOR_BYTES {
+            return Err(NativeEngineError::limit(
+                "native text value",
+                MAX_LOCATOR_BYTES,
+                next.len(),
+            ));
+        }
+        if next == current {
+            return Ok(Vec::new());
+        }
+        self.node_mut(id)
+            .ok_or(NativeEngineError::DetachedTarget)?
+            .state
+            .value = Some(next);
+        Ok(vec![(id, NativeEventKind::Input)])
     }
 
     /// Apply validated commands emitted by one JavaScript evaluation.

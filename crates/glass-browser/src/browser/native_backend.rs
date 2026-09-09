@@ -63,14 +63,14 @@ impl NativeEngineBackend {
         for capability in supported {
             let limitations = match capability {
                 BrowserCapability::Navigation => {
-                    vec!["bounded HTTP(S) HTML documents with redirects; no subresources, scripts, or browser security policy yet".into()]
+                    vec!["bounded HTTP(S) HTML documents with redirects, policy-checked stylesheets/scripts/modules, and GET-form navigation; broader subresources and parser timing remain open".into()]
                 }
                 BrowserCapability::Evidence => {
                     vec!["bounded URL, title, and visible text only; no DOM or pixels".into()]
                 }
                 BrowserCapability::Action => {
                     vec![
-                        "semantic click/type, bounded vertical root scrolling, and native point targets for supported local controls; no nested scrolling".into(),
+                        "semantic click/type, focused-text printable/Backspace/Delete key input, bounded vertical root scrolling, and native point targets for supported local controls; selection, IME, and nested scrolling remain open".into(),
                     ]
                 }
                 BrowserCapability::Effects => {
@@ -80,7 +80,7 @@ impl NativeEngineBackend {
                     ]
                 }
                 BrowserCapability::Script => vec![
-                    "bounded ECMAScript evaluation with JSON-serializable results; DOM and Web APIs are not wired yet".into(),
+                    "bounded QuickJS evaluation with refreshed window/document snapshots, typed DOM/event commands, page scripts, modules, and deterministic task turns; live Web IDL identity, Fetch/XHR, workers, and full task timing remain open".into(),
                 ],
                 BrowserCapability::Capture => {
                     vec![
@@ -118,10 +118,10 @@ impl NativeEngineBackend {
                     glass_version: glass_version.into(),
                     tested_capabilities: supported.to_vec(),
                     limitations: vec![
-                        "network navigation is a bounded HTML-document slice, not browser parity".into(),
-                        "in-process execution is not a security boundary for hostile content".into(),
-                        "DOM/Web APIs, script-driven event loop/timers, subresources beyond the current loader slice, general CSS, scrolling/stacking layout, font/image fidelity, storage, and default browser behavior are unavailable".into(),
-                        "actions are limited to semantic click/type, bounded vertical root scrolling, and native point targets for supported local controls".into(),
+                        "network navigation and scripting are bounded web-platform slices, not browser parity".into(),
+                        "in-process local execution is not a security boundary for hostile content; external documents use the sandboxed content worker".into(),
+                        "live Web IDL identity, Fetch/XHR, workers, broad subresources, parser timing, general CSS/layout, font/image fidelity, storage classes beyond session cookies/cache, and full browser default behavior remain unavailable".into(),
+                        "actions are limited to semantic click/type, focused-text printable/Backspace/Delete key input, bounded vertical root scrolling, and native point targets for supported local controls".into(),
                     ],
                 },
             },
@@ -217,14 +217,7 @@ impl BrowserBackend for NativeEngineBackend {
                         SemanticAction::Type { target, text } => {
                             NativeAction::Type { target, text }
                         }
-                        SemanticAction::KeyPress { .. } => {
-                            return Err(BrowserBackendError::UnsupportedOperation {
-                                operation: "action".into(),
-                                reason:
-                                    "native engine supports semantic click/type and bounded vertical scroll actions"
-                                        .into(),
-                            });
-                        }
+                        SemanticAction::KeyPress { key } => NativeAction::KeyPress { key },
                         SemanticAction::Scroll { delta_x, delta_y } => {
                             NativeAction::Scroll { delta_x, delta_y }
                         }

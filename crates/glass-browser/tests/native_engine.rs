@@ -414,6 +414,83 @@ async fn native_local_script_owns_event_listeners_and_focus_order() {
 }
 
 #[tokio::test]
+async fn native_local_keypress_edits_focused_text_and_honors_keydown_cancel() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://keyboard",
+            "<input id='name' type='text' value='ab' style='width:120px;height:20px'>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://keyboard");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            "(() => { const field = document.getElementById('name'); globalThis.keyEvents = []; field.addEventListener('keydown', event => globalThis.keyEvents.push(event.type + ':' + event.key + ':' + event.code)); field.addEventListener('input', event => globalThis.keyEvents.push(event.type + ':' + field.value)); field.addEventListener('keyup', event => globalThis.keyEvents.push(event.type + ':' + event.key)); })()",
+        )
+        .await
+        .unwrap();
+
+    engine
+        .action(NativeAction::Click {
+            target: "id=name".into(),
+        })
+        .unwrap();
+    let typed = engine
+        .action(NativeAction::KeyPress { key: "!".into() })
+        .unwrap();
+    assert!(typed.accepted);
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({ value: document.getElementById('name').value, events: globalThis.keyEvents })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "value": "ab!",
+            "events": ["keydown:!:!", "input:ab!", "keyup:!"],
+        })
+    );
+
+    let backspaced = engine
+        .action(NativeAction::KeyPress {
+            key: "Backspace".into(),
+        })
+        .unwrap();
+    assert!(backspaced.accepted);
+    assert_eq!(
+        engine
+            .evaluate_async("document.getElementById('name').value")
+            .await
+            .unwrap(),
+        serde_json::json!("ab")
+    );
+
+    engine
+        .evaluate_async(
+            "(() => { const field = document.getElementById('name'); field.addEventListener('keydown', event => { if (event.key === 'x') event.preventDefault(); }); })()",
+        )
+        .await
+        .unwrap();
+    let canceled = engine
+        .action(NativeAction::KeyPress { key: "x".into() })
+        .unwrap();
+    assert!(canceled.accepted);
+    assert_eq!(
+        engine
+            .evaluate_async("({ value: document.getElementById('name').value, last: globalThis.keyEvents.slice(-2) })")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "value": "ab",
+            "last": ["keydown:x:KeyX", "keyup:x"],
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_script_click_owns_fixture_navigation() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -1610,6 +1687,30 @@ async fn native_content_process_owns_external_form_mutations_and_effects() {
             "value": "typed-by-child-action",
             "marker": "seen",
             "events": ["focus", "input", "change"],
+        })
+    );
+
+    engine
+        .evaluate_async(
+            "(() => { const field = document.getElementById('name'); globalThis.childKeyEvents = []; field.addEventListener('keydown', event => globalThis.childKeyEvents.push(event.type + ':' + event.key)); field.addEventListener('input', event => globalThis.childKeyEvents.push(event.type + ':' + field.value)); field.addEventListener('keyup', event => globalThis.childKeyEvents.push(event.type + ':' + event.key)); })()",
+        )
+        .await
+        .unwrap();
+    let keyed = engine
+        .action_async(NativeAction::KeyPress { key: "!".into() })
+        .await
+        .unwrap();
+    assert!(keyed.accepted);
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({ value: document.getElementById('name').value, events: globalThis.childKeyEvents })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "value": "typed-by-child-action!",
+            "events": ["keydown:!", "input:typed-by-child-action!", "keyup:!"],
         })
     );
 
@@ -25311,23 +25412,17 @@ async fn semantic_actions_and_effects_use_the_backend_contract() {
     let keypress = dispatcher
         .action(ActionRequest {
             context_id: "native-context".into(),
-            action: SemanticAction::KeyPress {
-                key: "Enter".into(),
-            },
+            action: SemanticAction::KeyPress { key: "!".into() },
         })
         .await
-        .unwrap_err();
-    assert!(matches!(
-        keypress,
-        glass_browser::browser_backend::BrowserBackendError::UnsupportedOperation {
-            operation, ..
-        } if operation == "action"
-    ));
+        .unwrap();
+    assert_eq!(keypress.revision, 4);
+    assert!(keypress.accepted);
 
     let future = dispatcher
         .effects(EffectsRequest {
             context_id: "native-context".into(),
-            since_revision: 4,
+            since_revision: 5,
         })
         .await
         .unwrap_err();

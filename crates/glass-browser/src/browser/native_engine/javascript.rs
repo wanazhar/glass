@@ -238,6 +238,8 @@ pub(crate) fn host_event_script(
             let (event_type, bubbles, cancelable) = match kind {
                 NativeEventKind::Blur => ("blur", false, false),
                 NativeEventKind::Focus => ("focus", false, false),
+                NativeEventKind::KeyDown => ("keydown", true, true),
+                NativeEventKind::KeyUp => ("keyup", true, false),
                 NativeEventKind::Click => ("click", true, true),
                 NativeEventKind::Input => ("input", true, false),
                 NativeEventKind::Change => ("change", true, false),
@@ -259,6 +261,60 @@ pub(crate) fn host_event_script(
     if source.len() > MAX_NATIVE_SCRIPT_BYTES {
         return Err(NativeEngineError::limit(
             "native event dispatch",
+            MAX_NATIVE_SCRIPT_BYTES,
+            source.len(),
+        ));
+    }
+    Ok(Some(source))
+}
+
+pub(crate) fn host_key_event_script(
+    node_index: u32,
+    kind: NativeEventKind,
+    key: &str,
+) -> Result<Option<String>, NativeEngineError> {
+    let (event_type, bubbles, cancelable) = match kind {
+        NativeEventKind::KeyDown => ("keydown", true, true),
+        NativeEventKind::KeyUp => ("keyup", true, false),
+        _ => {
+            return Err(NativeEngineError::invalid(
+                "native key event",
+                "key event dispatch requires keydown or keyup",
+            ));
+        }
+    };
+    let code = match key {
+        " " => "Space".to_owned(),
+        "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight" | "Enter" | "Tab" | "Escape"
+        | "Backspace" | "Delete" | "Home" | "End" | "PageUp" | "PageDown" => key.to_owned(),
+        _ if key.chars().count() == 1 => {
+            let character = key.chars().next().expect("single-character key");
+            if character.is_ascii_alphabetic() {
+                format!("Key{}", character.to_ascii_uppercase())
+            } else if character.is_ascii_digit() {
+                format!("Digit{character}")
+            } else {
+                key.to_owned()
+            }
+        }
+        _ => key.to_owned(),
+    };
+    let descriptors = serde_json::json!([{
+        "node_index": node_index,
+        "type": event_type,
+        "bubbles": bubbles,
+        "cancelable": cancelable,
+        "key": key,
+        "code": code,
+    }]);
+    let encoded = serde_json::to_string(&descriptors).map_err(|_| NativeEngineError::Worker {
+        operation: "serialize native key event dispatch".into(),
+        reason: "native key event metadata could not be serialized".into(),
+    })?;
+    let source = format!("globalThis.__glassDispatchHostEvents({encoded})");
+    if source.len() > MAX_NATIVE_SCRIPT_BYTES {
+        return Err(NativeEngineError::limit(
+            "native key event dispatch",
             MAX_NATIVE_SCRIPT_BYTES,
             source.len(),
         ));
@@ -887,6 +943,8 @@ fn document_bootstrap(
       type: normalizeEventType(type),
       bubbles: Boolean(settings.bubbles),
       cancelable: Boolean(settings.cancelable),
+      key: settings.key === undefined ? "" : String(settings.key),
+      code: settings.code === undefined ? "" : String(settings.code),
       target: null,
       currentTarget: null,
       eventPhase: 0,
@@ -963,7 +1021,8 @@ fn document_bootstrap(
     eventState.dispatching = false;
     return !event.defaultPrevented;
   }};
-  const makeElement = (entry) => {{
+  const makeElement = (initialEntry) => {{
+    let entry = initialEntry;
     const element = {{
       nodeIndex: entry.nodeIndex,
       parentIndex: entry.parentIndex,
@@ -1072,15 +1131,51 @@ fn document_bootstrap(
         pushCommand({{ kind: "setSelected", node_index: entry.nodeIndex, selected }});
       }}
     }});
+    Object.defineProperty(element, "__glassRefresh", {{
+      enumerable: false,
+      configurable: false,
+      value(nextEntry) {{
+        entry = nextEntry;
+        element.nodeIndex = nextEntry.nodeIndex;
+        element.parentIndex = nextEntry.parentIndex;
+        element.tagName = nextEntry.tagName.toUpperCase();
+        element.id = nextEntry.attributes.id || "";
+        element.className = nextEntry.attributes.class || "";
+        element.textContent = nextEntry.text;
+        element.innerText = nextEntry.text;
+        element.disabled = nextEntry.disabled;
+        element.hidden = nextEntry.hidden;
+        element.focused = nextEntry.focused;
+        value = nextEntry.value === null ? "" : nextEntry.value;
+        checked = nextEntry.checked;
+        selected = nextEntry.selected;
+      }}
+    }});
     return element;
   }};
-  const elements = state.elements.map(makeElement);
+  const previousElements = globalThis.__glassHostElements instanceof Map
+    ? globalThis.__glassHostElements
+    : new Map();
+  const elements = state.elements.map((entry) => {{
+    const existing = previousElements.get(entry.nodeIndex);
+    if (existing && typeof existing.__glassRefresh === "function") {{
+      existing.__glassRefresh(entry);
+      return existing;
+    }}
+    return makeElement(entry);
+  }});
   const elementsByIndex = new Map(elements.map((element) => [element.nodeIndex, element]));
+  globalThis.__glassHostElements = elementsByIndex;
   for (const element of elements) {{
+    if (Object.prototype.hasOwnProperty.call(element, "parentElement")) continue;
     Object.defineProperty(element, "parentElement", {{
       enumerable: false,
       configurable: false,
-      get() {{ return element.parentIndex === null ? null : elementsByIndex.get(element.parentIndex) || null; }},
+      get() {{
+        if (element.parentIndex === null) return null;
+        const current = globalThis.__glassHostElements;
+        return current instanceof Map ? current.get(element.parentIndex) || null : null;
+      }},
     }});
     Object.defineProperty(element, "parentNode", {{
       enumerable: false,
@@ -1143,6 +1238,8 @@ fn document_bootstrap(
     const event = createEvent(descriptor.type, {{
       bubbles: Boolean(descriptor.bubbles),
       cancelable: Boolean(descriptor.cancelable),
+      key: descriptor.key,
+      code: descriptor.code,
     }});
     return dispatchTarget(target, event);
   }});

@@ -436,6 +436,15 @@ timer registry across same-document actions while resetting it on full
 navigation. Wall-clock delays, intervals, animation/idle callbacks, parser
 timing, and full task-source ordering remain open.
 
+The completed native-engine-browser-033 batch adds bounded native semantic
+keyboard input. Local and child-owned `KeyPress` actions target the focused
+text control, dispatch cancelable `keydown` with bounded `key`/`code` metadata,
+apply printable or Backspace/Delete edits, then dispatch `input` and `keyup`.
+Persistent host wrappers refresh from the committed Rust snapshot before
+callbacks, so retained element references observe current values. Selection,
+caret movement, IME/composition, navigation keys, modifier shortcuts,
+`beforeinput`, and form-submit defaults remain open.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature
@@ -3457,7 +3466,8 @@ read-only textboxes, and unsupported action roles also fail before mutation.
 The grammar is a semantic locator contract, not a CSS selector implementation;
 general CSS selector coverage belongs to a later CSS/layout phase.
 
-The native backend accepts semantic `Click`, `Type`, and bounded vertical
+The native backend accepts semantic `Click`, `Type`, focused-text `KeyPress`
+for printable keys plus `Backspace`/`Delete`, and bounded vertical
 `Scroll` actions plus the native `point=<x>,<y>` click-target extension. A
 point is checked against the
 viewport, resolved to the deepest visible layout box, and walked to the
@@ -3468,12 +3478,15 @@ scrolls do not mutate the revision. Click focuses
 supported buttons, links, checkboxes, radios, textboxes, and comboboxes;
 checkbox and radio state changes are retained in the document owner. Clicking
 an option in a single-select combobox selects it and clears its siblings. Type
-replaces private state for native `input` and `textarea` textboxes. A bounded
-visibility gate recognizes `hidden`, `aria-hidden="true"`, and computed
+replaces private state for native `input` and `textarea` textboxes. KeyPress
+appends printable keys to the focused text control and removes the final
+Unicode scalar for Backspace; Delete is a bounded end-of-value no-op. A
+bounded visibility gate recognizes `hidden`, `aria-hidden="true"`, and computed
 `display:none`/`visibility:hidden`; hidden subtrees are omitted from text,
 layout, and hit testing. Supported local links perform the bounded default
 navigation described above; unsupported links fail closed. No action performs
-keyboard navigation, multi-select, or script-driven default browser behavior.
+selection, IME, keyboard navigation, multi-select, or script-driven default
+browser behavior.
 Each accepted mutating action advances the document revision exactly once, so
 earlier references must be re-observed. The effects operation returns the current
 revision and changed bit; bounded native event metadata remains an internal
@@ -3489,7 +3502,7 @@ The native profile is `experimental` and declares:
 | navigation | available | local resources plus bounded external HTTP(S) HTML navigation, inline/classic/module-root/static-graph/literal-dynamic-import child scripts, bounded task turns, and bounded GET-form navigation; no computed module loading or general subresources |
 | contexts | available | one active context |
 | evidence | available | bounded URL, title, visible text, revision; native semantic projection is Rust-only |
-| action | available | semantic click/type, bounded vertical root scrolling, plus native point targets for supported local controls; no nested scrolling or default browser behavior |
+| action | available | semantic click/type, focused-text printable/Backspace/Delete key input, bounded vertical root scrolling, plus native point targets for supported local controls; no selection/IME, nested scrolling, or default browser behavior |
 | effects | available | current revision and changed signal; bounded event metadata is Rust-only |
 | script | available | bounded QuickJS ECMAScript with a refreshed `window`/`document` snapshot, bounded inline/classic/module-root page-script loading, HTTP(S) static module graphs, literal dynamic imports, and deterministic microtask/next-turn timer callbacks, typed click/form-submit/attribute/focus commands, persistent listener records, bounded Event/CustomEvent capture/target/bubble dispatch, cancelable click preflight, transactional type/input/change event re-entry, top-level link/form navigation handoff, and relative HTTP(S)/same-document resolution; no live Web IDL identity, target contexts, beforeinput/composition, POST/multipart forms, intervals/animation/idle callbacks, wall-clock timer semantics, computed imports, bare specifiers/import maps, local external subresources, or general page loading |
 | capture | available | bounded PNG of the current logical RGBA surface; JPEG/PDF and screenshot-containing evidence are unavailable |

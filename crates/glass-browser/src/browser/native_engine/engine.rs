@@ -156,7 +156,14 @@ impl NativeEngine {
         if let Some(process) = content_process.as_mut() {
             process.start().await?;
         }
-        let prepared = self.prepare_navigation_async(&initial_url).await?;
+        let prepared = if let Some(process) = content_process.as_mut() {
+            let resource = process
+                .load(&initial_url, self.config.limits.max_document_bytes)
+                .await?;
+            self.prepare_navigation_resource(resource)?
+        } else {
+            self.prepare_navigation_async(&initial_url).await?
+        };
         let worker = NativeRuntimeWorker::spawn_shared(self.runtime.clone())?;
         worker.start().await?;
         if let Some(process) = content_process.as_mut() {
@@ -237,7 +244,20 @@ impl NativeEngine {
         if is_network_url(&url) {
             self.ensure_content_process().await?;
         }
-        let resource = self.loader.load_async(&url).await?;
+        let resource = if is_network_url(&url) {
+            let process =
+                self.content_process
+                    .as_mut()
+                    .ok_or_else(|| NativeEngineError::Worker {
+                        operation: "content process load".into(),
+                        reason: "native content process is not running".into(),
+                    })?;
+            process
+                .load(&url, self.config.limits.max_document_bytes)
+                .await?
+        } else {
+            self.loader.load_async(&url).await?
+        };
         if let Some(worker) = self.runtime_worker.clone() {
             self.navigate_resource_async(resource, &worker).await
         } else {
@@ -262,6 +282,13 @@ impl NativeEngine {
     }
 
     async fn ensure_content_process(&mut self) -> Result<(), NativeEngineError> {
+        if self
+            .content_process
+            .as_ref()
+            .is_some_and(|process| !process.is_healthy())
+        {
+            self.content_process.take();
+        }
         if self.content_process.is_none() {
             let mut process = NativeContentProcess::spawn().await?;
             process.start().await?;

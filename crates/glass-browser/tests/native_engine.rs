@@ -121,6 +121,40 @@ async fn native_runtime_session_loads_bounded_external_http_html_without_cdp() {
     server.await.unwrap();
 }
 
+#[tokio::test]
+async fn native_content_process_enforces_child_owned_document_limit() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0_u8; 4096];
+        let _ = stream.read(&mut request).await.unwrap();
+        let body = "x".repeat(128);
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let limits = NativeEngineLimits {
+        max_document_bytes: 32,
+        ..NativeEngineLimits::default()
+    };
+    let error = match BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default()
+            .with_limits(limits)
+            .with_initial_url(format!("http://{address}/oversized")),
+    )
+    .await
+    {
+        Ok(_) => panic!("oversized content unexpectedly initialized"),
+        Err(error) => error.to_string(),
+    };
+    assert!(error.contains("HTTP document exceeds limit 32"), "{error}");
+    server.await.unwrap();
+}
+
 #[test]
 fn native_layout_is_deterministic_and_uses_bounded_pixel_dimensions() {
     let document = NativeDocument::parse(

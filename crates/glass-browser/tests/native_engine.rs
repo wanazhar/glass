@@ -343,6 +343,86 @@ async fn native_local_script_owns_event_listeners_and_focus_order() {
 }
 
 #[tokio::test]
+async fn native_local_script_click_owns_fixture_navigation() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://script-nav",
+            "<title>Start</title><a id='next' href='fixture://script-destination'>Next</a>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://script-destination",
+            "<title>Destination</title><p>Arrived</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://script-nav");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    let initial_revision = engine.revision();
+
+    engine
+        .evaluate_async("document.getElementById('next').click()")
+        .await
+        .unwrap();
+    assert_eq!(engine.revision(), initial_revision + 2);
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        "fixture://script-destination"
+    );
+    assert_eq!(engine.snapshot().unwrap().title, "Destination");
+    assert_eq!(engine.snapshot().unwrap().visible_text, "Arrived");
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_child_script_click_owns_external_navigation() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/start", "/destination"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 4096];
+            let read = stream.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..read]);
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let body = if expected_path == "/start" {
+                format!(
+                    "<title>Start</title><a id='next' href='http://{address}/destination'>Next</a>"
+                )
+            } else {
+                "<title>Destination</title><p>Arrived</p>".to_owned()
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/start")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let initial_revision = engine.revision();
+    engine
+        .evaluate_async("document.getElementById('next').click()")
+        .await
+        .unwrap();
+    assert_eq!(engine.revision(), initial_revision + 2);
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        format!("http://{address}/destination")
+    );
+    assert_eq!(engine.snapshot().unwrap().title, "Destination");
+    assert_eq!(engine.snapshot().unwrap().visible_text, "Arrived");
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_runtime_session_loads_bounded_external_http_html_without_cdp() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

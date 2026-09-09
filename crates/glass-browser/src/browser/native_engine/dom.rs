@@ -919,6 +919,21 @@ impl NativeDocument {
         &mut self,
         commands: &[NativeScriptCommand],
     ) -> Result<Vec<(NativeNodeId, NativeEventKind)>, NativeEngineError> {
+        self.apply_script_commands_with_link_policy(commands, false)
+    }
+
+    pub(crate) fn apply_script_commands_allowing_links(
+        &mut self,
+        commands: &[NativeScriptCommand],
+    ) -> Result<Vec<(NativeNodeId, NativeEventKind)>, NativeEngineError> {
+        self.apply_script_commands_with_link_policy(commands, true)
+    }
+
+    fn apply_script_commands_with_link_policy(
+        &mut self,
+        commands: &[NativeScriptCommand],
+        allow_script_navigation: bool,
+    ) -> Result<Vec<(NativeNodeId, NativeEventKind)>, NativeEngineError> {
         let mut events = Vec::new();
         for command in commands {
             match command {
@@ -932,7 +947,9 @@ impl NativeDocument {
                 }
                 NativeScriptCommand::Click { node_index } => {
                     let id = NativeNodeId::from_parts(self.generation, *node_index);
-                    if self.link_href(id).is_some_and(|href| !href.is_empty()) {
+                    if !allow_script_navigation
+                        && self.link_href(id).is_some_and(|href| !href.is_empty())
+                    {
                         return Err(NativeEngineError::TargetNotActionable {
                             reason: "script-driven link navigation is not available".into(),
                         });

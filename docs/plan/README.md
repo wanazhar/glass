@@ -267,9 +267,20 @@ child-owned type actions now apply the value on a clone, dispatch focus,
 input, and change in order, apply callback commands, and commit one revision.
 The current host command sink also keeps captured callback setters connected to
 the current bounded evaluation buffer without claiming full live Web IDL
-identity. The next BE-03/BE-04 gate is link navigation/default-action
-ownership and script-driven navigation, followed by timers, modules,
-page-script loading, and Fetch/XHR.
+identity.
+
+The completed script-navigation batch is
+[native-engine-browser-024](tasks/native-engine-browser-024.md). Top-level
+script link clicks now hand off one validated navigation request to the local
+history/resource owner or to the parent after child-owned validation and
+transfer. Full navigations reset the realm, same-document navigation retains
+it, and no path silently falls back to CDP. Click and navigation currently use
+separate revisions; relative external navigation, target contexts, form
+submission, timers, modules, page-script loading, and Fetch/XHR remain open.
+
+The next BE-03/BE-04 gate is navigation task ordering and remaining
+link/default-action coverage, followed by timers, modules, page-script loading,
+and Fetch/XHR.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

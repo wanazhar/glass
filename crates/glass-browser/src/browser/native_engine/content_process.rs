@@ -42,9 +42,16 @@ pub(crate) struct NativeContentEvent {
     pub(crate) kind: NativeEventKind,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct NativeContentNavigation {
+    pub(crate) node_index: u32,
+    pub(crate) href: String,
+}
+
 pub(crate) struct NativeContentMutation {
     pub(crate) document: NativeDocumentWire,
     pub(crate) events: Vec<NativeContentEvent>,
+    pub(crate) navigation: Option<NativeContentNavigation>,
 }
 
 pub(crate) struct NativeContentScriptResult {
@@ -663,7 +670,36 @@ fn decode_mutation_payload(
             })?;
         events.push(NativeContentEvent { node_index, kind });
     }
-    Ok(NativeContentMutation { document, events })
+    let navigation = response
+        .get("navigation")
+        .filter(|value| !value.is_null())
+        .map(|value| {
+            let node_index = value
+                .get("node_index")
+                .and_then(Value::as_u64)
+                .and_then(|value| u32::try_from(value).ok())
+                .ok_or_else(|| NativeEngineError::Worker {
+                    operation: operation.into(),
+                    reason: "content process returned an invalid navigation node".into(),
+                })?;
+            let href = value.get("href").and_then(Value::as_str).ok_or_else(|| {
+                NativeEngineError::Worker {
+                    operation: operation.into(),
+                    reason: "content process returned an invalid navigation href".into(),
+                }
+            })?;
+            validate_url_text("content process navigation href", href)?;
+            Ok(NativeContentNavigation {
+                node_index,
+                href: href.to_owned(),
+            })
+        })
+        .transpose()?;
+    Ok(NativeContentMutation {
+        document,
+        events,
+        navigation,
+    })
 }
 
 fn decode_fetch_response(
@@ -964,6 +1000,10 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                         "node_index": event.node_index,
                                         "kind": event_kind_text(event.kind),
                                     })).collect::<Vec<_>>(),
+                                    "navigation": mutation.navigation.as_ref().map(|navigation| json!({
+                                        "node_index": navigation.node_index,
+                                        "href": navigation.href,
+                                    })),
                                 })
                             }
                             Err(error) => content_error_response(id, error),
@@ -1345,6 +1385,7 @@ fn mutate_click_with_event_preflight(
                 kind,
             })
             .collect(),
+        navigation: None,
     };
     Ok((next, mutation))
 }
@@ -1387,6 +1428,7 @@ fn mutate_type_with_event_bridge(
                 kind,
             })
             .collect(),
+        navigation: None,
     };
     Ok((next, mutation))
 }
@@ -1395,8 +1437,9 @@ fn mutate_script_document(
     current: &NativeDocument,
     commands: &[NativeScriptCommand],
 ) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
+    let navigation = script_navigation_target(current, commands)?;
     let mut next = current.clone();
-    let events = next.apply_script_commands(commands)?;
+    let events = next.apply_script_commands_allowing_links(commands)?;
     if events.len() > MAX_NATIVE_EFFECTS {
         return Err(NativeEngineError::limit(
             "content-process script mutation effects",
@@ -1413,8 +1456,33 @@ fn mutate_script_document(
                 kind,
             })
             .collect(),
+        navigation: navigation
+            .map(|(node_index, href)| NativeContentNavigation { node_index, href }),
     };
     Ok((next, mutation))
+}
+
+fn script_navigation_target(
+    document: &NativeDocument,
+    commands: &[NativeScriptCommand],
+) -> Result<Option<(u32, String)>, NativeEngineError> {
+    let mut navigation = None;
+    for command in commands {
+        let NativeScriptCommand::Click { node_index } = command else {
+            continue;
+        };
+        let node_id = NativeNodeId::from_parts(document.generation(), *node_index);
+        let Some(href) = document.link_href(node_id).filter(|href| !href.is_empty()) else {
+            continue;
+        };
+        if navigation.is_some() {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "one script batch cannot activate multiple links".into(),
+            });
+        }
+        navigation = Some((*node_index, href.to_owned()));
+    }
+    Ok(navigation)
 }
 
 fn event_kind_text(kind: NativeEventKind) -> &'static str {

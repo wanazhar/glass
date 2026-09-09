@@ -3,7 +3,9 @@ use super::config::{
     NativeEngineConfig, decode_percent_encoded_fragment, decode_text_fragment_terms,
     is_network_url, resolve_fixture_relative_url, validate_url_text, without_fragment,
 };
-use super::content_process::{NativeContentLoad, NativeContentMutation, NativeContentProcess};
+use super::content_process::{
+    NativeContentLoad, NativeContentMutation, NativeContentNavigation, NativeContentProcess,
+};
 use super::diagnostics::NativeDiagnostic;
 use super::dom::{NativeDocument, NativeNodeId};
 use super::error::NativeEngineError;
@@ -435,7 +437,11 @@ impl NativeEngine {
             }
             let evaluation = process.evaluate(&source).await?;
             if let Some(mutation) = evaluation.mutation {
+                let navigation = mutation.navigation.clone();
                 self.apply_content_process_mutation(mutation)?;
+                if let Some(navigation) = navigation {
+                    self.navigate_script_navigation_async(navigation).await?;
+                }
             }
             return Ok(evaluation.value);
         }
@@ -449,7 +455,7 @@ impl NativeEngine {
             &self.origin,
             self.config.viewport,
         )?;
-        self.apply_local_script_commands(&evaluation.commands)?;
+        self.apply_local_script_commands(&evaluation.commands, true)?;
         Ok(evaluation.value)
     }
 
@@ -523,7 +529,7 @@ impl NativeEngine {
                 if let Some(href) = self.document.link_href(id).map(str::to_owned)
                     && !href.is_empty()
                 {
-                    return self.activate_link(id, &href);
+                    return self.activate_link(id, &href, false);
                 }
                 if self.javascript.is_some() {
                     return self.action_local_click_with_event_preflight(id);
@@ -648,19 +654,74 @@ impl NativeEngine {
     fn apply_local_script_commands(
         &mut self,
         commands: &[super::javascript::NativeScriptCommand],
+        allow_script_navigation: bool,
     ) -> Result<(), NativeEngineError> {
         if commands.is_empty() {
             return Ok(());
         }
+        let navigation = if allow_script_navigation {
+            self.script_navigation_target(commands)?
+        } else {
+            None
+        };
         let mut document = self.document.clone();
-        let events = document.apply_script_commands(commands)?;
+        let events = if allow_script_navigation {
+            document.apply_script_commands_allowing_links(commands)?
+        } else {
+            document.apply_script_commands(commands)?
+        };
         let next_revision = self.next_revision()?;
         document.set_revision(next_revision);
         self.document = document;
         self.revision = next_revision;
         self.history.update_current_scroll(self.scroll_offset);
         self.record_effects(events);
+        if let Some((id, href)) = navigation {
+            self.activate_link(id, &href, true)?;
+        }
         Ok(())
+    }
+
+    fn script_navigation_target(
+        &self,
+        commands: &[super::javascript::NativeScriptCommand],
+    ) -> Result<Option<(NativeNodeId, String)>, NativeEngineError> {
+        let mut navigation = None;
+        for command in commands {
+            let super::javascript::NativeScriptCommand::Click { node_index } = command else {
+                continue;
+            };
+            let id = NativeNodeId::from_parts(self.document.generation(), *node_index);
+            let Some(href) = self.document.link_href(id).filter(|href| !href.is_empty()) else {
+                continue;
+            };
+            if navigation.is_some() {
+                return Err(NativeEngineError::TargetNotActionable {
+                    reason: "one script batch cannot activate multiple links".into(),
+                });
+            }
+            navigation = Some((id, href.to_owned()));
+        }
+        Ok(navigation)
+    }
+
+    async fn navigate_script_navigation_async(
+        &mut self,
+        navigation: NativeContentNavigation,
+    ) -> Result<(), NativeEngineError> {
+        let id = NativeNodeId::from_parts(self.document.generation(), navigation.node_index);
+        let href = self
+            .document
+            .link_href(id)
+            .filter(|href| !href.is_empty())
+            .ok_or(NativeEngineError::DetachedTarget)?;
+        if href != navigation.href {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "script navigation target changed during transfer".into(),
+            });
+        }
+        let target_url = self.resolve_link_href(href)?;
+        self.navigate_async(target_url).await.map(|_| ())
     }
 
     fn dispatch_local_events(
@@ -670,7 +731,7 @@ impl NativeEngine {
         let Some(evaluation) = self.evaluate_local_events(&self.document, events)? else {
             return Ok(());
         };
-        self.apply_local_script_commands(&evaluation.commands)
+        self.apply_local_script_commands(&evaluation.commands, false)
     }
 
     fn evaluate_local_events(
@@ -839,6 +900,7 @@ impl NativeEngine {
         &mut self,
         id: super::dom::NativeNodeId,
         href: &str,
+        click_already_applied: bool,
     ) -> Result<NativeActionResult, NativeEngineError> {
         let target_url = self.resolve_link_href(href)?;
         let resource = self.loader.load(&target_url)?;
@@ -849,7 +911,11 @@ impl NativeEngine {
                 NativeTask::CommitSameDocumentNavigation,
                 "link same-document navigation",
             )?;
-            let events = self.document.apply_click(id)?;
+            let events = if click_already_applied {
+                Vec::new()
+            } else {
+                self.document.apply_click(id)?
+            };
             self.document.set_revision(revision);
             self.url = resource.url.clone();
             self.scroll_offset = scroll_offset;
@@ -869,8 +935,11 @@ impl NativeEngine {
             NativePoint { x: 0, y: 0 },
         )?;
         self.run_commit_task(NativeTask::CommitNavigation, "link navigation")?;
-        let _events = self.document.apply_click(id)?;
+        if !click_already_applied {
+            let _events = self.document.apply_click(id)?;
+        }
         self.document = prepared.document;
+        self.javascript = None;
         self.url = prepared.resource.url;
         self.origin = prepared.resource.origin;
         self.scroll_offset = scroll_offset;

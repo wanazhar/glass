@@ -1084,6 +1084,36 @@ async fn native_local_formnovalidate_serializes_submitter_value() {
 }
 
 #[tokio::test]
+async fn native_local_submitter_overrides_form_action_and_method() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://submitter-overrides",
+            "<form id='search' method='post' action='fixture://wrong-result'><input name='query' value='hello'><button id='go' type='submit' formmethod='get' formaction='fixture://override-result' name='action' value='search'>Go</button></form>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://override-result?query=hello&action=search",
+            "<title>Override result</title><p>Submitted</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://submitter-overrides");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            "document.getElementById('search').requestSubmit(document.getElementById('go'))",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        "fixture://override-result?query=hello&action=search"
+    );
+    assert_eq!(engine.snapshot().unwrap().title, "Override result");
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_form_attribute_associates_external_controls_in_document_order() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -1990,6 +2020,64 @@ async fn native_content_process_form_submission_supports_multipart_and_text_plai
         format!("http://{address}/plain-result")
     );
     text_plain.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_submitter_overrides_form_action_method_and_encoding() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/form", "/result"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            if expected_path == "/form" {
+                assert_eq!(request.split_whitespace().next(), Some("GET"));
+            } else {
+                assert_eq!(request.split_whitespace().next(), Some("POST"));
+                assert!(
+                    request
+                        .lines()
+                        .any(|line| { line.eq_ignore_ascii_case("content-type: text/plain") })
+                );
+                let body = request
+                    .split_once("\r\n\r\n")
+                    .map(|(_, body)| body)
+                    .unwrap_or_default();
+                assert_eq!(body, "query=hello\r\naction=search\r\n");
+            }
+            let body = if expected_path == "/form" {
+                "<form id='search' action='/wrong' enctype='application/x-www-form-urlencoded'><input name='query' value='hello'><button id='go' type='submit' formmethod='post' formaction='/result' formenctype='text/plain' name='action' value='search'>Go</button></form>"
+            } else {
+                "<title>Override result</title><p>Submitted</p>"
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/form")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            "document.getElementById('search').requestSubmit(document.getElementById('go'))",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        format!("http://{address}/result")
+    );
+    assert_eq!(engine.snapshot().unwrap().title, "Override result");
+    engine.close_async().await.unwrap();
     server.await.unwrap();
 }
 

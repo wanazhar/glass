@@ -2119,8 +2119,8 @@ The completed bounded POST-encoding follow-up is
 now carry bounded `multipart/form-data` text fields and `text/plain` bodies
 through parent/content-process IPC with explicit content types; redirects
 clear content type when POST becomes GET. File parts, FormData/Web IDL
-identity, submitter encoding overrides, full constraint validation, target
-contexts, and the remaining browser-context primitives remain open.
+identity, full constraint validation, target contexts, and the remaining
+browser-context primitives remain open.
 
 The completed bounded navigation-cancellation/history-event follow-up is
 [native-engine-browser-046](../tasks/native-engine-browser-046.md). Replacement
@@ -2138,6 +2138,14 @@ child realms now retain normalized `setTimeout` due times, drain only due
 callbacks on a later host turn in due-time/ID order, and honor `clearTimeout`.
 There is no background page event loop yet; intervals, animation/idle
 callbacks, task-source fairness, and full wall-clock scheduling remain open.
+
+The completed bounded submitter-override follow-up is
+[native-engine-browser-048](../tasks/native-engine-browser-048.md). Local and
+child-owned script submissions now apply validated `formaction`, `formmethod`,
+and `formenctype` overrides before request construction, including the
+effective POST content type across the process boundary. Form target contexts,
+dialog submission, file parts, and general form-control/Web IDL identity remain
+open.
 
 The next bounded workstream is full task ordering and navigation edge cases,
 followed by file/FormData support, full constraint validation, target contexts,

@@ -1925,7 +1925,10 @@ impl NativeDocument {
                 reason: "form submitter must be a submit control for the form".into(),
             });
         }
-        let method = form.attribute("method").unwrap_or("get");
+        let submitter_node = submitter.and_then(|id| self.node(id));
+        let method = submitter_node
+            .and_then(|node| node.attribute("formmethod"))
+            .unwrap_or_else(|| form.attribute("method").unwrap_or("get"));
         let method = if method.eq_ignore_ascii_case("get") {
             super::resource_loader::NativeNavigationMethod::Get
         } else if method.eq_ignore_ascii_case("post") {
@@ -1936,9 +1939,12 @@ impl NativeDocument {
             });
         };
         let encoding = if method == super::resource_loader::NativeNavigationMethod::Post {
-            let enctype = form
-                .attribute("enctype")
-                .unwrap_or("application/x-www-form-urlencoded");
+            let enctype = submitter_node
+                .and_then(|node| node.attribute("formenctype"))
+                .unwrap_or_else(|| {
+                    form.attribute("enctype")
+                        .unwrap_or("application/x-www-form-urlencoded")
+                });
             let media_type = enctype.split(';').next().unwrap_or_default().trim();
             if media_type.eq_ignore_ascii_case("application/x-www-form-urlencoded") {
                 NativeFormEncoding::UrlEncoded
@@ -1954,7 +1960,9 @@ impl NativeDocument {
         } else {
             NativeFormEncoding::UrlEncoded
         };
-        let action = form.attribute("action").unwrap_or(document_url);
+        let action = submitter_node
+            .and_then(|node| node.attribute("formaction"))
+            .unwrap_or_else(|| form.attribute("action").unwrap_or(document_url));
         validate_url_text("form action", action)?;
         let base = Url::parse(without_fragment(document_url)).map_err(|_| {
             NativeEngineError::UnsupportedUrl {

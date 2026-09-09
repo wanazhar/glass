@@ -455,8 +455,8 @@ The completed bounded POST-encoding slice is
 carry explicit bounded `multipart/form-data` and `text/plain` bodies through
 the parent/content-process request boundary, including the multipart boundary
 header and redirect method/body reset. File parts, FormData/Web IDL identity,
-submitter encoding overrides, full constraint validation, target contexts, and
-the remaining browser-context primitives remain open.
+full constraint validation, target contexts, and the remaining browser-context
+primitives remain open.
 
 The completed bounded navigation-cancellation/history-event slice is
 [native-engine-browser-046](tasks/native-engine-browser-046.md). Replacement
@@ -473,6 +473,14 @@ child realms now retain normalized `setTimeout` due times, drain only timers
 that are due on a later host turn, preserve due-time/ID ordering, and honor
 `clearTimeout`. There is still no background page event loop; intervals,
 animation/idle callbacks, task-source fairness, and full wall-clock scheduling
+remain open.
+
+The completed bounded submitter-override slice is
+[native-engine-browser-048](tasks/native-engine-browser-048.md). Local and
+child-owned submissions now apply validated `formaction`, `formmethod`, and
+`formenctype` overrides before request construction, including the effective
+POST content type across the content-process boundary. Form target contexts,
+dialog submission, file parts, and general form-control/Web IDL identity
 remain open.
 
 The next BE-02/BE-03/BE-04 gate is full task ordering and navigation edge cases,

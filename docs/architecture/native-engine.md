@@ -697,6 +697,15 @@ origin-keyed, cookie-synchronized, or IndexedDB-backed; cookie-scope requests
 remain explicitly unsupported. This removes a backend-contract denial without
 claiming browser storage parity.
 
+The completed native-engine-browser-065 batch installs bounded page-visible
+`localStorage` and `sessionStorage` objects in the shared QuickJS bootstrap
+used by local documents and the sandboxed content worker. `length`, `key`,
+`getItem`, `setItem`, `removeItem`, and `clear` retain independent realm-local
+maps under the existing key, value, and entry limits. State is not yet
+origin-keyed across navigation or durable, and storage events, cookie
+synchronization, IndexedDB, quota policy, and full Storage Web IDL identity
+remain open.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature

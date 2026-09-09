@@ -547,6 +547,13 @@ the existing network and CORS policy remains the sole request owner. File/blob
 parts, file chooser/upload progress, streaming, URLSearchParams, and full
 FormData/Web IDL iterator identity remain open.
 
+The completed bounded URLSearchParams slice is
+[native-engine-browser-057](tasks/native-engine-browser-057.md). `fetch()` and
+XHR now accept string-only `URLSearchParams`, serialize bounded URL-encoded
+POST bodies with `+` spaces and the matching charset-bearing content type, and
+retain the existing network/CORS owner. Full constructor, sorting, iterator,
+streaming, and Web IDL identity remain open.
+
 The next BE-02/BE-03/BE-04 gate is full task ordering and navigation edge cases,
 followed by file/FormData support, full constraint validation, target contexts,
 and the remaining browser-context primitives.

@@ -2210,6 +2210,13 @@ owner with deterministic bounded multipart boundaries and matching content
 types. File/blob parts, chooser/upload progress, streaming, URLSearchParams,
 and full FormData/Web IDL iterator identity remain open.
 
+The completed bounded URLSearchParams follow-up is
+[native-engine-browser-057](../tasks/native-engine-browser-057.md). String-only
+`URLSearchParams` now serializes through the existing fetch/XHR owner as
+bounded `application/x-www-form-urlencoded;charset=UTF-8` POST data with
+`+`-encoded spaces. Full constructors, sorting, iterator/Web IDL identity,
+and streaming remain open.
+
 The next bounded workstream is full task ordering and navigation edge cases,
 followed by file/FormData support, full constraint validation, target contexts,
 and the remaining browser-context primitives.

@@ -1840,6 +1840,17 @@ the shared URL/CSP/mixed-content helpers. No script/fetch/XHR or other
 resource caller exists yet, so the remaining BE-02e gate is executable
 request mediation rather than policy-only coverage.
 
+The completed child-fetch follow-up is
+[native-engine-browser-015](../tasks/native-engine-browser-015.md). The
+existing content worker now owns a bounded GET-only fetch caller from the
+current external document. It applies the connect CSP family, shared URL and
+HTTPS mixed-content policy, eight-hop redirects, explicit credential cookie
+use, and CORS `Origin`/ACAO authorization before transferring a capped typed
+response. It returns HTTP status/content-type metadata without changing the
+document revision. This is an executable network primitive, not a Fetch/Web
+IDL implementation: custom request shapes, preflights, streams, service
+workers, script execution, and remaining resource classes remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

@@ -13,6 +13,8 @@ use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::{Context, Error, Module, Runtime, Value};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::fs;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use url::Url;
@@ -27,6 +29,8 @@ pub(crate) const MAX_NATIVE_MODULE_IMPORTS: usize = 128;
 const NATIVE_SCRIPT_MEMORY_BYTES: usize = 32 * 1024 * 1024;
 const NATIVE_SCRIPT_STACK_BYTES: usize = 1024 * 1024;
 const NATIVE_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_WEB_STORAGE_PROFILE_BYTES: usize = 4 * 1024 * 1024;
+const WEB_STORAGE_PROFILE_VERSION: u64 = 1;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -109,10 +113,176 @@ pub(crate) struct NativeScriptEvaluation {
 }
 
 /// Origin-keyed page storage retained by the native runtime owner.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq, Serialize)]
 pub(crate) struct NativeWebStorageState {
     local: BTreeMap<String, BTreeMap<String, String>>,
     session: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct NativeWebStorageProfile {
+    version: u64,
+    local: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+pub(crate) fn load_web_storage_profile(
+    path: Option<&Path>,
+) -> Result<NativeWebStorageState, NativeEngineError> {
+    let Some(path) = path else {
+        return Ok(NativeWebStorageState::default());
+    };
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(NativeWebStorageState::default());
+        }
+        Err(_) => {
+            return Err(NativeEngineError::Worker {
+                operation: "load native Web Storage profile".into(),
+                reason: "native Web Storage profile metadata is unavailable".into(),
+            });
+        }
+    };
+    let profile_bytes = usize::try_from(metadata.len()).map_err(|_| {
+        NativeEngineError::limit(
+            "native Web Storage profile",
+            MAX_WEB_STORAGE_PROFILE_BYTES,
+            usize::MAX,
+        )
+    })?;
+    if profile_bytes > MAX_WEB_STORAGE_PROFILE_BYTES {
+        return Err(NativeEngineError::limit(
+            "native Web Storage profile",
+            MAX_WEB_STORAGE_PROFILE_BYTES,
+            profile_bytes,
+        ));
+    }
+    let bytes = fs::read(path).map_err(|_| NativeEngineError::Worker {
+        operation: "load native Web Storage profile".into(),
+        reason: "native Web Storage profile cannot be read".into(),
+    })?;
+    let profile: NativeWebStorageProfile = serde_json::from_slice(&bytes).map_err(|_| {
+        NativeEngineError::invalid(
+            "storage profile",
+            "must contain a valid native Web Storage profile",
+        )
+    })?;
+    if profile.version != WEB_STORAGE_PROFILE_VERSION {
+        return Err(NativeEngineError::invalid(
+            "storage profile version",
+            "is unsupported",
+        ));
+    }
+    let state = NativeWebStorageState {
+        local: profile.local,
+        session: BTreeMap::new(),
+    };
+    validate_web_storage_state(&state)?;
+    Ok(state)
+}
+
+pub(crate) fn save_web_storage_profile(
+    path: Option<&Path>,
+    state: &NativeWebStorageState,
+) -> Result<(), NativeEngineError> {
+    let Some(path) = path else {
+        return Ok(());
+    };
+    validate_web_storage_state(state)?;
+    let profile = NativeWebStorageProfile {
+        version: WEB_STORAGE_PROFILE_VERSION,
+        local: state.local.clone(),
+    };
+    let bytes = serde_json::to_vec(&profile).map_err(|_| NativeEngineError::Worker {
+        operation: "save native Web Storage profile".into(),
+        reason: "native Web Storage profile cannot be encoded".into(),
+    })?;
+    if bytes.len() > MAX_WEB_STORAGE_PROFILE_BYTES {
+        return Err(NativeEngineError::limit(
+            "native Web Storage profile",
+            MAX_WEB_STORAGE_PROFILE_BYTES,
+            bytes.len(),
+        ));
+    }
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent).map_err(|_| NativeEngineError::Worker {
+            operation: "save native Web Storage profile".into(),
+            reason: "native Web Storage profile directory cannot be created".into(),
+        })?;
+    }
+    let temporary_path = path.with_extension(format!("tmp-{}", std::process::id()));
+    fs::write(&temporary_path, &bytes).map_err(|_| NativeEngineError::Worker {
+        operation: "save native Web Storage profile".into(),
+        reason: "native Web Storage profile cannot be written".into(),
+    })?;
+    if let Err(rename_error) = fs::rename(&temporary_path, path) {
+        // Unix replaces an existing destination atomically. Windows refuses
+        // that rename, so copy the already-complete bounded snapshot as a
+        // portable fallback and keep the original until the copy starts.
+        let expected_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        let fallback = fs::copy(&temporary_path, path).and_then(|copied_bytes| {
+            (copied_bytes == expected_bytes)
+                .then_some(())
+                .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::WriteZero))
+        });
+        if fallback.is_err() {
+            let _ = fs::remove_file(&temporary_path);
+            return Err(NativeEngineError::Worker {
+                operation: "save native Web Storage profile".into(),
+                reason: format!("native Web Storage profile cannot be committed: {rename_error}"),
+            });
+        }
+        let _ = fs::remove_file(&temporary_path);
+    }
+    Ok(())
+}
+
+fn validate_web_storage_state(state: &NativeWebStorageState) -> Result<(), NativeEngineError> {
+    for origins in [&state.local, &state.session] {
+        if origins.len() > crate::browser_backend::MAX_STORAGE_ENTRIES {
+            return Err(NativeEngineError::limit(
+                "native Web Storage origins",
+                crate::browser_backend::MAX_STORAGE_ENTRIES,
+                origins.len(),
+            ));
+        }
+        for (origin, entries) in origins {
+            if origin.len() > crate::browser_backend::MAX_TEXT_BYTES {
+                return Err(NativeEngineError::limit(
+                    "native Web Storage origin",
+                    crate::browser_backend::MAX_TEXT_BYTES,
+                    origin.len(),
+                ));
+            }
+            if entries.len() > crate::browser_backend::MAX_STORAGE_ENTRIES {
+                return Err(NativeEngineError::limit(
+                    "native Web Storage entries",
+                    crate::browser_backend::MAX_STORAGE_ENTRIES,
+                    entries.len(),
+                ));
+            }
+            for (key, value) in entries {
+                if key.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES {
+                    return Err(NativeEngineError::limit(
+                        "native Web Storage key",
+                        crate::browser_backend::MAX_BACKEND_ID_BYTES,
+                        key.len(),
+                    ));
+                }
+                if value.len() > crate::browser_backend::MAX_TEXT_BYTES {
+                    return Err(NativeEngineError::limit(
+                        "native Web Storage value",
+                        crate::browser_backend::MAX_TEXT_BYTES,
+                        value.len(),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Default, Serialize)]

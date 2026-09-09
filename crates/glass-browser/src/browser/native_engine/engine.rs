@@ -15,8 +15,9 @@ use super::interaction::{
     MAX_NATIVE_EFFECTS, NativeAction, NativeEffect, NativeEventKind, validate_native_edit_key,
 };
 use super::javascript::{
-    NativeJavaScriptRuntime, NativeScriptEvaluation, execute_inline_scripts, host_event_script,
-    host_hash_change_event_script, host_key_event_script, host_submit_event_script,
+    NativeJavaScriptRuntime, NativeScriptEvaluation, NativeWebStorageState, execute_inline_scripts,
+    host_event_script, host_hash_change_event_script, host_key_event_script,
+    host_submit_event_script, load_web_storage_profile, save_web_storage_profile,
 };
 use super::layout::{NativeLayoutSnapshot, NativePoint};
 use super::lifecycle::NativeLifecycleState;
@@ -77,6 +78,7 @@ pub struct NativeEngine {
     runtime_worker: Option<NativeRuntimeWorker>,
     content_process: Option<NativeContentProcess>,
     javascript: Option<NativeJavaScriptRuntime>,
+    web_storage: NativeWebStorageState,
     history: NativeHistory,
     lifecycle: NativeLifecycleState,
     document: NativeDocument,
@@ -90,6 +92,7 @@ pub struct NativeEngine {
 impl NativeEngine {
     pub fn new(config: NativeEngineConfig) -> Result<Self, NativeEngineError> {
         config.validate()?;
+        let web_storage = load_web_storage_profile(config.storage_path.as_deref())?;
         let loader = NativeResourceLoader::new(&config)?;
         if !is_network_url(&config.initial_url) {
             loader.load(&config.initial_url)?;
@@ -104,6 +107,7 @@ impl NativeEngine {
             runtime_worker: None,
             content_process: None,
             javascript: None,
+            web_storage,
             history: NativeHistory::new(max_history_entries),
             lifecycle: NativeLifecycleState::New,
             document: NativeDocument::empty(),
@@ -163,12 +167,12 @@ impl NativeEngine {
         }
         let initial_url = self.config.initial_url.clone();
         let mut content_process = if is_network_url(&initial_url) {
-            Some(NativeContentProcess::spawn().await?)
+            Some(NativeContentProcess::spawn(self.config.storage_path.as_deref()).await?)
         } else {
             None
         };
         if let Some(process) = content_process.as_mut() {
-            process.start().await?;
+            process.start(self.config.storage_path.as_deref()).await?;
         }
         let prepared = if let Some(process) = content_process.as_mut() {
             let viewport = self.config.viewport;
@@ -206,6 +210,7 @@ impl NativeEngine {
     pub fn close(&mut self) -> Result<(), NativeEngineError> {
         match self.lifecycle {
             NativeLifecycleState::Running => {
+                self.persist_local_web_storage()?;
                 self.runtime.close()?;
                 self.runtime_worker.take();
                 self.content_process.take();
@@ -225,6 +230,7 @@ impl NativeEngine {
     pub async fn close_async(&mut self) -> Result<(), NativeEngineError> {
         match self.lifecycle {
             NativeLifecycleState::Running => {
+                self.persist_local_web_storage()?;
                 self.runtime.close()?;
                 self.runtime_worker.take();
                 self.lifecycle = NativeLifecycleState::Closed;
@@ -354,8 +360,9 @@ impl NativeEngine {
             self.content_process.take();
         }
         if self.content_process.is_none() {
-            let mut process = NativeContentProcess::spawn().await?;
-            process.start().await?;
+            let mut process =
+                NativeContentProcess::spawn(self.config.storage_path.as_deref()).await?;
+            process.start(self.config.storage_path.as_deref()).await?;
             self.content_process = Some(process);
         }
         Ok(())
@@ -457,6 +464,7 @@ impl NativeEngine {
         if self.javascript.is_some() {
             self.dispatch_local_navigation_lifecycle()?;
         }
+        self.persist_local_web_storage()?;
         Ok(true)
     }
 
@@ -587,17 +595,24 @@ impl NativeEngine {
             }
             return Ok(evaluation.value);
         }
-        let javascript = self
+        if self.javascript.is_none() {
+            let javascript = NativeJavaScriptRuntime::new()?;
+            javascript.set_storage_state(self.web_storage.clone());
+            self.javascript = Some(javascript);
+        }
+        let evaluation = self
             .javascript
-            .get_or_insert(NativeJavaScriptRuntime::new()?);
-        let evaluation = javascript.evaluate(
-            &source,
-            &self.document,
-            &self.url,
-            &self.origin,
-            self.config.viewport,
-        )?;
+            .as_ref()
+            .expect("local JavaScript runtime initialized")
+            .evaluate(
+                &source,
+                &self.document,
+                &self.url,
+                &self.origin,
+                self.config.viewport,
+            )?;
         self.apply_local_script_commands(&evaluation.commands, true)?;
+        self.persist_local_web_storage()?;
         Ok(evaluation.value)
     }
 
@@ -1056,6 +1071,14 @@ impl NativeEngine {
             return Ok(());
         }
         self.navigate_request_async(request).await.map(|_| ())
+    }
+
+    fn persist_local_web_storage(&mut self) -> Result<(), NativeEngineError> {
+        let Some(javascript) = self.javascript.as_ref() else {
+            return Ok(());
+        };
+        self.web_storage = javascript.storage_state();
+        save_web_storage_profile(self.config.storage_path.as_deref(), &self.web_storage)
     }
 
     fn dispatch_local_events(
@@ -1753,11 +1776,8 @@ impl NativeEngine {
             }
             self.dispatch_local_navigation_lifecycle()?;
         }
-        let storage_state = self
-            .javascript
-            .as_ref()
-            .map(NativeJavaScriptRuntime::storage_state)
-            .unwrap_or_default();
+        self.persist_local_web_storage()?;
+        let storage_state = self.web_storage.clone();
         let mut javascript = None;
         if prepared.execute_inline_scripts {
             execute_inline_scripts(
@@ -1784,6 +1804,7 @@ impl NativeEngine {
         self.revision = revision;
         self.history.push(self.url.clone(), revision, scroll_offset);
         self.dispatch_local_page_show()?;
+        self.persist_local_web_storage()?;
         Ok(())
     }
 
@@ -1793,11 +1814,8 @@ impl NativeEngine {
         worker: &NativeRuntimeWorker,
     ) -> Result<(), NativeEngineError> {
         let execute_page_scripts = prepared.execute_inline_scripts;
-        let storage_state = self
-            .javascript
-            .as_ref()
-            .map(NativeJavaScriptRuntime::storage_state)
-            .unwrap_or_default();
+        self.persist_local_web_storage()?;
+        let storage_state = self.web_storage.clone();
         let mut javascript = None;
         if execute_page_scripts {
             execute_inline_scripts(
@@ -1826,6 +1844,7 @@ impl NativeEngine {
         self.history.push(self.url.clone(), revision, scroll_offset);
         if execute_page_scripts {
             self.dispatch_local_page_show()?;
+            self.persist_local_web_storage()?;
         }
         Ok(())
     }
@@ -1870,6 +1889,7 @@ impl NativeEngine {
             self.dispatch_local_pop_state()?;
         }
         self.dispatch_local_hash_change(&old_url, &self.url.clone())?;
+        self.persist_local_web_storage()?;
         Ok(())
     }
 
@@ -1927,6 +1947,7 @@ impl NativeEngine {
         } else {
             self.dispatch_local_hash_change(&old_url, &new_url)?;
         }
+        self.persist_local_web_storage()?;
         Ok(())
     }
 
@@ -1935,6 +1956,7 @@ impl NativeEngine {
         prepared: PreparedNavigation,
         history_index: usize,
     ) -> Result<(), NativeEngineError> {
+        self.persist_local_web_storage()?;
         if self.history.entry(history_index).is_none() {
             return Err(NativeEngineError::Scheduler {
                 reason: "history target is no longer available".into(),

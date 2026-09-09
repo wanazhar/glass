@@ -137,7 +137,7 @@ impl NativeEngineBackend {
                 }
                 BrowserCapability::Contexts => vec!["one active context only".into()],
                 BrowserCapability::Storage => vec![
-                    "bounded semantic maps plus origin-keyed page local/session Web Storage; durable persistence, cookie sync, and IndexedDB remain open".into(),
+                    "bounded semantic maps plus origin-keyed page local/session Web Storage; localStorage profile persistence is opt-in, while storage events, cookie sync, and IndexedDB remain open".into(),
                 ],
                 BrowserCapability::Lifecycle => {
                     vec!["close is terminal for the engine instance".into()]
@@ -171,7 +171,7 @@ impl NativeEngineBackend {
                     limitations: vec![
                         "network navigation and scripting are bounded web-platform slices, not browser parity".into(),
                         "in-process local execution is not a security boundary for hostile content; external documents use the sandboxed content worker".into(),
-                        "page Web Storage is bounded and volatile; durable profiles, cookie sync, and IndexedDB remain unavailable".into(),
+                        "page Web Storage is bounded; localStorage persistence is opt-in, sessionStorage is volatile, and storage events, cookie sync, and IndexedDB remain unavailable".into(),
                         "actions are limited to bounded click/type/key/scroll, select controls, form defaults, root scrolling, and native point targets".into(),
                     ],
                 },

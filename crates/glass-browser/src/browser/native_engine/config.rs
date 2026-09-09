@@ -1,4 +1,5 @@
 use super::error::NativeEngineError;
+use std::path::PathBuf;
 use url::Url;
 
 /// Maximum source document size accepted by the native resource loader.
@@ -152,6 +153,7 @@ pub struct NativeEngineConfig {
     pub viewport: Viewport,
     pub limits: NativeEngineLimits,
     pub fixtures: Vec<NativeFixture>,
+    pub storage_path: Option<PathBuf>,
 }
 
 impl Default for NativeEngineConfig {
@@ -161,6 +163,7 @@ impl Default for NativeEngineConfig {
             viewport: Viewport::default(),
             limits: NativeEngineLimits::default(),
             fixtures: Vec::new(),
+            storage_path: None,
         }
     }
 }
@@ -181,6 +184,11 @@ impl NativeEngineConfig {
         self
     }
 
+    pub fn with_storage_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.storage_path = Some(path.into());
+        self
+    }
+
     pub fn with_fixture(
         mut self,
         url: impl Into<String>,
@@ -195,6 +203,36 @@ impl NativeEngineConfig {
         self.limits.validate()?;
         self.viewport.validate()?;
         validate_url_text("initial URL", &self.initial_url)?;
+        if self
+            .storage_path
+            .as_ref()
+            .is_some_and(|path| path.as_os_str().is_empty())
+        {
+            return Err(NativeEngineError::invalid(
+                "storage path",
+                "must not be empty",
+            ));
+        }
+        if self
+            .storage_path
+            .as_ref()
+            .is_some_and(|path| path.to_str().is_none())
+        {
+            return Err(NativeEngineError::invalid(
+                "storage path",
+                "must be valid UTF-8 for content-process transfer",
+            ));
+        }
+        if self
+            .storage_path
+            .as_ref()
+            .is_some_and(|path| !path.is_absolute())
+        {
+            return Err(NativeEngineError::invalid(
+                "storage path",
+                "must be absolute for sandboxed content-process transfer",
+            ));
+        }
         if !is_supported_url_shape(&self.initial_url) {
             return Err(NativeEngineError::UnsupportedUrl {
                 reason: "native navigation accepts about:blank, data:text/html, fixture://, or HTTP(S) URLs".into(),

@@ -41,22 +41,24 @@ impl NativeContentSandbox {
 
 pub(crate) fn prepare_worker_command(
     worker_path: &Path,
+    storage_path: Option<&Path>,
 ) -> Result<(Command, NativeContentSandbox), NativeEngineError> {
     #[cfg(target_os = "linux")]
     {
-        return prepare_linux(worker_path);
+        return prepare_linux(worker_path, storage_path);
     }
     #[cfg(target_os = "macos")]
     {
-        return prepare_macos(worker_path);
+        return prepare_macos(worker_path, storage_path);
     }
     #[cfg(windows)]
     {
+        let _ = storage_path;
         return prepare_windows(worker_path);
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
-        let _ = worker_path;
+        let _ = (worker_path, storage_path);
         Err(sandbox_error(
             "native content sandbox is not implemented for this operating system",
         ))
@@ -64,7 +66,10 @@ pub(crate) fn prepare_worker_command(
 }
 
 #[cfg(target_os = "linux")]
-fn prepare_linux(worker_path: &Path) -> Result<(Command, NativeContentSandbox), NativeEngineError> {
+fn prepare_linux(
+    worker_path: &Path,
+    storage_path: Option<&Path>,
+) -> Result<(Command, NativeContentSandbox), NativeEngineError> {
     let Some(bwrap) = find_executable("bwrap") else {
         return Err(sandbox_error(
             "Linux native content requires bubblewrap; refusing to run the worker unsandboxed",
@@ -126,6 +131,9 @@ fn prepare_linux(worker_path: &Path) -> Result<(Command, NativeContentSandbox), 
     if Path::new("/etc/ssl/certs").is_dir() {
         command.args(["--ro-bind", "/etc/ssl/certs", "/etc/ssl/certs"]);
     }
+    if let Some(storage_path) = storage_path {
+        command.arg("--bind").arg(storage_path).arg(storage_path);
+    }
     command
         .arg("--")
         .arg(sandbox_worker)
@@ -142,7 +150,10 @@ fn prepare_linux(worker_path: &Path) -> Result<(Command, NativeContentSandbox), 
 }
 
 #[cfg(target_os = "macos")]
-fn prepare_macos(worker_path: &Path) -> Result<(Command, NativeContentSandbox), NativeEngineError> {
+fn prepare_macos(
+    worker_path: &Path,
+    storage_path: Option<&Path>,
+) -> Result<(Command, NativeContentSandbox), NativeEngineError> {
     let seatbelt = Path::new("/usr/bin/sandbox-exec");
     if !seatbelt.is_file() {
         return Err(sandbox_error(
@@ -150,8 +161,18 @@ fn prepare_macos(worker_path: &Path) -> Result<(Command, NativeContentSandbox), 
         ));
     }
     let worker = quote_profile_path(worker_path);
+    let storage_rules = storage_path
+        .and_then(Path::parent)
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(|parent| {
+            let parent = quote_profile_path(parent);
+            format!(
+                " (allow file-read* (subpath \"{parent}\")) (allow file-write* (subpath \"{parent}\"))"
+            )
+        })
+        .unwrap_or_default();
     let profile = format!(
-        "(version 1) (deny default) (allow process-exec (literal \"{worker}\")) (allow file-read* (subpath \"/System\") (subpath \"/usr\") (subpath \"/Library\") (literal \"{worker}\")) (allow network-outbound) (allow sysctl-read) (allow mach-lookup)"
+        "(version 1) (deny default) (allow process-exec (literal \"{worker}\")) (allow file-read* (subpath \"/System\") (subpath \"/usr\") (subpath \"/Library\") (literal \"{worker}\")) (allow network-outbound) (allow sysctl-read) (allow mach-lookup){storage_rules}"
     );
     let mut command = Command::new(seatbelt);
     command

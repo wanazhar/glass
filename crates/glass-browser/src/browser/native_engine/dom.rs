@@ -1584,6 +1584,12 @@ impl NativeDocument {
             .collect::<Vec<_>>();
         for select_id in select_ids {
             let option_ids = self.select_option_ids(select_id);
+            if self
+                .node(select_id)
+                .is_some_and(|node| node.attribute("multiple").is_some())
+            {
+                continue;
+            }
             let selected_id = option_ids
                 .iter()
                 .find(|option_id| {

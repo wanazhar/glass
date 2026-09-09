@@ -1187,6 +1187,22 @@ fn document_bootstrap(
       if (control.formOwnerIndex !== form.nodeIndex || control.disabled) continue;
       const name = String(control.getAttribute("name") || "");
       if (!name) continue;
+      if (control.tagName === "SELECT") {{
+        const options = elements.filter(option =>
+          option.tagName === "OPTION"
+            && option.parentIndex === control.nodeIndex
+            && option.selected
+            && !option.disabled
+        );
+        const selectedOptions = control.getAttribute("multiple") === null
+          ? options.slice(0, 1)
+          : options;
+        for (const option of selectedOptions) {{
+          const optionValue = option.getAttribute("value");
+          entries.push([name, optionValue === null ? String(option.textContent || "") : String(optionValue)]);
+        }}
+        continue;
+      }}
       const type = String(control.getAttribute("type") || "text").toLowerCase();
       if (["button", "reset", "submit", "image"].includes(type)) continue;
       if (type === "file") throw new TypeError("native FormData file controls are unsupported");

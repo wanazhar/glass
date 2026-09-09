@@ -11,9 +11,12 @@ use super::dom::{NativeDocument, NativeNodeId};
 use super::error::NativeEngineError;
 use super::error::NativeWorkerFailureKind;
 use super::history::{NativeHistory, NativeHistoryDirection};
-use super::interaction::{MAX_NATIVE_EFFECTS, NativeAction, NativeEffect, NativeEventKind};
+use super::interaction::{
+    MAX_NATIVE_EFFECTS, NativeAction, NativeEffect, NativeEventKind, validate_native_edit_key,
+};
 use super::javascript::{
     NativeJavaScriptRuntime, NativeScriptEvaluation, execute_inline_scripts, host_event_script,
+    host_key_event_script,
 };
 use super::layout::{NativeLayoutSnapshot, NativePoint};
 use super::lifecycle::NativeLifecycleState;
@@ -548,6 +551,17 @@ impl NativeEngine {
                 }
                 (self.document.apply_type(id, &text)?, true)
             }
+            NativeAction::KeyPress { key } => {
+                validate_native_edit_key(&key)?;
+                let id = self.document.focused_text_control()?;
+                if self.javascript.is_some() {
+                    return self.action_local_key_press_with_event_transaction(id, &key);
+                }
+                let mut events = vec![(id, NativeEventKind::KeyDown)];
+                events.extend(self.document.apply_key_press(id, &key)?);
+                events.push((id, NativeEventKind::KeyUp));
+                (events, true)
+            }
             NativeAction::Scroll { delta_x, delta_y } => {
                 let moved = self.apply_scroll(delta_x, delta_y)?;
                 let events = moved
@@ -644,6 +658,26 @@ impl NativeEngine {
                             })?;
                     process
                         .mutate_type_with_event_bridge(id.index(), text)
+                        .await?
+                };
+                let next_revision = self.next_revision()?;
+                self.apply_content_process_mutation_at(next_revision, mutation)
+            }
+            NativeAction::KeyPress { key } => {
+                validate_native_edit_key(&key)?;
+                let id = self.document.focused_text_control()?;
+                let mut preview = self.document.clone();
+                preview.apply_key_press(id, &key)?;
+                let mutation = {
+                    let process =
+                        self.content_process
+                            .as_mut()
+                            .ok_or_else(|| NativeEngineError::Worker {
+                                operation: "content process key event bridge".into(),
+                                reason: "native content process is not running".into(),
+                            })?;
+                    process
+                        .mutate_key_with_event_bridge(id.index(), key)
                         .await?
                 };
                 let next_revision = self.next_revision()?;
@@ -801,6 +835,28 @@ impl NativeEngine {
         )?))
     }
 
+    fn evaluate_local_key_event(
+        &self,
+        document: &NativeDocument,
+        node_id: NativeNodeId,
+        kind: NativeEventKind,
+        key: &str,
+    ) -> Result<Option<NativeScriptEvaluation>, NativeEngineError> {
+        let Some(source) = host_key_event_script(node_id.index(), kind, key)? else {
+            return Ok(None);
+        };
+        let Some(javascript) = self.javascript.as_ref() else {
+            return Ok(None);
+        };
+        Ok(Some(javascript.evaluate(
+            &source,
+            document,
+            &self.url,
+            &self.origin,
+            self.config.viewport,
+        )?))
+    }
+
     fn action_local_click_with_event_preflight(
         &mut self,
         id: NativeNodeId,
@@ -872,6 +928,68 @@ impl NativeEngine {
                 ));
             }
         }
+        let next_revision = self.next_revision()?;
+        document.set_revision(next_revision);
+        self.document = document;
+        self.revision = next_revision;
+        self.history.update_current_scroll(self.scroll_offset);
+        self.record_effects(events);
+        Ok(NativeActionResult {
+            revision: next_revision,
+            accepted: true,
+        })
+    }
+
+    fn action_local_key_press_with_event_transaction(
+        &mut self,
+        id: NativeNodeId,
+        key: &str,
+    ) -> Result<NativeActionResult, NativeEngineError> {
+        let mut document = self.document.clone();
+        let mut events = vec![(id, NativeEventKind::KeyDown)];
+        let keydown = self
+            .evaluate_local_key_event(&document, id, NativeEventKind::KeyDown, key)?
+            .ok_or_else(|| NativeEngineError::Worker {
+                operation: "native keydown event preflight".into(),
+                reason: "native JavaScript realm disappeared during keydown dispatch".into(),
+            })?;
+        let keydown_allowed = keydown
+            .value
+            .as_array()
+            .and_then(|values| values.first())
+            .and_then(serde_json::Value::as_bool)
+            .ok_or_else(|| NativeEngineError::Worker {
+                operation: "native keydown event preflight".into(),
+                reason: "native keydown event result was invalid".into(),
+            })?;
+        events.extend(document.apply_script_commands(&keydown.commands)?);
+
+        if keydown_allowed {
+            let input_events = document.apply_key_press(id, key)?;
+            events.extend(input_events.clone());
+            for (event_node, event_kind) in input_events {
+                if let Some(evaluation) =
+                    self.evaluate_local_events(&document, &[(event_node, event_kind)])?
+                {
+                    events.extend(document.apply_script_commands(&evaluation.commands)?);
+                }
+            }
+        }
+
+        events.push((id, NativeEventKind::KeyUp));
+        if let Some(evaluation) =
+            self.evaluate_local_key_event(&document, id, NativeEventKind::KeyUp, key)?
+        {
+            events.extend(document.apply_script_commands(&evaluation.commands)?);
+        }
+        if events.len() > MAX_NATIVE_EFFECTS {
+            return Err(NativeEngineError::limit(
+                "native key press effects",
+                MAX_NATIVE_EFFECTS,
+                events.len(),
+            ));
+        }
+
         let next_revision = self.next_revision()?;
         document.set_revision(next_revision);
         self.document = document;

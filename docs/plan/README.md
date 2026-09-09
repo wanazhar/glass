@@ -344,9 +344,18 @@ local and child-owned realms. Wall-clock delays, `setInterval`, animation/idle
 callbacks, parser timing, POST/submission lifecycle/default-action ordering,
 target contexts, Fetch/XHR, and the remaining resource classes remain open.
 
+The completed bounded keyboard-input batch is
+[native-engine-browser-033](tasks/native-engine-browser-033.md). Native
+semantic `KeyPress` actions now route through local and child-owned focused
+text controls, dispatch cancelable `keydown`/`input`/`keyup` callbacks with
+bounded key metadata, and refresh persistent host wrappers before callbacks.
+Printable keys append, `Backspace` removes the final scalar, and `Delete` is a
+bounded end-of-value no-op. Selection, IME, navigation keys, `beforeinput`,
+form defaults, and modifier shortcuts remain open.
+
 The next BE-02/BE-03/BE-04 gate is parser-blocking/defer/async ordering and
-submission lifecycle/default actions, alongside the remaining browser-context
-primitives.
+submission lifecycle/default actions, alongside selection/input lifecycle and
+the remaining browser-context primitives.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

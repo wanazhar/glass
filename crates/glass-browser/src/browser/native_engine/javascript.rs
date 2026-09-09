@@ -326,20 +326,27 @@ fn document_bootstrap(
     for (const callbacks of listeners.values()) count += callbacks.length;
     return count;
   }};
-  const addListener = (owner, type, callback) => {{
+  const listenerOptions = (options) => {{
+    if (options === true) return {{ capture: true, once: false }};
+    if (!options || typeof options !== "object") return {{ capture: false, once: false }};
+    return {{ capture: Boolean(options.capture), once: Boolean(options.once) }};
+  }};
+  const addListener = (owner, type, callback, options) => {{
     if (typeof callback !== "function") throw new TypeError("event listener must be callable");
     const key = listenerKey(owner, type);
     const callbacks = listeners.get(key) || [];
-    if (callbacks.some((current) => current === callback)) return;
+    const settings = listenerOptions(options);
+    if (callbacks.some((record) => record.callback === callback && record.capture === settings.capture)) return;
     if (listenerCount() >= {max_listeners}) throw new RangeError("native event listener limit exceeded");
-    callbacks.push(callback);
+    callbacks.push({{ callback, capture: settings.capture, once: settings.once }});
     listeners.set(key, callbacks);
   }};
-  const removeListener = (owner, type, callback) => {{
+  const removeListener = (owner, type, callback, options) => {{
     const key = listenerKey(owner, type);
     const callbacks = listeners.get(key);
     if (!callbacks) return;
-    const index = callbacks.findIndex((current) => current === callback);
+    const capture = listenerOptions(options).capture;
+    const index = callbacks.findIndex((record) => record.callback === callback && record.capture === capture);
     if (index < 0) return;
     callbacks.splice(index, 1);
     if (callbacks.length === 0) listeners.delete(key);
@@ -357,29 +364,79 @@ fn document_bootstrap(
       preventDefault() {{
         if (this.cancelable) this.defaultPrevented = true;
       }},
-      stopPropagation() {{}},
-      stopImmediatePropagation() {{}},
+      stopPropagation() {{ eventState.stopped = true; }},
+      stopImmediatePropagation() {{
+        eventState.stopped = true;
+        eventState.immediate = true;
+      }},
     }};
+    const eventState = {{ stopped: false, immediate: false, dispatching: false }};
+    Object.defineProperty(event, "__glassState", {{
+      value: eventState,
+      enumerable: false,
+      configurable: false,
+    }});
     return event;
   }};
-  const dispatchOwner = (owner, target, event) => {{
-    if (!event || typeof event.type !== "string") throw new TypeError("invalid native event");
-    const eventType = normalizeEventType(event.type);
-    if (event.target !== null && event.target !== undefined && event.target !== target) {{
-      throw new TypeError("event target is already assigned");
-    }}
-    event.target = target;
+  const ownerFor = (target) => {{
+    if (target === globalThis) return "window";
+    if (target === document) return "document";
+    return "node:" + target.nodeIndex;
+  }};
+  const invokeListeners = (target, event, capture, phase) => {{
+    const owner = ownerFor(target);
+    const callbacks = (listeners.get(listenerKey(owner, event.type)) || []).slice();
+    const eventState = event.__glassState;
     event.currentTarget = target;
-    event.eventPhase = 2;
-    const callbacks = (listeners.get(listenerKey(owner, eventType)) || []).slice();
-    for (const callback of callbacks) callback.call(target, event);
+    event.eventPhase = phase;
+    for (const record of callbacks) {{
+      if (record.capture !== capture) continue;
+      record.callback.call(target, event);
+      if (record.once) removeListener(owner, event.type, record.callback, capture);
+      if (eventState.immediate) break;
+    }}
+  }};
+  const dispatchTarget = (target, event) => {{
+    if (!event || typeof event.type !== "string") throw new TypeError("invalid native event");
+    normalizeEventType(event.type);
+    const eventState = event.__glassState;
+    if (!eventState || eventState.dispatching) throw new TypeError("event is already being dispatched");
+    eventState.dispatching = true;
+    event.target = target;
+    const path = [target];
+    if (target !== globalThis && target !== document && typeof target.nodeIndex === "number") {{
+      let parent = target.parentElement;
+      while (parent) {{
+        path.push(parent);
+        parent = parent.parentElement;
+      }}
+      path.push(document, globalThis);
+    }} else if (target === document) {{
+      path.push(globalThis);
+    }}
+    for (let index = path.length - 1; index > 0; index -= 1) {{
+      invokeListeners(path[index], event, true, 1);
+      if (eventState.stopped || eventState.immediate) break;
+    }}
+    if (!eventState.immediate) {{
+      invokeListeners(target, event, true, 2);
+      if (!eventState.immediate) invokeListeners(target, event, false, 2);
+    }}
+    if (event.bubbles && !eventState.stopped && !eventState.immediate) {{
+      for (let index = 1; index < path.length; index += 1) {{
+        invokeListeners(path[index], event, false, 3);
+        if (eventState.stopped || eventState.immediate) break;
+      }}
+    }}
     event.currentTarget = null;
     event.eventPhase = 0;
+    eventState.dispatching = false;
     return !event.defaultPrevented;
   }};
   const makeElement = (entry) => {{
     const element = {{
       nodeIndex: entry.nodeIndex,
+      parentIndex: entry.parentIndex,
       tagName: entry.tagName.toUpperCase(),
       id: entry.attributes.id || "",
       className: entry.attributes.class || "",
@@ -399,14 +456,14 @@ fn document_bootstrap(
         return null;
       }},
       hasAttribute(name) {{ return this.getAttribute(name) !== null; }},
-      addEventListener(type, callback) {{
-        addListener("node:" + entry.nodeIndex, type, callback);
+      addEventListener(type, callback, options) {{
+        addListener("node:" + entry.nodeIndex, type, callback, options);
       }},
-      removeEventListener(type, callback) {{
-        removeListener("node:" + entry.nodeIndex, type, callback);
+      removeEventListener(type, callback, options) {{
+        removeListener("node:" + entry.nodeIndex, type, callback, options);
       }},
       dispatchEvent(event) {{
-        return dispatchOwner("node:" + entry.nodeIndex, this, event);
+        return dispatchTarget(this, event);
       }},
       focus() {{
         if (this.disabled || this.hidden) return;
@@ -416,13 +473,13 @@ fn document_bootstrap(
         if (!this.focused) return;
         this.focused = false;
         pushCommand({{ kind: "blur", node_index: entry.nodeIndex }});
-        dispatchOwner("node:" + entry.nodeIndex, this, createEvent("blur"));
+        dispatchTarget(this, createEvent("blur"));
       }},
       click() {{
         if (this.disabled || this.hidden) return;
         this.focus();
         const event = createEvent("click", {{ bubbles: true, cancelable: true }});
-        if (!dispatchOwner("node:" + entry.nodeIndex, this, event)) return;
+        if (!dispatchTarget(this, event)) return;
         if (this.tagName === "INPUT") {{
           const type = String(entry.attributes.type || "text").toLowerCase();
           if (type === "checkbox") checked = !checked;
@@ -483,16 +540,29 @@ fn document_bootstrap(
     return element;
   }};
   const elements = state.elements.map(makeElement);
+  const elementsByIndex = new Map(elements.map((element) => [element.nodeIndex, element]));
+  for (const element of elements) {{
+    Object.defineProperty(element, "parentElement", {{
+      enumerable: false,
+      configurable: false,
+      get() {{ return element.parentIndex === null ? null : elementsByIndex.get(element.parentIndex) || null; }},
+    }});
+    Object.defineProperty(element, "parentNode", {{
+      enumerable: false,
+      configurable: false,
+      get() {{ return element.parentElement; }},
+    }});
+  }}
   const setLocalFocus = (target) => {{
     const current = elements.find((element) => element.focused && element !== target) || null;
     if (current) {{
       current.focused = false;
-      dispatchOwner("node:" + current.nodeIndex, current, createEvent("blur"));
+      dispatchTarget(current, createEvent("blur"));
     }}
     if (target.focused) return;
     target.focused = true;
     pushCommand({{ kind: "focus", node_index: target.nodeIndex }});
-    dispatchOwner("node:" + target.nodeIndex, target, createEvent("focus"));
+    dispatchTarget(target, createEvent("focus"));
   }};
   const matches = (element, selector) => {{
     const value = String(selector).trim();
@@ -509,14 +579,14 @@ fn document_bootstrap(
     documentElement,
     get activeElement() {{ return elements.find((element) => element.focused) || null; }},
     readyState: "complete",
-    addEventListener(type, callback) {{
-      addListener("document", type, callback);
+    addEventListener(type, callback, options) {{
+      addListener("document", type, callback, options);
     }},
-    removeEventListener(type, callback) {{
-      removeListener("document", type, callback);
+    removeEventListener(type, callback, options) {{
+      removeListener("document", type, callback, options);
     }},
     dispatchEvent(event) {{
-      return dispatchOwner("document", this, event);
+      return dispatchTarget(this, event);
     }},
     getElementById(id) {{ return elements.find((element) => element.id === String(id)) || null; }},
     querySelector(selector) {{ return findAll(selector)[0] || null; }},
@@ -545,9 +615,9 @@ fn document_bootstrap(
     event.detail = options && typeof options === "object" ? options.detail : undefined;
     return event;
   }};
-  globalThis.addEventListener = (type, callback) => addListener("window", type, callback);
-  globalThis.removeEventListener = (type, callback) => removeListener("window", type, callback);
-  globalThis.dispatchEvent = (event) => dispatchOwner("window", globalThis, event);
+  globalThis.addEventListener = (type, callback, options) => addListener("window", type, callback, options);
+  globalThis.removeEventListener = (type, callback, options) => removeListener("window", type, callback, options);
+  globalThis.dispatchEvent = (event) => dispatchTarget(globalThis, event);
   globalThis.console = globalThis.console || {{
     log() {{}}, info() {{}}, warn() {{}}, error() {{}}
   }};

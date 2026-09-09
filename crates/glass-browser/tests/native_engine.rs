@@ -170,7 +170,7 @@ async fn native_local_script_owns_event_listeners_and_focus_order() {
     let config = NativeEngineConfig::default()
         .with_fixture(
             "fixture://script-events",
-            "<input id='toggle' type='checkbox'><input id='name' type='text'>",
+            "<div id='outer'><section id='middle'><input id='toggle' type='checkbox'></section></div><input id='name' type='text'>",
         )
         .unwrap()
         .with_initial_url("fixture://script-events");
@@ -180,7 +180,7 @@ async fn native_local_script_owns_event_listeners_and_focus_order() {
 
     let registered = engine
         .evaluate_async(
-            "(() => { const toggle = document.getElementById('toggle'); globalThis.events = []; globalThis.onToggleClick = (event) => { globalThis.events.push(event.type + ':' + event.target.id + ':' + event.currentTarget.id); document.getElementById('name').value = 'from-listener'; event.preventDefault(); }; globalThis.onProbe = (event) => { globalThis.events.push(event.type + ':' + event.detail); }; toggle.addEventListener('click', globalThis.onToggleClick); toggle.addEventListener('probe', globalThis.onProbe); toggle.focus(); const accepted = toggle.dispatchEvent(new CustomEvent('probe', { cancelable: true, detail: 'detail' })); return { active: document.activeElement.id, accepted, eventType: new Event('probe').type, events: globalThis.events }; })()",
+            "(() => { const toggle = document.getElementById('toggle'); const outer = document.getElementById('outer'); const middle = document.getElementById('middle'); globalThis.events = []; globalThis.onOuterCapture = (event) => { globalThis.events.push('capture:' + event.currentTarget.id + ':' + event.eventPhase); }; globalThis.onMiddleCapture = (event) => { globalThis.events.push('capture:' + event.currentTarget.id + ':' + event.eventPhase); }; globalThis.onOuterBubble = (event) => { globalThis.events.push('bubble:' + event.currentTarget.id + ':' + event.eventPhase); }; globalThis.onToggleClick = (event) => { globalThis.events.push(event.type + ':' + event.target.id + ':' + event.currentTarget.id); document.getElementById('name').value = 'from-listener'; event.preventDefault(); }; globalThis.onProbe = (event) => { globalThis.events.push(event.type + ':' + event.detail); }; outer.addEventListener('click', globalThis.onOuterCapture, true); middle.addEventListener('click', globalThis.onMiddleCapture, { capture: true }); outer.addEventListener('click', globalThis.onOuterBubble); toggle.addEventListener('click', globalThis.onToggleClick); toggle.addEventListener('probe', globalThis.onProbe); toggle.focus(); const accepted = toggle.dispatchEvent(new CustomEvent('probe', { cancelable: true, detail: 'detail' })); return { active: document.activeElement.id, accepted, eventType: new Event('probe').type, parent: toggle.parentElement.id, events: globalThis.events }; })()",
         )
         .await
         .unwrap();
@@ -190,6 +190,7 @@ async fn native_local_script_owns_event_listeners_and_focus_order() {
             "active": "toggle",
             "accepted": true,
             "eventType": "probe",
+            "parent": "middle",
             "events": ["probe:detail"],
         })
     );
@@ -206,7 +207,13 @@ async fn native_local_script_owns_event_listeners_and_focus_order() {
         serde_json::json!({
             "checked": false,
             "value": "from-listener",
-            "events": ["probe:detail", "click:toggle:toggle"],
+            "events": [
+                "probe:detail",
+                "capture:outer:1",
+                "capture:middle:1",
+                "click:toggle:toggle",
+                "bubble:outer:3",
+            ],
         })
     );
     assert_eq!(engine.revision(), initial_revision + 2);

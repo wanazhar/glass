@@ -1889,10 +1889,21 @@ evaluations; bounded `Event` and `CustomEvent` values support synchronous
 dispatch and cancellation. Scripted focus/blur transitions emit typed
 commands, and scripted click activation is suppressed when a target listener
 calls `preventDefault()`. Parent and child owners validate and commit focus
-transitions with the same one-revision batch contract. Ancestor
-propagation/capture, listeners for Rust semantic actions, default-action
-ordering, mutation invalidation, timers, modules, page-script loading,
-Fetch/XHR, service workers, and remaining resource classes stay open.
+transitions with the same one-revision batch contract. Ancestor propagation,
+listeners for Rust semantic actions, default-action ordering, mutation
+invalidation, timers, modules, page-script loading, Fetch/XHR, service workers,
+and remaining resource classes stay open.
+
+The completed JavaScript event-graph follow-up is
+[native-engine-browser-020](../tasks/native-engine-browser-020.md). The host
+snapshot now carries nearest-element parent indices and non-enumerable
+`parentElement`/`parentNode` links. Listener records retain capture and once
+options; dispatch walks a bounded window/document/ancestor path through
+capture, target, and bubble phases with propagation controls. Rust semantic
+actions still do not re-enter the page realm. The next owner bridge must
+dispatch click/input/change/focus/blur into the correct local or child realm,
+define cancellation/default-action ordering, and commit callback mutations
+without bypassing child ownership.
 
 ## Baseline and constraints
 

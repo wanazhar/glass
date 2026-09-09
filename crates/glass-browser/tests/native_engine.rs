@@ -25096,3 +25096,64 @@ fn native_css_diagnostics_replace_atomically_with_navigation() {
     assert!(after_success.diagnostics.is_empty());
     assert!(!after_success.truncated);
 }
+
+#[tokio::test]
+async fn native_content_process_fetches_cors_authorized_cross_origin_get() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let document_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let document_address = document_listener.local_addr().unwrap();
+    let api_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let api_address = api_listener.local_addr().unwrap();
+    let document_origin = format!("http://{document_address}");
+    let expected_origin = document_origin.clone();
+    let response_origin = document_origin.clone();
+
+    let document_server = tokio::spawn(async move {
+        let (mut stream, _) = document_listener.accept().await.unwrap();
+        let mut request = [0_u8; 4096];
+        let _ = stream.read(&mut request).await.unwrap();
+        let body = "<title>Fetch owner</title><p>Native fetch</p>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: connect-src *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+    let api_server = tokio::spawn(async move {
+        let (mut stream, _) = api_listener.accept().await.unwrap();
+        let mut request = [0_u8; 4096];
+        let read = stream.read(&mut request).await.unwrap();
+        let request = String::from_utf8_lossy(&request[..read]);
+        assert_eq!(request.split_whitespace().nth(1), Some("/data"));
+        assert!(
+            request.lines().any(|line| {
+                line.split_once(':').is_some_and(|(name, value)| {
+                    name.eq_ignore_ascii_case("origin") && value.trim() == expected_origin
+                })
+            }),
+            "cross-origin fetch omitted its Origin header: {request}"
+        );
+        let body = "{\"ok\":true}";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: {response_origin}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("{document_origin}/index.html")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let response = engine
+        .fetch_async(format!("http://{api_address}/data"), false)
+        .await
+        .unwrap();
+    assert_eq!(response.status, 200);
+    assert_eq!(response.content_type.as_deref(), Some("application/json"));
+    assert_eq!(response.body, br#"{"ok":true}"#);
+    engine.close_async().await.unwrap();
+    document_server.await.unwrap();
+    api_server.await.unwrap();
+}

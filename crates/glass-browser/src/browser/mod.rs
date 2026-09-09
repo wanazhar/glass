@@ -78,10 +78,10 @@ pub use native_engine::{
     NativeDiagnosticCode, NativeDiagnosticSource, NativeDiagnosticsSnapshot, NativeDisplayCommand,
     NativeDisplayList, NativeDocument, NativeEffect, NativeEffectsSnapshot, NativeEngine,
     NativeEngineConfig, NativeEngineError, NativeEngineLimits, NativeEngineSnapshot,
-    NativeEventKind, NativeFixture, NativeHistory, NativeHistoryDirection, NativeHistoryEntry,
-    NativeLayoutBox, NativeLayoutSnapshot, NativeLifecycleState, NativeNode, NativeNodeId,
-    NativeNodeKind, NativeOrigin, NativePoint, NativeRect, NativeResource, NativeResourceLoader,
-    NativeSemanticNode, NativeSurface, NativeTask, NativeTextDecorationStyle,
+    NativeEventKind, NativeFetchResponse, NativeFixture, NativeHistory, NativeHistoryDirection,
+    NativeHistoryEntry, NativeLayoutBox, NativeLayoutSnapshot, NativeLifecycleState, NativeNode,
+    NativeNodeId, NativeNodeKind, NativeOrigin, NativePoint, NativeRect, NativeResource,
+    NativeResourceLoader, NativeSemanticNode, NativeSurface, NativeTask, NativeTextDecorationStyle,
     NativeWorkerFailureKind, ScheduledTask, Viewport,
 };
 /// Browser-free deterministic backend used for semantic conformance tests.

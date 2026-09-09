@@ -18,6 +18,7 @@ const MAX_NATIVE_CACHE_ENTRIES: usize = 32;
 const MAX_NATIVE_COOKIES: usize = 128;
 const MAX_NATIVE_COOKIE_BYTES: usize = 4096;
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NativeSubresourceKind {
     Style,
@@ -30,6 +31,7 @@ pub(crate) enum NativeSubresourceKind {
     Worker,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NativeCorsMode {
     NoCors,
@@ -42,6 +44,15 @@ pub struct NativeResource {
     pub url: String,
     pub origin: NativeOrigin,
     pub body: String,
+}
+
+/// A bounded response returned by the native GET/fetch primitive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeFetchResponse {
+    pub url: String,
+    pub status: u16,
+    pub content_type: Option<String>,
+    pub body: Vec<u8>,
 }
 
 /// Bounded resource loader for local documents and HTTP(S) HTML responses.
@@ -387,6 +398,179 @@ impl NativeResourceLoader {
             self.network.store_cache(cache_key(&parsed), cache_resource);
         }
         Ok(resource)
+    }
+
+    pub(crate) async fn fetch_async(
+        &mut self,
+        document_url: &str,
+        href: &str,
+        credentials: bool,
+    ) -> Result<NativeFetchResponse, NativeEngineError> {
+        validate_url_text("fetch owner URL", document_url)?;
+        validate_url_text("fetch URL", href)?;
+        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "fetch owner URL is not valid HTTP(S) syntax".into(),
+            }
+        })?;
+        if !is_network_url(document_url.as_str()) {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "native fetch requires an HTTP(S) document owner".into(),
+            });
+        }
+        reject_credentials(&document_url)?;
+        let Some(target_url) = resolve_subresource_url(&document_url, href)? else {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "native fetch URL is not an HTTP(S) resource".into(),
+            });
+        };
+        if !mixed_content_allowed(&document_url, &target_url) {
+            return Err(NativeEngineError::Network {
+                operation: "fetch policy".into(),
+                reason: "HTTPS documents cannot fetch HTTP resources".into(),
+            });
+        }
+        let policy = self
+            .network
+            .document_policies
+            .get(&cache_key(&document_url))
+            .cloned()
+            .unwrap_or_default();
+        if !policy.allows(NativeSubresourceKind::Connect, &document_url, &target_url) {
+            return Err(NativeEngineError::Network {
+                operation: "fetch policy".into(),
+                reason: "document CSP blocked the connect target".into(),
+            });
+        }
+
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(NATIVE_NETWORK_TIMEOUT)
+            .build()
+            .map_err(|error| network_error("fetch client construction", error))?;
+        let mut current_url = target_url;
+        let mut request_referrer = normalize_referrer(Some(document_url.as_str()), &current_url)?;
+        let mut redirects = 0;
+        let mut pending_cookies = Vec::new();
+        let response = loop {
+            let mut request_url = current_url.clone();
+            request_url.set_fragment(None);
+            let mut request = client
+                .get(request_url)
+                .header(reqwest::header::ACCEPT, "*/*");
+            if let Some(origin) =
+                cors_origin_header(&document_url, &current_url, NativeCorsMode::Cors)
+            {
+                request = request.header(reqwest::header::ORIGIN, origin);
+            }
+            if let Some(referrer) = request_referrer.as_deref() {
+                request = request.header(reqwest::header::REFERER, referrer);
+            }
+            if credentials && let Some(cookie) = self.network.cookie_header(&current_url) {
+                request = request.header(reqwest::header::COOKIE, cookie);
+            }
+            let response = request
+                .send()
+                .await
+                .map_err(|error| network_error("fetch request", error))?;
+            for value in response
+                .headers()
+                .get_all(reqwest::header::SET_COOKIE)
+                .iter()
+            {
+                if let Ok(cookie) = value.to_str() {
+                    pending_cookies.push((current_url.clone(), cookie.to_owned()));
+                }
+            }
+            if !is_http_redirect(response.status()) {
+                break response;
+            }
+            if redirects >= MAX_NATIVE_NETWORK_REDIRECTS {
+                return Err(NativeEngineError::Network {
+                    operation: "fetch redirect".into(),
+                    reason: "fetch redirect chain exceeded the native limit".into(),
+                });
+            }
+            let location = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| NativeEngineError::Network {
+                    operation: "fetch redirect".into(),
+                    reason: "fetch redirect did not provide a valid location".into(),
+                })?;
+            let next_url = current_url
+                .join(location)
+                .map_err(|_| NativeEngineError::Network {
+                    operation: "fetch redirect".into(),
+                    reason: "fetch redirect location is not valid URL syntax".into(),
+                })?;
+            reject_credentials(&next_url)?;
+            if !is_network_url(without_fragment(next_url.as_str()))
+                || !mixed_content_allowed(&document_url, &next_url)
+                || !policy.allows(NativeSubresourceKind::Connect, &document_url, &next_url)
+            {
+                return Err(NativeEngineError::Network {
+                    operation: "fetch redirect policy".into(),
+                    reason: "fetch redirect was blocked by URL, CSP, or mixed-content policy"
+                        .into(),
+                });
+            }
+            request_referrer = normalize_referrer(Some(current_url.as_str()), &next_url)?;
+            current_url = next_url;
+            redirects += 1;
+        };
+        let final_url = current_url;
+        let status = response.status().as_u16();
+        let response_headers = response.headers().clone();
+        if !cors_response_allowed(&response_headers, &document_url, &final_url, credentials) {
+            return Err(NativeEngineError::Network {
+                operation: "fetch CORS policy".into(),
+                reason: "cross-origin fetch response did not authorize the document origin".into(),
+            });
+        }
+        let content_length = response.content_length();
+        if content_length.is_some_and(|length| length > self.max_document_bytes as u64) {
+            return Err(NativeEngineError::limit(
+                "fetch response",
+                self.max_document_bytes,
+                content_length
+                    .and_then(|length| usize::try_from(length).ok())
+                    .unwrap_or(usize::MAX),
+            ));
+        }
+        let mut stream = response.bytes_stream();
+        let mut body = Vec::with_capacity(
+            content_length
+                .unwrap_or_default()
+                .min(self.max_document_bytes as u64) as usize,
+        );
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|error| network_error("fetch response body", error))?;
+            let next_len = body.len().saturating_add(chunk.len());
+            if next_len > self.max_document_bytes {
+                return Err(NativeEngineError::limit(
+                    "fetch response",
+                    self.max_document_bytes,
+                    next_len,
+                ));
+            }
+            body.extend_from_slice(&chunk);
+        }
+        for (cookie_url, cookie) in pending_cookies {
+            self.network.store_cookie(&cookie_url, &cookie);
+        }
+        let content_type = response_headers
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        Ok(NativeFetchResponse {
+            url: without_fragment(final_url.as_str()).to_owned(),
+            status,
+            content_type,
+            body,
+        })
     }
 
     pub(crate) async fn load_stylesheet_async(

@@ -133,6 +133,13 @@ fn prepare_linux(
     }
     if let Some(storage_path) = storage_path {
         command.arg("--bind").arg(storage_path).arg(storage_path);
+        let storage_lock_path = storage_path.with_extension("lock");
+        if storage_lock_path.is_file() {
+            command
+                .arg("--bind")
+                .arg(&storage_lock_path)
+                .arg(&storage_lock_path);
+        }
     }
     command
         .arg("--")

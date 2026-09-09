@@ -42,6 +42,9 @@ pub enum NativeEngineError {
         kind: NativeWorkerFailureKind,
         reason: String,
     },
+    StorageProfileLocked {
+        path: String,
+    },
     Parse {
         offset: usize,
         reason: String,
@@ -127,6 +130,12 @@ impl fmt::Display for NativeEngineError {
                 formatter,
                 "native content worker {kind:?} failure during {operation}: {reason}"
             ),
+            Self::StorageProfileLocked { path } => {
+                write!(
+                    formatter,
+                    "native Web Storage profile is already owned: {path}"
+                )
+            }
             Self::Parse { offset, reason } => {
                 write!(formatter, "HTML parse failure at byte {offset}: {reason}")
             }

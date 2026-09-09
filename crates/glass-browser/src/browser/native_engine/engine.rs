@@ -661,16 +661,16 @@ impl NativeEngine {
         if commands.is_empty() {
             return Ok(());
         }
-        let navigation = if allow_script_navigation {
-            self.script_navigation_target(commands)?
-        } else {
-            None
-        };
         let mut document = self.document.clone();
         let events = if allow_script_navigation {
             document.apply_script_commands_allowing_links(commands)?
         } else {
             document.apply_script_commands(commands)?
+        };
+        let navigation = if allow_script_navigation {
+            self.script_navigation_target(&document, commands)?
+        } else {
+            None
         };
         let next_revision = self.next_revision()?;
         document.set_revision(next_revision);
@@ -678,31 +678,59 @@ impl NativeEngine {
         self.revision = next_revision;
         self.history.update_current_scroll(self.scroll_offset);
         self.record_effects(events);
-        if let Some((id, href)) = navigation {
-            self.activate_link(id, &href, true)?;
+        if let Some(navigation) = navigation {
+            match navigation {
+                ScriptNavigationTarget::Link { id, href } => {
+                    self.activate_link(id, &href, true)?;
+                }
+                ScriptNavigationTarget::Form { href } => {
+                    self.navigate(href)?;
+                }
+            }
         }
         Ok(())
     }
 
     fn script_navigation_target(
         &self,
+        document: &NativeDocument,
         commands: &[super::javascript::NativeScriptCommand],
-    ) -> Result<Option<(NativeNodeId, String)>, NativeEngineError> {
+    ) -> Result<Option<ScriptNavigationTarget>, NativeEngineError> {
         let mut navigation = None;
         for command in commands {
-            let super::javascript::NativeScriptCommand::Click { node_index } = command else {
-                continue;
+            let target = match command {
+                super::javascript::NativeScriptCommand::Click { node_index } => {
+                    let id = NativeNodeId::from_parts(document.generation(), *node_index);
+                    if let Some(href) = document.link_href(id).filter(|href| !href.is_empty()) {
+                        Some(ScriptNavigationTarget::Link {
+                            id,
+                            href: href.to_owned(),
+                        })
+                    } else if document.submit_control_form(id).is_some() {
+                        Some(ScriptNavigationTarget::Form {
+                            href: document.form_submission_url(id, &self.url)?,
+                        })
+                    } else {
+                        None
+                    }
+                }
+                super::javascript::NativeScriptCommand::SubmitForm { node_index } => {
+                    let id = NativeNodeId::from_parts(document.generation(), *node_index);
+                    Some(ScriptNavigationTarget::Form {
+                        href: document.form_submission_url(id, &self.url)?,
+                    })
+                }
+                _ => None,
             };
-            let id = NativeNodeId::from_parts(self.document.generation(), *node_index);
-            let Some(href) = self.document.link_href(id).filter(|href| !href.is_empty()) else {
+            let Some(target) = target else {
                 continue;
             };
             if navigation.is_some() {
                 return Err(NativeEngineError::TargetNotActionable {
-                    reason: "one script batch cannot activate multiple links".into(),
+                    reason: "one script batch cannot activate multiple navigations".into(),
                 });
             }
-            navigation = Some((id, href.to_owned()));
+            navigation = Some(target);
         }
         Ok(navigation)
     }
@@ -712,17 +740,17 @@ impl NativeEngine {
         navigation: NativeContentNavigation,
     ) -> Result<(), NativeEngineError> {
         let id = NativeNodeId::from_parts(self.document.generation(), navigation.node_index);
-        let href = self
-            .document
-            .link_href(id)
-            .filter(|href| !href.is_empty())
-            .ok_or(NativeEngineError::DetachedTarget)?;
+        let href = if let Some(href) = self.document.link_href(id).filter(|href| !href.is_empty()) {
+            href.to_owned()
+        } else {
+            self.document.form_submission_url(id, &self.url)?
+        };
         if href != navigation.href {
             return Err(NativeEngineError::TargetNotActionable {
                 reason: "script navigation target changed during transfer".into(),
             });
         }
-        let target_url = self.resolve_link_href(href)?;
+        let target_url = self.resolve_link_href(&href)?;
         if self.is_same_document_navigation(&target_url) {
             if let Some(worker) = self.runtime_worker.clone() {
                 self.commit_same_document_navigation_async(
@@ -1508,6 +1536,11 @@ struct PreparedNavigation {
     resource: NativeResource,
     document: NativeDocument,
     execute_inline_scripts: bool,
+}
+
+enum ScriptNavigationTarget {
+    Link { id: NativeNodeId, href: String },
+    Form { href: String },
 }
 
 enum HistoryCommit {

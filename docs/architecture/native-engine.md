@@ -755,7 +755,13 @@ batch extends the same coordinator through separate sandboxed HTTP(S) content
 workers: worker responses carry bounded effective local-storage changes, and a
 receiving worker applies queued changes and dispatches `StorageEvent` before
 its next page operation. Session-storage browsing-context routing and
-cross-process profile-writer coordination remain deliberately open.
+cross-process profile-writer coordination remain deliberately open at that
+boundary. The completed native-engine-browser-072 batch now wraps the retained
+JSON profile read path in a shared OS advisory lock and the complete snapshot
+write/rename-or-copy path in an exclusive lock. Contention is bounded and
+typed, and Linux exposes the lock file to the sandboxed worker. This protects
+physical profile I/O; stale independent full-state snapshots still require a
+future ownership or merge protocol.
 
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third

@@ -188,11 +188,12 @@ recovery, and cross-process quotas remain open.
 The completed resource-transfer batch is recorded in
 [`native-engine-browser-005`](../plan/tasks/native-engine-browser-005.md). The
 helper now invokes the shared bounded HTTP(S) loader and returns final URL plus
-base64-encoded HTML through the capped IPC frame. The parent validates the
-request ID, URL, origin, encoding, and document quota before parsing; load
-deadlines and malformed-transfer failures poison the child without CDP
-fallback. The HTML parser and DOM still run in the parent, so this remains a
-resource-ownership slice rather than full content-process isolation.
+base64-encoded typed DOM through the capped IPC frame. The child owns bounded
+HTML tree construction; the parent validates request ID, URL, origin, snapshot
+links, and quotas before reconstructing the arena. Load deadlines and
+malformed-transfer failures poison the child without CDP fallback. Stylesheet
+source parsing, computed style, and DOM mutation still run in the parent, so
+this remains a partial content-process boundary rather than full isolation.
 
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third

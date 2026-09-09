@@ -155,6 +155,50 @@ async fn native_content_process_enforces_child_owned_document_limit() {
     server.await.unwrap();
 }
 
+#[tokio::test]
+async fn native_content_process_rejects_malformed_html_before_parent_commit() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 4096];
+            let read = stream.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..read]);
+            let path = request.split_whitespace().nth(1).unwrap_or("/");
+            let body = if path.starts_with("/broken") {
+                "<p title='unfinished>"
+            } else {
+                "<title>Stable</title><p>Current document</p>"
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/stable")),
+    )
+    .await
+    .unwrap();
+    let before = session.evidence(EvidenceLevel::Compact).await.unwrap();
+    let error = session
+        .navigate(format!("http://{address}/broken"))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("content process load"), "{error}");
+    let after = session.evidence(EvidenceLevel::Compact).await.unwrap();
+    assert_eq!(after.url, before.url);
+    assert_eq!(after.title, before.title);
+    assert_eq!(after.visible_text, before.visible_text);
+    session.close().await.unwrap();
+    server.await.unwrap();
+}
+
 #[test]
 fn native_layout_is_deterministic_and_uses_bounded_pixel_dimensions() {
     let document = NativeDocument::parse(

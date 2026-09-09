@@ -18,6 +18,7 @@ use super::{
         TextOverflowValue, TextTransformValue, VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
     },
 };
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 const MAX_ATTRIBUTE_BYTES: usize = 1024;
@@ -74,6 +75,38 @@ pub enum NativeNodeKind {
         attributes: BTreeMap<String, String>,
     },
     Text(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct NativeDocumentWire {
+    pub(crate) nodes: Vec<NativeNodeWire>,
+    pub(crate) stylesheet_sources: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct NativeNodeWire {
+    pub(crate) parent: Option<u32>,
+    pub(crate) children: Vec<u32>,
+    pub(crate) kind: NativeNodeKindWire,
+    pub(crate) state: NativeElementStateWire,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum NativeNodeKindWire {
+    Document,
+    Element {
+        name: String,
+        attributes: BTreeMap<String, String>,
+    },
+    Text(String),
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct NativeElementStateWire {
+    pub(crate) value: Option<String>,
+    pub(crate) checked: bool,
+    pub(crate) focused: bool,
+    pub(crate) selected: bool,
 }
 
 /// One arena-owned node with parent and child links.
@@ -315,6 +348,165 @@ impl NativeDocument {
         let (diagnostics, diagnostics_truncated) = diagnostics.finish();
         document.diagnostics = diagnostics;
         document.diagnostics_truncated = diagnostics_truncated;
+        document.normalize_select_defaults();
+        Ok(document)
+    }
+
+    pub(crate) fn to_content_wire(&self) -> NativeDocumentWire {
+        let stylesheet_sources = self
+            .nodes
+            .iter()
+            .filter(|node| node.element_name() == Some("style"))
+            .map(|node| {
+                let mut source = String::new();
+                self.collect_raw_text(node.id(), &mut source);
+                source
+            })
+            .collect();
+        let nodes = self
+            .nodes
+            .iter()
+            .map(|node| NativeNodeWire {
+                parent: node.parent.map(|parent| parent.index),
+                children: node.children.iter().map(|child| child.index).collect(),
+                kind: match &node.kind {
+                    NativeNodeKind::Document => NativeNodeKindWire::Document,
+                    NativeNodeKind::Element { name, attributes } => NativeNodeKindWire::Element {
+                        name: name.clone(),
+                        attributes: attributes.clone(),
+                    },
+                    NativeNodeKind::Text(value) => NativeNodeKindWire::Text(value.clone()),
+                },
+                state: NativeElementStateWire {
+                    value: node.state.value.clone(),
+                    checked: node.state.checked,
+                    focused: node.state.focused,
+                    selected: node.state.selected,
+                },
+            })
+            .collect();
+        NativeDocumentWire {
+            nodes,
+            stylesheet_sources,
+        }
+    }
+
+    pub(crate) fn from_content_wire(
+        wire: NativeDocumentWire,
+        limits: &NativeEngineLimits,
+        generation: u32,
+    ) -> Result<Self, NativeEngineError> {
+        limits.validate()?;
+        if wire.nodes.is_empty() {
+            return Err(NativeEngineError::Parse {
+                offset: 0,
+                reason: "content process returned an empty document snapshot".into(),
+            });
+        }
+        if wire.nodes.len() > limits.max_nodes {
+            return Err(NativeEngineError::limit(
+                "content-process DOM nodes",
+                limits.max_nodes,
+                wire.nodes.len(),
+            ));
+        }
+        let node_id = |index: u32| -> Result<NativeNodeId, NativeEngineError> {
+            let index_usize = usize::try_from(index).map_err(|_| NativeEngineError::Parse {
+                offset: 0,
+                reason: "content process returned an invalid node index".into(),
+            })?;
+            if index_usize >= wire.nodes.len() {
+                return Err(NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned an out-of-range node link".into(),
+                });
+            }
+            Ok(NativeNodeId { generation, index })
+        };
+        let mut nodes = Vec::with_capacity(wire.nodes.len());
+        for (index, wire_node) in wire.nodes.iter().enumerate() {
+            let index = u32::try_from(index).map_err(|_| {
+                NativeEngineError::limit("content-process DOM node index", u32::MAX as usize, index)
+            })?;
+            let parent = wire_node.parent.map(&node_id).transpose()?;
+            let children = wire_node
+                .children
+                .iter()
+                .copied()
+                .map(node_id)
+                .collect::<Result<Vec<_>, _>>()?;
+            let kind = match &wire_node.kind {
+                NativeNodeKindWire::Document => NativeNodeKind::Document,
+                NativeNodeKindWire::Element { name, attributes } => {
+                    if name.len() > MAX_ATTRIBUTE_BYTES
+                        || attributes.iter().any(|(name, value)| {
+                            name.len() > MAX_ATTRIBUTE_BYTES || value.len() > MAX_ATTRIBUTE_BYTES
+                        })
+                    {
+                        return Err(NativeEngineError::limit(
+                            "content-process attribute",
+                            MAX_ATTRIBUTE_BYTES,
+                            MAX_ATTRIBUTE_BYTES.saturating_add(1),
+                        ));
+                    }
+                    NativeNodeKind::Element {
+                        name: name.clone(),
+                        attributes: attributes.clone(),
+                    }
+                }
+                NativeNodeKindWire::Text(value) => NativeNodeKind::Text(value.clone()),
+            };
+            nodes.push(NativeNode {
+                id: NativeNodeId { generation, index },
+                parent,
+                children,
+                kind,
+                state: NativeElementState {
+                    value: wire_node.state.value.clone(),
+                    checked: wire_node.state.checked,
+                    focused: wire_node.state.focused,
+                    selected: wire_node.state.selected,
+                },
+            });
+        }
+        if !matches!(nodes[0].kind, NativeNodeKind::Document) || nodes[0].parent.is_some() {
+            return Err(NativeEngineError::Parse {
+                offset: 0,
+                reason: "content process returned an invalid document root".into(),
+            });
+        }
+        let root = NativeNodeId {
+            generation,
+            index: 0,
+        };
+        let mut diagnostics = NativeDiagnosticSink::default();
+        let stylesheet = NativeStylesheet::from_sources_with_diagnostics(
+            wire.stylesheet_sources,
+            &mut diagnostics,
+        )?;
+        for node in &nodes {
+            let Some(inline_style) = node.attribute("style") else {
+                continue;
+            };
+            super::css::collect_declaration_diagnostics(
+                inline_style,
+                NativeDiagnosticSource::InlineStyle {
+                    node_index: node.id().index(),
+                },
+                0,
+                &mut diagnostics,
+            );
+        }
+        let (diagnostics, diagnostics_truncated) = diagnostics.finish();
+        let mut document = Self {
+            generation,
+            revision: u64::from(generation),
+            root,
+            nodes,
+            stylesheet,
+            diagnostics,
+            diagnostics_truncated,
+        };
         document.normalize_select_defaults();
         Ok(document)
     }

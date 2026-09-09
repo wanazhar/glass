@@ -76,10 +76,11 @@ execution, OS sandboxing, supervisor recovery, and browser parity remain open.
 
 The completed resource-transfer batch is
 [native-engine-browser-005](tasks/native-engine-browser-005.md). The child now
-invokes the shared bounded HTTP(S) loader and returns only validated final-URL
-metadata plus a size-capped HTML transfer. Load deadlines, frame/document
-quotas, malformed-transfer detection, and child poisoning are explicit; local
-resources remain in-process. The parent still constructs the DOM, so parser
+invokes the shared bounded HTTP(S) loader, parses the HTML tree, and returns
+only validated final-URL metadata plus a size-capped typed DOM snapshot. Load
+deadlines, frame/document quotas, malformed-transfer detection, and child
+poisoning are explicit; local resources remain in-process. The parent
+reconstructs the DOM and reparses stylesheet sources, so computed-style
 isolation, content execution, sandboxing, supervisor recovery, and browser
 parity remain open.
 

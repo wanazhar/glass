@@ -1761,8 +1761,18 @@ The completed computed-style follow-up is
 now serializes one typed computed-style record per parsed node; the parent
 validates the bounded record set and uses it for external layout/visibility
 without reparsing stylesheet sources. Local/data/fixture documents retain the
-direct stylesheet owner. DOM mutation, CSS diagnostic transfer, script
-execution, sandboxing, and supervisor recovery remain open.
+direct stylesheet owner.
+
+The completed mutation-ownership follow-up is
+[`native-engine-browser-007`](../tasks/native-engine-browser-007.md). The child
+retains the external document, applies bounded click/type control mutations on
+a transactional clone, and returns a fresh DOM/style snapshot with typed
+privacy-safe effects. The parent validates the returned node indices and
+publishes one revision/effect batch; a five-second mutation deadline,
+malformed transfer, or worker rejection poisons the child without success or
+silent fallback. Scroll and link navigation remain parent-owned handoffs.
+CSS diagnostic transfer, script/event-loop execution, sandboxing, supervisor
+recovery, and browser parity remain open.
 
 ## Baseline and constraints
 

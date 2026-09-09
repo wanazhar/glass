@@ -28017,3 +28017,72 @@ async fn native_content_process_exposes_bounded_same_origin_post_fetch() {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
+
+#[tokio::test]
+async fn native_content_process_exposes_bounded_xhr_fetch_bridge() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/xhr"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            if expected_path == "/xhr" {
+                assert_eq!(request.split_whitespace().next(), Some("POST"));
+                assert!(request.lines().any(|line| {
+                    line.split_once(':').is_some_and(|(name, value)| {
+                        name.eq_ignore_ascii_case("content-type")
+                            && value.trim() == "application/json"
+                    })
+                }));
+                let body = request
+                    .split_once("\r\n\r\n")
+                    .map(|(_, body)| body)
+                    .unwrap_or_default();
+                assert_eq!(body, r#"{"name":"glass"}"#);
+            }
+            let (content_type, body) = if expected_path == "/page" {
+                ("text/html", "<p>XHR owner</p>")
+            } else {
+                ("text/plain", "xhr-response")
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            r#"(() => {
+                const xhr = new XMLHttpRequest();
+                xhr.open('POST', '/xhr');
+                xhr.setRequestHeader('Content-Type', 'application/json');
+                xhr.onload = () => {
+                    globalThis.xhrResult = [xhr.status, xhr.responseText, xhr.responseURL, xhr.getResponseHeader('content-type')];
+                };
+                xhr.send('{"name":"glass"}');
+            })()"#,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.evaluate_async("globalThis.xhrResult").await.unwrap(),
+        serde_json::json!([
+            200,
+            "xhr-response",
+            format!("http://{address}/xhr"),
+            "text/plain"
+        ])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}

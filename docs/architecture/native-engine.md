@@ -150,6 +150,13 @@ The versioned implementation contract is
 profile capability family and milestone it advances; a bounded fixture slice
 cannot claim browser-complete status by itself.
 
+The first executable browser-complete batch is recorded in
+[`native-engine-browser-001`](../plan/tasks/native-engine-browser-001.md). Its
+`NativeRuntime` owns runtime state, typed task/microtask ordering, cancellation,
+bounded privacy-safe traces, startup rollback, and terminal close. It is still
+synchronous and in-process; later BE-01 work must add asynchronous workers,
+IPC, crash recovery, and the production content-process boundary.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature
@@ -2400,7 +2407,9 @@ NativeEngineBackend       <- semantic backend profile and lifecycle adapter
 NativeEngine              <- the only mutable page-state owner
     +-------+--------+----------------+----------+-----------+
     |       |        |                |          |           |          |
-  DOM   history  scheduler      resource loader layout    display list  raster
+  DOM   history   runtime      resource loader layout    display list  raster
+                    |
+                scheduler
     |       |        |                |          |           |          |
     +--- semantic projection ---------+---- hit test --- paint commands -> RGBA
             |

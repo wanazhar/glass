@@ -1712,6 +1712,13 @@ next implementation batch must advance one declared profile family and retain
 the profile's native-only, no-silent-fallback, two-crate, and security-boundary
 constraints.
 
+The first executable BE-01 batch is
+[`native-engine-browser-001`](../tasks/native-engine-browser-001.md). It
+introduces a `NativeRuntime` owner around the existing deterministic scheduler,
+with typed microtasks, one-shot cancellation, bounded privacy-safe traces,
+startup rollback, and terminal close. It deliberately stops before network,
+JavaScript, asynchronous Web APIs, IPC, or process isolation.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine
@@ -1756,7 +1763,8 @@ real edit touching the native module, and target-directory growth separately.
 |---|---|---|---|---|
 | `native_engine::config` | public startup configuration, hard limits, and bounded local URL policy | URLs, viewport, fixtures, limits | validated `NativeEngineConfig` and local URL helpers | `url`, typed native error |
 | `native_engine::lifecycle` | lifecycle state | transitions | `New`, `Running`, `Closed` | none |
-| `native_engine::scheduler` | logical clock and bounded ordered tasks | task kind, delay | deterministic task IDs/order | native limits |
+| `native_engine::runtime` | runtime lifecycle, cancellation, typed microtasks, bounded trace, and scheduler ownership | lifecycle events, typed work, delay, cancellation | runtime state, task/microtask readiness, trace events | scheduler + native error |
+| `native_engine::scheduler` | logical clock and bounded ordered tasks | task kind, delay | deterministic task IDs/order | native limits; owned by runtime |
 | `native_engine::history` | current local history and per-entry root scroll state | committed URL/revision/scroll offset | bounded entries/current index | native limits + layout point |
 | `native_engine::origin` | Phase 1 origin placeholder | loaded URL | opaque origin | none |
 | `native_engine::resource_loader` | fixture/data/about resource boundary | validated URL | bounded local HTML resource | `url`, config fixtures |
@@ -1791,16 +1799,17 @@ geometry representation is introduced.
 The first slice must prove these real call chains:
 
 1. `NativeEngineConfig` creates a bounded `NativeResourceLoader` and a
-   deterministic scheduler.
+   `NativeRuntime` around the deterministic scheduler.
 2. `NativeEngineBackend::new` creates one `NativeEngine` and validates its
    experimental `BackendProfile`.
 3. `BackendFactory::native` registers the backend without adding it to
    automatic selection candidates.
 4. `BackendFactory::start` permits the native candidate only when the request's
    preferred backend ID is `native-engine`.
-5. `BrowserBackendDispatcher::initialize` reaches the engine lifecycle state.
+5. `BrowserBackendDispatcher::initialize` reaches the engine and runtime
+   lifecycle states, including the startup commit trace.
 6. `BrowserBackendDispatcher::navigate` reaches resource loading, DOM parsing,
-   scheduler commit, history, and revision generation.
+   runtime-owned scheduler commit, history, and revision generation.
 7. `BrowserBackendDispatcher::contexts` projects the sole engine context into
    the transport-neutral `BrowsingContext` type.
 8. `BrowserBackendDispatcher::evidence` projects the bounded document snapshot

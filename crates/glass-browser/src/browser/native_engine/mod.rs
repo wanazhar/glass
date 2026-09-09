@@ -19,6 +19,7 @@ mod origin;
 mod paint;
 mod raster;
 mod resource_loader;
+mod runtime;
 mod scheduler;
 
 pub use browsing_context::{NATIVE_CONTEXT_ID, NativeBrowsingContext};
@@ -58,4 +59,8 @@ pub use raster::{
     NativeSurface,
 };
 pub use resource_loader::{NativeResource, NativeResourceLoader};
+pub use runtime::{
+    MAX_NATIVE_MICROTASKS, MAX_NATIVE_RUNTIME_TRACE, NativeCancellationToken, NativeMicrotask,
+    NativeRuntime, NativeRuntimeState, NativeRuntimeTraceEvent, NativeRuntimeTraceKind,
+};
 pub use scheduler::{DeterministicClock, DeterministicScheduler, NativeTask, ScheduledTask};

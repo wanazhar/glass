@@ -28086,3 +28086,80 @@ async fn native_content_process_exposes_bounded_xhr_fetch_bridge() {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
+
+#[tokio::test]
+async fn native_content_process_fetches_bounded_text_form_data() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/formdata"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            if expected_path == "/formdata" {
+                assert_eq!(request.split_whitespace().next(), Some("POST"));
+                let content_type = request.lines().find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.eq_ignore_ascii_case("content-type")
+                            .then_some(value.trim().to_owned())
+                    })
+                });
+                assert!(content_type.is_some_and(|value| {
+                    value.starts_with("multipart/form-data; boundary=----GlassNativeForm")
+                }));
+                let body = request
+                    .split_once("\r\n\r\n")
+                    .map(|(_, body)| body)
+                    .unwrap_or_default();
+                assert!(
+                    body.contains("Content-Disposition: form-data; name=\"name\"\r\n\r\nGlass\r\n"),
+                    "unexpected FormData body: {body:?}"
+                );
+                assert!(
+                    body.contains("Content-Disposition: form-data; name=\"tag\"\r\n\r\nengine\r\n"),
+                    "unexpected FormData body: {body:?}"
+                );
+            }
+            let (content_type, body) = if expected_path == "/page" {
+                ("text/html", "<p>FormData owner</p>")
+            } else {
+                ("text/plain", "formdata-accepted")
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            r#"(() => {
+                const formData = new FormData();
+                formData.append('name', 'Glass');
+                formData.append('tag', 'old');
+                formData.set('tag', 'engine');
+                fetch('/formdata', { method: 'POST', body: formData })
+                    .then(response => response.text())
+                    .then(text => { globalThis.formDataResponse = text; });
+            })()"#,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.formDataResponse")
+            .await
+            .unwrap(),
+        serde_json::json!("formdata-accepted")
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}

@@ -1168,18 +1168,72 @@ fn document_bootstrap(
   let nextFetchRequestId = Number.isSafeInteger(globalThis.__glassNextFetchRequestId)
     ? globalThis.__glassNextFetchRequestId
     : 1;
+  const FormDataNative = function() {{
+    this.__glassFormData = true;
+    this._entries = [];
+  }};
+  FormDataNative.prototype.append = function(name, value, filename) {{
+    if (filename !== undefined) throw new TypeError("native FormData file parts are unsupported");
+    this._entries.push([String(name), String(value)]);
+  }};
+  FormDataNative.prototype.set = function(name, value, filename) {{
+    if (filename !== undefined) throw new TypeError("native FormData file parts are unsupported");
+    const key = String(name);
+    this._entries = this._entries.filter(entry => entry[0] !== key);
+    this._entries.push([key, String(value)]);
+  }};
+  FormDataNative.prototype.delete = function(name) {{
+    const key = String(name);
+    this._entries = this._entries.filter(entry => entry[0] !== key);
+  }};
+  FormDataNative.prototype.get = function(name) {{
+    const key = String(name);
+    const entry = this._entries.find(candidate => candidate[0] === key);
+    return entry ? entry[1] : null;
+  }};
+  FormDataNative.prototype.getAll = function(name) {{
+    const key = String(name);
+    return this._entries.filter(entry => entry[0] === key).map(entry => entry[1]);
+  }};
+  FormDataNative.prototype.has = function(name) {{
+    const key = String(name);
+    return this._entries.some(entry => entry[0] === key);
+  }};
+  FormDataNative.prototype.entries = function() {{ return this._entries.slice(); }};
+  FormDataNative.prototype.forEach = function(callback, thisArg) {{
+    if (typeof callback !== "function") throw new TypeError("FormData callback must be callable");
+    this._entries.forEach(entry => callback.call(thisArg, entry[1], entry[0], this));
+  }};
+  const escapeFormDataName = value => String(value)
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, "\\\"")
+    .replace(/\r/g, "%0D")
+    .replace(/\n/g, "%0A");
+  const serializeFormData = (formData, requestId) => {{
+    const boundary = "----GlassNativeForm" + requestId;
+    let body = "";
+    for (const entry of formData._entries) {{
+      body += "--" + boundary + "\r\n";
+      body += "Content-Disposition: form-data; name=\"" + escapeFormDataName(entry[0]) + "\"\r\n\r\n";
+      body += entry[1] + "\r\n";
+    }}
+    body += "--" + boundary + "--\r\n";
+    return {{ body, contentType: "multipart/form-data; boundary=" + boundary }};
+  }};
+  globalThis.FormData = FormDataNative;
   const fetchNative = (input, options) => {{
     if (typeof input !== "string") throw new TypeError("native fetch requires a URL string");
     const settings = options && typeof options === "object" ? options : {{}};
     const method = settings.method === undefined ? "GET" : String(settings.method).toUpperCase();
-    const body = settings.body === undefined || settings.body === null
+    const rawBody = settings.body === undefined || settings.body === null
       ? null
       : String(settings.body);
+    const formData = settings.body && settings.body.__glassFormData === true
+      ? settings.body
+      : null;
+    let body = rawBody;
     if (method !== "GET" && method !== "POST") {{
       return Promise.reject(new TypeError("native fetch supports only GET and POST requests"));
-    }}
-    if (method === "GET" && body !== null) {{
-      return Promise.reject(new TypeError("GET fetch requests must not have a body"));
     }}
     const headers = settings.headers && typeof settings.headers === "object"
       ? settings.headers
@@ -1192,6 +1246,15 @@ fn document_bootstrap(
       contentType = String(headers[name]);
     }}
     const requestId = nextFetchRequestId;
+    if (formData) {{
+      if (contentType !== null) return Promise.reject(new TypeError("FormData chooses its own Content-Type boundary"));
+      const serialized = serializeFormData(formData, requestId);
+      body = serialized.body;
+      contentType = serialized.contentType;
+    }}
+    if (method === "GET" && body !== null) {{
+      return Promise.reject(new TypeError("GET fetch requests must not have a body"));
+    }}
     nextFetchRequestId += 1;
     globalThis.__glassNextFetchRequestId = nextFetchRequestId;
     const credentials = settings.credentials !== "omit";
@@ -1253,12 +1316,14 @@ fn document_bootstrap(
   }};
   XMLHttpRequestNative.prototype.getAllResponseHeaders = function() {{
     return this._responseContentType
-      ? "content-type: " + this._responseContentType + "\\r\\n"
+      ? "content-type: " + this._responseContentType + "\r\n"
       : "";
   }};
   XMLHttpRequestNative.prototype.send = function(body) {{
     if (this.readyState !== 1) throw new TypeError("native XMLHttpRequest is not open");
-    const requestBody = body === undefined || body === null ? null : String(body);
+    const requestBody = body && body.__glassFormData === true
+      ? body
+      : body === undefined || body === null ? null : String(body);
     const request = fetchNative(this._url, {{
       method: this._method,
       body: requestBody,

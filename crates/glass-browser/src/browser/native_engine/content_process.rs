@@ -903,7 +903,13 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             }
             "load" if protocol_matches(&request) && running => {
                 match load_content_resource(&request, &mut resource_loader).await {
-                    Ok((resource, mut parsed, loaded_viewport, script_sources)) => {
+                    Ok((
+                        resource,
+                        mut parsed,
+                        loaded_viewport,
+                        script_sources,
+                        resource_load_nodes,
+                    )) => {
                         let mut script_runtime = None;
                         let response = match execute_page_scripts(
                             &mut parsed,
@@ -912,6 +918,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             &resource.url,
                             &resource.origin,
                             loaded_viewport,
+                            &resource_load_nodes,
                         ) {
                             Ok(()) => {
                                 let document_wire = parsed.to_content_wire();
@@ -1362,6 +1369,7 @@ async fn load_content_resource(
         NativeDocument,
         Viewport,
         Vec<NativePageScript>,
+        Vec<u32>,
     ),
     NativeEngineError,
 > {
@@ -1496,11 +1504,13 @@ async fn load_content_resource(
         .await?;
     let discovery = NativeDocument::parse(&resource.body, &limits)?;
     let mut external_stylesheets = Vec::new();
+    let mut resource_load_nodes = Vec::new();
     for href in discovery
-        .external_stylesheet_hrefs()
+        .external_stylesheet_links()
         .into_iter()
         .take(MAX_CONTENT_STYLESHEETS)
     {
+        let (node_index, href) = href;
         if let Some(stylesheet) = loader.load_stylesheet_async(&resource.url, &href).await? {
             let next_len = external_stylesheets
                 .iter()
@@ -1515,11 +1525,16 @@ async fn load_content_resource(
                 ));
             }
             external_stylesheets.push(stylesheet);
+            resource_load_nodes.push(node_index);
         }
     }
     let document =
         NativeDocument::parse_with_stylesheets(&resource.body, &limits, &external_stylesheets, 1)?;
-    let script_sources = load_page_script_sources(&document, loader, &resource.url).await?;
+    let (script_sources, mut script_resource_nodes) =
+        load_page_script_sources(&document, loader, &resource.url).await?;
+    resource_load_nodes.append(&mut script_resource_nodes);
+    resource_load_nodes.sort_unstable();
+    resource_load_nodes.dedup();
     let wire = document.to_content_wire();
     Ok((
         NativeContentLoad {
@@ -1530,6 +1545,7 @@ async fn load_content_resource(
         document,
         viewport,
         script_sources,
+        resource_load_nodes,
     ))
 }
 
@@ -1537,8 +1553,9 @@ async fn load_page_script_sources(
     document: &NativeDocument,
     loader: &mut NativeResourceLoader,
     document_url: &str,
-) -> Result<Vec<NativePageScript>, NativeEngineError> {
+) -> Result<(Vec<NativePageScript>, Vec<u32>), NativeEngineError> {
     let mut sources = Vec::new();
+    let mut resource_load_nodes = Vec::new();
     for (index, script) in document
         .page_script_sources(
             super::javascript::MAX_NATIVE_INLINE_SCRIPTS,
@@ -1575,11 +1592,16 @@ async fn load_page_script_sources(
                 )
                 .await?;
             }
-            NativePageScriptSource::External { href, timing } => {
+            NativePageScriptSource::External {
+                href,
+                timing,
+                node_index,
+            } => {
                 if let Some(resource) = loader
                     .load_script_async(document_url, &href, MAX_NATIVE_SCRIPT_BYTES)
                     .await?
                 {
+                    resource_load_nodes.push(node_index);
                     sources.push((
                         timing,
                         NativePageScript::Classic {
@@ -1588,11 +1610,16 @@ async fn load_page_script_sources(
                     ));
                 }
             }
-            NativePageScriptSource::ModuleExternal { href, timing } => {
+            NativePageScriptSource::ModuleExternal {
+                href,
+                timing,
+                node_index,
+            } => {
                 if let Some(resource) = loader
                     .load_script_async(document_url, &href, MAX_NATIVE_SCRIPT_BYTES)
                     .await?
                 {
+                    resource_load_nodes.push(node_index);
                     let name = resource.url;
                     let source = resource.body;
                     let mut seen = BTreeSet::new();
@@ -1620,7 +1647,7 @@ async fn load_page_script_sources(
             }
         }
     }
-    Ok(order_page_scripts(sources))
+    Ok((order_page_scripts(sources), resource_load_nodes))
 }
 
 async fn load_module_dependencies(

@@ -190,6 +190,7 @@ pub(crate) fn execute_inline_scripts(
         document_url,
         document_origin,
         viewport,
+        &[],
     )
 }
 
@@ -200,6 +201,7 @@ pub(crate) fn execute_page_scripts(
     document_url: &str,
     document_origin: &NativeOrigin,
     viewport: Viewport,
+    resource_load_nodes: &[u32],
 ) -> Result<(), NativeEngineError> {
     if runtime.is_none() {
         *runtime = Some(NativeJavaScriptRuntime::new()?);
@@ -244,6 +246,27 @@ pub(crate) fn execute_page_scripts(
                 NativePageScript::ModuleDependency { .. } => continue,
             }
         };
+        if evaluation.commands.is_empty() {
+            continue;
+        }
+        let mut next = document.clone();
+        next.apply_script_commands(&evaluation.commands)?;
+        *document = next;
+    }
+    for node_index in resource_load_nodes {
+        let Some(event_source) = host_event_script(&[(*node_index, NativeEventKind::Load)])? else {
+            continue;
+        };
+        let evaluation = runtime
+            .as_ref()
+            .expect("page script runtime initialized")
+            .evaluate(
+                &event_source,
+                document,
+                document_url,
+                document_origin,
+                viewport,
+            )?;
         if evaluation.commands.is_empty() {
             continue;
         }

@@ -17,6 +17,7 @@ const NATIVE_NETWORK_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_NATIVE_CACHE_ENTRIES: usize = 32;
 const MAX_NATIVE_COOKIES: usize = 128;
 const MAX_NATIVE_COOKIE_BYTES: usize = 4096;
+const MAX_NATIVE_FORM_BODY_BYTES: usize = crate::browser_backend::MAX_TEXT_BYTES;
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +45,44 @@ pub struct NativeResource {
     pub url: String,
     pub origin: NativeOrigin,
     pub body: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NativeNavigationMethod {
+    Get,
+    Post,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeNavigationRequest {
+    pub(crate) method: NativeNavigationMethod,
+    pub(crate) url: String,
+    pub(crate) body: Option<String>,
+}
+
+impl NativeNavigationRequest {
+    pub(crate) fn get(url: impl Into<String>) -> Self {
+        Self {
+            method: NativeNavigationMethod::Get,
+            url: url.into(),
+            body: None,
+        }
+    }
+
+    pub(crate) fn post(url: impl Into<String>, body: String) -> Result<Self, NativeEngineError> {
+        if body.len() > MAX_NATIVE_FORM_BODY_BYTES {
+            return Err(NativeEngineError::limit(
+                "form submission body",
+                MAX_NATIVE_FORM_BODY_BYTES,
+                body.len(),
+            ));
+        }
+        Ok(Self {
+            method: NativeNavigationMethod::Post,
+            url: url.into(),
+            body: Some(body),
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -249,6 +288,44 @@ impl NativeResourceLoader {
         url: &str,
         referrer: Option<&str>,
     ) -> Result<NativeResource, NativeEngineError> {
+        self.load_async_request_with_referrer(&NativeNavigationRequest::get(url), referrer)
+            .await
+    }
+
+    pub(crate) async fn load_async_request_with_referrer(
+        &mut self,
+        navigation: &NativeNavigationRequest,
+        referrer: Option<&str>,
+    ) -> Result<NativeResource, NativeEngineError> {
+        let request_method = navigation.method;
+        let request_body = match request_method {
+            NativeNavigationMethod::Get => {
+                if navigation.body.is_some() {
+                    return Err(NativeEngineError::invalid(
+                        "GET navigation body",
+                        "must be absent",
+                    ));
+                }
+                None
+            }
+            NativeNavigationMethod::Post => {
+                let body = navigation.body.as_deref().ok_or_else(|| {
+                    NativeEngineError::invalid(
+                        "POST navigation body",
+                        "must be present for a form submission",
+                    )
+                })?;
+                if body.len() > MAX_NATIVE_FORM_BODY_BYTES {
+                    return Err(NativeEngineError::limit(
+                        "form submission body",
+                        MAX_NATIVE_FORM_BODY_BYTES,
+                        body.len(),
+                    ));
+                }
+                Some(body.to_owned())
+            }
+        };
+        let url = navigation.url.as_str();
         validate_url_text("navigation URL", url)?;
         let resource_url = without_fragment(url);
         if !is_network_url(resource_url) {
@@ -259,7 +336,9 @@ impl NativeResourceLoader {
         })?;
         reject_credentials(&parsed)?;
         let referrer = normalize_referrer(referrer, &parsed)?;
-        if let Some(cached) = self.network.cache.get(&cache_key(&parsed)).cloned() {
+        if request_method == NativeNavigationMethod::Get
+            && let Some(cached) = self.network.cache.get(&cache_key(&parsed)).cloned()
+        {
             return with_original_fragment(cached, url);
         }
         let client = reqwest::Client::builder()
@@ -269,14 +348,24 @@ impl NativeResourceLoader {
             .map_err(|error| network_error("HTTP client construction", error))?;
         let mut current_url = parsed.clone();
         let mut request_referrer = referrer;
+        let mut current_method = request_method;
+        let mut current_body = request_body;
         let mut redirects = 0;
         let mut pending_cookies = Vec::new();
         let response = loop {
             let mut request_url = current_url.clone();
             request_url.set_fragment(None);
-            let mut request = client
-                .get(request_url)
-                .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml");
+            let mut request = match current_method {
+                NativeNavigationMethod::Get => client.get(request_url),
+                NativeNavigationMethod::Post => client
+                    .post(request_url)
+                    .header(
+                        reqwest::header::CONTENT_TYPE,
+                        "application/x-www-form-urlencoded",
+                    )
+                    .body(current_body.clone().unwrap_or_default()),
+            }
+            .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml");
             if let Some(referrer) = request_referrer.as_deref() {
                 request = request.header(reqwest::header::REFERER, referrer);
             }
@@ -327,6 +416,16 @@ impl NativeResourceLoader {
                 });
             }
             request_referrer = normalize_referrer(Some(current_url.as_str()), &next_url)?;
+            if matches!(
+                response.status(),
+                reqwest::StatusCode::MOVED_PERMANENTLY
+                    | reqwest::StatusCode::FOUND
+                    | reqwest::StatusCode::SEE_OTHER
+            ) && current_method == NativeNavigationMethod::Post
+            {
+                current_method = NativeNavigationMethod::Get;
+                current_body = None;
+            }
             current_url = next_url;
             redirects += 1;
         };
@@ -400,7 +499,7 @@ impl NativeResourceLoader {
             cache_key(&final_url),
             content_security_policy(&response_headers),
         );
-        if cacheable && !has_set_cookie {
+        if request_method == NativeNavigationMethod::Get && cacheable && !has_set_cookie {
             self.network.store_cache(cache_key(&parsed), cache_resource);
         }
         Ok(resource)

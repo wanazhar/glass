@@ -21,12 +21,41 @@ use std::io::Cursor;
 use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 
 fn native_content_process_test_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
+}
+
+async fn read_http_request(stream: &mut TcpStream) -> String {
+    let mut request = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    loop {
+        let read = stream.read(&mut chunk).await.unwrap();
+        if read == 0 {
+            break;
+        }
+        request.extend_from_slice(&chunk[..read]);
+        let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n") else {
+            continue;
+        };
+        let header_end = header_end + 4;
+        let content_length = String::from_utf8_lossy(&request[..header_end])
+            .lines()
+            .find_map(|line| {
+                line.split_once(':').and_then(|(name, value)| {
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().unwrap())
+                })
+            })
+            .unwrap_or_default();
+        if request.len() >= header_end.saturating_add(content_length) {
+            break;
+        }
+    }
+    String::from_utf8_lossy(&request).into_owned()
 }
 
 fn find_element_with_attribute(
@@ -576,6 +605,52 @@ async fn native_local_script_form_submit_navigates_with_get_controls() {
 }
 
 #[tokio::test]
+async fn native_local_script_form_submit_navigates_with_post_controls() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://post-form-start",
+            "<form id='search' method='post' action='fixture://post-form-result'><input name='query' value='hello'></form>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://post-form-result",
+            "<title>Post result</title><p>Submitted</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://post-form-start");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async("document.getElementById('search').submit()")
+        .await
+        .unwrap();
+    assert_eq!(engine.snapshot().unwrap().url, "fixture://post-form-result");
+    assert_eq!(engine.snapshot().unwrap().title, "Post result");
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_local_form_rejects_unsupported_post_encoding() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://unsupported-post-form",
+            "<form id='search' method='post' enctype='multipart/form-data' action='fixture://post-result'><input name='query' value='hello'></form>",
+        )
+        .unwrap()
+        .with_fixture("fixture://post-result", "<title>Result</title>")
+        .unwrap()
+        .with_initial_url("fixture://unsupported-post-form");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize().unwrap();
+    let error = engine
+        .evaluate_async("document.getElementById('search').submit()")
+        .await
+        .unwrap_err();
+    assert!(matches!(error, NativeEngineError::UnsupportedUrl { .. }));
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_form_submit_event_can_cancel_request_submit() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -1081,6 +1156,56 @@ async fn native_content_process_script_form_submit_navigates_with_get_controls()
         format!("http://{address}/result?query=child-event")
     );
     assert_eq!(engine.snapshot().unwrap().title, "Result");
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_script_form_submit_sends_post_controls() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/form", "/result"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            if expected_path == "/result" {
+                assert_eq!(request.split_whitespace().next(), Some("POST"));
+                assert!(request.lines().any(|line| {
+                    line.eq_ignore_ascii_case("content-type: application/x-www-form-urlencoded")
+                }));
+                assert!(request.ends_with("query=hello"));
+            } else {
+                assert_eq!(request.split_whitespace().next(), Some("GET"));
+            }
+            let body = if expected_path == "/form" {
+                "<form id='search' method='post' action='/result'><input name='query' value='hello'></form>"
+            } else {
+                "<title>Post result</title><p>Submitted</p>"
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/form")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async("document.getElementById('search').submit()")
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        format!("http://{address}/result")
+    );
+    assert_eq!(engine.snapshot().unwrap().title, "Post result");
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }

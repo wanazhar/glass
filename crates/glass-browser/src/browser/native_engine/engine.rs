@@ -24,7 +24,8 @@ use super::origin::NativeOrigin;
 use super::paint::NativeDisplayList;
 use super::raster::NativeSurface;
 use super::resource_loader::{
-    NativeFetchResponse, NativeResource, NativeResourceLoader, referrer_for_navigation,
+    NativeFetchResponse, NativeNavigationMethod, NativeNavigationRequest, NativeResource,
+    NativeResourceLoader, referrer_for_navigation,
 };
 use super::runtime::{NativeRuntimeState, NativeRuntimeTraceEvent};
 use super::scheduler::{DeterministicScheduler, NativeTask};
@@ -172,7 +173,12 @@ impl NativeEngine {
         let prepared = if let Some(process) = content_process.as_mut() {
             let viewport = self.config.viewport;
             let resource = process
-                .load(&initial_url, &self.config.limits, viewport, None)
+                .load(
+                    &NativeNavigationRequest::get(initial_url.clone()),
+                    &self.config.limits,
+                    viewport,
+                    None,
+                )
                 .await?;
             self.prepare_navigation_content(resource)?
         } else {
@@ -255,8 +261,16 @@ impl NativeEngine {
         &mut self,
         url: impl Into<String>,
     ) -> Result<NativeEngineSnapshot, NativeEngineError> {
+        self.navigate_request_async(NativeNavigationRequest::get(url))
+            .await
+    }
+
+    async fn navigate_request_async(
+        &mut self,
+        navigation: NativeNavigationRequest,
+    ) -> Result<NativeEngineSnapshot, NativeEngineError> {
         self.require_running("navigate")?;
-        let url = url.into();
+        let url = navigation.url.as_str();
         if is_network_url(&url) {
             let referrer = referrer_for_navigation(&self.url, &url)?;
             self.ensure_content_process().await?;
@@ -268,7 +282,12 @@ impl NativeEngine {
                     operation: "content process load".into(),
                     reason: "native content process is not running".into(),
                 })?
-                .load(&url, &self.config.limits, viewport, referrer.as_deref())
+                .load(
+                    &navigation,
+                    &self.config.limits,
+                    viewport,
+                    referrer.as_deref(),
+                )
                 .await?;
             self.commit_content_process().await?;
             if let Some(worker) = self.runtime_worker.clone() {
@@ -277,7 +296,10 @@ impl NativeEngine {
             return self.navigate_content(content);
         }
         self.content_process.take();
-        let resource = self.loader.load_async(&url).await?;
+        let resource = self
+            .loader
+            .load_async_request_with_referrer(&navigation, None)
+            .await?;
         if let Some(worker) = self.runtime_worker.clone() {
             self.navigate_resource_async(resource, &worker).await
         } else {
@@ -758,8 +780,8 @@ impl NativeEngine {
                     self.activate_link(id, &href, true)?;
                 }
                 ScriptNavigationTarget::Form { form_id, .. } => {
-                    let href = self.document.form_submission_url(form_id, &self.url)?;
-                    self.navigate(href)?;
+                    let request = self.document.form_submission_request(form_id, &self.url)?;
+                    self.navigate(request.url)?;
                 }
             }
         }
@@ -782,7 +804,7 @@ impl NativeEngine {
                             href: href.to_owned(),
                         })
                     } else if let Some(form_id) = document.submit_control_form(id) {
-                        document.form_submission_url(form_id, &self.url)?;
+                        document.form_submission_request(form_id, &self.url)?;
                         Some(ScriptNavigationTarget::Form {
                             form_id,
                             dispatch_submit: true,
@@ -793,7 +815,7 @@ impl NativeEngine {
                 }
                 super::javascript::NativeScriptCommand::SubmitForm { node_index } => {
                     let id = NativeNodeId::from_parts(document.generation(), *node_index);
-                    document.form_submission_url(id, &self.url)?;
+                    document.form_submission_request(id, &self.url)?;
                     Some(ScriptNavigationTarget::Form {
                         form_id: id,
                         dispatch_submit: false,
@@ -801,7 +823,7 @@ impl NativeEngine {
                 }
                 super::javascript::NativeScriptCommand::RequestSubmitForm { node_index } => {
                     let id = NativeNodeId::from_parts(document.generation(), *node_index);
-                    document.form_submission_url(id, &self.url)?;
+                    document.form_submission_request(id, &self.url)?;
                     Some(ScriptNavigationTarget::Form {
                         form_id: id,
                         dispatch_submit: true,
@@ -827,18 +849,22 @@ impl NativeEngine {
         navigation: NativeContentNavigation,
     ) -> Result<(), NativeEngineError> {
         let id = NativeNodeId::from_parts(self.document.generation(), navigation.node_index);
-        let href = if let Some(href) = self.document.link_href(id).filter(|href| !href.is_empty()) {
-            href.to_owned()
-        } else {
-            self.document.form_submission_url(id, &self.url)?
-        };
-        if href != navigation.href {
+        let mut request =
+            if let Some(href) = self.document.link_href(id).filter(|href| !href.is_empty()) {
+                NativeNavigationRequest::get(href)
+            } else {
+                self.document.form_submission_request(id, &self.url)?
+            };
+        if request.url != navigation.href {
             return Err(NativeEngineError::TargetNotActionable {
                 reason: "script navigation target changed during transfer".into(),
             });
         }
-        let target_url = self.resolve_link_href(&href)?;
-        if self.is_same_document_navigation(&target_url) {
+        let target_url = self.resolve_link_href(&request.url)?;
+        request.url = target_url.clone();
+        if request.method == NativeNavigationMethod::Get
+            && self.is_same_document_navigation(&target_url)
+        {
             if let Some(worker) = self.runtime_worker.clone() {
                 self.commit_same_document_navigation_async(
                     target_url,
@@ -851,7 +877,7 @@ impl NativeEngine {
             }
             return Ok(());
         }
-        self.navigate_async(target_url).await.map(|_| ())
+        self.navigate_request_async(request).await.map(|_| ())
     }
 
     fn dispatch_local_events(
@@ -979,8 +1005,8 @@ impl NativeEngine {
         self.history.update_current_scroll(self.scroll_offset);
         self.record_effects(events);
         if let Some(form_id) = navigation {
-            let href = self.document.form_submission_url(form_id, &self.url)?;
-            let snapshot = self.navigate(href)?;
+            let request = self.document.form_submission_request(form_id, &self.url)?;
+            let snapshot = self.navigate(request.url)?;
             return Ok(NativeActionResult {
                 revision: snapshot.revision,
                 accepted: true,
@@ -1003,8 +1029,8 @@ impl NativeEngine {
         self.revision = next_revision;
         self.history.update_current_scroll(self.scroll_offset);
         self.record_effects(events);
-        let href = self.document.form_submission_url(form_id, &self.url)?;
-        let snapshot = self.navigate(href)?;
+        let request = self.document.form_submission_request(form_id, &self.url)?;
+        let snapshot = self.navigate(request.url)?;
         Ok(NativeActionResult {
             revision: snapshot.revision,
             accepted: true,

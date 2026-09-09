@@ -63,14 +63,14 @@ impl NativeEngineBackend {
         for capability in supported {
             let limitations = match capability {
                 BrowserCapability::Navigation => {
-                    vec!["bounded HTTP(S) HTML documents with redirects, policy-checked stylesheets/scripts/modules, and GET-form navigation; broader subresources and parser timing remain open".into()]
+                    vec!["bounded HTTP(S) HTML documents with redirects, policy-checked stylesheets/scripts/modules, and GET or urlencoded-POST form navigation; broader subresources and parser timing remain open".into()]
                 }
                 BrowserCapability::Evidence => {
                     vec!["bounded URL, title, and visible text only; no DOM or pixels".into()]
                 }
                 BrowserCapability::Action => {
                     vec![
-                        "semantic click/type, focused-text printable/Backspace/Delete key input, bounded GET form defaults, bounded vertical root scrolling, and native point targets for supported local controls; selection, IME, and nested scrolling remain open".into(),
+                        "semantic click/type, focused-text printable/Backspace/Delete key input, bounded GET or urlencoded-POST form defaults, bounded vertical root scrolling, and native point targets for supported local controls; selection, IME, and nested scrolling remain open".into(),
                     ]
                 }
                 BrowserCapability::Effects => {
@@ -121,7 +121,7 @@ impl NativeEngineBackend {
                         "network navigation and scripting are bounded web-platform slices, not browser parity".into(),
                         "in-process local execution is not a security boundary for hostile content; external documents use the sandboxed content worker".into(),
                         "live Web IDL identity, Fetch/XHR, workers, broad subresources, parser timing, general CSS/layout, font/image fidelity, storage classes beyond session cookies/cache, and full browser default behavior remain unavailable".into(),
-                        "actions are limited to semantic click/type, focused-text printable/Backspace/Delete key input, bounded GET form defaults, bounded vertical root scrolling, and native point targets for supported local controls".into(),
+                        "actions are limited to semantic click/type, focused-text printable/Backspace/Delete key input, bounded GET or urlencoded-POST form defaults, bounded vertical root scrolling, and native point targets for supported local controls".into(),
                     ],
                 },
             },

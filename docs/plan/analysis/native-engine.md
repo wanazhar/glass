@@ -2025,9 +2025,17 @@ The completed bounded GET-form lifecycle follow-up is
 child owners now distinguish direct `form.submit()` from `requestSubmit()`,
 dispatch a cancelable bubbling `submit` event before GET query serialization,
 retain listener mutations, and transfer semantic submit-button navigation
-through the existing owner path. POST/multipart bodies, validation,
-submitter metadata, target contexts, and unload/navigation task ordering remain
-open.
+through the existing owner path.
+
+The completed bounded urlencoded-POST follow-up is
+[native-engine-browser-035](../tasks/native-engine-browser-035.md). Local and
+child owners now serialize accepted `method="post"` forms into one bounded
+`application/x-www-form-urlencoded` body and send it through the shared
+navigation loader and content-process IPC. Existing submit cancellation,
+cookie/referrer/redirect policy, response parsing, and no-POST-cache behavior
+remain in force; unsupported methods and multipart/text/plain encodings fail
+explicitly. Validation, submitter metadata, target contexts, multipart bodies,
+and unload/navigation task ordering remain open.
 
 ## Baseline and constraints
 

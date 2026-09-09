@@ -7,6 +7,7 @@ use super::javascript::NativeScriptCommand;
 use super::layout::NativeLayoutSnapshot;
 use super::paint::NativeDisplayList;
 use super::raster::NativeSurface;
+use super::resource_loader::NativeNavigationRequest;
 use super::{
     config::{MAX_NATIVE_DOM_DEPTH, TextFragmentTerms, Viewport},
     css::{
@@ -1824,11 +1825,11 @@ impl NativeDocument {
             .flatten()
     }
 
-    pub(crate) fn form_submission_url(
+    pub(crate) fn form_submission_request(
         &self,
         id: NativeNodeId,
         document_url: &str,
-    ) -> Result<String, NativeEngineError> {
+    ) -> Result<NativeNavigationRequest, NativeEngineError> {
         let form_id = if self
             .node(id)
             .is_some_and(|node| node.element_name() == Some("form"))
@@ -1846,13 +1847,26 @@ impl NativeDocument {
                 reason: "script form submission target is not a form".into(),
             });
         }
-        if form
-            .attribute("method")
-            .is_some_and(|method| !method.eq_ignore_ascii_case("get"))
-        {
+        let method = form.attribute("method").unwrap_or("get");
+        let method = if method.eq_ignore_ascii_case("get") {
+            super::resource_loader::NativeNavigationMethod::Get
+        } else if method.eq_ignore_ascii_case("post") {
+            super::resource_loader::NativeNavigationMethod::Post
+        } else {
             return Err(NativeEngineError::UnsupportedUrl {
-                reason: "native form submission currently supports only GET".into(),
+                reason: "native form submission supports only GET and POST".into(),
             });
+        };
+        if method == super::resource_loader::NativeNavigationMethod::Post {
+            let enctype = form
+                .attribute("enctype")
+                .unwrap_or("application/x-www-form-urlencoded");
+            let media_type = enctype.split(';').next().unwrap_or_default().trim();
+            if !media_type.eq_ignore_ascii_case("application/x-www-form-urlencoded") {
+                return Err(NativeEngineError::UnsupportedUrl {
+                    reason: "native POST form submission supports only application/x-www-form-urlencoded".into(),
+                });
+            }
         }
         let action = form.attribute("action").unwrap_or(document_url);
         validate_url_text("form action", action)?;
@@ -1883,19 +1897,28 @@ impl NativeDocument {
         let query = query.finish();
         if query.len() > MAX_LOCATOR_BYTES {
             return Err(NativeEngineError::limit(
-                "form submission query",
+                "form submission data",
                 MAX_LOCATOR_BYTES,
                 query.len(),
             ));
         }
-        if query.is_empty() {
-            target.set_query(None);
-        } else {
-            target.set_query(Some(&query));
+        match method {
+            super::resource_loader::NativeNavigationMethod::Get => {
+                if query.is_empty() {
+                    target.set_query(None);
+                } else {
+                    target.set_query(Some(&query));
+                }
+                let target = target.to_string();
+                validate_url_text("form submission URL", &target)?;
+                Ok(NativeNavigationRequest::get(target))
+            }
+            super::resource_loader::NativeNavigationMethod::Post => {
+                let target = target.to_string();
+                validate_url_text("form submission URL", &target)?;
+                NativeNavigationRequest::post(target, query)
+            }
         }
-        let target = target.to_string();
-        validate_url_text("form submission URL", &target)?;
-        Ok(target)
     }
 
     pub(crate) fn submit_control_form(&self, id: NativeNodeId) -> Option<NativeNodeId> {

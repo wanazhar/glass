@@ -358,12 +358,20 @@ The completed bounded GET-form lifecycle batch is
 `submit` events now run before GET query serialization for `requestSubmit()`
 and submit-button defaults, callback mutations are retained, direct
 `form.submit()` remains event-free, and local/child semantic submit buttons
-hand off navigation through their existing owners. POST/multipart, validation,
-submitter metadata, target contexts, and unload ordering remain open.
+hand off navigation through their existing owners.
+
+The completed bounded urlencoded-POST batch is
+[native-engine-browser-035](tasks/native-engine-browser-035.md). Forms with
+`method="post"` now serialize the same bounded enabled named controls into an
+`application/x-www-form-urlencoded` request body and send it through the
+existing parent/content-process loader, preserving submit cancellation and
+redirect/referrer/cookie policy. Unsupported methods and multipart/text/plain
+encodings fail explicitly. Constraint validation, submitter metadata, target
+contexts, multipart bodies, and unload ordering remain open.
 
 The next BE-02/BE-03/BE-04 gate is parser-blocking/defer/async ordering and
-parser timing, POST/multipart form behavior, validation, and the remaining
-browser-context primitives.
+parser timing, followed by multipart/validation/submitter behavior and the
+remaining browser-context primitives.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

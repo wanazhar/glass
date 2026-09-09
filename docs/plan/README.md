@@ -307,9 +307,9 @@ The completed bounded GET-form batch is
 [native-engine-browser-028](tasks/native-engine-browser-028.md). Local and
 child-owned forms now encode named enabled controls into a bounded query,
 support `form.submit()`/`requestSubmit()`, and route submit-button script clicks
-through the same navigation owner. POST/multipart, constraint validation,
-submission lifecycle/events, target contexts, module timing, timers, Fetch/XHR,
-and the remaining resource classes remain open.
+through the same navigation owner. POST/multipart, full constraint validation,
+complete submission lifecycle/event parity, target contexts, module timing,
+timers, Fetch/XHR, and the remaining resource classes remain open.
 
 The completed bounded module-root batch is
 [native-engine-browser-029](tasks/native-engine-browser-029.md). Local and
@@ -366,8 +366,8 @@ The completed bounded urlencoded-POST batch is
 `application/x-www-form-urlencoded` request body and send it through the
 existing parent/content-process loader, preserving submit cancellation and
 redirect/referrer/cookie policy. Unsupported methods and multipart/text/plain
-encodings fail explicitly. Constraint validation, submitter metadata, target
-contexts, multipart bodies, and unload ordering remain open.
+encodings fail explicitly. Full constraint validation, submitter serialization,
+target contexts, multipart bodies, and unload ordering remain open.
 
 The completed bounded parser-time script-ordering batch is
 [native-engine-browser-036](tasks/native-engine-browser-036.md). Classic
@@ -384,9 +384,19 @@ mutations through the existing typed owner path. Ready-state transitions,
 resource-specific events, unload/pagehide, completion races, and full
 task-source timing remain open.
 
-The next BE-02/BE-03/BE-04 gate is full parser/task timing and script lifecycle
-ordering, followed by multipart/validation/submitter behavior and the remaining
-browser-context primitives.
+The completed bounded form-validation batch is
+[native-engine-browser-038](tasks/native-engine-browser-038.md). Local and
+child-owned owners now dispatch bounded non-bubbling `invalid` events for
+required controls before blocking interactive submission, and valid submit
+callbacks receive `event.submitter` for button activation and
+`requestSubmit(button)`. Direct `form.submit()` remains validation-free.
+Full constraint-validation APIs, submitter serialization, multipart encoding,
+and target contexts remain open.
+
+The next BE-02/BE-03/BE-04 gate is ready-state/resource lifecycle timing and
+full task ordering, followed by multipart, full constraint-validation, and
+submitter serialization behavior plus the remaining browser-context
+primitives.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

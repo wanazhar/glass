@@ -1152,7 +1152,10 @@ impl NativeDocument {
                         });
                     }
                 }
-                NativeScriptCommand::RequestSubmitForm { node_index } => {
+                NativeScriptCommand::RequestSubmitForm {
+                    node_index,
+                    submitter_index,
+                } => {
                     if !allow_script_navigation {
                         return Err(NativeEngineError::TargetNotActionable {
                             reason:
@@ -1168,6 +1171,16 @@ impl NativeDocument {
                         return Err(NativeEngineError::TargetNotActionable {
                             reason: "script form submission target is not a form".into(),
                         });
+                    }
+                    if let Some(submitter_index) = submitter_index {
+                        let submitter = NativeNodeId::from_parts(self.generation, *submitter_index);
+                        if self.submit_control_form(submitter) != Some(id) {
+                            return Err(NativeEngineError::TargetNotActionable {
+                                reason:
+                                    "requestSubmit submitter must be a submit control for the form"
+                                        .into(),
+                            });
+                        }
                     }
                 }
                 NativeScriptCommand::SetValue { node_index, value } => {
@@ -1982,6 +1995,133 @@ impl NativeDocument {
             parent = self.node(parent_id).and_then(NativeNode::parent);
         }
         None
+    }
+
+    /// Return required controls that block an interactive form submission.
+    /// This is deliberately a bounded validity subset: disabled controls and
+    /// read-only controls do not participate, while required text controls,
+    /// checkboxes, radio groups, selects, and textareas do.
+    pub(crate) fn invalid_form_controls(
+        &self,
+        form_id: NativeNodeId,
+    ) -> Result<Vec<NativeNodeId>, NativeEngineError> {
+        let form = self
+            .node(form_id)
+            .ok_or(NativeEngineError::DetachedTarget)?;
+        if form.element_name() != Some("form") {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "form validation target is not a form".into(),
+            });
+        }
+        let mut controls = Vec::new();
+        self.collect_form_controls(form_id, &mut controls)?;
+        let mut invalid = Vec::new();
+        for id in controls {
+            let Some(node) = self.node(id) else {
+                continue;
+            };
+            if node.attribute("required").is_none() || self.is_disabled(id) || self.is_read_only(id)
+            {
+                continue;
+            }
+            let valid = match node.element_name() {
+                Some("input") => {
+                    let input_type = node.attribute("type").unwrap_or("text");
+                    if input_type.eq_ignore_ascii_case("hidden")
+                        || input_type.eq_ignore_ascii_case("button")
+                        || input_type.eq_ignore_ascii_case("submit")
+                        || input_type.eq_ignore_ascii_case("reset")
+                        || input_type.eq_ignore_ascii_case("image")
+                    {
+                        true
+                    } else if input_type.eq_ignore_ascii_case("checkbox") {
+                        node.state.checked
+                    } else if input_type.eq_ignore_ascii_case("radio") {
+                        self.radio_group_has_checked(form_id, id)
+                    } else {
+                        self.current_value(id)
+                            .is_some_and(|value| !value.is_empty())
+                    }
+                }
+                Some("textarea") => self
+                    .current_value(id)
+                    .is_some_and(|value| !value.is_empty()),
+                Some("select") => self
+                    .select_option_ids(id)
+                    .into_iter()
+                    .filter(|option_id| {
+                        self.node(*option_id)
+                            .is_some_and(|option| option.state.selected)
+                    })
+                    .any(|option_id| {
+                        self.node(option_id)
+                            .and_then(|option| option.attribute("value"))
+                            .map(str::to_owned)
+                            .or_else(|| {
+                                self.element_text(option_id, MAX_LOCATOR_BYTES)
+                                    .map(|(value, _)| value)
+                            })
+                            .is_some_and(|value| !value.is_empty())
+                    }),
+                _ => true,
+            };
+            if !valid {
+                if invalid.len() >= MAX_FORM_CONTROLS {
+                    return Err(NativeEngineError::limit(
+                        "invalid form controls",
+                        MAX_FORM_CONTROLS,
+                        invalid.len().saturating_add(1),
+                    ));
+                }
+                invalid.push(id);
+            }
+        }
+        Ok(invalid)
+    }
+
+    fn collect_form_controls(
+        &self,
+        parent_id: NativeNodeId,
+        controls: &mut Vec<NativeNodeId>,
+    ) -> Result<(), NativeEngineError> {
+        let children = self
+            .node(parent_id)
+            .ok_or(NativeEngineError::DetachedTarget)?
+            .children()
+            .to_vec();
+        for child_id in children {
+            if self.node(child_id).is_some_and(|node| {
+                matches!(node.element_name(), Some("input" | "textarea" | "select"))
+            }) {
+                controls.push(child_id);
+                if controls.len() > MAX_FORM_CONTROLS {
+                    return Err(NativeEngineError::limit(
+                        "form controls",
+                        MAX_FORM_CONTROLS,
+                        controls.len(),
+                    ));
+                }
+            }
+            self.collect_form_controls(child_id, controls)?;
+        }
+        Ok(())
+    }
+
+    fn radio_group_has_checked(&self, form_id: NativeNodeId, radio_id: NativeNodeId) -> bool {
+        let Some(radio) = self.node(radio_id) else {
+            return false;
+        };
+        let name = radio.attribute("name");
+        self.nodes.iter().any(|candidate| {
+            candidate.element_name() == Some("input")
+                && candidate
+                    .attribute("type")
+                    .is_some_and(|kind| kind.eq_ignore_ascii_case("radio"))
+                && self.is_descendant_of(candidate.id(), form_id)
+                && candidate.attribute("name") == name
+                && !self.is_disabled(candidate.id())
+                && candidate.state.checked
+        })
     }
 
     fn collect_form_data(

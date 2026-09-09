@@ -739,6 +739,87 @@ async fn native_local_form_submit_event_can_cancel_request_submit() {
 }
 
 #[tokio::test]
+async fn native_local_form_validation_and_submitter_metadata_are_bounded() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://validated-form",
+            "<form id='search' action='fixture://validated-result'><input id='query' name='query' required><button id='go' name='action' value='search' type='submit'>Go</button></form>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://validated-result",
+            "<title>Validated result</title><p>Submitted</p>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://validated-result?query=ready",
+            "<title>Validated result</title><p>Submitted</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://validated-form");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            "(() => { const form = document.getElementById('search'); const input = document.getElementById('query'); globalThis.invalidEvents = []; globalThis.submitEvents = []; input.addEventListener('invalid', event => invalidEvents.push(event.target.id)); form.addEventListener('submit', event => { submitEvents.push(event.submitter && event.submitter.id); event.preventDefault(); }); })()",
+        )
+        .await
+        .unwrap();
+    engine
+        .evaluate_async(
+            "document.getElementById('search').requestSubmit(document.getElementById('go'))",
+        )
+        .await
+        .unwrap();
+    assert_eq!(engine.snapshot().unwrap().url, "fixture://validated-form");
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.invalidEvents")
+            .await
+            .unwrap(),
+        serde_json::json!(["query"])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.submitEvents")
+            .await
+            .unwrap(),
+        serde_json::json!([])
+    );
+
+    engine
+        .evaluate_async(
+            "(() => { const input = document.getElementById('query'); input.value = 'ready'; })()",
+        )
+        .await
+        .unwrap();
+    engine
+        .evaluate_async(
+            "document.getElementById('search').requestSubmit(document.getElementById('go'))",
+        )
+        .await
+        .unwrap();
+    assert_eq!(engine.snapshot().unwrap().url, "fixture://validated-form");
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.submitEvents")
+            .await
+            .unwrap(),
+        serde_json::json!(["go"])
+    );
+
+    engine
+        .evaluate_async("document.getElementById('search').submit()")
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        "fixture://validated-result?query=ready"
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_semantic_submit_button_navigates_without_script_realm() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -1224,7 +1305,7 @@ async fn native_content_process_script_form_submit_navigates_with_get_controls()
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
-        for expected_path in ["/form", "/result?query=child-event"] {
+        for expected_path in ["/form", "/result?query=go"] {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut request = [0_u8; 4096];
             let read = stream.read(&mut request).await.unwrap();
@@ -1250,7 +1331,7 @@ async fn native_content_process_script_form_submit_navigates_with_get_controls()
     engine.initialize_async().await.unwrap();
     engine
         .evaluate_async(
-            "(() => { const form = document.getElementById('search'); form.addEventListener('submit', event => { document.querySelector('input').value = 'child-event'; }); })()",
+            "(() => { const form = document.getElementById('search'); form.addEventListener('submit', event => { document.querySelector('input').value = event.submitter.id; }); })()",
         )
         .await
         .unwrap();
@@ -1260,9 +1341,62 @@ async fn native_content_process_script_form_submit_navigates_with_get_controls()
         .unwrap();
     assert_eq!(
         engine.snapshot().unwrap().url,
-        format!("http://{address}/result?query=child-event")
+        format!("http://{address}/result?query=go")
     );
     assert_eq!(engine.snapshot().unwrap().title, "Result");
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_form_validation_blocks_submit() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0_u8; 4096];
+        let _ = stream.read(&mut request).await.unwrap();
+        let body = "<form id='search' action='/result'><input id='query' name='query' required><button id='go' type='submit'>Go</button></form>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let initial_url = format!("http://{address}/form");
+    let mut engine =
+        NativeEngine::new(NativeEngineConfig::default().with_initial_url(initial_url.clone()))
+            .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            "(() => { const form = document.getElementById('search'); const input = document.getElementById('query'); globalThis.invalidEvents = []; globalThis.submitEvents = []; input.addEventListener('invalid', event => invalidEvents.push(event.target.id)); form.addEventListener('submit', event => submitEvents.push(event.submitter && event.submitter.id)); })()",
+        )
+        .await
+        .unwrap();
+    engine
+        .evaluate_async(
+            "document.getElementById('search').requestSubmit(document.getElementById('go'))",
+        )
+        .await
+        .unwrap();
+    assert_eq!(engine.snapshot().unwrap().url, initial_url);
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.invalidEvents")
+            .await
+            .unwrap(),
+        serde_json::json!(["query"])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.submitEvents")
+            .await
+            .unwrap(),
+        serde_json::json!([])
+    );
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }

@@ -10,8 +10,8 @@ use super::interaction::{MAX_NATIVE_EFFECTS, NativeEventKind, validate_native_ed
 use super::javascript::{
     MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_SCRIPT_BYTES, NativeJavaScriptRuntime, NativePageScript,
     NativeScriptCommand, NativeScriptEvaluation, execute_page_scripts, host_event_script,
-    host_key_event_script, literal_dynamic_module_specifiers, order_page_scripts,
-    static_module_specifiers,
+    host_key_event_script, host_submit_event_script, literal_dynamic_module_specifiers,
+    order_page_scripts, static_module_specifiers,
 };
 use super::origin::NativeOrigin;
 use super::resource_loader::{
@@ -1747,19 +1747,33 @@ fn mutate_click_with_event_preflight(
     if click_allowed {
         events.extend(next.apply_click(node_id)?);
         if let Some(form_id) = next.submit_control_form(node_id) {
-            if dispatch_submit_event(
-                &mut next,
-                runtime,
-                document_url,
-                document_origin,
-                viewport,
-                form_id,
-                &mut events,
-            )? {
-                navigation = Some(NativeContentNavigation {
-                    node_index: form_id.index(),
-                    href: next.form_submission_request(form_id, document_url)?.url,
-                });
+            let invalid = next.invalid_form_controls(form_id)?;
+            if invalid.is_empty() {
+                if dispatch_submit_event(
+                    &mut next,
+                    runtime,
+                    document_url,
+                    document_origin,
+                    viewport,
+                    form_id,
+                    Some(node_id),
+                    &mut events,
+                )? {
+                    navigation = Some(NativeContentNavigation {
+                        node_index: form_id.index(),
+                        href: next.form_submission_request(form_id, document_url)?.url,
+                    });
+                }
+            } else {
+                dispatch_invalid_events(
+                    &mut next,
+                    runtime,
+                    document_url,
+                    document_origin,
+                    viewport,
+                    &invalid,
+                    &mut events,
+                )?;
             }
         }
     } else {
@@ -1793,14 +1807,13 @@ fn dispatch_submit_event(
     document_origin: &NativeOrigin,
     viewport: Viewport,
     form_id: NativeNodeId,
+    submitter: Option<NativeNodeId>,
     events: &mut Vec<(NativeNodeId, NativeEventKind)>,
 ) -> Result<bool, NativeEngineError> {
-    let source =
-        host_event_script(&[(form_id.index(), NativeEventKind::Submit)])?.ok_or_else(|| {
-            NativeEngineError::Worker {
-                operation: "content process submit event".into(),
-                reason: "native submit event source was empty".into(),
-            }
+    let source = host_submit_event_script(form_id.index(), submitter.map(NativeNodeId::index))?
+        .ok_or_else(|| NativeEngineError::Worker {
+            operation: "content process submit event".into(),
+            reason: "native submit event source was empty".into(),
         })?;
     let evaluation =
         runtime.evaluate(&source, document, document_url, document_origin, viewport)?;
@@ -1816,6 +1829,34 @@ fn dispatch_submit_event(
     events.push((form_id, NativeEventKind::Submit));
     events.extend(document.apply_script_commands(&evaluation.commands)?);
     Ok(allowed)
+}
+
+fn dispatch_invalid_events(
+    document: &mut NativeDocument,
+    runtime: &NativeJavaScriptRuntime,
+    document_url: &str,
+    document_origin: &NativeOrigin,
+    viewport: Viewport,
+    invalid: &[NativeNodeId],
+    events: &mut Vec<(NativeNodeId, NativeEventKind)>,
+) -> Result<(), NativeEngineError> {
+    let metadata = invalid
+        .iter()
+        .map(|id| (id.index(), NativeEventKind::Invalid))
+        .collect::<Vec<_>>();
+    let Some(source) = host_event_script(&metadata)? else {
+        return Ok(());
+    };
+    let evaluation =
+        runtime.evaluate(&source, document, document_url, document_origin, viewport)?;
+    events.extend(
+        invalid
+            .iter()
+            .copied()
+            .map(|id| (id, NativeEventKind::Invalid)),
+    );
+    events.extend(document.apply_script_commands(&evaluation.commands)?);
+    Ok(())
 }
 
 fn mutate_type_with_event_bridge(
@@ -1971,18 +2012,34 @@ fn mutate_script_document(
     if let Some(ScriptNavigationTarget::Form {
         form_id,
         dispatch_submit: true,
+        submitter,
         ..
     }) = navigation.as_ref()
     {
-        if !dispatch_submit_event(
-            &mut next,
-            runtime,
-            document_url,
-            document_origin,
-            viewport,
-            *form_id,
-            &mut events,
-        )? {
+        let invalid = next.invalid_form_controls(*form_id)?;
+        if invalid.is_empty() {
+            if !dispatch_submit_event(
+                &mut next,
+                runtime,
+                document_url,
+                document_origin,
+                viewport,
+                *form_id,
+                *submitter,
+                &mut events,
+            )? {
+                navigation = None;
+            }
+        } else {
+            dispatch_invalid_events(
+                &mut next,
+                runtime,
+                document_url,
+                document_origin,
+                viewport,
+                &invalid,
+                &mut events,
+            )?;
             navigation = None;
         }
     }
@@ -2030,6 +2087,7 @@ enum ScriptNavigationTarget {
         node_index: u32,
         form_id: NativeNodeId,
         dispatch_submit: bool,
+        submitter: Option<NativeNodeId>,
     },
 }
 
@@ -2054,6 +2112,7 @@ fn script_navigation_target(
                         node_index: form_id.index(),
                         form_id,
                         dispatch_submit: true,
+                        submitter: Some(node_id),
                     })
                 } else {
                     None
@@ -2066,15 +2125,30 @@ fn script_navigation_target(
                     node_index: *node_index,
                     form_id: node_id,
                     dispatch_submit: false,
+                    submitter: None,
                 })
             }
-            NativeScriptCommand::RequestSubmitForm { node_index } => {
+            NativeScriptCommand::RequestSubmitForm {
+                node_index,
+                submitter_index,
+            } => {
                 let node_id = NativeNodeId::from_parts(document.generation(), *node_index);
                 document.form_submission_request(node_id, document_url)?;
+                let submitter = submitter_index
+                    .map(|index| NativeNodeId::from_parts(document.generation(), index));
+                if let Some(submitter) = submitter
+                    && document.submit_control_form(submitter) != Some(node_id)
+                {
+                    return Err(NativeEngineError::TargetNotActionable {
+                        reason: "requestSubmit submitter must be a submit control for the form"
+                            .into(),
+                    });
+                }
                 Some(ScriptNavigationTarget::Form {
                     node_index: *node_index,
                     form_id: node_id,
                     dispatch_submit: true,
+                    submitter,
                 })
             }
             _ => None,
@@ -2096,6 +2170,7 @@ fn event_kind_text(kind: NativeEventKind) -> &'static str {
         NativeEventKind::Focus => "focus",
         NativeEventKind::DomContentLoaded => "DOMContentLoaded",
         NativeEventKind::Load => "load",
+        NativeEventKind::Invalid => "invalid",
         NativeEventKind::KeyDown => "keydown",
         NativeEventKind::KeyUp => "keyup",
         NativeEventKind::Submit => "submit",
@@ -2112,6 +2187,7 @@ fn parse_event_kind(value: &str) -> Option<NativeEventKind> {
         "focus" => Some(NativeEventKind::Focus),
         "DOMContentLoaded" => Some(NativeEventKind::DomContentLoaded),
         "load" => Some(NativeEventKind::Load),
+        "invalid" => Some(NativeEventKind::Invalid),
         "keydown" => Some(NativeEventKind::KeyDown),
         "keyup" => Some(NativeEventKind::KeyUp),
         "submit" => Some(NativeEventKind::Submit),

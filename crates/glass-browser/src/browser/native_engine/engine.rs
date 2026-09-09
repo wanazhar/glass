@@ -862,6 +862,16 @@ impl NativeEngine {
         } else {
             document.apply_script_commands(commands)?
         };
+        let validation_events = events
+            .iter()
+            .filter(|(_, kind)| *kind == NativeEventKind::Invalid)
+            .copied()
+            .collect::<Vec<_>>();
+        if !validation_events.is_empty()
+            && let Some(evaluation) = self.evaluate_local_events(&document, &validation_events)?
+        {
+            events.extend(document.apply_script_commands(&evaluation.commands)?);
+        }
         let mut navigation = if allow_script_navigation {
             self.script_navigation_target(&document, commands)?
         } else {

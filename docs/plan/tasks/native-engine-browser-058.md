@@ -24,7 +24,7 @@ for the common `date`, `month`, `time`, and `datetime-local` input types.
 ## Deliberate boundary and tradeoffs
 
 The implementation intentionally does not claim pattern, file, custom-validity,
-`ValidityState`/`checkValidity` Web IDL, timezone, picker, or browser-wide
+full live `ValidityState` Web IDL, timezone, picker, or browser-wide
 temporal conformance. Invalid or unsupported constraint syntax remains bounded
 by the existing fallback policy rather than adding a new dependency or runtime
 path.

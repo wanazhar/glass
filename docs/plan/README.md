@@ -494,8 +494,8 @@ The completed bounded common-constraint slice is
 [native-engine-browser-050](tasks/native-engine-browser-050.md). Local and
 child-owned forms now validate required, email/URL, UTF-16 length, and numeric
 min/max/step constraints before the existing ordered `invalid` events and
-submit handoff. Pattern/file constraints, custom validity, and
-`ValidityState`/`checkValidity` Web IDL identity remain open.
+submit handoff. Pattern/file constraints and full `ValidityState` Web IDL
+identity remain open; the bounded validation API is covered by 059.
 
 The completed bounded script-fetch slice is
 [native-engine-browser-051](tasks/native-engine-browser-051.md). Explicit
@@ -559,10 +559,19 @@ The completed bounded temporal-validation slice is
 child-owned forms now strictly validate `date`, `month`, `time`, and
 `datetime-local` values, including calendar validity and bounded `min`/`max`/
 `step` checks in the correct temporal units. Pattern/file constraints, custom
-validity, and `ValidityState`/`checkValidity` Web IDL identity remain open.
+validity, and full `ValidityState` Web IDL identity remain open at that
+checkpoint; custom validity is covered by the later 059 API slice.
+
+The completed bounded form-validation API slice is
+[native-engine-browser-059](tasks/native-engine-browser-059.md). Local and
+child-owned controls now expose bounded `validity`, `validationMessage`, and
+`willValidate` snapshots; `checkValidity()`/`reportValidity()` dispatch the
+existing ordered `invalid` events; and `setCustomValidity()` persists through
+the typed owner boundary. Pattern/file validation, picker/UI behavior, and
+full live `ValidityState` Web IDL identity remain open.
 
 The next BE-02/BE-03/BE-04 gate is full task ordering and navigation edge cases,
-followed by file/FormData support, the remaining pattern/file/custom constraint
+followed by file/FormData support, the remaining pattern/file constraint
 validation, target contexts, and the remaining browser-context primitives.
 
 The first dependency-ordered checkpoint is

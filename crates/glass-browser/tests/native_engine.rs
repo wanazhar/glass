@@ -1192,6 +1192,95 @@ async fn native_local_form_validation_covers_temporal_constraints() {
 }
 
 #[tokio::test]
+async fn native_local_form_validation_api_exposes_validity_and_custom_errors() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://validation-api",
+            "<form id='search' novalidate><input id='email' name='email' type='email' value='invalid'><input id='custom' name='custom' value='ready'><button id='go' type='submit'>Go</button></form>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://validation-api");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            "(() => { globalThis.invalidEvents = []; ['email', 'custom'].forEach(id => document.getElementById(id).addEventListener('invalid', event => invalidEvents.push(event.target.id))); })()",
+        )
+        .await
+        .unwrap();
+
+    let validity_observed = engine
+        .evaluate_async(
+            "(() => { const email = document.getElementById('email'); const form = document.getElementById('search'); return { tag: form.tagName, snapshot: form.validity.valid, form: form.checkValidity(), valid: email.validity.valid, mismatch: email.validity.typeMismatch, message: email.validationMessage, willValidate: email.willValidate }; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        validity_observed,
+        serde_json::json!({
+            "tag": "FORM",
+            "snapshot": false,
+            "form": false,
+            "valid": false,
+            "mismatch": true,
+            "message": "Please enter a valid value.",
+            "willValidate": true,
+        })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.invalidEvents")
+            .await
+            .unwrap(),
+        serde_json::json!(["email"])
+    );
+
+    engine
+        .evaluate_async("document.getElementById('email').value = 'user@example.com'")
+        .await
+        .unwrap();
+    engine
+        .evaluate_async("document.getElementById('custom').setCustomValidity('blocked by policy')")
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { globalThis.invalidEvents = []; const custom = document.getElementById('custom'); return { result: custom.checkValidity(), custom: custom.validity.customError, message: custom.validationMessage }; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "result": false,
+            "custom": true,
+            "message": "blocked by policy",
+        })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.invalidEvents")
+            .await
+            .unwrap(),
+        serde_json::json!(["custom"])
+    );
+
+    engine
+        .evaluate_async("document.getElementById('custom').setCustomValidity('')")
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { globalThis.invalidEvents = []; const form = document.getElementById('search'); return { check: form.checkValidity(), report: form.reportValidity(), invalid: invalidEvents }; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({ "check": true, "report": true, "invalid": [] })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_semantic_submit_button_navigates_without_script_realm() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -2476,6 +2565,100 @@ async fn native_content_process_form_validation_covers_common_constraints() {
         format!("http://{address}/result?email=user%40example.com")
     );
     assert_eq!(engine.snapshot().unwrap().title, "Validated result");
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_form_validation_api_exposes_validity_and_custom_errors() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/form"));
+        let body = "<form id='search' novalidate><input id='email' name='email' type='email' value='invalid'><input id='custom' name='custom' value='ready'><button id='go' type='submit'>Go</button></form>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/form")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            "(() => { globalThis.invalidEvents = []; ['email', 'custom'].forEach(id => document.getElementById(id).addEventListener('invalid', event => invalidEvents.push(event.target.id))); })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const email = document.getElementById('email'); const form = document.getElementById('search'); return { form: form.checkValidity(), valid: email.validity.valid, mismatch: email.validity.typeMismatch, message: email.validationMessage }; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "form": false,
+            "valid": false,
+            "mismatch": true,
+            "message": "Please enter a valid value.",
+        })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.invalidEvents")
+            .await
+            .unwrap(),
+        serde_json::json!(["email"])
+    );
+    engine
+        .evaluate_async("document.getElementById('email').value = 'user@example.com'")
+        .await
+        .unwrap();
+    engine
+        .evaluate_async("document.getElementById('custom').setCustomValidity('blocked by policy')")
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { globalThis.invalidEvents = []; const custom = document.getElementById('custom'); return { result: custom.reportValidity(), custom: custom.validity.customError, message: custom.validationMessage }; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "result": false,
+            "custom": true,
+            "message": "blocked by policy",
+        })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.invalidEvents")
+            .await
+            .unwrap(),
+        serde_json::json!(["custom"])
+    );
+    engine
+        .evaluate_async("document.getElementById('custom').setCustomValidity('')")
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { globalThis.invalidEvents = []; const form = document.getElementById('search'); return { check: form.checkValidity(), report: form.reportValidity(), invalid: invalidEvents }; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({ "check": true, "report": true, "invalid": [] })
+    );
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }

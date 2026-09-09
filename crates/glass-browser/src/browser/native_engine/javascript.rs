@@ -79,6 +79,16 @@ pub(crate) enum NativeScriptCommand {
         node_index: u32,
         name: String,
     },
+    SetCustomValidity {
+        node_index: u32,
+        message: String,
+    },
+    CheckValidity {
+        node_index: u32,
+    },
+    ReportValidity {
+        node_index: u32,
+    },
 }
 
 pub(crate) struct NativeScriptEvaluation {
@@ -1574,6 +1584,44 @@ fn document_bootstrap(
     eventState.dispatching = false;
     return !event.defaultPrevented;
   }};
+  const validityFlags = (entry) => {{
+    const source = entry.validity || {{}};
+    const customError = String(entry.customValidity || "").length > 0;
+    const validity = {{
+      badInput: Boolean(source.badInput),
+      customError,
+      patternMismatch: Boolean(source.patternMismatch),
+      rangeOverflow: Boolean(source.rangeOverflow),
+      rangeUnderflow: Boolean(source.rangeUnderflow),
+      stepMismatch: Boolean(source.stepMismatch),
+      tooLong: Boolean(source.tooLong),
+      tooShort: Boolean(source.tooShort),
+      typeMismatch: Boolean(source.typeMismatch),
+      valueMissing: Boolean(source.valueMissing),
+      valid: false,
+    }};
+    validity.valid = String(entry.tagName).toUpperCase() === "FORM"
+      ? Boolean(source.valid)
+      : !validity.badInput && !validity.customError
+        && !validity.patternMismatch && !validity.rangeOverflow
+        && !validity.rangeUnderflow && !validity.stepMismatch
+        && !validity.tooLong && !validity.tooShort
+        && !validity.typeMismatch && !validity.valueMissing;
+    return validity;
+  }};
+  const validationMessageFor = (entry, validity) => {{
+    const custom = String(entry.customValidity || "");
+    if (custom.length > 0) return custom;
+    if (validity.valueMissing) return "Please fill out this field.";
+    if (validity.typeMismatch || validity.badInput) return "Please enter a valid value.";
+    if (validity.tooShort) return "Value is too short.";
+    if (validity.tooLong) return "Value is too long.";
+    if (validity.rangeUnderflow) return "Value is below the minimum.";
+    if (validity.rangeOverflow) return "Value is above the maximum.";
+    if (validity.stepMismatch) return "Value does not match the required step.";
+    if (validity.patternMismatch) return "Please match the requested format.";
+    return "";
+  }};
   const makeElement = (initialEntry) => {{
     let entry = initialEntry;
     const element = {{
@@ -1590,6 +1638,11 @@ fn document_bootstrap(
       disabled: entry.disabled,
       hidden: entry.hidden,
       focused: entry.focused,
+      get validity() {{ return validityFlags(entry); }},
+      get validationMessage() {{
+        return validationMessageFor(entry, validityFlags(entry));
+      }},
+      get willValidate() {{ return Boolean(entry.willValidate); }},
       getAttribute(name) {{
         const key = String(name).toLowerCase();
         for (const attr of Object.keys(entry.attributes)) {{
@@ -1640,6 +1693,24 @@ fn document_bootstrap(
           throw new TypeError("requestSubmit submitter must be an element");
         }}
         pushCommand({{ kind: "requestSubmitForm", node_index: entry.nodeIndex, submitter_index: submitter === null ? null : submitter.nodeIndex }});
+      }},
+      checkValidity() {{
+        const valid = validityFlags(entry).valid;
+        if (!valid) pushCommand({{ kind: "checkValidity", node_index: entry.nodeIndex }});
+        return valid;
+      }},
+      reportValidity() {{
+        const valid = validityFlags(entry).valid;
+        if (!valid) pushCommand({{ kind: "reportValidity", node_index: entry.nodeIndex }});
+        return valid;
+      }},
+      setCustomValidity(message) {{
+        const value = String(message);
+        entry.customValidity = value;
+        if (!entry.validity) entry.validity = {{}};
+        entry.validity.customError = value.length > 0;
+        entry.validity.valid = validityFlags(entry).valid;
+        pushCommand({{ kind: "setCustomValidity", node_index: entry.nodeIndex, message: value }});
       }},
       setAttribute(name, value) {{
         const key = String(name).toLowerCase();

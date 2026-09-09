@@ -15,9 +15,10 @@ use super::interaction::{
     MAX_NATIVE_EFFECTS, NativeAction, NativeEffect, NativeEventKind, validate_native_edit_key,
 };
 use super::javascript::{
-    NativeJavaScriptRuntime, NativeScriptEvaluation, NativeWebStorageState, execute_inline_scripts,
-    host_event_script, host_hash_change_event_script, host_key_event_script,
-    host_submit_event_script, load_web_storage_profile, save_web_storage_profile,
+    NativeJavaScriptRuntime, NativeScriptEvaluation, NativeStorageCoordinator,
+    NativeStorageEventQueue, NativeWebStorageState, execute_inline_scripts, host_event_script,
+    host_hash_change_event_script, host_key_event_script, host_submit_event_script,
+    load_web_storage_profile, save_web_storage_profile, storage_coordinator_for, storage_key,
 };
 use super::layout::{NativeLayoutSnapshot, NativePoint};
 use super::lifecycle::NativeLifecycleState;
@@ -32,6 +33,7 @@ use super::runtime::{NativeRuntimeState, NativeRuntimeTraceEvent};
 use super::scheduler::{DeterministicScheduler, NativeTask};
 use super::worker::{NativeRuntimeShared, NativeRuntimeWorker};
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 /// Bounded observation of the current native document.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,6 +81,8 @@ pub struct NativeEngine {
     content_process: Option<NativeContentProcess>,
     javascript: Option<NativeJavaScriptRuntime>,
     web_storage: NativeWebStorageState,
+    storage_coordinator: Option<Arc<NativeStorageCoordinator>>,
+    storage_event_queue: Option<NativeStorageEventQueue>,
     history: NativeHistory,
     lifecycle: NativeLifecycleState,
     document: NativeDocument,
@@ -94,6 +98,14 @@ impl NativeEngine {
     pub fn new(config: NativeEngineConfig) -> Result<Self, NativeEngineError> {
         config.validate()?;
         let web_storage = load_web_storage_profile(config.storage_path.as_deref())?;
+        let (storage_coordinator, storage_event_queue) =
+            if let Some(path) = config.storage_path.as_deref() {
+                let coordinator = storage_coordinator_for(path)?;
+                let queue = coordinator.subscribe()?;
+                (Some(coordinator), Some(queue))
+            } else {
+                (None, None)
+            };
         let loader = NativeResourceLoader::new(&config)?;
         if !is_network_url(&config.initial_url) {
             loader.load(&config.initial_url)?;
@@ -109,6 +121,8 @@ impl NativeEngine {
             content_process: None,
             javascript: None,
             web_storage,
+            storage_coordinator,
+            storage_event_queue,
             history: NativeHistory::new(max_history_entries),
             lifecycle: NativeLifecycleState::New,
             document: NativeDocument::empty(),
@@ -604,6 +618,7 @@ impl NativeEngine {
             javascript.set_storage_state(self.web_storage.clone());
             self.javascript = Some(javascript);
         }
+        self.sync_external_storage_events()?;
         let cookie = self.loader.document_cookie(&self.url)?;
         self.javascript
             .as_ref()
@@ -1073,6 +1088,35 @@ impl NativeEngine {
         self.navigate_request_async(request).await.map(|_| ())
     }
 
+    fn sync_external_storage_events(&mut self) -> Result<(), NativeEngineError> {
+        let Some(queue) = self.storage_event_queue.as_ref() else {
+            return Ok(());
+        };
+        let events = queue
+            .lock()
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "receive native storage events".into(),
+                reason: "native storage event queue is unavailable".into(),
+            })
+            .map(|mut events| std::mem::take(&mut *events))?;
+        let current_storage_key = storage_key(&self.url, &self.origin);
+        let events = events
+            .into_iter()
+            .filter(|event| event.scope == "local" && event.storage_key == current_storage_key)
+            .collect::<Vec<_>>();
+        if events.is_empty() {
+            return Ok(());
+        }
+        for event in &events {
+            self.web_storage.apply_storage_event(event)?;
+        }
+        if let Some(javascript) = self.javascript.as_ref() {
+            javascript.set_storage_state(self.web_storage.clone());
+            javascript.set_storage_events(events)?;
+        }
+        Ok(())
+    }
+
     fn persist_local_web_storage(&mut self) -> Result<(), NativeEngineError> {
         let Some(javascript) = self.javascript.as_ref() else {
             return Ok(());
@@ -1082,17 +1126,23 @@ impl NativeEngine {
         for value in cookie_updates {
             self.loader.set_document_cookie(&self.url, &value)?;
         }
-        save_web_storage_profile(self.config.storage_path.as_deref(), &self.web_storage)
-    }
-
-    fn sync_local_cookie_state(&mut self) -> Result<(), NativeEngineError> {
-        let Some(javascript) = self.javascript.as_ref() else {
-            return Ok(());
-        };
-        for value in javascript.take_cookie_updates() {
-            self.loader.set_document_cookie(&self.url, &value)?;
+        save_web_storage_profile(self.config.storage_path.as_deref(), &self.web_storage)?;
+        let storage_changes = javascript.take_storage_changes();
+        if let (Some(coordinator), Some(queue)) = (
+            self.storage_coordinator.as_ref(),
+            self.storage_event_queue.as_ref(),
+        ) {
+            for change in storage_changes {
+                if change.scope == "local" {
+                    coordinator.publish(queue, change)?;
+                }
+            }
         }
         Ok(())
+    }
+
+    fn persist_local_script_state(&mut self) -> Result<(), NativeEngineError> {
+        self.persist_local_web_storage()
     }
 
     fn dispatch_local_events(
@@ -1213,7 +1263,7 @@ impl NativeEngine {
                 &self.origin,
                 self.config.viewport,
             )?;
-        self.sync_local_cookie_state()?;
+        self.persist_local_script_state()?;
         let event = (
             NativeNodeId::from_parts(self.document.generation(), u32::MAX),
             NativeEventKind::HashChange,
@@ -1256,7 +1306,7 @@ impl NativeEngine {
             &self.origin,
             self.config.viewport,
         )?;
-        self.sync_local_cookie_state()?;
+        self.persist_local_script_state()?;
         Ok(Some(evaluation))
     }
 
@@ -1281,7 +1331,7 @@ impl NativeEngine {
             &self.origin,
             self.config.viewport,
         )?;
-        self.sync_local_cookie_state()?;
+        self.persist_local_script_state()?;
         Ok(Some(evaluation))
     }
 
@@ -1305,7 +1355,7 @@ impl NativeEngine {
             &self.origin,
             self.config.viewport,
         )?;
-        self.sync_local_cookie_state()?;
+        self.persist_local_script_state()?;
         Ok(Some(evaluation))
     }
 

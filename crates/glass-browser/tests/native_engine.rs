@@ -28679,6 +28679,150 @@ async fn native_local_web_storage_persists_through_profile_restart() {
 }
 
 #[tokio::test]
+async fn native_local_web_storage_delivers_origin_filtered_events_to_other_documents() {
+    let profile_path = std::env::temp_dir().join(format!(
+        "glass-native-web-storage-{}-cross-document-events.json",
+        std::process::id()
+    ));
+    let _ = fs::remove_file(&profile_path);
+    let owner_config = NativeEngineConfig::default()
+        .with_storage_path(profile_path.clone())
+        .with_fixture("fixture://storage-events", "<p>Storage owner</p>")
+        .unwrap()
+        .with_initial_url("fixture://storage-events");
+    let observer_config = owner_config.clone();
+    let other_origin_config = NativeEngineConfig::default()
+        .with_storage_path(profile_path.clone())
+        .with_fixture("fixture://other-storage-events", "<p>Other storage</p>")
+        .unwrap()
+        .with_initial_url("fixture://other-storage-events");
+
+    let mut owner = NativeEngine::new(owner_config).unwrap();
+    let mut observer = NativeEngine::new(observer_config).unwrap();
+    let mut other_origin = NativeEngine::new(other_origin_config).unwrap();
+    owner.initialize().unwrap();
+    observer.initialize().unwrap();
+    other_origin.initialize().unwrap();
+
+    for engine in [&mut owner, &mut observer, &mut other_origin] {
+        engine
+            .evaluate_async(
+                "globalThis.storageEvents = []; addEventListener('storage', event => storageEvents.push({ key: event.key, oldValue: event.oldValue, newValue: event.newValue, url: event.url, local: event.storageArea === localStorage })); true",
+            )
+            .await
+            .unwrap();
+    }
+
+    owner
+        .evaluate_async("localStorage.setItem('theme', 'dark'); true")
+        .await
+        .unwrap();
+    assert_eq!(
+        observer
+            .evaluate_async("storageEvents.splice(0)")
+            .await
+            .unwrap(),
+        serde_json::json!([{
+            "key": "theme",
+            "oldValue": null,
+            "newValue": "dark",
+            "url": "fixture://storage-events",
+            "local": true,
+        }])
+    );
+    assert_eq!(
+        other_origin.evaluate_async("storageEvents").await.unwrap(),
+        serde_json::json!([])
+    );
+    assert_eq!(
+        owner.evaluate_async("storageEvents").await.unwrap(),
+        serde_json::json!([])
+    );
+
+    owner
+        .evaluate_async("localStorage.setItem('theme', 'dark'); true")
+        .await
+        .unwrap();
+    assert_eq!(
+        observer
+            .evaluate_async("storageEvents.splice(0)")
+            .await
+            .unwrap(),
+        serde_json::json!([])
+    );
+
+    owner
+        .evaluate_async("localStorage.setItem('theme', 'light'); true")
+        .await
+        .unwrap();
+    assert_eq!(
+        observer
+            .evaluate_async("storageEvents.splice(0)")
+            .await
+            .unwrap(),
+        serde_json::json!([{
+            "key": "theme",
+            "oldValue": "dark",
+            "newValue": "light",
+            "url": "fixture://storage-events",
+            "local": true,
+        }])
+    );
+
+    owner
+        .evaluate_async("localStorage.removeItem('theme'); true")
+        .await
+        .unwrap();
+    assert_eq!(
+        observer
+            .evaluate_async("storageEvents.splice(0)")
+            .await
+            .unwrap(),
+        serde_json::json!([{
+            "key": "theme",
+            "oldValue": "light",
+            "newValue": null,
+            "url": "fixture://storage-events",
+            "local": true,
+        }])
+    );
+
+    owner
+        .evaluate_async("localStorage.setItem('one', '1'); localStorage.setItem('two', '2'); true")
+        .await
+        .unwrap();
+    let _ = observer
+        .evaluate_async("storageEvents.splice(0)")
+        .await
+        .unwrap();
+    owner
+        .evaluate_async("localStorage.clear(); true")
+        .await
+        .unwrap();
+    assert_eq!(
+        observer
+            .evaluate_async("({ events: storageEvents.splice(0), length: localStorage.length })")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "events": [{
+                "key": null,
+                "oldValue": null,
+                "newValue": null,
+                "url": "fixture://storage-events",
+                "local": true,
+            }],
+            "length": 0,
+        })
+    );
+
+    other_origin.close().unwrap();
+    observer.close().unwrap();
+    owner.close().unwrap();
+    let _ = fs::remove_file(profile_path);
+}
+
+#[tokio::test]
 async fn native_content_process_web_storage_persists_through_profile_restart() {
     let _guard = native_content_process_test_lock().lock().await;
     let profile_path = std::env::temp_dir().join(format!(

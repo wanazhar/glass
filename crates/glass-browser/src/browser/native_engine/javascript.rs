@@ -7,7 +7,7 @@
 use super::config::Viewport;
 use super::dom::{NativeDocument, NativePageScriptSource, NativePageScriptTiming};
 use super::error::NativeEngineError;
-use super::interaction::NativeEventKind;
+use super::interaction::{MAX_NATIVE_EFFECTS, NativeEventKind};
 use super::origin::NativeOrigin;
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::{Context, Error, Module, Runtime, Value};
@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 use url::Url;
 
@@ -31,6 +31,7 @@ const NATIVE_SCRIPT_STACK_BYTES: usize = 1024 * 1024;
 const NATIVE_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_WEB_STORAGE_PROFILE_BYTES: usize = 4 * 1024 * 1024;
 const WEB_STORAGE_PROFILE_VERSION: u64 = 1;
+const MAX_NATIVE_STORAGE_EVENTS: usize = 64;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -120,6 +121,144 @@ pub(crate) struct NativeScriptEvaluation {
 pub(crate) struct NativeWebStorageState {
     local: BTreeMap<String, BTreeMap<String, String>>,
     session: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+impl NativeWebStorageState {
+    pub(crate) fn apply_storage_event(
+        &mut self,
+        event: &NativeStorageEvent,
+    ) -> Result<(), NativeEngineError> {
+        let storage = match event.scope.as_str() {
+            "local" => &mut self.local,
+            "session" => &mut self.session,
+            _ => {
+                return Err(NativeEngineError::invalid(
+                    "native Web Storage scope",
+                    "must be local or session",
+                ));
+            }
+        };
+        let entries = storage.entry(event.storage_key.clone()).or_default();
+        match (&event.key, &event.new_value) {
+            (Some(key), Some(value)) => {
+                if entries.len() >= crate::browser_backend::MAX_STORAGE_ENTRIES
+                    && !entries.contains_key(key)
+                {
+                    return Err(NativeEngineError::limit(
+                        "native Web Storage entries",
+                        crate::browser_backend::MAX_STORAGE_ENTRIES,
+                        entries.len().saturating_add(1),
+                    ));
+                }
+                entries.insert(key.clone(), value.clone());
+            }
+            (Some(key), None) => {
+                entries.remove(key);
+            }
+            (None, None) => entries.clear(),
+            (None, Some(_)) => {
+                return Err(NativeEngineError::invalid(
+                    "native storage event",
+                    "a clear event must not contain a new value",
+                ));
+            }
+        }
+        validate_web_storage_state(self)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct NativeStorageEvent {
+    pub(crate) scope: String,
+    pub(crate) storage_key: String,
+    pub(crate) key: Option<String>,
+    pub(crate) old_value: Option<String>,
+    pub(crate) new_value: Option<String>,
+    pub(crate) url: String,
+}
+
+pub(crate) type NativeStorageEventQueue = Arc<Mutex<Vec<NativeStorageEvent>>>;
+
+#[derive(Debug, Default)]
+pub(crate) struct NativeStorageCoordinator {
+    subscribers: Mutex<Vec<Weak<Mutex<Vec<NativeStorageEvent>>>>>,
+}
+
+impl NativeStorageCoordinator {
+    pub(crate) fn subscribe(&self) -> Result<NativeStorageEventQueue, NativeEngineError> {
+        let queue = Arc::new(Mutex::new(Vec::new()));
+        let mut subscribers = self
+            .subscribers
+            .lock()
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "subscribe native storage events".into(),
+                reason: "native storage subscriber registry is unavailable".into(),
+            })?;
+        subscribers.retain(|subscriber| subscriber.strong_count() > 0);
+        if subscribers.len() >= MAX_NATIVE_EFFECTS {
+            return Err(NativeEngineError::limit(
+                "native storage subscribers",
+                MAX_NATIVE_EFFECTS,
+                subscribers.len().saturating_add(1),
+            ));
+        }
+        subscribers.push(Arc::downgrade(&queue));
+        Ok(queue)
+    }
+
+    pub(crate) fn publish(
+        &self,
+        source: &NativeStorageEventQueue,
+        event: NativeStorageEvent,
+    ) -> Result<(), NativeEngineError> {
+        let mut subscribers = self
+            .subscribers
+            .lock()
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "publish native storage event".into(),
+                reason: "native storage subscriber registry is unavailable".into(),
+            })?;
+        subscribers.retain(|subscriber| subscriber.strong_count() > 0);
+        for subscriber in subscribers.iter().filter_map(Weak::upgrade) {
+            if Arc::ptr_eq(&subscriber, source) {
+                continue;
+            }
+            let mut events = subscriber.lock().map_err(|_| NativeEngineError::Worker {
+                operation: "publish native storage event".into(),
+                reason: "native storage event queue is unavailable".into(),
+            })?;
+            if events.len() >= MAX_NATIVE_STORAGE_EVENTS {
+                return Err(NativeEngineError::limit(
+                    "native storage events",
+                    MAX_NATIVE_STORAGE_EVENTS,
+                    events.len().saturating_add(1),
+                ));
+            }
+            events.push(event.clone());
+        }
+        Ok(())
+    }
+}
+
+static NATIVE_STORAGE_COORDINATORS: OnceLock<
+    Mutex<BTreeMap<String, Weak<NativeStorageCoordinator>>>,
+> = OnceLock::new();
+
+pub(crate) fn storage_coordinator_for(
+    path: &Path,
+) -> Result<Arc<NativeStorageCoordinator>, NativeEngineError> {
+    let key = path.to_string_lossy().into_owned();
+    let registry = NATIVE_STORAGE_COORDINATORS.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let mut registry = registry.lock().map_err(|_| NativeEngineError::Worker {
+        operation: "open native storage coordinator".into(),
+        reason: "native storage coordinator registry is unavailable".into(),
+    })?;
+    if let Some(coordinator) = registry.get(&key).and_then(Weak::upgrade) {
+        return Ok(coordinator);
+    }
+    let coordinator = Arc::new(NativeStorageCoordinator::default());
+    registry.insert(key, Arc::downgrade(&coordinator));
+    Ok(coordinator)
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -749,6 +888,8 @@ pub(crate) struct NativeJavaScriptRuntime {
     deadline: Arc<Mutex<Option<Instant>>>,
     module_sources: Arc<Mutex<BTreeMap<String, String>>>,
     storage: Arc<Mutex<NativeWebStorageState>>,
+    storage_changes: Arc<Mutex<Vec<NativeStorageEvent>>>,
+    pending_storage_events: Arc<Mutex<Vec<NativeStorageEvent>>>,
     cookie: Arc<Mutex<String>>,
     cookie_updates: Arc<Mutex<Vec<String>>>,
     ready_state: String,
@@ -789,6 +930,8 @@ impl NativeJavaScriptRuntime {
             deadline,
             module_sources,
             storage: Arc::new(Mutex::new(NativeWebStorageState::default())),
+            storage_changes: Arc::new(Mutex::new(Vec::new())),
+            pending_storage_events: Arc::new(Mutex::new(Vec::new())),
             cookie: Arc::new(Mutex::new(String::new())),
             cookie_updates: Arc::new(Mutex::new(Vec::new())),
             ready_state: "complete".into(),
@@ -806,6 +949,46 @@ impl NativeJavaScriptRuntime {
         self.storage
             .lock()
             .map(|state| state.clone())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn take_storage_changes(&self) -> Vec<NativeStorageEvent> {
+        self.storage_changes
+            .lock()
+            .map(|mut changes| std::mem::take(&mut *changes))
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn set_storage_events(
+        &self,
+        events: Vec<NativeStorageEvent>,
+    ) -> Result<(), NativeEngineError> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        let mut pending =
+            self.pending_storage_events
+                .lock()
+                .map_err(|_| NativeEngineError::Worker {
+                    operation: "queue native storage events".into(),
+                    reason: "native storage event queue is unavailable".into(),
+                })?;
+        let next_len = pending.len().saturating_add(events.len());
+        if next_len > MAX_NATIVE_STORAGE_EVENTS {
+            return Err(NativeEngineError::limit(
+                "native storage events",
+                MAX_NATIVE_STORAGE_EVENTS,
+                next_len,
+            ));
+        }
+        pending.extend(events);
+        Ok(())
+    }
+
+    fn take_storage_events(&self) -> Vec<NativeStorageEvent> {
+        self.pending_storage_events
+            .lock()
+            .map(|mut events| std::mem::take(&mut *events))
             .unwrap_or_default()
     }
 
@@ -865,7 +1048,7 @@ impl NativeJavaScriptRuntime {
         command: &NativeScriptCommand,
         document_url: &str,
         origin: &NativeOrigin,
-    ) -> Result<bool, NativeEngineError> {
+    ) -> Result<Option<NativeStorageEvent>, NativeEngineError> {
         let (scope, entry_key, value, operation) = match command {
             NativeScriptCommand::StorageSet { scope, key, value } => (
                 scope.as_str(),
@@ -877,7 +1060,7 @@ impl NativeJavaScriptRuntime {
                 (scope.as_str(), Some(key.as_str()), None, "remove")
             }
             NativeScriptCommand::StorageClear { scope } => (scope.as_str(), None, None, "clear"),
-            _ => return Ok(false),
+            _ => return Ok(None),
         };
         let mut state = self.storage.lock().map_err(|_| NativeEngineError::Worker {
             operation: "native Web Storage".into(),
@@ -894,7 +1077,7 @@ impl NativeJavaScriptRuntime {
             }
         };
         let origin_key = storage_key(document_url, origin);
-        let entries = storage.entry(origin_key).or_default();
+        let entries = storage.entry(origin_key.clone()).or_default();
         if let Some(entry_key) = entry_key {
             if entry_key.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES {
                 return Err(NativeEngineError::limit(
@@ -913,7 +1096,7 @@ impl NativeJavaScriptRuntime {
                 ));
             }
         }
-        match operation {
+        let change = match operation {
             "set" => {
                 if entries.len() >= crate::browser_backend::MAX_STORAGE_ENTRIES
                     && entry_key.is_some_and(|key| !entries.contains_key(key))
@@ -924,18 +1107,66 @@ impl NativeJavaScriptRuntime {
                         entries.len().saturating_add(1),
                     ));
                 }
-                entries.insert(
-                    entry_key.expect("storage set key").to_owned(),
-                    value.expect("storage set value").to_owned(),
-                );
+                let key = entry_key.expect("storage set key");
+                let value = value.expect("storage set value");
+                let old_value = entries.get(key).cloned();
+                if old_value.as_deref() == Some(value) {
+                    None
+                } else {
+                    entries.insert(key.to_owned(), value.to_owned());
+                    Some(NativeStorageEvent {
+                        scope: scope.to_owned(),
+                        storage_key: origin_key,
+                        key: Some(key.to_owned()),
+                        old_value,
+                        new_value: Some(value.to_owned()),
+                        url: document_url.to_owned(),
+                    })
+                }
             }
             "remove" => {
-                entries.remove(entry_key.expect("storage remove key"));
+                let key = entry_key.expect("storage remove key");
+                entries.remove(key).map(|old_value| NativeStorageEvent {
+                    scope: scope.to_owned(),
+                    storage_key: origin_key,
+                    key: Some(key.to_owned()),
+                    old_value: Some(old_value),
+                    new_value: None,
+                    url: document_url.to_owned(),
+                })
             }
-            "clear" => entries.clear(),
+            "clear" if entries.is_empty() => None,
+            "clear" => {
+                entries.clear();
+                Some(NativeStorageEvent {
+                    scope: scope.to_owned(),
+                    storage_key: origin_key,
+                    key: None,
+                    old_value: None,
+                    new_value: None,
+                    url: document_url.to_owned(),
+                })
+            }
             _ => unreachable!("storage operation matched above"),
+        };
+        if let Some(change) = change.as_ref() {
+            let mut changes =
+                self.storage_changes
+                    .lock()
+                    .map_err(|_| NativeEngineError::Worker {
+                        operation: "record native storage event".into(),
+                        reason: "native storage change queue is unavailable".into(),
+                    })?;
+            if changes.len() >= MAX_NATIVE_STORAGE_EVENTS {
+                return Err(NativeEngineError::limit(
+                    "native storage changes",
+                    MAX_NATIVE_STORAGE_EVENTS,
+                    changes.len().saturating_add(1),
+                ));
+            }
+            changes.push(change.clone());
         }
-        Ok(true)
+        Ok(change)
     }
 
     fn apply_cookie_command(
@@ -997,6 +1228,7 @@ impl NativeJavaScriptRuntime {
                 source.len(),
             ));
         }
+        let storage_events = self.take_storage_events();
         let bootstrap = document_bootstrap(
             document,
             document_url,
@@ -1005,6 +1237,7 @@ impl NativeJavaScriptRuntime {
             &self.ready_state,
             self.now_ms(),
             &self.storage_view(document_url, origin),
+            &storage_events,
             &self.cookie_state(),
         )?;
         let deadline = Instant::now() + NATIVE_SCRIPT_TIMEOUT;
@@ -1043,7 +1276,10 @@ impl NativeJavaScriptRuntime {
             let commands = read_script_commands(ctx.clone())?;
             let mut document_commands = Vec::with_capacity(commands.len());
             for command in commands {
-                if self.apply_storage_command(&command, document_url, origin)? {
+                if self
+                    .apply_storage_command(&command, document_url, origin)?
+                    .is_some()
+                {
                     continue;
                 }
                 if self.apply_cookie_command(&command)? {
@@ -1159,6 +1395,7 @@ impl NativeJavaScriptRuntime {
                 source.len(),
             ));
         }
+        let storage_events = self.take_storage_events();
         let bootstrap = document_bootstrap(
             document,
             document_url,
@@ -1167,6 +1404,7 @@ impl NativeJavaScriptRuntime {
             &self.ready_state,
             self.now_ms(),
             &self.storage_view(document_url, origin),
+            &storage_events,
             &self.cookie_state(),
         )?;
         let deadline = Instant::now() + NATIVE_SCRIPT_TIMEOUT;
@@ -1193,7 +1431,10 @@ impl NativeJavaScriptRuntime {
             let commands = read_script_commands(ctx.clone())?;
             let mut document_commands = Vec::with_capacity(commands.len());
             for command in commands {
-                if self.apply_storage_command(&command, document_url, origin)? {
+                if self
+                    .apply_storage_command(&command, document_url, origin)?
+                    .is_some()
+                {
                     continue;
                 }
                 if self.apply_cookie_command(&command)? {
@@ -1513,7 +1754,7 @@ fn is_javascript_identifier_continue(byte: u8) -> bool {
     is_javascript_identifier_start(byte) || byte.is_ascii_digit()
 }
 
-fn storage_key(document_url: &str, origin: &NativeOrigin) -> String {
+pub(crate) fn storage_key(document_url: &str, origin: &NativeOrigin) -> String {
     if matches!(origin, NativeOrigin::Opaque) {
         return format!(
             "opaque:{}",
@@ -1533,6 +1774,7 @@ fn document_bootstrap(
     ready_state: &str,
     now_ms: u64,
     storage: &NativeWebStorageView,
+    storage_events: &[NativeStorageEvent],
     cookie: &str,
 ) -> Result<String, NativeEngineError> {
     let state = document.script_snapshot(crate::browser_backend::MAX_TEXT_BYTES);
@@ -1542,6 +1784,7 @@ fn document_bootstrap(
         "state": state,
         "now_ms": now_ms,
         "storage": storage,
+        "storage_events": storage_events,
         "cookie": cookie,
     }))
     .map_err(|_| NativeEngineError::Worker {
@@ -2563,9 +2806,41 @@ fn document_bootstrap(
   globalThis.addEventListener = (type, callback, options) => addListener("window", type, callback, options);
   globalThis.removeEventListener = (type, callback, options) => removeListener("window", type, callback, options);
   globalThis.dispatchEvent = (event) => dispatchTarget(globalThis, event);
+  const makeStorageEvent = (descriptor) => {{
+    const event = createEvent("storage");
+    event.key = descriptor.key === null ? null : String(descriptor.key);
+    event.oldValue = descriptor.old_value === null ? null : String(descriptor.old_value);
+    event.newValue = descriptor.new_value === null ? null : String(descriptor.new_value);
+    event.url = String(descriptor.url || "");
+    event.storageArea = descriptor.scope === "session"
+      ? globalThis.sessionStorage
+      : globalThis.localStorage;
+    return event;
+  }};
+  globalThis.StorageEvent = globalThis.StorageEvent || function StorageEvent(type, options) {{
+    const event = createEvent(type, options);
+    event.key = options && options.key !== undefined ? options.key : null;
+    event.oldValue = options && options.oldValue !== undefined ? options.oldValue : null;
+    event.newValue = options && options.newValue !== undefined ? options.newValue : null;
+    event.url = options && options.url !== undefined ? String(options.url) : "";
+    event.storageArea = options && options.storageArea !== undefined ? options.storageArea : null;
+    return event;
+  }};
+  globalThis.__glassDispatchStorageEvents = (events) => events.map((descriptor) => {{
+    const values = descriptor.scope === "session"
+      ? globalThis.__glassSessionStorageValues
+      : globalThis.__glassLocalStorageValues;
+    if (descriptor.key === null) values.clear();
+    else if (descriptor.new_value === null) values.delete(String(descriptor.key));
+    else values.set(String(descriptor.key), String(descriptor.new_value));
+    return dispatchTarget(globalThis, makeStorageEvent(descriptor));
+  }});
   globalThis.console = globalThis.console || {{
     log() {{}}, info() {{}}, warn() {{}}, error() {{}}
   }};
+  if (Array.isArray(host.storage_events) && host.storage_events.length > 0) {{
+    globalThis.__glassDispatchStorageEvents(host.storage_events);
+  }}
   globalThis.__glassRunTimers(host.now_ms);
 }})();"###,
         serialized = serialized,

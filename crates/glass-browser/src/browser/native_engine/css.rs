@@ -2,6 +2,7 @@ use super::config::{MAX_NATIVE_DOM_DEPTH, MAX_NATIVE_VIEWPORT_DIMENSION};
 use super::diagnostics::{NativeDiagnosticCode, NativeDiagnosticSink, NativeDiagnosticSource};
 use super::dom::{NativeDocument, NativeNode, NativeNodeId};
 use super::error::NativeEngineError;
+use serde::{Deserialize, Serialize};
 
 pub(crate) const MAX_NATIVE_STYLE_RULES: usize = 512;
 pub(crate) const MIN_NATIVE_FLEX_ITEM_ORDER: i32 = -1024;
@@ -42,7 +43,7 @@ const LOGICAL_BORDER_RADIUS_END_START: usize = 2;
 const LOGICAL_BORDER_RADIUS_END_END: usize = 3;
 
 /// A bounded RGBA color used by the native display-list seed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NativeColor {
     pub red: u8,
     pub green: u8,
@@ -96,7 +97,7 @@ impl NativeColorValue {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum NativeBorderStyle {
     #[default]
     Solid,
@@ -109,7 +110,7 @@ pub enum NativeBorderStyle {
     Outset,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum NativeBorderStyleValue {
     #[default]
     None,
@@ -199,7 +200,7 @@ impl NativeBackgroundColorValue {
 }
 
 /// Bounded text-decoration patterns owned separately from border styling.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum NativeTextDecorationStyle {
     #[default]
     Solid,
@@ -284,7 +285,7 @@ enum NativeTextDecorationColorDeclaration {
 }
 
 /// Bounded inherited glyph-intersection behavior for text decorations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum NativeTextDecorationSkipInk {
     #[default]
     Auto,
@@ -313,7 +314,7 @@ impl NativeTextDecorationSkipInkDeclaration {
 }
 
 /// Bounded inherited fixed-cell whitespace behavior for text decorations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum NativeTextDecorationSkipSpaces {
     #[default]
     None,
@@ -346,7 +347,7 @@ impl NativeTextDecorationSkipSpacesDeclaration {
 
 /// Bounded physical circular radii for the top-left, top-right, bottom-right,
 /// and bottom-left corners of one native box.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NativeBorderRadius {
     pub top_left: u32,
     pub top_right: u32,
@@ -375,7 +376,7 @@ pub(crate) enum NativeBorderRadiusValue {
     Revert,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct NativeBorderSide {
     width: u32,
     style: NativeBorderStyle,
@@ -425,7 +426,7 @@ impl NativeBorderSide {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct NativeBorder {
     top: NativeBorderSide,
     right: NativeBorderSide,
@@ -474,14 +475,14 @@ impl NativeBorder {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum NativeBoxSizing {
     #[default]
     ContentBox,
     BorderBox,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum DisplayValue {
     #[default]
     Auto,
@@ -493,7 +494,7 @@ pub(crate) enum DisplayValue {
     Other,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum WhiteSpaceValue {
     #[default]
     Normal,
@@ -503,7 +504,7 @@ pub(crate) enum WhiteSpaceValue {
     NoWrap,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum TextAlignValue {
     #[default]
     Left,
@@ -514,7 +515,7 @@ pub(crate) enum TextAlignValue {
     Justify,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum TextAlignLastValue {
     #[default]
     Auto,
@@ -543,7 +544,7 @@ impl TextAlignLastValue {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum TextJustifyValue {
     #[default]
     Auto,
@@ -551,7 +552,7 @@ pub(crate) enum TextJustifyValue {
     InterWord,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum JustifyContentValue {
     #[default]
     FlexStart,
@@ -572,7 +573,7 @@ enum JustifyContentDeclaration {
     RevertLayer,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum AlignItemsValue {
     #[default]
     FlexStart,
@@ -590,7 +591,7 @@ enum AlignItemsDeclaration {
     RevertLayer,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum AlignSelfValue {
     #[default]
     Auto,
@@ -609,7 +610,7 @@ enum AlignSelfDeclaration {
     RevertLayer,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum AlignContentValue {
     #[default]
     FlexStart,
@@ -630,7 +631,7 @@ enum AlignContentDeclaration {
     RevertLayer,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum FlexDirectionValue {
     #[default]
     Row,
@@ -647,14 +648,14 @@ enum FlexDirectionDeclaration {
     RevertLayer,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum DirectionValue {
     #[default]
     Ltr,
     Rtl,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum FlexWrapValue {
     #[default]
     NoWrap,
@@ -670,14 +671,14 @@ enum FlexWrapDeclaration {
     RevertLayer,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum FlexBasisValue {
     #[default]
     Auto,
     Length(u32),
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct NativeOrderValue(i32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -722,7 +723,7 @@ impl NativeOrderValue {
 ///
 /// The bit representation keeps the computed value compact while preserving
 /// independent inheritance and painting state for each supported line.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct TextDecorationValue(u8);
 
 impl TextDecorationValue {
@@ -776,7 +777,7 @@ impl NativeTextDecorationDeclaration {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum TextTransformValue {
     #[default]
     None,
@@ -784,21 +785,21 @@ pub(crate) enum TextTransformValue {
     Lowercase,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum FontWeightValue {
     #[default]
     Normal,
     Bold,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum FontStyleValue {
     #[default]
     Normal,
     Italic,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum WordBreakValue {
     #[default]
     Normal,
@@ -823,14 +824,14 @@ enum LocalCascadeDeclaration<T> {
     RevertLayer,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum TextOverflowValue {
     #[default]
     Clip,
     Ellipsis,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum VerticalAlignValue {
     #[default]
     Baseline,
@@ -865,7 +866,7 @@ enum GapComponentDeclaration {
     RevertLayer,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum NativeMarginValue {
     Length(u32),
     Auto,
@@ -998,7 +999,7 @@ impl Default for NativeInheritedStyle {
 }
 
 /// Bounded physical top, right, bottom, and left box values.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct NativeBoxEdges {
     top: u32,
     right: u32,
@@ -1066,7 +1067,7 @@ impl NativeBoxEdges {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct NativeAutoEdges {
     top: bool,
     right: bool,
@@ -1101,7 +1102,7 @@ impl NativeAutoEdges {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct NativeComputedStyle {
     display: DisplayValue,
     visibility_hidden: bool,
@@ -1463,6 +1464,7 @@ impl NativeStylesheet {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn computed_for_in_document(
         &self,
         document: &NativeDocument,
@@ -2809,7 +2811,7 @@ enum VisibilityValue {
     Other,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum OverflowValue {
     Hidden,
     Clip,

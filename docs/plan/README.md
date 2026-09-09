@@ -84,6 +84,14 @@ reconstructs the DOM and reparses stylesheet sources, so computed-style
 isolation, content execution, sandboxing, supervisor recovery, and browser
 parity remain open.
 
+The completed computed-style batch is
+[native-engine-browser-006](tasks/native-engine-browser-006.md). External
+documents now carry one typed computed-style record per child-parsed node; the
+parent validates the bounded snapshot and uses it for layout/visibility without
+reparsing stylesheet sources. Local resources retain the direct stylesheet
+path. DOM mutation, CSS diagnostics transfer, script execution, sandboxing,
+supervisor recovery, and browser parity remain open.
+
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,
 fixture/data-URL-only, one-context engine kernel and explicit semantic backend.

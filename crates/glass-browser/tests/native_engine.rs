@@ -199,6 +199,47 @@ async fn native_content_process_rejects_malformed_html_before_parent_commit() {
     server.await.unwrap();
 }
 
+#[tokio::test]
+async fn native_content_process_transfers_computed_style_for_layout() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0_u8; 4096];
+        let _ = stream.read(&mut request).await.unwrap();
+        let body = "<style>#target { width: 80px; height: 24px; }</style><button id='target'>Target</button>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/styled")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let target = engine
+        .semantic_nodes()
+        .unwrap()
+        .into_iter()
+        .find(|node| node.name == "Target")
+        .unwrap();
+    let layout = engine.layout().unwrap();
+    assert_eq!(
+        layout.box_for(target.node_id),
+        Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 24,
+        })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
 #[test]
 fn native_layout_is_deterministic_and_uses_bounded_pixel_dimensions() {
     let document = NativeDocument::parse(

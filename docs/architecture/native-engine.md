@@ -461,6 +461,13 @@ callback-mutation contract, and keeps the existing redirect, referrer, cookie,
 MIME, and response limits. Multipart/text/plain encoding, validation,
 submitter metadata, target contexts, and unload ordering remain open.
 
+The completed native-engine-browser-036 batch adds bounded parser-time script
+ordering. Classic parser-blocking scripts, external `async` scripts, deferred
+classics, and default-deferred module roots retain timing metadata and execute
+through one deterministic local/child ordering helper. Incremental parsing,
+wall-clock completion races, script lifecycle events, dynamic insertion, and
+full task-source timing remain open.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature
@@ -3515,7 +3522,7 @@ The native profile is `experimental` and declares:
 | Capability | Level | Current contract |
 |---|---|---|
 | lifecycle | available | initialize and explicit close |
-| navigation | available | local resources plus bounded external HTTP(S) HTML navigation, inline/classic/module-root/static-graph/literal-dynamic-import child scripts, bounded task turns, and bounded GET or urlencoded-POST form navigation; no computed module loading or general subresources |
+| navigation | available | local resources plus bounded external HTTP(S) HTML navigation, inline/classic/module-root/static-graph/literal-dynamic-import child scripts with bounded parser-blocking/async/defer ordering, bounded task turns, and bounded GET or urlencoded-POST form navigation; no computed module loading or general subresources |
 | contexts | available | one active context |
 | evidence | available | bounded URL, title, visible text, revision; native semantic projection is Rust-only |
 | action | available | semantic click/type, focused-text printable/Backspace/Delete key input, bounded vertical root scrolling, bounded GET or urlencoded-POST form defaults, plus native point targets for supported local controls; no selection/IME or nested scrolling |

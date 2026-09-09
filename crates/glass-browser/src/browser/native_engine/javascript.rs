@@ -5,7 +5,7 @@
 //! capability has an explicit resource and security contract.
 
 use super::config::Viewport;
-use super::dom::{NativeDocument, NativePageScriptSource};
+use super::dom::{NativeDocument, NativePageScriptSource, NativePageScriptTiming};
 use super::error::NativeEngineError;
 use super::interaction::NativeEventKind;
 use super::origin::NativeOrigin;
@@ -130,6 +130,24 @@ impl Loader for NativeModuleLoader {
     }
 }
 
+pub(crate) fn order_page_scripts(
+    sources: Vec<(NativePageScriptTiming, NativePageScript)>,
+) -> Vec<NativePageScript> {
+    let mut parser_blocking = Vec::new();
+    let mut asynchronous = Vec::new();
+    let mut deferred = Vec::new();
+    for (timing, source) in sources {
+        match timing {
+            NativePageScriptTiming::ParserBlocking => parser_blocking.push(source),
+            NativePageScriptTiming::Async => asynchronous.push(source),
+            NativePageScriptTiming::Defer => deferred.push(source),
+        }
+    }
+    parser_blocking.extend(asynchronous);
+    parser_blocking.extend(deferred);
+    parser_blocking
+}
+
 /// Execute the bounded inline scripts discovered in one parsed document.
 ///
 /// The caller owns the realm so local documents and the child content process
@@ -148,14 +166,21 @@ pub(crate) fn execute_inline_scripts(
         .into_iter()
         .enumerate()
         .filter_map(|(index, source)| match source {
-            NativePageScriptSource::Inline(source) => Some(NativePageScript::Classic { source }),
-            NativePageScriptSource::ModuleInline(source) => Some(NativePageScript::Module {
-                name: format!("{document_url}#glass-inline-module-{index}"),
-                source,
-            }),
-            NativePageScriptSource::External(_) | NativePageScriptSource::ModuleExternal(_) => None,
+            NativePageScriptSource::Inline { source, timing } => {
+                Some((timing, NativePageScript::Classic { source }))
+            }
+            NativePageScriptSource::ModuleInline { source, timing } => Some((
+                timing,
+                NativePageScript::Module {
+                    name: format!("{document_url}#glass-inline-module-{index}"),
+                    source,
+                },
+            )),
+            NativePageScriptSource::External { .. }
+            | NativePageScriptSource::ModuleExternal { .. } => None,
         })
         .collect::<Vec<_>>();
+    let sources = order_page_scripts(sources);
     execute_page_scripts(
         document,
         runtime,

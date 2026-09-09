@@ -369,9 +369,16 @@ redirect/referrer/cookie policy. Unsupported methods and multipart/text/plain
 encodings fail explicitly. Constraint validation, submitter metadata, target
 contexts, multipart bodies, and unload ordering remain open.
 
-The next BE-02/BE-03/BE-04 gate is parser-blocking/defer/async ordering and
-parser timing, followed by multipart/validation/submitter behavior and the
-remaining browser-context primitives.
+The completed bounded parser-time script-ordering batch is
+[native-engine-browser-036](tasks/native-engine-browser-036.md). Classic
+parser-blocking scripts, external async scripts, deferred classics, and
+default-deferred module roots now use one deterministic local/child ordering
+contract. Incremental parsing, completion-order races, script event timing,
+and dynamic insertion remain open.
+
+The next BE-02/BE-03/BE-04 gate is full parser/task timing and script lifecycle
+events, followed by multipart/validation/submitter behavior and the remaining
+browser-context primitives.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

@@ -63,7 +63,7 @@ impl NativeEngineBackend {
         for capability in supported {
             let limitations = match capability {
                 BrowserCapability::Navigation => {
-                    vec!["bounded HTTP(S) HTML documents with redirects, policy-checked stylesheets/scripts/modules, and GET or urlencoded-POST form navigation; broader subresources and parser timing remain open".into()]
+                    vec!["bounded HTTP(S) HTML documents with redirects, policy-checked stylesheets/scripts/modules, bounded parser-blocking/async/defer script ordering, and GET or urlencoded-POST form navigation; broader subresources and full parser/task timing remain open".into()]
                 }
                 BrowserCapability::Evidence => {
                     vec!["bounded URL, title, and visible text only; no DOM or pixels".into()]

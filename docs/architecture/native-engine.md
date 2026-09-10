@@ -1152,6 +1152,14 @@ rejection for locked or consumed bodies, shared tee/backpressure semantics,
 Request/Response constructors, and complete Response Web IDL parity remain
 open.
 
+The completed native-engine-browser-118 batch adds bounded `Request` objects
+and `fetch(request, overrides)` input. Request construction and cloning retain
+the existing GET/POST, header, mode, redirect, credentials, body, and signal
+bounds, while Fetch merges explicit overrides before using the existing
+transport and security owners. Full Request body streams, disturbance rules,
+URL/cache/referrer/integrity fields, duplex, and complete Request/Headers Web
+IDL parity remain open.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature

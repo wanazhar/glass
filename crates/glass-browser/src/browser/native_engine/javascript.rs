@@ -5409,6 +5409,39 @@ fn document_bootstrap(
   }});
   HeadersNative.prototype[Symbol.iterator] = HeadersNative.prototype.entries;
   globalThis.Headers = HeadersNative;
+  const RequestNative = function(input, init) {{
+    const source = input && input.__glassRequest === true ? input : null;
+    const href = source ? source.url : input;
+    if (typeof href !== "string") throw new TypeError("native Request URL must be a string");
+    const overrides = init && typeof init === "object" ? init : {{}};
+    const settings = Object.assign({{}}, source ? source._settings : {{}}, overrides);
+    const method = settings.method === undefined ? "GET" : String(settings.method).toUpperCase();
+    if (!["GET", "POST"].includes(method)) throw new TypeError("native Request supports only GET and POST");
+    if (method === "GET" && settings.body !== undefined && settings.body !== null)
+      throw new TypeError("native GET Requests must not have a body");
+    const mode = settings.mode === undefined ? "cors" : String(settings.mode).toLowerCase();
+    if (!["cors", "no-cors", "same-origin"].includes(mode)) throw new TypeError("native Request mode is unsupported");
+    const redirect = settings.redirect === undefined ? "follow" : String(settings.redirect).toLowerCase();
+    if (!["follow", "error", "manual"].includes(redirect)) throw new TypeError("native Request redirect mode is unsupported");
+    const headers = new HeadersNative(settings.headers);
+    settings.method = method;
+    settings.mode = mode;
+    settings.redirect = redirect;
+    settings.headers = headers;
+    Object.defineProperty(this, "__glassRequest", {{ value: true }});
+    Object.defineProperty(this, "_settings", {{ value: settings }});
+    this.method = method;
+    this.url = href;
+    this.headers = headers;
+    this.mode = mode;
+    this.redirect = redirect;
+    this.credentials = settings.credentials === undefined ? "same-origin" : String(settings.credentials);
+    this.signal = settings.signal === undefined ? null : settings.signal;
+    this.body = settings.body === undefined || settings.body === null ? null : settings.body;
+    Object.freeze(this);
+  }};
+  RequestNative.prototype.clone = function() {{ return new RequestNative(this); }};
+  globalThis.Request = RequestNative;
   const nativeAbortError = () => {{
     const error = new Error("The operation was aborted");
     error.name = "AbortError";
@@ -5521,8 +5554,14 @@ fn document_bootstrap(
     if (pending.signal && pending.abortListener) pending.signal.removeEventListener("abort", pending.abortListener);
   }};
   const fetchNative = (input, options) => {{
-    if (typeof input !== "string") throw new TypeError("native fetch requires a URL string");
-    const settings = options && typeof options === "object" ? options : {{}};
+    const sourceRequest = input && input.__glassRequest === true ? input : null;
+    if (typeof input !== "string" && !sourceRequest) throw new TypeError("native fetch requires a URL string or Request");
+    const href = sourceRequest ? sourceRequest.url : input;
+    const settings = Object.assign(
+      {{}},
+      sourceRequest ? sourceRequest._settings : {{}},
+      options && typeof options === "object" ? options : {{}},
+    );
     const signal = settings.signal === undefined ? null : settings.signal;
     if (signal !== null && (!signal || typeof signal !== "object" || typeof signal.aborted !== "boolean" || typeof signal.addEventListener !== "function")) throw new TypeError("native fetch signal is invalid");
     if (signal && signal.aborted) return Promise.reject(signal.reason === undefined ? nativeAbortError() : signal.reason);
@@ -5633,7 +5672,7 @@ fn document_bootstrap(
       fetchRequests.set(requestId, pending);
       if (signal) signal.addEventListener("abort", abort);
       if (!fetchRequests.has(requestId)) return;
-      pushCommand({{ kind: "fetch", request_id: requestId, href: input, credentials, method, headers: requestHeaders, body, body_base64: bodyBase64, content_type: contentType, mode, redirect, timeout_ms: timeoutMs }});
+      pushCommand({{ kind: "fetch", request_id: requestId, href, credentials, method, headers: requestHeaders, body, body_base64: bodyBase64, content_type: contentType, mode, redirect, timeout_ms: timeoutMs }});
     }});
   }};
   const responseHeaders = (rawEntries, contentType) => {{

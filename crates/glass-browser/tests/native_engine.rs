@@ -628,6 +628,60 @@ async fn native_runtime_opener_links_create_routable_popup_targets() {
 }
 
 #[tokio::test]
+async fn native_external_blank_link_creates_popup_target() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap();
+            let body = match path {
+                "/popup-parent" => {
+                    "<title>HTTP opener</title><a id='open' target='_blank' href='/popup-child'>Open popup</a>"
+                }
+                "/popup-child" => "<title>HTTP popup</title><p>worker popup</p>",
+                other => panic!("unexpected popup request path: {other}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/popup-parent")),
+    )
+    .await
+    .unwrap();
+    let action = session
+        .action(SemanticAction::Click {
+            target: "id=open".into(),
+        })
+        .await
+        .unwrap();
+    assert!(action.accepted);
+    assert_eq!(
+        session
+            .evidence(EvidenceLevel::Compact)
+            .await
+            .unwrap()
+            .title,
+        "HTTP opener"
+    );
+    let targets = session.native_list_targets().await.unwrap();
+    assert_eq!(targets.len(), 2);
+    let popup = targets.iter().find(|target| !target.active).unwrap();
+    assert_eq!(popup.title, "HTTP popup");
+    assert_eq!(popup.opener_id.as_deref(), Some("native-context"));
+    session.close().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_click_expect_popup_returns_causal_target_evidence() {
     let config = NativeEngineConfig::default()
         .with_fixture(

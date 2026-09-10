@@ -1888,6 +1888,13 @@ impl NativeEngine {
                             accepted: outcome.accepted,
                         });
                     }
+                    if self.document.link_opens_new_target(id) {
+                        self.queue_popup(target_url)?;
+                        return Ok(NativeActionResult {
+                            revision: self.revision,
+                            accepted: outcome.accepted,
+                        });
+                    }
                     self.navigate_request_async(NativeNavigationRequest::get(target_url), 0)
                         .await?;
                     return Ok(NativeActionResult {

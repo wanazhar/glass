@@ -4848,6 +4848,7 @@ fn document_bootstrap(
   const BlobNative = function(parts, options) {{
     this.__glassNativeBlob = true;
     this._text = boundedBlobText(parts);
+    this._bytes = null;
     this.size = this._text.length;
     this.type = normalizeBlobType(options);
   }};
@@ -4872,17 +4873,93 @@ fn document_bootstrap(
     if (bytes.length > storageValueLimit) throw new RangeError("native Blob binary size limit exceeded");
     return bytes;
   }};
+  const base64Digit = (character) => {{
+    const code = character.charCodeAt(0);
+    if (code >= 65 && code <= 90) return code - 65;
+    if (code >= 97 && code <= 122) return code - 97 + 26;
+    if (code >= 48 && code <= 57) return code - 48 + 52;
+    if (character === "+") return 62;
+    if (character === "/") return 63;
+    if (character === "=") return -2;
+    return -1;
+  }};
+  const decodeBase64 = (encoded) => {{
+    if (typeof encoded !== "string" || encoded.length % 4 !== 0) throw new TypeError("native response bytes are not valid base64");
+    const bytes = [];
+    for (let index = 0; index < encoded.length; index += 4) {{
+      const first = base64Digit(encoded[index]);
+      const second = base64Digit(encoded[index + 1]);
+      const third = base64Digit(encoded[index + 2]);
+      const fourth = base64Digit(encoded[index + 3]);
+      if (first < 0 || second < 0 || third === -1 || fourth === -1
+          || (third === -2 && fourth !== -2)
+          || (third === -2 && index + 4 !== encoded.length)
+          || (fourth === -2 && index + 4 !== encoded.length)) throw new TypeError("native response bytes are not valid base64");
+      bytes.push((first << 2) | (second >> 4));
+      if (third !== -2) bytes.push(((second & 15) << 4) | (third >> 2));
+      if (fourth !== -2) bytes.push(((third & 3) << 6) | fourth);
+    }}
+    if (bytes.length > storageValueLimit) throw new RangeError("native Blob binary size limit exceeded");
+    return bytes;
+  }};
+  const utf8TextFromBytes = (bytes) => {{
+    const continuation = value => value >= 0x80 && value <= 0xbf;
+    let text = "";
+    for (let index = 0; index < bytes.length;) {{
+      const first = bytes[index];
+      let codePoint = -1;
+      let width = 1;
+      if (first <= 0x7f) {{
+        codePoint = first;
+      }} else if (first >= 0xc2 && first <= 0xdf && continuation(bytes[index + 1])) {{
+        codePoint = ((first & 0x1f) << 6) | (bytes[index + 1] & 0x3f);
+        width = 2;
+      }} else if (first === 0xe0 && bytes[index + 1] >= 0xa0 && bytes[index + 1] <= 0xbf && continuation(bytes[index + 2])) {{
+        codePoint = ((first & 0x0f) << 12) | ((bytes[index + 1] & 0x3f) << 6) | (bytes[index + 2] & 0x3f);
+        width = 3;
+      }} else if (first >= 0xe1 && first <= 0xec && continuation(bytes[index + 1]) && continuation(bytes[index + 2])) {{
+        codePoint = ((first & 0x0f) << 12) | ((bytes[index + 1] & 0x3f) << 6) | (bytes[index + 2] & 0x3f);
+        width = 3;
+      }} else if (first === 0xed && bytes[index + 1] >= 0x80 && bytes[index + 1] <= 0x9f && continuation(bytes[index + 2])) {{
+        codePoint = ((first & 0x0f) << 12) | ((bytes[index + 1] & 0x3f) << 6) | (bytes[index + 2] & 0x3f);
+        width = 3;
+      }} else if (first >= 0xee && first <= 0xef && continuation(bytes[index + 1]) && continuation(bytes[index + 2])) {{
+        codePoint = ((first & 0x0f) << 12) | ((bytes[index + 1] & 0x3f) << 6) | (bytes[index + 2] & 0x3f);
+        width = 3;
+      }} else if (first === 0xf0 && bytes[index + 1] >= 0x90 && bytes[index + 1] <= 0xbf && continuation(bytes[index + 2]) && continuation(bytes[index + 3])) {{
+        codePoint = ((first & 0x07) << 18) | ((bytes[index + 1] & 0x3f) << 12) | ((bytes[index + 2] & 0x3f) << 6) | (bytes[index + 3] & 0x3f);
+        width = 4;
+      }} else if (first >= 0xf1 && first <= 0xf3 && continuation(bytes[index + 1]) && continuation(bytes[index + 2]) && continuation(bytes[index + 3])) {{
+        codePoint = ((first & 0x07) << 18) | ((bytes[index + 1] & 0x3f) << 12) | ((bytes[index + 2] & 0x3f) << 6) | (bytes[index + 3] & 0x3f);
+        width = 4;
+      }} else if (first === 0xf4 && bytes[index + 1] >= 0x80 && bytes[index + 1] <= 0x8f && continuation(bytes[index + 2]) && continuation(bytes[index + 3])) {{
+        codePoint = ((first & 0x07) << 18) | ((bytes[index + 1] & 0x3f) << 12) | ((bytes[index + 2] & 0x3f) << 6) | (bytes[index + 3] & 0x3f);
+        width = 4;
+      }}
+      if (codePoint < 0) {{
+        text += "\ufffd";
+        index += 1;
+      }} else {{
+        text += String.fromCodePoint(codePoint);
+        index += width;
+      }}
+    }}
+    return text;
+  }};
+  const blobBytes = (blob) => Array.isArray(blob._bytes)
+    ? blob._bytes.slice()
+    : blobUtf8Bytes(blob._text);
   BlobNative.prototype.text = function() {{
-    return Promise.resolve(this._text);
+    return Promise.resolve(Array.isArray(this._bytes) ? utf8TextFromBytes(this._bytes) : this._text);
   }};
   BlobNative.prototype.arrayBuffer = function() {{
-    return Promise.resolve(new Uint8Array(blobUtf8Bytes(this._text)).buffer);
+    return Promise.resolve(new Uint8Array(blobBytes(this)).buffer);
   }};
   BlobNative.prototype.bytes = function() {{
-    return Promise.resolve(new Uint8Array(blobUtf8Bytes(this._text)));
+    return Promise.resolve(new Uint8Array(blobBytes(this)));
   }};
   BlobNative.prototype.slice = function(start, end, contentType) {{
-    const length = this._text.length;
+    const length = Array.isArray(this._bytes) ? this._bytes.length : this._text.length;
     const normalizePosition = (value, fallback) => {{
       if (value === undefined) return fallback;
       const number = Number(value);
@@ -4891,6 +4968,13 @@ fn document_bootstrap(
     }};
     const begin = normalizePosition(start, 0);
     const finish = normalizePosition(end, length);
+    if (Array.isArray(this._bytes)) {{
+      const blob = new BlobNative([], {{ type: contentType === undefined ? this.type : contentType }});
+      blob._bytes = this._bytes.slice(begin, finish);
+      blob._text = utf8TextFromBytes(blob._bytes);
+      blob.size = blob._bytes.length;
+      return blob;
+    }}
     return new BlobNative([begin > finish ? "" : this._text.slice(begin, finish)], {{ type: contentType }});
   }};
   const FileNative = function(parts, name, options) {{
@@ -5255,7 +5339,17 @@ fn document_bootstrap(
     }};
     return Object.freeze(headers);
   }};
-  const responseBodyBlob = (payload) => new Blob([payload.body], {{ type: payload.contentType || "" }});
+  const responseBodyBlob = (payload) => {{
+    const blob = new BlobNative([], {{ type: payload.contentType || "" }});
+    blob._bytes = typeof payload.bodyBase64 === "string"
+      ? decodeBase64(payload.bodyBase64)
+      : blobUtf8Bytes(String(payload.body || ""));
+    blob._text = payload.body === undefined
+      ? utf8TextFromBytes(blob._bytes)
+      : String(payload.body);
+    blob.size = blob._bytes.length;
+    return blob;
+  }};
   const responseFromFetch = (payload) => Object.freeze({{
     ok: payload.status >= 200 && payload.status < 300,
     status: payload.status,

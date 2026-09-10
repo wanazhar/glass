@@ -28516,7 +28516,7 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
     engine.initialize_async().await.unwrap();
     engine
         .evaluate_async(
-            "fetch('/data').then(response => response.json()).then(data => { globalThis.fetchValue = data.value; document.getElementById('result').value = data.value; const controller = new AbortController(); const events = []; controller.signal.addEventListener('abort', () => events.push('listener')); controller.signal.onabort = () => events.push('property'); const request = fetch('/data', { signal: controller.signal }); controller.abort(); controller.abort(); request.catch(error => { globalThis.abortValue = [error.name, controller.signal.aborted, controller.signal.reason.name, events]; }); });",
+            "fetch('/data').then(response => Promise.all([response.json(), response.text(), response.blob(), response.arrayBuffer(), response.bytes()])).then(async ([data, text, blob, buffer, bytes]) => { globalThis.fetchValue = data.value; globalThis.fetchBody = [text, blob instanceof Blob, buffer instanceof ArrayBuffer && Array.from(new Uint8Array(buffer)), Array.from(bytes), await blob.text()]; document.getElementById('result').value = data.value; const controller = new AbortController(); const events = []; controller.signal.addEventListener('abort', () => events.push('listener')); controller.signal.onabort = () => events.push('property'); const request = fetch('/data', { signal: controller.signal }); controller.abort(); controller.abort(); request.catch(error => { globalThis.abortValue = [error.name, controller.signal.aborted, controller.signal.reason.name, events]; }); });",
         )
         .await
         .unwrap();
@@ -28533,6 +28533,22 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
             .await
             .unwrap(),
         serde_json::json!(["AbortError", true, "AbortError", ["listener", "property"]])
+    );
+    assert_eq!(
+        engine.evaluate_async("globalThis.fetchBody").await.unwrap(),
+        serde_json::json!([
+            "{\"value\":\"fetched\"}",
+            true,
+            [
+                123, 34, 118, 97, 108, 117, 101, 34, 58, 34, 102, 101, 116, 99, 104, 101, 100, 34,
+                125
+            ],
+            [
+                123, 34, 118, 97, 108, 117, 101, 34, 58, 34, 102, 101, 116, 99, 104, 101, 100, 34,
+                125
+            ],
+            "{\"value\":\"fetched\"}",
+        ])
     );
     assert_eq!(
         engine

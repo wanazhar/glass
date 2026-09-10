@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-093` locally. The versioned
+`native-engine-browser-094` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -871,6 +871,13 @@ handling, while the existing text-backed `size`, FormData, and persistence
 contracts remain unchanged. Binary Blob construction, streams, transfer
 semantics, and full Blob/File parity remain open.
 
+The completed bounded fetch Blob/File-body slice is
+[native-engine-browser-090](tasks/native-engine-browser-090.md). `fetch()` now
+sends text-backed native `Blob` and `File` payloads directly and derives a
+`Content-Type` from their normalized MIME type when no explicit header is
+provided; the worker HTTP path is covered. XHR Blob bodies, binary Blob
+construction, streams, abort, and full Fetch/Blob parity remain open.
+
 The completed bounded XHR Blob/File-body slice is
 [native-engine-browser-091](tasks/native-engine-browser-091.md). Asynchronous
 XHR now forwards text-backed `Blob` and `File` bodies through the existing
@@ -893,12 +900,12 @@ deletion, and snapshot iterators; and uses the corrected form-urlencoded
 escaping rules. Full live Web IDL iterator identity and exotic iterable parity
 remain open.
 
-The completed bounded fetch Blob/File-body slice is
-[native-engine-browser-090](tasks/native-engine-browser-090.md). `fetch()` now
-sends text-backed native `Blob` and `File` payloads directly and derives a
-`Content-Type` from their normalized MIME type when no explicit header is
-provided; the worker HTTP path is covered. XHR Blob bodies, binary Blob
-construction, streams, abort, and full Fetch/Blob parity remain open.
+The completed bounded fetch response-body slice is
+[native-engine-browser-094](tasks/native-engine-browser-094.md). Native
+responses now expose fresh text-backed `Blob`, UTF-8 `ArrayBuffer`, and
+`Uint8Array` results through `blob()`, `arrayBuffer()`, and `bytes()` while
+retaining independent `text()`/`json()` reads. Streaming response bodies and
+byte-preserving non-UTF-8 response parity remain open.
 
 Full cookie policy/Web IDL parity and the remaining browser-complete gates
 remain open.

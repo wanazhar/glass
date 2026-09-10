@@ -28516,7 +28516,7 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
     engine.initialize_async().await.unwrap();
     engine
         .evaluate_async(
-            "fetch('/data').then(response => Promise.all([response.json(), response.text(), response.blob(), response.arrayBuffer(), response.bytes()])).then(async ([data, text, blob, buffer, bytes]) => { globalThis.fetchValue = data.value; globalThis.fetchBody = [text, blob instanceof Blob, buffer instanceof ArrayBuffer && Array.from(new Uint8Array(buffer)), Array.from(bytes), await blob.text()]; document.getElementById('result').value = data.value; const controller = new AbortController(); const events = []; controller.signal.addEventListener('abort', () => events.push('listener')); controller.signal.onabort = () => events.push('property'); const request = fetch('/data', { signal: controller.signal }); controller.abort(); controller.abort(); request.catch(error => { globalThis.abortValue = [error.name, controller.signal.aborted, controller.signal.reason.name, events]; }); });",
+            "fetch('/data').then(response => { const headerEvents = []; response.headers.forEach((value, name) => headerEvents.push(name + '=' + value)); globalThis.fetchHeaders = [response.headers.get('CONTENT-TYPE'), response.headers.has('content-type'), Array.from(response.headers.entries()), Array.from(response.headers.keys()), Array.from(response.headers.values()), Array.from(response.headers), headerEvents]; return Promise.all([response.json(), response.text(), response.blob(), response.arrayBuffer(), response.bytes()]); }).then(async ([data, text, blob, buffer, bytes]) => { globalThis.fetchValue = data.value; globalThis.fetchBody = [text, blob instanceof Blob, buffer instanceof ArrayBuffer && Array.from(new Uint8Array(buffer)), Array.from(bytes), await blob.text()]; document.getElementById('result').value = data.value; const controller = new AbortController(); const events = []; controller.signal.addEventListener('abort', () => events.push('listener')); controller.signal.onabort = () => events.push('property'); const request = fetch('/data', { signal: controller.signal }); controller.abort(); controller.abort(); request.catch(error => { globalThis.abortValue = [error.name, controller.signal.aborted, controller.signal.reason.name, events]; }); });",
         )
         .await
         .unwrap();
@@ -28548,6 +28548,21 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
                 125
             ],
             "{\"value\":\"fetched\"}",
+        ])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.fetchHeaders")
+            .await
+            .unwrap(),
+        serde_json::json!([
+            "application/json",
+            true,
+            [["content-type", "application/json"]],
+            ["content-type"],
+            ["application/json"],
+            [["content-type", "application/json"]],
+            ["content-type=application/json"],
         ])
     );
     assert_eq!(

@@ -262,6 +262,17 @@ impl BrowserRuntimeSession {
         }
     }
 
+    /// Report whether the native request owner has stayed idle for the
+    /// requested bounded interval.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_network_quiet(&self, duration: Duration) -> BrowserResult<(bool, String)> {
+        let _operation = self.operation_lock.lock().await;
+        match &self.backend {
+            BackendStartup::Native(backend) => Ok(backend.network_quiet(duration)?),
+            _ => Err("native network activity is only available on the native runtime".into()),
+        }
+    }
+
     pub async fn evidence(&self, level: EvidenceLevel) -> BrowserResult<EvidenceResult> {
         let context_id = self.active_context_id().await?;
         Ok(BrowserBackendDispatcher::new(&self.backend)
@@ -798,19 +809,21 @@ impl BrowserRuntimeSession {
     ) -> BrowserResult<WaitOutcome> {
         validate_native_deadline(deadline)?;
         condition.validate()?;
-        if matches!(condition, WaitCondition::NetworkQuiet(_)) {
-            return Err(
-                "native network-quiet waits require native request lifecycle accounting".into(),
-            );
-        }
         let description = condition.description();
         let started = tokio::time::Instant::now();
         let expires = started + deadline;
         let mut previous_geometry = None;
         loop {
-            let (matched, state, geometry) = self
-                .native_check_wait_condition(&condition, previous_geometry.as_deref())
-                .await?;
+            let (matched, state, geometry) = match &condition {
+                WaitCondition::NetworkQuiet(duration) => {
+                    let (matched, state) = self.native_network_quiet(*duration).await?;
+                    (matched, state, None)
+                }
+                _ => {
+                    self.native_check_wait_condition(&condition, previous_geometry.as_deref())
+                        .await?
+                }
+            };
             if matched {
                 let observation = self.native_semantic_observation().await?;
                 return Ok(WaitOutcome {

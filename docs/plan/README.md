@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-140` locally. The versioned
+`native-engine-browser-141` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1286,6 +1286,18 @@ suspended modal continuation and caller-supplied prompt response injection
 remain separate issue #40 gates, alongside target/frame expansion,
 popup/download witnesses, request accounting, universal workflow parity, and
 CDP replacement.
+
+The completed native request-lifecycle batch is
+[native-engine-browser-141](tasks/native-engine-browser-141.md). Native
+navigation loads, direct fetches, and external content-process evaluations now
+advance a bounded parent-owned request ledger; native `network-quiet` waits
+use that ledger through the runtime, CLI, and MCP native seams and report
+in-flight, quiet-duration, and completion-sequence state. This is operation-
+boundary accounting, not yet a per-resource event stream for every
+subresource, redirect, service worker, or transport cancellation; those
+browser-complete contracts remain issue #40 work alongside continuation-aware
+prompts, target/frame expansion, popup/download witnesses, universal workflow
+parity, and CDP replacement.
 
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and

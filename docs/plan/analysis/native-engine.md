@@ -2953,6 +2953,17 @@ milestone. Target/frame expansion, popup/download witnesses, request
 accounting, universal workflow parity, and native production promotion remain
 issue #40 work.
 
+The completed native-engine-browser-141 batch adds the first request-lifecycle
+owner needed by native synchronization. Navigation loads, direct fetches, and
+external content-process evaluations now bracket their bounded operation in a
+parent-owned ledger with an in-flight count, completion sequence, and last
+activity instant. `BrowserRuntimeSession::native_wait` now implements
+`network-quiet` against that ledger, and the native CLI/MCP wait route reaches
+the same result without CDP. The contract is deliberately operation-level at
+this stage: it does not pretend to observe each subresource, redirect,
+service-worker fetch, or transport cancellation. Those finer events and the
+remaining browser-complete parity gates remain open.
+
 The completed native-engine-browser-133 batch extends the native target seam
 with a side-effect-free preflight result. The engine resolves the current
 semantic locator and derives viewport geometry and actionability under the

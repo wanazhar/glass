@@ -28520,6 +28520,7 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
             "/upload",
             "/constructed-upload",
             "/file-upload",
+            "/form-upload",
             "/data",
         ] {
             let (mut stream, _) = listener.accept().await.unwrap();
@@ -28533,7 +28534,10 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
                     })
                 }));
             }
-            if expected_path.ends_with("upload") {
+            if matches!(
+                expected_path,
+                "/upload" | "/constructed-upload" | "/file-upload"
+            ) {
                 let header_end = request_bytes
                     .windows(4)
                     .position(|window| window == b"\r\n\r\n")
@@ -28546,6 +28550,34 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
                     })
                 }));
                 assert_eq!(&request_bytes[header_end..], [0_u8, 0xff, 0x80, b'A']);
+            }
+            if expected_path == "/form-upload" {
+                assert!(request.lines().any(|line| {
+                    line.split_once(':').is_some_and(|(name, value)| {
+                        name.eq_ignore_ascii_case("content-type")
+                            && value
+                                .trim()
+                                .starts_with("multipart/form-data; boundary=----GlassNativeForm")
+                    })
+                }));
+                let header_end = request_bytes
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .unwrap()
+                    + 4;
+                let body = &request_bytes[header_end..];
+                assert!(
+                    body.windows(b"name=\"name\"".len())
+                        .any(|window| window == b"name=\"name\"")
+                );
+                assert!(
+                    body.windows(b"name=\"payload\"".len())
+                        .any(|window| window == b"name=\"payload\"")
+                );
+                assert!(
+                    body.windows([0_u8, 0xff, 0x80, b'A'].len())
+                        .any(|window| window == [0_u8, 0xff, 0x80, b'A'])
+                );
             }
             if expected_path == "/binary" {
                 let body = [0_u8, 0xff, 0x80, b'A'];
@@ -28584,7 +28616,7 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
     engine.initialize_async().await.unwrap();
     engine
         .evaluate_async(
-            "fetch('/data', { headers: { 'X-Glass-Token': 'alpha' } }).then(response => { const headerEvents = []; response.headers.forEach((value, name) => headerEvents.push(name + '=' + value)); globalThis.fetchHeaders = [response.headers.get('CONTENT-TYPE'), response.headers.has('content-type'), Array.from(response.headers.entries()), Array.from(response.headers.keys()), Array.from(response.headers.values()), Array.from(response.headers), headerEvents]; return Promise.all([response.json(), response.text(), response.blob(), response.arrayBuffer(), response.bytes()]); }).then(async ([data, text, blob, buffer, bytes]) => { globalThis.fetchValue = data.value; globalThis.fetchBody = [text, blob instanceof Blob, buffer instanceof ArrayBuffer && Array.from(new Uint8Array(buffer)), Array.from(bytes), await blob.text()]; const binaryResponse = await fetch('/binary'); const binaryBuffer = await binaryResponse.arrayBuffer(); const binaryBytes = await binaryResponse.bytes(); const binaryBlob = await binaryResponse.blob(); globalThis.binaryFetchBody = [Array.from(new Uint8Array(binaryBuffer)), Array.from(binaryBytes), binaryBlob.size, Array.from(await binaryBlob.slice(1, 3).bytes()), await binaryBlob.text()]; const uploadResponse = await fetch('/upload', { method: 'POST', body: binaryBlob, headers: { 'Content-Type': 'application/octet-stream' } }); globalThis.binaryUpload = await uploadResponse.text(); const payload = new Uint8Array([0, 255, 128, 65]); const constructedBlob = new Blob([payload], { type: 'application/octet-stream' }); const constructedFile = new File([payload.buffer], 'payload.bin', { type: 'application/octet-stream' }); globalThis.binaryConstruction = [constructedBlob.size, Array.from(await constructedBlob.bytes()), constructedFile.size, Array.from(await constructedFile.bytes())]; const constructedUpload = await fetch('/constructed-upload', { method: 'POST', body: constructedBlob }); const fileUpload = await fetch('/file-upload', { method: 'POST', body: constructedFile }); globalThis.binaryUploads = [await constructedUpload.text(), await fileUpload.text()]; document.getElementById('result').value = data.value; const controller = new AbortController(); const events = []; controller.signal.addEventListener('abort', () => events.push('listener')); controller.signal.onabort = () => events.push('property'); const request = fetch('/data', { signal: controller.signal, headers: { 'X-Glass-Token': 'alpha' } }); controller.abort(); controller.abort(); request.catch(error => { globalThis.abortValue = [error.name, controller.signal.aborted, controller.signal.reason.name, events]; }); });",
+            "fetch('/data', { headers: { 'X-Glass-Token': 'alpha' } }).then(response => { const headerEvents = []; response.headers.forEach((value, name) => headerEvents.push(name + '=' + value)); globalThis.fetchHeaders = [response.headers.get('CONTENT-TYPE'), response.headers.has('content-type'), Array.from(response.headers.entries()), Array.from(response.headers.keys()), Array.from(response.headers.values()), Array.from(response.headers), headerEvents]; return Promise.all([response.json(), response.text(), response.blob(), response.arrayBuffer(), response.bytes()]); }).then(async ([data, text, blob, buffer, bytes]) => { globalThis.fetchValue = data.value; globalThis.fetchBody = [text, blob instanceof Blob, buffer instanceof ArrayBuffer && Array.from(new Uint8Array(buffer)), Array.from(bytes), await blob.text()]; const binaryResponse = await fetch('/binary'); const binaryBuffer = await binaryResponse.arrayBuffer(); const binaryBytes = await binaryResponse.bytes(); const binaryBlob = await binaryResponse.blob(); globalThis.binaryFetchBody = [Array.from(new Uint8Array(binaryBuffer)), Array.from(binaryBytes), binaryBlob.size, Array.from(await binaryBlob.slice(1, 3).bytes()), await binaryBlob.text()]; const uploadResponse = await fetch('/upload', { method: 'POST', body: binaryBlob, headers: { 'Content-Type': 'application/octet-stream' } }); globalThis.binaryUpload = await uploadResponse.text(); const payload = new Uint8Array([0, 255, 128, 65]); const constructedBlob = new Blob([payload], { type: 'application/octet-stream' }); const constructedFile = new File([payload.buffer], 'payload.bin', { type: 'application/octet-stream' }); globalThis.binaryConstruction = [constructedBlob.size, Array.from(await constructedBlob.bytes()), constructedFile.size, Array.from(await constructedFile.bytes())]; const constructedUpload = await fetch('/constructed-upload', { method: 'POST', body: constructedBlob }); const fileUpload = await fetch('/file-upload', { method: 'POST', body: constructedFile }); globalThis.binaryUploads = [await constructedUpload.text(), await fileUpload.text()]; const form = new FormData(); form.append('name', 'glass'); form.append('payload', binaryBlob, 'payload.bin'); const formUpload = await fetch('/form-upload', { method: 'POST', body: form }); globalThis.formUpload = await formUpload.text(); document.getElementById('result').value = data.value; const controller = new AbortController(); const events = []; controller.signal.addEventListener('abort', () => events.push('listener')); controller.signal.onabort = () => events.push('property'); const request = fetch('/data', { signal: controller.signal, headers: { 'X-Glass-Token': 'alpha' } }); controller.abort(); controller.abort(); request.catch(error => { globalThis.abortValue = [error.name, controller.signal.aborted, controller.signal.reason.name, events]; }); });",
         )
         .await
         .unwrap();
@@ -28686,6 +28718,13 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
             .await
             .unwrap(),
         serde_json::json!(["uploaded", "uploaded"])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.formUpload")
+            .await
+            .unwrap(),
+        serde_json::json!("uploaded")
     );
     engine
         .evaluate_async(

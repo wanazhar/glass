@@ -13,7 +13,7 @@ use glass_browser::browser::native_engine::{
 };
 use glass_browser::browser::session::{
     IntentConfidence, IntentConstraints, SemanticIntentAction, SemanticIntentRequest,
-    SemanticResolutionPolicy,
+    SemanticResolutionPolicy, VerificationPredicate, WaitCondition,
 };
 use glass_browser::browser_backend::{
     ActionRequest, BROWSER_BACKEND_SCHEMA_VERSION, BackendSelectionRequest,
@@ -243,6 +243,92 @@ async fn native_runtime_session_exposes_agent_inspection_and_target_discovery() 
         .unwrap();
     assert!(preflight.unique);
     assert_eq!(preflight.revision, inspection.revision);
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_session_exposes_bounded_wait_and_verification() {
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(
+            "data:text/html,%3Ctitle%3EVerify%3C%2Ftitle%3E%3Cmain%3E%3Cbutton%20id%3D%27save%27%3ESave%3C%2Fbutton%3E%3C/main%3E",
+        ),
+    )
+    .await
+    .unwrap();
+
+    let lifecycle = session
+        .native_wait(
+            WaitCondition::Lifecycle("complete".into()),
+            Duration::from_millis(100),
+        )
+        .await
+        .unwrap();
+    assert_eq!(lifecycle.condition, "lifecycle");
+    assert_eq!(lifecycle.target_id, "native-context");
+
+    let text = session
+        .native_wait(
+            WaitCondition::Text("Save".into()),
+            Duration::from_millis(100),
+        )
+        .await
+        .unwrap();
+    assert_eq!(text.last_state, "present=true");
+
+    let visible = session
+        .native_wait(
+            WaitCondition::TargetVisible("id=save".into()),
+            Duration::from_millis(100),
+        )
+        .await
+        .unwrap();
+    assert_eq!(visible.condition, "target_visible");
+
+    let stable = session
+        .native_wait(
+            WaitCondition::TargetStable("id=save".into()),
+            Duration::from_millis(100),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stable.condition, "target_stable");
+
+    let javascript = session
+        .native_wait(
+            WaitCondition::JavaScript("document.title === 'Verify'".into()),
+            Duration::from_millis(100),
+        )
+        .await
+        .unwrap();
+    assert_eq!(javascript.last_state, "true");
+
+    let verified = session
+        .native_verify(
+            VerificationPredicate::All {
+                all: vec![
+                    VerificationPredicate::TitleContains {
+                        value: "Verify".into(),
+                    },
+                    VerificationPredicate::TextContains {
+                        value: "Save".into(),
+                    },
+                ],
+            },
+            Duration::from_millis(100),
+        )
+        .await
+        .unwrap();
+    assert_eq!(verified.status, "satisfied");
+    assert!(verified.state.starts_with("all=["));
+
+    let timeout = session
+        .native_wait(
+            WaitCondition::Text("missing".into()),
+            Duration::from_millis(1),
+        )
+        .await
+        .unwrap_err();
+    assert!(timeout.to_string().contains("wait timed out"));
     session.close().await.unwrap();
 }
 

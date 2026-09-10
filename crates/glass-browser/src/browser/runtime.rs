@@ -21,8 +21,19 @@ use serde::{Deserialize, Serialize};
 
 use super::session::{ActionContractError, BrowserResult};
 #[cfg(feature = "native-engine")]
-use super::session::{FindTargetResult, InspectPageResult};
+use super::session::{
+    ActionFailureKind, ActionFailurePhase, ActionKind, ActionVerificationError, FindTargetResult,
+    InspectPageResult, RecoveryStrategy, VerificationOutcome, VerificationPredicate, WaitCondition,
+    WaitOutcome, WaitTimeout,
+};
+#[cfg(feature = "native-engine")]
+use std::time::Duration;
 use tokio::sync::Mutex;
+
+#[cfg(feature = "native-engine")]
+const NATIVE_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(25);
+#[cfg(feature = "native-engine")]
+const NATIVE_MAX_WAIT_DEADLINE: Duration = Duration::from_secs(300);
 
 /// Browser runtimes supported by the portable semantic session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
@@ -378,6 +389,277 @@ impl BrowserRuntimeSession {
         Ok(observation)
     }
 
+    /// Evaluate a bounded native verification predicate until it is
+    /// satisfied or the caller's deadline expires.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_verify(
+        &self,
+        predicate: VerificationPredicate,
+        deadline: Duration,
+    ) -> BrowserResult<VerificationOutcome> {
+        validate_native_deadline(deadline)?;
+        predicate.validate(0)?;
+        let started = tokio::time::Instant::now();
+        let expires = started + deadline;
+        loop {
+            let (matched, observed) = self.native_check_verification_predicate(&predicate).await?;
+            if matched {
+                return Ok(VerificationOutcome {
+                    status: "satisfied",
+                    predicate,
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                    state: observed,
+                });
+            }
+            if tokio::time::Instant::now() >= expires {
+                let revision = self.native_semantic_observation().await?.revision;
+                return Err(Box::new(ActionVerificationError {
+                    kind: ActionFailureKind::VerificationFailed,
+                    action: ActionKind::Click,
+                    phase: ActionFailurePhase::Verification,
+                    recovery_strategy: RecoveryStrategy::Report,
+                    execution_id: None,
+                    target: None,
+                    revision,
+                    reason: format!("verification predicate not satisfied: {observed}"),
+                }));
+            }
+            tokio::time::sleep(
+                expires
+                    .saturating_duration_since(tokio::time::Instant::now())
+                    .min(NATIVE_WAIT_POLL_INTERVAL),
+            )
+            .await;
+        }
+    }
+
+    /// Wait for a bounded native lifecycle, URL, text, target, region, or
+    /// JavaScript condition.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_wait(
+        &self,
+        condition: WaitCondition,
+        deadline: Duration,
+    ) -> BrowserResult<WaitOutcome> {
+        validate_native_deadline(deadline)?;
+        condition.validate()?;
+        if matches!(condition, WaitCondition::NetworkQuiet(_)) {
+            return Err(
+                "native network-quiet waits require native request lifecycle accounting".into(),
+            );
+        }
+        let description = condition.description();
+        let started = tokio::time::Instant::now();
+        let expires = started + deadline;
+        let mut previous_geometry = None;
+        loop {
+            let (matched, state, geometry) = self
+                .native_check_wait_condition(&condition, previous_geometry.as_deref())
+                .await?;
+            if matched {
+                let observation = self.native_semantic_observation().await?;
+                return Ok(WaitOutcome {
+                    condition: description,
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                    last_state: state,
+                    target_id: observation.route.target_id,
+                    frame_id: observation.route.frame_id,
+                });
+            }
+            if tokio::time::Instant::now() >= expires {
+                let observation = self.native_semantic_observation().await?;
+                return Err(Box::new(WaitTimeout {
+                    condition: description,
+                    deadline_ms: deadline.as_millis() as u64,
+                    last_state: state,
+                    observed_page: Some(super::session::PageInfo {
+                        url: observation.page.url,
+                        title: observation.page.title,
+                        ready_state: "complete".into(),
+                        target_id: observation.route.target_id,
+                        frame_id: observation.route.frame_id,
+                    }),
+                    reason: "deadline_exceeded",
+                }));
+            }
+            previous_geometry = geometry;
+            tokio::time::sleep(
+                expires
+                    .saturating_duration_since(tokio::time::Instant::now())
+                    .min(NATIVE_WAIT_POLL_INTERVAL),
+            )
+            .await;
+        }
+    }
+
+    #[cfg(feature = "native-engine")]
+    async fn native_check_verification_predicate(
+        &self,
+        predicate: &VerificationPredicate,
+    ) -> BrowserResult<(bool, String)> {
+        match predicate {
+            VerificationPredicate::UrlEquals { value } => {
+                let observation = self.native_semantic_observation().await?;
+                Ok((
+                    observation.page.url == *value,
+                    format!("url={}", observation.page.url),
+                ))
+            }
+            VerificationPredicate::TitleContains { value } => {
+                let observation = self.native_semantic_observation().await?;
+                Ok((
+                    observation.page.title.contains(value),
+                    format!("title={}", observation.page.title),
+                ))
+            }
+            VerificationPredicate::Visible { visible } => {
+                let target = self
+                    .native_preflight_target(visible, NativePreflightAction::Click)
+                    .await?;
+                let matched = target.node.as_ref().is_some_and(|node| !node.hidden)
+                    && target.geometry.is_some();
+                Ok((matched, format!("visible={matched}")))
+            }
+            VerificationPredicate::TextContains { value } => {
+                let observation = self.native_semantic_observation().await?;
+                let text = observation.text.unwrap_or_default();
+                let matched = text.contains(value);
+                Ok((matched, format!("textContains={matched}")))
+            }
+            VerificationPredicate::RevisionEquals { value } => {
+                let observation = self.native_semantic_observation().await?;
+                Ok((
+                    observation.revision == *value,
+                    format!("revision={}", observation.revision),
+                ))
+            }
+            VerificationPredicate::All { all } => {
+                let mut states = Vec::with_capacity(all.len());
+                let mut matched = true;
+                for predicate in all {
+                    let (child_matched, state) =
+                        Box::pin(self.native_check_verification_predicate(predicate)).await?;
+                    matched &= child_matched;
+                    states.push(state);
+                }
+                Ok((matched, format!("all=[{}]", states.join(","))))
+            }
+            VerificationPredicate::Any { any } => {
+                let mut states = Vec::with_capacity(any.len());
+                let mut matched = false;
+                for predicate in any {
+                    let (child_matched, state) =
+                        Box::pin(self.native_check_verification_predicate(predicate)).await?;
+                    matched |= child_matched;
+                    states.push(state);
+                }
+                Ok((matched, format!("any=[{}]", states.join(","))))
+            }
+            VerificationPredicate::Not { not } => {
+                let (matched, state) =
+                    Box::pin(self.native_check_verification_predicate(not)).await?;
+                Ok((!matched, format!("not({state})")))
+            }
+            VerificationPredicate::PopupOpened { .. }
+            | VerificationPredicate::DialogOpen { .. }
+            | VerificationPredicate::DownloadStarted { .. } => Err(
+                "native verification does not yet expose popup, dialog, or download topology"
+                    .into(),
+            ),
+        }
+    }
+
+    #[cfg(feature = "native-engine")]
+    async fn native_check_wait_condition(
+        &self,
+        condition: &WaitCondition,
+        previous_geometry: Option<&str>,
+    ) -> BrowserResult<(bool, String, Option<String>)> {
+        match condition {
+            WaitCondition::Lifecycle(expected) => {
+                let _observation = self.native_semantic_observation().await?;
+                let matched = matches!(expected.as_str(), "interactive" | "complete");
+                Ok((matched, "lifecycle=complete".into(), None))
+            }
+            WaitCondition::UrlExact(expected) => {
+                let observation = self.native_semantic_observation().await?;
+                Ok((
+                    observation.page.url == *expected,
+                    format!("url={}", observation.page.url),
+                    None,
+                ))
+            }
+            WaitCondition::UrlPrefix(prefix) => {
+                let observation = self.native_semantic_observation().await?;
+                Ok((
+                    observation.page.url.starts_with(prefix),
+                    format!("url={}", observation.page.url),
+                    None,
+                ))
+            }
+            WaitCondition::Text(expected) => {
+                let observation = self.native_semantic_observation().await?;
+                let text = observation.text.unwrap_or_default();
+                let matched = text.contains(expected);
+                Ok((matched, format!("present={matched}"), None))
+            }
+            WaitCondition::SemanticRegion(region_id) => {
+                let observation = self.native_semantic_observation().await?;
+                let matched = observation
+                    .regions
+                    .iter()
+                    .find(|region| region.id == *region_id)
+                    .is_some_and(|region| !region.targets.is_empty());
+                Ok((matched, format!("region={region_id};ready={matched}"), None))
+            }
+            WaitCondition::JavaScript(expression) => {
+                let result = self.script(expression).await?;
+                let matched = result
+                    .value
+                    .as_bool()
+                    .ok_or("native wait JavaScript predicate must return a boolean")?;
+                Ok((matched, matched.to_string(), None))
+            }
+            WaitCondition::TargetAttached(target)
+            | WaitCondition::TargetVisible(target)
+            | WaitCondition::TargetHidden(target)
+            | WaitCondition::TargetEnabled(target)
+            | WaitCondition::TargetStable(target) => {
+                let result = self
+                    .native_preflight_target(target, NativePreflightAction::Click)
+                    .await?;
+                let present = result.unique;
+                let visible = result.node.as_ref().is_some_and(|node| !node.hidden)
+                    && result.geometry.is_some();
+                let enabled = visible && result.node.as_ref().is_some_and(|node| !node.disabled);
+                let geometry = result
+                    .geometry
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()?;
+                let matched = match condition {
+                    WaitCondition::TargetAttached(_) => present,
+                    WaitCondition::TargetVisible(_) => visible,
+                    WaitCondition::TargetHidden(_) => !present || !visible,
+                    WaitCondition::TargetEnabled(_) => enabled,
+                    WaitCondition::TargetStable(_) => {
+                        visible
+                            && geometry
+                                .as_deref()
+                                .is_some_and(|value| previous_geometry == Some(value))
+                    }
+                    _ => unreachable!(),
+                };
+                Ok((
+                    matched,
+                    format!("present={present};visible={visible};enabled={enabled}"),
+                    geometry,
+                ))
+            }
+            WaitCondition::NetworkQuiet(_) => unreachable!("handled by native_wait"),
+        }
+    }
+
     pub async fn close(self) -> BrowserResult<()> {
         Ok(BrowserBackendDispatcher::new(&self.backend).close().await?)
     }
@@ -402,6 +684,14 @@ impl BrowserRuntimeSession {
             .map(|context| context.context_id)
             .ok_or("alternative runtime returned no active context")?)
     }
+}
+
+#[cfg(feature = "native-engine")]
+fn validate_native_deadline(deadline: Duration) -> BrowserResult<()> {
+    if deadline.is_zero() || deadline > NATIVE_MAX_WAIT_DEADLINE {
+        return Err("native wait deadline must be between 1 ms and 300000 ms".into());
+    }
+    Ok(())
 }
 
 #[cfg(feature = "native-engine")]

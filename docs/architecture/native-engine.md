@@ -1306,6 +1306,17 @@ fingerprint semantics as the Chromium session. Native `inspectPage` and
 creating Chromium. Landmark-specific regions, rich accessibility trees,
 structured extraction, and universal workflow parity remain open.
 
+The completed native-engine-browser-135 batch extends the same observation and
+preflight owners into synchronization. Native `wait` supports lifecycle, URL,
+text, semantic-region, JavaScript-boolean, and target-state conditions;
+native `verify` supports URL, title, visibility, text, revision, and bounded
+composed predicates. Both return the existing Glass result/error envelopes
+through the runtime session, CLI, and MCP, use bounded polling, and gate
+JavaScript waits through the active evaluate capability. A consecutive
+geometry sample is used for target stability. Request lifecycle accounting,
+popup/dialog/download topology, action-specific `act-and-verify`, and
+universal workflow parity remain open contracts.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature

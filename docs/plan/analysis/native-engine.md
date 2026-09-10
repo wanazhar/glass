@@ -2888,6 +2888,17 @@ projection deliberately has one bounded main region and the native supported
 interactive set; landmark regions, rich accessibility, extraction, and full
 browser parity remain issue #40 work.
 
+The completed native-engine-browser-135 batch carries the same atomic
+observation into wait and verification. `BrowserRuntimeSession` now polls
+bounded lifecycle, URL, text, semantic-region, JavaScript, and target-state
+conditions and returns the shared `WaitOutcome`/`WaitTimeout` contracts;
+native verification evaluates URL, title, visibility, text, revision, and
+bounded `all`/`any`/`not` predicates with the shared verification envelopes.
+CLI and MCP route these operations through native ownership, and JavaScript
+waits use the existing evaluate policy gate. The implementation intentionally
+does not claim request-ledger, popup/dialog/download, or action-specific
+postcondition parity; those are subsequent engine contracts.
+
 The completed native-engine-browser-133 batch extends the native target seam
 with a side-effect-free preflight result. The engine resolves the current
 semantic locator and derives viewport geometry and actionability under the

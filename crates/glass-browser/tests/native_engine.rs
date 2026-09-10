@@ -28609,14 +28609,14 @@ async fn native_content_process_indexed_db_round_trips_through_worker_ipc() {
     assert_eq!(
         engine
             .evaluate_async(
-                "await (async () => { const request = indexedDB.open('content', 1); request.onupgradeneeded = event => event.target.result.createObjectStore('records'); const db = await new Promise((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); }); const tx = db.transaction('records', 'readwrite'); tx.objectStore('records').put({ ready: true }, 'status'); await new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); }); const read = db.transaction('records', 'readonly').objectStore('records').get('status'); return await new Promise((resolve, reject) => { read.onsuccess = () => resolve({ version: db.version, stores: db.objectStoreNames, value: read.result }); read.onerror = () => reject(read.error); }); })()",
+                "await (async () => { const request = indexedDB.open('content', 1); request.onupgradeneeded = event => { const store = event.target.result.createObjectStore('records'); store.createIndex('byStatus', 'status'); }; const db = await new Promise((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); }); const tx = db.transaction('records', 'readwrite'); tx.objectStore('records').put({ ready: true, status: 'ready' }, 'status'); await new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); }); const records = db.transaction('records', 'readonly').objectStore('records'); const read = records.index('byStatus').get('ready'); return await new Promise((resolve, reject) => { read.onsuccess = () => resolve({ version: db.version, stores: records.indexNames, value: read.result }); read.onerror = () => reject(read.error); }); })()",
             )
             .await
             .unwrap(),
         serde_json::json!({
             "version": 1,
-            "stores": ["records"],
-            "value": {"ready": true},
+            "stores": ["byStatus"],
+            "value": {"ready": true, "status": "ready"},
         })
     );
     engine.close_async().await.unwrap();
@@ -28984,6 +28984,69 @@ async fn native_local_indexed_db_supports_upgrade_crud_and_profile_restart() {
                 .await
                 .unwrap(),
             serde_json::json!([{"id": "one", "title": "hello", "count": 3}])
+        );
+        engine.close().unwrap();
+    }
+    for suffix in ["", "lock", "events", "readers"] {
+        let path = if suffix.is_empty() {
+            profile_path.clone()
+        } else {
+            profile_path.with_extension(suffix)
+        };
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[tokio::test]
+async fn native_local_indexed_db_supports_indexes_key_ranges_and_cursors() {
+    let profile_path = std::env::temp_dir().join(format!(
+        "glass-native-indexed-db-{}-indexes.json",
+        std::process::id()
+    ));
+    let _ = fs::remove_file(&profile_path);
+    let config = NativeEngineConfig::default()
+        .with_storage_path(profile_path.clone())
+        .with_fixture("fixture://indexed-db-indexes", "<p>IndexedDB indexes</p>")
+        .unwrap()
+        .with_initial_url("fixture://indexed-db-indexes");
+
+    {
+        let mut engine = NativeEngine::new(config.clone()).unwrap();
+        engine.initialize().unwrap();
+        assert_eq!(
+            engine
+                .evaluate_async(
+                    "await (async () => { const request = indexedDB.open('catalog', 1); request.onupgradeneeded = event => { const store = event.target.result.createObjectStore('records', { keyPath: 'id' }); store.createIndex('byTag', 'tags', { multiEntry: true }); store.createIndex('byType', 'type'); store.createIndex('bySku', 'sku', { unique: true }); }; const db = await new Promise((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); }); const write = db.transaction('records', 'readwrite'); const store = write.objectStore('records'); for (const record of [{ id: 'c', type: 'b', sku: 'sku-c', tags: ['green', 'blue'] }, { id: 'a', type: 'a', sku: 'sku-a', tags: ['green'] }, { id: 'b', type: 'b', sku: 'sku-b', tags: ['blue'] }]) store.put(record); await new Promise((resolve, reject) => { write.oncomplete = resolve; write.onerror = () => reject(write.error); }); const read = db.transaction('records', 'readonly'); const records = read.objectStore('records'); const byType = records.index('byType'); const byTag = records.index('byTag'); const requestValue = request => new Promise((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); }); const values = await requestValue(byType.getAll(IDBKeyRange.bound('a', 'b'))); const green = await requestValue(byTag.getAll('green')); const firstGreenKey = await requestValue(byTag.getKey('green')); const count = await requestValue(byType.count(IDBKeyRange.lowerBound('b'))); const cursorKeys = await new Promise((resolve, reject) => { const cursorRequest = byType.openCursor(); const seen = []; cursorRequest.onsuccess = () => { const cursor = cursorRequest.result; if (!cursor) return resolve(seen); seen.push(cursor.primaryKey); if (seen.length === 1) cursor.advance(2); else cursor.continue(); }; cursorRequest.onerror = () => reject(cursorRequest.error); }); const keyCursorKeys = await new Promise((resolve, reject) => { const cursorRequest = records.openKeyCursor(IDBKeyRange.lowerBound('b'), 'prev'); const seen = []; cursorRequest.onsuccess = () => { const cursor = cursorRequest.result; if (!cursor) return resolve(seen); seen.push(cursor.key); cursor.continue(); }; cursorRequest.onerror = () => reject(cursorRequest.error); }); const conflictTx = db.transaction('records', 'readwrite'); const conflict = conflictTx.objectStore('records').put({ id: 'd', type: 'd', sku: 'sku-a', tags: [] }); const uniqueError = await new Promise(resolve => { conflict.onsuccess = () => resolve('none'); conflict.onerror = () => resolve(conflict.error.name); }); await new Promise((resolve, reject) => { const mutation = db.transaction('records', 'readwrite'); const mutationStore = mutation.objectStore('records'); const mutationCursor = mutationStore.index('byType').openCursor(IDBKeyRange.only('b')); mutation.oncomplete = resolve; mutation.onerror = () => reject(mutation.error); mutationCursor.onerror = () => reject(mutationCursor.error); mutationCursor.onsuccess = () => { const cursor = mutationCursor.result; if (!cursor) return; if (cursor.primaryKey === 'b') { const update = cursor.update({ id: 'b', type: 'b', sku: 'sku-b', tags: ['updated'] }); update.onerror = () => reject(update.error); update.onsuccess = () => cursor.continue(); } else { const remove = cursor.delete(); remove.onerror = () => reject(remove.error); remove.onsuccess = () => cursor.continue(); } }; }); const updated = await requestValue(db.transaction('records', 'readonly').objectStore('records').index('byTag').get('updated')); const remaining = await requestValue(db.transaction('records', 'readonly').objectStore('records').index('byType').getAll('b')); return { indexNames: records.indexNames, values: values.map(value => value.id), green: green.map(value => value.id), firstGreenKey, count, cursorKeys, keyCursorKeys, uniqueError, updated: updated.id, remaining: remaining.map(value => value.id) }; })()",
+                )
+                .await
+                .unwrap(),
+            serde_json::json!({
+                "indexNames": ["bySku", "byTag", "byType"],
+                "values": ["a", "b", "c"],
+                "green": ["a", "c"],
+                "firstGreenKey": "a",
+                "count": 2,
+                "cursorKeys": ["a", "c"],
+                "keyCursorKeys": ["c", "b"],
+                "uniqueError": "ConstraintError",
+                "updated": "b",
+                "remaining": ["b"],
+            })
+        );
+        engine.close().unwrap();
+    }
+
+    {
+        let mut engine = NativeEngine::new(config).unwrap();
+        engine.initialize().unwrap();
+        assert_eq!(
+            engine
+                .evaluate_async(
+                    "await (async () => { const request = indexedDB.open('catalog'); const db = await new Promise((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); }); const read = db.transaction('records', 'readonly').objectStore('records').index('bySku').get('sku-b'); return await new Promise((resolve, reject) => { read.onsuccess = () => resolve(read.result); read.onerror = () => reject(read.error); }); })()",
+                )
+                .await
+                .unwrap(),
+            serde_json::json!({"id": "b", "type": "b", "sku": "sku-b", "tags": ["updated"]})
         );
         engine.close().unwrap();
     }

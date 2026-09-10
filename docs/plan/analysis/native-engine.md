@@ -2452,6 +2452,19 @@ last-writer rule. Indexes, cursors, key ranges, non-JSON structured-clone
 values, full transaction/version-change coordination, quota APIs, and the
 remaining browser-complete gates remain open.
 
+The completed bounded IndexedDB query-primitives follow-up is
+[native-engine-browser-080](../tasks/native-engine-browser-080.md). Object
+stores now retain bounded string-key-path indexes with unique and multi-entry
+constraints; `IDBKeyRange` supports exact, lower, upper, and bound queries;
+and store/index lookups, counts, deletes, ordered key/value cursors,
+continuation, advancement, update, and delete are available for the supported
+JSON key model. Index metadata uses a dedicated delta and record changes keep
+the established merge path. Query-time derivation scans at most the bounded
+128-record store, trading large-database throughput for deterministic resource
+use and a compact profile. Compound keys, array keys outside `multiEntry`,
+non-JSON values, full transaction/version-change coordination, quota APIs, and
+the remaining browser-complete gates remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

@@ -783,6 +783,19 @@ non-JSON structured-clone values, full transaction/version-change
 coordination, quota APIs, and the remaining browser-complete gates remain
 open.
 
+The completed bounded IndexedDB query-primitives slice is
+[native-engine-browser-080](tasks/native-engine-browser-080.md). Object-store
+indexes now persist bounded string key paths with unique and multi-entry
+constraints; `IDBKeyRange` supports exact, lower, upper, and bounded queries;
+and store/index lookups, counts, deletes, key cursors, value cursors, cursor
+continuation, advancement, update, and delete are available in the supported
+JSON key model. Index metadata uses a dedicated delta, while record changes
+retain the existing merge path. Queries derive at most the bounded 128-record
+scan at operation time, keeping resource use predictable at the cost of
+large-database indexing throughput. Compound keys, array keys outside
+`multiEntry`, non-JSON values, full transaction/version-change coordination,
+quota APIs, and the remaining browser-complete gates remain open.
+
 Full cookie policy/Web IDL parity and the remaining browser-complete gates
 remain open.
 

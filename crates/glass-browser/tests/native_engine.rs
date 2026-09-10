@@ -29352,6 +29352,75 @@ async fn native_local_indexed_db_serializes_transactions_before_abort() {
 }
 
 #[tokio::test]
+async fn native_local_indexed_db_round_trips_bounded_structured_clone_extensions() {
+    let profile_path = std::env::temp_dir().join(format!(
+        "glass-native-indexed-db-{}-structured-clone.json",
+        std::process::id()
+    ));
+    let _ = fs::remove_file(&profile_path);
+    let config = NativeEngineConfig::default()
+        .with_storage_path(profile_path.clone())
+        .with_fixture(
+            "fixture://indexed-db-structured-clone",
+            "<p>IndexedDB structured clone</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://indexed-db-structured-clone");
+    let mut engine = NativeEngine::new(config.clone()).unwrap();
+    engine.initialize().unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await (async () => { const request = indexedDB.open('structured', 1); request.onupgradeneeded = event => event.target.result.createObjectStore('records'); return await new Promise((resolve, reject) => { request.onsuccess = () => resolve(true); request.onerror = () => reject(request.error); }); })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await (async () => { const request = indexedDB.open('structured'); const db = await new Promise((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); }); return await new Promise((resolve, reject) => { const transaction = db.transaction('records', 'readwrite'); const value = { undefinedValue: undefined, date: new Date('2026-01-02T03:04:05.000Z'), pattern: /glass/gi, numbers: [NaN, Infinity, -Infinity, -0], map: new Map([['missing', undefined], ['date', new Date('2026-01-02T03:04:05.000Z')]]), set: new Set(['a', 'b']) }; const write = transaction.objectStore('records').put(value, 'special'); write.onerror = () => reject(write.error); transaction.oncomplete = () => resolve(true); transaction.onabort = () => reject(transaction.error); }); })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    engine.close().unwrap();
+
+    let mut restarted = NativeEngine::new(config).unwrap();
+    restarted.initialize().unwrap();
+    assert_eq!(
+        restarted
+            .evaluate_async(
+                "await (async () => { const request = indexedDB.open('structured'); const db = await new Promise((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); }); const read = db.transaction('records', 'readonly').objectStore('records').get('special'); const value = await new Promise((resolve, reject) => { read.onsuccess = () => resolve(read.result); read.onerror = () => reject(read.error); }); return { undefinedValue: Object.prototype.hasOwnProperty.call(value, 'undefinedValue') && value.undefinedValue === undefined, date: value.date instanceof Date && value.date.toISOString(), regexp: value.pattern instanceof RegExp && value.pattern.source === 'glass' && value.pattern.flags === 'gi' && value.pattern.lastIndex === 0, nan: Number.isNaN(value.numbers[0]), positiveInfinity: value.numbers[1] === Infinity, negativeInfinity: value.numbers[2] === -Infinity, negativeZero: Object.is(value.numbers[3], -0), map: value.map instanceof Map && value.map.get('missing') === undefined && value.map.get('date') instanceof Date, set: value.set instanceof Set && value.set.has('a') && value.set.has('b') }; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "undefinedValue": true,
+            "date": "2026-01-02T03:04:05.000Z",
+            "regexp": true,
+            "nan": true,
+            "positiveInfinity": true,
+            "negativeInfinity": true,
+            "negativeZero": true,
+            "map": true,
+            "set": true,
+        })
+    );
+    restarted.close().unwrap();
+    for suffix in ["", "lock", "events", "readers"] {
+        let path = if suffix.is_empty() {
+            profile_path.clone()
+        } else {
+            profile_path.with_extension(suffix)
+        };
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[tokio::test]
 async fn native_local_indexed_db_journal_merges_live_origin_writers() {
     let profile_path = std::env::temp_dir().join(format!(
         "glass-native-indexed-db-{}-journal.json",

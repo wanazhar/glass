@@ -5245,10 +5245,13 @@ fn document_bootstrap(
     this.onreadystatechange = null;
     this.onload = null;
     this.onerror = null;
+    this.onabort = null;
     this._method = "GET";
     this._url = "";
     this._headers = {{}};
     this._responseContentType = null;
+    this._controller = null;
+    this._aborted = false;
   }};
   XMLHttpRequestNative.prototype._notifyReadyState = function() {{
     if (typeof this.onreadystatechange === "function") this.onreadystatechange.call(this);
@@ -5262,6 +5265,8 @@ fn document_bootstrap(
     this._method = normalizedMethod;
     this._url = url;
     this._headers = {{}};
+    this._controller = null;
+    this._aborted = false;
     this.readyState = 1;
     this._notifyReadyState();
   }};
@@ -5269,6 +5274,23 @@ fn document_bootstrap(
     if (String(name).toLowerCase() !== "content-type")
       throw new TypeError("native XMLHttpRequest only supports the Content-Type header");
     this._headers["Content-Type"] = String(value);
+  }};
+  XMLHttpRequestNative.prototype.abort = function() {{
+    const active = this.readyState !== 0 && this.readyState !== 4;
+    const controller = this._controller;
+    this._aborted = true;
+    this._controller = null;
+    if (controller) controller.abort();
+    if (!active) return;
+    this.readyState = 0;
+    this.status = 0;
+    this.statusText = "";
+    this.responseText = "";
+    this.responseURL = "";
+    this.response = "";
+    this._responseContentType = null;
+    this._notifyReadyState();
+    if (typeof this.onabort === "function") this.onabort.call(this, {{ type: "abort", target: this }});
   }};
   XMLHttpRequestNative.prototype.getResponseHeader = function(name) {{
     return String(name).toLowerCase() === "content-type" ? this._responseContentType : null;
@@ -5283,25 +5305,34 @@ fn document_bootstrap(
     const requestBody = body && (body.__glassFormData === true || body.__glassUrlSearchParams === true || body.__glassNativeBlob === true)
       ? body
       : body === undefined || body === null ? null : String(body);
+    const controller = new AbortControllerNative();
+    this._controller = controller;
+    this._aborted = false;
     const request = fetchNative(this._url, {{
       method: this._method,
       body: requestBody,
       headers: this._headers,
       credentials: this.withCredentials ? "include" : "omit",
+      signal: controller.signal,
     }});
     request.then(response => {{
+      if (this._controller !== controller || this._aborted) return null;
       this.status = response.status;
       this.statusText = String(response.status);
       this.responseURL = response.url;
       this._responseContentType = response.headers.get("content-type");
       return response.text();
     }}).then(text => {{
+      if (text === null || this._controller !== controller || this._aborted) return;
+      this._controller = null;
       this.responseText = text;
       this.response = text;
       this.readyState = 4;
       this._notifyReadyState();
       if (typeof this.onload === "function") this.onload.call(this, {{ type: "load", target: this }});
     }}).catch(error => {{
+      if (this._controller !== controller || this._aborted) return;
+      this._controller = null;
       this.readyState = 4;
       this._notifyReadyState();
       if (typeof this.onerror === "function") this.onerror.call(this, {{ type: "error", target: this, error }});

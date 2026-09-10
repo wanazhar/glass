@@ -914,6 +914,13 @@ now offers read-only case-insensitive content-type lookup plus bounded
 headers, request-header dictionaries, trailers, and full Headers/Web IDL
 parity remain open.
 
+The completed bounded XHR-abort slice is
+[native-engine-browser-096](tasks/native-engine-browser-096.md). Asynchronous
+`XMLHttpRequest.abort()` now uses a request-local abort signal, resets active
+requests to `UNSENT`, emits the bounded `readystatechange`/`abort` callbacks,
+and ignores late `load`/`error` continuations. Transport cancellation,
+timeout/progress, and complete XHR/Web IDL parity remain open.
+
 Full cookie policy/Web IDL parity and the remaining browser-complete gates
 remain open.
 

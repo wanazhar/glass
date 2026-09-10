@@ -4982,36 +4982,63 @@ fn document_bootstrap(
     return {{ body, contentType: "multipart/form-data; boundary=" + boundary }};
   }};
   globalThis.FormData = FormDataNative;
+  const appendUrlSearchParam = (target, name, value) => {{
+    const key = String(name);
+    const normalizedValue = String(value);
+    if (key.length > storageKeyLimit) throw new RangeError("native URLSearchParams name exceeds its limit");
+    if (normalizedValue.length > storageValueLimit) throw new RangeError("native URLSearchParams value exceeds its limit");
+    if (target._entries.length >= storageEntryLimit) throw new RangeError("native URLSearchParams entry limit exceeded");
+    target._entries.push([key, normalizedValue]);
+  }};
   const URLSearchParamsNative = function(init) {{
     this.__glassUrlSearchParams = true;
     this._entries = [];
     if (init === undefined || init === null) return;
     if (typeof init === "string") {{
-      for (const part of init.split("&")) {{
+      const source = init.startsWith("?") ? init.slice(1) : init;
+      for (const part of source.split("&")) {{
         if (!part) continue;
-        const pieces = part.split("=");
+        const separator = part.indexOf("=");
         const decode = value => decodeURIComponent(String(value).replace(/\+/g, " "));
-        this._entries.push([decode(pieces.shift()), decode(pieces.join("="))]);
+        const name = separator < 0 ? part : part.slice(0, separator);
+        const value = separator < 0 ? "" : part.slice(separator + 1);
+        appendUrlSearchParam(this, decode(name), decode(value));
       }}
       return;
     }}
     if (init.__glassUrlSearchParams === true) {{
-      this._entries = init._entries.map(entry => [entry[0], entry[1]]);
+      init._entries.forEach(entry => appendUrlSearchParam(this, entry[0], entry[1]));
       return;
     }}
-    throw new TypeError("native URLSearchParams accepts only text or URLSearchParams");
+    if (Array.isArray(init)) {{
+      for (const pair of init) {{
+        if (!Array.isArray(pair) || pair.length !== 2) throw new TypeError("native URLSearchParams pairs must contain two values");
+        appendUrlSearchParam(this, pair[0], pair[1]);
+      }}
+      return;
+    }}
+    if (typeof init === "object") {{
+      for (const name of Object.keys(init)) appendUrlSearchParam(this, name, init[name]);
+      return;
+    }}
+    throw new TypeError("native URLSearchParams accepts text, pairs, records, or URLSearchParams");
   }};
   URLSearchParamsNative.prototype.append = function(name, value) {{
-    this._entries.push([String(name), String(value)]);
+    appendUrlSearchParam(this, name, value);
   }};
   URLSearchParamsNative.prototype.set = function(name, value) {{
     const key = String(name);
     this._entries = this._entries.filter(entry => entry[0] !== key);
-    this._entries.push([key, String(value)]);
+    appendUrlSearchParam(this, key, value);
   }};
-  URLSearchParamsNative.prototype.delete = function(name) {{
+  URLSearchParamsNative.prototype.delete = function(name, value) {{
     const key = String(name);
-    this._entries = this._entries.filter(entry => entry[0] !== key);
+    if (arguments.length > 1) {{
+      const normalizedValue = String(value);
+      this._entries = this._entries.filter(entry => entry[0] !== key || entry[1] !== normalizedValue);
+    }} else {{
+      this._entries = this._entries.filter(entry => entry[0] !== key);
+    }}
   }};
   URLSearchParamsNative.prototype.get = function(name) {{
     const key = String(name);
@@ -5026,9 +5053,39 @@ fn document_bootstrap(
     const key = String(name);
     return this._entries.some(entry => entry[0] === key);
   }};
-  URLSearchParamsNative.prototype.entries = function() {{ return this._entries.slice(); }};
+  Object.defineProperty(URLSearchParamsNative.prototype, "size", {{
+    get() {{ return this._entries.length; }},
+  }});
+  const urlSearchParamsIterator = entries => entries[Symbol.iterator]();
+  URLSearchParamsNative.prototype.entries = function() {{
+    return urlSearchParamsIterator(this._entries.map(entry => [entry[0], entry[1]]));
+  }};
+  URLSearchParamsNative.prototype.keys = function() {{
+    return urlSearchParamsIterator(this._entries.map(entry => entry[0]));
+  }};
+  URLSearchParamsNative.prototype.values = function() {{
+    return urlSearchParamsIterator(this._entries.map(entry => entry[1]));
+  }};
+  URLSearchParamsNative.prototype.forEach = function(callback, thisArg) {{
+    if (typeof callback !== "function") throw new TypeError("native URLSearchParams callback must be callable");
+    this._entries.slice().forEach(entry => callback.call(thisArg, entry[1], entry[0], this));
+  }};
+  URLSearchParamsNative.prototype.sort = function() {{
+    for (let index = 1; index < this._entries.length; index += 1) {{
+      const current = this._entries[index];
+      let position = index;
+      while (position > 0 && this._entries[position - 1][0] > current[0]) {{
+        this._entries[position] = this._entries[position - 1];
+        position -= 1;
+      }}
+      this._entries[position] = current;
+    }}
+  }};
+  URLSearchParamsNative.prototype[Symbol.iterator] = URLSearchParamsNative.prototype.entries;
   URLSearchParamsNative.prototype.toString = function() {{
-    const encode = value => encodeURIComponent(String(value)).replace(/%20/g, "+");
+    const encode = value => encodeURIComponent(String(value))
+      .replace(/[!'()~]/g, character => "%" + character.charCodeAt(0).toString(16).toUpperCase())
+      .replace(/%20/g, "+");
     return this._entries.map(entry => encode(entry[0]) + "=" + encode(entry[1])).join("&");
   }};
   globalThis.URLSearchParams = URLSearchParamsNative;

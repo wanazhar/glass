@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-092` locally. The versioned
+`native-engine-browser-093` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -884,6 +884,14 @@ The completed bounded fetch-abort slice is
 observable `fetch()` promise rejection now work through the worker path; late
 host responses are ignored. Socket-level cancellation, XHR `abort()`, timeout,
 progress, `AbortSignal.timeout/any`, and full Web IDL parity remain open.
+
+The completed bounded URLSearchParams slice is
+[native-engine-browser-093](tasks/native-engine-browser-093.md).
+`URLSearchParams` now accepts bounded query strings, pair sequences, records,
+and existing instances; supports stable sort, size, callbacks, optional-value
+deletion, and snapshot iterators; and uses the corrected form-urlencoded
+escaping rules. Full live Web IDL iterator identity and exotic iterable parity
+remain open.
 
 The completed bounded fetch Blob/File-body slice is
 [native-engine-browser-090](tasks/native-engine-browser-090.md). `fetch()` now

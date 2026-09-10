@@ -1168,6 +1168,14 @@ transport boundary. URL setters, full percent-encoding/IDNA/IPv6/default-port
 parity, live search-parameter synchronization, non-HTTP scheme parity, and
 complete URL/Web IDL identity remain open.
 
+The completed native-engine-browser-120 batch adds bounded Response identity
+and constructors. Fetched and constructed responses are `instanceof Response`;
+`new Response`, `Response.json`, `Response.error`, and `Response.redirect`
+reuse the existing bounded body/header/clone projections, with null bodies
+remaining `body === null`. Stream input, body disturbance/`bodyUsed`, full
+factory and redirect/error internals, trailers, shared tee/backpressure, and
+complete Response Web IDL identity remain open.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature

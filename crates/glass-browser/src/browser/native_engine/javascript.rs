@@ -5940,26 +5940,124 @@ fn document_bootstrap(
     blob.size = blob._bytes.length;
     return blob;
   }};
+  const responseInitEntries = (input) => {{
+    if (input === undefined || input === null) return [];
+    if (input.__glassHeaders === true) return input._entries.map(entry => [entry[0], entry[1]]);
+    if (Array.isArray(input)) return input.map(entry => {{
+      if (!Array.isArray(entry) || entry.length !== 2) throw new TypeError("native Response header pairs must contain two values");
+      return [entry[0], entry[1]];
+    }});
+    if (typeof input !== "object") throw new TypeError("native Response headers must be an object or pairs");
+    return Object.keys(input).map(name => [name, input[name]]);
+  }};
+  const responseConstructorPayload = (body, options) => {{
+    const settings = options && typeof options === "object" ? options : {{}};
+    const bodyNull = body === undefined || body === null;
+    const bodyPayload = bodyNull
+      ? {{ body: "", bodyBase64: encodeBase64([]), contentType: null }}
+      : body && body.__glassNativeBlob === true
+        ? {{ body: body._text, bodyBase64: encodeBase64(blobBytes(body)), contentType: body.type || null }}
+        : body && body.__glassUrlSearchParams === true
+          ? {{ body: body.toString(), bodyBase64: encodeBase64(blobUtf8Bytes(body.toString())), contentType: "application/x-www-form-urlencoded;charset=UTF-8" }}
+          : body instanceof ArrayBuffer
+            ? {{ body: utf8TextFromBytes(Array.from(new Uint8Array(body))), bodyBase64: encodeBase64(Array.from(new Uint8Array(body))), contentType: null }}
+            : typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(body)
+              ? {{ body: utf8TextFromBytes(Array.from(new Uint8Array(body.buffer, body.byteOffset, body.byteLength))), bodyBase64: encodeBase64(Array.from(new Uint8Array(body.buffer, body.byteOffset, body.byteLength))), contentType: null }}
+              : {{ body: String(body), bodyBase64: encodeBase64(blobUtf8Bytes(String(body))), contentType: null }};
+    const status = settings.status === undefined ? 200 : Number(settings.status);
+    if (!Number.isInteger(status) || status < 200 || status > 599) throw new RangeError("native Response status is outside the bounded range");
+    const headers = responseInitEntries(settings.headers);
+    return {{
+      url: "",
+      status,
+      statusText: settings.statusText === undefined ? "" : String(settings.statusText),
+      headers,
+      contentType: bodyPayload.contentType,
+      body: bodyPayload.body,
+      bodyBase64: bodyPayload.bodyBase64,
+      bodyNull,
+      redirected: false,
+      opaque: false,
+      opaqueRedirect: false,
+    }};
+  }};
+  const ResponseNative = function(body, options) {{
+    if (!(this instanceof ResponseNative)) throw new TypeError("native Response requires new");
+    if (body && body.__glassReadableStream === true) throw new TypeError("native Response stream bodies are unsupported");
+    return responseFromFetch(responseConstructorPayload(body, options));
+  }};
+  ResponseNative.prototype.constructor = ResponseNative;
+  ResponseNative.json = function(data, options) {{
+    const settings = options && typeof options === "object" ? Object.assign({{}}, options) : {{}};
+    const headers = new HeadersNative(settings.headers);
+    if (!headers.has("content-type")) headers.set("content-type", "application/json");
+    settings.headers = headers;
+    return new ResponseNative(JSON.stringify(data), settings);
+  }};
+  ResponseNative.error = function() {{
+    const response = Object.create(ResponseNative.prototype);
+    Object.assign(response, {{
+      type: "error",
+      ok: false,
+      status: 0,
+      statusText: "",
+      url: "",
+      redirected: false,
+      headers: responseHeaders([], null),
+      body: null,
+      clone() {{ return ResponseNative.error(); }},
+      text() {{ return Promise.reject(nativeOpaqueResponseError()); }},
+      json() {{ return Promise.reject(nativeOpaqueResponseError()); }},
+      blob() {{ return Promise.reject(nativeOpaqueResponseError()); }},
+      arrayBuffer() {{ return Promise.reject(nativeOpaqueResponseError()); }},
+      bytes() {{ return Promise.reject(nativeOpaqueResponseError()); }},
+    }});
+    return Object.freeze(response);
+  }};
+  ResponseNative.redirect = function(url, status) {{
+    const code = status === undefined ? 302 : Number(status);
+    if (![301, 302, 303, 307, 308].includes(code)) throw new RangeError("native Response redirect status is unsupported");
+    const location = url && url.__glassUrl === true ? url.href : String(url);
+    return responseFromFetch({{
+      url: "",
+      status: code,
+      statusText: "",
+      headers: [["location", location]],
+      contentType: null,
+      body: "",
+      bodyBase64: encodeBase64([]),
+      bodyNull: true,
+      redirected: false,
+      opaque: false,
+      opaqueRedirect: false,
+    }});
+  }};
+  globalThis.Response = ResponseNative;
   const responseFromFetch = (payload) => {{
     const opaque = payload && payload.opaque === true;
     const opaqueRedirect = payload && payload.opaqueRedirect === true;
-    const filtered = opaque || opaqueRedirect;
+    const error = payload && payload.error === true;
+    const filtered = opaque || opaqueRedirect || error;
+    const bodyNull = payload && payload.bodyNull === true;
     const opaqueBody = () => Promise.reject(nativeOpaqueResponseError());
-    return Object.freeze({{
-      type: opaqueRedirect ? "opaqueredirect" : (opaque ? "opaque" : "basic"),
+    const response = Object.create(ResponseNative.prototype);
+    Object.assign(response, {{
+      type: error ? "error" : opaqueRedirect ? "opaqueredirect" : (opaque ? "opaque" : "basic"),
       ok: !filtered && payload.status >= 200 && payload.status < 300,
       status: filtered ? 0 : payload.status,
+      statusText: filtered ? "" : (payload.statusText === undefined ? String(payload.status) : String(payload.statusText)),
       url: filtered ? "" : payload.url,
       redirected: opaqueRedirect ? false : payload.redirected === true,
       headers: filtered ? responseHeaders([], null) : responseHeaders(payload.headers, payload.contentType),
-      body: filtered ? null : new ReadableStreamNative(responseBodyBytes(payload)),
+      body: filtered || bodyNull ? null : new ReadableStreamNative(responseBodyBytes(payload)),
       clone() {{ return responseFromFetch(payload); }},
-      text() {{ return filtered ? opaqueBody() : Promise.resolve(payload.body); }},
-      json() {{ return filtered ? opaqueBody() : Promise.resolve(JSON.parse(payload.body)); }},
+      text() {{ return filtered ? opaqueBody() : Promise.resolve(bodyNull ? "" : payload.body); }},
+      json() {{ return filtered ? opaqueBody() : Promise.resolve(JSON.parse(bodyNull ? "" : payload.body)); }},
       blob() {{ return filtered ? opaqueBody() : Promise.resolve(responseBodyBlob(payload)); }},
       arrayBuffer() {{ return filtered ? opaqueBody() : responseBodyBlob(payload).arrayBuffer(); }},
       bytes() {{ return filtered ? opaqueBody() : responseBodyBlob(payload).bytes(); }},
     }});
+    return Object.freeze(response);
   }};
   const XMLHttpRequestNative = function() {{
     this.readyState = 0;

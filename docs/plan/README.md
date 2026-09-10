@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-150` locally. The versioned
+`native-engine-browser-151` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1400,6 +1400,17 @@ messages, and cause later named-target calls to reuse the renamed target. The
 opener projection is intentionally snapshotted at child creation; live
 cross-context property scripting, popup permission policy and geometry, frame
 lifecycle/scripting, and complete browser parity remain issue #40 gates.
+
+The completed native-engine-browser-151 batch is
+[native-engine-browser-151](tasks/native-engine-browser-151.md). Native
+WindowProxy `close()` now emits a bounded parent-owned effect across local and
+HTTP(S) realms, including the content-worker boundary. The target registry
+resolves private handles, direct context IDs, and named targets, processes
+close effects after any causally-required popup creation, and routes shutdown
+through the existing target/frame/worker owner. The requesting proxy reports
+`closed === true`, closed targets leave topology, and stale repeats are
+idempotent. Live updates to every already-held proxy remain a separate
+identity-observation gate in issue #40.
 
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and

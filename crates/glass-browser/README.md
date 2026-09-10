@@ -472,7 +472,9 @@ filtering. Direct cross-context property scripting, popup permissions/geometry,
 and full browser topology remain later issue #40 gates. Native browsing contexts
 also expose bounded `window.name` and `window.opener` metadata across local and
 HTTP(S) page loads, and a renamed target can be reused by later named
-`window.open` calls.
+`window.open` calls. `WindowProxy.close()` now removes its target through the
+same parent-owned lifecycle path across local and HTTP(S) pages; the requesting
+proxy reports `closed === true`, and repeated stale closes are harmless.
 
 ## Safety and support
 

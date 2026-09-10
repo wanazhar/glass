@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-150` slice; the bounded foundation below remains
+`native-engine-browser-151` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -1489,6 +1489,16 @@ later named-target open reuse the renamed context. The opener name is captured
 at child creation; live cross-context property scripting, popup
 permission/geometry, frame lifecycle/shared scripting, and complete browser
 topology remain separate issue #40 gates.
+
+The completed native-engine-browser-151 slice adds live target closure through
+the WindowProxy effect boundary. Local and HTTP(S) realms emit a bounded
+`closeWindow` request with a private handle or direct context identity; the
+parent registry resolves it after popup creation/message cascades and invokes
+the existing target owner shutdown. The requesting proxy marks itself closed,
+the target disappears from topology, and repeated or stale requests are
+idempotent. The established protocol-6 worker envelope carries the additive
+effect field without changing source ownership. Live observation updates for
+all extant proxy objects remain a later identity gate.
 
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third

@@ -2743,6 +2743,16 @@ streaming, backpressure, body disturbance/`bodyUsed`, BYOB readers,
 transport-level cancellation, trailers, and complete ReadableStream/Response
 Web IDL parity remain open.
 
+The completed bounded Fetch Response-clone follow-up is
+[native-engine-browser-117](../tasks/native-engine-browser-117.md). Native
+`Response.clone()` now returns a fresh bounded response with independent
+headers and body owners; ordinary clones preserve the existing body readers
+and one-chunk stream, while opaque and `opaqueredirect` clones retain their
+filtered shells and `body === null`. Full body disturbance/`bodyUsed`, clone
+rejection for locked or consumed bodies, shared tee/backpressure semantics,
+Request/Response constructors, and complete Response Web IDL parity remain
+open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

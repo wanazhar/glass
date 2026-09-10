@@ -1143,6 +1143,15 @@ streaming, backpressure, body disturbance/`bodyUsed`, BYOB readers,
 transport-level cancellation, and complete ReadableStream/Response Web IDL
 parity remain open.
 
+The completed native-engine-browser-117 batch adds bounded `Response.clone()`
+projections with fresh response-header and body owners. Ordinary clones retain
+the existing metadata and independent text, JSON, Blob, ArrayBuffer, bytes, and
+one-chunk stream views; opaque and `opaqueredirect` clones retain their
+filtered shells and `body === null`. Full body disturbance/`bodyUsed`, clone
+rejection for locked or consumed bodies, shared tee/backpressure semantics,
+Request/Response constructors, and complete Response Web IDL parity remain
+open.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature
@@ -4207,6 +4216,10 @@ The native profile is `experimental` and declares:
 | storage | partial | process-owned cookies with bounded `document.cookie` synchronization, bounded document cache, origin-keyed page local/session storage with opt-in revisioned localStorage/cookie/IndexedDB profiles, stale-snapshot key-level merge for Web Storage and cookies, profile-journal local/session events across live local and process-backed documents, bounded reader-lease retention, acknowledged-prefix compaction, profile-snapshot recovery, a bounded StorageManager estimate against the fixed 4 MiB profile quota, and a bounded tagged JSON/structured-clone IndexedDB subset with text-backed Blob/File values plus byte-vector ArrayBuffer/typed-array/DataView values, bounded Blob/File `arrayBuffer()`/`bytes()` reads, version upgrades, same-realm version-change/deletion coordination, serialized atomic ordinary transactions, object stores, indexes, key ranges, cursors, and CRUD; no full cookie policy or IndexedDB parity |
 | prompts | omitted | no dialogs |
 | downloads | omitted | no download pipeline |
+
+Within the available script profile, native Fetch `Response.clone()` creates a
+bounded fresh response/header/body owner; full disturbance and Web IDL
+semantics remain explicitly outside the profile.
 
 The profile limitations are surfaced through `BackendProfile`. The dispatcher
 returns typed capability denials for omitted operations. `EvidenceLevel::Deep`

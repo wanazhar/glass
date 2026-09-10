@@ -623,6 +623,9 @@ fn action_source(action: &SemanticAction) -> Result<String, BrowserBackendError>
         | SemanticAction::Check { .. }
         | SemanticAction::Uncheck { .. }
         | SemanticAction::Select { .. }
+        | SemanticAction::KeyDown { .. }
+        | SemanticAction::KeyUp { .. }
+        | SemanticAction::Shortcut { .. }
         | SemanticAction::KeyPress { .. }
         | SemanticAction::Scroll { .. } => {
             Err(BrowserBackendError::UnsupportedOperation {

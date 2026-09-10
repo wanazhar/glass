@@ -107,27 +107,41 @@ cargo run -p glass-browser --features native-engine -- \
   navigate 'data:text/html,%3Cbutton%20id%3D%22save%22%3ESave%3C%2Fbutton%3E'
 ```
 
-The default CLI configuration accepts only `about:blank` and bounded,
-percent-decoded `data:text/html` documents. Registered `fixture://` documents
-remain available through the Rust `NativeEngineConfig` constructor; the CLI
-does not read fixture files. Native supports only the local command set:
+The CLI accepts `about:blank`, bounded percent-decoded `data:text/html`, and
+external HTTP(S) documents through the native content worker. Registered
+`fixture://` documents remain available through the Rust `NativeEngineConfig`
+constructor; the CLI does not read fixture files. Native currently supports
+this semantic command set:
 
 ```text
 navigate URL
 click SEMANTIC_LOCATOR_OR_POINT
 type TEXT --target SEMANTIC_LOCATOR
+clear SEMANTIC_LOCATOR
+check SEMANTIC_LOCATOR
+uncheck SEMANTIC_LOCATOR
+select SEMANTIC_LOCATOR VALUE
+key KEY
+key-down KEY
+key-up KEY
+shortcut MODIFIER+KEY
 text
 observe
 targets
+dom
+evaluate EXPRESSION
+scroll --dy DY
+screenshot --output PATH --format png
 ```
 
 Native locators use `ref`, `id`, `role`, `name`, or `text` forms. Native clicks
 may additionally use `point=<unsigned-x>,<unsigned-y>` for the bounded viewport
-hit-test path; CSS selectors are not accepted. Endpoint and external lifecycle flags, remote URLs,
-script/evaluate, MCP, TUI, profiles, screenshots, storage, downloads, prompts,
-and other Chromium-only operations fail closed. The backend is experimental,
-in-process, and not a security boundary for hostile content. It never enters
-automatic selection or silently falls back to Chromium.
+hit-test path; CSS selectors are not accepted. Endpoint and external lifecycle
+flags, MCP, TUI, profiles, storage, downloads, prompts, and other Chromium-only
+operations fail closed. The backend is experimental, and local execution is
+not a security boundary for hostile content; external HTTP(S) documents use
+the native content worker. It never enters automatic selection or silently
+falls back to Chromium.
 
 Place global options before or after the subcommand.
 Compatibility spellings are limited to the aliases defined by Clap:

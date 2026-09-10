@@ -2835,6 +2835,16 @@ session methods, while Firefox/Safari/proof reject them explicitly. This
 improves product action coverage but does not yet promote native selection or
 certify CDP replacement.
 
+The completed native-engine-browser-129 keyboard batch adds key-down, key-up,
+and modifier-aware shortcut intents to the transport-neutral action contract.
+The local and HTTP(S) content-process owners dispatch matching key/code and
+modifier metadata, preserve cancelable keydown behavior, apply only the
+bounded unmodified text default, and commit one revision per action. Chromium
+maps the same intents to its existing keyboard methods; Firefox, Safari, and
+proof adapters reject them explicitly. Selection/caret ranges, IME and
+composition, repeat, platform text services, rich observation, and native
+promotion remain issue #40 gates.
+
 The completed bounded Response-constructor follow-up is
 [native-engine-browser-120](../tasks/native-engine-browser-120.md). Fetched and
 constructed responses now share `Response` identity; `new Response`,

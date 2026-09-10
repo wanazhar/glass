@@ -1248,6 +1248,15 @@ actions, and non-native partial adapters reject them rather than silently
 claiming support. Full form/Web IDL parity, rich observation, and native
 default promotion remain issue #40 gates.
 
+The completed native-engine-browser-129 batch extends that same action owner
+with explicit key-down, key-up, and modifier-aware shortcut intents. Local and
+HTTP(S) content-process documents use one event bridge for key/code and
+Alt/Ctrl/Meta/Shift fields, cancellation, bounded default text editing, and
+one parent revision per action. Chromium maps the intents to its existing
+keyboard methods, while partial adapters reject them explicitly. Persistent
+selection/caret ranges, IME/composition, repeat, text services, rich
+observation, and production replacement of CDP remain open.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature

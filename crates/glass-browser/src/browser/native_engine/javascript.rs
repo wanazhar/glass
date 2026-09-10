@@ -2697,6 +2697,15 @@ pub(crate) fn host_key_event_script(
     kind: NativeEventKind,
     key: &str,
 ) -> Result<Option<String>, NativeEngineError> {
+    host_key_event_script_with_modifiers(node_index, kind, key, 0)
+}
+
+pub(crate) fn host_key_event_script_with_modifiers(
+    node_index: u32,
+    kind: NativeEventKind,
+    key: &str,
+    modifiers: i64,
+) -> Result<Option<String>, NativeEngineError> {
     let (event_type, bubbles, cancelable) = match kind {
         NativeEventKind::KeyDown => ("keydown", true, true),
         NativeEventKind::KeyUp => ("keyup", true, false),
@@ -2730,6 +2739,10 @@ pub(crate) fn host_key_event_script(
         "cancelable": cancelable,
         "key": key,
         "code": code,
+        "alt_key": modifiers & 1 != 0,
+        "ctrl_key": modifiers & 2 != 0,
+        "meta_key": modifiers & 4 != 0,
+        "shift_key": modifiers & 8 != 0,
     }]);
     let encoded = serde_json::to_string(&descriptors).map_err(|_| NativeEngineError::Worker {
         operation: "serialize native key event dispatch".into(),
@@ -6470,6 +6483,10 @@ fn document_bootstrap(
       cancelable: Boolean(settings.cancelable),
       key: settings.key === undefined ? "" : String(settings.key),
       code: settings.code === undefined ? "" : String(settings.code),
+      altKey: Boolean(settings.altKey),
+      ctrlKey: Boolean(settings.ctrlKey),
+      metaKey: Boolean(settings.metaKey),
+      shiftKey: Boolean(settings.shiftKey),
       target: null,
       currentTarget: null,
       eventPhase: 0,
@@ -6889,6 +6906,10 @@ fn document_bootstrap(
       cancelable: Boolean(descriptor.cancelable),
       key: descriptor.key,
       code: descriptor.code,
+      altKey: Boolean(descriptor.alt_key),
+      ctrlKey: Boolean(descriptor.ctrl_key),
+      metaKey: Boolean(descriptor.meta_key),
+      shiftKey: Boolean(descriptor.shift_key),
       submitter: descriptor.submitter_node_index == null
         ? null
         : elements.find((element) => element.nodeIndex === descriptor.submitter_node_index) || null,

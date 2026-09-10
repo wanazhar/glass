@@ -508,6 +508,17 @@ fn validate_alternative_runtime_command(
         } if expected_revision.is_some() => {
             Err("revision guards are not yet exposed by the portable runtime CLI".into())
         }
+        Commands::KeyDown {
+            expected_revision, ..
+        }
+        | Commands::KeyUp {
+            expected_revision, ..
+        }
+        | Commands::Shortcut {
+            expected_revision, ..
+        } if expected_revision.is_some() => {
+            Err("revision guards are not yet exposed by the portable runtime CLI".into())
+        }
         Commands::Type { target, .. } if target.is_none() => Err(if native {
             "native type requires --target with a semantic locator".into()
         } else {
@@ -574,6 +585,9 @@ fn validate_alternative_runtime_command(
             Err("revision guards are not yet exposed by the portable runtime CLI".into())
         }
         Commands::Key { .. } if native => Ok(()),
+        Commands::KeyDown { .. } | Commands::KeyUp { .. } | Commands::Shortcut { .. } if native => {
+            Ok(())
+        }
         Commands::Navigate { .. }
         | Commands::Click { .. }
         | Commands::Type { .. }
@@ -581,6 +595,9 @@ fn validate_alternative_runtime_command(
         | Commands::Check { .. }
         | Commands::Uncheck { .. }
         | Commands::Select { .. }
+        | Commands::KeyDown { .. }
+        | Commands::KeyUp { .. }
+        | Commands::Shortcut { .. }
         | Commands::Text
         | Commands::Observe { .. }
         | Commands::Targets => Ok(()),
@@ -690,6 +707,26 @@ async fn run_alternative_runtime_command(
         Commands::Key { key, .. } if session.runtime().is_native() => print_json_mode(
             &session
                 .action(SemanticAction::KeyPress { key: key.clone() })
+                .await?,
+            response_mode,
+        ),
+        Commands::KeyDown { key, .. } if session.runtime().is_native() => print_json_mode(
+            &session
+                .action(SemanticAction::KeyDown { key: key.clone() })
+                .await?,
+            response_mode,
+        ),
+        Commands::KeyUp { key, .. } if session.runtime().is_native() => print_json_mode(
+            &session
+                .action(SemanticAction::KeyUp { key: key.clone() })
+                .await?,
+            response_mode,
+        ),
+        Commands::Shortcut { shortcut, .. } if session.runtime().is_native() => print_json_mode(
+            &session
+                .action(SemanticAction::Shortcut {
+                    shortcut: shortcut.clone(),
+                })
                 .await?,
             response_mode,
         ),

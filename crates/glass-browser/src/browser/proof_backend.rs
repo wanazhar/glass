@@ -230,6 +230,9 @@ impl ProofBackend {
                     | SemanticAction::Check { .. }
                     | SemanticAction::Uncheck { .. }
                     | SemanticAction::Select { .. }
+                    | SemanticAction::KeyDown { .. }
+                    | SemanticAction::KeyUp { .. }
+                    | SemanticAction::Shortcut { .. }
                     | SemanticAction::KeyPress { .. }
                     | SemanticAction::Scroll { .. } => {
                         return Err(invalid_action("proof backend supports click and type only"));

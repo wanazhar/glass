@@ -209,13 +209,14 @@ impl NativeEngine {
         if let Some(process) = content_process.as_mut() {
             process.commit().await?;
         }
+        let has_content_process = content_process.is_some();
+        self.content_process = content_process;
         if let Err(error) = self.commit_navigation_async(prepared, &worker).await {
+            self.content_process.take();
             worker.rollback_start().await?;
             return Err(error);
         }
         self.runtime_worker = Some(worker);
-        let has_content_process = content_process.is_some();
-        self.content_process = content_process;
         self.lifecycle = NativeLifecycleState::Running;
         if has_content_process {
             self.dispatch_content_page_show_async().await?;
@@ -1199,19 +1200,31 @@ impl NativeEngine {
     }
 
     fn persist_local_web_storage(&mut self) -> Result<(), NativeEngineError> {
-        let Some(javascript) = self.javascript.as_ref() else {
+        if self
+            .content_process
+            .as_ref()
+            .is_some_and(NativeContentProcess::is_healthy)
+        {
             return Ok(());
-        };
-        let cookie_updates = javascript.take_cookie_updates();
-        self.web_storage = javascript.storage_state();
-        for value in cookie_updates {
-            self.loader.set_document_cookie(&self.url, &value)?;
         }
-        let storage_changes = javascript.take_storage_changes();
+        let storage_changes = if let Some(javascript) = self.javascript.as_ref() {
+            let cookie_updates = javascript.take_cookie_updates();
+            self.web_storage = javascript.storage_state();
+            for value in cookie_updates {
+                self.loader.set_document_cookie(&self.url, &value)?;
+            }
+            javascript.take_storage_changes()
+        } else {
+            Vec::new()
+        };
+        let cookie_state = self.loader.cookie_profile();
+        let cookie_changes = self.loader.take_cookie_changes();
         save_web_storage_profile(
             self.config.storage_path.as_deref(),
             &self.web_storage,
             &storage_changes,
+            &cookie_state,
+            &cookie_changes,
         )?;
         append_storage_events(
             self.config.storage_path.as_deref(),

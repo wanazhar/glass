@@ -96,7 +96,13 @@ impl NativeContentProcess {
         if let Some(storage_path) = storage_path
             && !storage_path.exists()
         {
-            save_web_storage_profile(Some(storage_path), &NativeWebStorageState::default(), &[])?;
+            save_web_storage_profile(
+                Some(storage_path),
+                &NativeWebStorageState::default(),
+                &[],
+                &[],
+                &[],
+            )?;
         }
         let (mut command, mut sandbox) = prepare_worker_command(&path, storage_path)?;
         let mut child = command
@@ -1148,7 +1154,13 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 if let Some(runtime) = javascript_runtime.as_ref() {
                     storage_state = runtime.storage_state();
                 }
-                match load_content_resource(&request, &mut resource_loader).await {
+                match load_content_resource(
+                    &request,
+                    &mut resource_loader,
+                    storage_profile_path.as_deref(),
+                )
+                .await
+                {
                     Ok((
                         resource,
                         mut parsed,
@@ -1951,9 +1963,12 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     &mut resource_loader,
                     document_url.as_deref(),
                 )?;
-                if let Some(path) = storage_profile_path.as_deref() {
-                    save_web_storage_profile(Some(path), &storage_state, &storage_events)?;
-                }
+                persist_content_profile(
+                    storage_profile_path.as_deref(),
+                    &storage_state,
+                    &storage_events,
+                    &mut resource_loader,
+                )?;
                 write_value_frame(&mut stdout, &json!({"kind":"closed","id":id})).await?;
                 return Ok(());
             }
@@ -1971,9 +1986,12 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             &mut resource_loader,
             document_url.as_deref(),
         )?;
-        if let Some(path) = storage_profile_path.as_deref() {
-            save_web_storage_profile(Some(path), &storage_state, &storage_events)?;
-        }
+        persist_content_profile(
+            storage_profile_path.as_deref(),
+            &storage_state,
+            &storage_events,
+            &mut resource_loader,
+        )?;
         if let Some(object) = response.as_object_mut() {
             object.insert(
                 "storage_events".into(),
@@ -2005,6 +2023,29 @@ fn sync_content_runtime_state(
     Ok(runtime.take_storage_changes())
 }
 
+fn persist_content_profile(
+    storage_path: Option<&Path>,
+    storage_state: &NativeWebStorageState,
+    storage_events: &[NativeStorageEvent],
+    resource_loader: &mut Option<NativeResourceLoader>,
+) -> Result<(), NativeEngineError> {
+    let cookie_state = resource_loader
+        .as_ref()
+        .map(NativeResourceLoader::cookie_profile)
+        .unwrap_or_default();
+    let cookie_changes = resource_loader
+        .as_mut()
+        .map(NativeResourceLoader::take_cookie_changes)
+        .unwrap_or_default();
+    save_web_storage_profile(
+        storage_path,
+        storage_state,
+        storage_events,
+        &cookie_state,
+        &cookie_changes,
+    )
+}
+
 fn refresh_content_runtime_cookie(
     runtime: Option<&NativeJavaScriptRuntime>,
     resource_loader: Option<&NativeResourceLoader>,
@@ -2021,6 +2062,7 @@ fn refresh_content_runtime_cookie(
 async fn load_content_resource(
     request: &Value,
     resource_loader: &mut Option<NativeResourceLoader>,
+    storage_path: Option<&Path>,
 ) -> Result<
     (
         NativeContentLoad,
@@ -2172,6 +2214,7 @@ async fn load_content_resource(
         None => {
             *resource_loader = Some(NativeResourceLoader::for_content_process(
                 max_document_bytes,
+                storage_path,
             )?);
             resource_loader
                 .as_mut()

@@ -29061,6 +29061,56 @@ async fn native_local_indexed_db_supports_indexes_key_ranges_and_cursors() {
 }
 
 #[tokio::test]
+async fn native_local_indexed_db_versionchange_unblocks_closed_connection() {
+    let profile_path = std::env::temp_dir().join(format!(
+        "glass-native-indexed-db-{}-versionchange.json",
+        std::process::id()
+    ));
+    let _ = fs::remove_file(&profile_path);
+    let config = NativeEngineConfig::default()
+        .with_storage_path(profile_path.clone())
+        .with_fixture(
+            "fixture://indexed-db-versionchange",
+            "<p>IndexedDB version change</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://indexed-db-versionchange");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize().unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await (async () => { const request = indexedDB.open('versions', 1); request.onupgradeneeded = event => event.target.result.createObjectStore('v1'); const db = await new Promise((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); }); globalThis.versionConnection = db; return db.version; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(1)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await new Promise((resolve, reject) => { const events = []; versionConnection.onversionchange = event => events.push(`versionchange:${event.oldVersion}:${event.newVersion}`); const request = indexedDB.open('versions', 2); request.onblocked = () => { events.push('blocked'); versionConnection.close(); }; request.onupgradeneeded = event => { events.push('upgrade'); event.target.result.createObjectStore('v2'); }; request.onsuccess = () => resolve({ version: request.result.version, stores: request.result.objectStoreNames, events }); request.onerror = () => reject(request.error); })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "version": 2,
+            "stores": ["v1", "v2"],
+            "events": ["versionchange:1:2", "blocked", "upgrade"],
+        })
+    );
+    engine.close().unwrap();
+    for suffix in ["", "lock", "events", "readers"] {
+        let path = if suffix.is_empty() {
+            profile_path.clone()
+        } else {
+            profile_path.with_extension(suffix)
+        };
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[tokio::test]
 async fn native_local_indexed_db_journal_merges_live_origin_writers() {
     let profile_path = std::env::temp_dir().join(format!(
         "glass-native-indexed-db-{}-journal.json",

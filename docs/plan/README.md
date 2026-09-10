@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-079` locally. The versioned
+`native-engine-browser-081` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -795,6 +795,16 @@ scan at operation time, keeping resource use predictable at the cost of
 large-database indexing throughput. Compound keys, array keys outside
 `multiEntry`, non-JSON values, full transaction/version-change coordination,
 quota APIs, and the remaining browser-complete gates remain open.
+
+The completed bounded IndexedDB version-change coordination slice is
+[native-engine-browser-081](tasks/native-engine-browser-081.md). A persistent
+same-realm connection registry now dispatches `versionchange`, emits one
+`blocked` notification while a prior connection remains open, and resumes the
+pending upgrade after the final connection calls `close()`. The resumed
+version-change transaction exposes its current object-store list and runs the
+existing upgrade callbacks. Cross-process live connection identity, complete
+`deleteDatabase` blocking, rollback, and the remaining browser-complete gates
+remain open.
 
 Full cookie policy/Web IDL parity and the remaining browser-complete gates
 remain open.

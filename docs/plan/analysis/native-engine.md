@@ -2465,6 +2465,16 @@ use and a compact profile. Compound keys, array keys outside `multiEntry`,
 non-JSON values, full transaction/version-change coordination, quota APIs, and
 the remaining browser-complete gates remain open.
 
+The completed bounded IndexedDB version-change follow-up is
+[native-engine-browser-081](../tasks/native-engine-browser-081.md). A
+persistent same-realm connection registry dispatches `versionchange`, keeps a
+higher-version `open()` pending behind one `blocked` notification while an
+older connection remains open, and retries the upgrade after the final
+connection calls `close()`. The resumed version-change transaction exposes its
+current object-store list and runs the existing upgrade callbacks. Cross-
+process live connection identity, complete `deleteDatabase` blocking,
+rollback, and the remaining browser-complete gates remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

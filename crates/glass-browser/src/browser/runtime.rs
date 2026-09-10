@@ -214,6 +214,26 @@ impl BrowserRuntimeSession {
         }
     }
 
+    /// Create a native page target without changing the active selection.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_create_target(&self, url: &str) -> BrowserResult<PageTargetInfo> {
+        let _operation = self.operation_lock.lock().await;
+        match &self.backend {
+            BackendStartup::Native(backend) => Ok(backend.create_target(url).await?),
+            _ => Err("native target creation is only available on the native runtime".into()),
+        }
+    }
+
+    /// Close one native page target. Closing the active target clears selection.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_close_target(&self, target_id: &str) -> BrowserResult<()> {
+        let _operation = self.operation_lock.lock().await;
+        match &self.backend {
+            BackendStartup::Native(backend) => Ok(backend.close_target(target_id).await?),
+            _ => Err("native target closure is only available on the native runtime".into()),
+        }
+    }
+
     /// Select one explicitly listed native frame.
     #[cfg(feature = "native-engine")]
     pub async fn native_select_frame(&self, frame_id: &str) -> BrowserResult<FrameInfo> {

@@ -348,6 +348,20 @@ pub struct NativeEngine {
     pending_lifecycle_effects: Vec<(NativeNodeId, NativeEventKind)>,
 }
 
+impl Drop for NativeEngine {
+    fn drop(&mut self) {
+        if self.lifecycle == NativeLifecycleState::Running {
+            let _ = self.persist_local_web_storage();
+        }
+        if self.lifecycle != NativeLifecycleState::Closed {
+            let _ = unregister_storage_reader(
+                self.config.storage_path.as_deref(),
+                &self.storage_writer_id,
+            );
+        }
+    }
+}
+
 impl NativeEngine {
     pub fn new(config: NativeEngineConfig) -> Result<Self, NativeEngineError> {
         config.validate()?;

@@ -463,7 +463,8 @@ agreement reports exact schema and capability status.
 - The native engine is experimental, default-off, and available through the
   explicit Rust backend factory and feature-gated local CLI runtime. Its
   current semantic slice supports bounded local and external HTTP(S) document
-  navigation, parent-owned anchor downloads, bounded box-model layout,
+  navigation, parent-owned anchor downloads, up to 32 independently owned page
+  targets with explicit selection and cleanup, bounded box-model layout,
   root horizontal and vertical viewport scrolling, bounded inherited
   `white-space: nowrap` collapsed one-line flow, point input, click/type
   actions, bounded physical min/max width/height constraints, bounded

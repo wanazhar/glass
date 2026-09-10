@@ -21,26 +21,71 @@ use crate::browser_backend::{
     SemanticAction, StorageResult, StorageScope, SupportLevel,
 };
 use std::collections::BTreeMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 /// Stable backend ID for the Glass-owned native engine.
 pub const NATIVE_ENGINE_BACKEND_ID: &str = "native-engine";
 const NATIVE_ENGINE_BACKEND_VERSION: &str = "0.1";
 const NATIVE_ENGINE_BROWSER_FAMILY: &str = "native";
 
-/// Semantic adapter around one native engine instance.
+const NATIVE_MAX_TARGETS: usize = crate::browser::session::TOPOLOGY_MAX_TARGETS;
+
+struct NativeParkedTarget {
+    engine: NativeEngine,
+    opener_id: Option<String>,
+}
+
+struct NativeTargetState {
+    active_target_id: Option<String>,
+    active_opener_id: Option<String>,
+    parked: BTreeMap<String, NativeParkedTarget>,
+    next_target_number: u64,
+}
+
+impl NativeTargetState {
+    fn new(active_target_id: String) -> Self {
+        Self {
+            active_target_id: Some(active_target_id),
+            active_opener_id: None,
+            parked: BTreeMap::new(),
+            next_target_number: 1,
+        }
+    }
+
+    fn target_count(&self) -> usize {
+        self.parked.len() + usize::from(self.active_target_id.is_some())
+    }
+
+    fn next_target_id(&mut self) -> String {
+        loop {
+            let number = self.next_target_number;
+            self.next_target_number = self.next_target_number.saturating_add(1);
+            let candidate = format!("native-target-{number}");
+            if self.active_target_id.as_deref() != Some(candidate.as_str())
+                && !self.parked.contains_key(&candidate)
+            {
+                return candidate;
+            }
+        }
+    }
+}
+
+/// Semantic adapter around the native browser's target-owned engine pool.
 pub struct NativeEngineBackend {
     profile: BackendProfile,
     engine: Mutex<NativeEngine>,
+    targets: Mutex<NativeTargetState>,
 }
 
 impl NativeEngineBackend {
     pub fn new(config: NativeEngineConfig) -> Result<Self, BrowserBackendError> {
         let profile = Self::profile_for(env!("CARGO_PKG_VERSION"))?;
+        let active_target_id = config.context_id.clone();
         let engine = NativeEngine::new(config).map_err(native_error)?;
         Ok(Self {
             profile,
             engine: Mutex::new(engine),
+            targets: Mutex::new(NativeTargetState::new(active_target_id)),
         })
     }
 
@@ -163,25 +208,35 @@ impl NativeEngineBackend {
             .map_err(native_error)
     }
 
-    /// Project the native engine's single browsing context into the standard
-    /// page-target contract. The native owner deliberately exposes no hidden
-    /// targets and never invents a second selection.
+    /// Project every target-owned native engine into the standard page-target
+    /// contract. A parked target keeps its complete document and runtime state
+    /// alive; selecting it only changes which owner receives subsequent work.
     pub fn list_targets(&self) -> Result<Vec<PageTargetInfo>, BrowserBackendError> {
-        let engine = self.lock_engine(BackendOperation::Contexts)?;
-        let context = engine.context().map_err(native_error)?;
-        let snapshot = engine.snapshot().map_err(native_error)?;
-        Ok(vec![PageTargetInfo {
-            id: context.context_id,
-            url: redact_diagnostic_url(&context.url),
-            title: redact_diagnostic_text(&snapshot.title),
-            opener_id: None,
-            active: context.active,
-        }])
+        let targets = self.lock_targets(BackendOperation::Contexts)?;
+        let engine = self.lock_engine_raw(BackendOperation::Contexts)?;
+        let mut projected = Vec::with_capacity(targets.target_count());
+        if let Some(active_target_id) = targets.active_target_id.as_deref() {
+            projected.push(project_native_target(
+                &engine,
+                active_target_id,
+                targets.active_opener_id.clone(),
+                true,
+            )?);
+        }
+        for (target_id, parked) in &targets.parked {
+            projected.push(project_native_target(
+                &parked.engine,
+                target_id,
+                parked.opener_id.clone(),
+                false,
+            )?);
+        }
+        Ok(projected)
     }
 
-    /// Project the native document's main browsing frame into the standard
-    /// frame contract. Child-frame execution is not silently redirected to the
-    /// main frame; callers must select this explicit main-frame identity.
+    /// Project the selected native document's main browsing frame into the
+    /// standard frame contract. Child-frame ownership is added separately; a
+    /// frame request is never redirected to another target.
     pub fn list_frames(&self) -> Result<Vec<FrameInfo>, BrowserBackendError> {
         let engine = self.lock_engine(BackendOperation::Contexts)?;
         let context = engine.context().map_err(native_error)?;
@@ -196,13 +251,154 @@ impl NativeEngineBackend {
 
     pub fn select_target(&self, target_id: &str) -> Result<PageTargetInfo, BrowserBackendError> {
         validate_native_topology_id(target_id)?;
-        self.list_targets()?
-            .into_iter()
-            .find(|target| target.id == target_id)
-            .ok_or_else(|| BrowserBackendError::SelectionFailed {
+        let mut targets = self.lock_targets(BackendOperation::Contexts)?;
+        if targets.active_target_id.as_deref() == Some(target_id) {
+            let engine = self.lock_engine_raw(BackendOperation::Contexts)?;
+            return project_native_target(
+                &engine,
+                target_id,
+                targets.active_opener_id.clone(),
+                true,
+            );
+        }
+
+        let Some(parked) = targets.parked.remove(target_id) else {
+            return Err(BrowserBackendError::SelectionFailed {
                 reason: "native page target was not found; call listTargets to refresh topology"
                     .into(),
-            })
+            });
+        };
+        if let Err(error) = parked.engine.context() {
+            targets.parked.insert(target_id.to_owned(), parked);
+            return Err(native_error(error));
+        }
+        let NativeParkedTarget {
+            engine: parked_engine,
+            opener_id,
+        } = parked;
+        let mut active_engine = self.lock_engine_raw(BackendOperation::Contexts)?;
+        let old_engine = std::mem::replace(&mut *active_engine, parked_engine);
+        let old_target_id = targets.active_target_id.replace(target_id.to_owned());
+        let old_opener_id = std::mem::replace(&mut targets.active_opener_id, opener_id);
+        if let Some(old_target_id) = old_target_id {
+            targets.parked.insert(
+                old_target_id,
+                NativeParkedTarget {
+                    engine: old_engine,
+                    opener_id: old_opener_id,
+                },
+            );
+        }
+        project_native_target(
+            &active_engine,
+            target_id,
+            targets.active_opener_id.clone(),
+            true,
+        )
+    }
+
+    /// Create and initialize a new independent native page target. The new
+    /// target is intentionally not selected, matching the public target API.
+    pub async fn create_target(&self, url: &str) -> Result<PageTargetInfo, BrowserBackendError> {
+        let base_config = self
+            .engine
+            .lock()
+            .map_err(|_| poisoned_lock_error(BackendOperation::Contexts, "engine"))?
+            .config()
+            .clone();
+        let (target_id, opener_id) = {
+            let mut targets = self.lock_targets(BackendOperation::Contexts)?;
+            if targets.target_count() >= NATIVE_MAX_TARGETS {
+                return Err(BrowserBackendError::SelectionFailed {
+                    reason: format!("native target limit reached ({NATIVE_MAX_TARGETS})"),
+                });
+            }
+            let target_id = targets.next_target_id();
+            let opener_id = targets.active_target_id.clone();
+            (target_id, opener_id)
+        };
+        let config = base_config
+            .with_context_id(target_id.clone())
+            .with_initial_url(url.to_owned());
+        let mut engine = NativeEngine::new(config).map_err(native_error)?;
+        if let Err(error) = engine.initialize_async().await {
+            let _ = engine.close_async().await;
+            return Err(native_error(error));
+        }
+        let target = match project_native_target(&engine, &target_id, opener_id.clone(), false) {
+            Ok(target) => target,
+            Err(error) => {
+                let _ = engine.close_async().await;
+                return Err(error);
+            }
+        };
+        let mut targets = self.lock_targets(BackendOperation::Contexts)?;
+        if targets.target_count() >= NATIVE_MAX_TARGETS || targets.parked.contains_key(&target_id) {
+            let _ = engine.close_async().await;
+            return Err(BrowserBackendError::SelectionFailed {
+                reason: format!("native target limit reached ({NATIVE_MAX_TARGETS})"),
+            });
+        }
+        targets
+            .parked
+            .insert(target_id, NativeParkedTarget { engine, opener_id });
+        Ok(target)
+    }
+
+    /// Close one target and release its worker, storage lease, and document
+    /// owner. Closing the selected target deliberately leaves no implicit
+    /// selection, even when parked targets remain available.
+    pub async fn close_target(&self, target_id: &str) -> Result<(), BrowserBackendError> {
+        validate_native_topology_id(target_id)?;
+        let mut targets = self.lock_targets(BackendOperation::Close)?;
+        if targets.active_target_id.as_deref() == Some(target_id) {
+            let mut engine = self.lock_engine_raw(BackendOperation::Close)?;
+            engine.close_async().await.map_err(native_error)?;
+            targets.active_target_id = None;
+            targets.active_opener_id = None;
+            return Ok(());
+        }
+        let Some(mut parked) = targets.parked.remove(target_id) else {
+            return Err(BrowserBackendError::SelectionFailed {
+                reason: "native page target was not found; call listTargets to refresh topology"
+                    .into(),
+            });
+        };
+        if let Err(error) = parked.engine.close_async().await {
+            targets.parked.insert(target_id.to_owned(), parked);
+            return Err(native_error(error));
+        }
+        Ok(())
+    }
+
+    async fn close_all(&self) -> Result<(), BrowserBackendError> {
+        let (active_error, parked) = {
+            let mut targets = self.lock_targets(BackendOperation::Close)?;
+            let mut active_engine = self.lock_engine_raw(BackendOperation::Close)?;
+            let active_error = if targets.active_target_id.is_some()
+                && active_engine.lifecycle() == super::native_engine::NativeLifecycleState::Running
+            {
+                active_engine.close_async().await.err().map(native_error)
+            } else {
+                None
+            };
+            targets.active_target_id = None;
+            targets.active_opener_id = None;
+            (active_error, std::mem::take(&mut targets.parked))
+        };
+
+        let mut first_error = active_error;
+        for (_, mut parked) in parked {
+            if parked.engine.lifecycle() != super::native_engine::NativeLifecycleState::Running {
+                continue;
+            }
+            if let Err(error) = parked.engine.close_async().await.map_err(native_error) {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+        first_error.map_or(Ok(()), Err)
     }
 
     pub fn select_frame(&self, frame_id: &str) -> Result<FrameInfo, BrowserBackendError> {
@@ -297,7 +493,9 @@ impl NativeEngineBackend {
                         "bounded PNG of the current logical RGBA surface; JPEG/PDF and screenshot-containing evidence are unavailable".into(),
                     ]
                 }
-                BrowserCapability::Contexts => vec!["one active context only".into()],
+                BrowserCapability::Contexts => vec![
+                    "up to 32 independent native page targets with one explicitly selected active context".into(),
+                ],
                 BrowserCapability::Storage => vec![
                     "origin-keyed page local/session Web Storage; opt-in revisioned localStorage and cookie profiles; profile-journal events; IndexedDB remains open".into(),
                 ],
@@ -351,17 +549,37 @@ impl NativeEngineBackend {
         Ok(profile)
     }
 
+    fn lock_targets(
+        &self,
+        operation: BackendOperation,
+    ) -> Result<MutexGuard<'_, NativeTargetState>, BrowserBackendError> {
+        self.targets
+            .lock()
+            .map_err(|_| poisoned_lock_error(operation, "target registry"))
+    }
+
+    fn lock_engine_raw(
+        &self,
+        operation: BackendOperation,
+    ) -> Result<MutexGuard<'_, NativeEngine>, BrowserBackendError> {
+        self.engine
+            .lock()
+            .map_err(|_| poisoned_lock_error(operation, "engine"))
+    }
+
     fn lock_engine(
         &self,
         operation: BackendOperation,
-    ) -> Result<std::sync::MutexGuard<'_, NativeEngine>, BrowserBackendError> {
-        self.engine
-            .lock()
-            .map_err(|_| BrowserBackendError::Lifecycle {
+    ) -> Result<MutexGuard<'_, NativeEngine>, BrowserBackendError> {
+        let has_active_target = self.lock_targets(operation)?.active_target_id.is_some();
+        if !has_active_target {
+            return Err(BrowserBackendError::Lifecycle {
                 operation: operation_name(operation).into(),
-                state: "poisoned".into(),
-                reason: "native engine state lock is unavailable".into(),
-            })
+                state: "no-target-selected".into(),
+                reason: "select an available native page target before this operation".into(),
+            });
+        }
+        self.lock_engine_raw(operation)
     }
 }
 
@@ -379,15 +597,18 @@ impl BrowserBackend for NativeEngineBackend {
             request.validate()?;
             self.profile
                 .require_operation(operation, SupportLevel::Available)?;
+            if matches!(
+                (&operation, &request),
+                (BackendOperation::Close, BackendRequest::Close)
+            ) {
+                self.close_all().await?;
+                return Ok(BackendResponse::Unit);
+            }
             let mut engine = self.lock_engine(operation)?;
             let active_context_id = engine.config().context_id.clone();
             match (operation, request) {
                 (BackendOperation::Initialize, BackendRequest::Initialize) => {
                     engine.initialize_async().await.map_err(native_error)?;
-                    Ok(BackendResponse::Unit)
-                }
-                (BackendOperation::Close, BackendRequest::Close) => {
-                    engine.close_async().await.map_err(native_error)?;
                     Ok(BackendResponse::Unit)
                 }
                 (BackendOperation::Navigate, BackendRequest::Navigate(request)) => {
@@ -542,6 +763,31 @@ impl BrowserBackend for NativeEngineBackend {
                 }),
             }
         })
+    }
+}
+
+fn project_native_target(
+    engine: &NativeEngine,
+    target_id: &str,
+    opener_id: Option<String>,
+    active: bool,
+) -> Result<PageTargetInfo, BrowserBackendError> {
+    let context = engine.context().map_err(native_error)?;
+    let snapshot = engine.snapshot().map_err(native_error)?;
+    Ok(PageTargetInfo {
+        id: target_id.to_owned(),
+        url: redact_diagnostic_url(&context.url),
+        title: redact_diagnostic_text(&snapshot.title),
+        opener_id,
+        active,
+    })
+}
+
+fn poisoned_lock_error(operation: BackendOperation, owner: &str) -> BrowserBackendError {
+    BrowserBackendError::Lifecycle {
+        operation: operation_name(operation).into(),
+        state: "poisoned".into(),
+        reason: format!("native {owner} lock is unavailable"),
     }
 }
 

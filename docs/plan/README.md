@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-075` locally. The versioned
+`native-engine-browser-077` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -732,12 +732,9 @@ storage changes are appended under the existing profile lock; live receivers
 poll before page operations, exclude their writer, and apply origin and
 browsing-context filters before dispatch. The journal repairs an incomplete
 tail, rejects malformed records, and is capped at 4 MiB; acknowledged
-records are not compacted by this slice. The next storage gates are IndexedDB, full
-binary/stream FormData support, full task ordering/navigation edge cases,
-remaining full pattern-regex/file constraint validation, target contexts, and
-the remaining browser-context primitives.
+records were initially retained until the bounded retention/recovery slice.
 
-The current bounded cookie-profile persistence slice is
+The completed bounded cookie-profile persistence slice is
 [native-engine-browser-076](tasks/native-engine-browser-076.md). Supplying the
 existing explicit profile path now restores accepted Rust-owned cookies for
 page `document.cookie`, HTTP navigation/fetch, and sandboxed content workers;
@@ -747,6 +744,19 @@ wall-clock metadata, and merge key-level changes from stale live contexts.
 Without a profile path cookies remain volatile. Full SameSite, partitioned,
 third-party, Expires-date, cookie-change-event, and Cookie/Document Web IDL
 parity remain open, as does IndexedDB.
+
+The current bounded journal-retention and recovery slice is
+[native-engine-browser-077](tasks/native-engine-browser-077.md). Profile-backed
+engines register bounded `P.readers` leases beside the `P.events` journal;
+heartbeats expire after 15 minutes, and healthy readers refresh at most every
+30 seconds or when their cursor advances. Appends compact only a complete
+prefix acknowledged by every live lease, shifting retained cursors under the
+same `P.lock`; an active slow reader can still produce a typed 4 MiB limit
+error. A missing/stale lease or out-of-range cursor reloads the authoritative
+revisioned profile snapshot and sends a full bounded state replacement to a
+sandboxed worker, so dropped event callbacks are not replayed. IndexedDB,
+full cookie policy/Web IDL parity, and the remaining browser-complete gates
+remain open.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

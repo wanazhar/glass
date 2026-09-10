@@ -36,7 +36,7 @@ use url::Url;
 
 const MAX_CONTENT_IPC_FRAME_BYTES: usize = 4 * 1024 * 1024;
 const MAX_CONTENT_DOCUMENT_WIRE_BYTES: usize = 2 * 1024 * 1024;
-const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 2;
+const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 3;
 const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTENT_PROCESS_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -472,6 +472,46 @@ impl NativeContentProcess {
             "storage_events_synced",
             id,
             "content process storage events",
+        );
+        if result.is_err() {
+            self.mark_failed(NativeWorkerFailureKind::Protocol);
+            let _ = self.child.start_kill();
+        }
+        result
+    }
+
+    pub(crate) async fn sync_storage_state(
+        &mut self,
+        state: &NativeWebStorageState,
+    ) -> Result<(), NativeEngineError> {
+        let id = self.next_id();
+        let response = match timeout(
+            CONTENT_PROCESS_SCRIPT_TIMEOUT,
+            self.exchange(json!({
+                "kind": "storage_state",
+                "id": id,
+                "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
+                "state": state,
+            })),
+        )
+        .await
+        {
+            Ok(response) => response?,
+            Err(_) => {
+                self.mark_failed(NativeWorkerFailureKind::Timeout);
+                let _ = self.child.start_kill();
+                return Err(NativeEngineError::worker_failure(
+                    "content process storage state",
+                    NativeWorkerFailureKind::Timeout,
+                    "content process storage-state synchronization exceeded its deadline",
+                ));
+            }
+        };
+        let result = require_response_kind(
+            &response,
+            "storage_state_synced",
+            id,
+            "content process storage state",
         );
         if result.is_err() {
             self.mark_failed(NativeWorkerFailureKind::Protocol);
@@ -1149,6 +1189,24 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     runtime.set_storage_events(events)?;
                 }
                 json!({"kind":"storage_events_synced","id":id})
+            }
+            "storage_state" if protocol_matches(&request) && running => {
+                let value = request.get("state").ok_or_else(|| {
+                    NativeEngineError::invalid("content-process storage state", "must be an object")
+                })?;
+                let next_state: NativeWebStorageState = serde_json::from_value(value.clone())
+                    .map_err(|_| {
+                        NativeEngineError::invalid(
+                            "content-process storage state",
+                            "must be a valid native Web Storage state",
+                        )
+                    })?;
+                next_state.validate()?;
+                storage_state = next_state;
+                if let Some(runtime) = javascript_runtime.as_ref() {
+                    runtime.replace_storage_state(storage_state.clone());
+                }
+                json!({"kind":"storage_state_synced","id":id})
             }
             "load" if protocol_matches(&request) && running => {
                 if let Some(runtime) = javascript_runtime.as_ref() {

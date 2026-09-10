@@ -790,9 +790,9 @@ cursor; local and session changes are appended under the retained profile lock,
 and receivers poll before page operations, exclude their writer, and apply
 origin/context routing before updating state and dispatching the page event.
 Malformed records are typed failures, incomplete tails are safely repaired at
-the next append, and the journal is capped at 4 MiB without compaction in this
-slice. Cookie profile persistence is recorded in the following slice. IndexedDB
-and the remaining browser-complete gates remain open.
+the next append, and the journal is capped at 4 MiB. Bounded retention and
+crash recovery are recorded in the following slice. IndexedDB and the remaining
+browser-complete gates remain open.
 
 The completed native-engine-browser-076 batch adds opt-in cookie-profile
 persistence to the same bounded versioned JSON profile. An explicit profile
@@ -805,6 +805,20 @@ session cookies are retained for the explicit profile lifetime. Without a
 profile path cookies remain volatile; the profile is sensitive
 credential-bearing state, and IndexedDB plus full cookie policy/Web IDL parity
 remain open.
+
+The completed native-engine-browser-077 batch adds bounded reader leases at
+`P.readers` beside the `P.events` journal. Leases carry a byte cursor and
+heartbeat, expire after 15 minutes, and are refreshed at most every 30 seconds
+or when a reader advances. Appends compact only complete records acknowledged
+by every live lease, shift retained cursors under the same `P.lock`, and keep
+the 4 MiB journal cap visible as typed backpressure when an active reader pins
+too much unconsumed data. Missing leases and out-of-range cursors trigger a
+reload from the authoritative revisioned profile snapshot; the engine sends a
+full bounded state replacement to local or sandboxed realms, and does not
+replay event callbacks discarded by recovery. A live engine preserves its
+volatile session state, while the content worker remains a consumer of typed
+IPC and never opens the journal or lease file. IndexedDB and full cookie
+policy/Web IDL parity remain open.
 
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
@@ -3867,7 +3881,7 @@ The native profile is `experimental` and declares:
 | effects | available | current revision and changed signal; bounded event metadata is Rust-only |
 | script | available | bounded QuickJS ECMAScript with a refreshed `window`/`document` snapshot, bounded inline/classic/module-root page-script loading and parser/lifecycle ordering, HTTP(S) static module graphs, literal dynamic imports, bounded due-time `setTimeout`/`setInterval` turns, policy-owned bounded GET, same-origin string-body POST, and bounded cross-origin simple/preflighted POST `fetch()` promises, bounded text-only `FormData(form)` construction, text-backed Blob/File parts, and multipart bodies with Rust-owned form association, and string-only `URLSearchParams` URL-encoded bodies, plus asynchronous bounded GET/POST `XMLHttpRequest` with string bodies and response callbacks, from explicit evaluations and initial page scripts, typed click/form-submit/attribute/focus commands, persistent listener records, bounded Event/CustomEvent capture/target/bubble dispatch, cancelable click preflight, transactional type/input/change event re-entry, bounded common constraint validation for required/email/URL/length/numeric/date/month/time/datetime-local/pattern controls, bounded `validity`/`validationMessage`/`willValidate` snapshots with `checkValidity()`/`reportValidity()` and custom validity, submitter event metadata and successful-control serialization, bounded external form ownership, bounded multipart/text/plain form encodings and validated `formaction`/`formmethod`/`formenctype` overrides, bounded `readyState`/`readystatechange`/DOMContentLoaded/load phase ordering, form `novalidate`/`formnovalidate` bypass, top-level link/form navigation handoff, and relative HTTP(S)/same-document resolution; no live Web IDL identity, target contexts, resource-specific lifecycle parity, beforeinput/composition, full JavaScript RegExp `v`-flag/Unicode-set and file constraint validation or picker/UI parity, full live `ValidityState` identity, binary Blob/File FormData parity, FormData iterator identity, preflight caching, custom fetch headers, private-network access, opaque `no-cors` responses, binary/stream FormData body parity, URLSearchParams full constructor/sorting/iterator parity, synchronous XHR, XHR upload/progress/binary-response/timeout/abort/streaming parity, callback navigation during initial publication, AbortController, service workers, WebSocket/EventSource, animation/idle callbacks, task-source fairness, background page scheduling, computed imports, bare specifiers/import maps, local external subresources, or general page loading |
 | capture | available | bounded PNG of the current logical RGBA surface; JPEG/PDF and screenshot-containing evidence are unavailable |
-| storage | partial | process-owned cookies with bounded `document.cookie` synchronization, bounded document cache, origin-keyed page local/session storage with opt-in revisioned localStorage/cookie profiles, stale-snapshot key-level merge, and profile-journal local/session events across live local and process-backed documents; no IndexedDB or full cookie policy parity |
+| storage | partial | process-owned cookies with bounded `document.cookie` synchronization, bounded document cache, origin-keyed page local/session storage with opt-in revisioned localStorage/cookie profiles, stale-snapshot key-level merge, profile-journal local/session events across live local and process-backed documents, bounded reader-lease retention, acknowledged-prefix compaction, and profile-snapshot recovery; no IndexedDB or full cookie policy parity |
 | prompts | omitted | no dialogs |
 | downloads | omitted | no download pipeline |
 
@@ -3900,6 +3914,16 @@ The engine never logs source HTML, evaluated input, credentials, cookies, form
 values, or full documents. The bounded network slice and later scripting work
 must preserve the same transaction, origin, cancellation, and redaction
 boundaries.
+
+Profile-backed storage has a separate bounded recovery boundary. The parent
+engine is the only journal writer and registers a reader lease under the
+profile lock. A missing or overrun lease is treated as stale-reader recovery:
+the engine reloads the revisioned profile snapshot, replaces the active
+storage state (preserving only the live engine's volatile session map), and
+uses a typed full-state transfer for a sandboxed content worker. Event
+callbacks that cannot be proven unconsumed are not replayed. Compaction drops
+only complete records acknowledged by every non-stale reader lease; a live
+reader that prevents the 4 MiB bound receives typed backpressure.
 
 ## Tests and promotion boundary
 
@@ -3938,6 +3962,10 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
   tuple origins, bounded top-level `await`, typed JavaScript DOM commands,
   one-revision command batches, form/option state, attributes, effects, and
   fresh host re-projection.
+- opt-in revisioned local-storage/cookie profiles, origin/context-filtered
+  storage events across local and sandboxed content processes, bounded `P.events`
+  journal records, `P.readers` leases with stale-reader recovery, acknowledged
+  prefix compaction under `P.lock`, and full storage-state replacement IPC.
 - raw-text/RCDATA containment for script, style, title, and textarea content,
   including unterminated-element behavior.
 - bounded stylesheet/inline selector matching and display/visibility cascade
@@ -4124,6 +4152,6 @@ isolation, cancellation, conformance, and platform evidence exist.
 
 Future phases may split the DOM parser into tokenizer/tree-builder modules and
 add general CSS, nested/scrolling/stacking layout, paint, full event-loop, script,
-storage, and process boundaries. Those changes require updates to this
+complete storage semantics, and additional process boundaries. Those changes require updates to this
 document, the epic, and their dependency-ordered task files before
 implementation.

@@ -96,7 +96,7 @@ impl NativeContentProcess {
         if let Some(storage_path) = storage_path
             && !storage_path.exists()
         {
-            save_web_storage_profile(Some(storage_path), &NativeWebStorageState::default())?;
+            save_web_storage_profile(Some(storage_path), &NativeWebStorageState::default(), &[])?;
         }
         let (mut command, mut sandbox) = prepare_worker_command(&path, storage_path)?;
         let mut child = command
@@ -1945,14 +1945,14 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 }
             }
             "close" if protocol_matches(&request) => {
-                let _storage_events = sync_content_runtime_state(
+                let storage_events = sync_content_runtime_state(
                     javascript_runtime.as_ref(),
                     &mut storage_state,
                     &mut resource_loader,
                     document_url.as_deref(),
                 )?;
                 if let Some(path) = storage_profile_path.as_deref() {
-                    save_web_storage_profile(Some(path), &storage_state)?;
+                    save_web_storage_profile(Some(path), &storage_state, &storage_events)?;
                 }
                 write_value_frame(&mut stdout, &json!({"kind":"closed","id":id})).await?;
                 return Ok(());
@@ -1972,7 +1972,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             document_url.as_deref(),
         )?;
         if let Some(path) = storage_profile_path.as_deref() {
-            save_web_storage_profile(Some(path), &storage_state)?;
+            save_web_storage_profile(Some(path), &storage_state, &storage_events)?;
         }
         if let Some(object) = response.as_object_mut() {
             object.insert(

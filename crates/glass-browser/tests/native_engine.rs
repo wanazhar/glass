@@ -28721,6 +28721,64 @@ async fn native_local_web_storage_persists_through_profile_restart() {
     let _ = fs::remove_file(profile_path);
 }
 
+#[tokio::test]
+async fn native_local_web_storage_merges_stale_profile_deltas() {
+    let file_name = format!(
+        "glass-native-web-storage-{}-stale-merge.json",
+        std::process::id()
+    );
+    let first_path = std::env::temp_dir().join(&file_name);
+    let second_path = std::env::temp_dir().join(".").join(&file_name);
+    let lock_path = first_path.with_extension("lock");
+    let _ = fs::remove_file(&first_path);
+    let _ = fs::remove_file(&lock_path);
+    let first_config = NativeEngineConfig::default()
+        .with_storage_path(first_path.clone())
+        .with_fixture("fixture://stale-profile-merge", "<p>Profile merge</p>")
+        .unwrap()
+        .with_initial_url("fixture://stale-profile-merge");
+    let second_config = first_config.clone().with_storage_path(second_path);
+    let mut first = NativeEngine::new(first_config.clone()).unwrap();
+    let mut second = NativeEngine::new(second_config).unwrap();
+    first.initialize().unwrap();
+    second.initialize().unwrap();
+
+    first
+        .evaluate_async("localStorage.setItem('first', 'one'); true")
+        .await
+        .unwrap();
+    second
+        .evaluate_async("localStorage.setItem('second', 'two'); true")
+        .await
+        .unwrap();
+    first.close().unwrap();
+    second.close().unwrap();
+
+    let profile: serde_json::Value =
+        serde_json::from_slice(&fs::read(&first_path).unwrap()).unwrap();
+    assert!(profile["revision"].as_u64().unwrap_or_default() >= 2);
+    let local = profile["local"].as_object().unwrap();
+    assert_eq!(local.len(), 1);
+    let entries = local.values().next().unwrap();
+    assert_eq!(entries["first"], "one");
+    assert_eq!(entries["second"], "two");
+
+    let mut reopened = NativeEngine::new(first_config).unwrap();
+    reopened.initialize().unwrap();
+    assert_eq!(
+        reopened
+            .evaluate_async(
+                "({ first: localStorage.getItem('first'), second: localStorage.getItem('second') })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({"first":"one", "second":"two"})
+    );
+    reopened.close().unwrap();
+    let _ = fs::remove_file(first_path);
+    let _ = fs::remove_file(lock_path);
+}
+
 #[test]
 fn native_web_storage_profile_rejects_an_active_writer() {
     let profile_path = std::env::temp_dir().join(format!(
@@ -29048,6 +29106,67 @@ async fn native_content_process_delivers_local_storage_events_between_documents(
     owner.close_async().await.unwrap();
     server.await.unwrap();
     let _ = fs::remove_file(profile_path);
+}
+
+#[tokio::test]
+async fn native_content_process_merges_stale_profile_deltas() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let file_name = format!(
+        "glass-native-web-storage-{}-content-stale-merge.json",
+        std::process::id()
+    );
+    let first_path = std::env::temp_dir().join(&file_name);
+    let second_path = std::env::temp_dir().join(".").join(&file_name);
+    let lock_path = first_path.with_extension("lock");
+    let _ = fs::remove_file(&first_path);
+    let _ = fs::remove_file(&lock_path);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+            let body = "<p>Content stale profile merge</p>";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+    let url = format!("http://{address}/page");
+    let first_config = NativeEngineConfig::default()
+        .with_storage_path(first_path.clone())
+        .with_initial_url(url.clone());
+    let second_config = first_config.clone().with_storage_path(second_path);
+    let mut first = NativeEngine::new(first_config).unwrap();
+    let mut second = NativeEngine::new(second_config).unwrap();
+    first.initialize_async().await.unwrap();
+    second.initialize_async().await.unwrap();
+
+    first
+        .evaluate_async("localStorage.setItem('first', 'one'); true")
+        .await
+        .unwrap();
+    second
+        .evaluate_async("localStorage.setItem('second', 'two'); true")
+        .await
+        .unwrap();
+    second.close_async().await.unwrap();
+    first.close_async().await.unwrap();
+    server.await.unwrap();
+
+    let profile: serde_json::Value =
+        serde_json::from_slice(&fs::read(&first_path).unwrap()).unwrap();
+    let local = profile["local"].as_object().unwrap();
+    assert_eq!(local.len(), 1);
+    let entries = local.values().next().unwrap();
+    assert_eq!(entries["first"], "one");
+    assert_eq!(entries["second"], "two");
+
+    let _ = fs::remove_file(first_path);
+    let _ = fs::remove_file(lock_path);
 }
 
 #[tokio::test]

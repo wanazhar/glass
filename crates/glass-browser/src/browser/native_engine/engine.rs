@@ -1214,8 +1214,12 @@ impl NativeEngine {
         for value in cookie_updates {
             self.loader.set_document_cookie(&self.url, &value)?;
         }
-        save_web_storage_profile(self.config.storage_path.as_deref(), &self.web_storage)?;
         let storage_changes = javascript.take_storage_changes();
+        save_web_storage_profile(
+            self.config.storage_path.as_deref(),
+            &self.web_storage,
+            &storage_changes,
+        )?;
         if let (Some(coordinator), Some(queue)) = (
             self.storage_coordinator.as_ref(),
             self.storage_event_queue.as_ref(),

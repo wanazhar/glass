@@ -132,7 +132,7 @@ impl NativeEngineBackend {
                 }
                 BrowserCapability::Action => {
                     vec![
-                        "bounded click/type/key/scroll, single/multi-select, form defaults, root scrolling, and native point targets; selection, IME, and nested scrolling remain open".into(),
+                        "bounded click/type/key/clear/check/uncheck/select/scroll, single/multi-select, form defaults, root scrolling, and native point targets; selection, IME, and nested scrolling remain open".into(),
                     ]
                 }
                 BrowserCapability::Effects => {
@@ -186,7 +186,7 @@ impl NativeEngineBackend {
                         "network navigation and scripting are bounded web-platform slices, not browser parity".into(),
                         "in-process local execution is not a security boundary for hostile content; external documents use the sandboxed content worker".into(),
                         "bounded page Web Storage and session document.cookie; opt-in revisioned localStorage/cookie profiles; per-context sessionStorage; profile-journal events; IndexedDB unavailable".into(),
-                        "actions are limited to bounded click/type/key/scroll, select controls, form defaults, root scrolling, and native point targets".into(),
+                        "actions are limited to bounded click/type/key/clear/check/uncheck/select/scroll, select controls, form defaults, root scrolling, and native point targets".into(),
                     ],
                 },
             },
@@ -295,6 +295,12 @@ impl BrowserBackend for NativeEngineBackend {
                         SemanticAction::Click { target } => NativeAction::Click { target },
                         SemanticAction::Type { target, text } => {
                             NativeAction::Type { target, text }
+                        }
+                        SemanticAction::Clear { target } => NativeAction::Clear { target },
+                        SemanticAction::Check { target } => NativeAction::Check { target },
+                        SemanticAction::Uncheck { target } => NativeAction::Uncheck { target },
+                        SemanticAction::Select { target, value } => {
+                            NativeAction::Select { target, value }
                         }
                         SemanticAction::KeyPress { key } => NativeAction::KeyPress { key },
                         SemanticAction::Scroll { delta_x, delta_y } => {

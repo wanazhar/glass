@@ -9,6 +9,10 @@ pub(crate) const MAX_NATIVE_KEY_BYTES: usize = 64;
 pub enum NativeAction {
     Click { target: String },
     Type { target: String, text: String },
+    Clear { target: String },
+    Check { target: String },
+    Uncheck { target: String },
+    Select { target: String, value: String },
     KeyPress { key: String },
     Scroll { delta_x: i32, delta_y: i32 },
 }

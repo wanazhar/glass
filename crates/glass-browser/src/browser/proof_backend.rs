@@ -226,7 +226,12 @@ impl ProofBackend {
                     SemanticAction::Click { .. } | SemanticAction::Type { .. } => {
                         return Err(invalid_action("unknown proof target"));
                     }
-                    SemanticAction::KeyPress { .. } | SemanticAction::Scroll { .. } => {
+                    SemanticAction::Clear { .. }
+                    | SemanticAction::Check { .. }
+                    | SemanticAction::Uncheck { .. }
+                    | SemanticAction::Select { .. }
+                    | SemanticAction::KeyPress { .. }
+                    | SemanticAction::Scroll { .. } => {
                         return Err(invalid_action("proof backend supports click and type only"));
                     }
                 }

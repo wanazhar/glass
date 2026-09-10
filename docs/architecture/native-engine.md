@@ -1237,6 +1237,17 @@ the CLI maps native `evaluate`, `click-at`, `key`, `scroll`, `dom`, and PNG
 semantic-region observation, revision guards, full selector/Web IDL parity,
 and default/native production promotion remain subsequent issue #40 gates.
 
+The completed native-engine-browser-128 batch extends the stable semantic
+action boundary with clear, check, uncheck, and exact select operations. The
+Chromium adapter maps those intents to `BrowserSession`'s existing form
+actions. Native local documents and external HTTP(S) documents use dedicated
+clear/select mutations and the existing click owner for check/uncheck; the
+content worker returns one validated snapshot and bounded event list while
+the parent assigns the revision. The one-shot native CLI exposes all four
+actions, and non-native partial adapters reject them rather than silently
+claiming support. Full form/Web IDL parity, rich observation, and native
+default promotion remain issue #40 gates.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature

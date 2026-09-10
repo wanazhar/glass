@@ -309,6 +309,15 @@ impl NativeContentProcess {
         .await
     }
 
+    pub(crate) async fn mutate_form_action_with_event_bridge(
+        &mut self,
+        action: Value,
+    ) -> Result<NativeContentMutation, NativeEngineError> {
+        let id = self.next_id();
+        self.mutate_with_request_kind(id, "mutate_form_events", action)
+            .await
+    }
+
     pub(crate) async fn mutate_key_with_event_bridge(
         &mut self,
         node_index: u32,
@@ -1931,6 +1940,121 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     Err(error) => content_error_response(id, error),
                 }
             }
+            "mutate_form_events" if protocol_matches(&request) && running => {
+                let Some(current) = document.as_ref() else {
+                    let response = content_error_response(
+                        id,
+                        NativeEngineError::Worker {
+                            operation: "content process form action".into(),
+                            reason: "content process has no committed document".into(),
+                        },
+                    );
+                    write_value_frame(&mut stdout, &response).await?;
+                    continue;
+                };
+                let action = request.get("action").ok_or_else(|| {
+                    NativeEngineError::invalid("content-process form action", "is required")
+                })?;
+                let node_index = action
+                    .get("node_index")
+                    .and_then(Value::as_u64)
+                    .and_then(|value| u32::try_from(value).ok())
+                    .ok_or_else(|| {
+                        NativeEngineError::invalid(
+                            "content-process form target",
+                            "must be a uint32",
+                        )
+                    })?;
+                let form_action = match action.get("kind").and_then(Value::as_str) {
+                    Some("clear") => NativeFormAction::Clear,
+                    Some("select") => NativeFormAction::Select(
+                        action
+                            .get("value")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| {
+                                NativeEngineError::invalid(
+                                    "content-process select value",
+                                    "must be text",
+                                )
+                            })?
+                            .to_owned(),
+                    ),
+                    _ => {
+                        let response = content_error_response(
+                            id,
+                            NativeEngineError::invalid(
+                                "content-process form action",
+                                "kind must be clear or select",
+                            ),
+                        );
+                        write_value_frame(&mut stdout, &response).await?;
+                        continue;
+                    }
+                };
+                let Some(document_url) = document_url.as_deref() else {
+                    let response = content_error_response(
+                        id,
+                        NativeEngineError::Worker {
+                            operation: "content process form action".into(),
+                            reason: "content process has no committed URL".into(),
+                        },
+                    );
+                    write_value_frame(&mut stdout, &response).await?;
+                    continue;
+                };
+                let Some(document_origin) = document_origin.as_ref() else {
+                    let response = content_error_response(
+                        id,
+                        NativeEngineError::Worker {
+                            operation: "content process form action".into(),
+                            reason: "content process has no committed origin".into(),
+                        },
+                    );
+                    write_value_frame(&mut stdout, &response).await?;
+                    continue;
+                };
+                if javascript_runtime.is_none() {
+                    match NativeJavaScriptRuntime::new_with_context_id(&storage_context_id) {
+                        Ok(runtime) => {
+                            runtime.set_storage_state(storage_state.clone());
+                            javascript_runtime = Some(runtime);
+                        }
+                        Err(error) => {
+                            let response = content_error_response(id, error);
+                            write_value_frame(&mut stdout, &response).await?;
+                            continue;
+                        }
+                    }
+                }
+                let runtime = javascript_runtime.as_ref().expect("runtime initialized");
+                runtime.set_indexed_db_state(
+                    indexed_db_state.origin(&storage_key(document_url, document_origin)),
+                );
+                match mutate_form_action_with_event_bridge(
+                    current,
+                    runtime,
+                    document_url,
+                    document_origin,
+                    viewport,
+                    node_index,
+                    form_action,
+                ) {
+                    Ok((next, mutation)) => {
+                        document = Some(next);
+                        json!({
+                            "kind": "mutated",
+                            "id": id,
+                            "document_base64": base64::engine::general_purpose::STANDARD
+                                .encode(serde_json::to_vec(&mutation.document).unwrap_or_default()),
+                            "events": mutation.events.iter().map(|event| json!({
+                                "node_index": event.node_index,
+                                "kind": event_kind_text(event.kind),
+                            })).collect::<Vec<_>>(),
+                        })
+                    }
+                    Err(error) => content_error_response(id, error),
+                }
+            }
             "mutate_key_events" if protocol_matches(&request) && running => {
                 let Some(current) = document.as_ref() else {
                     let response = content_error_response(
@@ -3048,6 +3172,60 @@ fn mutate_type_with_event_bridge(
         if events.len() > MAX_NATIVE_EFFECTS {
             return Err(NativeEngineError::limit(
                 "content-process type event effects",
+                MAX_NATIVE_EFFECTS,
+                events.len(),
+            ));
+        }
+    }
+    let mutation = NativeContentMutation {
+        document: next.to_content_wire(),
+        events: events
+            .into_iter()
+            .map(|(node, kind)| NativeContentEvent {
+                node_index: node.index(),
+                kind,
+            })
+            .collect(),
+        navigation: None,
+        allowed: true,
+        storage_events: Vec::new(),
+        indexed_db_changes: Vec::new(),
+    };
+    Ok((next, mutation))
+}
+
+enum NativeFormAction {
+    Clear,
+    Select(String),
+}
+
+fn mutate_form_action_with_event_bridge(
+    current: &NativeDocument,
+    runtime: &NativeJavaScriptRuntime,
+    document_url: &str,
+    document_origin: &NativeOrigin,
+    viewport: Viewport,
+    node_index: u32,
+    action: NativeFormAction,
+) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
+    let node_id = NativeNodeId::from_parts(current.generation(), node_index);
+    let mut next = current.clone();
+    let mut events = match action {
+        NativeFormAction::Clear => next.apply_clear(node_id)?,
+        NativeFormAction::Select(value) => next.apply_select(node_id, &value)?,
+    };
+    let default_events = events.clone();
+    for (event_node, event_kind) in default_events {
+        let source = host_event_script(&[(event_node.index(), event_kind)])?;
+        let Some(source) = source else {
+            continue;
+        };
+        let evaluation =
+            runtime.evaluate(&source, &next, document_url, document_origin, viewport)?;
+        events.extend(next.apply_script_commands(&evaluation.commands)?);
+        if events.len() > MAX_NATIVE_EFFECTS {
+            return Err(NativeEngineError::limit(
+                "content-process form event effects",
                 MAX_NATIVE_EFFECTS,
                 events.len(),
             ));

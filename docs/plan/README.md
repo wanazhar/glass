@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-127` locally. The versioned
+`native-engine-browser-128` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1158,6 +1158,16 @@ or ambiguous matches before mutation. Full CSS selector/Web IDL parity,
 form-value and semantic-region observation, revision guards, automatic native
 selection, and production replacement of CDP remain open; the native feature
 is still explicit-only at this checkpoint.
+
+The completed bounded native form-control action batch is
+[native-engine-browser-128](tasks/native-engine-browser-128.md). The stable
+semantic action contract now carries clear, check, uncheck, and exact select
+intents; Chromium maps them to the existing session actions, while the native
+engine owns local and process-backed mutations with one parent revision. The
+native one-shot CLI exposes the four commands, and Firefox/Safari/proof reject
+the new actions explicitly. Full form semantics, rich observation, automatic
+native selection, and production replacement of CDP remain open; native is
+still explicit-only at this checkpoint.
 
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and

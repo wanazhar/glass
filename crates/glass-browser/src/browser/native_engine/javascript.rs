@@ -3852,6 +3852,11 @@ fn document_bootstrap(
     return name;
   }};
   const indexedDbTypeKey = "__glassNativeIndexedDbType";
+  const indexedDbTypedArrayNames = new Set([
+    "Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array",
+    "Uint16Array", "Int32Array", "Uint32Array", "Float32Array", "Float64Array",
+    "BigInt64Array", "BigUint64Array",
+  ]);
   const indexedDbEncode = (value, seen = new Set(), depth = 0) => {{
     if (depth > 64) throw indexedDbError("DataCloneError", "native IndexedDB value is too deeply nested");
     if (value === undefined) return {{ [indexedDbTypeKey]: "undefined" }};
@@ -3867,7 +3872,21 @@ fn document_bootstrap(
     if (seen.has(value)) throw indexedDbError("DataCloneError", "cyclic value cannot be cloned by native IndexedDB");
     seen.add(value);
     let encoded;
-    if (value && value.__glassNativeBlob === true) {{
+    if (typeof SharedArrayBuffer === "function" && value instanceof SharedArrayBuffer) throw indexedDbError("DataCloneError", "shared buffers cannot be cloned by native IndexedDB");
+    if (value instanceof ArrayBuffer) {{
+      encoded = {{
+        [indexedDbTypeKey]: "arrayBuffer",
+        bytes: Array.from(new Uint8Array(value)),
+      }};
+    }} else if (typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(value)) {{
+      const constructorName = value.constructor && value.constructor.name;
+      if (constructorName !== "DataView" && !indexedDbTypedArrayNames.has(constructorName)) throw indexedDbError("DataCloneError", "typed array cannot be cloned by native IndexedDB");
+      encoded = {{
+        [indexedDbTypeKey]: "typedArray",
+        constructor: constructorName,
+        bytes: Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)),
+      }};
+    }} else if (value && value.__glassNativeBlob === true) {{
       encoded = {{
         [indexedDbTypeKey]: "blob",
         text: String(value._text || ""),
@@ -3915,6 +3934,13 @@ fn document_bootstrap(
     if (type === "regexp") return new RegExp(value.source, value.flags);
     if (type === "map") return new Map((value.entries || []).map(entry => [indexedDbDecode(entry[0]), indexedDbDecode(entry[1])]));
     if (type === "set") return new Set((value.values || []).map(entry => indexedDbDecode(entry)));
+    if (type === "arrayBuffer") return new Uint8Array(value.bytes || []).buffer;
+    if (type === "typedArray") {{
+      const buffer = new Uint8Array(value.bytes || []).buffer;
+      if (value.constructor === "DataView") return new DataView(buffer);
+      if (!indexedDbTypedArrayNames.has(value.constructor) || typeof globalThis[value.constructor] !== "function") throw indexedDbError("DataCloneError", "typed array cannot be reconstructed by native IndexedDB");
+      return new globalThis[value.constructor](buffer);
+    }}
     if (type === "blob") return value.file
       ? new File([value.text], value.name, {{ type: value.type, lastModified: value.lastModified }})
       : new Blob([value.text], {{ type: value.type }});

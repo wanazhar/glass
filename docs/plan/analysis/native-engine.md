@@ -2523,7 +2523,15 @@ The completed bounded IndexedDB Blob/File clone follow-up is
 text-backed native `Blob` and `File` values retain payload, MIME type, file
 name, and non-negative `lastModified` across IndexedDB reads and profile
 restart. Byte-exact binary buffers, typed arrays, streams, transfer lists, and
-full clone/prototype parity remain open.
+full clone/prototype parity remained open at that checkpoint.
+
+The completed bounded IndexedDB binary structured-clone follow-up is
+[native-engine-browser-088](../tasks/native-engine-browser-088.md). `ArrayBuffer`,
+common typed arrays, and `DataView` now cross the bounded tagged-JSON profile
+and shared worker state-transfer paths as visible byte vectors, including API
+read and profile-restart reconstruction. `SharedArrayBuffer` fails closed;
+transfer lists, detached-buffer identity, binary Blob/File methods, streams,
+and full clone/prototype parity remain open.
 
 ## Baseline and constraints
 

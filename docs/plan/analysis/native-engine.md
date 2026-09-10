@@ -2733,6 +2733,16 @@ observe bounded `append()`/`set()` mutations, and return self-iterating cursors;
 immutable response-header views remain bounded snapshots. Full Headers Web IDL
 parity, raw response headers, and trailers remain open.
 
+The completed bounded Fetch Response-stream follow-up is
+[native-engine-browser-116](../tasks/native-engine-browser-116.md). Ordinary
+responses now expose a bounded one-chunk native `ReadableStream` body with
+`instanceof`, default-reader completion, lock/release, cancel, and async-
+iterator hooks, while opaque and `opaqueredirect` responses keep `body ===
+null` and existing filtered body-method failures. Progressive transport
+streaming, backpressure, body disturbance/`bodyUsed`, BYOB readers,
+transport-level cancellation, trailers, and complete ReadableStream/Response
+Web IDL parity remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

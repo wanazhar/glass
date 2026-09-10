@@ -16,10 +16,11 @@ use super::interaction::{
     MAX_NATIVE_EFFECTS, NativeAction, NativeEffect, NativeEventKind, validate_native_edit_key,
 };
 use super::javascript::{
-    NativeJavaScriptRuntime, NativeScriptEvaluation, NativeStorageCoordinator, NativeStorageEvent,
-    NativeStorageEventQueue, NativeWebStorageState, execute_inline_scripts, host_event_script,
+    NativeJavaScriptRuntime, NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState,
+    append_storage_events, execute_inline_scripts, host_event_script,
     host_hash_change_event_script, host_key_event_script, host_submit_event_script,
-    load_web_storage_profile, save_web_storage_profile, storage_coordinator_for, storage_key,
+    load_web_storage_profile, new_storage_writer_id, read_storage_event_journal,
+    save_web_storage_profile, storage_event_cursor, storage_key,
 };
 use super::layout::{NativeLayoutSnapshot, NativePoint};
 use super::lifecycle::NativeLifecycleState;
@@ -34,7 +35,6 @@ use super::runtime::{NativeRuntimeState, NativeRuntimeTraceEvent};
 use super::scheduler::{DeterministicScheduler, NativeTask};
 use super::worker::{NativeRuntimeShared, NativeRuntimeWorker};
 use std::collections::VecDeque;
-use std::sync::Arc;
 
 /// Bounded observation of the current native document.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,8 +82,8 @@ pub struct NativeEngine {
     content_process: Option<NativeContentProcess>,
     javascript: Option<NativeJavaScriptRuntime>,
     web_storage: NativeWebStorageState,
-    storage_coordinator: Option<Arc<NativeStorageCoordinator>>,
-    storage_event_queue: Option<NativeStorageEventQueue>,
+    storage_writer_id: String,
+    storage_event_offset: u64,
     pending_external_storage_events: Vec<NativeStorageEvent>,
     history: NativeHistory,
     lifecycle: NativeLifecycleState,
@@ -100,14 +100,8 @@ impl NativeEngine {
     pub fn new(config: NativeEngineConfig) -> Result<Self, NativeEngineError> {
         config.validate()?;
         let web_storage = load_web_storage_profile(config.storage_path.as_deref())?;
-        let (storage_coordinator, storage_event_queue) =
-            if let Some(path) = config.storage_path.as_deref() {
-                let coordinator = storage_coordinator_for(path)?;
-                let queue = coordinator.subscribe()?;
-                (Some(coordinator), Some(queue))
-            } else {
-                (None, None)
-            };
+        let storage_event_offset = storage_event_cursor(config.storage_path.as_deref())?;
+        let storage_writer_id = new_storage_writer_id()?;
         let loader = NativeResourceLoader::new(&config)?;
         if !is_network_url(&config.initial_url) {
             loader.load(&config.initial_url)?;
@@ -123,8 +117,8 @@ impl NativeEngine {
             content_process: None,
             javascript: None,
             web_storage,
-            storage_coordinator,
-            storage_event_queue,
+            storage_writer_id,
+            storage_event_offset,
             pending_external_storage_events: Vec::new(),
             history: NativeHistory::new(max_history_entries),
             lifecycle: NativeLifecycleState::New,
@@ -279,6 +273,7 @@ impl NativeEngine {
     ) -> Result<NativeEngineSnapshot, NativeEngineError> {
         self.require_running("navigate")?;
         self.pending_lifecycle_effects.clear();
+        self.sync_external_storage_events()?;
         let url = url.into();
         let resource = self.loader.load(&url)?;
         if self.is_same_document_navigation(&resource.url) {
@@ -584,6 +579,8 @@ impl NativeEngine {
                 reason: "native fetch requires an HTTP(S) document".into(),
             });
         }
+        self.sync_external_storage_events()?;
+        self.deliver_pending_external_storage_events().await?;
         let href = href.into();
         self.ensure_content_process().await?;
         self.content_process
@@ -1119,19 +1116,15 @@ impl NativeEngine {
     }
 
     fn sync_external_storage_events(&mut self) -> Result<(), NativeEngineError> {
-        let Some(queue) = self.storage_event_queue.as_ref() else {
-            return Ok(());
-        };
-        let events = queue
-            .lock()
-            .map_err(|_| NativeEngineError::Worker {
-                operation: "receive native storage events".into(),
-                reason: "native storage event queue is unavailable".into(),
-            })
-            .map(|mut events| std::mem::take(&mut *events))?;
+        let records = read_storage_event_journal(
+            self.config.storage_path.as_deref(),
+            &mut self.storage_event_offset,
+        )?;
         let current_storage_key = storage_key(&self.url, &self.origin);
-        let events = events
+        let events = records
             .into_iter()
+            .filter(|record| record.writer_id != self.storage_writer_id)
+            .map(|record| record.event)
             .filter(|event| {
                 event.storage_key == current_storage_key
                     && (event.scope == "local"
@@ -1194,14 +1187,14 @@ impl NativeEngine {
         &mut self,
         events: &[NativeStorageEvent],
     ) -> Result<(), NativeEngineError> {
-        let coordinator = self.storage_coordinator.clone();
-        let queue = self.storage_event_queue.clone();
         for event in events {
             self.web_storage.apply_storage_event(event)?;
-            if let (Some(coordinator), Some(queue)) = (coordinator.as_ref(), queue.as_ref()) {
-                coordinator.publish(queue, event.clone())?;
-            }
         }
+        append_storage_events(
+            self.config.storage_path.as_deref(),
+            &self.storage_writer_id,
+            events,
+        )?;
         Ok(())
     }
 
@@ -1220,14 +1213,11 @@ impl NativeEngine {
             &self.web_storage,
             &storage_changes,
         )?;
-        if let (Some(coordinator), Some(queue)) = (
-            self.storage_coordinator.as_ref(),
-            self.storage_event_queue.as_ref(),
-        ) {
-            for change in storage_changes {
-                coordinator.publish(queue, change)?;
-            }
-        }
+        append_storage_events(
+            self.config.storage_path.as_deref(),
+            &self.storage_writer_id,
+            &storage_changes,
+        )?;
         Ok(())
     }
 

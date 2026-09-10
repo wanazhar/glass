@@ -2386,7 +2386,20 @@ binary/stream FormData support, full task ordering/navigation edge cases,
 remaining full pattern-regex/file constraint validation, target contexts, and
 the remaining browser-context primitives remain open.
 
-The next bounded workstream is cross-process event delivery, followed by
+The completed bounded cross-process storage-event follow-up is
+[native-engine-browser-075](../tasks/native-engine-browser-075.md). Profile-
+backed engines use unique writer identities and cursors into a bounded
+newline-delimited event journal protected by the retained profile lock. Local
+and session changes are appended and live receivers poll before page
+operations, exclude their writer, and apply origin/context routing before
+dispatch. Incomplete tails are repaired, malformed records are typed errors,
+and the journal is capped at 4 MiB without compaction in this slice. Cookie
+profile persistence, IndexedDB, full binary/stream FormData support, full task
+ordering/navigation edge cases, remaining full pattern-regex/file constraint
+validation, target contexts, and the remaining browser-context primitives
+remain open.
+
+The next bounded workstream is cookie profile persistence, followed by
 IndexedDB, full binary/stream FormData support, full task ordering/navigation
 edge cases, remaining full pattern-regex/file constraint validation, target
 contexts, and the remaining browser-context primitives.

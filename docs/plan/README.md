@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-074` locally. The versioned
+`native-engine-browser-075` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -724,8 +724,16 @@ profiles without a revision remain readable. Session storage is still volatile,
 and this slice does not add cross-process event delivery, cookie profile
 persistence, IndexedDB, or full browser parity.
 
-The next BE-02/BE-03/BE-04/BE-07 gate is cross-process event delivery,
-followed by IndexedDB, full
+The completed bounded cross-process storage-event slice is
+[native-engine-browser-075](tasks/native-engine-browser-075.md). Each
+profile-backed engine has a unique writer identity and a cursor into the
+bounded newline-delimited event journal beside the profile. Local and session
+storage changes are appended under the existing profile lock; live receivers
+poll before page operations, exclude their writer, and apply origin and
+browsing-context filters before dispatch. The journal repairs an incomplete
+tail, rejects malformed records, and is capped at 4 MiB; acknowledged
+records are not compacted by this slice. The next storage gates are cookie
+profile persistence, IndexedDB, full
 binary/stream FormData support, full task ordering/navigation edge cases,
 remaining full pattern-regex/file constraint validation, target contexts, and
 the remaining browser-context primitives.

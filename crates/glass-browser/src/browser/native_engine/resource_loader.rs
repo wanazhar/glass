@@ -289,6 +289,7 @@ struct NativeCspPolicy {
     font_sources: Option<Vec<String>>,
     media_sources: Option<Vec<String>>,
     frame_sources: Option<Vec<String>>,
+    child_sources: Option<Vec<String>>,
     connect_sources: Option<Vec<String>>,
     worker_sources: Option<Vec<String>>,
     default_sources: Option<Vec<String>>,
@@ -297,36 +298,7 @@ struct NativeCspPolicy {
 impl NativeCspPolicy {
     fn allows(&self, kind: NativeSubresourceKind, document_url: &Url, resource_url: &Url) -> bool {
         let sources = self.sources_for(kind).or(self.default_sources.as_ref());
-        let Some(sources) = sources else {
-            return true;
-        };
-        if sources.is_empty() {
-            return false;
-        }
-        let document_origin = document_url.origin();
-        for source in sources {
-            if source == "'none'" {
-                return false;
-            }
-            if source == "*" {
-                return true;
-            }
-            if source == "'self'" && resource_url.origin() == document_origin {
-                return true;
-            }
-            if source.ends_with(':')
-                && source[..source.len().saturating_sub(1)]
-                    .eq_ignore_ascii_case(resource_url.scheme())
-            {
-                return true;
-            }
-            if Url::parse(source)
-                .is_ok_and(|source_url| source_url.origin() == resource_url.origin())
-            {
-                return true;
-            }
-        }
-        false
+        csp_sources_allow(sources.map(Vec::as_slice), document_url, resource_url)
     }
 
     fn sources_for(&self, kind: NativeSubresourceKind) -> Option<&Vec<String>> {
@@ -336,11 +308,51 @@ impl NativeCspPolicy {
             NativeSubresourceKind::Image => self.image_sources.as_ref(),
             NativeSubresourceKind::Font => self.font_sources.as_ref(),
             NativeSubresourceKind::Media => self.media_sources.as_ref(),
-            NativeSubresourceKind::Frame => self.frame_sources.as_ref(),
+            NativeSubresourceKind::Frame => {
+                self.frame_sources.as_ref().or(self.child_sources.as_ref())
+            }
             NativeSubresourceKind::Connect => self.connect_sources.as_ref(),
             NativeSubresourceKind::Worker => self.worker_sources.as_ref(),
         }
     }
+}
+
+/// Evaluate the bounded source-expression subset shared by document
+/// subresources and parent-owned frame navigation. Keeping this matcher in
+/// the loader prevents the content worker and frame registry from drifting
+/// into different CSP decisions.
+pub(crate) fn csp_sources_allow(
+    sources: Option<&[String]>,
+    document_url: &Url,
+    resource_url: &Url,
+) -> bool {
+    let Some(sources) = sources else {
+        return true;
+    };
+    if sources.is_empty() {
+        return false;
+    }
+    let document_origin = document_url.origin();
+    for source in sources {
+        if source == "'none'" {
+            return false;
+        }
+        if source == "*" {
+            return true;
+        }
+        if source == "'self'" && resource_url.origin() == document_origin {
+            return true;
+        }
+        if source.ends_with(':')
+            && source[..source.len().saturating_sub(1)].eq_ignore_ascii_case(resource_url.scheme())
+        {
+            return true;
+        }
+        if Url::parse(source).is_ok_and(|source_url| source_url.origin() == resource_url.origin()) {
+            return true;
+        }
+    }
+    false
 }
 
 impl NativeResourceLoader {
@@ -381,6 +393,32 @@ impl NativeResourceLoader {
 
     pub(crate) fn max_document_bytes(&self) -> usize {
         self.max_document_bytes
+    }
+
+    pub(crate) fn frame_sources_for_document(
+        &self,
+        document_url: &str,
+    ) -> Result<Option<Vec<String>>, NativeEngineError> {
+        validate_url_text("frame policy owner URL", document_url)?;
+        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "frame policy owner URL is not valid URL syntax".into(),
+            }
+        })?;
+        if !is_network_url(document_url.as_str()) {
+            return Ok(None);
+        }
+        reject_credentials(&document_url)?;
+        Ok(self
+            .network
+            .document_policies
+            .get(&cache_key(&document_url))
+            .and_then(|policy| {
+                policy
+                    .sources_for(NativeSubresourceKind::Frame)
+                    .or(policy.default_sources.as_ref())
+                    .cloned()
+            }))
     }
 
     pub(crate) fn cookie_profile(&self) -> Vec<NativeCookieProfileEntry> {
@@ -1653,7 +1691,8 @@ fn content_security_policy(headers: &HeaderMap) -> NativeCspPolicy {
                 "img-src" => policy.image_sources = Some(sources),
                 "font-src" => policy.font_sources = Some(sources),
                 "media-src" => policy.media_sources = Some(sources),
-                "frame-src" | "child-src" => policy.frame_sources = Some(sources),
+                "frame-src" => policy.frame_sources = Some(sources),
+                "child-src" => policy.child_sources = Some(sources),
                 "connect-src" => policy.connect_sources = Some(sources),
                 "worker-src" => policy.worker_sources = Some(sources),
                 "default-src" => policy.default_sources = Some(sources),
@@ -2994,6 +3033,32 @@ mod tests {
         assert!(policy.allows(NativeSubresourceKind::Connect, &document, &document));
         assert!(!policy.allows(NativeSubresourceKind::Connect, &document, &socket));
         assert!(!policy.allows(NativeSubresourceKind::Font, &document, &document));
+    }
+
+    #[test]
+    fn csp_frame_src_takes_precedence_over_child_src_and_default_src() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(
+                "default-src 'none'; child-src https://child.test; frame-src https://frame.test",
+            ),
+        );
+        let policy = content_security_policy(&headers);
+        let document = Url::parse("https://app.test/index.html").unwrap();
+        let frame = Url::parse("https://frame.test/child").unwrap();
+        let child = Url::parse("https://child.test/child").unwrap();
+        assert!(policy.allows(NativeSubresourceKind::Frame, &document, &frame));
+        assert!(!policy.allows(NativeSubresourceKind::Frame, &document, &child));
+
+        let mut child_only_headers = HeaderMap::new();
+        child_only_headers.insert(
+            CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("default-src 'none'; child-src https://child.test"),
+        );
+        let child_only_policy = content_security_policy(&child_only_headers);
+        assert!(child_only_policy.allows(NativeSubresourceKind::Frame, &document, &child));
+        assert!(!child_only_policy.allows(NativeSubresourceKind::Frame, &document, &frame));
     }
 
     #[test]

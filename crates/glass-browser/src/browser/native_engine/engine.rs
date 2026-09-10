@@ -33,7 +33,7 @@ use super::paint::NativeDisplayList;
 use super::raster::NativeSurface;
 use super::resource_loader::{
     NativeFetchResponse, NativeNavigationMethod, NativeNavigationRequest, NativeResource,
-    NativeResourceLoader, referrer_for_navigation,
+    NativeResourceLoader, csp_sources_allow, referrer_for_navigation,
 };
 use super::runtime::{NativeRuntimeState, NativeRuntimeTraceEvent};
 use super::scheduler::{DeterministicScheduler, NativeTask};
@@ -350,6 +350,9 @@ pub struct NativeEngine {
     document: NativeDocument,
     url: String,
     origin: NativeOrigin,
+    document_frame_sources: Option<Vec<String>>,
+    embedding_document_url: Option<String>,
+    embedding_frame_sources: Option<Vec<String>>,
     revision: u64,
     scroll_offset: NativePoint,
     effects: VecDeque<NativeEffect>,
@@ -415,6 +418,9 @@ impl NativeEngine {
             lifecycle: NativeLifecycleState::New,
             document: NativeDocument::empty(),
             origin: NativeOrigin::Opaque,
+            document_frame_sources: None,
+            embedding_document_url: None,
+            embedding_frame_sources: None,
             revision: 0,
             scroll_offset: NativePoint { x: 0, y: 0 },
             effects: VecDeque::new(),
@@ -451,6 +457,67 @@ impl NativeEngine {
     ) -> Result<String, NativeEngineError> {
         self.require_running("frame discovery")?;
         self.resolve_link_href(source)
+    }
+
+    pub(crate) fn allows_embedded_frame_url(
+        &self,
+        target_url: &str,
+    ) -> Result<bool, NativeEngineError> {
+        self.require_running("frame discovery")?;
+        let Some(frame_sources) = self.document_frame_sources.as_deref() else {
+            return Ok(true);
+        };
+        validate_url_text("embedded frame URL", target_url)?;
+        let document_url = url::Url::parse(without_fragment(&self.url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "the frame policy owner URL is not valid URL syntax".into(),
+            }
+        })?;
+        let target_url = url::Url::parse(without_fragment(target_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "embedded frame URL is not valid URL syntax".into(),
+            }
+        })?;
+        Ok(csp_sources_allow(
+            Some(frame_sources),
+            &document_url,
+            &target_url,
+        ))
+    }
+
+    pub(crate) fn frame_navigation_policy(&self) -> (String, Option<Vec<String>>) {
+        (self.url.clone(), self.document_frame_sources.clone())
+    }
+
+    pub(crate) fn set_embedding_frame_policy(
+        &mut self,
+        document_url: String,
+        frame_sources: Option<Vec<String>>,
+    ) {
+        self.embedding_document_url = Some(document_url);
+        self.embedding_frame_sources = frame_sources;
+    }
+
+    fn allows_frame_navigation(&self, target_url: &str) -> Result<bool, NativeEngineError> {
+        let Some(document_url) = self.embedding_document_url.as_deref() else {
+            return Ok(true);
+        };
+        validate_url_text("frame navigation URL", target_url)?;
+        let document_url = url::Url::parse(without_fragment(document_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "the frame policy owner URL is not valid URL syntax".into(),
+            }
+        })?;
+        let target_url = url::Url::parse(without_fragment(target_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "frame navigation URL is not valid URL syntax".into(),
+            }
+        })?;
+        Ok(csp_sources_allow(
+            self.embedding_frame_sources.as_deref(),
+            &document_url,
+            &target_url,
+        ))
     }
 
     pub const fn lifecycle(&self) -> NativeLifecycleState {
@@ -515,6 +582,7 @@ impl NativeEngine {
         }
         let has_content_process = content_process.is_some();
         self.content_process = content_process;
+        let mut use_content_process = has_content_process;
         let (prepared, history_commit, page_navigation_handoffs) = if has_content_process {
             let (content, history_commit, page_navigation_handoffs) = self
                 .load_content_with_page_navigation(
@@ -524,11 +592,23 @@ impl NativeEngine {
                     0,
                 )
                 .await?;
-            (
-                self.prepare_navigation_content(content)?,
-                history_commit,
-                page_navigation_handoffs,
-            )
+            if !self.is_same_document_navigation(&content.url)
+                && !self.allows_frame_navigation(&content.url)?
+            {
+                self.content_process.take();
+                use_content_process = false;
+                (
+                    self.prepare_navigation_resource(self.loader.load("about:blank")?)?,
+                    HistoryCommit::Push,
+                    0,
+                )
+            } else {
+                (
+                    self.prepare_navigation_content(content)?,
+                    history_commit,
+                    page_navigation_handoffs,
+                )
+            }
         } else {
             (
                 self.prepare_navigation_async(&initial_url).await?,
@@ -538,7 +618,7 @@ impl NativeEngine {
         };
         let worker = NativeRuntimeWorker::spawn_shared(self.runtime.clone())?;
         worker.start().await?;
-        if has_content_process {
+        if use_content_process {
             self.commit_content_process().await?;
         }
         let page_navigation = match self
@@ -556,7 +636,7 @@ impl NativeEngine {
         self.lifecycle = NativeLifecycleState::Running;
         if let Some(page_navigation) = page_navigation {
             self.navigate_request_async(page_navigation, 1).await?;
-        } else if has_content_process
+        } else if use_content_process
             && let Some(page_navigation) = self.dispatch_content_page_show_async().await?
         {
             self.navigate_script_navigation_async(page_navigation, page_navigation_handoffs)
@@ -628,6 +708,8 @@ impl NativeEngine {
         let resource = self.loader.load(&url)?;
         if self.is_same_document_navigation(&resource.url) {
             self.commit_same_document_navigation(resource.url, HistoryCommit::Push)?;
+        } else if !self.allows_frame_navigation(&resource.url)? {
+            return Ok(self.snapshot_unchecked());
         } else {
             let prepared = self.prepare_navigation_resource(resource)?;
             if let Some(page_navigation) = self.commit_navigation(prepared, HistoryCommit::Push)? {
@@ -661,6 +743,9 @@ impl NativeEngine {
             HistoryCommit::Push
         };
         let same_document = self.is_same_document_navigation(url);
+        if !same_document && !self.allows_frame_navigation(url)? {
+            return Ok(self.snapshot_unchecked());
+        }
         if !same_document && !self.dispatch_navigation_lifecycle_async().await? {
             return Ok(self.snapshot_unchecked());
         }
@@ -685,6 +770,11 @@ impl NativeEngine {
                     page_navigation_handoffs,
                 )
                 .await?;
+            if !self.is_same_document_navigation(&content.url)
+                && !self.allows_frame_navigation(&content.url)?
+            {
+                return Ok(self.snapshot_unchecked());
+            }
             self.commit_content_process().await?;
             if let Some(worker) = self.runtime_worker.clone() {
                 return self
@@ -867,6 +957,8 @@ impl NativeEngine {
     ) -> Result<NativeEngineSnapshot, NativeEngineError> {
         if self.is_same_document_navigation(&content.url) {
             self.commit_same_document_navigation(content.url, history_commit)?;
+        } else if !self.allows_frame_navigation(&content.url)? {
+            return Ok(self.snapshot_unchecked());
         } else {
             let prepared = self.prepare_navigation_content(content)?;
             let _ = self.commit_navigation(prepared, history_commit)?;
@@ -882,6 +974,9 @@ impl NativeEngine {
         page_navigation_handoffs: usize,
     ) -> Result<NativeEngineSnapshot, NativeEngineError> {
         let same_document = self.is_same_document_navigation(&content.url);
+        if !same_document && !self.allows_frame_navigation(&content.url)? {
+            return Ok(self.snapshot_unchecked());
+        }
         if same_document {
             self.commit_same_document_navigation_async(content.url, history_commit, worker)
                 .await?;
@@ -3311,6 +3406,31 @@ impl NativeEngine {
                 accepted: true,
             });
         }
+        if !self.allows_frame_navigation(&target_url)? {
+            let events = if click_already_applied {
+                Vec::new()
+            } else {
+                self.document.apply_click(id)?
+            };
+            let revision = if click_already_applied {
+                self.revision
+            } else {
+                let revision = self.next_revision()?;
+                self.document.set_revision(revision);
+                self.revision = revision;
+                self.history.update_current_scroll(self.scroll_offset);
+                self.record_effects(events);
+                return Ok(NativeActionResult {
+                    revision,
+                    accepted: true,
+                });
+            };
+            self.record_effects(events);
+            return Ok(NativeActionResult {
+                revision,
+                accepted: true,
+            });
+        }
         let resource = self.loader.load(&target_url)?;
         let revision = self.next_revision()?;
         if self.is_same_document_navigation(&resource.url) {
@@ -3350,6 +3470,7 @@ impl NativeEngine {
         self.javascript = None;
         self.url = prepared.resource.url;
         self.origin = prepared.resource.origin;
+        self.document_frame_sources = prepared.frame_sources;
         self.scroll_offset = scroll_offset;
         self.revision = revision;
         self.history.push(self.url.clone(), revision, scroll_offset);
@@ -3560,6 +3681,7 @@ impl NativeEngine {
                 body: String::new(),
             },
             document,
+            frame_sources: content.frame_sources,
             dialogs: content.dialogs,
             execute_inline_scripts: false,
         })
@@ -3575,9 +3697,11 @@ impl NativeEngine {
         })?;
         let document =
             NativeDocument::parse_with_generation(&resource.body, &self.config.limits, generation)?;
+        let frame_sources = self.loader.frame_sources_for_document(&resource.url)?;
         Ok(PreparedNavigation {
             resource,
             document,
+            frame_sources,
             dialogs: Vec::new(),
             execute_inline_scripts: true,
         })
@@ -3632,6 +3756,7 @@ impl NativeEngine {
         self.javascript = javascript;
         self.url = prepared.resource.url;
         self.origin = prepared.resource.origin;
+        self.document_frame_sources = prepared.frame_sources;
         self.scroll_offset = scroll_offset;
         self.revision = revision;
         self.pending_dialogs.clear();
@@ -3715,6 +3840,7 @@ impl NativeEngine {
         self.javascript = javascript;
         self.url = prepared.resource.url;
         self.origin = prepared.resource.origin;
+        self.document_frame_sources = prepared.frame_sources;
         self.scroll_offset = scroll_offset;
         self.revision = revision;
         self.pending_dialogs.clear();
@@ -3887,6 +4013,7 @@ impl NativeEngine {
         self.javascript = None;
         self.url = prepared.resource.url;
         self.origin = prepared.resource.origin;
+        self.document_frame_sources = prepared.frame_sources;
         self.scroll_offset = scroll_offset;
         self.revision = revision;
         self.pending_dialogs.clear();
@@ -3935,6 +4062,7 @@ impl NativeEngine {
         self.javascript = None;
         self.url = prepared.resource.url;
         self.origin = prepared.resource.origin;
+        self.document_frame_sources = prepared.frame_sources;
         self.scroll_offset = scroll_offset;
         self.revision = revision;
         self.pending_dialogs.clear();
@@ -3971,6 +4099,8 @@ impl NativeEngine {
                 resource.url,
                 HistoryCommit::Activate(history_index),
             )?;
+        } else if !self.allows_frame_navigation(&resource.url)? {
+            return Ok(Some(self.snapshot_unchecked()));
         } else {
             let prepared = self.prepare_navigation_resource(resource)?;
             self.commit_history_navigation(prepared, history_index)?;
@@ -4013,6 +4143,9 @@ impl NativeEngine {
         }
 
         let history_commit = HistoryCommit::Activate(history_index);
+        if !self.allows_frame_navigation(&target_url)? {
+            return Ok(Some(self.snapshot_unchecked()));
+        }
         if is_network_url(&target_url) {
             let referrer = referrer_for_navigation(&self.url, &target_url)?;
             self.ensure_content_process().await?;
@@ -4024,6 +4157,11 @@ impl NativeEngine {
                     0,
                 )
                 .await?;
+            if !self.is_same_document_navigation(&content.url)
+                && !self.allows_frame_navigation(&content.url)?
+            {
+                return Ok(Some(self.snapshot_unchecked()));
+            }
             self.commit_content_process().await?;
             if let Some(worker) = self.runtime_worker.clone() {
                 return Ok(Some(
@@ -4246,6 +4384,7 @@ impl NativeEngine {
 struct PreparedNavigation {
     resource: NativeResource,
     document: NativeDocument,
+    frame_sources: Option<Vec<String>>,
     dialogs: Vec<NativeDialog>,
     execute_inline_scripts: bool,
 }

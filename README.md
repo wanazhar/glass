@@ -615,7 +615,10 @@ operations through the explicitly selected live frame owner while retaining
 parked parent and sibling state. Allowed local and external anchor clicks with
 `target="_blank"` also create initialized parked native popup targets while
 leaving the opener selected; popup targets are independently selectable and
-closable. It is not yet a browser-parity
+closable. External document responses now carry bounded `frame-src`,
+`child-src`, and `default-src` policy into frame ownership: denied child URLs
+remain observable as `about:blank` contexts without being fetched, and allowed
+same-origin frames load through the sandboxed content worker. It is not yet a browser-parity
 implementation or hostile-content security boundary. See the [native engine
 architecture](docs/architecture/native-engine.md).
 
@@ -937,7 +940,7 @@ workflows.
 | Chrome / Chromium | Supported browser families on environments with native evidence |
 | Firefox automation | Experimental portable semantic session over Firefox WebDriver BiDi |
 | Safari automation | Experimental portable semantic session over SafariDriver W3C WebDriver |
-| Native engine | Experimental default-off Glass-owned Rust backend with bounded local and external HTTP(S) HTML navigation, layout/display-list/software-surface artifacts, and parent-owned anchor downloads with completion evidence. Its current Flexbox slice includes stable visual `order`, integer `flex-grow`/`flex-shrink` allocation, `flex-basis:auto|Npx` base-size selection, finite `flex` expansion, and case-insensitive 15-layer/unlayered `revert-layer` rollback for those non-inherited owners including standalone `flex:revert-layer`, `flex-flow:revert-layer`, and `place-content:revert-layer` shorthand rollback with native fallbacks and finite expansion, plus independent finite-pixel gap-family rollback for `gap`, `row-gap`, and `column-gap`; inherited text presentation also has bounded case-insensitive 15-layer/unlayered rollback for `text-transform`, `font-weight`, `font-style`, and `word-break` with finite parent/root fallbacks; the bounded horizontal-tb logical border family maps block start/end to top/bottom and direction-aware inline start/end for `ltr`/`rtl` through the existing physical border consumers; explicit Rust or feature-gated local CLI path. See the [native-engine architecture](docs/architecture/native-engine.md) for the bounded contract and exclusions. |
+| Native engine | Experimental default-off Glass-owned Rust backend with bounded local and external HTTP(S) HTML navigation, layout/display-list/software-surface artifacts, parent-owned anchor downloads with completion evidence, and bounded response-CSP frame-source enforcement. Its current Flexbox slice includes stable visual `order`, integer `flex-grow`/`flex-shrink` allocation, `flex-basis:auto|Npx` base-size selection, finite `flex` expansion, and case-insensitive 15-layer/unlayered `revert-layer` rollback for those non-inherited owners including standalone `flex:revert-layer`, `flex-flow:revert-layer`, and `place-content:revert-layer` shorthand rollback with native fallbacks and finite expansion, plus independent finite-pixel gap-family rollback for `gap`, `row-gap`, and `column-gap`; inherited text presentation also has bounded case-insensitive 15-layer/unlayered rollback for `text-transform`, `font-weight`, `font-style`, and `word-break` with finite parent/root fallbacks; the bounded horizontal-tb logical border family maps block start/end to top/bottom and direction-aware inline start/end for `ltr`/`rtl` through the existing physical border consumers; explicit Rust or feature-gated local CLI path. See the [native-engine architecture](docs/architecture/native-engine.md) for the bounded contract and exclusions. |
 The native engine also accepts bounded case-insensitive 15-layer/unlayered
 `revert-layer` for local `display` and `visibility`. Rollback resolves through
 lower concrete candidates or the established normal-flow `display:auto` and

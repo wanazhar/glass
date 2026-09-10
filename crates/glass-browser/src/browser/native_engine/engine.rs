@@ -1596,14 +1596,11 @@ impl NativeEngine {
             NativeAction::Click { target } => {
                 let id = self.resolve_click_target(&target)?;
                 self.require_layout_actionable(id)?;
-                if self
+                let link_href = self
                     .document
                     .link_href(id)
-                    .is_some_and(|href| !href.is_empty())
-                {
-                    self.content_process.take();
-                    return self.action(NativeAction::Click { target });
-                }
+                    .filter(|href| !href.is_empty())
+                    .map(str::to_owned);
                 let mut preview = self.document.clone();
                 preview.apply_click(id)?;
                 let mutation = {
@@ -1619,10 +1616,20 @@ impl NativeEngine {
                         .await?
                 };
                 let navigation = mutation.navigation.clone();
+                let click_allowed = mutation.allowed;
                 let next_revision = self.next_revision()?;
                 let outcome = self.apply_content_process_mutation_at(next_revision, mutation)?;
                 if let Some(navigation) = navigation {
                     self.navigate_script_navigation_async(navigation, 0).await?;
+                    return Ok(NativeActionResult {
+                        revision: self.revision,
+                        accepted: outcome.accepted,
+                    });
+                }
+                if click_allowed && let Some(href) = link_href {
+                    let target_url = self.resolve_link_href(&href)?;
+                    self.navigate_request_async(NativeNavigationRequest::get(target_url), 0)
+                        .await?;
                     return Ok(NativeActionResult {
                         revision: self.revision,
                         accepted: outcome.accepted,

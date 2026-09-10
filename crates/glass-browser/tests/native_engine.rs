@@ -2974,6 +2974,88 @@ async fn native_child_script_click_owns_external_navigation() {
 }
 
 #[tokio::test]
+async fn native_direct_click_owns_external_link_navigation() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/start", "/destination"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let body = if expected_path == "/start" {
+                "<title>Start</title><a id='next' href='/destination'>Next</a>"
+            } else {
+                "<title>Destination</title><p>Arrived</p>"
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/start")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let initial_revision = engine.revision();
+    engine
+        .action_async(NativeAction::Click {
+            target: "id=next".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(engine.revision(), initial_revision + 2);
+    let snapshot = engine.snapshot().unwrap();
+    assert_eq!(snapshot.url, format!("http://{address}/destination"));
+    assert_eq!(snapshot.title, "Destination");
+    assert_eq!(snapshot.visible_text, "Arrived");
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_external_link_click_honors_content_process_cancellation() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/start"));
+        let body = "<a id='next' href='/destination'>Next</a><script>document.getElementById('next').addEventListener('click', event => event.preventDefault());</script>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/start")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let initial_revision = engine.revision();
+    engine
+        .action_async(NativeAction::Click {
+            target: "id=next".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(engine.revision(), initial_revision + 1);
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        format!("http://{address}/start")
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_runtime_session_loads_bounded_external_http_html_without_cdp() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -1115,6 +1115,111 @@ async fn native_http_window_proxy_close_removes_content_process_target() {
 }
 
 #[tokio::test]
+async fn native_window_proxy_location_navigates_parked_target() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://location-parent",
+            "<title>Location parent</title><script>globalThis.popup = window.open('fixture://location-child', 'location-target');</script><p>parent</p>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://location-child",
+            "<title>Location child</title><script>globalThis.observedOpener = opener.location.href;</script><p>child</p>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://location-child-next",
+            "<title>Location child next</title><p>next</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://location-parent");
+    let session = BrowserRuntimeSession::connect_native(config).await.unwrap();
+
+    let child = session
+        .native_list_targets()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|target| !target.active)
+        .unwrap();
+    session.native_select_target(&child.id).await.unwrap();
+    assert_eq!(
+        session
+            .script("globalThis.observedOpener")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("fixture://location-parent")
+    );
+    session
+        .native_select_target("native-context")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        session
+            .script("[popup.location.href, popup.location.toString()]")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!(["fixture://location-child", "fixture://location-child"])
+    );
+    session
+        .script("popup.location.assign('fixture://location-child-next'); true")
+        .await
+        .unwrap();
+    let targets = session.native_list_targets().await.unwrap();
+    let child = targets.iter().find(|target| !target.active).unwrap();
+    assert_eq!(child.url, "fixture://location-child-next");
+    assert_eq!(child.title, "Location child next");
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_http_window_proxy_location_navigates_content_process_target() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..3 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap();
+            let body = match path {
+                "/location-parent" => {
+                    "<title>HTTP location parent</title><script>globalThis.popup = window.open('/location-child', 'location-target');</script><p>parent</p>"
+                }
+                "/location-child" => "<title>HTTP location child</title><p>child</p>",
+                "/location-child-next" => "<title>HTTP location child next</title><p>next</p>",
+                other => panic!("unexpected WindowProxy.location request path: {other}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/location-parent")),
+    )
+    .await
+    .unwrap();
+    assert_eq!(session.native_list_targets().await.unwrap().len(), 2);
+    session
+        .script("popup.location.replace('/location-child-next'); true")
+        .await
+        .unwrap();
+    let targets = session.native_list_targets().await.unwrap();
+    let child = targets.iter().find(|target| !target.active).unwrap();
+    assert_eq!(child.url, format!("http://{address}/location-child-next"));
+    assert_eq!(child.title, "HTTP location child next");
+    session.close().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_http_window_identity_crosses_content_worker() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

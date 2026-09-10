@@ -17,11 +17,11 @@ use super::javascript::{
     NativeCookieProfileEntry, NativeDialog, NativeIndexedDbChange, NativeIndexedDbState,
     NativeJavaScriptRuntime, NativePageScript, NativePopupRequest, NativePostMessageRequest,
     NativeScriptCommand, NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState,
-    NativeWindowCloseRequest, diff_indexed_db_changes, execute_page_scripts, host_event_script,
-    host_hash_change_event_script, host_key_event_script, host_key_event_script_with_modifiers,
-    host_submit_event_script, literal_dynamic_module_specifiers, load_indexed_db_profile,
-    load_web_storage_profile, order_page_scripts, save_web_storage_profile,
-    static_module_specifiers, storage_key,
+    NativeWindowCloseRequest, NativeWindowNavigationRequest, diff_indexed_db_changes,
+    execute_page_scripts, host_event_script, host_hash_change_event_script, host_key_event_script,
+    host_key_event_script_with_modifiers, host_submit_event_script,
+    literal_dynamic_module_specifiers, load_indexed_db_profile, load_web_storage_profile,
+    order_page_scripts, save_web_storage_profile, static_module_specifiers, storage_key,
 };
 use super::origin::NativeOrigin;
 use super::resource_loader::{
@@ -66,6 +66,7 @@ pub(crate) struct NativeContentLoad {
     pub(crate) popups: Vec<NativePopupRequest>,
     pub(crate) post_messages: Vec<NativePostMessageRequest>,
     pub(crate) window_closes: Vec<NativeWindowCloseRequest>,
+    pub(crate) window_navigations: Vec<NativeWindowNavigationRequest>,
     pub(crate) window_name: String,
 }
 
@@ -95,6 +96,7 @@ pub(crate) struct NativeContentMutation {
     pub(crate) popups: Vec<NativePopupRequest>,
     pub(crate) post_messages: Vec<NativePostMessageRequest>,
     pub(crate) window_closes: Vec<NativeWindowCloseRequest>,
+    pub(crate) window_navigations: Vec<NativeWindowNavigationRequest>,
     pub(crate) window_name: String,
 }
 
@@ -107,6 +109,7 @@ pub(crate) struct NativeContentScriptResult {
     pub(crate) popups: Vec<NativePopupRequest>,
     pub(crate) post_messages: Vec<NativePostMessageRequest>,
     pub(crate) window_closes: Vec<NativeWindowCloseRequest>,
+    pub(crate) window_navigations: Vec<NativeWindowNavigationRequest>,
     pub(crate) window_name: String,
 }
 
@@ -208,6 +211,7 @@ impl NativeContentProcess {
         window_name: &str,
         opener_context_id: Option<&str>,
         opener_window_name: &str,
+        opener_url: &str,
     ) -> Result<(), NativeEngineError> {
         let id = self.next_id();
         let response = self
@@ -220,6 +224,7 @@ impl NativeContentProcess {
                 "window_name": window_name,
                 "opener_context_id": opener_context_id,
                 "opener_window_name": opener_window_name,
+                "opener_url": opener_url,
             }))
             .await?;
         let result = require_response_kind(&response, "started", id, "content process start");
@@ -963,6 +968,8 @@ fn decode_loaded_response(
     let popups = decode_popup_requests(response, "decode content process load")?;
     let post_messages = decode_post_message_requests(response, "decode content process load")?;
     let window_closes = decode_window_close_requests(response, "decode content process load")?;
+    let window_navigations =
+        decode_window_navigation_requests(response, "decode content process load")?;
     let window_name = decode_window_name(response, "decode content process load")?;
     let frame_sources = decode_frame_sources(response, "decode content process load")?;
     Ok(NativeContentLoad {
@@ -977,6 +984,7 @@ fn decode_loaded_response(
         popups,
         post_messages,
         window_closes,
+        window_navigations,
         window_name,
     })
 }
@@ -1134,6 +1142,7 @@ fn decode_mutation_payload(
     let popups = decode_popup_requests(response, operation)?;
     let post_messages = decode_post_message_requests(response, operation)?;
     let window_closes = decode_window_close_requests(response, operation)?;
+    let window_navigations = decode_window_navigation_requests(response, operation)?;
     let window_name = decode_window_name(response, operation)?;
     Ok(NativeContentMutation {
         document,
@@ -1149,6 +1158,7 @@ fn decode_mutation_payload(
         popups,
         post_messages,
         window_closes,
+        window_navigations,
         window_name,
     })
 }
@@ -1512,6 +1522,8 @@ fn decode_script_response(
     let has_mutation = mutation.is_some();
     let post_messages = decode_post_message_requests(&response, "decode content process script")?;
     let window_closes = decode_window_close_requests(&response, "decode content process script")?;
+    let window_navigations =
+        decode_window_navigation_requests(&response, "decode content process script")?;
     let window_name = decode_window_name(&response, "decode content process script")?;
     Ok(NativeContentScriptResult {
         value,
@@ -1537,6 +1549,11 @@ fn decode_script_response(
             Vec::new()
         } else {
             window_closes
+        },
+        window_navigations: if has_mutation {
+            Vec::new()
+        } else {
+            window_navigations
         },
         window_name,
     })
@@ -1578,6 +1595,39 @@ fn decode_window_close_requests(
         })?;
     for request in &requests {
         validate_url_text("content-process window close target", &request.target)?;
+        if let Some(target_context_id) = request.target_context_id.as_deref() {
+            validate_context_id(target_context_id)?;
+        }
+    }
+    Ok(requests)
+}
+
+fn decode_window_navigation_requests(
+    response: &Value,
+    operation: &str,
+) -> Result<Vec<NativeWindowNavigationRequest>, NativeEngineError> {
+    let Some(value) = response.get("window_navigations") else {
+        return Ok(Vec::new());
+    };
+    let values = value.as_array().ok_or_else(|| NativeEngineError::Worker {
+        operation: operation.into(),
+        reason: "content process returned invalid window navigation requests".into(),
+    })?;
+    if values.len() > MAX_NATIVE_EFFECTS {
+        return Err(NativeEngineError::limit(
+            "content-process window navigation requests",
+            MAX_NATIVE_EFFECTS,
+            values.len(),
+        ));
+    }
+    let requests = serde_json::from_value::<Vec<NativeWindowNavigationRequest>>(value.clone())
+        .map_err(|_| NativeEngineError::Worker {
+            operation: operation.into(),
+            reason: "content process returned malformed window navigation requests".into(),
+        })?;
+    for request in &requests {
+        validate_url_text("content-process window navigation target", &request.target)?;
+        validate_url_text("content-process window navigation href", &request.href)?;
         if let Some(target_context_id) = request.target_context_id.as_deref() {
             validate_context_id(target_context_id)?;
         }
@@ -1769,6 +1819,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut window_name = String::new();
     let mut opener_context_id: Option<String> = None;
     let mut opener_window_name = String::new();
+    let mut opener_url = String::new();
     loop {
         let payload = read_frame(&mut stdin).await?;
         let request: Value =
@@ -1822,6 +1873,13 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     .and_then(Value::as_str)
                     .unwrap_or_default();
                 validate_window_name(requested_opener_window_name)?;
+                let requested_opener_url = request
+                    .get("opener_url")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if !requested_opener_url.is_empty() {
+                    validate_url_text("content-process opener URL", requested_opener_url)?;
+                }
                 let requested_path = request
                     .get("storage_path")
                     .and_then(Value::as_str)
@@ -1847,6 +1905,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         window_name = requested_window_name.to_owned();
                         opener_context_id = requested_opener_context_id.map(str::to_owned);
                         opener_window_name = requested_opener_window_name.to_owned();
+                        opener_url = requested_opener_url.to_owned();
                         running = true;
                         json!({"kind":"started","id":id})
                     }
@@ -1987,6 +2046,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 &window_name,
                                 opener_context_id.as_deref(),
                                 &opener_window_name,
+                                &opener_url,
                             ) {
                                 Ok(runtime) => Some(runtime),
                                 Err(error) => {
@@ -2182,6 +2242,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         &window_name,
                         opener_context_id.as_deref(),
                         &opener_window_name,
+                        &opener_url,
                     ) {
                         Ok(runtime) => {
                             runtime.set_storage_state(storage_state.clone());
@@ -2345,6 +2406,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         &window_name,
                         opener_context_id.as_deref(),
                         &opener_window_name,
+                        &opener_url,
                     ) {
                         Ok(runtime) => {
                             runtime.set_storage_state(storage_state.clone());
@@ -2449,6 +2511,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         &window_name,
                         opener_context_id.as_deref(),
                         &opener_window_name,
+                        &opener_url,
                     ) {
                         Ok(runtime) => {
                             runtime.set_storage_state(storage_state.clone());
@@ -2569,6 +2632,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         &window_name,
                         opener_context_id.as_deref(),
                         &opener_window_name,
+                        &opener_url,
                     ) {
                         Ok(runtime) => {
                             runtime.set_storage_state(storage_state.clone());
@@ -2678,6 +2742,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         &window_name,
                         opener_context_id.as_deref(),
                         &opener_window_name,
+                        &opener_url,
                     ) {
                         Ok(runtime) => {
                             runtime.set_storage_state(storage_state.clone());
@@ -3060,6 +3125,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     _popups,
                     _post_messages,
                     _window_closes,
+                    _window_navigations,
                     _window_name,
                 ) = sync_content_runtime_state(
                     javascript_runtime.as_ref(),
@@ -3095,6 +3161,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             popups,
             post_messages,
             window_closes,
+            window_navigations,
             response_window_name,
         ) = sync_content_runtime_state(
             javascript_runtime.as_ref(),
@@ -3142,6 +3209,18 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 "content-process window close requests",
                 MAX_NATIVE_EFFECTS,
                 response_window_closes.len(),
+            ));
+        }
+        let mut response_window_navigations = decode_window_navigation_requests(
+            &response,
+            "merge content process window navigation",
+        )?;
+        response_window_navigations.extend(window_navigations);
+        if response_window_navigations.len() > MAX_NATIVE_EFFECTS {
+            return Err(NativeEngineError::limit(
+                "content-process window navigation requests",
+                MAX_NATIVE_EFFECTS,
+                response_window_navigations.len(),
             ));
         }
         if let Some(object) = response.as_object_mut() {
@@ -3193,6 +3272,16 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     }
                 })?,
             );
+            object.insert(
+                "window_navigations".into(),
+                serde_json::to_value(response_window_navigations).map_err(|_| {
+                    NativeEngineError::Worker {
+                        operation: "encode content process window navigation requests".into(),
+                        reason: "content process window navigation requests could not be encoded"
+                            .into(),
+                    }
+                })?,
+            );
             object.insert("window_name".into(), Value::String(response_window_name));
         }
         write_value_frame(&mut stdout, &response).await?;
@@ -3214,12 +3303,14 @@ fn sync_content_runtime_state(
         Vec<NativePopupRequest>,
         Vec<NativePostMessageRequest>,
         Vec<NativeWindowCloseRequest>,
+        Vec<NativeWindowNavigationRequest>,
         String,
     ),
     NativeEngineError,
 > {
     let Some(runtime) = runtime else {
         return Ok((
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -3253,6 +3344,7 @@ fn sync_content_runtime_state(
         runtime.take_popup_events(),
         runtime.take_post_message_events(),
         runtime.take_window_close_events(),
+        runtime.take_window_navigation_events(),
         runtime.window_name(),
     ))
 }
@@ -3510,6 +3602,7 @@ async fn load_content_resource(
             popups: Vec::new(),
             post_messages: Vec::new(),
             window_closes: Vec::new(),
+            window_navigations: Vec::new(),
             window_name: String::new(),
         },
         document,
@@ -3825,6 +3918,7 @@ fn mutate_click_with_event_preflight(
         popups: Vec::new(),
         post_messages: Vec::new(),
         window_closes: Vec::new(),
+        window_navigations: Vec::new(),
         window_name: String::new(),
     };
     Ok((next, mutation))
@@ -3935,6 +4029,7 @@ fn mutate_type_with_event_bridge(
         popups: Vec::new(),
         post_messages: Vec::new(),
         window_closes: Vec::new(),
+        window_navigations: Vec::new(),
         window_name: String::new(),
     };
     Ok((next, mutation))
@@ -3994,6 +4089,7 @@ fn mutate_form_action_with_event_bridge(
         popups: Vec::new(),
         post_messages: Vec::new(),
         window_closes: Vec::new(),
+        window_navigations: Vec::new(),
         window_name: String::new(),
     };
     Ok((next, mutation))
@@ -4098,6 +4194,7 @@ fn mutate_key_with_event_bridge(
         popups: Vec::new(),
         post_messages: Vec::new(),
         window_closes: Vec::new(),
+        window_navigations: Vec::new(),
         window_name: String::new(),
     };
     Ok((next, mutation))
@@ -4162,6 +4259,7 @@ fn mutate_key_event_with_event_bridge(
             popups: Vec::new(),
             post_messages: Vec::new(),
             window_closes: Vec::new(),
+            window_navigations: Vec::new(),
             window_name: String::new(),
         },
     ))
@@ -4276,6 +4374,7 @@ fn mutate_key_shortcut_with_event_bridge(
             popups: Vec::new(),
             post_messages: Vec::new(),
             window_closes: Vec::new(),
+            window_navigations: Vec::new(),
             window_name: String::new(),
         },
     ))
@@ -4380,6 +4479,7 @@ fn mutate_before_unload(
             popups: Vec::new(),
             post_messages: Vec::new(),
             window_closes: Vec::new(),
+            window_navigations: Vec::new(),
             window_name: String::new(),
         },
     ))
@@ -4407,6 +4507,7 @@ fn mutate_lifecycle_events(
                 popups: Vec::new(),
                 post_messages: Vec::new(),
                 window_closes: Vec::new(),
+                window_navigations: Vec::new(),
                 window_name: String::new(),
             },
         ));
@@ -4455,6 +4556,7 @@ fn mutate_lifecycle_events(
             popups: Vec::new(),
             post_messages: Vec::new(),
             window_closes: Vec::new(),
+            window_navigations: Vec::new(),
             window_name: String::new(),
         },
     ))
@@ -4509,6 +4611,7 @@ fn mutate_hash_change(
             popups: Vec::new(),
             post_messages: Vec::new(),
             window_closes: Vec::new(),
+            window_navigations: Vec::new(),
             window_name: String::new(),
         },
     ))
@@ -4634,6 +4737,7 @@ fn mutate_script_document(
         popups: Vec::new(),
         post_messages: Vec::new(),
         window_closes: Vec::new(),
+        window_navigations: Vec::new(),
         window_name: String::new(),
     };
     Ok((next, mutation))

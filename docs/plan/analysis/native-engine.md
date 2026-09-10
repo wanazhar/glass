@@ -3079,6 +3079,20 @@ the requesting proxy reports closed, and topology no longer publishes the
 target. Stale repeats are harmless. The remaining identity work is live
 observation of target closure through every already-held proxy.
 
+The completed native-engine-browser-152 slice extends the same parent-owned
+WindowProxy boundary with location control. Each proxy keeps a bounded URL
+snapshot and implements `href`, `toString()`, the standard URL component
+getters, `assign()`, `replace()`, and `reload()`; mutating calls emit typed
+navigation effects carrying the target identity, resolved URL, and history
+mode. Local runtimes and the protocol-6 content worker validate and transfer
+those effects, while the parent resolves direct context IDs, source-owned
+private handles, or names and delegates to the existing navigation owner.
+Popup creation transfers a validated opener URL snapshot so child realms can
+read `opener.location.href` consistently. The snapshot model is deterministic
+and bounded, while live updates to previously-held proxies, full cross-origin
+Window property access, popup policy/geometry, frame lifecycle/shared
+scripting, and complete browser parity remain separate issue #40 work.
+
 The completed native-engine-browser-133 batch extends the native target seam
 with a side-effect-free preflight result. The engine resolves the current
 semantic locator and derives viewport geometry and actionability under the

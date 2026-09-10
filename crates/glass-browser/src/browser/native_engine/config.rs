@@ -157,6 +157,7 @@ pub struct NativeEngineConfig {
     pub context_id: String,
     pub opener_context_id: Option<String>,
     pub opener_window_name: String,
+    pub opener_url: String,
     pub window_name: String,
     pub initial_url: String,
     pub viewport: Viewport,
@@ -171,6 +172,7 @@ impl Default for NativeEngineConfig {
             context_id: NATIVE_CONTEXT_ID.into(),
             opener_context_id: None,
             opener_window_name: String::new(),
+            opener_url: String::new(),
             window_name: String::new(),
             initial_url: "about:blank".into(),
             viewport: Viewport::default(),
@@ -194,6 +196,11 @@ impl NativeEngineConfig {
 
     pub fn with_opener_window_name(mut self, name: impl Into<String>) -> Self {
         self.opener_window_name = name.into();
+        self
+    }
+
+    pub fn with_opener_url(mut self, url: impl Into<String>) -> Self {
+        self.opener_url = url.into();
         self
     }
 
@@ -240,6 +247,9 @@ impl NativeEngineConfig {
             validate_context_id(opener_context_id)?;
         }
         validate_window_name(&self.opener_window_name)?;
+        if !self.opener_url.is_empty() {
+            validate_url_text("opener URL", &self.opener_url)?;
+        }
         validate_window_name(&self.window_name)?;
         validate_url_text("initial URL", &self.initial_url)?;
         if self

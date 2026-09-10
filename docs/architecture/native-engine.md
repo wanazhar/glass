@@ -1276,6 +1276,17 @@ one-shot `navigate`, `click`, `type`, `clear`, `check`, `uncheck`, `select`,
 their existing `--expected-revision` fields. The backend still owns revision
 increments, and no guard or unchecked operation creates a CDP fallback.
 
+The completed native-engine-browser-132 batch carries that ownership through
+the MCP transport. A native MCP connection now keeps a separate lazy
+`BrowserRuntimeSession`, closes it at stdio EOF, and routes core navigation,
+compact/deep evidence, semantic actions, script evaluation, logical PNG
+capture, target listing, and storage reads through native owners. Offline MCP
+tools remain browser-free, the default Chromium path is unchanged, and richer
+workflow/profile/frame/download/prompt tools fail closed instead of allocating
+Chromium when native is selected. The core MCP route is covered by a focused
+no-Chromium test; it does not yet certify universal MCP workflow parity or
+production CDP replacement.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature

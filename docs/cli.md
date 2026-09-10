@@ -136,14 +136,16 @@ screenshot --output PATH --format png
 
 Native locators use `ref`, `id`, `role`, `name`, or `text` forms. Native clicks
 may additionally use `point=<unsigned-x>,<unsigned-y>` for the bounded viewport
-hit-test path; CSS selectors are not accepted. Endpoint and external lifecycle
-flags, MCP, TUI, profiles, storage, downloads, prompts, and other Chromium-only
-operations fail closed. The `--expected-revision` option is honored by native
-navigation, form, keyboard, and scroll commands; stale observations fail
-before mutation. The backend is experimental, and local execution is not a
-security boundary for hostile content; external HTTP(S) documents use the
-native content worker. It never enters automatic selection or silently falls
-back to Chromium.
+hit-test path; CSS selectors are not accepted. Core MCP browser tools now use
+the same native session when `--mcp` is selected: navigation, evidence,
+semantic actions, script, PNG capture, target listing, and storage reads do not
+start Chromium. Richer MCP workflows, TUI, profiles, downloads, prompts, and
+other unsupported operations fail closed. The `--expected-revision` option is
+honored by native navigation, form, keyboard, and scroll commands; stale
+observations fail before mutation. The backend is experimental, and local
+execution is not a security boundary for hostile content; external HTTP(S)
+documents use the native content worker. It never enters automatic selection
+or silently falls back to Chromium.
 
 Place global options before or after the subcommand.
 Compatibility spellings are limited to the aliases defined by Clap:

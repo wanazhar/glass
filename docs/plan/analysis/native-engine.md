@@ -2865,6 +2865,18 @@ unchecked calls retain the same session serialization. This removes a
 correctness gap without changing the backend wire schema or adding a CDP
 fallback.
 
+The completed native-engine-browser-132 batch extends the same seam through
+MCP. Native MCP owns a separate lazy `BrowserRuntimeSession` slot and routes
+core navigation, semantic actions, compact/deep evidence, script evaluation,
+logical PNG capture, target listing, and local/session storage reads through
+the native backend. The connection closes that slot at EOF; offline tools stay
+browser-free; unsupported richer MCP tools return an explicit error before any
+Chromium session can be created. The existing Chromium MCP path and its public
+response envelopes remain unchanged. Focused native MCP routing coverage
+passed with no Chromium endpoint, while universal workflow parity, profile,
+frame, download, prompt, checkpoint, recovery, and production replacement of
+CDP remain open.
+
 The completed bounded Response-constructor follow-up is
 [native-engine-browser-120](../tasks/native-engine-browser-120.md). Fetched and
 constructed responses now share `Response` identity; `new Response`,

@@ -550,6 +550,52 @@ async fn native_local_interval_reschedules_until_cleared() {
 }
 
 #[tokio::test]
+async fn native_local_abort_signal_timeout_and_any_follow_host_turns() {
+    let config = NativeEngineConfig::default()
+        .with_fixture("fixture://abort-signal-static", "<p>Abort signals</p>")
+        .unwrap()
+        .with_initial_url("fixture://abort-signal-static");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            r#"(() => {
+                const timeoutSignal = AbortSignal.timeout(200);
+                const controller = new AbortController();
+                const combined = AbortSignal.any([timeoutSignal, controller.signal]);
+                const events = [];
+                combined.addEventListener('abort', () => events.push(combined.reason.name));
+                const immediateController = new AbortController();
+                const immediate = AbortSignal.any([immediateController.signal]);
+                immediateController.abort();
+                globalThis.abortSignalState = { timeoutSignal, combined, events, immediate, empty: AbortSignal.any([]) };
+            })()"#,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "[abortSignalState.timeoutSignal.aborted, abortSignalState.combined.aborted, abortSignalState.immediate.aborted, abortSignalState.empty.aborted]",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([false, false, true, false])
+    );
+    tokio::time::sleep(Duration::from_millis(230)).await;
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "[abortSignalState.timeoutSignal.aborted, abortSignalState.timeoutSignal.reason.name, abortSignalState.combined.aborted, abortSignalState.combined.reason.name, abortSignalState.events]",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, "TimeoutError", true, "TimeoutError", ["TimeoutError"]])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_script_applies_bounded_dom_commands_once() {
     let config = NativeEngineConfig::default()
         .with_fixture(

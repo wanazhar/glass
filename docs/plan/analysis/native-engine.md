@@ -2695,6 +2695,14 @@ cross-origin redirect hops. Full redirect-status/referrer parity,
 service-worker/private-network routing, streaming, and complete
 Fetch/Response Web IDL parity remain open.
 
+The completed bounded AbortSignal-combinator follow-up is
+[native-engine-browser-111](../tasks/native-engine-browser-111.md).
+`AbortSignal.timeout()` now schedules one bounded `TimeoutError` abort on a due
+host turn, while `AbortSignal.any()` composes a bounded iterable of native
+signals with first-reason propagation, empty-input non-abortion, and listener
+cleanup. Transport cancellation, XHR integration, and complete AbortSignal/Web
+IDL parity remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

@@ -28877,7 +28877,7 @@ async fn native_content_process_exposes_opaque_no_cors_response() {
     );
     engine
         .evaluate_async(&format!(
-            "fetch('http://{api_address}/opaque', {{ mode: 'no-cors', credentials: 'omit' }}).then(async response => {{ const bodyRead = await response.text().then(() => 'readable', error => error.name); globalThis.opaqueFetchValue = [response.type, response.status, response.ok, response.url, Array.from(response.headers.entries()), bodyRead]; }});"
+            "fetch('http://{api_address}/opaque', {{ mode: 'no-cors', credentials: 'omit' }}).then(async response => {{ const bodyRead = await response.text().then(() => 'readable', error => error.name); globalThis.opaqueFetchValue = [response.type, response.status, response.ok, response.url, Array.from(response.headers.entries()), bodyRead, response.body === null]; }});"
         ))
         .await
         .unwrap();
@@ -28886,7 +28886,7 @@ async fn native_content_process_exposes_opaque_no_cors_response() {
             .evaluate_async("globalThis.opaqueFetchValue")
             .await
             .unwrap(),
-        serde_json::json!(["opaque", 0, false, "", [], "TypeError"])
+        serde_json::json!(["opaque", 0, false, "", [], "TypeError", true])
     );
     engine.close_async().await.unwrap();
     document_server.await.unwrap();
@@ -29176,7 +29176,7 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
     );
     engine
         .evaluate_async(
-            "fetch('/data', { headers: { 'X-Glass-Token': 'alpha' } }).then(response => { const headerEvents = []; response.headers.forEach((value, name) => headerEvents.push(name + '=' + value)); globalThis.fetchHeaders = [response.headers.get('CONTENT-TYPE'), response.headers.has('content-type'), Array.from(response.headers.entries()), Array.from(response.headers.keys()), Array.from(response.headers.values()), Array.from(response.headers), headerEvents]; return Promise.all([response.json(), response.text(), response.blob(), response.arrayBuffer(), response.bytes()]); }).then(async ([data, text, blob, buffer, bytes]) => { globalThis.fetchValue = data.value; globalThis.fetchBody = [text, blob instanceof Blob, buffer instanceof ArrayBuffer && Array.from(new Uint8Array(buffer)), Array.from(bytes), await blob.text()]; const binaryResponse = await fetch('/binary'); const binaryBuffer = await binaryResponse.arrayBuffer(); const binaryBytes = await binaryResponse.bytes(); const binaryBlob = await binaryResponse.blob(); globalThis.binaryFetchBody = [Array.from(new Uint8Array(binaryBuffer)), Array.from(binaryBytes), binaryBlob.size, Array.from(await binaryBlob.slice(1, 3).bytes()), await binaryBlob.text()]; const uploadResponse = await fetch('/upload', { method: 'POST', body: binaryBlob, headers: { 'Content-Type': 'application/octet-stream' } }); globalThis.binaryUpload = await uploadResponse.text(); const payload = new Uint8Array([0, 255, 128, 65]); const constructedBlob = new Blob([payload], { type: 'application/octet-stream' }); const constructedFile = new File([payload.buffer], 'payload.bin', { type: 'application/octet-stream' }); globalThis.binaryConstruction = [constructedBlob.size, Array.from(await constructedBlob.bytes()), constructedFile.size, Array.from(await constructedFile.bytes())]; const constructedUpload = await fetch('/constructed-upload', { method: 'POST', body: constructedBlob }); const fileUpload = await fetch('/file-upload', { method: 'POST', body: constructedFile }); globalThis.binaryUploads = [await constructedUpload.text(), await fileUpload.text()]; const form = new FormData(); form.append('name', 'glass'); form.append('payload', binaryBlob, 'payload.bin'); const formUpload = await fetch('/form-upload', { method: 'POST', body: form }); globalThis.formUpload = await formUpload.text(); document.getElementById('result').value = data.value; const controller = new AbortController(); const events = []; controller.signal.addEventListener('abort', () => events.push('listener')); controller.signal.onabort = () => events.push('property'); const request = fetch('/data', { signal: controller.signal, headers: { 'X-Glass-Token': 'alpha' } }); controller.abort(); controller.abort(); request.catch(error => { globalThis.abortValue = [error.name, controller.signal.aborted, controller.signal.reason.name, events]; }); });",
+            "fetch('/data', { headers: { 'X-Glass-Token': 'alpha' } }).then(async response => { const headerEvents = []; response.headers.forEach((value, name) => headerEvents.push(name + '=' + value)); const stream = response.body; const streamReader = stream.getReader(); const streamFirst = await streamReader.read(); const streamSecond = await streamReader.read(); const streamLocked = stream.locked; streamReader.releaseLock(); const releasedStreamRead = await streamReader.read().then(() => 'readable', error => error.name); globalThis.fetchStream = [response.body instanceof ReadableStream, streamLocked, stream.locked, streamFirst.done, Array.from(streamFirst.value), streamSecond.done, releasedStreamRead]; globalThis.fetchHeaders = [response.headers.get('CONTENT-TYPE'), response.headers.has('content-type'), Array.from(response.headers.entries()), Array.from(response.headers.keys()), Array.from(response.headers.values()), Array.from(response.headers), headerEvents]; return Promise.all([response.json(), response.text(), response.blob(), response.arrayBuffer(), response.bytes()]); }).then(async ([data, text, blob, buffer, bytes]) => { globalThis.fetchValue = data.value; globalThis.fetchBody = [text, blob instanceof Blob, buffer instanceof ArrayBuffer && Array.from(new Uint8Array(buffer)), Array.from(bytes), await blob.text()]; const binaryResponse = await fetch('/binary'); const binaryStream = binaryResponse.body; const binaryReader = binaryStream.getReader(); const binaryLocked = binaryStream.locked; await binaryReader.cancel(); binaryReader.releaseLock(); const canceledReader = binaryStream.getReader(); const canceledChunk = await canceledReader.read(); canceledReader.releaseLock(); globalThis.fetchStream = globalThis.fetchStream.concat([binaryResponse.body instanceof ReadableStream, binaryLocked, canceledChunk.done, binaryStream.locked]); const binaryBuffer = await binaryResponse.arrayBuffer(); const binaryBytes = await binaryResponse.bytes(); const binaryBlob = await binaryResponse.blob(); globalThis.binaryFetchBody = [Array.from(new Uint8Array(binaryBuffer)), Array.from(binaryBytes), binaryBlob.size, Array.from(await binaryBlob.slice(1, 3).bytes()), await binaryBlob.text()]; const uploadResponse = await fetch('/upload', { method: 'POST', body: binaryBlob, headers: { 'Content-Type': 'application/octet-stream' } }); globalThis.binaryUpload = await uploadResponse.text(); const payload = new Uint8Array([0, 255, 128, 65]); const constructedBlob = new Blob([payload], { type: 'application/octet-stream' }); const constructedFile = new File([payload.buffer], 'payload.bin', { type: 'application/octet-stream' }); globalThis.binaryConstruction = [constructedBlob.size, Array.from(await constructedBlob.bytes()), constructedFile.size, Array.from(await constructedFile.bytes())]; const constructedUpload = await fetch('/constructed-upload', { method: 'POST', body: constructedBlob }); const fileUpload = await fetch('/file-upload', { method: 'POST', body: constructedFile }); globalThis.binaryUploads = [await constructedUpload.text(), await fileUpload.text()]; const form = new FormData(); form.append('name', 'glass'); form.append('payload', binaryBlob, 'payload.bin'); const formUpload = await fetch('/form-upload', { method: 'POST', body: form }); globalThis.formUpload = await formUpload.text(); document.getElementById('result').value = data.value; const controller = new AbortController(); const events = []; controller.signal.addEventListener('abort', () => events.push('listener')); controller.signal.onabort = () => events.push('property'); const request = fetch('/data', { signal: controller.signal, headers: { 'X-Glass-Token': 'alpha' } }); controller.abort(); controller.abort(); request.catch(error => { globalThis.abortValue = [error.name, controller.signal.aborted, controller.signal.reason.name, events]; }); });",
         )
         .await
         .unwrap();
@@ -29243,6 +29243,28 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
                 "content-length=19",
                 "connection=close"
             ],
+        ])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.fetchStream")
+            .await
+            .unwrap(),
+        serde_json::json!([
+            true,
+            true,
+            false,
+            false,
+            [
+                123, 34, 118, 97, 108, 117, 101, 34, 58, 34, 102, 101, 116, 99, 104, 101, 100, 34,
+                125
+            ],
+            true,
+            "TypeError",
+            true,
+            true,
+            true,
+            false,
         ])
     );
     assert_eq!(

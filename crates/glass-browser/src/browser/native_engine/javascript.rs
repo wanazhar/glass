@@ -5676,11 +5676,100 @@ fn document_bootstrap(
     }};
     return Object.freeze(headers);
   }};
+  const readableStreamState = (stream) => {{
+    if (!stream || stream.__glassReadableStream !== true || !stream._state)
+      throw new TypeError("native ReadableStream receiver is invalid");
+    return stream._state;
+  }};
+  const ReadableStreamNative = function(bytes) {{
+    if (!(this instanceof ReadableStreamNative)) throw new TypeError("native ReadableStream requires new");
+    const values = Array.isArray(bytes) ? bytes.slice() : [];
+    if (values.length > storageValueLimit) throw new RangeError("native ReadableStream body limit exceeded");
+    for (const value of values) {{
+      if (!Number.isInteger(value) || value < 0 || value > 255)
+        throw new TypeError("native ReadableStream bytes are invalid");
+    }}
+    Object.defineProperty(this, "__glassReadableStream", {{ value: true }});
+    Object.defineProperty(this, "_state", {{
+      value: {{ bytes: values, offset: 0, locked: false, cancelled: false }},
+    }});
+    Object.freeze(this);
+  }};
+  Object.defineProperty(ReadableStreamNative.prototype, "locked", {{
+    get() {{ return readableStreamState(this).locked; }},
+  }});
+  ReadableStreamNative.prototype.getReader = function(_options) {{
+    const state = readableStreamState(this);
+    if (state.locked) throw new TypeError("native ReadableStream is already locked");
+    state.locked = true;
+    let released = false;
+    let closed = false;
+    let resolveClosed;
+    const closedPromise = new Promise(resolve => {{ resolveClosed = resolve; }});
+    const settleClosed = () => {{
+      if (closed) return;
+      closed = true;
+      resolveClosed();
+    }};
+    const release = () => {{
+      if (released) return;
+      released = true;
+      state.locked = false;
+    }};
+    const reader = {{
+      read() {{
+        if (released) return Promise.reject(new TypeError("native ReadableStream reader is released"));
+        if (state.cancelled || state.offset >= state.bytes.length) {{
+          settleClosed();
+          return Promise.resolve({{ value: undefined, done: true }});
+        }}
+        const value = new Uint8Array(state.bytes.slice(state.offset));
+        state.offset = state.bytes.length;
+        return Promise.resolve({{ value, done: false }});
+      }},
+      cancel() {{
+        if (released) return Promise.reject(new TypeError("native ReadableStream reader is released"));
+        state.cancelled = true;
+        state.offset = state.bytes.length;
+        settleClosed();
+        return Promise.resolve(undefined);
+      }},
+      releaseLock() {{ release(); }},
+      return() {{
+        if (released) return Promise.resolve({{ value: undefined, done: true }});
+        state.cancelled = true;
+        state.offset = state.bytes.length;
+        settleClosed();
+        release();
+        return Promise.resolve({{ value: undefined, done: true }});
+      }},
+      [Symbol.asyncIterator]() {{ return this; }},
+    }};
+    Object.defineProperty(reader, "closed", {{ value: closedPromise }});
+    return Object.freeze(reader);
+  }};
+  ReadableStreamNative.prototype.cancel = function() {{
+    const state = readableStreamState(this);
+    if (state.locked) return Promise.reject(new TypeError("native ReadableStream is locked"));
+    state.cancelled = true;
+    state.offset = state.bytes.length;
+    return Promise.resolve(undefined);
+  }};
+  ReadableStreamNative.prototype[Symbol.asyncIterator] = function() {{
+    const reader = this.getReader();
+    return Object.freeze({{
+      next() {{ return reader.read(); }},
+      return() {{ return reader.return(); }},
+      [Symbol.asyncIterator]() {{ return this; }},
+    }});
+  }};
+  globalThis.ReadableStream = ReadableStreamNative;
+  const responseBodyBytes = (payload) => typeof payload.bodyBase64 === "string"
+    ? decodeBase64(payload.bodyBase64)
+    : blobUtf8Bytes(String(payload.body || ""));
   const responseBodyBlob = (payload) => {{
     const blob = new BlobNative([], {{ type: payload.contentType || "" }});
-    blob._bytes = typeof payload.bodyBase64 === "string"
-      ? decodeBase64(payload.bodyBase64)
-      : blobUtf8Bytes(String(payload.body || ""));
+    blob._bytes = responseBodyBytes(payload);
     blob._text = payload.body === undefined
       ? utf8TextFromBytes(blob._bytes)
       : String(payload.body);
@@ -5699,6 +5788,7 @@ fn document_bootstrap(
       url: filtered ? "" : payload.url,
       redirected: opaqueRedirect ? false : payload.redirected === true,
       headers: filtered ? responseHeaders([], null) : responseHeaders(payload.headers, payload.contentType),
+      body: filtered ? null : new ReadableStreamNative(responseBodyBytes(payload)),
       text() {{ return filtered ? opaqueBody() : Promise.resolve(payload.body); }},
       json() {{ return filtered ? opaqueBody() : Promise.resolve(JSON.parse(payload.body)); }},
       blob() {{ return filtered ? opaqueBody() : Promise.resolve(responseBodyBlob(payload)); }},

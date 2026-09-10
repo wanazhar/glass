@@ -1220,6 +1220,17 @@ impl NativeDocument {
             })
     }
 
+    /// Return the active page target for a raw key event. Browsers deliver
+    /// keyboard events to the focused element and otherwise to the document;
+    /// the native host uses the document root as that no-focus target.
+    pub(crate) fn focused_node(&self) -> NativeNodeId {
+        self.nodes
+            .iter()
+            .find(|node| node.state.focused)
+            .map(NativeNode::id)
+            .unwrap_or(self.root)
+    }
+
     /// Apply the bounded default edit for one key to a focused text control.
     /// Selection, caret movement, composition, and form submission are kept
     /// out of this slice; printable keys append at the current value end.

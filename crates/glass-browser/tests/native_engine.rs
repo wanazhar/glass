@@ -1231,6 +1231,59 @@ async fn native_local_keypress_edits_focused_text_and_honors_keydown_cancel() {
             "last": ["keydown:x:KeyX", "keyup:x"],
         })
     );
+
+    engine
+        .evaluate_async(
+            "(() => { const field = document.getElementById('name'); globalThis.shortcutEvents = []; field.addEventListener('keydown', event => globalThis.shortcutEvents.push([event.key, event.code, event.altKey, event.ctrlKey, event.metaKey, event.shiftKey])); field.addEventListener('keyup', event => globalThis.shortcutEvents.push([event.key, event.code, event.altKey, event.ctrlKey, event.metaKey, event.shiftKey])); globalThis.rawKeyEvents = []; field.addEventListener('keydown', event => globalThis.rawKeyEvents.push('down:' + event.key)); field.addEventListener('keyup', event => globalThis.rawKeyEvents.push('up:' + event.key)); })()",
+        )
+        .await
+        .unwrap();
+    let before_shortcut = engine.revision();
+    let shortcut = engine
+        .action(NativeAction::Shortcut {
+            shortcut: "Ctrl+a".into(),
+        })
+        .unwrap();
+    assert!(shortcut.accepted);
+    assert_eq!(shortcut.revision, before_shortcut + 1);
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({ value: document.getElementById('name').value, events: globalThis.shortcutEvents })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "value": "ab",
+            "events": [
+                ["a", "KeyA", false, true, false, false],
+                ["a", "KeyA", false, true, false, false],
+            ],
+        })
+    );
+
+    let before_keydown = engine.revision();
+    let keydown = engine
+        .action(NativeAction::KeyDown {
+            key: "Enter".into(),
+        })
+        .unwrap();
+    assert!(keydown.accepted);
+    assert_eq!(keydown.revision, before_keydown + 1);
+    let keyup = engine
+        .action(NativeAction::KeyUp {
+            key: "Enter".into(),
+        })
+        .unwrap();
+    assert!(keyup.accepted);
+    assert_eq!(keyup.revision, before_keydown + 2);
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.rawKeyEvents.slice(-2)")
+            .await
+            .unwrap(),
+        serde_json::json!(["down:Enter", "up:Enter"])
+    );
     engine.close_async().await.unwrap();
 }
 
@@ -1961,6 +2014,96 @@ async fn native_content_process_form_data_constructor_collects_text_controls() {
             "unchecked": false,
             "outside": "two",
             "selected": ["x", "Y", "z"],
+        })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_keyboard_actions_preserve_event_and_modifier_contract() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/keyboard"));
+        let body = "<input id='name' type='text' value='ab'>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/keyboard")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            "(() => { const field = document.getElementById('name'); globalThis.contentKeyEvents = []; field.addEventListener('keydown', event => { globalThis.contentKeyEvents.push(['down', event.key, event.code, event.altKey, event.ctrlKey, event.metaKey, event.shiftKey]); if (event.key === 'x') event.preventDefault(); }); field.addEventListener('input', event => globalThis.contentKeyEvents.push(['input', field.value])); field.addEventListener('keyup', event => globalThis.contentKeyEvents.push(['up', event.key, event.code, event.altKey, event.ctrlKey, event.metaKey, event.shiftKey])); })()",
+        )
+        .await
+        .unwrap();
+    engine
+        .action_async(NativeAction::Click {
+            target: "id=name".into(),
+        })
+        .await
+        .unwrap();
+
+    let before_shortcut = engine.revision();
+    let shortcut = engine
+        .action_async(NativeAction::Shortcut {
+            shortcut: "Ctrl+a".into(),
+        })
+        .await
+        .unwrap();
+    assert!(shortcut.accepted);
+    assert_eq!(shortcut.revision, before_shortcut + 1);
+    let canceled = engine
+        .action_async(NativeAction::Shortcut {
+            shortcut: "x".into(),
+        })
+        .await
+        .unwrap();
+    assert!(canceled.accepted);
+    assert_eq!(canceled.revision, before_shortcut + 2);
+    let keydown = engine
+        .action_async(NativeAction::KeyDown {
+            key: "Enter".into(),
+        })
+        .await
+        .unwrap();
+    assert!(keydown.accepted);
+    let keyup = engine
+        .action_async(NativeAction::KeyUp {
+            key: "Enter".into(),
+        })
+        .await
+        .unwrap();
+    assert!(keyup.accepted);
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({ value: document.getElementById('name').value, events: globalThis.contentKeyEvents })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "value": "ab",
+            "events": [
+                ["down", "a", "KeyA", false, true, false, false],
+                ["up", "a", "KeyA", false, true, false, false],
+                ["down", "x", "KeyX", false, false, false, false],
+                ["up", "x", "KeyX", false, false, false, false],
+                ["down", "Enter", "Enter", false, false, false, false],
+                ["up", "Enter", "Enter", false, false, false, false],
+            ],
         })
     );
     engine.close_async().await.unwrap();

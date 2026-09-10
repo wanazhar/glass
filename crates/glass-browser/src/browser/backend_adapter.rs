@@ -441,6 +441,18 @@ async fn execute_action(
             .select_option(target, value)
             .await
             .map_err(|error| translate_error("action", error.as_ref()))?,
+        SemanticAction::KeyDown { key } => session
+            .key_down(key)
+            .await
+            .map_err(|error| translate_error("action", error.as_ref()))?,
+        SemanticAction::KeyUp { key } => session
+            .key_up(key)
+            .await
+            .map_err(|error| translate_error("action", error.as_ref()))?,
+        SemanticAction::Shortcut { shortcut } => session
+            .shortcut(shortcut)
+            .await
+            .map_err(|error| translate_error("action", error.as_ref()))?,
         SemanticAction::KeyPress { key } => session
             .key_press(key)
             .await

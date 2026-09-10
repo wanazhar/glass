@@ -8,16 +8,18 @@ use super::dom::{
     NativePageScriptTiming,
 };
 use super::error::{NativeEngineError, NativeWorkerFailureKind};
-use super::interaction::{MAX_NATIVE_EFFECTS, NativeEventKind, validate_native_edit_key};
+use super::interaction::{
+    MAX_NATIVE_EFFECTS, NativeEventKind, validate_native_edit_key, validate_native_key,
+};
 use super::javascript::{
     MAX_NATIVE_INDEXED_DB_CHANGES, MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_SCRIPT_BYTES,
     MAX_NATIVE_XHR_TIMEOUT_MS, NativeIndexedDbChange, NativeIndexedDbState,
     NativeJavaScriptRuntime, NativePageScript, NativeScriptCommand, NativeScriptEvaluation,
     NativeStorageEvent, NativeWebStorageState, diff_indexed_db_changes, execute_page_scripts,
     host_event_script, host_hash_change_event_script, host_key_event_script,
-    host_submit_event_script, literal_dynamic_module_specifiers, load_indexed_db_profile,
-    load_web_storage_profile, order_page_scripts, save_web_storage_profile,
-    static_module_specifiers, storage_key,
+    host_key_event_script_with_modifiers, host_submit_event_script,
+    literal_dynamic_module_specifiers, load_indexed_db_profile, load_web_storage_profile,
+    order_page_scripts, save_web_storage_profile, static_module_specifiers, storage_key,
 };
 use super::origin::NativeOrigin;
 use super::resource_loader::{
@@ -328,6 +330,49 @@ impl NativeContentProcess {
             id,
             "mutate_key_events",
             json!({"node_index": node_index, "key": key}),
+        )
+        .await
+    }
+
+    pub(crate) async fn mutate_key_event_with_event_bridge(
+        &mut self,
+        node_index: u32,
+        key: String,
+        kind: NativeEventKind,
+        modifiers: i64,
+    ) -> Result<NativeContentMutation, NativeEngineError> {
+        let id = self.next_id();
+        self.mutate_with_request_kind(
+            id,
+            "mutate_key_event",
+            json!({
+                "node_index": node_index,
+                "key": key,
+                "kind": event_kind_text(kind),
+                "modifiers": modifiers,
+            }),
+        )
+        .await
+    }
+
+    pub(crate) async fn mutate_key_shortcut_with_event_bridge(
+        &mut self,
+        node_index: u32,
+        key: String,
+        modifiers: i64,
+        apply_default: bool,
+    ) -> Result<NativeContentMutation, NativeEngineError> {
+        let id = self.next_id();
+        self.mutate_with_request_kind(
+            id,
+            "mutate_key_shortcut",
+            json!({
+                "node_index": node_index,
+                "key": key,
+                "kind": "shortcut",
+                "modifiers": modifiers,
+                "apply_default": apply_default,
+            }),
         )
         .await
     }
@@ -2055,7 +2100,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     Err(error) => content_error_response(id, error),
                 }
             }
-            "mutate_key_events" if protocol_matches(&request) && running => {
+            "mutate_key_events" | "mutate_key_event" | "mutate_key_shortcut"
+                if protocol_matches(&request) && running =>
+            {
                 let Some(current) = document.as_ref() else {
                     let response = content_error_response(
                         id,
@@ -2080,7 +2127,15 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 let key = action.get("key").and_then(Value::as_str).ok_or_else(|| {
                     NativeEngineError::invalid("content-process key", "must be text")
                 })?;
-                if let Err(error) = validate_native_edit_key(key) {
+                let request_kind = request.get("kind").and_then(Value::as_str).unwrap_or("");
+                let action_kind = action.get("kind").and_then(Value::as_str).unwrap_or("");
+                let is_legacy_key_press = request_kind == "mutate_key_events";
+                let key_validation = if is_legacy_key_press {
+                    validate_native_edit_key(key)
+                } else {
+                    validate_native_key(key)
+                };
+                if let Err(error) = key_validation {
                     let response = content_error_response(id, error);
                     write_value_frame(&mut stdout, &response).await?;
                     continue;
@@ -2124,15 +2179,66 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 runtime.set_indexed_db_state(
                     indexed_db_state.origin(&storage_key(document_url, document_origin)),
                 );
-                match mutate_key_with_event_bridge(
-                    current,
-                    runtime,
-                    document_url,
-                    document_origin,
-                    viewport,
-                    node_index,
-                    key,
-                ) {
+                let modifiers = action.get("modifiers").and_then(Value::as_i64).unwrap_or(0);
+                if !(0..=15).contains(&modifiers) {
+                    let response = content_error_response(
+                        id,
+                        NativeEngineError::invalid(
+                            "content-process key modifiers",
+                            "must be an integer mask from 0 through 15",
+                        ),
+                    );
+                    write_value_frame(&mut stdout, &response).await?;
+                    continue;
+                }
+                let result = match (request_kind, action_kind) {
+                    ("mutate_key_event", "keydown" | "keyup") => {
+                        let kind = if action_kind == "keydown" {
+                            NativeEventKind::KeyDown
+                        } else {
+                            NativeEventKind::KeyUp
+                        };
+                        mutate_key_event_with_event_bridge(
+                            current,
+                            runtime,
+                            document_url,
+                            document_origin,
+                            viewport,
+                            node_index,
+                            key,
+                            kind,
+                            modifiers,
+                        )
+                    }
+                    ("mutate_key_shortcut", "shortcut") => mutate_key_shortcut_with_event_bridge(
+                        current,
+                        runtime,
+                        document_url,
+                        document_origin,
+                        viewport,
+                        node_index,
+                        key,
+                        modifiers,
+                        action
+                            .get("apply_default")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
+                    ),
+                    ("mutate_key_events", "") => mutate_key_with_event_bridge(
+                        current,
+                        runtime,
+                        document_url,
+                        document_origin,
+                        viewport,
+                        node_index,
+                        key,
+                    ),
+                    _ => Err(NativeEngineError::invalid(
+                        "content-process key action",
+                        "request kind must match keydown, keyup, or shortcut action",
+                    )),
+                };
+                match result {
                     Ok((next, mutation)) => {
                         document = Some(next);
                         json!({
@@ -3345,6 +3451,179 @@ fn mutate_key_with_event_bridge(
         indexed_db_changes: Vec::new(),
     };
     Ok((next, mutation))
+}
+
+fn mutate_key_event_with_event_bridge(
+    current: &NativeDocument,
+    runtime: &NativeJavaScriptRuntime,
+    document_url: &str,
+    document_origin: &NativeOrigin,
+    viewport: Viewport,
+    node_index: u32,
+    key: &str,
+    kind: NativeEventKind,
+    modifiers: i64,
+) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
+    validate_native_key(key)?;
+    if !matches!(kind, NativeEventKind::KeyDown | NativeEventKind::KeyUp) {
+        return Err(NativeEngineError::invalid(
+            "content-process key event",
+            "kind must be keydown or keyup",
+        ));
+    }
+    let node_id = NativeNodeId::from_parts(current.generation(), node_index);
+    if current.focused_node() != node_id {
+        return Err(NativeEngineError::TargetNotActionable {
+            reason: "key event target is not the focused page target".into(),
+        });
+    }
+    let mut next = current.clone();
+    let source = host_key_event_script_with_modifiers(node_index, kind, key, modifiers)?
+        .ok_or_else(|| NativeEngineError::Worker {
+            operation: "content process key event bridge".into(),
+            reason: "native key event source was empty".into(),
+        })?;
+    let evaluation = runtime.evaluate(&source, &next, document_url, document_origin, viewport)?;
+    let mut events = vec![(node_id, kind)];
+    events.extend(next.apply_script_commands(&evaluation.commands)?);
+    if events.len() > MAX_NATIVE_EFFECTS {
+        return Err(NativeEngineError::limit(
+            "content-process key event effects",
+            MAX_NATIVE_EFFECTS,
+            events.len(),
+        ));
+    }
+    Ok((
+        next.clone(),
+        NativeContentMutation {
+            document: next.to_content_wire(),
+            events: events
+                .into_iter()
+                .map(|(node, kind)| NativeContentEvent {
+                    node_index: node.index(),
+                    kind,
+                })
+                .collect(),
+            navigation: None,
+            allowed: true,
+            storage_events: Vec::new(),
+            indexed_db_changes: Vec::new(),
+        },
+    ))
+}
+
+fn mutate_key_shortcut_with_event_bridge(
+    current: &NativeDocument,
+    runtime: &NativeJavaScriptRuntime,
+    document_url: &str,
+    document_origin: &NativeOrigin,
+    viewport: Viewport,
+    node_index: u32,
+    key: &str,
+    modifiers: i64,
+    apply_default: bool,
+) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
+    validate_native_key(key)?;
+    if !(0..=15).contains(&modifiers) {
+        return Err(NativeEngineError::invalid(
+            "content-process shortcut modifiers",
+            "must be an integer mask from 0 through 15",
+        ));
+    }
+    if apply_default && !should_apply_native_key_default(key, modifiers) {
+        return Err(NativeEngineError::invalid(
+            "content-process shortcut default",
+            "default editing is only valid for an unmodified printable, Backspace, or Delete key",
+        ));
+    }
+    let node_id = NativeNodeId::from_parts(current.generation(), node_index);
+    if current.focused_node() != node_id {
+        return Err(NativeEngineError::TargetNotActionable {
+            reason: "shortcut target is not the focused page target".into(),
+        });
+    }
+    let mut next = current.clone();
+    let keydown_source =
+        host_key_event_script_with_modifiers(node_index, NativeEventKind::KeyDown, key, modifiers)?
+            .ok_or_else(|| NativeEngineError::Worker {
+                operation: "content process shortcut event bridge".into(),
+                reason: "native shortcut keydown source was empty".into(),
+            })?;
+    let keydown = runtime.evaluate(
+        &keydown_source,
+        &next,
+        document_url,
+        document_origin,
+        viewport,
+    )?;
+    let keydown_allowed = keydown
+        .value
+        .as_array()
+        .and_then(|values| values.first())
+        .and_then(serde_json::Value::as_bool)
+        .ok_or_else(|| NativeEngineError::Worker {
+            operation: "content process shortcut keydown".into(),
+            reason: "native shortcut keydown result was invalid".into(),
+        })?;
+    let mut events = vec![(node_id, NativeEventKind::KeyDown)];
+    events.extend(next.apply_script_commands(&keydown.commands)?);
+    if keydown_allowed && apply_default && next.focused_node() == node_id {
+        let input_events = next.apply_key_press(node_id, key)?;
+        events.extend(input_events.clone());
+        for (event_node, event_kind) in input_events {
+            let source = host_event_script(&[(event_node.index(), event_kind)])?;
+            let Some(source) = source else {
+                continue;
+            };
+            let evaluation =
+                runtime.evaluate(&source, &next, document_url, document_origin, viewport)?;
+            events.extend(next.apply_script_commands(&evaluation.commands)?);
+        }
+    }
+    let keyup_source =
+        host_key_event_script_with_modifiers(node_index, NativeEventKind::KeyUp, key, modifiers)?
+            .ok_or_else(|| NativeEngineError::Worker {
+            operation: "content process shortcut event bridge".into(),
+            reason: "native shortcut keyup source was empty".into(),
+        })?;
+    let keyup = runtime.evaluate(
+        &keyup_source,
+        &next,
+        document_url,
+        document_origin,
+        viewport,
+    )?;
+    events.push((node_id, NativeEventKind::KeyUp));
+    events.extend(next.apply_script_commands(&keyup.commands)?);
+    if events.len() > MAX_NATIVE_EFFECTS {
+        return Err(NativeEngineError::limit(
+            "content-process shortcut effects",
+            MAX_NATIVE_EFFECTS,
+            events.len(),
+        ));
+    }
+    Ok((
+        next.clone(),
+        NativeContentMutation {
+            document: next.to_content_wire(),
+            events: events
+                .into_iter()
+                .map(|(node, kind)| NativeContentEvent {
+                    node_index: node.index(),
+                    kind,
+                })
+                .collect(),
+            navigation: None,
+            allowed: true,
+            storage_events: Vec::new(),
+            indexed_db_changes: Vec::new(),
+        },
+    ))
+}
+
+fn should_apply_native_key_default(key: &str, modifiers: i64) -> bool {
+    modifiers & (1 | 2 | 4) == 0
+        && (key.chars().count() == 1 || matches!(key, "Backspace" | "Delete"))
 }
 
 fn split_location_navigation(

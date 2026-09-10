@@ -1789,6 +1789,18 @@ pub enum SemanticAction {
         #[serde(deserialize_with = "deserialize_bounded_string")]
         value: String,
     },
+    KeyDown {
+        #[serde(deserialize_with = "deserialize_bounded_string")]
+        key: String,
+    },
+    KeyUp {
+        #[serde(deserialize_with = "deserialize_bounded_string")]
+        key: String,
+    },
+    Shortcut {
+        #[serde(deserialize_with = "deserialize_bounded_string")]
+        shortcut: String,
+    },
     KeyPress {
         #[serde(deserialize_with = "deserialize_bounded_string")]
         key: String,
@@ -2002,7 +2014,12 @@ impl BackendContract for SemanticAction {
                 validate_text("action target", target, MAX_TEXT_BYTES)?;
                 validate_text("select value", value, MAX_TEXT_BYTES)
             }
-            Self::KeyPress { key } => validate_text("key", key, MAX_LIMITATION_BYTES),
+            Self::KeyDown { key } | Self::KeyUp { key } | Self::KeyPress { key } => {
+                validate_text("key", key, MAX_LIMITATION_BYTES)
+            }
+            Self::Shortcut { shortcut } => {
+                validate_text("shortcut", shortcut, MAX_LIMITATION_BYTES)
+            }
             Self::Scroll { .. } => Ok(()),
         }
     }

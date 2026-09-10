@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-128` locally. The versioned
+`native-engine-browser-129` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1168,6 +1168,17 @@ native one-shot CLI exposes the four commands, and Firefox/Safari/proof reject
 the new actions explicitly. Full form semantics, rich observation, automatic
 native selection, and production replacement of CDP remain open; native is
 still explicit-only at this checkpoint.
+
+The completed bounded native keyboard-action batch is
+[native-engine-browser-129](tasks/native-engine-browser-129.md). The stable
+semantic action contract now carries key-down, key-up, and modifier-aware
+shortcut intents. Native local and HTTP(S) content-process documents dispatch
+the same bounded DOM key events, expose key/code/modifier fields, honor
+cancellation before default text editing, and publish one revision per action.
+Chromium maps the new intents to its existing keyboard methods; other partial
+adapters reject them explicitly. Selection/caret state, IME/composition,
+repeat, text services, rich observation, automatic native selection, and
+production replacement of CDP remain issue #40 gates.
 
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and

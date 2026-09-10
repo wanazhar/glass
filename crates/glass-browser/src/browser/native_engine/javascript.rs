@@ -5312,6 +5312,129 @@ fn document_bootstrap(
     return this._entries.map(entry => encode(entry[0]) + "=" + encode(entry[1])).join("&");
   }};
   globalThis.URLSearchParams = URLSearchParamsNative;
+  const nativeUrlScheme = /^[A-Za-z][A-Za-z0-9+.-]*:/;
+  const nativeUrlNormalizePath = (path) => {{
+    const source = String(path || "/");
+    const trailing = source.endsWith("/");
+    const segments = [];
+    for (const segment of source.split("/")) {{
+      if (!segment || segment === ".") continue;
+      if (segment === "..") {{
+        if (segments.length > 0) segments.pop();
+        continue;
+      }}
+      segments.push(segment);
+    }}
+    let normalized = "/" + segments.join("/");
+    if (trailing && normalized !== "/") normalized += "/";
+    return normalized;
+  }};
+  const nativeUrlParts = (input) => {{
+    const source = String(input);
+    const hashIndex = source.indexOf("#");
+    const hash = hashIndex < 0 ? "" : source.slice(hashIndex);
+    const withoutHash = hashIndex < 0 ? source : source.slice(0, hashIndex);
+    const queryIndex = withoutHash.indexOf("?");
+    const search = queryIndex < 0 ? "" : withoutHash.slice(queryIndex);
+    const main = queryIndex < 0 ? withoutHash : withoutHash.slice(0, queryIndex);
+    const match = main.match(/^([A-Za-z][A-Za-z0-9+.-]*:)(.*)$/);
+    if (!match) throw new TypeError("native URL requires an absolute or resolvable URL");
+    const protocol = match[1].toLowerCase();
+    let rest = match[2];
+    let authority = "";
+    let pathname = "";
+    if (rest.startsWith("//")) {{
+      rest = rest.slice(2);
+      const slash = rest.indexOf("/");
+      if (slash < 0) {{
+        authority = rest;
+        pathname = "/";
+      }} else {{
+        authority = rest.slice(0, slash);
+        pathname = rest.slice(slash) || "/";
+      }}
+    }} else pathname = rest || ((protocol === "http:" || protocol === "https:") ? "/" : "");
+    const at = authority.lastIndexOf("@");
+    const hostPort = at < 0 ? authority : authority.slice(at + 1);
+    let hostname = hostPort;
+    let port = "";
+    if (hostname.startsWith("[")) {{
+      const closing = hostname.indexOf("]");
+      if (closing >= 0) {{
+        const suffix = hostname.slice(closing + 1);
+        hostname = hostname.slice(0, closing + 1);
+        if (suffix.startsWith(":")) port = suffix.slice(1);
+      }}
+    }} else {{
+      const colon = hostname.lastIndexOf(":");
+      if (colon >= 0 && /^[0-9]*$/.test(hostname.slice(colon + 1))) {{
+        port = hostname.slice(colon + 1);
+        hostname = hostname.slice(0, colon);
+      }}
+    }}
+    hostname = hostname.toLowerCase();
+    const origin = protocol === "http:" || protocol === "https:"
+      ? protocol + "//" + hostPort.toLowerCase()
+      : "null";
+    const prefix = authority ? protocol + "//" + authority : protocol;
+    const href = prefix + pathname + search + hash;
+    return {{
+      href,
+      protocol,
+      origin,
+      authority,
+      host: hostPort,
+      hostname,
+      port,
+      pathname,
+      search,
+      hash,
+    }};
+  }};
+  const nativeUrlResolve = (input, base) => {{
+    const value = String(input);
+    if (nativeUrlScheme.test(value)) return value;
+    if (base === undefined || base === null) throw new TypeError("native relative URL requires a base");
+    const baseHref = base && base.__glassUrl === true ? base.href : String(base);
+    const baseParts = nativeUrlParts(baseHref);
+    if (value.startsWith("//")) return baseParts.protocol + value;
+    const hashIndex = value.indexOf("#");
+    const hash = hashIndex < 0 ? "" : value.slice(hashIndex);
+    const withoutHash = hashIndex < 0 ? value : value.slice(0, hashIndex);
+    const queryIndex = withoutHash.indexOf("?");
+    const search = queryIndex < 0 ? "" : withoutHash.slice(queryIndex);
+    const path = queryIndex < 0 ? withoutHash : withoutHash.slice(0, queryIndex);
+    const baseWithoutHash = baseParts.href.slice(0, baseParts.href.indexOf("#") < 0 ? baseParts.href.length : baseParts.href.indexOf("#"));
+    if (!path && !search && hash) return baseWithoutHash + hash;
+    if (!path && search) {{
+      const baseQuery = baseWithoutHash.indexOf("?");
+      return (baseQuery < 0 ? baseWithoutHash : baseWithoutHash.slice(0, baseQuery)) + search + hash;
+    }}
+    if (!path && !search && !hash) return baseWithoutHash;
+    const baseDirectory = baseParts.pathname.slice(0, baseParts.pathname.lastIndexOf("/") + 1);
+    const resolvedPath = path.startsWith("/") ? path : baseDirectory + path;
+    return baseParts.protocol + "//" + baseParts.authority + nativeUrlNormalizePath(resolvedPath) + search + hash;
+  }};
+  const URLNative = function(input, base) {{
+    const parts = nativeUrlParts(nativeUrlResolve(input && input.__glassUrl === true ? input.href : input, base));
+    Object.defineProperty(this, "__glassUrl", {{ value: true }});
+    this.href = parts.href;
+    this.origin = parts.origin;
+    this.protocol = parts.protocol;
+    this.username = "";
+    this.password = "";
+    this.host = parts.host;
+    this.hostname = parts.hostname;
+    this.port = parts.port;
+    this.pathname = parts.pathname;
+    this.search = parts.search;
+    this.hash = parts.hash;
+    this.searchParams = new URLSearchParamsNative(parts.search);
+    Object.freeze(this);
+  }};
+  URLNative.prototype.toString = function() {{ return this.href; }};
+  URLNative.prototype.toJSON = function() {{ return this.href; }};
+  globalThis.URL = URLNative;
   const requestHeaderNameNative = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
   const forbiddenRequestHeaderNative = (name) => [
     "accept-charset", "accept-encoding", "access-control-request-headers",
@@ -5411,7 +5534,8 @@ fn document_bootstrap(
   globalThis.Headers = HeadersNative;
   const RequestNative = function(input, init) {{
     const source = input && input.__glassRequest === true ? input : null;
-    const href = source ? source.url : input;
+    const sourceUrl = input && input.__glassUrl === true ? input : null;
+    const href = source ? source.url : sourceUrl ? sourceUrl.href : input;
     if (typeof href !== "string") throw new TypeError("native Request URL must be a string");
     const overrides = init && typeof init === "object" ? init : {{}};
     const settings = Object.assign({{}}, source ? source._settings : {{}}, overrides);
@@ -5555,8 +5679,9 @@ fn document_bootstrap(
   }};
   const fetchNative = (input, options) => {{
     const sourceRequest = input && input.__glassRequest === true ? input : null;
-    if (typeof input !== "string" && !sourceRequest) throw new TypeError("native fetch requires a URL string or Request");
-    const href = sourceRequest ? sourceRequest.url : input;
+    const sourceUrl = input && input.__glassUrl === true ? input : null;
+    if (typeof input !== "string" && !sourceRequest && !sourceUrl) throw new TypeError("native fetch requires a URL string, URL, or Request");
+    const href = sourceRequest ? sourceRequest.url : sourceUrl ? sourceUrl.href : input;
     const settings = Object.assign(
       {{}},
       sourceRequest ? sourceRequest._settings : {{}},

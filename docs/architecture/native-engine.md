@@ -1160,6 +1160,14 @@ transport and security owners. Full Request body streams, disturbance rules,
 URL/cache/referrer/integrity fields, duplex, and complete Request/Headers Web
 IDL parity remain open.
 
+The completed native-engine-browser-119 batch adds bounded `URL` objects for
+HTTP(S)-focused relative resolution, component inspection, and snapshot
+`searchParams`. URL objects are accepted by bounded Request and Fetch input,
+while Rust/content-worker URL and origin policy remains authoritative at the
+transport boundary. URL setters, full percent-encoding/IDNA/IPv6/default-port
+parity, live search-parameter synchronization, non-HTTP scheme parity, and
+complete URL/Web IDL identity remain open.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature

@@ -2669,6 +2669,13 @@ while `forEach()` and multipart serialization retain the existing ordered text
 and Blob/File entry owner. Live mutation during iteration, exotic iterables, and
 complete FormData/Web IDL parity remain open.
 
+The completed bounded URLSearchParams-iterable follow-up is
+[native-engine-browser-108](../tasks/native-engine-browser-108.md). The
+constructor now accepts bounded Map, Set, and other pair-iterable inputs as
+two-value sequences while retaining insertion order and the existing mutation,
+sorting, encoding, and snapshot-iterator owners. Live iterator mutation/
+identity and complete URLSearchParams Web IDL parity remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

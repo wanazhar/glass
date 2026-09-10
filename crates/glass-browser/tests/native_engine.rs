@@ -31184,7 +31184,9 @@ async fn native_content_process_fetches_bounded_url_search_params() {
                 api.sort();
                 const visited = [];
                 api.forEach((value, name) => visited.push(name + '=' + value));
-                globalThis.paramsApi = { size: api.size, entries: Array.from(api.entries()), keys: Array.from(api.keys()), values: Array.from(api.values()), visited, record: new URLSearchParams({ b: 'two', a: 'one' }).toString() };
+                const mapIterable = new URLSearchParams(new Map([['b', 'two'], ['a', 'one']]));
+                const setIterable = new URLSearchParams(new Set([['x', 'one'], ['y', 'two']]));
+                globalThis.paramsApi = { size: api.size, entries: Array.from(api.entries()), keys: Array.from(api.keys()), values: Array.from(api.values()), visited, record: new URLSearchParams({ b: 'two', a: 'one' }).toString(), mapIterable: mapIterable.toString(), setIterable: setIterable.toString() };
                 fetch('/params', { method: 'POST', body: params })
                     .then(response => response.text())
                     .then(text => { globalThis.paramsResponse = text; });
@@ -31208,6 +31210,8 @@ async fn native_content_process_fetches_bounded_url_search_params() {
             "values": ["first", "second", "last"],
             "visited": ["a=first", "a=second", "z=last"],
             "record": "b=two&a=one",
+            "mapIterable": "b=two&a=one",
+            "setIterable": "x=one&y=two",
         })
     );
     engine.close_async().await.unwrap();

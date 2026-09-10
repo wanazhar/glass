@@ -967,6 +967,13 @@ retaining the existing boundary, filename, MIME, and text-field contracts;
 streaming FormData, upload progress, iterator identity, and full FormData/Blob
 Web IDL parity remain open.
 
+The completed bounded Fetch `Headers` init/mutation slice is
+[native-engine-browser-103](tasks/native-engine-browser-103.md). Native Fetch
+now accepts bounded `Headers` records, pair sequences, and native `Headers`
+instances with case-insensitive append/set/delete/get/iteration behavior;
+response headers remain read-only snapshots, and full Headers Web IDL identity
+and exotic iterable parity remain open.
+
 Full cookie policy/Web IDL parity and the remaining browser-complete gates
 remain open.
 

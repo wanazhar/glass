@@ -28515,6 +28515,7 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
     let server = tokio::spawn(async move {
         for expected_path in [
             "/page",
+            "/headers",
             "/data",
             "/binary",
             "/upload",
@@ -28531,6 +28532,13 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
                 assert!(request.lines().any(|line| {
                     line.split_once(':').is_some_and(|(name, value)| {
                         name.eq_ignore_ascii_case("x-glass-token") && value.trim() == "alpha"
+                    })
+                }));
+            }
+            if expected_path == "/headers" {
+                assert!(request.lines().any(|line| {
+                    line.split_once(':').is_some_and(|(name, value)| {
+                        name.eq_ignore_ascii_case("x-glass-token") && value.trim() == "alpha, beta"
                     })
                 }));
             }
@@ -28591,6 +28599,8 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
             }
             let (content_type, body) = if expected_path == "/page" {
                 ("text/html", "<input id='result' value='pending'>")
+            } else if expected_path == "/headers" {
+                ("text/plain", "headers-ok")
             } else if expected_path.ends_with("upload") {
                 ("text/plain", "uploaded")
             } else {
@@ -28614,6 +28624,33 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
     )
     .unwrap();
     engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            "(() => { const headers = new Headers([['X-Glass-Token', 'alpha']]); headers.append('x-glass-token', 'beta'); headers.set('X-Glass-Extra', 'gamma'); headers.delete('x-glass-extra'); globalThis.requestHeaderView = [headers.get('x-glass-token'), headers.has('X-Glass-Token'), Array.from(headers.entries()), Array.from(headers.keys()), Array.from(headers.values()), headers.size]; fetch('/headers', { headers }).then(response => response.text()).then(value => { globalThis.headerFetch = value; }); })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.requestHeaderView")
+            .await
+            .unwrap(),
+        serde_json::json!([
+            "alpha, beta",
+            true,
+            [["x-glass-token", "alpha, beta"]],
+            ["x-glass-token"],
+            ["alpha, beta"],
+            1
+        ])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.headerFetch")
+            .await
+            .unwrap(),
+        serde_json::json!("headers-ok")
+    );
     engine
         .evaluate_async(
             "fetch('/data', { headers: { 'X-Glass-Token': 'alpha' } }).then(response => { const headerEvents = []; response.headers.forEach((value, name) => headerEvents.push(name + '=' + value)); globalThis.fetchHeaders = [response.headers.get('CONTENT-TYPE'), response.headers.has('content-type'), Array.from(response.headers.entries()), Array.from(response.headers.keys()), Array.from(response.headers.values()), Array.from(response.headers), headerEvents]; return Promise.all([response.json(), response.text(), response.blob(), response.arrayBuffer(), response.bytes()]); }).then(async ([data, text, blob, buffer, bytes]) => { globalThis.fetchValue = data.value; globalThis.fetchBody = [text, blob instanceof Blob, buffer instanceof ArrayBuffer && Array.from(new Uint8Array(buffer)), Array.from(bytes), await blob.text()]; const binaryResponse = await fetch('/binary'); const binaryBuffer = await binaryResponse.arrayBuffer(); const binaryBytes = await binaryResponse.bytes(); const binaryBlob = await binaryResponse.blob(); globalThis.binaryFetchBody = [Array.from(new Uint8Array(binaryBuffer)), Array.from(binaryBytes), binaryBlob.size, Array.from(await binaryBlob.slice(1, 3).bytes()), await binaryBlob.text()]; const uploadResponse = await fetch('/upload', { method: 'POST', body: binaryBlob, headers: { 'Content-Type': 'application/octet-stream' } }); globalThis.binaryUpload = await uploadResponse.text(); const payload = new Uint8Array([0, 255, 128, 65]); const constructedBlob = new Blob([payload], { type: 'application/octet-stream' }); const constructedFile = new File([payload.buffer], 'payload.bin', { type: 'application/octet-stream' }); globalThis.binaryConstruction = [constructedBlob.size, Array.from(await constructedBlob.bytes()), constructedFile.size, Array.from(await constructedFile.bytes())]; const constructedUpload = await fetch('/constructed-upload', { method: 'POST', body: constructedBlob }); const fileUpload = await fetch('/file-upload', { method: 'POST', body: constructedFile }); globalThis.binaryUploads = [await constructedUpload.text(), await fileUpload.text()]; const form = new FormData(); form.append('name', 'glass'); form.append('payload', binaryBlob, 'payload.bin'); const formUpload = await fetch('/form-upload', { method: 'POST', body: form }); globalThis.formUpload = await formUpload.text(); document.getElementById('result').value = data.value; const controller = new AbortController(); const events = []; controller.signal.addEventListener('abort', () => events.push('listener')); controller.signal.onabort = () => events.push('property'); const request = fetch('/data', { signal: controller.signal, headers: { 'X-Glass-Token': 'alpha' } }); controller.abort(); controller.abort(); request.catch(error => { globalThis.abortValue = [error.name, controller.signal.aborted, controller.signal.reason.name, events]; }); });",

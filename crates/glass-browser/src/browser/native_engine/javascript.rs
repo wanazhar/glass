@@ -5264,6 +5264,90 @@ fn document_bootstrap(
     return this._entries.map(entry => encode(entry[0]) + "=" + encode(entry[1])).join("&");
   }};
   globalThis.URLSearchParams = URLSearchParamsNative;
+  const requestHeaderNameNative = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+  const forbiddenRequestHeaderNative = (name) => [
+    "accept-charset", "accept-encoding", "access-control-request-headers",
+    "access-control-request-method", "connection", "content-length",
+    "cookie", "cookie2", "date", "dnt", "expect", "host", "keep-alive",
+    "origin", "referer", "te", "trailer", "transfer-encoding", "upgrade",
+    "user-agent", "via",
+  ].includes(name) || name.startsWith("proxy-") || name.startsWith("sec-");
+  const validateNativeRequestHeader = (name, value) => {{
+    const normalizedName = String(name).toLowerCase();
+    if (!requestHeaderNameNative.test(String(name)) || normalizedName.length > {fetch_header_name_limit}) throw new TypeError("native Headers name is invalid");
+    if (forbiddenRequestHeaderNative(normalizedName)) throw new TypeError("native Headers name is forbidden");
+    const normalizedValue = String(value);
+    if (normalizedValue.length > {fetch_header_value_limit} || /[\u0000-\u001f\u007f]/.test(normalizedValue)) throw new TypeError("native Headers value is invalid");
+    return [normalizedName, normalizedValue];
+  }};
+  const validateNativeHeaderEntries = (entries) => {{
+    if (entries.length > {fetch_header_count_limit}) throw new RangeError("native Headers limit exceeded");
+    let totalBytes = 0;
+    for (const entry of entries) {{
+      totalBytes += entry[0].length + entry[1].length;
+      if (totalBytes > {fetch_header_bytes_limit}) throw new RangeError("native Headers exceed their limit");
+    }}
+  }};
+  const HeadersNative = function(init) {{
+    this.__glassHeaders = true;
+    this._entries = [];
+    if (init === undefined || init === null) return;
+    if (init.__glassHeaders === true) {{
+      init._entries.forEach(entry => this.append(entry[0], entry[1]));
+      return;
+    }}
+    if (Array.isArray(init)) {{
+      for (const entry of init) {{
+        if (!Array.isArray(entry) || entry.length !== 2) throw new TypeError("native Headers pairs must contain two values");
+        this.append(entry[0], entry[1]);
+      }}
+      return;
+    }}
+    if (typeof init !== "object") throw new TypeError("native Headers accepts records, pairs, or Headers");
+    for (const name of Object.keys(init)) this.append(name, init[name]);
+  }};
+  HeadersNative.prototype.append = function(name, value) {{
+    const normalized = validateNativeRequestHeader(name, value);
+    const existing = this._entries.find(entry => entry[0] === normalized[0]);
+    const nextValue = existing ? existing[1] + ", " + normalized[1] : normalized[1];
+    const nextEntries = existing
+      ? this._entries.map(entry => entry[0] === normalized[0] ? [entry[0], nextValue] : entry)
+      : this._entries.concat([[normalized[0], normalized[1]]]);
+    validateNativeHeaderEntries(nextEntries);
+    this._entries = nextEntries;
+  }};
+  HeadersNative.prototype.set = function(name, value) {{
+    const normalized = validateNativeRequestHeader(name, value);
+    const nextEntries = this._entries.filter(entry => entry[0] !== normalized[0]);
+    nextEntries.push(normalized);
+    validateNativeHeaderEntries(nextEntries);
+    this._entries = nextEntries;
+  }};
+  HeadersNative.prototype.delete = function(name) {{
+    const normalizedName = validateNativeRequestHeader(name, "")[0];
+    this._entries = this._entries.filter(entry => entry[0] !== normalizedName);
+  }};
+  HeadersNative.prototype.get = function(name) {{
+    const normalizedName = validateNativeRequestHeader(name, "")[0];
+    const entry = this._entries.find(candidate => candidate[0] === normalizedName);
+    return entry ? entry[1] : null;
+  }};
+  HeadersNative.prototype.has = function(name) {{
+    return this.get(name) !== null;
+  }};
+  const nativeHeaderIterator = entries => entries.map(entry => [entry[0], entry[1]])[Symbol.iterator]();
+  HeadersNative.prototype.entries = function() {{ return nativeHeaderIterator(this._entries); }};
+  HeadersNative.prototype.keys = function() {{ return this._entries.map(entry => entry[0])[Symbol.iterator](); }};
+  HeadersNative.prototype.values = function() {{ return this._entries.map(entry => entry[1])[Symbol.iterator](); }};
+  HeadersNative.prototype.forEach = function(callback, thisArg) {{
+    if (typeof callback !== "function") throw new TypeError("native Headers callback must be callable");
+    this._entries.slice().forEach(entry => callback.call(thisArg, entry[1], entry[0], this));
+  }};
+  Object.defineProperty(HeadersNative.prototype, "size", {{
+    get() {{ return this._entries.length; }},
+  }});
+  HeadersNative.prototype[Symbol.iterator] = HeadersNative.prototype.entries;
+  globalThis.Headers = HeadersNative;
   const nativeAbortError = () => {{
     const error = new Error("The operation was aborted");
     error.name = "AbortError";
@@ -5344,6 +5428,11 @@ fn document_bootstrap(
     const normalizeRequestHeaders = (input) => {{
       if (input === undefined || input === null) return {{}};
       if (typeof input !== "object") throw new TypeError("native fetch headers must be an object");
+      if (input.__glassHeaders === true) {{
+        const record = {{}};
+        input._entries.forEach(entry => {{ record[entry[0]] = entry[1]; }});
+        input = record;
+      }}
       const normalized = {{}};
       let count = 0;
       let totalBytes = 0;

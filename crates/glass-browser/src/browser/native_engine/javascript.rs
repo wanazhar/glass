@@ -5789,6 +5789,7 @@ fn document_bootstrap(
       redirected: opaqueRedirect ? false : payload.redirected === true,
       headers: filtered ? responseHeaders([], null) : responseHeaders(payload.headers, payload.contentType),
       body: filtered ? null : new ReadableStreamNative(responseBodyBytes(payload)),
+      clone() {{ return responseFromFetch(payload); }},
       text() {{ return filtered ? opaqueBody() : Promise.resolve(payload.body); }},
       json() {{ return filtered ? opaqueBody() : Promise.resolve(JSON.parse(payload.body)); }},
       blob() {{ return filtered ? opaqueBody() : Promise.resolve(responseBodyBlob(payload)); }},

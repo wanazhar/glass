@@ -3371,6 +3371,12 @@ async fn call_native_tool(
 ) -> BrowserResult<Value> {
     let session = ensure_native_session(native_session, viewport).await?;
     match invocation {
+        ToolInvocation::InspectPage => {
+            serialized_result_mode(&session.native_inspect_page().await?, response_mode)
+        }
+        ToolInvocation::FindTarget { request } => {
+            serialized_result_mode(&session.native_find_target(&request).await?, response_mode)
+        }
         ToolInvocation::Navigate {
             url,
             timeout_ms,
@@ -5909,6 +5915,51 @@ mod tests {
         assert_eq!(preflight["node"]["role"], "button");
         assert!(preflight["geometry"]["width"].as_u64().unwrap_or(0) > 0);
         assert!(session.is_none());
+
+        let inspection = invoke_native_mcp_tool(
+            "inspectPage",
+            json!({}),
+            &mut session,
+            &mut native_session,
+            &options,
+            &policy,
+        )
+        .await;
+        assert!(inspection.error.is_none());
+        let inspection: Value = serde_json::from_str(
+            inspection.result.unwrap()["content"][0]["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(inspection["page"]["title"], "MCP");
+        assert_eq!(inspection["regions"][0]["targets"][0]["role"], "button");
+
+        let find_target = invoke_native_mcp_tool(
+            "findTarget",
+            json!({
+                "schemaVersion": 1,
+                "intent": "save",
+                "action": "click",
+                "constraints": {"role": "button", "name": "Save"},
+                "resolutionPolicy": "requireExact",
+                "expectedRevision": preflight["revision"]
+            }),
+            &mut session,
+            &mut native_session,
+            &options,
+            &policy,
+        )
+        .await;
+        assert!(find_target.error.is_none());
+        let find_target: Value = serde_json::from_str(
+            find_target.result.unwrap()["content"][0]["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(find_target["ambiguity"], "none");
+        assert_eq!(find_target["candidates"][0]["name"], "Save");
 
         let text = invoke_native_mcp_tool(
             "getText",

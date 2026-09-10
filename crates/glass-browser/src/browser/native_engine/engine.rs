@@ -165,6 +165,16 @@ pub struct NativeTargetPreflight {
     pub likely_form_submit: bool,
 }
 
+/// One atomic native inspection snapshot used by higher-level semantic
+/// discovery surfaces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeInspectionSnapshot {
+    pub context_id: String,
+    pub snapshot: NativeEngineSnapshot,
+    pub nodes: Vec<super::dom::NativeSemanticNode>,
+    pub layout: NativeLayoutSnapshot,
+}
+
 /// Single-owner native browser kernel.
 pub struct NativeEngine {
     config: NativeEngineConfig,
@@ -956,6 +966,18 @@ impl NativeEngine {
     pub fn semantic_nodes(&self) -> Result<Vec<super::dom::NativeSemanticNode>, NativeEngineError> {
         self.require_running("semantic DOM")?;
         Ok(self.document.semantic_nodes())
+    }
+
+    /// Capture the current native page, semantic nodes, and layout under one
+    /// revision so agent-facing discovery cannot combine different states.
+    pub fn inspection_snapshot(&self) -> Result<NativeInspectionSnapshot, NativeEngineError> {
+        self.require_running("semantic inspection")?;
+        Ok(NativeInspectionSnapshot {
+            context_id: self.config.context_id.clone(),
+            snapshot: self.snapshot()?,
+            nodes: self.document.semantic_nodes(),
+            layout: self.layout()?,
+        })
     }
 
     /// Resolve one target and report actionability without scrolling, focus,

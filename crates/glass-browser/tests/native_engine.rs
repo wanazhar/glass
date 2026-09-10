@@ -7,9 +7,13 @@ use glass_browser::browser::native_engine::{
     NativeBorderStyle, NativeColor, NativeDiagnosticCode, NativeDiagnosticSource,
     NativeDisplayCommand, NativeDocument, NativeEngine, NativeEngineConfig, NativeEngineError,
     NativeEngineLimits, NativeEventKind, NativeLifecycleState, NativeNodeId, NativePoint,
-    NativeRect, NativeRuntimeState, NativeRuntimeTraceKind, NativeSurface,
+    NativePreflightAction, NativeRect, NativeRuntimeState, NativeRuntimeTraceKind, NativeSurface,
     NativeTextDecorationSkipInk, NativeTextDecorationSkipSpaces, NativeTextDecorationStyle,
     NativeWorkerFailureKind, Viewport,
+};
+use glass_browser::browser::session::{
+    IntentConfidence, IntentConstraints, SemanticIntentAction, SemanticIntentRequest,
+    SemanticResolutionPolicy,
 };
 use glass_browser::browser_backend::{
     ActionRequest, BROWSER_BACKEND_SCHEMA_VERSION, BackendSelectionRequest,
@@ -189,6 +193,56 @@ async fn native_runtime_session_uses_explicit_local_constructor() {
         .await
         .unwrap();
     assert_eq!(stored.entries.get("answer"), Some(&"one".to_owned()));
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_session_exposes_agent_inspection_and_target_discovery() {
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(
+            "data:text/html,%3Ctitle%3EInspect%3C%2Ftitle%3E%3Cmain%3E%3Cbutton%20id%3D%27save%27%3ESave%3C%2Fbutton%3E%3Cinput%20id%3D%27name%27%3E%3C%2Fmain%3E",
+        ),
+    )
+    .await
+    .unwrap();
+
+    let inspection = session.native_inspect_page().await.unwrap();
+    assert_eq!(inspection.page.title, "Inspect");
+    assert_eq!(inspection.page.target_id, "native-context");
+    assert_eq!(inspection.regions.len(), 1);
+    assert_eq!(inspection.regions[0].targets.len(), 2);
+    assert_eq!(inspection.limits.viewport.unwrap().width, 1280.0);
+
+    let request = SemanticIntentRequest {
+        schema_version: 1,
+        intent: "save".into(),
+        action: SemanticIntentAction::Click,
+        scope: Default::default(),
+        constraints: IntentConstraints {
+            role: Some("button".into()),
+            name: Some("Save".into()),
+            ..Default::default()
+        },
+        resolution_policy: SemanticResolutionPolicy::RequireExact,
+        expected_revision: Some(inspection.revision),
+    };
+    let result = session.native_find_target(&request).await.unwrap();
+    assert_eq!(result.ambiguity, "none");
+    assert_eq!(result.revision, Some(inspection.revision));
+    assert_eq!(result.candidates.len(), 1);
+    assert_eq!(result.candidates[0].role, "button");
+    assert_eq!(result.candidates[0].name, "Save");
+    assert_eq!(result.candidates[0].confidence, IntentConfidence::Exact);
+
+    let preflight = session
+        .native_preflight_target(
+            &result.candidates[0].reference,
+            NativePreflightAction::Click,
+        )
+        .await
+        .unwrap();
+    assert!(preflight.unique);
+    assert_eq!(preflight.revision, inspection.revision);
     session.close().await.unwrap();
 }
 

@@ -1296,6 +1296,16 @@ and exposes navigation/form hints without mutating document state. The
 Chromium preflight owner is unchanged. This is a targeting-contract slice,
 not a universal workflow or CDP-replacement certification.
 
+The completed native-engine-browser-134 batch extends that targeting seam to
+agent inspection. One atomic native page/node/layout snapshot now produces a
+standard Glass semantic observation with a bounded main region and supported
+interactive targets; the existing pure intent resolver then powers native
+`findTarget` with the same constraint, confidence, ambiguity, revision, and
+fingerprint semantics as the Chromium session. Native `inspectPage` and
+`findTarget` are available through the runtime session, CLI, and MCP without
+creating Chromium. Landmark-specific regions, rich accessibility trees,
+structured extraction, and universal workflow parity remain open.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature

@@ -133,14 +133,17 @@ dom
 evaluate EXPRESSION
 scroll --dy DY
 screenshot --output PATH --format png
+inspect-page
+find-target INPUT
 ```
 
 Native locators use `ref`, `id`, `role`, `name`, or `text` forms, plus the
 explicit `css=` form. Native clicks may additionally use
 `point=<unsigned-x>,<unsigned-y>` for the bounded viewport hit-test path.
 Native `preflight` is side-effect-free and reports the current semantic node,
-viewport geometry, actionability, and bounded navigation/form hints. Core MCP
-browser tools now use
+viewport geometry, actionability, and bounded navigation/form hints. Native
+`inspect-page` and `find-target INPUT` expose the standard agent inspection and
+intent-discovery envelopes. Core MCP browser tools now use
 the same native session when `--mcp` is selected: navigation, evidence,
 semantic actions, script, PNG capture, target listing, and storage reads do not
 start Chromium. Richer MCP workflows, TUI, profiles, downloads, prompts, and

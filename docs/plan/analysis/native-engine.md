@@ -2549,6 +2549,13 @@ provided. The worker network path is covered; XHR Blob bodies, binary Blob
 construction, streams, abort, upload progress, and full Fetch/Blob parity
 remain open.
 
+The completed bounded XHR Blob/File-body follow-up is
+[native-engine-browser-091](../tasks/native-engine-browser-091.md). Asynchronous
+XHR now preserves text-backed Blob/File bodies through the existing fetch
+bridge, including normalized MIME propagation and worker HTTP coverage.
+Binary responses, upload progress, timeout/abort, streams, synchronous XHR,
+binary Blob construction, and full XHR/Blob parity remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

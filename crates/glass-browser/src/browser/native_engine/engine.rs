@@ -25,7 +25,7 @@ use super::javascript::{
     register_storage_reader, save_web_storage_profile, storage_event_cursor, storage_key,
     unregister_storage_reader,
 };
-use super::layout::{NativeLayoutSnapshot, NativePoint};
+use super::layout::{NativeLayoutSnapshot, NativePoint, NativeRect};
 use super::lifecycle::NativeLifecycleState;
 use super::origin::NativeOrigin;
 use super::paint::NativeDisplayList;
@@ -52,6 +52,26 @@ fn should_apply_native_key_default(key: &str, modifiers: i64) -> bool {
                 key,
                 "Backspace" | "Delete" | "ArrowLeft" | "ArrowRight" | "Home" | "End"
             ))
+}
+
+fn native_action_supported(
+    action: NativePreflightAction,
+    node: &super::dom::NativeSemanticNode,
+) -> bool {
+    match action {
+        NativePreflightAction::Click => matches!(
+            node.role.as_str(),
+            "button" | "link" | "checkbox" | "radio" | "textbox" | "combobox" | "option"
+        ),
+        // Hover is deliberately reported as unavailable until the native
+        // event/input layer owns pointer hover state and dispatch semantics.
+        NativePreflightAction::Hover => false,
+        NativePreflightAction::Type => {
+            node.role == "textbox" && matches!(node.tag_name.as_str(), "input" | "textarea")
+        }
+        NativePreflightAction::Check => node.role == "checkbox" || node.role == "radio",
+        NativePreflightAction::Select => node.role == "combobox" && node.tag_name == "select",
+    }
 }
 
 /// Bounded observation of the current native document.
@@ -89,6 +109,60 @@ pub struct NativeDiagnosticsSnapshot {
     pub revision: u64,
     pub diagnostics: Vec<NativeDiagnostic>,
     pub truncated: bool,
+}
+
+/// Action families accepted by the shared browser preflight surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativePreflightAction {
+    Click,
+    Hover,
+    Type,
+    Check,
+    Select,
+}
+
+/// Stable resolution taxonomy used by the native preflight projection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeTargetErrorKind {
+    Ambiguous,
+    NotFound,
+    StaleReference,
+    NotActionable,
+}
+
+/// Stable actionability taxonomy used by native callers before mutation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeActionabilityReason {
+    NotVisible,
+    OutsideViewport,
+    Disabled,
+    ReadOnly,
+    UnsupportedAction,
+}
+
+/// Side-effect-free native target resolution and actionability result.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeTargetPreflight {
+    pub action: NativePreflightAction,
+    pub unique: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node: Option<super::dom::NativeSemanticNode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actionable: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actionability_reason: Option<NativeActionabilityReason>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<NativeTargetErrorKind>,
+    pub revision: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub geometry: Option<NativeRect>,
+    pub likely_navigation: bool,
+    pub likely_popup: bool,
+    pub likely_form_submit: bool,
 }
 
 /// Single-owner native browser kernel.
@@ -882,6 +956,75 @@ impl NativeEngine {
     pub fn semantic_nodes(&self) -> Result<Vec<super::dom::NativeSemanticNode>, NativeEngineError> {
         self.require_running("semantic DOM")?;
         Ok(self.document.semantic_nodes())
+    }
+
+    /// Resolve one target and report actionability without scrolling, focus,
+    /// event dispatch, navigation, or any other document mutation.
+    pub fn preflight_target(
+        &self,
+        target: &str,
+        action: NativePreflightAction,
+    ) -> Result<NativeTargetPreflight, NativeEngineError> {
+        self.require_running("target preflight")?;
+        let unresolved = |error_kind| NativeTargetPreflight {
+            action,
+            unique: false,
+            node: None,
+            actionable: None,
+            actionability_reason: None,
+            error_kind: Some(error_kind),
+            revision: self.revision,
+            geometry: None,
+            likely_navigation: false,
+            likely_popup: false,
+            likely_form_submit: false,
+        };
+        let id = match self.document.resolve_target(target) {
+            Ok(id) => id,
+            Err(NativeEngineError::AmbiguousTarget { .. }) => {
+                return Ok(unresolved(NativeTargetErrorKind::Ambiguous));
+            }
+            Err(NativeEngineError::TargetNotFound) => {
+                return Ok(unresolved(NativeTargetErrorKind::NotFound));
+            }
+            Err(NativeEngineError::DetachedTarget) => {
+                return Ok(unresolved(NativeTargetErrorKind::StaleReference));
+            }
+            Err(error) => return Err(error),
+        };
+        let node = self
+            .document
+            .semantic_nodes()
+            .into_iter()
+            .find(|node| node.node_id == id)
+            .ok_or(NativeEngineError::DetachedTarget)?;
+        let geometry = self.layout()?.viewport_rect_for(id);
+        let actionability_reason = if node.hidden {
+            Some(NativeActionabilityReason::NotVisible)
+        } else if node.disabled {
+            Some(NativeActionabilityReason::Disabled)
+        } else if matches!(action, NativePreflightAction::Type) && node.read_only {
+            Some(NativeActionabilityReason::ReadOnly)
+        } else if geometry.is_none() {
+            Some(NativeActionabilityReason::OutsideViewport)
+        } else if !native_action_supported(action, &node) {
+            Some(NativeActionabilityReason::UnsupportedAction)
+        } else {
+            None
+        };
+        Ok(NativeTargetPreflight {
+            action,
+            unique: true,
+            likely_navigation: self.document.link_href(id).is_some(),
+            likely_popup: false,
+            likely_form_submit: self.document.submit_control_form(id).is_some(),
+            node: Some(node),
+            actionable: Some(actionability_reason.is_none()),
+            actionability_reason,
+            error_kind: None,
+            revision: self.revision,
+            geometry,
+        })
     }
 
     /// Return the current document's derived integer-pixel layout.
@@ -3265,4 +3408,137 @@ fn parse_point_target(target: &str) -> Result<Option<(i64, i64)>, NativeEngineEr
         )
     })?;
     Ok(Some((i64::from(x), i64::from(y))))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn initialized_engine() -> NativeEngine {
+        let config = NativeEngineConfig::default()
+            .with_initial_url("fixture://preflight.test/index")
+            .with_fixture(
+                "fixture://preflight.test/index",
+                r#"
+                    <button id="save">Save</button>
+                    <button id="hidden" hidden>Hidden</button>
+                    <button id="disabled" disabled>Disabled</button>
+                    <input id="readonly" readonly>
+                    <button>Duplicate</button>
+                    <button>Duplicate</button>
+                "#,
+            )
+            .expect("preflight fixture must validate");
+        let mut engine = NativeEngine::new(config).expect("native engine must construct");
+        engine.initialize().expect("native engine must initialize");
+        engine
+    }
+
+    #[test]
+    fn preflight_resolves_current_semantics_and_geometry_without_mutation() {
+        let engine = initialized_engine();
+        let revision = engine.revision();
+        let result = engine
+            .preflight_target("id=save", NativePreflightAction::Click)
+            .expect("button preflight must succeed");
+
+        assert_eq!(result.action, NativePreflightAction::Click);
+        assert!(result.unique);
+        assert_eq!(result.actionable, Some(true));
+        assert!(result.actionability_reason.is_none());
+        assert_eq!(result.error_kind, None);
+        assert_eq!(result.revision, revision);
+        assert!(
+            result
+                .geometry
+                .is_some_and(|rect| rect.width > 0 && rect.height > 0)
+        );
+        assert!(!result.likely_navigation);
+        assert!(!result.likely_form_submit);
+        assert_eq!(engine.revision(), revision);
+    }
+
+    #[test]
+    fn preflight_reports_actionability_and_resolution_failures() {
+        let engine = initialized_engine();
+
+        let hidden = engine
+            .preflight_target("id=hidden", NativePreflightAction::Click)
+            .expect("hidden target should produce a preflight result");
+        assert_eq!(hidden.actionable, Some(false));
+        assert_eq!(
+            hidden.actionability_reason,
+            Some(NativeActionabilityReason::NotVisible)
+        );
+
+        let disabled = engine
+            .preflight_target("id=disabled", NativePreflightAction::Click)
+            .expect("disabled target should produce a preflight result");
+        assert_eq!(disabled.actionable, Some(false));
+        assert_eq!(
+            disabled.actionability_reason,
+            Some(NativeActionabilityReason::Disabled)
+        );
+
+        let read_only = engine
+            .preflight_target("id=readonly", NativePreflightAction::Type)
+            .expect("read-only target should produce a preflight result");
+        assert_eq!(read_only.actionable, Some(false));
+        assert_eq!(
+            read_only.actionability_reason,
+            Some(NativeActionabilityReason::ReadOnly)
+        );
+
+        let ambiguous = engine
+            .preflight_target("name=Duplicate", NativePreflightAction::Click)
+            .expect("ambiguous target should produce a preflight result");
+        assert!(!ambiguous.unique);
+        assert_eq!(ambiguous.error_kind, Some(NativeTargetErrorKind::Ambiguous));
+
+        let missing = engine
+            .preflight_target("id=missing", NativePreflightAction::Click)
+            .expect("missing target should produce a preflight result");
+        assert!(!missing.unique);
+        assert_eq!(missing.error_kind, Some(NativeTargetErrorKind::NotFound));
+    }
+
+    #[test]
+    fn preflight_rejects_stale_revision_references_without_mutation() {
+        let config = NativeEngineConfig::default()
+            .with_initial_url("fixture://preflight.test/one")
+            .with_fixture(
+                "fixture://preflight.test/one",
+                "<button id='one'>One</button>",
+            )
+            .and_then(|config| {
+                config.with_fixture(
+                    "fixture://preflight.test/two",
+                    "<button id='two'>Two</button>",
+                )
+            })
+            .expect("stale-reference fixtures must validate");
+        let mut engine = NativeEngine::new(config).expect("native engine must construct");
+        engine.initialize().expect("native engine must initialize");
+        let reference = engine
+            .semantic_nodes()
+            .expect("semantic nodes must be available")
+            .into_iter()
+            .find(|node| node.tag_name == "button")
+            .expect("fixture button must be semantic")
+            .reference;
+        engine
+            .navigate("fixture://preflight.test/two")
+            .expect("second fixture navigation must succeed");
+        let revision = engine.revision();
+
+        let result = engine
+            .preflight_target(&reference, NativePreflightAction::Click)
+            .expect("stale reference should produce a preflight result");
+        assert!(!result.unique);
+        assert_eq!(
+            result.error_kind,
+            Some(NativeTargetErrorKind::StaleReference)
+        );
+        assert_eq!(result.revision, revision);
+    }
 }

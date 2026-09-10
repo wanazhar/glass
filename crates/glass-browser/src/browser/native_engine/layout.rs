@@ -24,7 +24,7 @@ pub struct NativePoint {
 
 /// A half-open integer-pixel rectangle in the native viewport coordinate
 /// space.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct NativeRect {
     pub x: u32,
     pub y: u32,

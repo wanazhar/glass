@@ -4,7 +4,10 @@
 //! lifecycle state, while this module translates only the stable
 //! `browser_backend` contract.
 
-use super::native_engine::{NativeAction, NativeEngine, NativeEngineConfig, NativeEngineError};
+use super::native_engine::{
+    NativeAction, NativeEngine, NativeEngineConfig, NativeEngineError, NativePreflightAction,
+    NativeTargetPreflight,
+};
 use crate::browser_backend::{
     ActionResult, BROWSER_BACKEND_SCHEMA_VERSION, BackendFuture, BackendOperation, BackendProfile,
     BackendRequest, BackendResponse, BrowserBackend, BrowserBackendError, BrowserCapability,
@@ -100,6 +103,17 @@ impl NativeEngineBackend {
     pub fn capture_png(&self) -> Result<Vec<u8>, BrowserBackendError> {
         self.lock_engine(BackendOperation::Capture)?
             .capture_png()
+            .map_err(native_error)
+    }
+
+    /// Return a side-effect-free, revision-bound target preflight result.
+    pub fn preflight_target(
+        &self,
+        target: &str,
+        action: NativePreflightAction,
+    ) -> Result<NativeTargetPreflight, BrowserBackendError> {
+        self.lock_engine(BackendOperation::Evidence)?
+            .preflight_target(target, action)
             .map_err(native_error)
     }
 

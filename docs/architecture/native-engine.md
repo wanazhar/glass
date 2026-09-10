@@ -1287,6 +1287,15 @@ Chromium when native is selected. The core MCP route is covered by a focused
 no-Chromium test; it does not yet certify universal MCP workflow parity or
 production CDP replacement.
 
+The completed native-engine-browser-133 batch adds a read-only native target
+preflight projection across the engine, runtime session, CLI, and MCP
+surfaces. It resolves the current revision's semantic locator, reports the
+node and visible viewport geometry, classifies hidden/disabled/read-only,
+unsupported-action, outside-viewport, ambiguous, missing, and stale outcomes,
+and exposes navigation/form hints without mutating document state. The
+Chromium preflight owner is unchanged. This is a targeting-contract slice,
+not a universal workflow or CDP-replacement certification.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature

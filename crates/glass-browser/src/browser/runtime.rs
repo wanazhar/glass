@@ -9,7 +9,7 @@
 use super::backend_factory::{BackendFactory, BackendStartup};
 use super::bidi_backend::BidiBackendConfig;
 #[cfg(feature = "native-engine")]
-use super::native_engine::NativeEngineConfig;
+use super::native_engine::{NativeEngineConfig, NativePreflightAction, NativeTargetPreflight};
 use crate::browser_backend::{
     ActionRequest, ActionResult, BackendProfile, BrowserBackendDispatcher, BrowsingContext,
     ContextRequest, EffectsRequest, EffectsResult, EvidenceLevel, EvidenceRequest, EvidenceResult,
@@ -233,6 +233,21 @@ impl BrowserRuntimeSession {
         match &self.backend {
             BackendStartup::Native(backend) => Ok(backend.capture_png()?),
             _ => Err("native PNG capture is only available on the native runtime".into()),
+        }
+    }
+
+    /// Run a side-effect-free native target preflight under the session's
+    /// operation lock.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_preflight_target(
+        &self,
+        target: &str,
+        action: NativePreflightAction,
+    ) -> BrowserResult<NativeTargetPreflight> {
+        let _operation = self.operation_lock.lock().await;
+        match &self.backend {
+            BackendStartup::Native(backend) => Ok(backend.preflight_target(target, action)?),
+            _ => Err("native target preflight is only available on the native runtime".into()),
         }
     }
 

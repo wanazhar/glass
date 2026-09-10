@@ -27525,6 +27525,48 @@ async fn semantic_storage_uses_bounded_native_backend_state() {
     dispatcher.close().await.unwrap();
 }
 
+#[tokio::test]
+async fn native_backend_uses_configured_context_identity() {
+    let backend = NativeEngineBackend::new(
+        NativeEngineConfig::default()
+            .with_context_id("tab-one")
+            .with_initial_url("data:text/html,%3Ctitle%3ETab%3C%2Ftitle%3E"),
+    )
+    .unwrap();
+    let dispatcher = BrowserBackendDispatcher::new(&backend);
+    dispatcher.initialize().await.unwrap();
+
+    let contexts = dispatcher
+        .contexts(glass_browser::browser_backend::ContextRequest {
+            include_background: false,
+        })
+        .await
+        .unwrap();
+    assert_eq!(contexts[0].context_id, "tab-one");
+    let evidence = dispatcher
+        .evidence(EvidenceRequest {
+            context_id: "tab-one".into(),
+            level: EvidenceLevel::Compact,
+        })
+        .await
+        .unwrap();
+    assert_eq!(evidence.context_id, "tab-one");
+
+    let wrong_context = dispatcher
+        .evidence(EvidenceRequest {
+            context_id: "native-context".into(),
+            level: EvidenceLevel::Compact,
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        wrong_context,
+        glass_browser::browser_backend::BrowserBackendError::InvalidConfiguration { field, .. }
+            if field == "context id"
+    ));
+    dispatcher.close().await.unwrap();
+}
+
 #[test]
 fn native_backend_requires_explicit_factory_selection() {
     let automatic = BackendSelectionRequest {
@@ -28858,6 +28900,83 @@ async fn native_local_web_storage_delivers_origin_filtered_events_to_other_docum
 }
 
 #[tokio::test]
+async fn native_session_storage_routes_events_by_browsing_context() {
+    let profile_path = std::env::temp_dir().join(format!(
+        "glass-native-web-storage-{}-session-context-events.json",
+        std::process::id()
+    ));
+    let lock_path = profile_path.with_extension("lock");
+    let _ = fs::remove_file(&profile_path);
+    let _ = fs::remove_file(&lock_path);
+    let owner_config = NativeEngineConfig::default()
+        .with_context_id("tab-one")
+        .with_storage_path(profile_path.clone())
+        .with_fixture("fixture://session-storage-events", "<p>Session storage</p>")
+        .unwrap()
+        .with_initial_url("fixture://session-storage-events");
+    let same_context_config = owner_config.clone();
+    let other_context_config = owner_config.clone().with_context_id("tab-two");
+
+    let mut owner = NativeEngine::new(owner_config).unwrap();
+    let mut same_context = NativeEngine::new(same_context_config).unwrap();
+    let mut other_context = NativeEngine::new(other_context_config).unwrap();
+    owner.initialize().unwrap();
+    same_context.initialize().unwrap();
+    other_context.initialize().unwrap();
+
+    for engine in [&mut owner, &mut same_context, &mut other_context] {
+        engine
+            .evaluate_async(
+                "globalThis.storageEvents = []; addEventListener('storage', event => storageEvents.push({ key: event.key, oldValue: event.oldValue, newValue: event.newValue, url: event.url, session: event.storageArea === sessionStorage })); true",
+            )
+            .await
+            .unwrap();
+    }
+
+    owner
+        .evaluate_async("sessionStorage.setItem('tab', 'one'); true")
+        .await
+        .unwrap();
+    assert_eq!(
+        same_context
+            .evaluate_async(
+                "({ events: storageEvents.splice(0), value: sessionStorage.getItem('tab') })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "events": [{
+                "key": "tab",
+                "oldValue": null,
+                "newValue": "one",
+                "url": "fixture://session-storage-events",
+                "session": true,
+            }],
+            "value": "one",
+        })
+    );
+    assert_eq!(
+        other_context
+            .evaluate_async(
+                "({ events: storageEvents.splice(0), value: sessionStorage.getItem('tab') })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({"events": [], "value": null})
+    );
+    assert_eq!(
+        owner.evaluate_async("storageEvents").await.unwrap(),
+        serde_json::json!([])
+    );
+
+    other_context.close().unwrap();
+    same_context.close().unwrap();
+    owner.close().unwrap();
+    let _ = fs::remove_file(profile_path);
+    let _ = fs::remove_file(lock_path);
+}
+
+#[tokio::test]
 async fn native_content_process_delivers_local_storage_events_between_documents() {
     let _guard = native_content_process_test_lock().lock().await;
     let profile_path = std::env::temp_dir().join(format!(
@@ -28929,6 +29048,98 @@ async fn native_content_process_delivers_local_storage_events_between_documents(
     owner.close_async().await.unwrap();
     server.await.unwrap();
     let _ = fs::remove_file(profile_path);
+}
+
+#[tokio::test]
+async fn native_content_process_routes_session_storage_events_by_browsing_context() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let profile_path = std::env::temp_dir().join(format!(
+        "glass-native-web-storage-{}-content-session-context-events.json",
+        std::process::id()
+    ));
+    let lock_path = profile_path.with_extension("lock");
+    let _ = fs::remove_file(&profile_path);
+    let _ = fs::remove_file(&lock_path);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..3 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+            let body = "<p>Content session storage</p>";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+    let url = format!("http://{address}/page");
+    let owner_config = NativeEngineConfig::default()
+        .with_context_id("network-tab-one")
+        .with_storage_path(profile_path.clone())
+        .with_initial_url(url.clone());
+    let same_context_config = owner_config.clone();
+    let other_context_config = owner_config.clone().with_context_id("network-tab-two");
+    let mut owner = NativeEngine::new(owner_config).unwrap();
+    let mut same_context = NativeEngine::new(same_context_config).unwrap();
+    let mut other_context = NativeEngine::new(other_context_config).unwrap();
+    owner.initialize_async().await.unwrap();
+    same_context.initialize_async().await.unwrap();
+    other_context.initialize_async().await.unwrap();
+
+    for engine in [&mut owner, &mut same_context, &mut other_context] {
+        engine
+            .evaluate_async(
+                "globalThis.storageEvents = []; addEventListener('storage', event => storageEvents.push({ key: event.key, oldValue: event.oldValue, newValue: event.newValue, url: event.url, session: event.storageArea === sessionStorage })); true",
+            )
+            .await
+            .unwrap();
+    }
+
+    owner
+        .evaluate_async("sessionStorage.setItem('tab', 'one'); true")
+        .await
+        .unwrap();
+    assert_eq!(
+        same_context
+            .evaluate_async(
+                "({ events: storageEvents.splice(0), value: sessionStorage.getItem('tab') })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "events": [{
+                "key": "tab",
+                "oldValue": null,
+                "newValue": "one",
+                "url": url,
+                "session": true,
+            }],
+            "value": "one",
+        })
+    );
+    assert_eq!(
+        other_context
+            .evaluate_async(
+                "({ events: storageEvents.splice(0), value: sessionStorage.getItem('tab') })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({"events": [], "value": null})
+    );
+    assert_eq!(
+        owner.evaluate_async("storageEvents").await.unwrap(),
+        serde_json::json!([])
+    );
+
+    other_context.close_async().await.unwrap();
+    same_context.close_async().await.unwrap();
+    owner.close_async().await.unwrap();
+    server.await.unwrap();
+    let _ = fs::remove_file(profile_path);
+    let _ = fs::remove_file(lock_path);
 }
 
 #[tokio::test]

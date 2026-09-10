@@ -1,4 +1,4 @@
-use super::browsing_context::{NATIVE_CONTEXT_ID, NativeBrowsingContext};
+use super::browsing_context::NativeBrowsingContext;
 use super::config::{
     NativeEngineConfig, decode_percent_encoded_fragment, decode_text_fragment_terms,
     is_network_url, resolve_fixture_relative_url, validate_url_text, without_fragment,
@@ -191,7 +191,9 @@ impl NativeEngine {
             None
         };
         if let Some(process) = content_process.as_mut() {
-            process.start(self.config.storage_path.as_deref()).await?;
+            process
+                .start(self.config.storage_path.as_deref(), &self.config.context_id)
+                .await?;
         }
         let prepared = if let Some(process) = content_process.as_mut() {
             let viewport = self.config.viewport;
@@ -386,7 +388,9 @@ impl NativeEngine {
         if self.content_process.is_none() {
             let mut process =
                 NativeContentProcess::spawn(self.config.storage_path.as_deref()).await?;
-            process.start(self.config.storage_path.as_deref()).await?;
+            process
+                .start(self.config.storage_path.as_deref(), &self.config.context_id)
+                .await?;
             self.content_process = Some(process);
         }
         Ok(())
@@ -636,7 +640,7 @@ impl NativeEngine {
             return Ok(value);
         }
         if self.javascript.is_none() {
-            let javascript = NativeJavaScriptRuntime::new()?;
+            let javascript = NativeJavaScriptRuntime::new_with_context_id(&self.config.context_id)?;
             javascript.set_storage_state(self.web_storage.clone());
             self.javascript = Some(javascript);
         }
@@ -1128,7 +1132,12 @@ impl NativeEngine {
         let current_storage_key = storage_key(&self.url, &self.origin);
         let events = events
             .into_iter()
-            .filter(|event| event.scope == "local" && event.storage_key == current_storage_key)
+            .filter(|event| {
+                event.storage_key == current_storage_key
+                    && (event.scope == "local"
+                        || (event.scope == "session"
+                            && event.source_context_id == self.config.context_id))
+            })
             .collect::<Vec<_>>();
         if events.is_empty() {
             return Ok(());
@@ -1187,7 +1196,7 @@ impl NativeEngine {
     ) -> Result<(), NativeEngineError> {
         let coordinator = self.storage_coordinator.clone();
         let queue = self.storage_event_queue.clone();
-        for event in events.iter().filter(|event| event.scope == "local") {
+        for event in events {
             self.web_storage.apply_storage_event(event)?;
             if let (Some(coordinator), Some(queue)) = (coordinator.as_ref(), queue.as_ref()) {
                 coordinator.publish(queue, event.clone())?;
@@ -1212,9 +1221,7 @@ impl NativeEngine {
             self.storage_event_queue.as_ref(),
         ) {
             for change in storage_changes {
-                if change.scope == "local" {
-                    coordinator.publish(queue, change)?;
-                }
+                coordinator.publish(queue, change)?;
             }
         }
         Ok(())
@@ -1883,7 +1890,7 @@ impl NativeEngine {
     pub fn context(&self) -> Result<NativeBrowsingContext, NativeEngineError> {
         self.require_running("contexts")?;
         Ok(NativeBrowsingContext {
-            context_id: NATIVE_CONTEXT_ID.into(),
+            context_id: self.config.context_id.clone(),
             url: self.url.clone(),
             origin: self.origin.clone(),
             active: true,
@@ -1970,7 +1977,13 @@ impl NativeEngine {
         self.persist_local_web_storage()?;
         let storage_state = self.web_storage.clone();
         let cookie = self.loader.document_cookie(&prepared.resource.url)?;
-        let mut javascript = None;
+        let mut javascript = if prepared.execute_inline_scripts {
+            Some(NativeJavaScriptRuntime::new_with_context_id(
+                &self.config.context_id,
+            )?)
+        } else {
+            None
+        };
         if prepared.execute_inline_scripts {
             execute_inline_scripts(
                 &mut prepared.document,
@@ -2014,7 +2027,13 @@ impl NativeEngine {
         self.persist_local_web_storage()?;
         let storage_state = self.web_storage.clone();
         let cookie = self.loader.document_cookie(&prepared.resource.url)?;
-        let mut javascript = None;
+        let mut javascript = if execute_page_scripts {
+            Some(NativeJavaScriptRuntime::new_with_context_id(
+                &self.config.context_id,
+            )?)
+        } else {
+            None
+        };
         if execute_page_scripts {
             execute_inline_scripts(
                 &mut prepared.document,

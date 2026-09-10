@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-072` locally. The versioned
+`native-engine-browser-073` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -701,9 +701,21 @@ binary/stream FormData support, full task ordering/navigation edge cases,
 remaining full pattern-regex/file constraint validation, target contexts, and
 the remaining browser-context primitives remain open.
 
-The next BE-02/BE-03/BE-04/BE-07 gate is session-storage browsing-context
-routing and an explicit stale-snapshot ownership or merge protocol, followed
-by cross-process event delivery, IndexedDB, full
+The completed bounded session-storage routing slice is
+[native-engine-browser-073](tasks/native-engine-browser-073.md). Every native
+engine now has an explicit bounded browsing-context identity, the identity
+crosses local and sandboxed worker realms, and `sessionStorage` event/state
+delivery is restricted to other live engines representing that same context;
+different contexts receive neither the event nor the mutation, and configured
+backend responses no longer assume the historical `native-context` constant.
+The coordinator remains in-process, session state remains volatile, and
+cross-process events, stale-snapshot ownership or merge, IndexedDB, full
+binary/stream FormData support, full task ordering/navigation edge cases,
+remaining full pattern-regex/file constraint validation, target contexts, and
+the remaining browser-context primitives remain open.
+
+The next BE-02/BE-03/BE-04/BE-07 gate is an explicit stale-snapshot ownership
+or merge protocol, followed by cross-process event delivery, IndexedDB, full
 binary/stream FormData support, full task ordering/navigation edge cases,
 remaining full pattern-regex/file constraint validation, target contexts, and
 the remaining browser-context primitives.

@@ -2260,6 +2260,7 @@ mod tests {
             &first_state,
             &first_changes,
             &NativeIndexedDbState::default(),
+            &[],
         )
         .unwrap();
         let second_state = second.cookie_profile();
@@ -2271,6 +2272,7 @@ mod tests {
             &second_state,
             &second_changes,
             &NativeIndexedDbState::default(),
+            &[],
         )
         .unwrap();
 

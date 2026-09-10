@@ -2432,9 +2432,25 @@ per database, 128 records per store, 8 KiB per JSON value, and 64 KiB for the
 full IndexedDB state; content workers exchange validated snapshots through
 IPC and do not open profile files. Indexes, cursors, key ranges, non-JSON
 structured-clone values, full transaction/version-change coordination, quota
-APIs, and cross-process IndexedDB journal/delta merging remain open. The same
-follow-up suppresses the timer pump while initial page scripts are loaded and
-resets the deterministic timer clock at the page-operation boundary.
+APIs, and cross-process IndexedDB journal/delta merging remained open at that
+checkpoint. The same follow-up suppresses the timer pump while initial page
+scripts are loaded and resets the deterministic timer clock at the
+page-operation boundary.
+
+The completed bounded IndexedDB journal-convergence follow-up is
+[native-engine-browser-079](../tasks/native-engine-browser-079.md). Local
+realms and sandboxed content workers now emit bounded typed IndexedDB deltas
+beside Web Storage journal records. The parent validates and applies them,
+merges each writer against the latest profile snapshot under `P.lock`, and
+appends the delta batch in journal order. Live receivers apply IndexedDB-only
+records and refresh the current origin in their persistent realm through a
+bounded full-state transfer; worker responses no longer repeat the full
+snapshot, and workers never open profile, journal, lock, or lease files.
+Disjoint live database writers are covered on both local and process-backed
+paths. Same-database schema conflicts use journal order as the explicit
+last-writer rule. Indexes, cursors, key ranges, non-JSON structured-clone
+values, full transaction/version-change coordination, quota APIs, and the
+remaining browser-complete gates remain open.
 
 ## Baseline and constraints
 

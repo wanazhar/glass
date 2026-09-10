@@ -10,9 +10,10 @@ use super::dom::{
 use super::error::{NativeEngineError, NativeWorkerFailureKind};
 use super::interaction::{MAX_NATIVE_EFFECTS, NativeEventKind, validate_native_edit_key};
 use super::javascript::{
-    MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_SCRIPT_BYTES, NativeIndexedDbState,
-    NativeJavaScriptRuntime, NativePageScript, NativeScriptCommand, NativeScriptEvaluation,
-    NativeStorageEvent, NativeWebStorageState, execute_page_scripts, host_event_script,
+    MAX_NATIVE_INDEXED_DB_CHANGES, MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_SCRIPT_BYTES,
+    NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime, NativePageScript,
+    NativeScriptCommand, NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState,
+    diff_indexed_db_changes, execute_page_scripts, host_event_script,
     host_hash_change_event_script, host_key_event_script, host_submit_event_script,
     literal_dynamic_module_specifiers, load_indexed_db_profile, load_web_storage_profile,
     order_page_scripts, save_web_storage_profile, static_module_specifiers, storage_key,
@@ -49,7 +50,7 @@ pub(crate) struct NativeContentLoad {
     pub(crate) origin: NativeOrigin,
     pub(crate) document: NativeDocumentWire,
     pub(crate) storage_events: Vec<NativeStorageEvent>,
-    pub(crate) indexed_db_state: NativeIndexedDbState,
+    pub(crate) indexed_db_changes: Vec<NativeIndexedDbChange>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -71,14 +72,14 @@ pub(crate) struct NativeContentMutation {
     pub(crate) navigation: Option<NativeContentNavigation>,
     pub(crate) allowed: bool,
     pub(crate) storage_events: Vec<NativeStorageEvent>,
-    pub(crate) indexed_db_state: NativeIndexedDbState,
+    pub(crate) indexed_db_changes: Vec<NativeIndexedDbChange>,
 }
 
 pub(crate) struct NativeContentScriptResult {
     pub(crate) value: Value,
     pub(crate) mutation: Option<NativeContentMutation>,
     pub(crate) storage_events: Vec<NativeStorageEvent>,
-    pub(crate) indexed_db_state: NativeIndexedDbState,
+    pub(crate) indexed_db_changes: Vec<NativeIndexedDbChange>,
 }
 
 /// Process-backed lifecycle and bounded document-transfer channel for one
@@ -107,6 +108,7 @@ impl NativeContentProcess {
                 &[],
                 &[],
                 &NativeIndexedDbState::default(),
+                &[],
             )?;
         }
         let (mut command, mut sandbox) = prepare_worker_command(&path, storage_path)?;
@@ -488,6 +490,7 @@ impl NativeContentProcess {
     pub(crate) async fn sync_storage_state(
         &mut self,
         state: &NativeWebStorageState,
+        indexed_db_state: &NativeIndexedDbState,
     ) -> Result<(), NativeEngineError> {
         let id = self.next_id();
         let response = match timeout(
@@ -497,6 +500,7 @@ impl NativeContentProcess {
                 "id": id,
                 "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
                 "state": state,
+                "indexed_db_state": indexed_db_state,
             })),
         )
         .await
@@ -786,13 +790,13 @@ fn decode_loaded_response(
         })?;
     let origin = NativeOrigin::from_url(&origin_url)?;
     let storage_events = decode_storage_events(response, "decode content process load")?;
-    let indexed_db_state = decode_indexed_db_state(response, "decode content process load")?;
+    let indexed_db_changes = decode_indexed_db_changes(response, "decode content process load")?;
     Ok(NativeContentLoad {
         url: url.into(),
         origin,
         document,
         storage_events,
-        indexed_db_state,
+        indexed_db_changes,
     })
 }
 
@@ -895,7 +899,7 @@ fn decode_mutation_payload(
         })
         .transpose()?;
     let storage_events = decode_storage_events(response, operation)?;
-    let indexed_db_state = decode_indexed_db_state(response, operation)?;
+    let indexed_db_changes = decode_indexed_db_changes(response, operation)?;
     Ok(NativeContentMutation {
         document,
         events,
@@ -905,7 +909,7 @@ fn decode_mutation_payload(
             .and_then(Value::as_bool)
             .unwrap_or(true),
         storage_events,
-        indexed_db_state,
+        indexed_db_changes,
     })
 }
 
@@ -1002,7 +1006,7 @@ fn decode_script_response(
         ));
     }
     let storage_events = decode_storage_events(response, "decode content process script")?;
-    let indexed_db_state = decode_indexed_db_state(response, "decode content process script")?;
+    let indexed_db_changes = decode_indexed_db_changes(response, "decode content process script")?;
     let has_document = response.get("document_base64").is_some();
     let has_events = response.get("events").is_some();
     let mutation = if has_document || has_events {
@@ -1021,7 +1025,7 @@ fn decode_script_response(
             storage_events
         },
         mutation,
-        indexed_db_state,
+        indexed_db_changes,
     })
 }
 
@@ -1035,20 +1039,26 @@ fn decode_storage_events(
     decode_storage_event_value(value, operation)
 }
 
-fn decode_indexed_db_state(
+fn decode_indexed_db_changes(
     response: &Value,
     operation: &str,
-) -> Result<NativeIndexedDbState, NativeEngineError> {
-    let Some(value) = response.get("indexed_db_state") else {
-        return Ok(NativeIndexedDbState::default());
+) -> Result<Vec<NativeIndexedDbChange>, NativeEngineError> {
+    let Some(value) = response.get("indexed_db_changes") else {
+        return Ok(Vec::new());
     };
-    let state: NativeIndexedDbState =
+    let changes: Vec<NativeIndexedDbChange> =
         serde_json::from_value(value.clone()).map_err(|_| NativeEngineError::Worker {
             operation: operation.into(),
-            reason: "content process returned malformed IndexedDB state".into(),
+            reason: "content process returned malformed IndexedDB changes".into(),
         })?;
-    state.validate()?;
-    Ok(state)
+    if changes.len() > MAX_NATIVE_INDEXED_DB_CHANGES {
+        return Err(NativeEngineError::limit(
+            "content-process IndexedDB changes",
+            MAX_NATIVE_INDEXED_DB_CHANGES,
+            changes.len(),
+        ));
+    }
+    Ok(changes)
 }
 
 fn decode_storage_event_value(
@@ -1247,8 +1257,26 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     })?;
                 next_state.validate()?;
                 storage_state = next_state;
+                if let Some(value) = request.get("indexed_db_state") {
+                    let next_indexed_db_state: NativeIndexedDbState =
+                        serde_json::from_value(value.clone()).map_err(|_| {
+                            NativeEngineError::invalid(
+                                "content-process IndexedDB state",
+                                "must be a valid native IndexedDB state",
+                            )
+                        })?;
+                    next_indexed_db_state.validate()?;
+                    indexed_db_state = next_indexed_db_state;
+                }
                 if let Some(runtime) = javascript_runtime.as_ref() {
                     runtime.replace_storage_state(storage_state.clone());
+                    if let (Some(document_url), Some(document_origin)) =
+                        (document_url.as_deref(), document_origin.as_ref())
+                    {
+                        runtime.set_indexed_db_state(
+                            indexed_db_state.origin(&storage_key(document_url, document_origin)),
+                        );
+                    }
                 }
                 json!({"kind":"storage_state_synced","id":id})
             }
@@ -2085,7 +2113,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 }
             }
             "close" if protocol_matches(&request) => {
-                let storage_events = sync_content_runtime_state(
+                let (storage_events, indexed_db_changes) = sync_content_runtime_state(
                     javascript_runtime.as_ref(),
                     &mut storage_state,
                     &mut indexed_db_state,
@@ -2098,6 +2126,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     &storage_state,
                     &indexed_db_state,
                     &storage_events,
+                    &indexed_db_changes,
                     &mut resource_loader,
                 )?;
                 write_value_frame(&mut stdout, &json!({"kind":"closed","id":id})).await?;
@@ -2111,7 +2140,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 },
             ),
         };
-        let storage_events = sync_content_runtime_state(
+        let (storage_events, indexed_db_changes) = sync_content_runtime_state(
             javascript_runtime.as_ref(),
             &mut storage_state,
             &mut indexed_db_state,
@@ -2124,6 +2153,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             &storage_state,
             &indexed_db_state,
             &storage_events,
+            &indexed_db_changes,
             &mut resource_loader,
         )?;
         if let Some(object) = response.as_object_mut() {
@@ -2135,10 +2165,12 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 })?,
             );
             object.insert(
-                "indexed_db_state".into(),
-                serde_json::to_value(&indexed_db_state).map_err(|_| NativeEngineError::Worker {
-                    operation: "encode content process IndexedDB state".into(),
-                    reason: "content process IndexedDB state could not be encoded".into(),
+                "indexed_db_changes".into(),
+                serde_json::to_value(&indexed_db_changes).map_err(|_| {
+                    NativeEngineError::Worker {
+                        operation: "encode content process IndexedDB changes".into(),
+                        reason: "content process IndexedDB changes could not be encoded".into(),
+                    }
                 })?,
             );
         }
@@ -2153,23 +2185,28 @@ fn sync_content_runtime_state(
     resource_loader: &mut Option<NativeResourceLoader>,
     document_url: Option<&str>,
     document_origin: Option<&NativeOrigin>,
-) -> Result<Vec<NativeStorageEvent>, NativeEngineError> {
+) -> Result<(Vec<NativeStorageEvent>, Vec<NativeIndexedDbChange>), NativeEngineError> {
     let Some(runtime) = runtime else {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     };
+    let before_indexed_db = indexed_db_state.clone();
     *storage_state = runtime.storage_state();
-    if let (Some(document_url), Some(document_origin)) = (document_url, document_origin) {
-        indexed_db_state.replace_origin(
-            storage_key(document_url, document_origin),
-            runtime.indexed_db_state(),
-        )?;
-    }
+    let indexed_db_changes =
+        if let (Some(document_url), Some(document_origin)) = (document_url, document_origin) {
+            let key = storage_key(document_url, document_origin);
+            let before = before_indexed_db.origin(&key);
+            let after = runtime.indexed_db_state();
+            indexed_db_state.replace_origin(key.clone(), after.clone())?;
+            diff_indexed_db_changes(&key, &before, &after)?
+        } else {
+            Vec::new()
+        };
     if let (Some(loader), Some(document_url)) = (resource_loader.as_mut(), document_url) {
         for value in runtime.take_cookie_updates() {
             loader.set_document_cookie(document_url, &value)?;
         }
     }
-    Ok(runtime.take_storage_changes())
+    Ok((runtime.take_storage_changes(), indexed_db_changes))
 }
 
 fn persist_content_profile(
@@ -2177,6 +2214,7 @@ fn persist_content_profile(
     storage_state: &NativeWebStorageState,
     indexed_db_state: &NativeIndexedDbState,
     storage_events: &[NativeStorageEvent],
+    indexed_db_changes: &[NativeIndexedDbChange],
     resource_loader: &mut Option<NativeResourceLoader>,
 ) -> Result<(), NativeEngineError> {
     let cookie_state = resource_loader
@@ -2194,20 +2232,8 @@ fn persist_content_profile(
         &cookie_state,
         &cookie_changes,
         indexed_db_state,
+        indexed_db_changes,
     )
-}
-
-fn indexed_db_snapshot(
-    runtime: &NativeJavaScriptRuntime,
-    document_url: &str,
-    document_origin: &NativeOrigin,
-) -> Result<NativeIndexedDbState, NativeEngineError> {
-    let mut state = NativeIndexedDbState::default();
-    state.replace_origin(
-        storage_key(document_url, document_origin),
-        runtime.indexed_db_state(),
-    )?;
-    Ok(state)
 }
 
 fn refresh_content_runtime_cookie(
@@ -2428,7 +2454,7 @@ async fn load_content_resource(
             origin: resource.origin,
             document: wire,
             storage_events: Vec::new(),
-            indexed_db_state: NativeIndexedDbState::default(),
+            indexed_db_changes: Vec::new(),
         },
         document,
         viewport,
@@ -2736,7 +2762,7 @@ fn mutate_click_with_event_preflight(
         navigation,
         allowed: true,
         storage_events: Vec::new(),
-        indexed_db_state: indexed_db_snapshot(runtime, document_url, document_origin)?,
+        indexed_db_changes: Vec::new(),
     };
     Ok((next, mutation))
 }
@@ -2841,7 +2867,7 @@ fn mutate_type_with_event_bridge(
         navigation: None,
         allowed: true,
         storage_events: Vec::new(),
-        indexed_db_state: indexed_db_snapshot(runtime, document_url, document_origin)?,
+        indexed_db_changes: Vec::new(),
     };
     Ok((next, mutation))
 }
@@ -2940,7 +2966,7 @@ fn mutate_key_with_event_bridge(
         navigation: None,
         allowed: true,
         storage_events: Vec::new(),
-        indexed_db_state: indexed_db_snapshot(runtime, document_url, document_origin)?,
+        indexed_db_changes: Vec::new(),
     };
     Ok((next, mutation))
 }
@@ -2997,7 +3023,7 @@ fn mutate_before_unload(
             navigation: None,
             allowed,
             storage_events: Vec::new(),
-            indexed_db_state: indexed_db_snapshot(runtime, document_url, document_origin)?,
+            indexed_db_changes: Vec::new(),
         },
     ))
 }
@@ -3019,7 +3045,7 @@ fn mutate_lifecycle_events(
                 navigation: None,
                 allowed: true,
                 storage_events: Vec::new(),
-                indexed_db_state: indexed_db_snapshot(runtime, document_url, document_origin)?,
+                indexed_db_changes: Vec::new(),
             },
         ));
     }
@@ -3061,7 +3087,7 @@ fn mutate_lifecycle_events(
             navigation: None,
             allowed: true,
             storage_events: Vec::new(),
-            indexed_db_state: indexed_db_snapshot(runtime, document_url, document_origin)?,
+            indexed_db_changes: Vec::new(),
         },
     ))
 }
@@ -3109,7 +3135,7 @@ fn mutate_hash_change(
             navigation: None,
             allowed: true,
             storage_events: Vec::new(),
-            indexed_db_state: indexed_db_snapshot(runtime, new_url, document_origin)?,
+            indexed_db_changes: Vec::new(),
         },
     ))
 }
@@ -3215,7 +3241,7 @@ fn mutate_script_document(
             .transpose()?,
         allowed: true,
         storage_events: Vec::new(),
-        indexed_db_state: indexed_db_snapshot(runtime, document_url, document_origin)?,
+        indexed_db_changes: Vec::new(),
     };
     Ok((next, mutation))
 }

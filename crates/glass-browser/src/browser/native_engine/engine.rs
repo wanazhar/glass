@@ -16,8 +16,9 @@ use super::interaction::{
     MAX_NATIVE_EFFECTS, NativeAction, NativeEffect, NativeEventKind, validate_native_edit_key,
 };
 use super::javascript::{
-    NativeIndexedDbState, NativeJavaScriptRuntime, NativeScriptEvaluation, NativeStorageEvent,
-    NativeWebStorageState, append_storage_events, execute_inline_scripts, host_event_script,
+    NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime, NativeScriptEvaluation,
+    NativeStorageEvent, NativeWebStorageState, append_storage_changes, apply_indexed_db_changes,
+    diff_indexed_db_changes, execute_inline_scripts, host_event_script,
     host_hash_change_event_script, host_key_event_script, host_submit_event_script,
     load_indexed_db_profile, load_web_storage_profile, new_storage_writer_id,
     read_storage_event_journal, register_storage_reader, save_web_storage_profile,
@@ -87,6 +88,7 @@ pub struct NativeEngine {
     storage_writer_id: String,
     storage_event_offset: u64,
     storage_state_recovery_pending: bool,
+    indexed_db_state_delivery_pending: bool,
     pending_external_storage_events: Vec<NativeStorageEvent>,
     history: NativeHistory,
     lifecycle: NativeLifecycleState,
@@ -130,6 +132,7 @@ impl NativeEngine {
             storage_writer_id,
             storage_event_offset,
             storage_state_recovery_pending: false,
+            indexed_db_state_delivery_pending: false,
             pending_external_storage_events: Vec::new(),
             history: NativeHistory::new(max_history_entries),
             lifecycle: NativeLifecycleState::New,
@@ -210,8 +213,7 @@ impl NativeEngine {
                     None,
                 )
                 .await?;
-            self.publish_content_storage_events(&resource.storage_events)?;
-            self.indexed_db = resource.indexed_db_state.clone();
+            self.publish_content_state(&resource.storage_events, &resource.indexed_db_changes)?;
             self.prepare_navigation_content(resource)?
         } else {
             self.prepare_navigation_async(&initial_url).await?
@@ -446,8 +448,7 @@ impl NativeEngine {
         &mut self,
         content: NativeContentLoad,
     ) -> Result<NativeEngineSnapshot, NativeEngineError> {
-        self.publish_content_storage_events(&content.storage_events)?;
-        self.indexed_db = content.indexed_db_state.clone();
+        self.publish_content_state(&content.storage_events, &content.indexed_db_changes)?;
         if self.is_same_document_navigation(&content.url) {
             self.commit_same_document_navigation(content.url, HistoryCommit::Push)?;
         } else {
@@ -462,8 +463,7 @@ impl NativeEngine {
         content: NativeContentLoad,
         worker: &NativeRuntimeWorker,
     ) -> Result<NativeEngineSnapshot, NativeEngineError> {
-        self.publish_content_storage_events(&content.storage_events)?;
-        self.indexed_db = content.indexed_db_state.clone();
+        self.publish_content_state(&content.storage_events, &content.indexed_db_changes)?;
         let same_document = self.is_same_document_navigation(&content.url);
         if same_document {
             self.commit_same_document_navigation_async(content.url, HistoryCommit::Push, worker)
@@ -632,7 +632,8 @@ impl NativeEngine {
                 value,
                 mutation,
                 storage_events,
-                indexed_db_state,
+                indexed_db_changes,
+                ..
             } = {
                 let process = self
                     .content_process
@@ -656,8 +657,7 @@ impl NativeEngine {
                     self.navigate_script_navigation_async(navigation).await?;
                 }
             } else {
-                self.publish_content_storage_events(&storage_events)?;
-                self.indexed_db = indexed_db_state;
+                self.publish_content_state(&storage_events, &indexed_db_changes)?;
             }
             return Ok(value);
         }
@@ -1152,26 +1152,43 @@ impl NativeEngine {
         )?;
         if journal.recovered {
             let profile_state = load_web_storage_profile(self.config.storage_path.as_deref())?;
+            let indexed_db_state = load_indexed_db_profile(self.config.storage_path.as_deref())?;
             self.web_storage.replace_profile_state(profile_state);
+            self.indexed_db = indexed_db_state;
             self.storage_state_recovery_pending = true;
+            self.indexed_db_state_delivery_pending = true;
             self.pending_external_storage_events.clear();
             if let Some(javascript) = self.javascript.as_ref() {
                 javascript.replace_storage_state(self.web_storage.clone());
+                javascript.set_indexed_db_state(
+                    self.indexed_db
+                        .origin(&storage_key(&self.url, &self.origin)),
+                );
             }
         }
         let current_storage_key = storage_key(&self.url, &self.origin);
-        let events = journal
-            .records
-            .into_iter()
-            .filter(|record| record.writer_id != self.storage_writer_id)
-            .map(|record| record.event)
-            .filter(|event| {
-                event.storage_key == current_storage_key
-                    && (event.scope == "local"
-                        || (event.scope == "session"
-                            && event.source_context_id == self.config.context_id))
-            })
-            .collect::<Vec<_>>();
+        let mut events = Vec::new();
+        let mut indexed_db_changes = Vec::new();
+        for record in journal.records {
+            if record.writer_id == self.storage_writer_id {
+                continue;
+            }
+            if let Some(event) = record.event
+                && event.storage_key == current_storage_key
+                && (event.scope == "local"
+                    || (event.scope == "session"
+                        && event.source_context_id == self.config.context_id))
+            {
+                events.push(event);
+            }
+            if !record.indexed_db_changes.is_empty() {
+                apply_indexed_db_changes(&mut self.indexed_db, &record.indexed_db_changes)?;
+                indexed_db_changes.extend(record.indexed_db_changes);
+            }
+        }
+        if !indexed_db_changes.is_empty() {
+            self.indexed_db_state_delivery_pending = true;
+        }
         if events.is_empty() {
             return Ok(());
         }
@@ -1199,12 +1216,17 @@ impl NativeEngine {
     }
 
     async fn deliver_pending_external_storage_events(&mut self) -> Result<(), NativeEngineError> {
-        if self.pending_external_storage_events.is_empty() && !self.storage_state_recovery_pending {
+        if self.pending_external_storage_events.is_empty()
+            && !self.storage_state_recovery_pending
+            && !self.indexed_db_state_delivery_pending
+        {
             return Ok(());
         }
         let events = std::mem::take(&mut self.pending_external_storage_events);
         let storage_state = self.web_storage.clone();
+        let indexed_db_state = self.indexed_db.clone();
         let recovery_pending = self.storage_state_recovery_pending;
+        let indexed_db_pending = self.indexed_db_state_delivery_pending;
         if let Some(process) = self.content_process.as_mut() {
             if !process.is_healthy() {
                 self.pending_external_storage_events = events;
@@ -1217,8 +1239,10 @@ impl NativeEngine {
                 ));
             }
             let result = async {
-                if recovery_pending {
-                    process.sync_storage_state(&storage_state).await?;
+                if recovery_pending || indexed_db_pending {
+                    process
+                        .sync_storage_state(&storage_state, &indexed_db_state)
+                        .await?;
                 }
                 process.sync_storage_events(&events).await
             }
@@ -1226,6 +1250,7 @@ impl NativeEngine {
             match result {
                 Ok(()) => {
                     self.storage_state_recovery_pending = false;
+                    self.indexed_db_state_delivery_pending = false;
                     Ok(())
                 }
                 Err(error) => {
@@ -1239,9 +1264,19 @@ impl NativeEngine {
             } else {
                 javascript.set_storage_state(storage_state);
             }
-            let result = javascript.set_storage_events(events.clone());
+            if indexed_db_pending || recovery_pending {
+                javascript.set_indexed_db_state(
+                    indexed_db_state.origin(&storage_key(&self.url, &self.origin)),
+                );
+            }
+            let result = if events.is_empty() {
+                Ok(())
+            } else {
+                javascript.set_storage_events(events.clone())
+            };
             if result.is_ok() {
                 self.storage_state_recovery_pending = false;
+                self.indexed_db_state_delivery_pending = false;
             } else {
                 self.pending_external_storage_events = events;
             }
@@ -1252,17 +1287,20 @@ impl NativeEngine {
         }
     }
 
-    fn publish_content_storage_events(
+    fn publish_content_state(
         &mut self,
         events: &[NativeStorageEvent],
+        indexed_db_changes: &[NativeIndexedDbChange],
     ) -> Result<(), NativeEngineError> {
         for event in events {
             self.web_storage.apply_storage_event(event)?;
         }
-        append_storage_events(
+        apply_indexed_db_changes(&mut self.indexed_db, indexed_db_changes)?;
+        append_storage_changes(
             self.config.storage_path.as_deref(),
             &self.storage_writer_id,
             events,
+            indexed_db_changes,
         )?;
         Ok(())
     }
@@ -1275,19 +1313,24 @@ impl NativeEngine {
         {
             return Ok(());
         }
-        let storage_changes = if let Some(javascript) = self.javascript.as_ref() {
+        let (storage_changes, indexed_db_changes) = if let Some(javascript) =
+            self.javascript.as_ref()
+        {
             let cookie_updates = javascript.take_cookie_updates();
             self.web_storage = javascript.storage_state();
-            self.indexed_db.replace_origin(
-                storage_key(&self.url, &self.origin),
-                javascript.indexed_db_state(),
-            )?;
+            let indexed_db_key = storage_key(&self.url, &self.origin);
+            let before_indexed_db = self.indexed_db.origin(&indexed_db_key);
+            let after_indexed_db = javascript.indexed_db_state();
+            let indexed_db_changes =
+                diff_indexed_db_changes(&indexed_db_key, &before_indexed_db, &after_indexed_db)?;
+            self.indexed_db
+                .replace_origin(indexed_db_key, after_indexed_db)?;
             for value in cookie_updates {
                 self.loader.set_document_cookie(&self.url, &value)?;
             }
-            javascript.take_storage_changes()
+            (javascript.take_storage_changes(), indexed_db_changes)
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
         let cookie_state = self.loader.cookie_profile();
         let cookie_changes = self.loader.take_cookie_changes();
@@ -1298,11 +1341,13 @@ impl NativeEngine {
             &cookie_state,
             &cookie_changes,
             &self.indexed_db,
+            &indexed_db_changes,
         )?;
-        append_storage_events(
+        append_storage_changes(
             self.config.storage_path.as_deref(),
             &self.storage_writer_id,
             &storage_changes,
+            &indexed_db_changes,
         )?;
         Ok(())
     }
@@ -1771,8 +1816,7 @@ impl NativeEngine {
         next_revision: u64,
         mutation: NativeContentMutation,
     ) -> Result<NativeActionResult, NativeEngineError> {
-        self.publish_content_storage_events(&mutation.storage_events)?;
-        self.indexed_db = mutation.indexed_db_state.clone();
+        self.publish_content_state(&mutation.storage_events, &mutation.indexed_db_changes)?;
         let generation = self.document.generation();
         let mut document = match NativeDocument::from_content_wire(
             mutation.document,

@@ -14,7 +14,7 @@ use fs2::FileExt;
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::{Context, Error, Module, Runtime, Value};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
@@ -47,6 +47,7 @@ pub(crate) const MAX_NATIVE_COOKIE_PROFILE_BYTES: usize = 4096;
 const MAX_NATIVE_INDEXED_DB_DATABASES: usize = 16;
 const MAX_NATIVE_INDEXED_DB_STORES: usize = 128;
 const MAX_NATIVE_INDEXED_DB_RECORDS: usize = 128;
+pub(crate) const MAX_NATIVE_INDEXED_DB_CHANGES: usize = 128;
 const MAX_NATIVE_INDEXED_DB_VALUE_BYTES: usize = 8 * 1024;
 const MAX_NATIVE_INDEXED_DB_STATE_BYTES: usize = MAX_NATIVE_SCRIPT_RESULT_BYTES;
 const NATIVE_STORAGE_PROFILE_LOCK_TIMEOUT: Duration = Duration::from_millis(500);
@@ -160,13 +161,13 @@ pub(crate) struct NativeIndexedDbOrigin {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
-struct NativeIndexedDbDatabase {
+pub(crate) struct NativeIndexedDbDatabase {
     version: u64,
     stores: BTreeMap<String, NativeIndexedDbObjectStore>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
-struct NativeIndexedDbObjectStore {
+pub(crate) struct NativeIndexedDbObjectStore {
     #[serde(default)]
     key_path: Option<String>,
     #[serde(default)]
@@ -174,6 +175,43 @@ struct NativeIndexedDbObjectStore {
     #[serde(default = "default_indexed_db_next_key")]
     next_key: u64,
     records: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
+pub(crate) enum NativeIndexedDbChange {
+    ReplaceDatabase {
+        storage_key: String,
+        name: String,
+        database: Option<NativeIndexedDbDatabase>,
+    },
+    ReplaceStore {
+        storage_key: String,
+        database: String,
+        version: u64,
+        name: String,
+        store: Option<NativeIndexedDbObjectStore>,
+    },
+    UpdateStoreMetadata {
+        storage_key: String,
+        database: String,
+        store: String,
+        key_path: Option<String>,
+        auto_increment: bool,
+        next_key: u64,
+    },
+    PutRecord {
+        storage_key: String,
+        database: String,
+        store: String,
+        key: String,
+        value: serde_json::Value,
+    },
+    DeleteRecord {
+        storage_key: String,
+        database: String,
+        store: String,
+        key: String,
+    },
 }
 
 fn default_indexed_db_next_key() -> u64 {
@@ -249,54 +287,69 @@ impl NativeIndexedDbOrigin {
             }
             for (store_name, store) in &database.stores {
                 validate_indexed_db_name("native IndexedDB object store name", store_name)?;
-                if let Some(key_path) = store.key_path.as_deref()
-                    && key_path.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES
-                {
-                    return Err(NativeEngineError::limit(
-                        "native IndexedDB key path",
-                        crate::browser_backend::MAX_BACKEND_ID_BYTES,
-                        key_path.len(),
-                    ));
-                }
-                if store.next_key == 0 {
-                    return Err(NativeEngineError::invalid(
-                        "native IndexedDB auto-increment key",
-                        "must be greater than zero",
-                    ));
-                }
-                if store.records.len() > MAX_NATIVE_INDEXED_DB_RECORDS {
-                    return Err(NativeEngineError::limit(
-                        "native IndexedDB records",
-                        MAX_NATIVE_INDEXED_DB_RECORDS,
-                        store.records.len(),
-                    ));
-                }
-                for (key, value) in &store.records {
-                    if key.is_empty() || key.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES {
-                        return Err(NativeEngineError::limit(
-                            "native IndexedDB record key",
-                            crate::browser_backend::MAX_BACKEND_ID_BYTES,
-                            key.len(),
-                        ));
-                    }
-                    let value_bytes = serde_json::to_vec(value).map_err(|_| {
-                        NativeEngineError::invalid(
-                            "native IndexedDB record",
-                            "must contain a JSON structured-clone value",
-                        )
-                    })?;
-                    if value_bytes.len() > MAX_NATIVE_INDEXED_DB_VALUE_BYTES {
-                        return Err(NativeEngineError::limit(
-                            "native IndexedDB record value",
-                            MAX_NATIVE_INDEXED_DB_VALUE_BYTES,
-                            value_bytes.len(),
-                        ));
-                    }
-                }
+                validate_indexed_db_store(store)?;
             }
         }
         Ok(())
     }
+}
+
+fn validate_indexed_db_store(store: &NativeIndexedDbObjectStore) -> Result<(), NativeEngineError> {
+    if let Some(key_path) = store.key_path.as_deref()
+        && key_path.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES
+    {
+        return Err(NativeEngineError::limit(
+            "native IndexedDB key path",
+            crate::browser_backend::MAX_BACKEND_ID_BYTES,
+            key_path.len(),
+        ));
+    }
+    if store.next_key == 0 {
+        return Err(NativeEngineError::invalid(
+            "native IndexedDB auto-increment key",
+            "must be greater than zero",
+        ));
+    }
+    if store.records.len() > MAX_NATIVE_INDEXED_DB_RECORDS {
+        return Err(NativeEngineError::limit(
+            "native IndexedDB records",
+            MAX_NATIVE_INDEXED_DB_RECORDS,
+            store.records.len(),
+        ));
+    }
+    for (key, value) in &store.records {
+        validate_indexed_db_record_key(key)?;
+        validate_indexed_db_record_value(value)?;
+    }
+    Ok(())
+}
+
+fn validate_indexed_db_record_key(key: &str) -> Result<(), NativeEngineError> {
+    if key.is_empty() || key.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES {
+        return Err(NativeEngineError::limit(
+            "native IndexedDB record key",
+            crate::browser_backend::MAX_BACKEND_ID_BYTES,
+            key.len(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_indexed_db_record_value(value: &serde_json::Value) -> Result<(), NativeEngineError> {
+    let value_bytes = serde_json::to_vec(value).map_err(|_| {
+        NativeEngineError::invalid(
+            "native IndexedDB record",
+            "must contain a JSON structured-clone value",
+        )
+    })?;
+    if value_bytes.len() > MAX_NATIVE_INDEXED_DB_VALUE_BYTES {
+        return Err(NativeEngineError::limit(
+            "native IndexedDB record value",
+            MAX_NATIVE_INDEXED_DB_VALUE_BYTES,
+            value_bytes.len(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_indexed_db_name(field: &str, value: &str) -> Result<(), NativeEngineError> {
@@ -328,6 +381,398 @@ fn validate_indexed_db_serialized_size(
         ));
     }
     Ok(())
+}
+
+pub(crate) fn diff_indexed_db_changes(
+    storage_key: &str,
+    before: &NativeIndexedDbOrigin,
+    after: &NativeIndexedDbOrigin,
+) -> Result<Vec<NativeIndexedDbChange>, NativeEngineError> {
+    validate_indexed_db_storage_key(storage_key)?;
+    before.validate()?;
+    after.validate()?;
+    if before == after {
+        return Ok(Vec::new());
+    }
+    let mut changes = Vec::new();
+    let database_names = before
+        .databases
+        .keys()
+        .chain(after.databases.keys())
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    for name in database_names {
+        match (before.databases.get(&name), after.databases.get(&name)) {
+            (None, Some(database)) => push_indexed_db_change(
+                &mut changes,
+                NativeIndexedDbChange::ReplaceDatabase {
+                    storage_key: storage_key.to_owned(),
+                    name,
+                    database: Some(database.clone()),
+                },
+            )?,
+            (Some(_), None) => push_indexed_db_change(
+                &mut changes,
+                NativeIndexedDbChange::ReplaceDatabase {
+                    storage_key: storage_key.to_owned(),
+                    name,
+                    database: None,
+                },
+            )?,
+            (Some(before_database), Some(after_database)) => {
+                if before_database.version != after_database.version {
+                    push_indexed_db_change(
+                        &mut changes,
+                        NativeIndexedDbChange::ReplaceDatabase {
+                            storage_key: storage_key.to_owned(),
+                            name,
+                            database: Some(after_database.clone()),
+                        },
+                    )?;
+                    continue;
+                }
+                let store_names = before_database
+                    .stores
+                    .keys()
+                    .chain(after_database.stores.keys())
+                    .cloned()
+                    .collect::<BTreeSet<_>>();
+                for store_name in store_names {
+                    match (
+                        before_database.stores.get(&store_name),
+                        after_database.stores.get(&store_name),
+                    ) {
+                        (None, Some(store)) => push_indexed_db_change(
+                            &mut changes,
+                            NativeIndexedDbChange::ReplaceStore {
+                                storage_key: storage_key.to_owned(),
+                                database: name.clone(),
+                                version: after_database.version,
+                                name: store_name,
+                                store: Some(store.clone()),
+                            },
+                        )?,
+                        (Some(_), None) => push_indexed_db_change(
+                            &mut changes,
+                            NativeIndexedDbChange::ReplaceStore {
+                                storage_key: storage_key.to_owned(),
+                                database: name.clone(),
+                                version: after_database.version,
+                                name: store_name,
+                                store: None,
+                            },
+                        )?,
+                        (Some(before_store), Some(after_store)) => {
+                            if (
+                                before_store.key_path.clone(),
+                                before_store.auto_increment,
+                                before_store.next_key,
+                            ) != (
+                                after_store.key_path.clone(),
+                                after_store.auto_increment,
+                                after_store.next_key,
+                            ) {
+                                push_indexed_db_change(
+                                    &mut changes,
+                                    NativeIndexedDbChange::UpdateStoreMetadata {
+                                        storage_key: storage_key.to_owned(),
+                                        database: name.clone(),
+                                        store: store_name.clone(),
+                                        key_path: after_store.key_path.clone(),
+                                        auto_increment: after_store.auto_increment,
+                                        next_key: after_store.next_key,
+                                    },
+                                )?;
+                            }
+                            let record_keys = before_store
+                                .records
+                                .keys()
+                                .chain(after_store.records.keys())
+                                .cloned()
+                                .collect::<BTreeSet<_>>();
+                            for key in record_keys {
+                                match (
+                                    before_store.records.get(&key),
+                                    after_store.records.get(&key),
+                                ) {
+                                    (None, Some(value)) => push_indexed_db_change(
+                                        &mut changes,
+                                        NativeIndexedDbChange::PutRecord {
+                                            storage_key: storage_key.to_owned(),
+                                            database: name.clone(),
+                                            store: store_name.clone(),
+                                            key,
+                                            value: value.clone(),
+                                        },
+                                    )?,
+                                    (Some(_), None) => push_indexed_db_change(
+                                        &mut changes,
+                                        NativeIndexedDbChange::DeleteRecord {
+                                            storage_key: storage_key.to_owned(),
+                                            database: name.clone(),
+                                            store: store_name.clone(),
+                                            key,
+                                        },
+                                    )?,
+                                    (Some(before_value), Some(after_value))
+                                        if before_value != after_value =>
+                                    {
+                                        push_indexed_db_change(
+                                            &mut changes,
+                                            NativeIndexedDbChange::PutRecord {
+                                                storage_key: storage_key.to_owned(),
+                                                database: name.clone(),
+                                                store: store_name.clone(),
+                                                key,
+                                                value: after_value.clone(),
+                                            },
+                                        )?;
+                                    }
+                                    (Some(_), Some(_)) => {}
+                                    (None, None) => {}
+                                }
+                            }
+                        }
+                        (None, None) => {}
+                    }
+                }
+            }
+            (None, None) => {}
+        }
+    }
+    Ok(changes)
+}
+
+fn push_indexed_db_change(
+    changes: &mut Vec<NativeIndexedDbChange>,
+    change: NativeIndexedDbChange,
+) -> Result<(), NativeEngineError> {
+    validate_indexed_db_change(&change)?;
+    if changes.len() >= MAX_NATIVE_INDEXED_DB_CHANGES {
+        return Err(NativeEngineError::limit(
+            "native IndexedDB changes",
+            MAX_NATIVE_INDEXED_DB_CHANGES,
+            changes.len().saturating_add(1),
+        ));
+    }
+    changes.push(change);
+    Ok(())
+}
+
+fn validate_indexed_db_storage_key(storage_key: &str) -> Result<(), NativeEngineError> {
+    if storage_key.is_empty() || storage_key.len() > crate::browser_backend::MAX_TEXT_BYTES {
+        return Err(NativeEngineError::limit(
+            "native IndexedDB storage key",
+            crate::browser_backend::MAX_TEXT_BYTES,
+            storage_key.len(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_indexed_db_change(change: &NativeIndexedDbChange) -> Result<(), NativeEngineError> {
+    match change {
+        NativeIndexedDbChange::ReplaceDatabase {
+            storage_key,
+            name,
+            database,
+        } => {
+            validate_indexed_db_storage_key(storage_key)?;
+            validate_indexed_db_name("native IndexedDB database name", name)?;
+            if let Some(database) = database {
+                let mut databases = BTreeMap::new();
+                databases.insert(name.clone(), database.clone());
+                NativeIndexedDbOrigin { databases }.validate()?;
+            }
+        }
+        NativeIndexedDbChange::ReplaceStore {
+            storage_key,
+            database,
+            version,
+            name,
+            store,
+        } => {
+            validate_indexed_db_storage_key(storage_key)?;
+            validate_indexed_db_name("native IndexedDB database name", database)?;
+            if *version == 0 {
+                return Err(NativeEngineError::invalid(
+                    "native IndexedDB database version",
+                    "must be greater than zero",
+                ));
+            }
+            validate_indexed_db_name("native IndexedDB object store name", name)?;
+            if let Some(store) = store {
+                validate_indexed_db_store(store)?;
+            }
+        }
+        NativeIndexedDbChange::UpdateStoreMetadata {
+            storage_key,
+            database,
+            store,
+            key_path,
+            next_key,
+            ..
+        } => {
+            validate_indexed_db_storage_key(storage_key)?;
+            validate_indexed_db_name("native IndexedDB database name", database)?;
+            validate_indexed_db_name("native IndexedDB object store name", store)?;
+            validate_indexed_db_key_path(key_path.as_deref())?;
+            if *next_key == 0 {
+                return Err(NativeEngineError::invalid(
+                    "native IndexedDB auto-increment key",
+                    "must be greater than zero",
+                ));
+            }
+        }
+        NativeIndexedDbChange::PutRecord {
+            storage_key,
+            database,
+            store,
+            key,
+            value,
+        } => {
+            validate_indexed_db_storage_key(storage_key)?;
+            validate_indexed_db_name("native IndexedDB database name", database)?;
+            validate_indexed_db_name("native IndexedDB object store name", store)?;
+            validate_indexed_db_record_key(key)?;
+            validate_indexed_db_record_value(value)?;
+        }
+        NativeIndexedDbChange::DeleteRecord {
+            storage_key,
+            database,
+            store,
+            key,
+        } => {
+            validate_indexed_db_storage_key(storage_key)?;
+            validate_indexed_db_name("native IndexedDB database name", database)?;
+            validate_indexed_db_name("native IndexedDB object store name", store)?;
+            validate_indexed_db_record_key(key)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_indexed_db_key_path(key_path: Option<&str>) -> Result<(), NativeEngineError> {
+    if let Some(key_path) = key_path
+        && key_path.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES
+    {
+        return Err(NativeEngineError::limit(
+            "native IndexedDB key path",
+            crate::browser_backend::MAX_BACKEND_ID_BYTES,
+            key_path.len(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn apply_indexed_db_changes(
+    state: &mut NativeIndexedDbState,
+    changes: &[NativeIndexedDbChange],
+) -> Result<(), NativeEngineError> {
+    if changes.len() > MAX_NATIVE_INDEXED_DB_CHANGES {
+        return Err(NativeEngineError::limit(
+            "native IndexedDB changes",
+            MAX_NATIVE_INDEXED_DB_CHANGES,
+            changes.len(),
+        ));
+    }
+    for change in changes {
+        validate_indexed_db_change(change)?;
+        match change {
+            NativeIndexedDbChange::ReplaceDatabase {
+                storage_key,
+                name,
+                database,
+            } => {
+                if let Some(database) = database {
+                    state
+                        .origins
+                        .entry(storage_key.clone())
+                        .or_default()
+                        .databases
+                        .insert(name.clone(), database.clone());
+                } else if let Some(origin) = state.origins.get_mut(storage_key) {
+                    origin.databases.remove(name);
+                    if origin.databases.is_empty() {
+                        state.origins.remove(storage_key);
+                    }
+                }
+            }
+            NativeIndexedDbChange::ReplaceStore {
+                storage_key,
+                database,
+                name,
+                store,
+                ..
+            } => {
+                let mut remove_origin = false;
+                if let Some(origin) = state.origins.get_mut(storage_key)
+                    && let Some(database) = origin.databases.get_mut(database)
+                {
+                    if let Some(store) = store {
+                        database.stores.insert(name.clone(), store.clone());
+                    } else {
+                        database.stores.remove(name);
+                    }
+                    remove_origin = origin.databases.is_empty();
+                }
+                if remove_origin {
+                    state.origins.remove(storage_key);
+                }
+            }
+            NativeIndexedDbChange::UpdateStoreMetadata {
+                storage_key,
+                database,
+                store,
+                key_path,
+                auto_increment,
+                next_key,
+            } => {
+                if let Some(object_store) = state
+                    .origins
+                    .get_mut(storage_key)
+                    .and_then(|origin| origin.databases.get_mut(database))
+                    .and_then(|database| database.stores.get_mut(store))
+                {
+                    object_store.key_path = key_path.clone();
+                    object_store.auto_increment = *auto_increment;
+                    object_store.next_key = *next_key;
+                }
+            }
+            NativeIndexedDbChange::PutRecord {
+                storage_key,
+                database,
+                store,
+                key,
+                value,
+            } => {
+                if let Some(object_store) = state
+                    .origins
+                    .get_mut(storage_key)
+                    .and_then(|origin| origin.databases.get_mut(database))
+                    .and_then(|database| database.stores.get_mut(store))
+                {
+                    object_store.records.insert(key.clone(), value.clone());
+                }
+            }
+            NativeIndexedDbChange::DeleteRecord {
+                storage_key,
+                database,
+                store,
+                key,
+            } => {
+                if let Some(object_store) = state
+                    .origins
+                    .get_mut(storage_key)
+                    .and_then(|origin| origin.databases.get_mut(database))
+                    .and_then(|database| database.stores.get_mut(store))
+                {
+                    object_store.records.remove(key);
+                }
+            }
+        }
+    }
+    state.validate()
 }
 
 impl NativeWebStorageState {
@@ -427,13 +872,16 @@ pub(crate) struct NativeCookieChange {
     pub(crate) cookie: Option<NativeCookieProfileEntry>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub(crate) struct NativeStorageJournalRecord {
     pub(crate) writer_id: String,
-    pub(crate) event: NativeStorageEvent,
+    #[serde(default)]
+    pub(crate) event: Option<NativeStorageEvent>,
+    #[serde(default)]
+    pub(crate) indexed_db_changes: Vec<NativeIndexedDbChange>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct NativeStorageJournalRead {
     pub(crate) records: Vec<NativeStorageJournalRecord>,
     pub(crate) recovered: bool,
@@ -837,7 +1285,25 @@ fn decode_storage_journal_record(
         )
     })?;
     validate_context_id(&record.writer_id)?;
-    validate_storage_journal_event(&record.event)?;
+    if let Some(event) = record.event.as_ref() {
+        validate_storage_journal_event(event)?;
+    }
+    if record.indexed_db_changes.is_empty() && record.event.is_none() {
+        return Err(NativeEngineError::invalid(
+            "native Web Storage event journal",
+            "must contain a storage event or IndexedDB changes",
+        ));
+    }
+    if record.indexed_db_changes.len() > MAX_NATIVE_INDEXED_DB_CHANGES {
+        return Err(NativeEngineError::limit(
+            "native IndexedDB changes",
+            MAX_NATIVE_INDEXED_DB_CHANGES,
+            record.indexed_db_changes.len(),
+        ));
+    }
+    for change in &record.indexed_db_changes {
+        validate_indexed_db_change(change)?;
+    }
     Ok(record)
 }
 
@@ -921,15 +1387,16 @@ pub(crate) fn read_storage_event_journal(
     Ok(NativeStorageJournalRead { records, recovered })
 }
 
-pub(crate) fn append_storage_events(
+pub(crate) fn append_storage_changes(
     path: Option<&Path>,
     writer_id: &str,
     events: &[NativeStorageEvent],
+    indexed_db_changes: &[NativeIndexedDbChange],
 ) -> Result<(), NativeEngineError> {
     let Some(path) = path else {
         return Ok(());
     };
-    if events.is_empty() {
+    if events.is_empty() && indexed_db_changes.is_empty() {
         return Ok(());
     }
     validate_context_id(writer_id)?;
@@ -973,7 +1440,31 @@ pub(crate) fn append_storage_events(
         validate_storage_journal_event(event)?;
         let record = NativeStorageJournalRecord {
             writer_id: writer_id.to_owned(),
-            event: event.clone(),
+            event: Some(event.clone()),
+            indexed_db_changes: Vec::new(),
+        };
+        let mut encoded = serde_json::to_vec(&record).map_err(|_| NativeEngineError::Worker {
+            operation: "encode native Web Storage event journal".into(),
+            reason: "native Web Storage event journal record cannot be encoded".into(),
+        })?;
+        encoded.push(b'\n');
+        payload.extend(encoded);
+    }
+    if !indexed_db_changes.is_empty() {
+        if indexed_db_changes.len() > MAX_NATIVE_INDEXED_DB_CHANGES {
+            return Err(NativeEngineError::limit(
+                "native IndexedDB changes",
+                MAX_NATIVE_INDEXED_DB_CHANGES,
+                indexed_db_changes.len(),
+            ));
+        }
+        for change in indexed_db_changes {
+            validate_indexed_db_change(change)?;
+        }
+        let record = NativeStorageJournalRecord {
+            writer_id: writer_id.to_owned(),
+            event: None,
+            indexed_db_changes: indexed_db_changes.to_vec(),
         };
         let mut encoded = serde_json::to_vec(&record).map_err(|_| NativeEngineError::Worker {
             operation: "encode native Web Storage event journal".into(),
@@ -1057,6 +1548,15 @@ pub(crate) fn append_storage_events(
         write_storage_reader_leases(path, &readers)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn append_storage_events(
+    path: Option<&Path>,
+    writer_id: &str,
+    events: &[NativeStorageEvent],
+) -> Result<(), NativeEngineError> {
+    append_storage_changes(path, writer_id, events, &[])
 }
 
 fn write_storage_event_journal(path: &Path, bytes: &[u8]) -> Result<(), NativeEngineError> {
@@ -1163,7 +1663,13 @@ mod storage_journal_tests {
             read_storage_event_journal(Some(&profile_path), "reader", &mut cursor).unwrap();
         assert!(!second_read.recovered);
         assert_eq!(second_read.records.len(), second_batch.len());
-        assert_eq!(second_read.records[0].event.key.as_deref(), Some("key-128"));
+        assert_eq!(
+            second_read.records[0]
+                .event
+                .as_ref()
+                .and_then(|event| event.key.as_deref()),
+            Some("key-128")
+        );
         assert!(cursor > 0);
 
         unregister_storage_reader(Some(&profile_path), "reader").unwrap();
@@ -1331,6 +1837,7 @@ pub(crate) fn save_web_storage_profile(
     cookie_state: &[NativeCookieProfileEntry],
     cookie_changes: &[NativeCookieChange],
     indexed_db: &NativeIndexedDbState,
+    indexed_db_changes: &[NativeIndexedDbChange],
 ) -> Result<(), NativeEngineError> {
     let Some(path) = path else {
         return Ok(());
@@ -1363,6 +1870,14 @@ pub(crate) fn save_web_storage_profile(
     if current.is_some() {
         merge_cookie_changes(&mut cookies, cookie_changes)?;
     }
+    let mut merged_indexed_db = current
+        .as_ref()
+        .map(|profile| profile.indexed_db.clone())
+        .unwrap_or_else(|| indexed_db.clone());
+    if current.is_some() {
+        apply_indexed_db_changes(&mut merged_indexed_db, indexed_db_changes)?;
+    }
+    merged_indexed_db.validate()?;
     let revision = match current.as_ref().map(|profile| profile.revision) {
         Some(revision) => revision
             .checked_add(1)
@@ -1382,7 +1897,7 @@ pub(crate) fn save_web_storage_profile(
         revision,
         local: merged_state.local,
         cookies,
-        indexed_db: indexed_db.clone(),
+        indexed_db: merged_indexed_db,
     };
     let bytes = serde_json::to_vec(&profile).map_err(|_| NativeEngineError::Worker {
         operation: "save native Web Storage profile".into(),
@@ -3211,14 +3726,12 @@ fn document_bootstrap(
   }};
   globalThis.localStorage = createStorage("__glassLocalStorageValues", "__glassLocalStorageObject", host.storage.local);
   globalThis.sessionStorage = createStorage("__glassSessionStorageValues", "__glassSessionStorageObject", host.storage.session);
-  const indexedDbState = globalThis.__glassIndexedDbState
-    && typeof globalThis.__glassIndexedDbState === "object"
-    ? globalThis.__glassIndexedDbState
-    : (host.indexed_db && typeof host.indexed_db === "object"
-      ? host.indexed_db
-      : {{ databases: {{}} }});
-  if (!indexedDbState.databases || typeof indexedDbState.databases !== "object") indexedDbState.databases = {{}};
-  globalThis.__glassIndexedDbState = indexedDbState;
+  const indexedDbHostState = host.indexed_db && typeof host.indexed_db === "object"
+    ? host.indexed_db
+    : {{ databases: {{}} }};
+  if (!indexedDbHostState.databases || typeof indexedDbHostState.databases !== "object") indexedDbHostState.databases = {{}};
+  globalThis.__glassIndexedDbState = indexedDbHostState;
+  const indexedDbState = () => globalThis.__glassIndexedDbState;
   if (!globalThis.__glassNativeIndexedDBInstalled) {{
   const indexedDbDatabaseLimit = {indexed_db_database_limit};
   const indexedDbStoreLimit = {indexed_db_store_limit};
@@ -3492,7 +4005,7 @@ fn document_bootstrap(
       const requestedVersion = version === undefined ? undefined : Number(version);
       const request = makeIndexedDbRequest();
       indexedDbSchedule(() => {{
-        let databaseState = indexedDbState.databases[normalizedName];
+        let databaseState = indexedDbState().databases[normalizedName];
         const oldVersion = databaseState ? Number(databaseState.version) : 0;
         const nextVersion = requestedVersion === undefined ? (databaseState ? oldVersion : 1) : requestedVersion;
         if (databaseState && nextVersion < oldVersion) {{
@@ -3501,12 +4014,12 @@ fn document_bootstrap(
         }}
         let upgradeTransaction = null;
         if (!databaseState) {{
-          if (Object.keys(indexedDbState.databases).length >= indexedDbDatabaseLimit) {{
+          if (Object.keys(indexedDbState().databases).length >= indexedDbDatabaseLimit) {{
             finishIndexedDbRequest(request, undefined, indexedDbError("QuotaExceededError", "native IndexedDB database limit exceeded"), null);
             return;
           }}
           databaseState = {{ version: nextVersion, stores: {{}} }};
-          indexedDbState.databases[normalizedName] = databaseState;
+          indexedDbState().databases[normalizedName] = databaseState;
         }} else if (nextVersion > oldVersion) {{
           databaseState.version = nextVersion;
         }}
@@ -3532,11 +4045,11 @@ fn document_bootstrap(
     deleteDatabase(name) {{
       const normalizedName = indexedDbName(name, "database name");
       const request = makeIndexedDbRequest();
-      indexedDbSchedule(() => {{ delete indexedDbState.databases[normalizedName]; finishIndexedDbRequest(request, undefined, null, null); }});
+      indexedDbSchedule(() => {{ delete indexedDbState().databases[normalizedName]; finishIndexedDbRequest(request, undefined, null, null); }});
       return request;
     }},
     databases() {{
-      return Promise.resolve(Object.keys(indexedDbState.databases).map(name => ({{ name, version: indexedDbState.databases[name].version }})));
+      return Promise.resolve(Object.keys(indexedDbState().databases).map(name => ({{ name, version: indexedDbState().databases[name].version }})));
     }},
   }};
   globalThis.indexedDB = nativeIndexedDB;

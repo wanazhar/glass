@@ -23,8 +23,8 @@ use super::origin::NativeOrigin;
 use super::resource_loader::{
     MAX_NATIVE_RESPONSE_HEADER_BYTES, MAX_NATIVE_RESPONSE_HEADER_NAME_BYTES,
     MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES, MAX_NATIVE_RESPONSE_HEADERS, NativeCorsMode,
-    NativeFetchBody, NativeFetchRequest, NativeFetchResponse, NativeNavigationMethod,
-    NativeNavigationRequest, NativeResourceLoader,
+    NativeFetchBody, NativeFetchRedirectMode, NativeFetchRequest, NativeFetchResponse,
+    NativeNavigationMethod, NativeNavigationRequest, NativeResourceLoader,
 };
 #[cfg(windows)]
 use super::sandbox::NativeContentSandbox;
@@ -1043,6 +1043,14 @@ fn decode_fetch_response(
         .get("opaque")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let redirected = response
+        .get("redirected")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let opaque_redirect = response
+        .get("opaque_redirect")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let headers = decode_fetch_headers(response)?;
     let encoded_body = response
         .get("body_base64")
@@ -1070,7 +1078,9 @@ fn decode_fetch_response(
         content_type,
         headers,
         body,
+        redirected,
         opaque,
+        opaque_redirect,
     })
 }
 
@@ -1531,7 +1541,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             "status": fetch.status,
                             "content_type": fetch.content_type,
                             "headers": fetch.headers,
+                            "redirected": fetch.redirected,
                             "opaque": fetch.opaque,
+                            "opaque_redirect": fetch.opaque_redirect,
                             "body_base64": base64::engine::general_purpose::STANDARD
                                 .encode(fetch.body),
                         })
@@ -3351,6 +3363,7 @@ fn fetch_commands(
         Option<NativeFetchBody>,
         Option<String>,
         NativeCorsMode,
+        NativeFetchRedirectMode,
         Option<Duration>,
         bool,
     )>,
@@ -3369,6 +3382,7 @@ fn fetch_commands(
                 body_base64,
                 content_type,
                 mode,
+                redirect,
                 timeout_ms,
             } => Some((
                 *request_id,
@@ -3379,6 +3393,7 @@ fn fetch_commands(
                 body_base64.clone(),
                 content_type.clone(),
                 mode.clone(),
+                redirect.clone(),
                 *timeout_ms,
                 *credentials,
             )),
@@ -3394,6 +3409,7 @@ fn fetch_commands(
                 body_base64,
                 content_type,
                 mode,
+                redirect,
                 timeout_ms,
                 credentials,
             )| {
@@ -3412,6 +3428,17 @@ fn fetch_commands(
                         return Err(NativeEngineError::invalid(
                             "script fetch mode",
                             "must be cors, no-cors, or same-origin",
+                        ));
+                    }
+                };
+                let redirect_mode = match redirect.as_deref().unwrap_or("follow") {
+                    "follow" => NativeFetchRedirectMode::Follow,
+                    "error" => NativeFetchRedirectMode::Error,
+                    "manual" => NativeFetchRedirectMode::Manual,
+                    _ => {
+                        return Err(NativeEngineError::invalid(
+                            "script fetch redirect mode",
+                            "must be follow, error, or manual",
                         ));
                     }
                 };
@@ -3454,6 +3481,7 @@ fn fetch_commands(
                     body,
                     content_type,
                     cors_mode,
+                    redirect_mode,
                     timeout,
                     credentials,
                 ))
@@ -3471,7 +3499,9 @@ fn fetch_response_payload(result: Result<NativeFetchResponse, NativeEngineError>
             "headers": response.headers,
             "body": String::from_utf8_lossy(&response.body),
             "bodyBase64": base64::engine::general_purpose::STANDARD.encode(&response.body),
+            "redirected": response.redirected,
             "opaque": response.opaque,
+            "opaqueRedirect": response.opaque_redirect,
         }),
         Err(error) => json!({
             "error": error.to_string(),
@@ -3510,6 +3540,7 @@ async fn resolve_script_fetches(
         body,
         content_type,
         cors_mode,
+        redirect_mode,
         timeout,
         credentials,
     )) = pending.pop()
@@ -3532,6 +3563,7 @@ async fn resolve_script_fetches(
                     content_type,
                     request_headers: headers,
                     cors_mode,
+                    redirect_mode,
                     timeout,
                     credentials,
                 })

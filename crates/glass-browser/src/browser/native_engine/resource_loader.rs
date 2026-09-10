@@ -53,6 +53,13 @@ pub(crate) enum NativeCorsMode {
     SameOrigin,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NativeFetchRedirectMode {
+    Follow,
+    Error,
+    Manual,
+}
+
 /// A bounded HTML resource accepted by the native engine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeResource {
@@ -136,6 +143,7 @@ pub(crate) struct NativeFetchRequest<'a> {
     pub(crate) request_headers: BTreeMap<String, String>,
     pub(crate) credentials: bool,
     pub(crate) cors_mode: NativeCorsMode,
+    pub(crate) redirect_mode: NativeFetchRedirectMode,
     pub(crate) timeout: Option<Duration>,
 }
 
@@ -153,7 +161,9 @@ pub struct NativeFetchResponse {
     pub content_type: Option<String>,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+    pub redirected: bool,
     pub opaque: bool,
+    pub opaque_redirect: bool,
 }
 
 /// Bounded resource loader for local documents and HTTP(S) HTML responses.
@@ -739,6 +749,7 @@ impl NativeResourceLoader {
             request_headers: BTreeMap::new(),
             credentials,
             cors_mode: NativeCorsMode::Cors,
+            redirect_mode: NativeFetchRedirectMode::Follow,
             timeout: None,
         })
         .await
@@ -757,6 +768,7 @@ impl NativeResourceLoader {
             request_headers,
             credentials,
             cors_mode,
+            redirect_mode,
             timeout,
         } = request;
         validate_url_text("fetch owner URL", document_url)?;
@@ -855,6 +867,8 @@ impl NativeResourceLoader {
         let mut current_content_type = content_type;
         let mut request_referrer = normalize_referrer(Some(document_url.as_str()), &current_url)?;
         let mut redirects = 0;
+        let mut redirected = false;
+        let mut no_cors_cross_origin = cross_origin;
         let mut pending_cookies = Vec::new();
         let response = loop {
             let mut request_url = current_url.clone();
@@ -928,6 +942,28 @@ impl NativeResourceLoader {
             if !is_http_redirect(response.status()) {
                 break response;
             }
+            if redirect_mode == NativeFetchRedirectMode::Error {
+                return Err(NativeEngineError::Network {
+                    operation: "fetch redirect".into(),
+                    reason: "fetch redirect is disallowed by redirect mode".into(),
+                });
+            }
+            if redirect_mode == NativeFetchRedirectMode::Manual {
+                for (cookie_url, cookie) in pending_cookies {
+                    self.cookie_changes
+                        .extend(self.network.store_cookie(&cookie_url, &cookie));
+                }
+                return Ok(NativeFetchResponse {
+                    url: without_fragment(current_url.as_str()).to_owned(),
+                    status: response.status().as_u16(),
+                    content_type: None,
+                    headers: Vec::new(),
+                    body: Vec::new(),
+                    redirected: false,
+                    opaque: false,
+                    opaque_redirect: true,
+                });
+            }
             if redirects >= MAX_NATIVE_NETWORK_REDIRECTS {
                 return Err(NativeEngineError::Network {
                     operation: "fetch redirect".into(),
@@ -960,10 +996,18 @@ impl NativeResourceLoader {
                         .into(),
                 });
             }
+            if cors_mode == NativeCorsMode::SameOrigin && document_url.origin() != next_url.origin()
+            {
+                return Err(NativeEngineError::Network {
+                    operation: "fetch redirect mode".into(),
+                    reason: "same-origin fetch redirect has a different origin".into(),
+                });
+            }
             request_referrer = normalize_referrer(Some(current_url.as_str()), &next_url)?;
             if current_url.origin() != next_url.origin() {
                 current_headers.remove("authorization");
             }
+            no_cors_cross_origin |= document_url.origin() != next_url.origin();
             if matches!(response.status().as_u16(), 301 | 302 | 303) {
                 current_method = NativeNavigationMethod::Get;
                 current_body = None;
@@ -971,6 +1015,7 @@ impl NativeResourceLoader {
             }
             current_url = next_url;
             redirects += 1;
+            redirected = true;
         };
         let final_url = current_url;
         let status = response.status().as_u16();
@@ -1015,8 +1060,7 @@ impl NativeResourceLoader {
             self.cookie_changes
                 .extend(self.network.store_cookie(&cookie_url, &cookie));
         }
-        let opaque =
-            cors_mode == NativeCorsMode::NoCors && document_url.origin() != final_url.origin();
+        let opaque = cors_mode == NativeCorsMode::NoCors && no_cors_cross_origin;
         let content_type = if opaque {
             None
         } else {
@@ -1040,7 +1084,9 @@ impl NativeResourceLoader {
             content_type,
             headers,
             body: if opaque { Vec::new() } else { body },
+            redirected,
             opaque,
+            opaque_redirect: false,
         })
     }
 

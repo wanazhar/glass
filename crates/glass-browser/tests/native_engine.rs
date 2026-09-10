@@ -28671,6 +28671,143 @@ async fn native_content_process_exposes_opaque_no_cors_response() {
 }
 
 #[tokio::test]
+async fn native_content_process_fetches_bounded_redirect_modes() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let cross_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let cross_address = cross_listener.local_addr().unwrap();
+    let cross_server = tokio::spawn(async move {
+        let accepted =
+            tokio::time::timeout(Duration::from_millis(500), cross_listener.accept()).await;
+        assert!(
+            accepted.is_err(),
+            "same-origin redirect reached the new origin"
+        );
+    });
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/follow", "/final", "/cross", "/error", "/manual"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let response = match expected_path {
+                "/page" => {
+                    let body = "<title>Fetch owner</title><p>Native fetch</p>";
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: connect-src *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                }
+                "/follow" => {
+                    "HTTP/1.1 302 Found\r\nLocation: /final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        .to_owned()
+                }
+                "/error" => {
+                    "HTTP/1.1 302 Found\r\nLocation: /error-final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        .to_owned()
+                }
+                "/cross" => format!(
+                    "HTTP/1.1 302 Found\r\nLocation: http://{cross_address}/final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                ),
+                "/manual" => {
+                    "HTTP/1.1 302 Found\r\nLocation: /manual-final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        .to_owned()
+                }
+                "/final" => {
+                    let body = "redirected-final";
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                }
+                _ => unreachable!(),
+            };
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            "fetch('/not-requested', { redirect: 'invalid' }).then(() => { globalThis.invalidRedirectValue = ['fulfilled', false]; }, error => { globalThis.invalidRedirectValue = [error.name, error.message.includes('redirect mode')]; });",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.invalidRedirectValue")
+            .await
+            .unwrap(),
+        serde_json::json!(["TypeError", true])
+    );
+    engine
+        .evaluate_async(
+            "fetch('/follow').then(async response => { globalThis.followRedirectValue = [response.type, response.redirected, response.status, response.url, await response.text()]; });",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.followRedirectValue")
+            .await
+            .unwrap(),
+        serde_json::json!([
+            "basic",
+            true,
+            200,
+            format!("http://{address}/final"),
+            "redirected-final"
+        ])
+    );
+    engine
+        .evaluate_async(
+            "fetch('/cross', { mode: 'same-origin' }).then(() => { globalThis.crossOriginRedirectValue = ['fulfilled', false]; }, error => { globalThis.crossOriginRedirectValue = [error.name, error.message.includes('different origin')]; });",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.crossOriginRedirectValue")
+            .await
+            .unwrap(),
+        serde_json::json!(["Error", true])
+    );
+    engine
+        .evaluate_async(
+            "fetch('/error', { redirect: 'error' }).then(() => { globalThis.errorRedirectValue = ['fulfilled', false]; }, error => { globalThis.errorRedirectValue = [error.name, error.message.includes('disallowed')]; });",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.errorRedirectValue")
+            .await
+            .unwrap(),
+        serde_json::json!(["Error", true])
+    );
+    engine
+        .evaluate_async(
+            "fetch('/manual', { redirect: 'manual' }).then(async response => { const body = await response.text().then(() => 'readable', error => error.name); globalThis.manualRedirectValue = [response.type, response.redirected, response.status, response.url, Array.from(response.headers.entries()), body]; });",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.manualRedirectValue")
+            .await
+            .unwrap(),
+        serde_json::json!(["opaqueredirect", false, 0, "", [], "TypeError"])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+    cross_server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_exposes_bounded_script_fetch_promises() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

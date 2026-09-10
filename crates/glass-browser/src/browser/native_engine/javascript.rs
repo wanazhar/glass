@@ -5378,10 +5378,27 @@ fn document_bootstrap(
       pushCommand({{ kind: "fetch", request_id: requestId, href: input, credentials, method, headers: requestHeaders, body, body_base64: bodyBase64, content_type: contentType }});
     }});
   }};
-  const responseHeaders = (contentType) => {{
-    const entries = contentType === null || contentType === undefined
-      ? []
-      : [["content-type", String(contentType)]];
+  const responseHeaders = (rawEntries, contentType) => {{
+    const entries = [];
+    const byName = new Map();
+    if (Array.isArray(rawEntries)) for (const rawEntry of rawEntries) {{
+      if (!Array.isArray(rawEntry) || rawEntry.length !== 2) continue;
+      const name = String(rawEntry[0]).toLowerCase();
+      const value = String(rawEntry[1]);
+      if (!name) continue;
+      const existing = byName.get(name);
+      if (existing) existing[1] += ", " + value;
+      else {{
+        const entry = [name, value];
+        byName.set(name, entry);
+        entries.push(entry);
+      }}
+    }}
+    if (!byName.has("content-type") && contentType !== null && contentType !== undefined) {{
+      const entry = ["content-type", String(contentType)];
+      byName.set("content-type", entry);
+      entries.push(entry);
+    }}
     const iterator = values => values[Symbol.iterator]();
     const headers = {{
       get(name) {{
@@ -5416,7 +5433,7 @@ fn document_bootstrap(
     ok: payload.status >= 200 && payload.status < 300,
     status: payload.status,
     url: payload.url,
-    headers: responseHeaders(payload.contentType),
+    headers: responseHeaders(payload.headers, payload.contentType),
     text() {{ return Promise.resolve(payload.body); }},
     json() {{ return Promise.resolve(JSON.parse(payload.body)); }},
     blob() {{ return Promise.resolve(responseBodyBlob(payload)); }},
@@ -5439,6 +5456,7 @@ fn document_bootstrap(
     this._url = "";
     this._headers = {{}};
     this._responseContentType = null;
+    this._responseHeaders = responseHeaders([], null);
     this._controller = null;
     this._aborted = false;
   }};
@@ -5478,16 +5496,17 @@ fn document_bootstrap(
     this.responseURL = "";
     this.response = "";
     this._responseContentType = null;
+    this._responseHeaders = responseHeaders([], null);
     this._notifyReadyState();
     if (typeof this.onabort === "function") this.onabort.call(this, {{ type: "abort", target: this }});
   }};
   XMLHttpRequestNative.prototype.getResponseHeader = function(name) {{
-    return String(name).toLowerCase() === "content-type" ? this._responseContentType : null;
+    return this._responseHeaders.get(name);
   }};
   XMLHttpRequestNative.prototype.getAllResponseHeaders = function() {{
-    return this._responseContentType
-      ? "content-type: " + this._responseContentType + "\r\n"
-      : "";
+    return Array.from(this._responseHeaders.entries())
+      .map(entry => entry[0] + ": " + entry[1] + "\r\n")
+      .join("");
   }};
   XMLHttpRequestNative.prototype.send = function(body) {{
     if (this.readyState !== 1) throw new TypeError("native XMLHttpRequest is not open");
@@ -5510,6 +5529,7 @@ fn document_bootstrap(
       this.statusText = String(response.status);
       this.responseURL = response.url;
       this._responseContentType = response.headers.get("content-type");
+      this._responseHeaders = response.headers;
       return response.text();
     }}).then(text => {{
       if (text === null || this._controller !== controller || this._aborted) return;

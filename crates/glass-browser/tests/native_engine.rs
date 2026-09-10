@@ -28303,7 +28303,7 @@ async fn native_content_process_fetches_cors_authorized_cross_origin_get() {
         );
         let body = "{\"ok\":true}";
         let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: {response_origin}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: {response_origin}\r\nAccess-Control-Expose-Headers: X-Visible\r\nX-Visible: yes\r\nX-Hidden: no\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         );
         stream.write_all(response.as_bytes()).await.unwrap();
@@ -28320,6 +28320,16 @@ async fn native_content_process_fetches_cors_authorized_cross_origin_get() {
         .unwrap();
     assert_eq!(response.status, 200);
     assert_eq!(response.content_type.as_deref(), Some("application/json"));
+    let mut headers = response.headers.clone();
+    headers.sort();
+    assert_eq!(
+        headers,
+        vec![
+            ("content-length".into(), "11".into()),
+            ("content-type".into(), "application/json".into()),
+            ("x-visible".into(), "yes".into()),
+        ]
+    );
     assert_eq!(response.body, br#"{"ok":true}"#);
     engine.close_async().await.unwrap();
     document_server.await.unwrap();
@@ -28554,8 +28564,13 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
             } else {
                 ("application/json", "{\"value\":\"fetched\"}")
             };
+            let extra_headers = if expected_path == "/data" {
+                "X-Glass-Response: one\r\nX-Glass-Response: two\r\n"
+            } else {
+                ""
+            };
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\n{extra_headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             );
             stream.write_all(response.as_bytes()).await.unwrap();
@@ -28611,11 +28626,31 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
         serde_json::json!([
             "application/json",
             true,
-            [["content-type", "application/json"]],
-            ["content-type"],
-            ["application/json"],
-            [["content-type", "application/json"]],
-            ["content-type=application/json"],
+            [
+                ["content-type", "application/json"],
+                ["x-glass-response", "one, two"],
+                ["content-length", "19"],
+                ["connection", "close"]
+            ],
+            [
+                "content-type",
+                "x-glass-response",
+                "content-length",
+                "connection"
+            ],
+            ["application/json", "one, two", "19", "close"],
+            [
+                ["content-type", "application/json"],
+                ["x-glass-response", "one, two"],
+                ["content-length", "19"],
+                ["connection", "close"]
+            ],
+            [
+                "content-type=application/json",
+                "x-glass-response=one, two",
+                "content-length=19",
+                "connection=close"
+            ],
         ])
     );
     assert_eq!(
@@ -30622,8 +30657,13 @@ async fn native_content_process_exposes_bounded_xhr_fetch_bridge() {
             } else {
                 ("text/plain", "xhr-response")
             };
+            let extra_headers = if expected_path == "/xhr" {
+                "X-Glass-Response: one\r\nX-Glass-Response: two\r\n"
+            } else {
+                ""
+            };
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\n{extra_headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             );
             stream.write_all(response.as_bytes()).await.unwrap();
@@ -30642,7 +30682,7 @@ async fn native_content_process_exposes_bounded_xhr_fetch_bridge() {
                 xhr.open('POST', '/xhr');
                 xhr.setRequestHeader('Content-Type', 'application/json');
                 xhr.onload = async () => {
-                    globalThis.xhrResult = [xhr.status, xhr.responseText, xhr.responseURL, xhr.getResponseHeader('content-type')];
+                    globalThis.xhrResult = [xhr.status, xhr.responseText, xhr.responseURL, xhr.getResponseHeader('content-type'), xhr.getResponseHeader('x-glass-response'), xhr.getAllResponseHeaders()];
                     const binaryResponse = await fetch('/binary');
                     const binaryBlob = await binaryResponse.blob();
                     const binaryXhr = new XMLHttpRequest();
@@ -30664,7 +30704,9 @@ async fn native_content_process_exposes_bounded_xhr_fetch_bridge() {
             200,
             "xhr-response",
             format!("http://{address}/xhr"),
-            "text/plain"
+            "text/plain",
+            "one, two",
+            "content-type: text/plain\r\nx-glass-response: one, two\r\ncontent-length: 12\r\nconnection: close\r\n"
         ])
     );
     assert_eq!(

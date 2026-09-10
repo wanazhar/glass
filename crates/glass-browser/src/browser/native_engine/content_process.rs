@@ -20,8 +20,10 @@ use super::javascript::{
 };
 use super::origin::NativeOrigin;
 use super::resource_loader::{
-    NativeFetchBody, NativeFetchRequest, NativeFetchResponse, NativeNavigationMethod,
-    NativeNavigationRequest, NativeResourceLoader,
+    MAX_NATIVE_RESPONSE_HEADER_BYTES, MAX_NATIVE_RESPONSE_HEADER_NAME_BYTES,
+    MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES, MAX_NATIVE_RESPONSE_HEADERS, NativeFetchBody,
+    NativeFetchRequest, NativeFetchResponse, NativeNavigationMethod, NativeNavigationRequest,
+    NativeResourceLoader,
 };
 #[cfg(windows)]
 use super::sandbox::NativeContentSandbox;
@@ -914,6 +916,87 @@ fn decode_mutation_payload(
     })
 }
 
+fn decode_fetch_headers(response: &Value) -> Result<Vec<(String, String)>, NativeEngineError> {
+    let Some(raw_headers) = response.get("headers") else {
+        return Ok(Vec::new());
+    };
+    let Some(raw_headers) = raw_headers.as_array() else {
+        return Err(NativeEngineError::Worker {
+            operation: "decode content process fetch".into(),
+            reason: "content process returned invalid response headers".into(),
+        });
+    };
+    if raw_headers.len() > MAX_NATIVE_RESPONSE_HEADERS {
+        return Err(NativeEngineError::limit(
+            "content-process response headers",
+            MAX_NATIVE_RESPONSE_HEADERS,
+            raw_headers.len(),
+        ));
+    }
+    let mut headers = Vec::with_capacity(raw_headers.len());
+    let mut total_bytes = 0usize;
+    for raw_header in raw_headers {
+        let Some(raw_header) = raw_header.as_array() else {
+            return Err(NativeEngineError::Worker {
+                operation: "decode content process fetch".into(),
+                reason: "content process returned an invalid response header entry".into(),
+            });
+        };
+        if raw_header.len() != 2 {
+            return Err(NativeEngineError::Worker {
+                operation: "decode content process fetch".into(),
+                reason: "content process returned an invalid response header pair".into(),
+            });
+        }
+        let name = raw_header[0]
+            .as_str()
+            .ok_or_else(|| NativeEngineError::Worker {
+                operation: "decode content process fetch".into(),
+                reason: "content process returned a non-text response header name".into(),
+            })?;
+        let value = raw_header[1]
+            .as_str()
+            .ok_or_else(|| NativeEngineError::Worker {
+                operation: "decode content process fetch".into(),
+                reason: "content process returned a non-text response header value".into(),
+            })?;
+        let normalized_name = name.to_ascii_lowercase();
+        if normalized_name.len() > MAX_NATIVE_RESPONSE_HEADER_NAME_BYTES {
+            return Err(NativeEngineError::limit(
+                "content-process response header name",
+                MAX_NATIVE_RESPONSE_HEADER_NAME_BYTES,
+                normalized_name.len(),
+            ));
+        }
+        reqwest::header::HeaderName::from_bytes(normalized_name.as_bytes()).map_err(|_| {
+            NativeEngineError::Worker {
+                operation: "decode content process fetch".into(),
+                reason: "content process returned an invalid response header name".into(),
+            }
+        })?;
+        if value.len() > MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES {
+            return Err(NativeEngineError::limit(
+                "content-process response header value",
+                MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES,
+                value.len(),
+            ));
+        }
+        let next_bytes = total_bytes
+            .saturating_add(normalized_name.len())
+            .saturating_add(value.len());
+        if next_bytes > MAX_NATIVE_RESPONSE_HEADER_BYTES {
+            return Err(NativeEngineError::limit(
+                "content-process response headers",
+                MAX_NATIVE_RESPONSE_HEADER_BYTES,
+                next_bytes,
+            ));
+        }
+        total_bytes = next_bytes;
+        headers.push((normalized_name, value.to_owned()));
+    }
+    Ok(headers)
+}
+
 fn decode_fetch_response(
     response: &Value,
     id: u64,
@@ -955,6 +1038,7 @@ fn decode_fetch_response(
                 })
         })
         .transpose()?;
+    let headers = decode_fetch_headers(response)?;
     let encoded_body = response
         .get("body_base64")
         .and_then(Value::as_str)
@@ -979,6 +1063,7 @@ fn decode_fetch_response(
         url: url.to_owned(),
         status,
         content_type,
+        headers,
         body,
     })
 }
@@ -1439,6 +1524,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             "url": fetch.url,
                             "status": fetch.status,
                             "content_type": fetch.content_type,
+                            "headers": fetch.headers,
                             "body_base64": base64::engine::general_purpose::STANDARD
                                 .encode(fetch.body),
                         })
@@ -3338,6 +3424,7 @@ fn fetch_response_payload(result: Result<NativeFetchResponse, NativeEngineError>
             "url": response.url,
             "status": response.status,
             "contentType": response.content_type,
+            "headers": response.headers,
             "body": String::from_utf8_lossy(&response.body),
             "bodyBase64": base64::engine::general_purpose::STANDARD.encode(&response.body),
         }),

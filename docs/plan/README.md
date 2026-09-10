@@ -953,6 +953,13 @@ bridge; text-only parts keep their established behavior. Binary multipart
 FormData, streams, upload progress, and full Blob/File Web IDL parity remain
 open.
 
+The completed bounded response-header slice is
+[native-engine-browser-101](tasks/native-engine-browser-101.md). Fetch and
+asynchronous XHR now expose bounded normalized response-header snapshots,
+combine duplicate names, and apply same-origin/CORS-exposed filtering;
+`Set-Cookie`, invalid raw header bytes, trailers, mutation, and full Headers
+Web IDL parity remain open.
+
 Full cookie policy/Web IDL parity and the remaining browser-complete gates
 remain open.
 

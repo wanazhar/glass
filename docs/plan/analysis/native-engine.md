@@ -2617,6 +2617,13 @@ exact bytes and byte length, and feed the 099 Fetch/XHR request-body bridge;
 text-only parts retain their established behavior. Binary multipart FormData,
 streams, upload progress, and full Blob/File Web IDL parity remain open.
 
+The completed bounded response-header follow-up is
+[native-engine-browser-101](../tasks/native-engine-browser-101.md). Fetch and
+asynchronous XHR now expose bounded normalized response-header snapshots,
+combine duplicate names, and apply same-origin/CORS-exposed filtering.
+`Set-Cookie`, invalid raw header bytes, trailers, mutation, and full Headers
+Web IDL parity remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

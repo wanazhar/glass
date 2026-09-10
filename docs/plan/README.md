@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-139` locally. The versioned
+`native-engine-browser-140` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1274,6 +1274,18 @@ MCP expose the standard bounded target/frame projections, with explicit
 selection. Multi-target creation/closure, child-frame execution,
 popup/dialog/download witnesses, request accounting, universal workflow
 parity, and CDP replacement remain issue #40 gates.
+
+The completed native prompt-lifecycle batch is
+[native-engine-browser-140](tasks/native-engine-browser-140.md). Native page
+JavaScript can surface bounded `alert`, `confirm`, and `prompt` metadata from
+local realms, page-load/lifecycle scripts, and the external content worker;
+the runtime, CLI, and MCP expose `dialogOpen`, `acceptDialog`, and
+`dismissDialog` through the native owner without CDP. The current bridge uses
+deterministic `false`/`null` script results while it records prompt state;
+suspended modal continuation and caller-supplied prompt response injection
+remain separate issue #40 gates, alongside target/frame expansion,
+popup/download witnesses, request accounting, universal workflow parity, and
+CDP replacement.
 
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and

@@ -17,7 +17,8 @@ use crate::browser_backend::{
     BackendRequest, BackendResponse, BrowserBackend, BrowserBackendError, BrowserCapability,
     BrowsingContext, CapabilityDescriptor, CaptureFormat, CaptureResult, CertificationLevel,
     CertificationProfile, EffectsResult, EvidenceLevel, EvidenceResult, NavigationResult,
-    Portability, ScriptResult, SemanticAction, StorageResult, StorageScope, SupportLevel,
+    Portability, PromptDecision, PromptResult, ScriptResult, SemanticAction, StorageResult,
+    StorageScope, SupportLevel,
 };
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -104,6 +105,23 @@ impl NativeEngineBackend {
         self.lock_engine(BackendOperation::Storage)?
             .clear_cookies_async()
             .await
+            .map_err(native_error)
+    }
+
+    pub async fn pending_dialog(
+        &self,
+    ) -> Result<Option<crate::browser::session::PendingDialog>, BrowserBackendError> {
+        self.lock_engine(BackendOperation::Prompt)?
+            .pending_dialog()
+            .map_err(native_error)
+    }
+
+    pub async fn resolve_dialog(
+        &self,
+        decision: PromptDecision,
+    ) -> Result<PromptResult, BrowserBackendError> {
+        self.lock_engine(BackendOperation::Prompt)?
+            .resolve_dialog(decision)
             .map_err(native_error)
     }
 
@@ -210,6 +228,7 @@ impl NativeEngineBackend {
             BrowserCapability::Script,
             BrowserCapability::Capture,
             BrowserCapability::Storage,
+            BrowserCapability::Prompts,
         ];
         let mut capabilities = BTreeMap::new();
         for capability in supported {
@@ -242,6 +261,9 @@ impl NativeEngineBackend {
                 BrowserCapability::Contexts => vec!["one active context only".into()],
                 BrowserCapability::Storage => vec![
                     "origin-keyed page local/session Web Storage; opt-in revisioned localStorage and cookie profiles; profile-journal events; IndexedDB remains open".into(),
+                ],
+                BrowserCapability::Prompts => vec![
+                    "bounded alert, confirm, and prompt metadata is surfaced and can be accepted or dismissed; modal JavaScript continuation remains a separate browser-loop gate".into(),
                 ],
                 BrowserCapability::Lifecycle => {
                     vec!["close is terminal for the engine instance".into()]
@@ -277,6 +299,7 @@ impl NativeEngineBackend {
                         "in-process local execution is not a security boundary for hostile content; external documents use the sandboxed content worker".into(),
                         "bounded page Web Storage and session document.cookie; opt-in revisioned localStorage/cookie profiles; per-context sessionStorage; profile-journal events; IndexedDB unavailable".into(),
                         "actions are limited to bounded click/type/key-down/key-up/shortcut/key-press/clear/check/uncheck/select/scroll, select controls, form defaults, root scrolling, and native point targets".into(),
+                        "JavaScript alert, confirm, and prompt calls are surfaced through the native prompt lifecycle".into(),
                     ],
                 },
             },
@@ -448,6 +471,14 @@ impl BrowserBackend for NativeEngineBackend {
                         .await
                         .map_err(native_error)?;
                     Ok(BackendResponse::Storage(StorageResult { entries }))
+                }
+                (BackendOperation::Prompt, BackendRequest::Prompt(request)) => {
+                    require_context_id(&request.context_id, &active_context_id)?;
+                    Ok(BackendResponse::Prompt(
+                        engine
+                            .resolve_dialog(request.decision)
+                            .map_err(native_error)?,
+                    ))
                 }
                 (operation, _) => Err(BrowserBackendError::UnsupportedOperation {
                     operation: operation_name(operation).into(),

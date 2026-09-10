@@ -567,6 +567,7 @@ fn validate_alternative_runtime_command(
         Commands::KeyDown { .. } | Commands::KeyUp { .. } | Commands::Shortcut { .. } if native => {
             Ok(())
         }
+        Commands::AcceptDialog | Commands::DismissDialog if native => Ok(()),
         Commands::Navigate { .. }
         | Commands::Click { .. }
         | Commands::Type { .. }
@@ -1086,6 +1087,28 @@ async fn run_alternative_runtime_command(
                     }),
                     response_mode,
                 )
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
+        }
+        Commands::AcceptDialog if session.runtime().is_native() => {
+            #[cfg(feature = "native-engine")]
+            {
+                let result = session
+                    .native_resolve_dialog(crate::browser_backend::PromptDecision::Accept)
+                    .await?;
+                print_json_mode(&result, response_mode)
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
+        }
+        Commands::DismissDialog if session.runtime().is_native() => {
+            #[cfg(feature = "native-engine")]
+            {
+                let result = session
+                    .native_resolve_dialog(crate::browser_backend::PromptDecision::Dismiss)
+                    .await?;
+                print_json_mode(&result, response_mode)
             }
             #[cfg(not(feature = "native-engine"))]
             unreachable!("native runtime is feature-gated")

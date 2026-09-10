@@ -19,8 +19,8 @@ use glass_browser::browser::session::{
 use glass_browser::browser_backend::{
     ActionRequest, BROWSER_BACKEND_SCHEMA_VERSION, BackendSelectionRequest,
     BrowserBackendDispatcher, BrowserCapability, CaptureFormat, CaptureRequest, CertificationLevel,
-    EffectsRequest, EvidenceLevel, EvidenceRequest, NavigationRequest, ScriptRequest,
-    SemanticAction, StorageOperation, StorageRequest, StorageScope, SupportLevel,
+    EffectsRequest, EvidenceLevel, EvidenceRequest, NavigationRequest, PromptDecision,
+    ScriptRequest, SemanticAction, StorageOperation, StorageRequest, StorageScope, SupportLevel,
 };
 use glass_browser::{BackendFactory, BrowserRuntime, BrowserRuntimeSession, NativeEngineBackend};
 use std::fs::{self, OpenOptions};
@@ -195,6 +195,135 @@ async fn native_runtime_session_uses_explicit_local_constructor() {
         .unwrap();
     assert_eq!(stored.entries.get("answer"), Some(&"one".to_owned()));
     session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_dialogs_are_owned_by_the_page_realm_and_prompt_backend() {
+    let session =
+        BrowserRuntimeSession::connect_native(NativeEngineConfig::default().with_initial_url(
+            "data:text/html,%3Ctitle%3EDialogs%3C%2Ftitle%3E%3Cp%3ENative%3C%2Fp%3E",
+        ))
+        .await
+        .unwrap();
+
+    assert!(session.native_pending_dialog().await.unwrap().is_none());
+    assert_eq!(
+        session
+            .script("alert('hello'); 'after-alert'")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("after-alert")
+    );
+    let pending = session.native_pending_dialog().await.unwrap().unwrap();
+    assert_eq!(pending.dialog_type, "alert");
+    assert_eq!(pending.message, "hello");
+    assert_eq!(
+        pending.url,
+        "data:text/html,%3Ctitle%3EDialogs%3C%2Ftitle%3E%3Cp%3ENative%3C%2Fp%3E"
+    );
+    assert!(
+        session
+            .native_resolve_dialog(PromptDecision::Accept)
+            .await
+            .unwrap()
+            .handled
+    );
+    assert!(session.native_pending_dialog().await.unwrap().is_none());
+
+    assert_eq!(
+        session.script("confirm('continue?')").await.unwrap().value,
+        serde_json::Value::Bool(false)
+    );
+    assert_eq!(
+        session
+            .native_pending_dialog()
+            .await
+            .unwrap()
+            .unwrap()
+            .dialog_type,
+        "confirm"
+    );
+    assert!(
+        session
+            .native_resolve_dialog(PromptDecision::Dismiss)
+            .await
+            .unwrap()
+            .handled
+    );
+
+    assert_eq!(
+        session
+            .script("prompt('name', 'Glass')")
+            .await
+            .unwrap()
+            .value,
+        serde_json::Value::Null
+    );
+    let pending = session.native_pending_dialog().await.unwrap().unwrap();
+    assert_eq!(pending.dialog_type, "prompt");
+    assert_eq!(pending.default_value.as_deref(), Some("Glass"));
+    assert!(
+        session
+            .native_resolve_dialog(PromptDecision::Dismiss)
+            .await
+            .unwrap()
+            .handled
+    );
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_forwards_page_dialogs_without_chromium() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/dialogs"));
+        let body = "<script>alert('loaded');</script><p>worker dialogs</p>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/dialogs")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let pending = engine.pending_dialog().unwrap().unwrap();
+    assert_eq!(pending.dialog_type, "alert");
+    assert_eq!(pending.message, "loaded");
+    assert_eq!(pending.url, format!("http://{address}/dialogs"));
+    assert!(
+        engine
+            .resolve_dialog(PromptDecision::Accept)
+            .unwrap()
+            .handled
+    );
+
+    assert_eq!(
+        engine
+            .evaluate_async("prompt('worker', 'default')")
+            .await
+            .unwrap(),
+        serde_json::Value::Null
+    );
+    let pending = engine.pending_dialog().unwrap().unwrap();
+    assert_eq!(pending.dialog_type, "prompt");
+    assert_eq!(pending.default_value.as_deref(), Some("default"));
+    assert!(
+        engine
+            .resolve_dialog(PromptDecision::Dismiss)
+            .unwrap()
+            .handled
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
 }
 
 #[tokio::test]

@@ -2719,6 +2719,13 @@ allocating a timer or dispatching a post-construction event. Transport
 cancellation, XHR integration, and complete AbortSignal/Web IDL parity remain
 open.
 
+The completed bounded live-FormData-iterator follow-up is
+[native-engine-browser-114](../tasks/native-engine-browser-114.md). FormData
+`entries()`, `keys()`, and `values()` now retain their owner, observe bounded
+later mutations, and return self-iterating cursors while multipart serialization
+and `forEach()` stay on their existing owners. Complex deletion/reordering
+semantics and complete FormData/Web IDL parity remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

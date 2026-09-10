@@ -28492,7 +28492,7 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
-        for expected_path in ["/page", "/data"] {
+        for expected_path in ["/page", "/data", "/data"] {
             let (mut stream, _) = listener.accept().await.unwrap();
             let request = read_http_request(&mut stream).await;
             assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
@@ -28516,7 +28516,7 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
     engine.initialize_async().await.unwrap();
     engine
         .evaluate_async(
-            "fetch('/data').then(response => response.json()).then(data => { globalThis.fetchValue = data.value; document.getElementById('result').value = data.value; });",
+            "fetch('/data').then(response => response.json()).then(data => { globalThis.fetchValue = data.value; document.getElementById('result').value = data.value; const controller = new AbortController(); const events = []; controller.signal.addEventListener('abort', () => events.push('listener')); controller.signal.onabort = () => events.push('property'); const request = fetch('/data', { signal: controller.signal }); controller.abort(); controller.abort(); request.catch(error => { globalThis.abortValue = [error.name, controller.signal.aborted, controller.signal.reason.name, events]; }); });",
         )
         .await
         .unwrap();
@@ -28526,6 +28526,13 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
             .await
             .unwrap(),
         serde_json::json!("fetched")
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.abortValue")
+            .await
+            .unwrap(),
+        serde_json::json!(["AbortError", true, "AbortError", ["listener", "property"]])
     );
     assert_eq!(
         engine

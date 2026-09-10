@@ -988,6 +988,14 @@ suppressed. Upload progress, transport cancellation beyond the bounded
 deadline, streaming, synchronous XHR, and complete XHR Web IDL parity remain
 open.
 
+The completed bounded CORS-preflight-cache slice is
+[native-engine-browser-106](tasks/native-engine-browser-106.md). Successful
+preflights with a positive `Access-Control-Max-Age` are cached by document
+origin, target, method, credentials mode, and sorted requested headers within
+a bounded 64-entry/10-minute budget; failed, invalid, and zero-age responses
+are not cached. Private-network access, opaque `no-cors` responses, and full
+Fetch/CORS Web IDL parity remain open.
+
 Full cookie policy/Web IDL parity and the remaining browser-complete gates
 remain open.
 

@@ -19,6 +19,8 @@ use url::Url;
 const MAX_NATIVE_NETWORK_REDIRECTS: usize = 8;
 const NATIVE_NETWORK_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_NATIVE_CACHE_ENTRIES: usize = 32;
+const MAX_NATIVE_PREFLIGHT_CACHE_ENTRIES: usize = 64;
+const MAX_NATIVE_PREFLIGHT_CACHE_AGE: Duration = Duration::from_secs(600);
 const MAX_NATIVE_COOKIE_BYTES: usize = 4096;
 const MAX_NATIVE_FORM_BODY_BYTES: usize = crate::browser_backend::MAX_TEXT_BYTES;
 const MAX_NATIVE_FETCH_HEADERS: usize = 16;
@@ -172,6 +174,7 @@ impl fmt::Debug for NativeResourceLoader {
                 "document_policy_count",
                 &self.network.document_policies.len(),
             )
+            .field("preflight_cache_count", &self.network.preflight_cache.len())
             .finish()
     }
 }
@@ -181,6 +184,7 @@ struct NativeNetworkState {
     cache: BTreeMap<String, NativeResource>,
     cookies: Vec<NativeCookie>,
     document_policies: BTreeMap<String, NativeCspPolicy>,
+    preflight_cache: BTreeMap<String, Instant>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1006,7 +1010,7 @@ impl NativeResourceLoader {
     }
 
     async fn verify_cors_preflight(
-        &self,
+        &mut self,
         client: &reqwest::Client,
         document_url: &Url,
         target_url: &Url,
@@ -1022,6 +1026,23 @@ impl NativeResourceLoader {
             NativeNavigationMethod::Get => "GET",
             NativeNavigationMethod::Post => "POST",
         };
+        let cache_key = cors_preflight_cache_key(
+            document_url,
+            target_url,
+            method,
+            requested_headers,
+            credentials,
+        );
+        let now = Instant::now();
+        if self
+            .network
+            .preflight_cache
+            .get(&cache_key)
+            .is_some_and(|expires_at| *expires_at > now)
+        {
+            return Ok(());
+        }
+        self.network.preflight_cache.remove(&cache_key);
         let mut request = client
             .request(reqwest::Method::OPTIONS, target_url.clone())
             .header("Origin", origin)
@@ -1050,6 +1071,18 @@ impl NativeResourceLoader {
                 operation: "fetch preflight".into(),
                 reason: "cross-origin preflight did not authorize the request".into(),
             });
+        }
+        if let Some(age) = cors_preflight_cache_age(response.headers()) {
+            if !age.is_zero() {
+                if !self.network.preflight_cache.contains_key(&cache_key)
+                    && self.network.preflight_cache.len() >= MAX_NATIVE_PREFLIGHT_CACHE_ENTRIES
+                {
+                    if let Some(oldest) = self.network.preflight_cache.keys().next().cloned() {
+                        self.network.preflight_cache.remove(&oldest);
+                    }
+                }
+                self.network.preflight_cache.insert(cache_key, now + age);
+            }
         }
         Ok(())
     }
@@ -1638,6 +1671,33 @@ fn cors_preflight_request_headers(
     requested.sort_unstable();
     requested.dedup();
     requested
+}
+
+fn cors_preflight_cache_key(
+    document_url: &Url,
+    resource_url: &Url,
+    method: &str,
+    requested_headers: &[String],
+    credentials: bool,
+) -> String {
+    format!(
+        "{}|{}|{}|{}|{}",
+        document_url.origin().ascii_serialization(),
+        without_fragment(resource_url.as_str()),
+        method,
+        if credentials { "include" } else { "omit" },
+        requested_headers.join(",")
+    )
+}
+
+fn cors_preflight_cache_age(headers: &HeaderMap) -> Option<Duration> {
+    let seconds = headers
+        .get("access-control-max-age")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())?;
+    Some(Duration::from_secs(
+        seconds.min(MAX_NATIVE_PREFLIGHT_CACHE_AGE.as_secs()),
+    ))
 }
 
 fn cors_preflight_response_allowed(

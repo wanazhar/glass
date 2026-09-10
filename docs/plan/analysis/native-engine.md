@@ -2799,7 +2799,20 @@ JavaScript realm now owns a frozen live `location` projection whose
 validated navigation command to the Rust/content-process owner. Local and
 HTTP(S) full-document commits and same-document fragment commits share the
 existing loader, lifecycle, origin, and history paths; `replace()` updates the
-current entry. Page-load/lifecycle re-entrant navigation, nested contexts,
+current entry. At that checkpoint, page-publication/lifecycle re-entrant
+navigation remained open; the publication subset is covered by the follow-up
+below, while nested contexts, complete Location/Web IDL descriptors, and full
+URL parsing remain open.
+
+The completed bounded page-publication-navigation follow-up is
+[native-engine-browser-126](../tasks/native-engine-browser-126.md). Initial
+local and content-process page-script phases can return one validated location
+handoff from `DOMContentLoaded`, `load`, or `pageshow` publication. The Rust
+owner resolves local, fixture, and HTTP(S) targets, carries push/replace
+history semantics through the handoff chain, and applies the content-process
+`pageshow` mutation before continuing navigation. The chain is bounded at
+eight handoffs; malformed or multiple navigation commands fail closed.
+Outgoing `beforeunload`/`pagehide`/`unload`, `hashchange`, nested contexts,
 complete Location/Web IDL descriptors, and full URL parsing remain open.
 
 The completed bounded Response-constructor follow-up is

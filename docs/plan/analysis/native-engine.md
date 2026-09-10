@@ -2920,6 +2920,17 @@ cookie projection is implemented; target/frame ownership, request accounting,
 popup/dialog/download witnesses, universal workflow parity, and CDP
 replacement remain open.
 
+The completed native-engine-browser-138 batch closes the cookie profile seam
+for the native runtime. Cookie reads are scoped to the current HTTP(S) URL and
+include HTTP-only entries; imports use the metadata-bearing Glass cookie
+contract and are delivered to the content process instead of being emulated
+through `document.cookie`; clear removes the profile through the same owner.
+The active page realm and subsequent native requests therefore share the
+updated jar. The current public cookie contract does not carry every browser
+attribute, so unsupported attributes are not invented. Multi-target/frame
+ownership, request accounting, popup/dialog/download witnesses, universal
+workflow parity, and CDP replacement remain open.
+
 The completed native-engine-browser-133 batch extends the native target seam
 with a side-effect-free preflight result. The engine resolves the current
 semantic locator and derives viewport geometry and actionability under the

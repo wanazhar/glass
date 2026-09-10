@@ -1337,6 +1337,16 @@ returned without losing domain, path, security, and expiry attributes. Target
 and frame ownership, request-ledger, popup/dialog/download witnesses, and full
 browser parity remain issue #40 work.
 
+The completed native-engine-browser-138 batch exposes the native cookie
+profile through the production-facing runtime seams. Active HTTP(S) cookie
+inspection includes HTTP-only entries and preserves the metadata represented
+by Glass's public cookie type; metadata-preserving import and clear commands
+reach the content worker as explicit bounded IPC operations, refresh the page
+cookie view, and persist through the existing profile journal. CLI and MCP
+route the native cookie surfaces without allocating Chromium. A map-shaped
+cookie write remains rejected because name/value alone cannot safely express
+domain, path, expiry, or security attributes.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature

@@ -381,6 +381,76 @@ impl NativeResourceLoader {
         self.network.cookie_profile()
     }
 
+    pub(crate) fn cookies_for_document(
+        &self,
+        document_url: &str,
+    ) -> Result<Vec<NativeCookieProfileEntry>, NativeEngineError> {
+        validate_url_text("cookie owner URL", document_url)?;
+        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "cookie owner URL is not valid URL syntax".into(),
+            }
+        })?;
+        if !is_network_url(document_url.as_str()) {
+            return Ok(Vec::new());
+        }
+        reject_credentials(&document_url)?;
+        Ok(self
+            .network
+            .matching_cookies(&document_url, true)
+            .into_iter()
+            .filter_map(NativeCookie::to_profile)
+            .collect())
+    }
+
+    pub(crate) fn set_cookie_profiles(
+        &mut self,
+        profiles: &[NativeCookieProfileEntry],
+    ) -> Result<(), NativeEngineError> {
+        if profiles.len() > MAX_NATIVE_COOKIE_PROFILE_ENTRIES {
+            return Err(NativeEngineError::limit(
+                "native cookie profile entries",
+                MAX_NATIVE_COOKIE_PROFILE_ENTRIES,
+                profiles.len(),
+            ));
+        }
+        for profile in profiles {
+            let Some(cookie) = NativeCookie::from_profile(profile.clone())? else {
+                if self
+                    .network
+                    .remove_cookie(&profile.name, &profile.domain, &profile.path)
+                {
+                    self.cookie_changes.push(NativeCookieChange {
+                        name: profile.name.clone(),
+                        domain: profile.domain.clone(),
+                        path: profile.path.clone(),
+                        cookie: None,
+                    });
+                }
+                continue;
+            };
+            if let Some(evicted) = self.network.set_cookie_profile(cookie)? {
+                self.cookie_changes.push(NativeCookieChange {
+                    name: evicted.name,
+                    domain: evicted.domain,
+                    path: evicted.path,
+                    cookie: None,
+                });
+            }
+            self.cookie_changes.push(NativeCookieChange {
+                name: profile.name.clone(),
+                domain: profile.domain.clone(),
+                path: profile.path.clone(),
+                cookie: Some(profile.clone()),
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) fn clear_cookies(&mut self) {
+        self.network.clear_cookies(&mut self.cookie_changes);
+    }
+
     pub(crate) fn take_cookie_changes(&mut self) -> Vec<NativeCookieChange> {
         std::mem::take(&mut self.cookie_changes)
     }
@@ -2114,8 +2184,10 @@ impl NativeNetworkState {
         self.cookie_header_with_visibility(url, false)
     }
 
-    fn cookie_header_with_visibility(&self, url: &Url, include_http_only: bool) -> Option<String> {
-        let host = url.host_str()?.to_ascii_lowercase();
+    fn matching_cookies(&self, url: &Url, include_http_only: bool) -> Vec<&NativeCookie> {
+        let Some(host) = url.host_str().map(str::to_ascii_lowercase) else {
+            return Vec::new();
+        };
         let request_path = if url.path().is_empty() {
             "/"
         } else {
@@ -2142,6 +2214,11 @@ impl NativeNetworkState {
                 .then_with(|| left.name.cmp(&right.name))
                 .then_with(|| left.domain.cmp(&right.domain))
         });
+        matching
+    }
+
+    fn cookie_header_with_visibility(&self, url: &Url, include_http_only: bool) -> Option<String> {
+        let matching = self.matching_cookies(url, include_http_only);
 
         let mut header = String::new();
         for cookie in matching {
@@ -2161,6 +2238,51 @@ impl NativeNetworkState {
             header.push_str(&pair);
         }
         (!header.is_empty()).then_some(header)
+    }
+
+    fn set_cookie_profile(
+        &mut self,
+        cookie: NativeCookie,
+    ) -> Result<Option<NativeCookieProfileEntry>, NativeEngineError> {
+        let same_cookie = |candidate: &NativeCookie| {
+            candidate.name == cookie.name
+                && candidate.domain == cookie.domain
+                && candidate.path == cookie.path
+        };
+        let had_existing = self.cookies.iter().any(same_cookie);
+        self.cookies.retain(|candidate| !same_cookie(candidate));
+        let evicted = if !had_existing && self.cookies.len() >= MAX_NATIVE_COOKIE_PROFILE_ENTRIES {
+            self.cookies.remove(0).to_profile()
+        } else {
+            None
+        };
+        self.cookies.push(cookie);
+        if self.cookies.len() > MAX_NATIVE_COOKIE_PROFILE_ENTRIES {
+            return Err(NativeEngineError::limit(
+                "native cookie profile entries",
+                MAX_NATIVE_COOKIE_PROFILE_ENTRIES,
+                self.cookies.len(),
+            ));
+        }
+        Ok(evicted)
+    }
+
+    fn remove_cookie(&mut self, name: &str, domain: &str, path: &str) -> bool {
+        let before = self.cookies.len();
+        self.cookies
+            .retain(|cookie| cookie.name != name || cookie.domain != domain || cookie.path != path);
+        self.cookies.len() != before
+    }
+
+    fn clear_cookies(&mut self, changes: &mut Vec<NativeCookieChange>) {
+        for cookie in self.cookies.drain(..) {
+            changes.push(NativeCookieChange {
+                name: cookie.name,
+                domain: cookie.domain,
+                path: cookie.path,
+                cookie: None,
+            });
+        }
     }
 
     fn store_cookie(&mut self, url: &Url, line: &str) -> Vec<NativeCookieChange> {

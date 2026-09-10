@@ -12,8 +12,9 @@ use glass_browser::browser::native_engine::{
     NativeWorkerFailureKind, Viewport,
 };
 use glass_browser::browser::session::{
-    IntentConfidence, IntentConstraints, SemanticIntentAction, SemanticIntentExecutionRequest,
-    SemanticIntentRequest, SemanticResolutionPolicy, VerificationPredicate, WaitCondition,
+    Cookie, IntentConfidence, IntentConstraints, SemanticIntentAction,
+    SemanticIntentExecutionRequest, SemanticIntentRequest, SemanticResolutionPolicy,
+    VerificationPredicate, WaitCondition,
 };
 use glass_browser::browser_backend::{
     ActionRequest, BROWSER_BACKEND_SCHEMA_VERSION, BackendSelectionRequest,
@@ -28598,7 +28599,7 @@ async fn semantic_actions_and_effects_use_the_backend_contract() {
 }
 
 #[tokio::test]
-async fn semantic_storage_uses_bounded_native_backend_state() {
+async fn semantic_storage_uses_page_owned_native_state() {
     let backend = NativeEngineBackend::new(NativeEngineConfig::default()).unwrap();
     assert_eq!(
         backend
@@ -28681,19 +28682,15 @@ async fn semantic_storage_uses_bounded_native_backend_state() {
         .unwrap();
     assert_eq!(page_cleared.value, serde_json::Value::Null);
 
-    let cookie_error = dispatcher
+    let cookies = dispatcher
         .storage(StorageRequest {
             context_id: "native-context".into(),
             scope: StorageScope::Cookies,
             operation: StorageOperation::Read,
         })
         .await
-        .unwrap_err();
-    assert!(matches!(
-        cookie_error,
-        glass_browser::browser_backend::BrowserBackendError::UnsupportedOperation { operation, .. }
-            if operation == "storage"
-    ));
+        .unwrap();
+    assert!(cookies.entries.is_empty());
     dispatcher.close().await.unwrap();
 }
 
@@ -30699,6 +30696,36 @@ async fn native_content_process_synchronizes_document_cookie_with_http_session()
             .unwrap(),
         serde_json::json!("cookie-ok")
     );
+    let cookies = engine.cookies_async().await.unwrap();
+    assert!(cookies.iter().any(|cookie| {
+        cookie.name == "secret" && cookie.http_only && cookie.domain == address.ip().to_string()
+    }));
+    engine
+        .set_cookies_async(&[Cookie {
+            name: "imported".into(),
+            value: "yes".into(),
+            domain: address.ip().to_string(),
+            path: "/".into(),
+            expires: 0.0,
+            http_only: true,
+            secure: false,
+            same_site: None,
+            is_session: true,
+            size: None,
+            priority: None,
+        }])
+        .await
+        .unwrap();
+    assert!(
+        engine
+            .cookies_async()
+            .await
+            .unwrap()
+            .iter()
+            .any(|cookie| cookie.name == "imported" && cookie.http_only)
+    );
+    engine.clear_cookies_async().await.unwrap();
+    assert!(engine.cookies_async().await.unwrap().is_empty());
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }

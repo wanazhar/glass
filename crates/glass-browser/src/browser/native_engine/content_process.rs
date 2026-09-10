@@ -13,10 +13,10 @@ use super::interaction::{
 };
 use super::javascript::{
     MAX_NATIVE_INDEXED_DB_CHANGES, MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_SCRIPT_BYTES,
-    MAX_NATIVE_XHR_TIMEOUT_MS, NativeIndexedDbChange, NativeIndexedDbState,
-    NativeJavaScriptRuntime, NativePageScript, NativeScriptCommand, NativeScriptEvaluation,
-    NativeStorageEvent, NativeWebStorageState, diff_indexed_db_changes, execute_page_scripts,
-    host_event_script, host_hash_change_event_script, host_key_event_script,
+    MAX_NATIVE_XHR_TIMEOUT_MS, NativeCookieProfileEntry, NativeIndexedDbChange,
+    NativeIndexedDbState, NativeJavaScriptRuntime, NativePageScript, NativeScriptCommand,
+    NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState, diff_indexed_db_changes,
+    execute_page_scripts, host_event_script, host_hash_change_event_script, host_key_event_script,
     host_key_event_script_with_modifiers, host_submit_event_script,
     literal_dynamic_module_specifiers, load_indexed_db_profile, load_web_storage_profile,
     order_page_scripts, save_web_storage_profile, static_module_specifiers, storage_key,
@@ -590,6 +590,64 @@ impl NativeContentProcess {
         result
     }
 
+    pub(crate) async fn cookies(
+        &mut self,
+        document_url: &str,
+    ) -> Result<Vec<NativeCookieProfileEntry>, NativeEngineError> {
+        let id = self.next_id();
+        let response = self
+            .exchange_with_timeout(
+                json!({
+                "kind": "cookies",
+                "id": id,
+                "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
+                "document_url": document_url,
+                }),
+                "content process cookies",
+            )
+            .await?;
+        decode_cookie_profiles(&response, id, "content process cookies")
+    }
+
+    pub(crate) async fn set_cookies(
+        &mut self,
+        cookies: &[NativeCookieProfileEntry],
+    ) -> Result<(), NativeEngineError> {
+        let id = self.next_id();
+        let response = self
+            .exchange_with_timeout(
+                json!({
+                "kind": "set_cookies",
+                "id": id,
+                "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
+                "cookies": cookies,
+                }),
+                "content process set cookies",
+            )
+            .await?;
+        require_response_kind(&response, "cookies_set", id, "content process set cookies")
+    }
+
+    pub(crate) async fn clear_cookies(&mut self) -> Result<(), NativeEngineError> {
+        let id = self.next_id();
+        let response = self
+            .exchange_with_timeout(
+                json!({
+                "kind": "clear_cookies",
+                "id": id,
+                "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
+                }),
+                "content process clear cookies",
+            )
+            .await?;
+        require_response_kind(
+            &response,
+            "cookies_cleared",
+            id,
+            "content process clear cookies",
+        )
+    }
+
     async fn mutate_with_request_kind(
         &mut self,
         id: u64,
@@ -687,6 +745,25 @@ impl NativeContentProcess {
                     "content process IPC",
                     kind,
                     error.to_string(),
+                ))
+            }
+        }
+    }
+
+    async fn exchange_with_timeout(
+        &mut self,
+        request: Value,
+        operation: &str,
+    ) -> Result<Value, NativeEngineError> {
+        match timeout(CONTENT_PROCESS_SCRIPT_TIMEOUT, self.exchange(request)).await {
+            Ok(response) => response,
+            Err(_) => {
+                self.mark_failed(NativeWorkerFailureKind::Timeout);
+                let _ = self.child.start_kill();
+                Err(NativeEngineError::worker_failure(
+                    operation,
+                    NativeWorkerFailureKind::Timeout,
+                    "content process cookie operation exceeded its deadline",
                 ))
             }
         }
@@ -865,6 +942,33 @@ fn decode_loaded_response(
         storage_events,
         indexed_db_changes,
     })
+}
+
+fn decode_cookie_profiles(
+    response: &Value,
+    id: u64,
+    operation: &str,
+) -> Result<Vec<NativeCookieProfileEntry>, NativeEngineError> {
+    require_response_kind(response, "cookies", id, operation)?;
+    let value = response
+        .get("cookies")
+        .ok_or_else(|| NativeEngineError::Worker {
+            operation: operation.into(),
+            reason: "content process omitted cookie profiles".into(),
+        })?;
+    let cookies: Vec<NativeCookieProfileEntry> =
+        serde_json::from_value(value.clone()).map_err(|_| NativeEngineError::Worker {
+            operation: operation.into(),
+            reason: "content process returned invalid cookie profiles".into(),
+        })?;
+    if cookies.len() > super::javascript::MAX_NATIVE_COOKIE_PROFILE_ENTRIES {
+        return Err(NativeEngineError::limit(
+            "content-process cookie profiles",
+            super::javascript::MAX_NATIVE_COOKIE_PROFILE_ENTRIES,
+            cookies.len(),
+        ));
+    }
+    Ok(cookies)
 }
 
 fn decode_mutated_response(
@@ -1428,6 +1532,62 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             }
             "commit" if protocol_matches(&request) && running => {
                 json!({"kind":"committed","id":id})
+            }
+            "cookies" if protocol_matches(&request) && running => {
+                let requested_url = request
+                    .get("document_url")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        NativeEngineError::invalid("content-process cookie URL", "must be text")
+                    })?;
+                let cookies = match resource_loader.as_ref() {
+                    Some(loader) => loader.cookies_for_document(requested_url),
+                    None => Err(NativeEngineError::Worker {
+                        operation: "content process cookies".into(),
+                        reason: "content process has no resource loader".into(),
+                    }),
+                }?;
+                json!({"kind":"cookies","id":id,"cookies":cookies})
+            }
+            "set_cookies" if protocol_matches(&request) && running => {
+                let values = request.get("cookies").ok_or_else(|| {
+                    NativeEngineError::invalid("content-process cookies", "must be an array")
+                })?;
+                let cookies: Vec<NativeCookieProfileEntry> = serde_json::from_value(values.clone())
+                    .map_err(|_| {
+                        NativeEngineError::invalid(
+                            "content-process cookies",
+                            "must be valid native cookie profiles",
+                        )
+                    })?;
+                let Some(loader) = resource_loader.as_mut() else {
+                    return Err(NativeEngineError::Worker {
+                        operation: "content process set cookies".into(),
+                        reason: "content process has no resource loader".into(),
+                    });
+                };
+                loader.set_cookie_profiles(&cookies)?;
+                refresh_content_runtime_cookie(
+                    javascript_runtime.as_ref(),
+                    resource_loader.as_ref(),
+                    document_url.as_deref(),
+                )?;
+                json!({"kind":"cookies_set","id":id})
+            }
+            "clear_cookies" if protocol_matches(&request) && running => {
+                let Some(loader) = resource_loader.as_mut() else {
+                    return Err(NativeEngineError::Worker {
+                        operation: "content process clear cookies".into(),
+                        reason: "content process has no resource loader".into(),
+                    });
+                };
+                loader.clear_cookies();
+                refresh_content_runtime_cookie(
+                    javascript_runtime.as_ref(),
+                    resource_loader.as_ref(),
+                    document_url.as_deref(),
+                )?;
+                json!({"kind":"cookies_cleared","id":id})
             }
             "storage_events" if protocol_matches(&request) && running => {
                 let values = request.get("events").ok_or_else(|| {

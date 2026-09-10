@@ -3741,6 +3741,20 @@ async fn call_native_tool(
         ToolInvocation::ListTargets => {
             serialized_result_mode(&session.contexts().await?, response_mode)
         }
+        ToolInvocation::Cookies => {
+            serialized_result_mode(&session.native_cookies().await?, response_mode)
+        }
+        ToolInvocation::SetCookies { cookies } => {
+            let parsed: Vec<crate::browser::session::Cookie> =
+                serde_json::from_value(cookies.clone())
+                    .map_err(|error| format!("invalid cookies: {error}"))?;
+            session.native_set_cookies(&parsed).await?;
+            serialized_result_mode(&json!({"ok": true}), response_mode)
+        }
+        ToolInvocation::ClearCookies => {
+            session.native_clear_cookies().await?;
+            serialized_result_mode(&json!({"ok": true}), response_mode)
+        }
         ToolInvocation::LocalStorage => {
             native_storage_result(
                 session,
@@ -6106,6 +6120,34 @@ mod tests {
                 .unwrap()
                 .contains("entries")
         );
+
+        let cookies = invoke_native_mcp_tool(
+            "cookies",
+            json!({}),
+            &mut session,
+            &mut native_session,
+            &options,
+            &policy,
+        )
+        .await;
+        assert!(cookies.error.is_none());
+        assert!(
+            cookies.result.unwrap()["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("[]")
+        );
+
+        let clear_cookies = invoke_native_mcp_tool(
+            "clearCookies",
+            json!({}),
+            &mut session,
+            &mut native_session,
+            &options,
+            &policy,
+        )
+        .await;
+        assert!(clear_cookies.error.is_none());
 
         let wait = invoke_native_mcp_tool(
             "wait",

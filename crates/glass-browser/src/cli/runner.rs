@@ -537,6 +537,7 @@ fn validate_alternative_runtime_command(
             Ok(())
         }
         Commands::Evaluate { .. } if native => Ok(()),
+        Commands::Preflight { .. } if native => Ok(()),
         Commands::Dom | Commands::ClickAt { .. } | Commands::Scroll { .. } if native => Ok(()),
         Commands::Clear { .. }
         | Commands::Check { .. }
@@ -626,6 +627,34 @@ async fn run_alternative_runtime_command(
             .await?,
             response_mode,
         ),
+        Commands::Preflight { target, action } if session.runtime().is_native() => {
+            #[cfg(feature = "native-engine")]
+            {
+                let action = match action {
+                    crate::browser::session::PreflightAction::Click => {
+                        crate::browser::native_engine::NativePreflightAction::Click
+                    }
+                    crate::browser::session::PreflightAction::Hover => {
+                        crate::browser::native_engine::NativePreflightAction::Hover
+                    }
+                    crate::browser::session::PreflightAction::Type => {
+                        crate::browser::native_engine::NativePreflightAction::Type
+                    }
+                    crate::browser::session::PreflightAction::Check => {
+                        crate::browser::native_engine::NativePreflightAction::Check
+                    }
+                    crate::browser::session::PreflightAction::Select => {
+                        crate::browser::native_engine::NativePreflightAction::Select
+                    }
+                };
+                print_json_mode(
+                    &session.native_preflight_target(target, action).await?,
+                    response_mode,
+                )
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
+        }
         Commands::Type {
             text,
             target,
@@ -3464,6 +3493,13 @@ mod tests {
                 "screenshot",
                 "--output",
                 "native.png",
+            ],
+            vec![
+                "glass",
+                "--browser-runtime",
+                "native",
+                "preflight",
+                "id=save",
             ],
         ] {
             let cli = Cli::try_parse_from(arguments).unwrap();

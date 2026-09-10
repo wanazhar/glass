@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-132` locally. The versioned
+`native-engine-browser-133` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1208,6 +1208,15 @@ through to `BrowserSession`. Unsupported richer MCP tools return an explicit
 error, while offline tools and the existing Chromium path retain their
 behavior. Universal MCP workflow parity, TUI/profile/frame/download/prompt
 owners, native promotion, and CDP replacement remain issue #40 gates.
+
+The completed bounded native target-preflight batch is
+[native-engine-browser-133](tasks/native-engine-browser-133.md). Native
+engine, session, CLI, and MCP callers can now resolve semantic locators
+against the current revision and receive the semantic node, visible viewport
+geometry, actionability, resolution failure kind, and navigation/form hints
+without scrolling, focusing, event dispatch, or storage mutation. The
+existing Chromium preflight path remains unchanged. Universal workflow
+parity, native promotion, and CDP replacement remain issue #40 gates.
 
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and

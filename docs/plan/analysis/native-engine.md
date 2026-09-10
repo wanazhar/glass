@@ -2877,6 +2877,17 @@ passed with no Chromium endpoint, while universal workflow parity, profile,
 frame, download, prompt, checkpoint, recovery, and production replacement of
 CDP remain open.
 
+The completed native-engine-browser-133 batch extends the native target seam
+with a side-effect-free preflight result. The engine resolves the current
+semantic locator and derives viewport geometry and actionability under the
+same revision that callers observe; `BrowserRuntimeSession`, the native CLI
+`preflight` command, and native MCP `preflight` now expose that result. The
+projection classifies resolution and actionability failures and includes
+bounded navigation/form hints without scrolling, focusing, dispatching
+events, or changing storage. Chromium's existing rich preflight path remains
+unchanged; workflow parity, full browser behavior, and native replacement of
+CDP remain open.
+
 The completed bounded Response-constructor follow-up is
 [native-engine-browser-120](../tasks/native-engine-browser-120.md). Fetched and
 constructed responses now share `Response` identity; `new Response`,

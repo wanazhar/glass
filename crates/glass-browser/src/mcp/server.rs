@@ -3405,6 +3405,27 @@ async fn call_native_tool(
             )
             .await
         }
+        ToolInvocation::Preflight { target, action } => {
+            let action = match action {
+                PreflightAction::Click => {
+                    crate::browser::native_engine::NativePreflightAction::Click
+                }
+                PreflightAction::Hover => {
+                    crate::browser::native_engine::NativePreflightAction::Hover
+                }
+                PreflightAction::Type => crate::browser::native_engine::NativePreflightAction::Type,
+                PreflightAction::Check => {
+                    crate::browser::native_engine::NativePreflightAction::Check
+                }
+                PreflightAction::Select => {
+                    crate::browser::native_engine::NativePreflightAction::Select
+                }
+            };
+            let result = session
+                .native_preflight_target(target.as_ref(), action)
+                .await?;
+            serialized_result_mode(&result, response_mode)
+        }
         ToolInvocation::Type {
             text,
             target,
@@ -5865,6 +5886,28 @@ mod tests {
         )
         .unwrap();
         assert_eq!(navigation["url"], url);
+        assert!(session.is_none());
+
+        let preflight = invoke_native_mcp_tool(
+            "preflight",
+            json!({"target": "id=save", "action": "click"}),
+            &mut session,
+            &mut native_session,
+            &options,
+            &policy,
+        )
+        .await;
+        assert!(preflight.error.is_none());
+        let preflight: Value = serde_json::from_str(
+            preflight.result.unwrap()["content"][0]["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(preflight["unique"], true);
+        assert_eq!(preflight["actionable"], true);
+        assert_eq!(preflight["node"]["role"], "button");
+        assert!(preflight["geometry"]["width"].as_u64().unwrap_or(0) > 0);
         assert!(session.is_none());
 
         let text = invoke_native_mcp_tool(

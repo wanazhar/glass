@@ -46,8 +46,9 @@ pub use diagnostics::{
 };
 pub use dom::{NativeDocument, NativeNode, NativeNodeId, NativeNodeKind, NativeSemanticNode};
 pub use engine::{
-    NativeActionResult, NativeDiagnosticsSnapshot, NativeEffectsSnapshot, NativeEngine,
-    NativeEngineSnapshot,
+    NativeActionResult, NativeActionabilityReason, NativeDiagnosticsSnapshot,
+    NativeEffectsSnapshot, NativeEngine, NativeEngineSnapshot, NativePreflightAction,
+    NativeTargetErrorKind, NativeTargetPreflight,
 };
 pub use error::{NativeEngineError, NativeWorkerFailureKind};
 pub use history::{NativeHistory, NativeHistoryDirection, NativeHistoryEntry};

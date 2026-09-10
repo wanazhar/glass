@@ -2541,6 +2541,14 @@ surrogate handling and bounded output in local and worker realms. Binary Blob
 construction, streams, transfer semantics, upload progress, and full
 Blob/File Web IDL parity remain open.
 
+The completed bounded fetch Blob/File-body follow-up is
+[native-engine-browser-090](../tasks/native-engine-browser-090.md). Direct
+`fetch()` requests now use the existing text-backed Blob/File payload and
+inherit its normalized MIME type when no explicit supported content type is
+provided. The worker network path is covered; XHR Blob bodies, binary Blob
+construction, streams, abort, upload progress, and full Fetch/Blob parity
+remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

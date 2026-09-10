@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-089` locally. The versioned
+`native-engine-browser-090` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -870,6 +870,13 @@ Text-backed `Blob` and `File` values now expose fresh UTF-8 bytes through
 handling, while the existing text-backed `size`, FormData, and persistence
 contracts remain unchanged. Binary Blob construction, streams, transfer
 semantics, and full Blob/File parity remain open.
+
+The completed bounded fetch Blob/File-body slice is
+[native-engine-browser-090](tasks/native-engine-browser-090.md). `fetch()` now
+sends text-backed native `Blob` and `File` payloads directly and derives a
+`Content-Type` from their normalized MIME type when no explicit header is
+provided; the worker HTTP path is covered. XHR Blob bodies, binary Blob
+construction, streams, abort, and full Fetch/Blob parity remain open.
 
 Full cookie policy/Web IDL parity and the remaining browser-complete gates
 remain open.

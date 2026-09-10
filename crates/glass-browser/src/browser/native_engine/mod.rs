@@ -2,7 +2,7 @@
 //!
 //! The current implementation combines a deterministic, headless
 //! fixture/data-URL kernel with a bounded asynchronous HTTP(S) document loader
-//! and a narrow semantic interaction slice. It is not a browser-parity
+//! and a bounded semantic interaction and form-control slice. It is not a browser-parity
 //! implementation or a security boundary.
 
 mod browsing_context;

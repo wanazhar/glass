@@ -4329,6 +4329,85 @@ async fn native_content_process_owns_external_form_mutations_and_effects() {
     server.await.unwrap();
 }
 
+#[tokio::test]
+async fn native_content_process_owns_clear_and_select_form_actions() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0_u8; 4096];
+        let _ = stream.read(&mut request).await.unwrap();
+        let body = "<input id='name' type='text' value='loaded' style='width:120px;height:20px'><input id='remember' type='checkbox' style='width:20px;height:20px'><select id='country' style='width:120px;height:20px'><option value='one'>One</option><option value='two'>Two</option></select>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/form-actions")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+
+    let cleared = engine
+        .action_async(NativeAction::Clear {
+            target: "id=name".into(),
+        })
+        .await
+        .unwrap();
+    assert!(cleared.accepted);
+    assert_eq!(
+        engine
+            .evaluate_async("document.getElementById('name').value")
+            .await
+            .unwrap(),
+        serde_json::json!("")
+    );
+
+    let checked = engine
+        .action_async(NativeAction::Check {
+            target: "id=remember".into(),
+        })
+        .await
+        .unwrap();
+    assert!(checked.accepted);
+    let unchecked = engine
+        .action_async(NativeAction::Uncheck {
+            target: "id=remember".into(),
+        })
+        .await
+        .unwrap();
+    assert!(unchecked.accepted);
+
+    let selected = engine
+        .action_async(NativeAction::Select {
+            target: "id=country".into(),
+            value: "two".into(),
+        })
+        .await
+        .unwrap();
+    assert!(selected.accepted);
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({name: document.getElementById('name').value, remember: document.getElementById('remember').checked, country: document.getElementById('country').value})",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "name": "",
+            "remember": false,
+            "country": "two",
+        })
+    );
+
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn native_content_process_recovers_after_worker_exit_during_startup() {
@@ -28427,6 +28506,100 @@ fn native_actions_update_state_and_reject_unsafe_targets_before_mutation() {
         Err(glass_browser::NativeEngineError::ReadOnlyTarget)
     ));
     assert_eq!(engine.revision(), revision_before_rejections);
+}
+
+#[test]
+fn native_form_actions_clear_check_and_select_controls() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://form-actions",
+            "<input id='name' type='text' value='loaded'><input id='remember' type='checkbox'><select id='country'><option value='one'>One</option><option value='two'>Two</option></select>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://form-actions");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize().unwrap();
+    let initial_revision = engine.revision();
+
+    let cleared = engine
+        .action(NativeAction::Clear {
+            target: "id=name".into(),
+        })
+        .unwrap();
+    assert_eq!(cleared.revision, initial_revision + 1);
+    assert_eq!(
+        engine
+            .semantic_nodes()
+            .unwrap()
+            .into_iter()
+            .find(|node| node.input_type.as_deref() == Some("text"))
+            .and_then(|node| node.empty),
+        Some(true)
+    );
+
+    let checked = engine
+        .action(NativeAction::Check {
+            target: "id=remember".into(),
+        })
+        .unwrap();
+    assert_eq!(checked.revision, cleared.revision + 1);
+    assert_eq!(
+        engine
+            .semantic_nodes()
+            .unwrap()
+            .into_iter()
+            .find(|node| node.input_type.as_deref() == Some("checkbox"))
+            .and_then(|node| node.checked),
+        Some(true)
+    );
+
+    let unchecked = engine
+        .action(NativeAction::Uncheck {
+            target: "id=remember".into(),
+        })
+        .unwrap();
+    assert_eq!(unchecked.revision, checked.revision + 1);
+    assert_eq!(
+        engine
+            .semantic_nodes()
+            .unwrap()
+            .into_iter()
+            .find(|node| node.input_type.as_deref() == Some("checkbox"))
+            .and_then(|node| node.checked),
+        Some(false)
+    );
+
+    let selected = engine
+        .action(NativeAction::Select {
+            target: "id=country".into(),
+            value: "two".into(),
+        })
+        .unwrap();
+    assert_eq!(selected.revision, unchecked.revision + 1);
+    let options = engine.semantic_nodes().unwrap();
+    assert_eq!(
+        options
+            .iter()
+            .find(|node| node.name == "One")
+            .and_then(|node| node.selected),
+        Some(false)
+    );
+    assert_eq!(
+        options
+            .iter()
+            .find(|node| node.name == "Two")
+            .and_then(|node| node.selected),
+        Some(true)
+    );
+
+    let no_op_revision = engine.revision();
+    let already_unchecked = engine
+        .action(NativeAction::Uncheck {
+            target: "id=remember".into(),
+        })
+        .unwrap();
+    assert!(already_unchecked.accepted);
+    assert_eq!(already_unchecked.revision, no_op_revision);
 }
 
 #[test]

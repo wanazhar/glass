@@ -493,6 +493,18 @@ fn validate_alternative_runtime_command(
         }
         | Commands::Type {
             expected_revision, ..
+        }
+        | Commands::Clear {
+            expected_revision, ..
+        }
+        | Commands::Check {
+            expected_revision, ..
+        }
+        | Commands::Uncheck {
+            expected_revision, ..
+        }
+        | Commands::Select {
+            expected_revision, ..
         } if expected_revision.is_some() => {
             Err("revision guards are not yet exposed by the portable runtime CLI".into())
         }
@@ -548,6 +560,14 @@ fn validate_alternative_runtime_command(
         }
         Commands::Evaluate { .. } if native => Ok(()),
         Commands::Dom | Commands::ClickAt { .. } | Commands::Scroll { .. } if native => Ok(()),
+        Commands::Clear { .. }
+        | Commands::Check { .. }
+        | Commands::Uncheck { .. }
+        | Commands::Select { .. }
+            if native =>
+        {
+            Ok(())
+        }
         Commands::Key {
             expected_revision, ..
         } if native && expected_revision.is_some() => {
@@ -557,12 +577,16 @@ fn validate_alternative_runtime_command(
         Commands::Navigate { .. }
         | Commands::Click { .. }
         | Commands::Type { .. }
+        | Commands::Clear { .. }
+        | Commands::Check { .. }
+        | Commands::Uncheck { .. }
+        | Commands::Select { .. }
         | Commands::Text
         | Commands::Observe { .. }
         | Commands::Targets => Ok(()),
         Commands::Evaluate { .. } => Ok(()),
         _ => Err(if native {
-            "this native runtime slice supports navigate, click, type, text, observe, and targets; use Chromium for the full session command set".into()
+            "this native runtime slice supports navigate, click, type, clear, check, uncheck, select, text, observe, and targets; use Chromium for the remaining full session command set".into()
         } else {
             "this Firefox/Safari runtime slice supports navigate, click, type, text, observe, targets, and evaluate; use Chromium for the full session command set".into()
         }),
@@ -623,6 +647,39 @@ async fn run_alternative_runtime_command(
                 response_mode,
             )
         }
+        Commands::Clear { target, .. } => print_json_mode(
+            &session
+                .action(SemanticAction::Clear {
+                    target: target.clone(),
+                })
+                .await?,
+            response_mode,
+        ),
+        Commands::Check { target, .. } => print_json_mode(
+            &session
+                .action(SemanticAction::Check {
+                    target: target.clone(),
+                })
+                .await?,
+            response_mode,
+        ),
+        Commands::Uncheck { target, .. } => print_json_mode(
+            &session
+                .action(SemanticAction::Uncheck {
+                    target: target.clone(),
+                })
+                .await?,
+            response_mode,
+        ),
+        Commands::Select { target, value, .. } => print_json_mode(
+            &session
+                .action(SemanticAction::Select {
+                    target: target.clone(),
+                    value: value.clone(),
+                })
+                .await?,
+            response_mode,
+        ),
         Commands::ClickAt { x, y } if session.runtime().is_native() => {
             let target = native_point_locator(*x, *y)?;
             print_json_mode(

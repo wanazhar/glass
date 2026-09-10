@@ -2825,6 +2825,16 @@ Malformed selectors and unmapped rich observation options remain typed denials,
 and Firefox/Safari do not inherit native-only commands. This checkpoint does
 not yet promote native selection to the default or certify CDP replacement.
 
+The completed native-engine-browser-128 form-control batch adds clear,
+check, uncheck, and exact select to the transport-neutral action contract.
+Native clear/select mutations are validated before state change and run in
+both local and content-process documents; check/uncheck delegate to the
+existing native click/default-action path so radio groups and click event
+cancellation keep one owner. Chromium maps the same variants to its existing
+session methods, while Firefox/Safari/proof reject them explicitly. This
+improves product action coverage but does not yet promote native selection or
+certify CDP replacement.
+
 The completed bounded Response-constructor follow-up is
 [native-engine-browser-120](../tasks/native-engine-browser-120.md). Fetched and
 constructed responses now share `Response` identity; `new Response`,

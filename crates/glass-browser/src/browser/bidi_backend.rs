@@ -619,10 +619,15 @@ fn action_source(action: &SemanticAction) -> Result<String, BrowserBackendError>
             css_selector_literal(target)?,
             serde_json::to_string(text).unwrap_or_else(|_| "\"\"".into())
         )),
-        SemanticAction::KeyPress { .. } | SemanticAction::Scroll { .. } => {
+        SemanticAction::Clear { .. }
+        | SemanticAction::Check { .. }
+        | SemanticAction::Uncheck { .. }
+        | SemanticAction::Select { .. }
+        | SemanticAction::KeyPress { .. }
+        | SemanticAction::Scroll { .. } => {
             Err(BrowserBackendError::UnsupportedOperation {
                 operation: "action".into(),
-                reason: "BiDi adapter only certifies click and type input".into(),
+                reason: "BiDi adapter only certifies click and type input; form-control actions are not certified".into(),
             })
         }
     }

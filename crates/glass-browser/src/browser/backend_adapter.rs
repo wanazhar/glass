@@ -425,6 +425,22 @@ async fn execute_action(
             .type_text(text, Some(target))
             .await
             .map_err(|error| translate_error("action", error.as_ref()))?,
+        SemanticAction::Clear { target } => session
+            .clear(target)
+            .await
+            .map_err(|error| translate_error("action", error.as_ref()))?,
+        SemanticAction::Check { target } => session
+            .check(target)
+            .await
+            .map_err(|error| translate_error("action", error.as_ref()))?,
+        SemanticAction::Uncheck { target } => session
+            .uncheck(target)
+            .await
+            .map_err(|error| translate_error("action", error.as_ref()))?,
+        SemanticAction::Select { target, value } => session
+            .select_option(target, value)
+            .await
+            .map_err(|error| translate_error("action", error.as_ref()))?,
         SemanticAction::KeyPress { key } => session
             .key_press(key)
             .await

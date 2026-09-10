@@ -1070,6 +1070,140 @@ impl NativeDocument {
         Ok(events)
     }
 
+    /// Clear a supported editable control and return its native event order.
+    /// An already-empty control remains a successful, focus-preserving no-op.
+    pub(crate) fn apply_clear(
+        &mut self,
+        id: NativeNodeId,
+    ) -> Result<Vec<(NativeNodeId, NativeEventKind)>, NativeEngineError> {
+        let semantic =
+            self.semantic_node(id)
+                .ok_or_else(|| NativeEngineError::TargetNotActionable {
+                    reason: "target has no supported semantic text-control role".into(),
+                })?;
+        if semantic.hidden {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "hidden targets cannot be cleared".into(),
+            });
+        }
+        if semantic.role != "textbox" || !matches!(semantic.tag_name.as_str(), "input" | "textarea")
+        {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "clear requires an input or textarea textbox".into(),
+            });
+        }
+        if semantic.disabled {
+            return Err(NativeEngineError::DisabledTarget);
+        }
+        if semantic.read_only {
+            return Err(NativeEngineError::ReadOnlyTarget);
+        }
+
+        let mut events = self.focus_element(id);
+        let current = self.current_value(id).unwrap_or_default();
+        if !current.is_empty() {
+            self.node_mut(id)
+                .ok_or(NativeEngineError::DetachedTarget)?
+                .state
+                .value = Some(String::new());
+            events.push((id, NativeEventKind::Input));
+            events.push((id, NativeEventKind::Change));
+        }
+        Ok(events)
+    }
+
+    /// Return the checked state of one visible, enabled checkbox or radio.
+    pub(crate) fn checked_control_state(
+        &self,
+        id: NativeNodeId,
+    ) -> Result<bool, NativeEngineError> {
+        let semantic =
+            self.semantic_node(id)
+                .ok_or_else(|| NativeEngineError::TargetNotActionable {
+                    reason: "target has no supported checkable control role".into(),
+                })?;
+        if semantic.hidden {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "hidden targets cannot be checked".into(),
+            });
+        }
+        if !matches!(semantic.role.as_str(), "checkbox" | "radio") || semantic.tag_name != "input" {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "check and uncheck require a checkbox or radio input".into(),
+            });
+        }
+        if semantic.disabled {
+            return Err(NativeEngineError::DisabledTarget);
+        }
+        Ok(semantic.checked.unwrap_or(false))
+    }
+
+    /// Select one exact option value and return its native event order.
+    pub(crate) fn apply_select(
+        &mut self,
+        id: NativeNodeId,
+        value: &str,
+    ) -> Result<Vec<(NativeNodeId, NativeEventKind)>, NativeEngineError> {
+        if value.is_empty() || value.len() > MAX_LOCATOR_BYTES {
+            return Err(NativeEngineError::invalid(
+                "select value",
+                "must be 1..=16384 bytes",
+            ));
+        }
+        let semantic =
+            self.semantic_node(id)
+                .ok_or_else(|| NativeEngineError::TargetNotActionable {
+                    reason: "target has no supported select control role".into(),
+                })?;
+        if semantic.hidden {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "hidden targets cannot be selected".into(),
+            });
+        }
+        if semantic.role != "combobox" || semantic.tag_name != "select" {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "select requires a select control".into(),
+            });
+        }
+        if semantic.disabled {
+            return Err(NativeEngineError::DisabledTarget);
+        }
+        let selected_option_id = self
+            .select_option_ids(id)
+            .into_iter()
+            .find(|option_id| {
+                self.option_value(*option_id).as_deref() == Some(value)
+                    && !self.is_disabled(*option_id)
+            })
+            .ok_or_else(|| NativeEngineError::TargetNotActionable {
+                reason: "select option value was not found or is disabled".into(),
+            })?;
+
+        let mut events = self.focus_element(id);
+        let option_ids = self.select_option_ids(id);
+        let mut changed = false;
+        for option_id in option_ids {
+            let should_be_selected = option_id == selected_option_id;
+            let was_selected = self
+                .node(option_id)
+                .ok_or(NativeEngineError::DetachedTarget)?
+                .state
+                .selected;
+            if was_selected != should_be_selected {
+                self.node_mut(option_id)
+                    .ok_or(NativeEngineError::DetachedTarget)?
+                    .state
+                    .selected = should_be_selected;
+                changed = true;
+            }
+        }
+        if changed {
+            events.push((id, NativeEventKind::Input));
+            events.push((id, NativeEventKind::Change));
+        }
+        Ok(events)
+    }
+
     pub(crate) fn focused_text_control(&self) -> Result<NativeNodeId, NativeEngineError> {
         self.nodes
             .iter()

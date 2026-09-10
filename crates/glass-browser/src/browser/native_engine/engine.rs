@@ -942,6 +942,34 @@ impl NativeEngine {
                 }
                 (self.document.apply_type(id, &text)?, true)
             }
+            NativeAction::Clear { target } => {
+                let id = self.document.resolve_target(&target)?;
+                self.require_layout_actionable(id)?;
+                if self.javascript.is_some() {
+                    return self.action_local_form_with_event_transaction(
+                        |document| document.apply_clear(id),
+                        "native clear event effects",
+                    );
+                }
+                (self.document.apply_clear(id)?, true)
+            }
+            NativeAction::Check { target } => {
+                return self.action_checked_with_click(target, true);
+            }
+            NativeAction::Uncheck { target } => {
+                return self.action_checked_with_click(target, false);
+            }
+            NativeAction::Select { target, value } => {
+                let id = self.document.resolve_target(&target)?;
+                self.require_layout_actionable(id)?;
+                if self.javascript.is_some() {
+                    return self.action_local_form_with_event_transaction(
+                        |document| document.apply_select(id, &value),
+                        "native select event effects",
+                    );
+                }
+                (self.document.apply_select(id, &value)?, true)
+            }
             NativeAction::KeyPress { key } => {
                 validate_native_edit_key(&key)?;
                 let id = self.document.focused_text_control()?;
@@ -1006,6 +1034,12 @@ impl NativeEngine {
             ));
         }
         match action {
+            NativeAction::Check { target } => {
+                self.action_checked_async_with_click(target, true).await
+            }
+            NativeAction::Uncheck { target } => {
+                self.action_checked_async_with_click(target, false).await
+            }
             NativeAction::Click { target } => {
                 let id = self.resolve_click_target(&target)?;
                 self.require_layout_actionable(id)?;
@@ -1063,6 +1097,53 @@ impl NativeEngine {
                 let next_revision = self.next_revision()?;
                 self.apply_content_process_mutation_at(next_revision, mutation)
             }
+            NativeAction::Clear { target } => {
+                let id = self.document.resolve_target(&target)?;
+                self.require_layout_actionable(id)?;
+                let mut preview = self.document.clone();
+                preview.apply_clear(id)?;
+                let mutation = {
+                    let process =
+                        self.content_process
+                            .as_mut()
+                            .ok_or_else(|| NativeEngineError::Worker {
+                                operation: "content process clear event bridge".into(),
+                                reason: "native content process is not running".into(),
+                            })?;
+                    process
+                        .mutate_form_action_with_event_bridge(serde_json::json!({
+                            "kind": "clear",
+                            "node_index": id.index(),
+                        }))
+                        .await?
+                };
+                let next_revision = self.next_revision()?;
+                self.apply_content_process_mutation_at(next_revision, mutation)
+            }
+            NativeAction::Select { target, value } => {
+                let id = self.document.resolve_target(&target)?;
+                self.require_layout_actionable(id)?;
+                let mut preview = self.document.clone();
+                preview.apply_select(id, &value)?;
+                let mutation = {
+                    let process =
+                        self.content_process
+                            .as_mut()
+                            .ok_or_else(|| NativeEngineError::Worker {
+                                operation: "content process select event bridge".into(),
+                                reason: "native content process is not running".into(),
+                            })?;
+                    process
+                        .mutate_form_action_with_event_bridge(serde_json::json!({
+                            "kind": "select",
+                            "node_index": id.index(),
+                            "value": value,
+                        }))
+                        .await?
+                };
+                let next_revision = self.next_revision()?;
+                self.apply_content_process_mutation_at(next_revision, mutation)
+            }
             NativeAction::KeyPress { key } => {
                 validate_native_edit_key(&key)?;
                 let id = self.document.focused_text_control()?;
@@ -1085,6 +1166,50 @@ impl NativeEngine {
             }
             NativeAction::Scroll { .. } => self.action(action),
         }
+    }
+
+    fn action_checked_with_click(
+        &mut self,
+        target: String,
+        desired: bool,
+    ) -> Result<NativeActionResult, NativeEngineError> {
+        let id = self.document.resolve_target(&target)?;
+        self.require_layout_actionable(id)?;
+        if self.document.checked_control_state(id)? == desired {
+            return Ok(NativeActionResult {
+                revision: self.revision,
+                accepted: true,
+            });
+        }
+        let outcome = self.action(NativeAction::Click { target })?;
+        if self.document.checked_control_state(id)? != desired {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "checkable control did not reach the requested state".into(),
+            });
+        }
+        Ok(outcome)
+    }
+
+    async fn action_checked_async_with_click(
+        &mut self,
+        target: String,
+        desired: bool,
+    ) -> Result<NativeActionResult, NativeEngineError> {
+        let id = self.document.resolve_target(&target)?;
+        self.require_layout_actionable(id)?;
+        if self.document.checked_control_state(id)? == desired {
+            return Ok(NativeActionResult {
+                revision: self.revision,
+                accepted: true,
+            });
+        }
+        let outcome = Box::pin(self.action_async(NativeAction::Click { target })).await?;
+        if self.document.checked_control_state(id)? != desired {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "checkable control did not reach the requested state".into(),
+            });
+        }
+        Ok(outcome)
     }
 
     fn apply_local_script_commands(
@@ -1935,6 +2060,42 @@ impl NativeEngine {
             if events.len() > MAX_NATIVE_EFFECTS {
                 return Err(NativeEngineError::limit(
                     "native type event effects",
+                    MAX_NATIVE_EFFECTS,
+                    events.len(),
+                ));
+            }
+        }
+        let next_revision = self.next_revision()?;
+        document.set_revision(next_revision);
+        self.document = document;
+        self.revision = next_revision;
+        self.history.update_current_scroll(self.scroll_offset);
+        self.record_effects(events);
+        Ok(NativeActionResult {
+            revision: next_revision,
+            accepted: true,
+        })
+    }
+
+    fn action_local_form_with_event_transaction(
+        &mut self,
+        apply: impl FnOnce(
+            &mut NativeDocument,
+        ) -> Result<Vec<(NativeNodeId, NativeEventKind)>, NativeEngineError>,
+        effect_limit_name: &str,
+    ) -> Result<NativeActionResult, NativeEngineError> {
+        let mut document = self.document.clone();
+        let mut events = apply(&mut document)?;
+        let default_events = events.clone();
+        for (event_node, event_kind) in default_events {
+            if let Some(evaluation) =
+                self.evaluate_local_events(&document, &[(event_node, event_kind)])?
+            {
+                events.extend(document.apply_script_commands(&evaluation.commands)?);
+            }
+            if events.len() > MAX_NATIVE_EFFECTS {
+                return Err(NativeEngineError::limit(
+                    effect_limit_name,
                     MAX_NATIVE_EFFECTS,
                     events.len(),
                 ));

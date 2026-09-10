@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-126` locally. The versioned
+`native-engine-browser-127` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1147,6 +1147,17 @@ handoffs, preserves `assign()`/`replace()` history semantics, and rejects
 malformed or multiple handoffs. Outgoing `beforeunload`/`pagehide`/`unload`,
 `hashchange`, nested contexts, full Location/Web IDL parity, and complete URL
 parsing remain open.
+
+The completed bounded native-inspection and CSS-target bridge is
+[native-engine-browser-127](tasks/native-engine-browser-127.md). Native
+runtime sessions now publish the engine-owned semantic-node projection and
+PNG capture, while native one-shot dispatch maps `evaluate`, `click-at`,
+`key`, `scroll`, `dom`, and PNG `screenshot` onto native owners. `css=` action
+locators reuse the stylesheet selector grammar and reject malformed, missing,
+or ambiguous matches before mutation. Full CSS selector/Web IDL parity,
+form-value and semantic-region observation, revision guards, automatic native
+selection, and production replacement of CDP remain open; the native feature
+is still explicit-only at this checkpoint.
 
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and

@@ -40,7 +40,8 @@ const SUPPORTED_ROLES: [&str; 8] = [
 ];
 
 /// Generational identity for one node in a native document arena.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct NativeNodeId {
     generation: u32,
     index: u32,
@@ -181,7 +182,8 @@ impl NativeNode {
 }
 
 /// Bounded semantic projection of one supported native element.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct NativeSemanticNode {
     pub node_id: NativeNodeId,
     pub reference: String,
@@ -709,6 +711,13 @@ impl NativeDocument {
             .collect()
     }
 
+    pub(crate) fn element_node_ids(&self) -> impl Iterator<Item = NativeNodeId> + '_ {
+        self.nodes
+            .iter()
+            .filter(|node| node.element_name().is_some())
+            .map(NativeNode::id)
+    }
+
     pub(crate) fn script_snapshot(&self, max_text_bytes: usize) -> NativeScriptDocumentSnapshot {
         let (title, _) = self.title(max_text_bytes);
         let (visible_text, _) = self.visible_text(max_text_bytes);
@@ -878,6 +887,9 @@ impl NativeDocument {
                 self.element_text(node.node_id, MAX_LOCATOR_BYTES)
                     .is_some_and(|(text, truncated)| !truncated && text == value)
             }),
+            NativeLocator::Css(selector) => {
+                unique_match(super::css::selector_matches_in_document(self, selector)?)
+            }
         }
     }
 
@@ -3381,6 +3393,7 @@ enum NativeLocator<'a> {
     },
     Name(&'a str),
     Text(&'a str),
+    Css(&'a str),
 }
 
 fn parse_locator(locator: &str) -> Result<NativeLocator<'_>, NativeEngineError> {
@@ -3476,9 +3489,16 @@ fn parse_locator(locator: &str) -> Result<NativeLocator<'_>, NativeEngineError> 
             .then_some(NativeLocator::Text(value))
             .ok_or_else(|| NativeEngineError::invalid("action locator", "text must not be empty"));
     }
+    if let Some(value) = locator.strip_prefix("css=") {
+        return (!value.is_empty())
+            .then_some(NativeLocator::Css(value))
+            .ok_or_else(|| {
+                NativeEngineError::invalid("action locator", "CSS selector must not be empty")
+            });
+    }
     Err(NativeEngineError::invalid(
         "action locator",
-        "use ref=, id=, role=, name=, or text=",
+        "use ref=, id=, role=, name=, text=, or css=",
     ))
 }
 

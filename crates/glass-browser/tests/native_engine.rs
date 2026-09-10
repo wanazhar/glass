@@ -87,7 +87,7 @@ fn find_element_with_attribute(
 async fn native_runtime_session_uses_explicit_local_constructor() {
     let session =
         BrowserRuntimeSession::connect_native(NativeEngineConfig::default().with_initial_url(
-            "data:text/html,%3Ctitle%3ERuntime%3C%2Ftitle%3E%3Cp%3ENative%20session%3C%2Fp%3E",
+            "data:text/html,%3Ctitle%3ERuntime%3C%2Ftitle%3E%3Cbutton%3ENative%20session%3C%2Fbutton%3E",
         ))
         .await
         .unwrap();
@@ -100,10 +100,18 @@ async fn native_runtime_session_uses_explicit_local_constructor() {
     let evidence = session.evidence(EvidenceLevel::Compact).await.unwrap();
     assert_eq!(
         evidence.url,
-        "data:text/html,%3Ctitle%3ERuntime%3C%2Ftitle%3E%3Cp%3ENative%20session%3C%2Fp%3E"
+        "data:text/html,%3Ctitle%3ERuntime%3C%2Ftitle%3E%3Cbutton%3ENative%20session%3C%2Fbutton%3E"
     );
     assert_eq!(evidence.title, "Runtime");
     assert_eq!(evidence.visible_text, "Native session");
+
+    let nodes = session.native_semantic_nodes().unwrap();
+    let button = nodes.iter().find(|node| node.tag_name == "button").unwrap();
+    let serialized = serde_json::to_value(button).unwrap();
+    assert_eq!(serialized["tagName"], "button");
+    assert!(serialized.get("nodeId").is_some());
+    let png = session.native_capture_png().unwrap();
+    assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
 
     let script = session.script("1 + 1").await.unwrap();
     assert_eq!(script.value, serde_json::json!(2));
@@ -111,7 +119,7 @@ async fn native_runtime_session_uses_explicit_local_constructor() {
     assert_eq!(promise.value, serde_json::json!(42));
     let host = session
         .script(
-            "({ title: document.title, text: document.querySelector('p').innerText, tag: document.querySelector('p').tagName, width: window.innerWidth, origin: location.origin })",
+            "({ title: document.title, text: document.querySelector('button').innerText, tag: document.querySelector('button').tagName, width: window.innerWidth, origin: location.origin })",
         )
         .await
         .unwrap();
@@ -120,7 +128,7 @@ async fn native_runtime_session_uses_explicit_local_constructor() {
         serde_json::json!({
             "title": "Runtime",
             "text": "Native session",
-            "tag": "P",
+            "tag": "BUTTON",
             "width": 1280,
             "origin": "null",
         })
@@ -182,6 +190,47 @@ async fn native_runtime_session_uses_explicit_local_constructor() {
         .unwrap();
     assert_eq!(stored.entries.get("answer"), Some(&"one".to_owned()));
     session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_css_locators_share_the_stylesheet_selector_grammar() {
+    let config = NativeEngineConfig::default()
+        .with_initial_url("fixture://css-locator")
+        .with_fixture(
+            "fixture://css-locator",
+            "<style>.profile .name { display: block; }</style><form class='profile'><input class='name' id='first'><input class='other' id='second'></form>",
+        )
+        .unwrap();
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    engine
+        .action(NativeAction::Type {
+            target: "css=form.profile input.name".into(),
+            text: "Ada".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("document.getElementById('first').value")
+            .await
+            .unwrap(),
+        serde_json::json!("Ada")
+    );
+
+    let error = engine
+        .action(NativeAction::Click {
+            target: "css=input".into(),
+        })
+        .unwrap_err();
+    assert!(error.to_string().contains("matched 2 elements"));
+    let error = engine
+        .action(NativeAction::Click {
+            target: "css=input:not-supported".into(),
+        })
+        .unwrap_err();
+    assert!(error.to_string().contains("CSS action locator"));
+    engine.close_async().await.unwrap();
 }
 
 #[tokio::test]

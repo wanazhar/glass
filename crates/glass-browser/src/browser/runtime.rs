@@ -1,9 +1,10 @@
 //! User-facing alternative browser runtime sessions.
 //!
-//! The existing [`crate::browser::session::BrowserSession`] remains the full Chrome/CDP
-//! API. This module exposes the portable semantic slice for Firefox BiDi and
-//! Safari WebDriver, plus the explicitly feature-gated native local runtime,
-//! without pretending those runtimes implement every CDP-only operation.
+//! The existing [`crate::browser::session::BrowserSession`] remains the
+//! Chromium-compatible high-level API. This module exposes the portable
+//! semantic session used by the Glass-owned native runtime and external
+//! protocol adapters while the native engine's richer owners are promoted
+//! through the same session seam.
 
 use super::backend_factory::{BackendFactory, BackendStartup};
 use super::bidi_backend::BidiBackendConfig;
@@ -91,7 +92,7 @@ impl BrowserRuntimeSession {
         Ok(session)
     }
 
-    /// Construct and initialize the explicit native runtime.
+    /// Construct and initialize the native runtime.
     #[cfg(feature = "native-engine")]
     pub async fn connect_native(config: NativeEngineConfig) -> BrowserResult<Self> {
         let backend = BackendFactory::native(config)?;
@@ -165,6 +166,26 @@ impl BrowserRuntimeSession {
         Ok(BrowserBackendDispatcher::new(&self.backend)
             .storage(request)
             .await?)
+    }
+
+    /// Return the native engine's bounded semantic accessibility projection.
+    #[cfg(feature = "native-engine")]
+    pub fn native_semantic_nodes(
+        &self,
+    ) -> BrowserResult<Vec<super::native_engine::NativeSemanticNode>> {
+        match &self.backend {
+            BackendStartup::Native(backend) => Ok(backend.semantic_nodes()?),
+            _ => Err("semantic node projection is only available on the native runtime".into()),
+        }
+    }
+
+    /// Capture a native logical software surface as PNG bytes.
+    #[cfg(feature = "native-engine")]
+    pub fn native_capture_png(&self) -> BrowserResult<Vec<u8>> {
+        match &self.backend {
+            BackendStartup::Native(backend) => Ok(backend.capture_png()?),
+            _ => Err("native PNG capture is only available on the native runtime".into()),
+        }
     }
 
     pub async fn close(self) -> BrowserResult<()> {

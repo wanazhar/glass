@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-142` locally. The versioned
+`native-engine-browser-143` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1308,6 +1308,18 @@ click and the navigation separately, preserving the existing lifecycle,
 history, request-ledger, and no-CDP guarantees. Download targets, target/frame
 expansion, and the remaining browser-complete workflow gates remain issue #40
 work.
+
+The completed native-engine-browser-143 batch is
+[native-engine-browser-143](tasks/native-engine-browser-143.md). Native
+`download` anchors now remain on the committed page while an allowed click or
+script navigation queues a parent-owned transfer. The navigation-mode loader
+fetches bounded cross-origin HTTP(S) bytes, and the native runtime, CLI, and
+MCP complete those bytes into an existing directory with sanitized,
+collision-free names, SHA-256 evidence, stable completion IDs, and bounded
+cancel/list bookkeeping. Non-download external links retain the 142
+asynchronous navigation path. Popup/new-target behavior, child-frame
+ownership, chooser/programmatic downloads, universal workflow parity, and
+native production promotion remain issue #40 work.
 
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and

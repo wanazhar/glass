@@ -4429,6 +4429,7 @@ async fn resolve_script_fetches(
                     redirect_mode,
                     timeout,
                     credentials,
+                    max_response_bytes: None,
                 })
                 .await,
         );

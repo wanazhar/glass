@@ -16,9 +16,9 @@ use crate::browser_backend::{
     ActionResult, BROWSER_BACKEND_SCHEMA_VERSION, BackendFuture, BackendOperation, BackendProfile,
     BackendRequest, BackendResponse, BrowserBackend, BrowserBackendError, BrowserCapability,
     BrowsingContext, CapabilityDescriptor, CaptureFormat, CaptureResult, CertificationLevel,
-    CertificationProfile, EffectsResult, EvidenceLevel, EvidenceResult, NavigationResult,
-    Portability, PromptDecision, PromptResult, ScriptResult, SemanticAction, StorageResult,
-    StorageScope, SupportLevel,
+    CertificationProfile, DownloadOperation, DownloadResult, EffectsResult, EvidenceLevel,
+    EvidenceResult, NavigationResult, Portability, PromptDecision, PromptResult, ScriptResult,
+    SemanticAction, StorageResult, StorageScope, SupportLevel,
 };
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -122,6 +122,35 @@ impl NativeEngineBackend {
     ) -> Result<(bool, String), BrowserBackendError> {
         self.lock_engine(BackendOperation::Effects)?
             .network_quiet(duration)
+            .map_err(native_error)
+    }
+
+    pub async fn wait_for_download(
+        &self,
+        destination: &std::path::Path,
+        deadline: std::time::Duration,
+    ) -> Result<crate::browser::session::DownloadOutcome, BrowserBackendError> {
+        self.lock_engine(BackendOperation::Download)?
+            .wait_for_download_async(destination, deadline)
+            .await
+            .map_err(native_error)
+    }
+
+    pub fn download_ids(&self) -> Result<Vec<String>, BrowserBackendError> {
+        self.lock_engine(BackendOperation::Download)?
+            .download_ids()
+            .map_err(native_error)
+    }
+
+    pub fn cancel_download(&self, download_id: &str) -> Result<bool, BrowserBackendError> {
+        self.lock_engine(BackendOperation::Download)?
+            .cancel_download(download_id)
+            .map_err(native_error)
+    }
+
+    pub fn completed_download_count(&self) -> Result<u64, BrowserBackendError> {
+        self.lock_engine(BackendOperation::Download)?
+            .completed_download_count()
             .map_err(native_error)
     }
 
@@ -238,6 +267,7 @@ impl NativeEngineBackend {
             BrowserCapability::Capture,
             BrowserCapability::Storage,
             BrowserCapability::Prompts,
+            BrowserCapability::Downloads,
         ];
         let mut capabilities = BTreeMap::new();
         for capability in supported {
@@ -274,10 +304,12 @@ impl NativeEngineBackend {
                 BrowserCapability::Prompts => vec![
                     "bounded alert, confirm, and prompt metadata is surfaced and can be accepted or dismissed; modal JavaScript continuation remains a separate browser-loop gate".into(),
                 ],
+                BrowserCapability::Downloads => vec![
+                    "bounded HTTP(S) anchor download attributes, parent-owned queued transfer, safe collision-free file writes, and completion IDs; programmatic download APIs, chooser UI, and streaming transfer parity remain open".into(),
+                ],
                 BrowserCapability::Lifecycle => {
                     vec!["close is terminal for the engine instance".into()]
                 }
-                _ => Vec::new(),
             };
             capabilities.insert(
                 capability,
@@ -309,6 +341,7 @@ impl NativeEngineBackend {
                         "bounded page Web Storage and session document.cookie; opt-in revisioned localStorage/cookie profiles; per-context sessionStorage; profile-journal events; IndexedDB unavailable".into(),
                         "actions are limited to bounded click/type/key-down/key-up/shortcut/key-press/clear/check/uncheck/select/scroll, select controls, form defaults, root scrolling, and native point targets".into(),
                         "JavaScript alert, confirm, and prompt calls are surfaced through the native prompt lifecycle".into(),
+                        "download links use a bounded parent-owned transfer queue and authorized destination; popup, chooser, and general download API parity remain open".into(),
                     ],
                 },
             },
@@ -488,6 +521,20 @@ impl BrowserBackend for NativeEngineBackend {
                             .resolve_dialog(request.decision)
                             .map_err(native_error)?,
                     ))
+                }
+                (BackendOperation::Download, BackendRequest::Download(request)) => {
+                    require_context_id(&request.context_id, &active_context_id)?;
+                    match request.operation {
+                        DownloadOperation::List => Ok(BackendResponse::Download(DownloadResult {
+                            download_ids: engine.download_ids().map_err(native_error)?,
+                        })),
+                        DownloadOperation::Cancel { download_id } => {
+                            engine.cancel_download(&download_id).map_err(native_error)?;
+                            Ok(BackendResponse::Download(DownloadResult {
+                                download_ids: engine.download_ids().map_err(native_error)?,
+                            }))
+                        }
+                    }
                 }
                 (operation, _) => Err(BrowserBackendError::UnsupportedOperation {
                     operation: operation_name(operation).into(),

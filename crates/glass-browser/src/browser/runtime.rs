@@ -23,11 +23,11 @@ use serde::{Deserialize, Serialize};
 use super::session::{
     ActAndVerifyResult, ActionFailureKind, ActionFailurePhase, ActionKind, ActionOutcome,
     ActionStatus, ActionTarget, ActionVerificationError, ActionVerificationEvidence, Cookie,
-    FindTargetResult, FrameInfo, InspectPageResult, IntentPolicyDecision, NavigationControlOutcome,
-    PageTargetInfo, PendingDialog, RecoveryStrategy, SemanticIntentAction,
-    SemanticIntentExecutionRequest, SemanticIntentExecutionResult, SemanticIntentExecutionStatus,
-    SemanticIntentResult, SemanticResolution, VerificationOutcome, VerificationPredicate,
-    WaitCondition, WaitOutcome, WaitTimeout,
+    DownloadOutcome, FindTargetResult, FrameInfo, InspectPageResult, IntentPolicyDecision,
+    NavigationControlOutcome, PageTargetInfo, PendingDialog, RecoveryStrategy,
+    SemanticIntentAction, SemanticIntentExecutionRequest, SemanticIntentExecutionResult,
+    SemanticIntentExecutionStatus, SemanticIntentResult, SemanticResolution, VerificationOutcome,
+    VerificationPredicate, WaitCondition, WaitOutcome, WaitTimeout,
 };
 use super::session::{ActionContractError, BrowserResult};
 #[cfg(feature = "native-engine")]
@@ -270,6 +270,33 @@ impl BrowserRuntimeSession {
         match &self.backend {
             BackendStartup::Native(backend) => Ok(backend.network_quiet(duration)?),
             _ => Err("native network activity is only available on the native runtime".into()),
+        }
+    }
+
+    /// Complete the oldest native anchor download into an authorized
+    /// destination without allocating Chromium or using CDP.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_wait_for_download(
+        &self,
+        destination: &std::path::Path,
+        deadline: Duration,
+    ) -> BrowserResult<DownloadOutcome> {
+        let _operation = self.operation_lock.lock().await;
+        match &self.backend {
+            BackendStartup::Native(backend) => {
+                Ok(backend.wait_for_download(destination, deadline).await?)
+            }
+            _ => Err("native downloads are only available on the native runtime".into()),
+        }
+    }
+
+    /// Return the completed native download count for causal verification.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_completed_download_count(&self) -> BrowserResult<u64> {
+        let _operation = self.operation_lock.lock().await;
+        match &self.backend {
+            BackendStartup::Native(backend) => Ok(backend.completed_download_count()?),
+            _ => Err("native downloads are only available on the native runtime".into()),
         }
     }
 
@@ -905,6 +932,10 @@ impl BrowserRuntimeSession {
                 let open = self.native_pending_dialog().await?.is_some();
                 Ok((open == *value, format!("dialogOpen={open}")))
             }
+            VerificationPredicate::DownloadStarted { value } => {
+                let started = self.native_completed_download_count().await? > 0;
+                Ok((started == *value, format!("downloadStarted={started}")))
+            }
             VerificationPredicate::All { all } => {
                 let mut states = Vec::with_capacity(all.len());
                 let mut matched = true;
@@ -932,9 +963,8 @@ impl BrowserRuntimeSession {
                     Box::pin(self.native_check_verification_predicate(not)).await?;
                 Ok((!matched, format!("not({state})")))
             }
-            VerificationPredicate::PopupOpened { .. }
-            | VerificationPredicate::DownloadStarted { .. } => {
-                Err("native verification does not yet expose popup or download topology".into())
+            VerificationPredicate::PopupOpened { .. } => {
+                Err("native verification does not yet expose popup topology".into())
             }
         }
     }

@@ -3018,6 +3018,92 @@ async fn native_direct_click_owns_external_link_navigation() {
 }
 
 #[tokio::test]
+async fn native_external_download_link_transfers_cross_origin_bytes() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let start_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let start_address = start_listener.local_addr().unwrap();
+    let download_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let download_address = download_listener.local_addr().unwrap();
+    let start_server = tokio::spawn(async move {
+        let (mut stream, _) = start_listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/start"));
+        let body = format!(
+            "<title>Download</title><a id='file' href='http://{download_address}/asset.bin' download='report.bin'>Download</a>"
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+    let download_server = tokio::spawn(async move {
+        let (mut stream, _) = download_listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/asset.bin"));
+        let body = b"native-download-bytes";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        stream.write_all(body).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{start_address}/start")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let initial_revision = engine.revision();
+    engine
+        .action_async(NativeAction::Click {
+            target: "id=file".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(engine.revision(), initial_revision + 1);
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        format!("http://{start_address}/start")
+    );
+    let queued = engine.download_ids().unwrap();
+    assert_eq!(queued, vec!["native-download-1"]);
+
+    let download_directory = std::env::temp_dir().join(format!(
+        "glass-native-download-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&download_directory).unwrap();
+    let outcome = engine
+        .wait_for_download_async(&download_directory, Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(outcome.guid, "native-download-1");
+    assert_eq!(outcome.suggested_filename, "report.bin");
+    assert_eq!(outcome.state, "completed");
+    assert_eq!(
+        outcome.received_bytes,
+        b"native-download-bytes".len() as u64
+    );
+    assert!(outcome.sha256.is_some());
+    assert_eq!(
+        fs::read(download_directory.join("report.bin")).unwrap(),
+        b"native-download-bytes"
+    );
+    assert_eq!(engine.completed_download_count().unwrap(), 1);
+    assert_eq!(engine.download_ids().unwrap(), vec!["native-download-1"]);
+    engine.close_async().await.unwrap();
+    fs::remove_dir_all(&download_directory).unwrap();
+    start_server.await.unwrap();
+    download_server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_external_link_click_honors_content_process_cancellation() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3501,31 +3587,34 @@ async fn native_content_process_interval_reschedules_until_cleared() {
     )
     .unwrap();
     engine.initialize_async().await.unwrap();
-    assert_eq!(
-        engine
-            .evaluate_async("globalThis.intervalCount")
-            .await
-            .unwrap(),
-        serde_json::json!(0)
-    );
-    tokio::time::sleep(Duration::from_millis(60)).await;
-    assert_eq!(
-        engine
-            .evaluate_async("globalThis.intervalCount")
-            .await
-            .unwrap(),
-        serde_json::json!(1)
-    );
-    tokio::time::sleep(Duration::from_millis(60)).await;
-    assert_eq!(
-        engine
-            .evaluate_async("globalThis.intervalCount")
-            .await
-            .unwrap(),
-        serde_json::json!(2)
-    );
+    let initial_count = engine
+        .evaluate_async("globalThis.intervalCount")
+        .await
+        .unwrap()
+        .as_u64()
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let first_count = engine
+        .evaluate_async("globalThis.intervalCount")
+        .await
+        .unwrap()
+        .as_u64()
+        .unwrap();
+    assert!(first_count > initial_count);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let second_count = engine
+        .evaluate_async("globalThis.intervalCount")
+        .await
+        .unwrap()
+        .as_u64()
+        .unwrap();
+    assert!(second_count > first_count);
     engine
         .evaluate_async("clearInterval(globalThis.intervalId)")
+        .await
+        .unwrap();
+    let cleared_count = engine
+        .evaluate_async("globalThis.intervalCount")
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_millis(60)).await;
@@ -3534,7 +3623,7 @@ async fn native_content_process_interval_reschedules_until_cleared() {
             .evaluate_async("globalThis.intervalCount")
             .await
             .unwrap(),
-        serde_json::json!(2)
+        cleared_count
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

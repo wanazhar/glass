@@ -2974,6 +2974,20 @@ navigation each retain their own bounded revision transition and request
 accounting. Download attributes, popup/new-target behavior, child frames,
 and universal browser parity remain open.
 
+The completed native-engine-browser-143 batch turns the download branch into a
+real parent-owned operation. Anchor `download` activation remains in the
+content-process event/script path, but queues a stable bounded record instead
+of navigating the current page. A navigation-mode resource request can fetch
+cross-origin HTTP(S) bytes under bounded redirect, CSP, deadline, and 16 MiB
+response policy without returning those bytes to page script. Runtime, CLI,
+and MCP complete the oldest queued transfer into an existing directory with
+sanitized collision-free file creation, SHA-256 evidence, target/frame
+ownership, and bounded list/cancel state. The slice also corrected the shared
+DOM mutation path so `.value` updates on non-text input controls do not invoke
+the text-only selection API. Popup/new-target behavior, child frames,
+chooser/programmatic downloads, per-resource events, universal workflow
+parity, and native production promotion remain open.
+
 The completed native-engine-browser-133 batch extends the native target seam
 with a side-effect-free preflight result. The engine resolves the current
 semantic locator and derives viewport geometry and actionability under the

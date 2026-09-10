@@ -1789,8 +1789,13 @@ impl NativeDocument {
             let node = self.node_mut(id).ok_or(NativeEngineError::DetachedTarget)?;
             node.state.value = Some(value.to_owned());
         }
-        let end = value.chars().count();
-        self.set_selection_state(id, end, end, "none")?;
+        if self
+            .semantic_node(id)
+            .is_some_and(|semantic| semantic.role == "textbox")
+        {
+            let end = value.chars().count();
+            self.set_selection_state(id, end, end, "none")?;
+        }
         Ok(())
     }
 
@@ -2390,6 +2395,17 @@ impl NativeDocument {
         (node.element_name() == Some("a") && self.semantic_role(id) == Some("link"))
             .then(|| node.attribute("href"))
             .flatten()
+    }
+
+    pub(crate) fn link_download_attribute(&self, id: NativeNodeId) -> Option<&str> {
+        let node = self.node(id)?;
+        if node.element_name() != Some("a") || self.semantic_role(id) != Some("link") {
+            return None;
+        }
+        let attributes = node.attributes()?;
+        attributes
+            .contains_key("download")
+            .then(|| node.attribute("download").unwrap_or(""))
     }
 
     pub(crate) fn form_submission_request(

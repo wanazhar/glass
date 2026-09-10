@@ -568,6 +568,7 @@ fn validate_alternative_runtime_command(
             Ok(())
         }
         Commands::AcceptDialog | Commands::DismissDialog if native => Ok(()),
+        Commands::Download { .. } if native => Ok(()),
         Commands::Navigate { .. }
         | Commands::Click { .. }
         | Commands::Type { .. }
@@ -1109,6 +1110,27 @@ async fn run_alternative_runtime_command(
                     .native_resolve_dialog(crate::browser_backend::PromptDecision::Dismiss)
                     .await?;
                 print_json_mode(&result, response_mode)
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
+        }
+        Commands::Download {
+            destination,
+            timeout_ms,
+        } if session.runtime().is_native() => {
+            policy.require(PolicyCapability::Download)?;
+            let destination = policy.require_existing_path(destination)?;
+            if !destination.is_dir() {
+                return Err("native download destination must be an existing directory".into());
+            }
+            #[cfg(feature = "native-engine")]
+            {
+                print_json_mode(
+                    &session
+                        .native_wait_for_download(&destination, Duration::from_millis(*timeout_ms))
+                        .await?,
+                    response_mode,
+                )
             }
             #[cfg(not(feature = "native-engine"))]
             unreachable!("native runtime is feature-gated")

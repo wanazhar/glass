@@ -655,6 +655,66 @@ async fn native_local_url_search_params_iterators_are_live_and_self_iterating() 
 }
 
 #[tokio::test]
+async fn native_local_form_data_iterators_are_live_and_self_iterating() {
+    let config = NativeEngineConfig::default()
+        .with_fixture("fixture://form-data-live", "<p>FormData</p>")
+        .unwrap()
+        .with_initial_url("fixture://form-data-live");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            r#"(() => {
+                const form = new FormData();
+                form.append('a', 'one');
+                form.append('b', 'two');
+                const entries = form.entries();
+                const first = entries.next();
+                form.set('b', 'updated');
+                form.append('c', 'three');
+                const second = entries.next();
+                const third = entries.next();
+                const complete = entries.next();
+                const keys = form.keys();
+                const firstKey = keys.next();
+                form.append('d', 'four');
+                const remainingKeys = [keys.next().value, keys.next().value, keys.next().value, keys.next().done];
+                globalThis.liveFormData = [
+                    form[Symbol.iterator] === form.entries,
+                    entries[Symbol.iterator]() === entries,
+                    first.value,
+                    first.done,
+                    second.value,
+                    third.value,
+                    complete.done,
+                    firstKey.value,
+                    remainingKeys,
+                ];
+            })()"#,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.liveFormData")
+            .await
+            .unwrap(),
+        serde_json::json!([
+            true,
+            true,
+            ["a", "one"],
+            false,
+            ["b", "updated"],
+            ["c", "three"],
+            true,
+            "a",
+            ["b", "c", "d", true],
+        ])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_script_applies_bounded_dom_commands_once() {
     let config = NativeEngineConfig::default()
         .with_fixture(

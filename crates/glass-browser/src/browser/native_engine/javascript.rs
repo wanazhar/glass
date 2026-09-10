@@ -5072,15 +5072,19 @@ fn document_bootstrap(
     if (form !== undefined && form !== null) this._entries = formDataEntries(form);
   }};
   const formDataEntryValue = entry => entry[1].kind === "file" ? entry[1].value : entry[1];
-  const formDataIterator = values => {{
+  const formDataIterator = (owner, kind) => {{
     let index = 0;
-    return {{
+    const iterator = {{
       next() {{
-        if (index >= values.length) return {{ value: undefined, done: true }};
-        return {{ value: values[index++], done: false }};
+        if (index >= owner._entries.length) return {{ value: undefined, done: true }};
+        const entry = owner._entries[index++];
+        if (kind === "keys") return {{ value: entry[0], done: false }};
+        if (kind === "values") return {{ value: formDataEntryValue(entry), done: false }};
+        return {{ value: [entry[0], formDataEntryValue(entry)], done: false }};
       }},
       [Symbol.iterator]() {{ return this; }},
     }};
+    return iterator;
   }};
   FormDataNative.prototype.append = function(name, value, filename) {{
     this._entries.push([String(name), formDataValue(value, filename)]);
@@ -5110,13 +5114,13 @@ fn document_bootstrap(
     return this._entries.some(entry => entry[0] === key);
   }};
   FormDataNative.prototype.entries = function() {{
-    return formDataIterator(this._entries.map(entry => [entry[0], formDataEntryValue(entry)]));
+    return formDataIterator(this, "entries");
   }};
   FormDataNative.prototype.keys = function() {{
-    return formDataIterator(this._entries.map(entry => entry[0]));
+    return formDataIterator(this, "keys");
   }};
   FormDataNative.prototype.values = function() {{
-    return formDataIterator(this._entries.map(formDataEntryValue));
+    return formDataIterator(this, "values");
   }};
   FormDataNative.prototype.forEach = function(callback, thisArg) {{
     if (typeof callback !== "function") throw new TypeError("FormData callback must be callable");

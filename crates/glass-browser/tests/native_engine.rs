@@ -5179,6 +5179,100 @@ async fn native_content_process_blocks_csp_disallowed_stylesheet_before_request(
 }
 
 #[tokio::test]
+async fn native_content_process_blocks_csp_disallowed_frame_before_request() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body =
+            "<title>Parent</title><iframe src='/blocked'>fallback</iframe><p>Parent page</p>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: frame-src 'none'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .await
+    .unwrap();
+    let frames = session.native_list_frames().await.unwrap();
+    assert_eq!(frames.len(), 2);
+    let child = frames
+        .iter()
+        .find(|frame| frame.id.ends_with(":frame-1"))
+        .unwrap();
+    assert_eq!(child.url, "about:blank");
+    session.native_select_frame(&child.id).await.unwrap();
+    session
+        .navigate(format!("http://{address}/blocked"))
+        .await
+        .unwrap();
+    assert_eq!(
+        session.evidence(EvidenceLevel::Compact).await.unwrap().url,
+        "about:blank"
+    );
+    session.close().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_allows_csp_same_origin_frame() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/child"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let (extra_headers, body) = if expected_path == "/page" {
+                (
+                    "Content-Security-Policy: frame-src 'self'\r\n",
+                    "<title>Parent</title><iframe src='/child'>fallback</iframe>",
+                )
+            } else {
+                ("", "<title>Child</title><p>Child page</p>")
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n{extra_headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .await
+    .unwrap();
+    let frames = session.native_list_frames().await.unwrap();
+    assert_eq!(frames.len(), 2);
+    let child = frames
+        .iter()
+        .find(|frame| frame.id.ends_with(":frame-1"))
+        .unwrap();
+    assert_eq!(child.url, format!("http://{address}/child"));
+    session.native_select_frame(&child.id).await.unwrap();
+    assert_eq!(
+        session
+            .evidence(EvidenceLevel::Compact)
+            .await
+            .unwrap()
+            .title,
+        "Child"
+    );
+    session.close().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_decodes_declared_external_html_charset() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

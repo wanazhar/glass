@@ -3022,6 +3022,19 @@ precedence. Named browsing contexts, `window.open`, popup permission/geometry,
 shared opener scripting, and complete browser topology remain open issue #40
 gates.
 
+The completed native-engine-browser-147 batch carries the effective response
+frame policy from the sandboxed content worker to the parent-owned frame tree.
+`frame-src` takes precedence over `child-src`, with `default-src` as the
+existing fallback. The parent evaluates the shared bounded CSP source matcher
+before initializing each discovered child; a denied navigation leaves a live
+`about:blank` owner in the topology and makes no request for the denied URL.
+The child retains the embedding policy for later direct, link, redirect, and
+history navigation, while allowed same-origin frames continue through the
+normal content-worker path. The versioned IPC descriptor is now protocol 4.
+Frame event/load parity, CSP reporting and full source-expression grammar,
+shared frame scripting, postMessage, and complete browser topology remain
+open issue #40 gates.
+
 The completed native-engine-browser-133 batch extends the native target seam
 with a side-effect-free preflight result. The engine resolves the current
 semantic locator and derives viewport geometry and actionability under the

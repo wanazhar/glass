@@ -1355,6 +1355,18 @@ scripts materialize the same target owner without CDP. Named browsing
 contexts, `window.open`, popup permissions/geometry, shared opener scripting,
 and complete browser topology remain issue #40 gates.
 
+The completed native-engine-browser-147 batch is
+[native-engine-browser-147](tasks/native-engine-browser-147.md). External
+document responses now transfer their effective `frame-src`, `child-src`, or
+`default-src` source list through the versioned content-worker boundary. The
+parent frame registry evaluates that policy before child initialization;
+blocked requests publish live `about:blank` owners without fetching the
+blocked URL, while allowed same-origin frames retain the normal sandboxed
+content-worker path. Existing frame owners retain the embedding policy across
+direct navigation, link activation, redirects, and history traversal. Frame
+event/load parity, shared frame scripting, full source-expression grammar,
+and complete browser topology remain issue #40 gates.
+
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and
 constructed responses now share `Response` identity; `new Response`,

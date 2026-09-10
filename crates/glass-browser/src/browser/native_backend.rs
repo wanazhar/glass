@@ -1081,23 +1081,33 @@ async fn reconcile_native_frames(
                 });
             }
             let frame_id = frames.next_frame_id(&target_id);
-            let frame_url = if parent_id == active_frame_id {
+            let parent_engine = if parent_id == active_frame_id {
                 engine
-                    .resolve_embedded_frame_url(&source)
-                    .map_err(native_error)?
             } else {
-                created
+                &created
                     .get(&parent_id)
                     .ok_or_else(|| BrowserBackendError::SelectionFailed {
                         reason: "native frame parent disappeared during discovery".into(),
                     })?
                     .engine
-                    .resolve_embedded_frame_url(&source)
-                    .map_err(native_error)?
             };
+            let requested_frame_url = parent_engine
+                .resolve_embedded_frame_url(&source)
+                .map_err(native_error)?;
+            let frame_url = if parent_engine
+                .allows_embedded_frame_url(&requested_frame_url)
+                .map_err(native_error)?
+            {
+                requested_frame_url
+            } else {
+                "about:blank".to_owned()
+            };
+            let (embedding_document_url, embedding_frame_sources) =
+                parent_engine.frame_navigation_policy();
             let mut child = NativeEngine::new(base_config.clone().with_initial_url(frame_url))
                 .map_err(native_error)?;
             child.set_frame_id(frame_id.clone());
+            child.set_embedding_frame_policy(embedding_document_url, embedding_frame_sources);
             if let Err(error) = child.initialize_async().await {
                 let _ = child.close_async().await;
                 return Err(native_error(error));

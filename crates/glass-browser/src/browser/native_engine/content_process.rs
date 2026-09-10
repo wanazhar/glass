@@ -45,17 +45,19 @@ use url::Url;
 
 const MAX_CONTENT_IPC_FRAME_BYTES: usize = 4 * 1024 * 1024;
 const MAX_CONTENT_DOCUMENT_WIRE_BYTES: usize = 2 * 1024 * 1024;
-const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 3;
+const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 4;
 const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTENT_PROCESS_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_CONTENT_STYLESHEETS: usize = 16;
 const MAX_CONTENT_STYLESHEET_BYTES: usize = 512 * 1024;
+const MAX_CONTENT_FRAME_SOURCES: usize = 64;
 
 pub(crate) struct NativeContentLoad {
     pub(crate) url: String,
     pub(crate) origin: NativeOrigin,
     pub(crate) document: NativeDocumentWire,
+    pub(crate) frame_sources: Option<Vec<String>>,
     pub(crate) navigation: Option<NativeContentNavigation>,
     pub(crate) storage_events: Vec<NativeStorageEvent>,
     pub(crate) indexed_db_changes: Vec<NativeIndexedDbChange>,
@@ -939,15 +941,72 @@ fn decode_loaded_response(
     let storage_events = decode_storage_events(response, "decode content process load")?;
     let indexed_db_changes = decode_indexed_db_changes(response, "decode content process load")?;
     let dialogs = decode_dialogs(response, "decode content process load")?;
+    let frame_sources = decode_frame_sources(response, "decode content process load")?;
     Ok(NativeContentLoad {
         url: url.into(),
         origin,
         document,
+        frame_sources,
         navigation,
         storage_events,
         indexed_db_changes,
         dialogs,
     })
+}
+
+fn decode_frame_sources(
+    response: &Value,
+    operation: &str,
+) -> Result<Option<Vec<String>>, NativeEngineError> {
+    let Some(value) = response.get("frame_sources") else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let sources = value.as_array().ok_or_else(|| NativeEngineError::Worker {
+        operation: operation.into(),
+        reason: "content process returned invalid frame policy sources".into(),
+    })?;
+    if sources.len() > MAX_CONTENT_FRAME_SOURCES {
+        return Err(NativeEngineError::limit(
+            "content-process frame policy sources",
+            MAX_CONTENT_FRAME_SOURCES,
+            sources.len(),
+        ));
+    }
+    let mut decoded = Vec::with_capacity(sources.len());
+    let mut total_bytes = 0usize;
+    for source in sources {
+        let source = source.as_str().ok_or_else(|| NativeEngineError::Worker {
+            operation: operation.into(),
+            reason: "content process returned a non-text frame policy source".into(),
+        })?;
+        if source.is_empty() || source.bytes().any(|byte| byte.is_ascii_control()) {
+            return Err(NativeEngineError::Worker {
+                operation: operation.into(),
+                reason: "content process returned an invalid frame policy source".into(),
+            });
+        }
+        if source.len() > MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES {
+            return Err(NativeEngineError::limit(
+                "content-process frame policy source",
+                MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES,
+                source.len(),
+            ));
+        }
+        let next_bytes = total_bytes.saturating_add(source.len());
+        if next_bytes > MAX_NATIVE_RESPONSE_HEADER_BYTES {
+            return Err(NativeEngineError::limit(
+                "content-process frame policy sources",
+                MAX_NATIVE_RESPONSE_HEADER_BYTES,
+                next_bytes,
+            ));
+        }
+        total_bytes = next_bytes;
+        decoded.push(source.to_owned());
+    }
+    Ok(Some(decoded))
 }
 
 fn decode_cookie_profiles(
@@ -1822,6 +1881,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                         "replace_history": navigation.replace_history,
                                     })),
                                     "dialogs": dialogs,
+                                    "frame_sources": resource.frame_sources,
                                     "document_base64": base64::engine::general_purpose::STANDARD
                                         .encode(serde_json::to_vec(&document_wire).unwrap_or_default()),
                                 })
@@ -3088,6 +3148,7 @@ async fn load_content_resource(
     let resource = loader
         .load_async_request_with_referrer(&navigation, referrer)
         .await?;
+    let frame_sources = loader.frame_sources_for_document(&resource.url)?;
     let discovery = NativeDocument::parse(&resource.body, &limits)?;
     let mut external_stylesheets = Vec::new();
     let mut resource_load_nodes = Vec::new();
@@ -3127,6 +3188,7 @@ async fn load_content_resource(
             url: resource.url,
             origin: resource.origin,
             document: wire,
+            frame_sources,
             navigation: None,
             storage_events: Vec::new(),
             indexed_db_changes: Vec::new(),

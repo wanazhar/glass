@@ -156,7 +156,9 @@ it accepts native
 `point=x,y` click targets
 through its Rust API/CLI path. These are experimental local-content artifacts,
 not CSS/layout, font, physical-pixel, or screenshot-evidence compatibility
-claims.
+claims. External HTTP(S) documents additionally transfer bounded response CSP
+frame-source policy into nested frame ownership, blocking denied child requests
+while retaining observable `about:blank` contexts.
 
 The standalone browser TUI starts structured-only by default. Its first screen
 offers `l` to launch a local browser, `a` to attach a verified DevTools port,
@@ -452,9 +454,12 @@ Native target sessions also own a bounded nested `iframe`/`frame` tree,
 including `srcdoc`, with stable parent-linked frame IDs and initialized child
 engine owners. Explicit frame selection routes the normal Glass operations to
 the selected child while parked parent and sibling engines retain their
-state; frame and target shutdown drain every owner. CSP frame directives,
-frame lifecycle events, and shared same-origin frame scripting remain separate
-production gates in issue #40. Allowed `_blank` anchor activation now creates
+state; frame and target shutdown drain every owner. External document response
+policies now govern child creation and later frame navigation: denied URLs
+remain live `about:blank` contexts without being fetched, while allowed
+same-origin frames use the sandboxed content worker. Frame lifecycle events,
+CSP reporting/full source grammar, and shared same-origin frame scripting
+remain separate production gates in issue #40. Allowed `_blank` anchor activation now creates
 an initialized parked popup target, leaves its opener selected, and exposes
 the target through native runtime, CLI, MCP, and target-selection surfaces.
 Named contexts, `window.open`, popup permissions/geometry, and shared opener

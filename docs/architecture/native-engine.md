@@ -1444,6 +1444,19 @@ is independently selectable and closable. Named browsing contexts,
 `window.open`, popup permission/geometry, shared opener scripting, and complete
 browser topology remain issue #40 gates.
 
+The completed native-engine-browser-147 batch closes the first frame-policy
+ownership gap. The content worker extracts the effective `frame-src`,
+`child-src`, or `default-src` source list from the document response and sends
+only that bounded descriptor across version-4 framed IPC. The parent frame
+registry evaluates the descriptor with the same source matcher used by other
+native subresource checks before creating a child owner. A denied URL therefore
+produces a live `about:blank` frame context without issuing the denied request;
+an allowed same-origin URL uses the existing sandboxed content worker. The
+embedding policy is retained by the child owner and checked on later direct,
+link, redirect, and history navigation as well. Frame lifecycle/load events,
+CSP reporting and complete source grammar, shared frame scripting,
+postMessage, and full browser topology remain issue #40 gates.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature

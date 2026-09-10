@@ -1021,6 +1021,15 @@ status zero, an empty URL/header view, and rejected body reads. Service-worker
 and private-network integration, streaming, redirect parity, and complete
 Fetch/Response Web IDL parity remain open.
 
+The completed bounded Fetch-redirect slice is
+[native-engine-browser-110](tasks/native-engine-browser-110.md). Fetch now
+accepts `redirect: "follow" | "error" | "manual"`; follow reports a bounded
+`redirected` flag and final URL, error rejects at the first redirect, manual
+returns a filtered `opaqueredirect` response, and same-origin mode rejects
+cross-origin redirect hops. Full redirect-status/referrer parity,
+service-worker/private-network routing, streaming, and complete
+Fetch/Response Web IDL parity remain open.
+
 Full cookie policy/Web IDL parity and the remaining browser-complete gates
 remain open.
 

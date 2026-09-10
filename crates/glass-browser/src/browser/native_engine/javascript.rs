@@ -95,6 +95,8 @@ pub(crate) enum NativeScriptCommand {
         #[serde(default)]
         mode: Option<String>,
         #[serde(default)]
+        redirect: Option<String>,
+        #[serde(default)]
         timeout_ms: Option<u32>,
     },
     StorageSet {
@@ -5439,6 +5441,9 @@ fn document_bootstrap(
     const mode = settings.mode === undefined ? "cors" : String(settings.mode).toLowerCase();
     if (!["cors", "no-cors", "same-origin"].includes(mode))
       return Promise.reject(new TypeError("native fetch mode is unsupported"));
+    const redirect = settings.redirect === undefined ? "follow" : String(settings.redirect).toLowerCase();
+    if (!["follow", "error", "manual"].includes(redirect))
+      return Promise.reject(new TypeError("native fetch redirect mode is unsupported"));
     const method = settings.method === undefined ? "GET" : String(settings.method).toUpperCase();
     const blobBody = settings.body && settings.body.__glassNativeBlob === true
       ? settings.body
@@ -5540,7 +5545,7 @@ fn document_bootstrap(
       fetchRequests.set(requestId, pending);
       if (signal) signal.addEventListener("abort", abort);
       if (!fetchRequests.has(requestId)) return;
-      pushCommand({{ kind: "fetch", request_id: requestId, href: input, credentials, method, headers: requestHeaders, body, body_base64: bodyBase64, content_type: contentType, mode, timeout_ms: timeoutMs }});
+      pushCommand({{ kind: "fetch", request_id: requestId, href: input, credentials, method, headers: requestHeaders, body, body_base64: bodyBase64, content_type: contentType, mode, redirect, timeout_ms: timeoutMs }});
     }});
   }};
   const responseHeaders = (rawEntries, contentType) => {{
@@ -5596,18 +5601,21 @@ fn document_bootstrap(
   }};
   const responseFromFetch = (payload) => {{
     const opaque = payload && payload.opaque === true;
+    const opaqueRedirect = payload && payload.opaqueRedirect === true;
+    const filtered = opaque || opaqueRedirect;
     const opaqueBody = () => Promise.reject(nativeOpaqueResponseError());
     return Object.freeze({{
-      type: opaque ? "opaque" : "basic",
-      ok: !opaque && payload.status >= 200 && payload.status < 300,
-      status: opaque ? 0 : payload.status,
-      url: opaque ? "" : payload.url,
-      headers: opaque ? responseHeaders([], null) : responseHeaders(payload.headers, payload.contentType),
-      text() {{ return opaque ? opaqueBody() : Promise.resolve(payload.body); }},
-      json() {{ return opaque ? opaqueBody() : Promise.resolve(JSON.parse(payload.body)); }},
-      blob() {{ return opaque ? opaqueBody() : Promise.resolve(responseBodyBlob(payload)); }},
-      arrayBuffer() {{ return opaque ? opaqueBody() : responseBodyBlob(payload).arrayBuffer(); }},
-      bytes() {{ return opaque ? opaqueBody() : responseBodyBlob(payload).bytes(); }},
+      type: opaqueRedirect ? "opaqueredirect" : (opaque ? "opaque" : "basic"),
+      ok: !filtered && payload.status >= 200 && payload.status < 300,
+      status: filtered ? 0 : payload.status,
+      url: filtered ? "" : payload.url,
+      redirected: opaqueRedirect ? false : payload.redirected === true,
+      headers: filtered ? responseHeaders([], null) : responseHeaders(payload.headers, payload.contentType),
+      text() {{ return filtered ? opaqueBody() : Promise.resolve(payload.body); }},
+      json() {{ return filtered ? opaqueBody() : Promise.resolve(JSON.parse(payload.body)); }},
+      blob() {{ return filtered ? opaqueBody() : Promise.resolve(responseBodyBlob(payload)); }},
+      arrayBuffer() {{ return filtered ? opaqueBody() : responseBodyBlob(payload).arrayBuffer(); }},
+      bytes() {{ return filtered ? opaqueBody() : responseBodyBlob(payload).bytes(); }},
     }});
   }};
   const XMLHttpRequestNative = function() {{

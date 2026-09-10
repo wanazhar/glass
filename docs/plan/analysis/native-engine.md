@@ -2686,6 +2686,15 @@ status zero, an empty URL/header view, and rejected body reads. Service-worker
 and private-network integration, streaming, redirect parity, and complete
 Fetch/Response Web IDL parity remain open.
 
+The completed bounded Fetch-redirect follow-up is
+[native-engine-browser-110](../tasks/native-engine-browser-110.md). Fetch now
+accepts `redirect: "follow" | "error" | "manual"`; follow reports a bounded
+`redirected` flag and final URL, error rejects at the first redirect, manual
+returns a filtered `opaqueredirect` response, and same-origin mode rejects
+cross-origin redirect hops. Full redirect-status/referrer parity,
+service-worker/private-network routing, streaming, and complete
+Fetch/Response Web IDL parity remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

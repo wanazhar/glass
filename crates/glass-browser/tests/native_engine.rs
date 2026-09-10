@@ -30179,7 +30179,7 @@ async fn native_content_process_uploads_bounded_file_blob_form_data() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
-        for expected_path in ["/page", "/upload"] {
+        for expected_path in ["/page", "/upload", "/blob"] {
             let (mut stream, _) = listener.accept().await.unwrap();
             let request = read_http_request(&mut stream).await;
             assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
@@ -30205,9 +30205,25 @@ async fn native_content_process_uploads_bounded_file_blob_form_data() {
                     "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"note.txt\"\r\nContent-Type: text/plain\r\n\r\nworld\r\n"
                 )));
                 assert!(body.ends_with(&format!("--{boundary}--\r\n")));
+            } else if expected_path == "/blob" {
+                assert_eq!(request.split_whitespace().next(), Some("POST"));
+                let content_type = request.lines().find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.eq_ignore_ascii_case("content-type")
+                            .then_some(value.trim())
+                    })
+                });
+                assert_eq!(content_type, Some("text/plain"));
+                let body = request
+                    .split_once("\r\n\r\n")
+                    .map(|(_, body)| body)
+                    .unwrap_or_default();
+                assert_eq!(body, "hello!");
             }
             let body = if expected_path == "/page" {
                 "<p>Upload owner</p>"
+            } else if expected_path == "/blob" {
+                "blob-uploaded"
             } else {
                 "uploaded"
             };
@@ -30231,7 +30247,7 @@ async fn native_content_process_uploads_bounded_file_blob_form_data() {
     engine.initialize_async().await.unwrap();
     engine
         .evaluate_async(
-            "fetch('/upload', { method: 'POST', body: (() => { const data = new FormData(); data.append('blob', new Blob(['hello!'], { type: 'text/plain' })); data.append('file', new File(['world'], 'note.txt', { type: 'text/plain' })); return data; })() }).then(response => response.text()).then(value => { globalThis.uploadStatus = value; });",
+            "fetch('/upload', { method: 'POST', body: (() => { const data = new FormData(); data.append('blob', new Blob(['hello!'], { type: 'text/plain' })); data.append('file', new File(['world'], 'note.txt', { type: 'text/plain' })); return data; })() }).then(response => response.text()).then(value => fetch('/blob', { method: 'POST', body: new Blob(['hello!'], { type: 'text/plain' }) }).then(response => response.text()).then(blobValue => { globalThis.uploadStatus = value + ':' + blobValue; }));",
         )
         .await
         .unwrap();
@@ -30240,7 +30256,7 @@ async fn native_content_process_uploads_bounded_file_blob_form_data() {
             .evaluate_async("globalThis.uploadStatus")
             .await
             .unwrap(),
-        serde_json::json!("uploaded")
+        serde_json::json!("uploaded:blob-uploaded")
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

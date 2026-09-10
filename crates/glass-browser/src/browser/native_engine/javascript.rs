@@ -5036,7 +5036,10 @@ fn document_bootstrap(
     if (typeof input !== "string") throw new TypeError("native fetch requires a URL string");
     const settings = options && typeof options === "object" ? options : {{}};
     const method = settings.method === undefined ? "GET" : String(settings.method).toUpperCase();
-    const rawBody = settings.body === undefined || settings.body === null
+    const blobBody = settings.body && settings.body.__glassNativeBlob === true
+      ? settings.body
+      : null;
+    const rawBody = settings.body === undefined || settings.body === null || blobBody
       ? null
       : String(settings.body);
     const formData = settings.body && settings.body.__glassFormData === true
@@ -5045,7 +5048,7 @@ fn document_bootstrap(
     const urlSearchParams = settings.body && settings.body.__glassUrlSearchParams === true
       ? settings.body
       : null;
-    let body = rawBody;
+    let body = blobBody ? blobBody._text : rawBody;
     if (method !== "GET" && method !== "POST") {{
       return Promise.reject(new TypeError("native fetch supports only GET and POST requests"));
     }}
@@ -5071,6 +5074,7 @@ fn document_bootstrap(
       body = urlSearchParams.toString();
       contentType = "application/x-www-form-urlencoded;charset=UTF-8";
     }}
+    if (blobBody && contentType === null && blobBody.type) contentType = blobBody.type;
     if (method === "GET" && body !== null) {{
       return Promise.reject(new TypeError("GET fetch requests must not have a body"));
     }}

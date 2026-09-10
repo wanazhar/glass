@@ -78,7 +78,8 @@ cargo check --quiet -p glass-browser --features native-engine --tests
 cargo test --quiet -p glass-browser --features native-engine --test native_engine popup -- --nocapture
 ```
 
-The focused popup integration target passes with 3 tests and 0 failures. The
-full native integration/library, strict affected-package lint, workspace
-gates, documentation validators, and remote CI remain required before native
+The focused popup integration target passes with 4 tests and 0 failures, and
+the dedicated local click-cancellation regression also passes. The full native
+integration/library, strict affected-package lint, workspace gates,
+documentation validators, and remote CI remain required before native
 production promotion and issue #40 closure.

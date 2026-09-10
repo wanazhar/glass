@@ -100,7 +100,8 @@ bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
 bounded-legacy-name-fragment-targets/bounded-text-fragment-targets/
-bounded-text-fragment-affixes/bounded-root-horizontal-scroll,
+bounded-text-fragment-affixes/bounded-root-horizontal-scroll/
+bounded-prompt-lifecycle,
 including bounded style
 inheritance, paint clipping, solid/dashed/dotted border painting, rounded
 fill/border masks, inline-box line placement, fixed pixel line-height floors,
@@ -1357,7 +1358,18 @@ frame (`native-context:main`) through the standard target/frame records;
 selection is idempotent for those identities and fails closed for unknown
 ones. Native target archives use the same bounded redacted projection. This
 does not yet claim target creation/closure, child-frame execution, popup
-witnesses, dialogs, downloads, or browser-wide topology parity.
+witnesses, downloads, or browser-wide topology parity.
+
+The completed native-engine-browser-140 batch adds the native prompt lifecycle
+to the same ownership model. Local page realms, page-load/lifecycle scripts,
+and the external content worker forward bounded `alert`, `confirm`, and
+`prompt` metadata into a FIFO parent queue; runtime, CLI, and MCP expose
+`dialogOpen`, `acceptDialog`, and `dismissDialog` without allocating Chromium.
+Page-load response metadata is merged with runtime synchronization records so
+the worker cannot discard a prompt before publication. The current script
+bridge returns deterministic `false`/`null` values for confirm/prompt while it
+records pending state; suspended decision-aware continuation and response
+injection remain a separate scheduler milestone.
 
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
@@ -4426,7 +4438,7 @@ The native profile is `experimental` and declares:
 | script | available | bounded QuickJS ECMAScript with a refreshed `window`/`document` snapshot, bounded inline/classic/module-root page-script loading and parser/lifecycle ordering, HTTP(S) static module graphs, literal dynamic imports, bounded due-time `setTimeout`/`setInterval` turns, policy-owned bounded GET, same-origin string-body POST, and bounded cross-origin simple/preflighted POST `fetch()` promises with independent text/json/blob/UTF-8 arrayBuffer/bytes response reads and bounded one-chunk `ReadableStream` response bodies with reader lock/release/cancel, a bounded read-only response Headers view with duplicate-name combination and same-origin/CORS-exposed filtering, and raw bounded byte-preserving response payloads for response body variants and binary Blob slicing, bounded Blob/File construction from ArrayBuffer and typed-array parts, bounded raw-byte-backed Blob/File request bodies for Fetch and asynchronous XHR, bounded mutable Fetch Headers records with live owner-backed iterators plus plain-object custom request headers with JavaScript/Rust validation, forbidden/internal-header protection, same-origin transfer, and sorted multi-header CORS preflight authorization with bounded positive-`Access-Control-Max-Age` caching, bounded Fetch `cors`/`no-cors`/`same-origin` mode policy with fail-closed same-origin and no-cors request checks plus opaque cross-origin no-cors response projection, bounded Fetch `follow`/`error`/`manual` redirect policy with `redirected` and filtered `opaqueredirect` response projection, direct text-backed Blob/File request bodies with normalized MIME propagation and bounded observable fetch AbortController/AbortSignal cancellation with static abort/timeout/any composition, bounded text-only `FormData(form)` construction, text-backed and raw-byte-backed Blob/File parts, and multipart bodies with Rust-owned form association plus bounded live owner-backed `entries()`/`keys()`/`values()`/`[Symbol.iterator]()` iterators, and bounded URLSearchParams construction from strings, records, pair arrays, and pair iterables, mutation, sorting, live entries/keys/values iteration, and URL-encoded bodies, plus asynchronous bounded GET/POST `XMLHttpRequest` with string, text-backed, and raw-byte-backed Blob/File request bodies, bounded `arraybuffer`/`blob` response types, bounded non-zero timeout with zero disabling the extra deadline, request-local abort/reset state, bounded `readystatechange`/`abort`/`timeout` callbacks, and stale-continuation suppression, from explicit evaluations and initial page scripts, typed click/form-submit/attribute/focus commands, persistent listener records, bounded Event/CustomEvent capture/target/bubble dispatch, cancelable click preflight, transactional type/input/change event re-entry, bounded common constraint validation for required/email/URL/length/numeric/date/month/time/datetime-local/pattern controls, bounded `validity`/`validationMessage`/`willValidate` snapshots with `checkValidity()`/`reportValidity()` and custom validity, submitter event metadata and successful-control serialization, bounded external form ownership, bounded multipart/text/plain form encodings and validated `formaction`/`formmethod`/`formenctype` overrides, bounded `readyState`/`readystatechange`/DOMContentLoaded/load phase ordering, form `novalidate`/`formnovalidate` bypass, top-level link/form navigation handoff, and relative HTTP(S)/same-document resolution; no live Web IDL identity, target contexts, resource-specific lifecycle parity, beforeinput/composition, full JavaScript RegExp `v`-flag/Unicode-set and file constraint validation or picker/UI parity, full live `ValidityState` identity, private-network access, streaming FormData body parity, synchronous XHR, XHR upload/progress/streaming parity, outgoing lifecycle and hashchange re-entrant navigation, transport-level fetch cancellation, full transport-streaming Response bodies, invalid raw response-header bytes, response trailers, service workers, WebSocket/EventSource, animation/idle callbacks, task-source fairness, background page scheduling, computed imports, bare specifiers/import maps, local external subresources, or general page loading |
 | capture | available | bounded PNG of the current logical RGBA surface; JPEG/PDF and screenshot-containing evidence are unavailable |
 | storage | partial | process-owned cookies with bounded `document.cookie` synchronization, bounded document cache, origin-keyed page local/session storage with opt-in revisioned localStorage/cookie/IndexedDB profiles, stale-snapshot key-level merge for Web Storage and cookies, profile-journal local/session events across live local and process-backed documents, bounded reader-lease retention, acknowledged-prefix compaction, profile-snapshot recovery, a bounded StorageManager estimate against the fixed 4 MiB profile quota, and a bounded tagged JSON/structured-clone IndexedDB subset with text-backed Blob/File values plus byte-vector ArrayBuffer/typed-array/DataView values, bounded Blob/File `arrayBuffer()`/`bytes()` reads, version upgrades, same-realm version-change/deletion coordination, serialized atomic ordinary transactions, object stores, indexes, key ranges, cursors, and CRUD; no full cookie policy or IndexedDB parity |
-| prompts | omitted | no dialogs |
+| prompts | partial | bounded alert/confirm/prompt metadata, FIFO pending state, `dialogOpen`, and accept/dismiss resolution; suspended modal continuation and response injection remain open |
 | downloads | omitted | no download pipeline |
 
 Within the available script profile, native Fetch `Response.clone()` creates a
@@ -4494,6 +4506,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - fixture-relative local link resolution with same-host enforcement;
 - title and visible-text projection with hidden `head`, `script`, and `style`;
 - bounded history entries, monotonic revisions, and explicit Rust traversal;
+- bounded alert/confirm/prompt metadata, content-worker forwarding, pending
+  dialog inspection, `dialogOpen` verification, and native accept/dismiss
+  routing;
 - deterministic scheduler ordering and queue bounds;
 - failed navigation preserving the previous state;
 - dispatcher capability denial and explicit-only backend selection;

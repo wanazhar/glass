@@ -2941,6 +2941,18 @@ Target creation/closure, child-frame execution, popup/dialog/download
 witnesses, request accounting, universal workflow parity, and CDP replacement
 remain open.
 
+The completed native-engine-browser-140 batch adds the first public native
+prompt lifecycle. Local page realms and the external content worker now
+forward bounded `alert`, `confirm`, and `prompt` metadata into one FIFO parent
+queue; runtime, CLI, MCP, and `dialogOpen` verification consume that same
+owner, and a worker response cannot overwrite page-load dialogs during runtime
+synchronization. The current QuickJS bridge reports deterministic `false` and
+`null` results for confirm and prompt while retaining the pending record;
+decision-aware suspended continuation remains an explicit follow-on scheduler
+milestone. Target/frame expansion, popup/download witnesses, request
+accounting, universal workflow parity, and native production promotion remain
+issue #40 work.
+
 The completed native-engine-browser-133 batch extends the native target seam
 with a side-effect-free preflight result. The engine resolves the current
 semantic locator and derives viewport geometry and actionability under the

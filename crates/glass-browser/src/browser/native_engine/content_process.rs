@@ -12,11 +12,12 @@ use super::interaction::{
     MAX_NATIVE_EFFECTS, NativeEventKind, validate_native_edit_key, validate_native_key,
 };
 use super::javascript::{
-    MAX_NATIVE_INDEXED_DB_CHANGES, MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_SCRIPT_BYTES,
-    MAX_NATIVE_XHR_TIMEOUT_MS, NativeCookieProfileEntry, NativeIndexedDbChange,
-    NativeIndexedDbState, NativeJavaScriptRuntime, NativePageScript, NativeScriptCommand,
-    NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState, diff_indexed_db_changes,
-    execute_page_scripts, host_event_script, host_hash_change_event_script, host_key_event_script,
+    MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_DIALOGS, MAX_NATIVE_INDEXED_DB_CHANGES,
+    MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_SCRIPT_BYTES, MAX_NATIVE_XHR_TIMEOUT_MS,
+    NativeCookieProfileEntry, NativeDialog, NativeIndexedDbChange, NativeIndexedDbState,
+    NativeJavaScriptRuntime, NativePageScript, NativeScriptCommand, NativeScriptEvaluation,
+    NativeStorageEvent, NativeWebStorageState, diff_indexed_db_changes, execute_page_scripts,
+    host_event_script, host_hash_change_event_script, host_key_event_script,
     host_key_event_script_with_modifiers, host_submit_event_script,
     literal_dynamic_module_specifiers, load_indexed_db_profile, load_web_storage_profile,
     order_page_scripts, save_web_storage_profile, static_module_specifiers, storage_key,
@@ -58,6 +59,7 @@ pub(crate) struct NativeContentLoad {
     pub(crate) navigation: Option<NativeContentNavigation>,
     pub(crate) storage_events: Vec<NativeStorageEvent>,
     pub(crate) indexed_db_changes: Vec<NativeIndexedDbChange>,
+    pub(crate) dialogs: Vec<NativeDialog>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -82,6 +84,7 @@ pub(crate) struct NativeContentMutation {
     pub(crate) allowed: bool,
     pub(crate) storage_events: Vec<NativeStorageEvent>,
     pub(crate) indexed_db_changes: Vec<NativeIndexedDbChange>,
+    pub(crate) dialogs: Vec<NativeDialog>,
 }
 
 pub(crate) struct NativeContentScriptResult {
@@ -89,6 +92,7 @@ pub(crate) struct NativeContentScriptResult {
     pub(crate) mutation: Option<NativeContentMutation>,
     pub(crate) storage_events: Vec<NativeStorageEvent>,
     pub(crate) indexed_db_changes: Vec<NativeIndexedDbChange>,
+    pub(crate) dialogs: Vec<NativeDialog>,
 }
 
 /// Process-backed lifecycle and bounded document-transfer channel for one
@@ -934,6 +938,7 @@ fn decode_loaded_response(
         .transpose()?;
     let storage_events = decode_storage_events(response, "decode content process load")?;
     let indexed_db_changes = decode_indexed_db_changes(response, "decode content process load")?;
+    let dialogs = decode_dialogs(response, "decode content process load")?;
     Ok(NativeContentLoad {
         url: url.into(),
         origin,
@@ -941,6 +946,7 @@ fn decode_loaded_response(
         navigation,
         storage_events,
         indexed_db_changes,
+        dialogs,
     })
 }
 
@@ -1038,6 +1044,7 @@ fn decode_mutation_payload(
         .transpose()?;
     let storage_events = decode_storage_events(response, operation)?;
     let indexed_db_changes = decode_indexed_db_changes(response, operation)?;
+    let dialogs = decode_dialogs(response, operation)?;
     Ok(NativeContentMutation {
         document,
         events,
@@ -1048,6 +1055,7 @@ fn decode_mutation_payload(
             .unwrap_or(true),
         storage_events,
         indexed_db_changes,
+        dialogs,
     })
 }
 
@@ -1311,6 +1319,7 @@ fn decode_script_response(
     }
     let storage_events = decode_storage_events(response, "decode content process script")?;
     let indexed_db_changes = decode_indexed_db_changes(response, "decode content process script")?;
+    let dialogs = decode_dialogs(response, "decode content process script")?;
     let has_document = response.get("document_base64").is_some();
     let has_events = response.get("events").is_some();
     let mutation = if has_document || has_events {
@@ -1321,16 +1330,68 @@ fn decode_script_response(
     } else {
         None
     };
+    let has_mutation = mutation.is_some();
     Ok(NativeContentScriptResult {
         value,
-        storage_events: if mutation.is_some() {
+        storage_events: if has_mutation {
             Vec::new()
         } else {
             storage_events
         },
         mutation,
         indexed_db_changes,
+        dialogs: if has_mutation { Vec::new() } else { dialogs },
     })
+}
+
+fn decode_dialogs(
+    response: &Value,
+    operation: &str,
+) -> Result<Vec<NativeDialog>, NativeEngineError> {
+    let Some(value) = response.get("dialogs") else {
+        return Ok(Vec::new());
+    };
+    let values = value.as_array().ok_or_else(|| NativeEngineError::Worker {
+        operation: operation.into(),
+        reason: "content process returned invalid dialogs".into(),
+    })?;
+    if values.len() > MAX_NATIVE_DIALOGS {
+        return Err(NativeEngineError::limit(
+            "content-process dialogs",
+            MAX_NATIVE_DIALOGS,
+            values.len(),
+        ));
+    }
+    let dialogs = serde_json::from_value::<Vec<NativeDialog>>(value.clone()).map_err(|_| {
+        NativeEngineError::Worker {
+            operation: operation.into(),
+            reason: "content process returned malformed dialogs".into(),
+        }
+    })?;
+    for dialog in &dialogs {
+        if !matches!(dialog.dialog_type.as_str(), "alert" | "confirm" | "prompt") {
+            return Err(NativeEngineError::invalid(
+                "content-process dialog type",
+                "must be alert, confirm, or prompt",
+            ));
+        }
+        if dialog.message.len() > MAX_NATIVE_DIALOG_TEXT_BYTES
+            || dialog
+                .default_value
+                .as_ref()
+                .is_some_and(|value| value.len() > MAX_NATIVE_DIALOG_TEXT_BYTES)
+        {
+            return Err(NativeEngineError::limit(
+                "content-process dialog text",
+                MAX_NATIVE_DIALOG_TEXT_BYTES,
+                dialog
+                    .default_value
+                    .as_ref()
+                    .map_or(dialog.message.len(), String::len),
+            ));
+        }
+    }
+    Ok(dialogs)
 }
 
 fn decode_storage_events(
@@ -1687,6 +1748,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         );
                         let prepared = match page_scripts {
                             Ok(page_scripts) if page_scripts.navigation.is_some() => {
+                                let dialogs = page_scripts.dialogs;
                                 let navigation = page_scripts.navigation.map(|navigation| {
                                     NativeContentNavigation {
                                         node_index: 0,
@@ -1696,12 +1758,13 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                         replace_history: navigation.replace_history,
                                     }
                                 });
-                                Ok((parsed, navigation))
+                                Ok((parsed, navigation, dialogs))
                             }
                             Ok(page_scripts) if page_scripts.pending_fetches.is_empty() => {
-                                Ok((parsed, None))
+                                Ok((parsed, None, page_scripts.dialogs))
                             }
                             Ok(page_scripts) => {
+                                let page_dialogs = page_scripts.dialogs;
                                 match (script_runtime.as_ref(), resource_loader.as_mut()) {
                                     (Some(runtime), Some(loader)) => {
                                         match resolve_script_fetches(
@@ -1718,12 +1781,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                         )
                                         .await
                                         {
-                                            Ok((next, mutation))
-                                                if mutation.navigation.is_none() =>
-                                            {
-                                                Ok((next, None))
+                                            Ok((next, mutation)) => {
+                                                Ok((next, mutation.navigation, page_dialogs))
                                             }
-                                            Ok((next, mutation)) => Ok((next, mutation.navigation)),
                                             Err(error) => Err(error),
                                         }
                                     }
@@ -1736,7 +1796,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             Err(error) => Err(error),
                         };
                         match prepared {
-                            Ok((parsed, navigation)) => {
+                            Ok((parsed, navigation, dialogs)) => {
                                 if let Some(runtime) = script_runtime.as_ref() {
                                     storage_state = runtime.storage_state();
                                     indexed_db_state.replace_origin(
@@ -1761,6 +1821,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                         "location": navigation.location,
                                         "replace_history": navigation.replace_history,
                                     })),
+                                    "dialogs": dialogs,
                                     "document_base64": base64::engine::general_purpose::STANDARD
                                         .encode(serde_json::to_vec(&document_wire).unwrap_or_default()),
                                 })
@@ -2698,7 +2759,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 }
             }
             "close" if protocol_matches(&request) => {
-                let (storage_events, indexed_db_changes) = sync_content_runtime_state(
+                let (storage_events, indexed_db_changes, _dialogs) = sync_content_runtime_state(
                     javascript_runtime.as_ref(),
                     &mut storage_state,
                     &mut indexed_db_state,
@@ -2725,7 +2786,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 },
             ),
         };
-        let (storage_events, indexed_db_changes) = sync_content_runtime_state(
+        let (storage_events, indexed_db_changes, dialogs) = sync_content_runtime_state(
             javascript_runtime.as_ref(),
             &mut storage_state,
             &mut indexed_db_state,
@@ -2741,6 +2802,15 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             &indexed_db_changes,
             &mut resource_loader,
         )?;
+        let mut response_dialogs = decode_dialogs(&response, "merge content process dialogs")?;
+        response_dialogs.extend(dialogs);
+        if response_dialogs.len() > MAX_NATIVE_DIALOGS {
+            return Err(NativeEngineError::limit(
+                "content-process dialogs",
+                MAX_NATIVE_DIALOGS,
+                response_dialogs.len(),
+            ));
+        }
         if let Some(object) = response.as_object_mut() {
             object.insert(
                 "storage_events".into(),
@@ -2758,6 +2828,13 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     }
                 })?,
             );
+            object.insert(
+                "dialogs".into(),
+                serde_json::to_value(response_dialogs).map_err(|_| NativeEngineError::Worker {
+                    operation: "encode content process dialogs".into(),
+                    reason: "content process dialogs could not be encoded".into(),
+                })?,
+            );
         }
         write_value_frame(&mut stdout, &response).await?;
     }
@@ -2770,9 +2847,16 @@ fn sync_content_runtime_state(
     resource_loader: &mut Option<NativeResourceLoader>,
     document_url: Option<&str>,
     document_origin: Option<&NativeOrigin>,
-) -> Result<(Vec<NativeStorageEvent>, Vec<NativeIndexedDbChange>), NativeEngineError> {
+) -> Result<
+    (
+        Vec<NativeStorageEvent>,
+        Vec<NativeIndexedDbChange>,
+        Vec<NativeDialog>,
+    ),
+    NativeEngineError,
+> {
     let Some(runtime) = runtime else {
-        return Ok((Vec::new(), Vec::new()));
+        return Ok((Vec::new(), Vec::new(), Vec::new()));
     };
     let before_indexed_db = indexed_db_state.clone();
     *storage_state = runtime.storage_state();
@@ -2791,7 +2875,11 @@ fn sync_content_runtime_state(
             loader.set_document_cookie(document_url, &value)?;
         }
     }
-    Ok((runtime.take_storage_changes(), indexed_db_changes))
+    Ok((
+        runtime.take_storage_changes(),
+        indexed_db_changes,
+        runtime.take_dialog_events(),
+    ))
 }
 
 fn persist_content_profile(
@@ -3041,6 +3129,7 @@ async fn load_content_resource(
             navigation: None,
             storage_events: Vec::new(),
             indexed_db_changes: Vec::new(),
+            dialogs: Vec::new(),
         },
         document,
         viewport,
@@ -3351,6 +3440,7 @@ fn mutate_click_with_event_preflight(
         allowed: true,
         storage_events: Vec::new(),
         indexed_db_changes: Vec::new(),
+        dialogs: Vec::new(),
     };
     Ok((next, mutation))
 }
@@ -3456,6 +3546,7 @@ fn mutate_type_with_event_bridge(
         allowed: true,
         storage_events: Vec::new(),
         indexed_db_changes: Vec::new(),
+        dialogs: Vec::new(),
     };
     Ok((next, mutation))
 }
@@ -3510,6 +3601,7 @@ fn mutate_form_action_with_event_bridge(
         allowed: true,
         storage_events: Vec::new(),
         indexed_db_changes: Vec::new(),
+        dialogs: Vec::new(),
     };
     Ok((next, mutation))
 }
@@ -3609,6 +3701,7 @@ fn mutate_key_with_event_bridge(
         allowed: true,
         storage_events: Vec::new(),
         indexed_db_changes: Vec::new(),
+        dialogs: Vec::new(),
     };
     Ok((next, mutation))
 }
@@ -3668,6 +3761,7 @@ fn mutate_key_event_with_event_bridge(
             allowed: true,
             storage_events: Vec::new(),
             indexed_db_changes: Vec::new(),
+            dialogs: Vec::new(),
         },
     ))
 }
@@ -3777,6 +3871,7 @@ fn mutate_key_shortcut_with_event_bridge(
             allowed: true,
             storage_events: Vec::new(),
             indexed_db_changes: Vec::new(),
+            dialogs: Vec::new(),
         },
     ))
 }
@@ -3876,6 +3971,7 @@ fn mutate_before_unload(
             allowed,
             storage_events: Vec::new(),
             indexed_db_changes: Vec::new(),
+            dialogs: Vec::new(),
         },
     ))
 }
@@ -3898,6 +3994,7 @@ fn mutate_lifecycle_events(
                 allowed: true,
                 storage_events: Vec::new(),
                 indexed_db_changes: Vec::new(),
+                dialogs: Vec::new(),
             },
         ));
     }
@@ -3941,6 +4038,7 @@ fn mutate_lifecycle_events(
             allowed: true,
             storage_events: Vec::new(),
             indexed_db_changes: Vec::new(),
+            dialogs: Vec::new(),
         },
     ))
 }
@@ -3990,6 +4088,7 @@ fn mutate_hash_change(
             allowed: true,
             storage_events: Vec::new(),
             indexed_db_changes: Vec::new(),
+            dialogs: Vec::new(),
         },
     ))
 }
@@ -4110,6 +4209,7 @@ fn mutate_script_document(
         allowed: true,
         storage_events: Vec::new(),
         indexed_db_changes: Vec::new(),
+        dialogs: Vec::new(),
     };
     Ok((next, mutation))
 }

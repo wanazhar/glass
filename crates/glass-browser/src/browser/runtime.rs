@@ -13,8 +13,8 @@ use super::native_engine::{NativeEngineConfig, NativePreflightAction, NativeTarg
 use crate::browser_backend::{
     ActionRequest, ActionResult, BackendProfile, BrowserBackendDispatcher, BrowsingContext,
     ContextRequest, EffectsRequest, EffectsResult, EvidenceLevel, EvidenceRequest, EvidenceResult,
-    NavigationRequest, NavigationResult, ScriptRequest, ScriptResult, SemanticAction,
-    StorageRequest, StorageResult,
+    NavigationRequest, NavigationResult, PromptDecision, PromptResult, ScriptRequest, ScriptResult,
+    SemanticAction, StorageRequest, StorageResult,
 };
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
@@ -24,10 +24,10 @@ use super::session::{
     ActAndVerifyResult, ActionFailureKind, ActionFailurePhase, ActionKind, ActionOutcome,
     ActionStatus, ActionTarget, ActionVerificationError, ActionVerificationEvidence, Cookie,
     FindTargetResult, FrameInfo, InspectPageResult, IntentPolicyDecision, NavigationControlOutcome,
-    PageTargetInfo, RecoveryStrategy, SemanticIntentAction, SemanticIntentExecutionRequest,
-    SemanticIntentExecutionResult, SemanticIntentExecutionStatus, SemanticIntentResult,
-    SemanticResolution, VerificationOutcome, VerificationPredicate, WaitCondition, WaitOutcome,
-    WaitTimeout,
+    PageTargetInfo, PendingDialog, RecoveryStrategy, SemanticIntentAction,
+    SemanticIntentExecutionRequest, SemanticIntentExecutionResult, SemanticIntentExecutionStatus,
+    SemanticIntentResult, SemanticResolution, VerificationOutcome, VerificationPredicate,
+    WaitCondition, WaitOutcome, WaitTimeout,
 };
 use super::session::{ActionContractError, BrowserResult};
 #[cfg(feature = "native-engine")]
@@ -235,6 +235,30 @@ impl BrowserRuntimeSession {
         match &self.backend {
             BackendStartup::Native(backend) => Ok(backend.navigate_history(direction).await?),
             _ => Err("native history is only available on the native runtime".into()),
+        }
+    }
+
+    /// Return the oldest unresolved native JavaScript dialog, if present.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_pending_dialog(&self) -> BrowserResult<Option<PendingDialog>> {
+        let _operation = self.operation_lock.lock().await;
+        match &self.backend {
+            BackendStartup::Native(backend) => Ok(backend.pending_dialog().await?),
+            _ => Err("native dialog inspection is only available on the native runtime".into()),
+        }
+    }
+
+    /// Accept or dismiss one native JavaScript dialog through the backend
+    /// prompt contract.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_resolve_dialog(
+        &self,
+        decision: PromptDecision,
+    ) -> BrowserResult<PromptResult> {
+        let _operation = self.operation_lock.lock().await;
+        match &self.backend {
+            BackendStartup::Native(backend) => Ok(backend.resolve_dialog(decision).await?),
+            _ => Err("native dialog resolution is only available on the native runtime".into()),
         }
     }
 
@@ -864,6 +888,10 @@ impl BrowserRuntimeSession {
                     format!("revision={}", observation.revision),
                 ))
             }
+            VerificationPredicate::DialogOpen { value } => {
+                let open = self.native_pending_dialog().await?.is_some();
+                Ok((open == *value, format!("dialogOpen={open}")))
+            }
             VerificationPredicate::All { all } => {
                 let mut states = Vec::with_capacity(all.len());
                 let mut matched = true;
@@ -892,11 +920,9 @@ impl BrowserRuntimeSession {
                 Ok((!matched, format!("not({state})")))
             }
             VerificationPredicate::PopupOpened { .. }
-            | VerificationPredicate::DialogOpen { .. }
-            | VerificationPredicate::DownloadStarted { .. } => Err(
-                "native verification does not yet expose popup, dialog, or download topology"
-                    .into(),
-            ),
+            | VerificationPredicate::DownloadStarted { .. } => {
+                Err("native verification does not yet expose popup or download topology".into())
+            }
         }
     }
 

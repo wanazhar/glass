@@ -17,13 +17,14 @@ use super::interaction::{
     validate_native_edit_key, validate_native_key,
 };
 use super::javascript::{
-    NativeCookieProfileEntry, NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime,
-    NativePageNavigation, NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState,
-    append_storage_changes, apply_indexed_db_changes, diff_indexed_db_changes,
-    execute_inline_scripts, host_event_script, host_hash_change_event_script,
-    host_submit_event_script, load_indexed_db_profile, load_web_storage_profile,
-    new_storage_writer_id, read_storage_event_journal, register_storage_reader,
-    save_web_storage_profile, storage_event_cursor, storage_key, unregister_storage_reader,
+    MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_DIALOGS, NativeCookieProfileEntry, NativeDialog,
+    NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime, NativePageNavigation,
+    NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState, append_storage_changes,
+    apply_indexed_db_changes, diff_indexed_db_changes, execute_inline_scripts, host_event_script,
+    host_hash_change_event_script, host_submit_event_script, load_indexed_db_profile,
+    load_web_storage_profile, new_storage_writer_id, read_storage_event_journal,
+    register_storage_reader, save_web_storage_profile, storage_event_cursor, storage_key,
+    unregister_storage_reader,
 };
 use super::layout::{NativeLayoutSnapshot, NativePoint, NativeRect};
 use super::lifecycle::NativeLifecycleState;
@@ -37,8 +38,8 @@ use super::resource_loader::{
 use super::runtime::{NativeRuntimeState, NativeRuntimeTraceEvent};
 use super::scheduler::{DeterministicScheduler, NativeTask};
 use super::worker::{NativeRuntimeShared, NativeRuntimeWorker};
-use crate::browser::session::Cookie;
-use crate::browser_backend::{StorageOperation, StorageScope};
+use crate::browser::session::{Cookie, PendingDialog};
+use crate::browser_backend::{PromptDecision, PromptResult, StorageOperation, StorageScope};
 use std::collections::VecDeque;
 
 const MAX_NATIVE_PAGE_NAVIGATION_HANDOFFS: usize = 8;
@@ -261,6 +262,7 @@ pub struct NativeEngine {
     storage_state_recovery_pending: bool,
     indexed_db_state_delivery_pending: bool,
     pending_external_storage_events: Vec<NativeStorageEvent>,
+    pending_dialogs: VecDeque<PendingDialog>,
     history: NativeHistory,
     lifecycle: NativeLifecycleState,
     document: NativeDocument,
@@ -305,6 +307,7 @@ impl NativeEngine {
             storage_state_recovery_pending: false,
             indexed_db_state_delivery_pending: false,
             pending_external_storage_events: Vec::new(),
+            pending_dialogs: VecDeque::new(),
             history: NativeHistory::new(max_history_entries),
             lifecycle: NativeLifecycleState::New,
             document: NativeDocument::empty(),
@@ -981,7 +984,7 @@ impl NativeEngine {
                 mutation,
                 storage_events,
                 indexed_db_changes,
-                ..
+                dialogs,
             } = {
                 let process = self
                     .content_process
@@ -1006,6 +1009,8 @@ impl NativeEngine {
                 }
             } else {
                 self.publish_content_state(&storage_events, &indexed_db_changes)?;
+                let dialog_url = self.url.clone();
+                self.install_dialogs(dialogs, &dialog_url)?;
             }
             return Ok(value);
         }
@@ -1036,6 +1041,7 @@ impl NativeEngine {
                 self.config.viewport,
             )?;
         let navigation = self.apply_local_script_commands(&evaluation.commands, true)?;
+        self.drain_local_dialogs()?;
         self.persist_local_web_storage()?;
         if let Some(navigation) = navigation {
             self.navigate_request_async(navigation, 0).await?;
@@ -1173,6 +1179,70 @@ impl NativeEngine {
         self.loader.clear_cookies();
         if self.content_process.is_none() {
             self.persist_local_web_storage()?;
+        }
+        Ok(())
+    }
+
+    /// Return the oldest unresolved JavaScript dialog for the active page.
+    pub fn pending_dialog(&self) -> Result<Option<PendingDialog>, NativeEngineError> {
+        self.require_running("inspect dialog")?;
+        Ok(self.pending_dialogs.front().cloned())
+    }
+
+    /// Resolve one queued JavaScript dialog without creating a browser or
+    /// routing through CDP. The page realm's bounded alert/confirm/prompt
+    /// result is deterministic for the current script batch; resolution
+    /// removes the user-facing prompt and lets the next queued prompt surface.
+    pub fn resolve_dialog(
+        &mut self,
+        _decision: PromptDecision,
+    ) -> Result<PromptResult, NativeEngineError> {
+        self.require_running("resolve dialog")?;
+        Ok(PromptResult {
+            handled: self.pending_dialogs.pop_front().is_some(),
+        })
+    }
+
+    fn install_dialogs(
+        &mut self,
+        dialogs: impl IntoIterator<Item = NativeDialog>,
+        document_url: &str,
+    ) -> Result<(), NativeEngineError> {
+        for dialog in dialogs {
+            if self.pending_dialogs.len() >= MAX_NATIVE_DIALOGS {
+                return Err(NativeEngineError::limit(
+                    "native dialogs",
+                    MAX_NATIVE_DIALOGS,
+                    self.pending_dialogs.len().saturating_add(1),
+                ));
+            }
+            if !matches!(dialog.dialog_type.as_str(), "alert" | "confirm" | "prompt") {
+                return Err(NativeEngineError::invalid(
+                    "native dialog type",
+                    "must be alert, confirm, or prompt",
+                ));
+            }
+            if dialog.message.len() > MAX_NATIVE_DIALOG_TEXT_BYTES
+                || dialog
+                    .default_value
+                    .as_ref()
+                    .is_some_and(|value| value.len() > MAX_NATIVE_DIALOG_TEXT_BYTES)
+            {
+                return Err(NativeEngineError::limit(
+                    "native dialog text",
+                    MAX_NATIVE_DIALOG_TEXT_BYTES,
+                    dialog
+                        .default_value
+                        .as_ref()
+                        .map_or(dialog.message.len(), String::len),
+                ));
+            }
+            self.pending_dialogs.push_back(PendingDialog {
+                dialog_type: dialog.dialog_type,
+                message: dialog.message,
+                default_value: dialog.default_value,
+                url: document_url.to_owned(),
+            });
         }
         Ok(())
     }
@@ -2159,6 +2229,19 @@ impl NativeEngine {
         self.persist_local_web_storage()
     }
 
+    fn drain_local_dialogs(&mut self) -> Result<(), NativeEngineError> {
+        let dialogs = self
+            .javascript
+            .as_ref()
+            .map(NativeJavaScriptRuntime::take_dialog_events)
+            .unwrap_or_default();
+        if dialogs.is_empty() {
+            return Ok(());
+        }
+        let dialog_url = self.url.clone();
+        self.install_dialogs(dialogs, &dialog_url)
+    }
+
     fn dispatch_local_events(
         &mut self,
         events: &[(NativeNodeId, NativeEventKind)],
@@ -2294,6 +2377,7 @@ impl NativeEngine {
                 &self.origin,
                 self.config.viewport,
             )?;
+        self.drain_local_dialogs()?;
         self.persist_local_script_state()?;
         let event = (
             NativeNodeId::from_parts(self.document.generation(), u32::MAX),
@@ -2337,6 +2421,7 @@ impl NativeEngine {
             &self.origin,
             self.config.viewport,
         )?;
+        self.drain_local_dialogs()?;
         self.persist_local_script_state()?;
         Ok(Some(evaluation))
     }
@@ -2362,6 +2447,7 @@ impl NativeEngine {
             &self.origin,
             self.config.viewport,
         )?;
+        self.drain_local_dialogs()?;
         self.persist_local_script_state()?;
         Ok(Some(evaluation))
     }
@@ -2393,6 +2479,7 @@ impl NativeEngine {
             &self.origin,
             self.config.viewport,
         )?;
+        self.drain_local_dialogs()?;
         self.persist_local_script_state()?;
         Ok(Some(evaluation))
     }
@@ -2727,6 +2814,7 @@ impl NativeEngine {
         mutation: NativeContentMutation,
     ) -> Result<NativeActionResult, NativeEngineError> {
         self.publish_content_state(&mutation.storage_events, &mutation.indexed_db_changes)?;
+        let dialogs = mutation.dialogs.clone();
         let generation = self.document.generation();
         let mut document = match NativeDocument::from_content_wire(
             mutation.document,
@@ -2785,6 +2873,8 @@ impl NativeEngine {
             } else {
                 self.record_effects(events);
             }
+            let dialog_url = self.url.clone();
+            self.install_dialogs(dialogs, &dialog_url)?;
             return Ok(NativeActionResult {
                 revision: self.revision,
                 accepted: true,
@@ -2795,6 +2885,8 @@ impl NativeEngine {
         self.revision = next_revision;
         self.history.update_current_scroll(self.scroll_offset);
         self.record_effects(events);
+        let dialog_url = self.url.clone();
+        self.install_dialogs(dialogs, &dialog_url)?;
         Ok(NativeActionResult {
             revision: next_revision,
             accepted: true,
@@ -3057,6 +3149,7 @@ impl NativeEngine {
                 body: String::new(),
             },
             document,
+            dialogs: content.dialogs,
             execute_inline_scripts: false,
         })
     }
@@ -3074,6 +3167,7 @@ impl NativeEngine {
         Ok(PreparedNavigation {
             resource,
             document,
+            dialogs: Vec::new(),
             execute_inline_scripts: true,
         })
     }
@@ -3099,8 +3193,9 @@ impl NativeEngine {
         } else {
             None
         };
+        let mut dialogs = std::mem::take(&mut prepared.dialogs);
         let page_navigation = if prepared.execute_inline_scripts {
-            execute_inline_scripts(
+            let result = execute_inline_scripts(
                 &mut prepared.document,
                 &mut javascript,
                 &prepared.resource.url,
@@ -3109,8 +3204,9 @@ impl NativeEngine {
                 &storage_state,
                 &self.indexed_db,
                 &cookie,
-            )?
-            .navigation
+            )?;
+            dialogs.extend(result.dialogs);
+            result.navigation
         } else {
             None
         };
@@ -3127,6 +3223,9 @@ impl NativeEngine {
         self.origin = prepared.resource.origin;
         self.scroll_offset = scroll_offset;
         self.revision = revision;
+        self.pending_dialogs.clear();
+        let dialog_url = self.url.clone();
+        self.install_dialogs(dialogs, &dialog_url)?;
         match history_commit {
             HistoryCommit::Push => self.history.push(self.url.clone(), revision, scroll_offset),
             HistoryCommit::Replace => {
@@ -3176,8 +3275,9 @@ impl NativeEngine {
         } else {
             None
         };
+        let mut dialogs = std::mem::take(&mut prepared.dialogs);
         let page_navigation = if execute_page_scripts {
-            execute_inline_scripts(
+            let result = execute_inline_scripts(
                 &mut prepared.document,
                 &mut javascript,
                 &prepared.resource.url,
@@ -3186,8 +3286,9 @@ impl NativeEngine {
                 &storage_state,
                 &self.indexed_db,
                 &cookie,
-            )?
-            .navigation
+            )?;
+            dialogs.extend(result.dialogs);
+            result.navigation
         } else {
             None
         };
@@ -3205,6 +3306,9 @@ impl NativeEngine {
         self.origin = prepared.resource.origin;
         self.scroll_offset = scroll_offset;
         self.revision = revision;
+        self.pending_dialogs.clear();
+        let dialog_url = self.url.clone();
+        self.install_dialogs(dialogs, &dialog_url)?;
         match history_commit {
             HistoryCommit::Push => self.history.push(self.url.clone(), revision, scroll_offset),
             HistoryCommit::Replace => {
@@ -3365,6 +3469,7 @@ impl NativeEngine {
             x: saved_scroll.x.min(max_scroll.x),
             y: saved_scroll.y.min(max_scroll.y),
         };
+        let dialogs = prepared.dialogs;
         self.run_commit_task(NativeTask::TraverseHistory, "history traversal")?;
         let revision = prepared.document.revision();
         self.document = prepared.document;
@@ -3373,6 +3478,9 @@ impl NativeEngine {
         self.origin = prepared.resource.origin;
         self.scroll_offset = scroll_offset;
         self.revision = revision;
+        self.pending_dialogs.clear();
+        let dialog_url = self.url.clone();
+        self.install_dialogs(dialogs, &dialog_url)?;
         self.history
             .activate(history_index, revision)
             .ok_or_else(|| NativeEngineError::Scheduler {
@@ -3408,6 +3516,7 @@ impl NativeEngine {
             x: saved_scroll.x.min(max_scroll.x),
             y: saved_scroll.y.min(max_scroll.y),
         };
+        let dialogs = prepared.dialogs;
         self.run_commit_task_async(NativeTask::TraverseHistory, "history traversal", worker)
             .await?;
         let revision = prepared.document.revision();
@@ -3417,6 +3526,9 @@ impl NativeEngine {
         self.origin = prepared.resource.origin;
         self.scroll_offset = scroll_offset;
         self.revision = revision;
+        self.pending_dialogs.clear();
+        let dialog_url = self.url.clone();
+        self.install_dialogs(dialogs, &dialog_url)?;
         self.history
             .activate(history_index, revision)
             .ok_or_else(|| NativeEngineError::Scheduler {
@@ -3723,6 +3835,7 @@ impl NativeEngine {
 struct PreparedNavigation {
     resource: NativeResource,
     document: NativeDocument,
+    dialogs: Vec<NativeDialog>,
     execute_inline_scripts: bool,
 }
 

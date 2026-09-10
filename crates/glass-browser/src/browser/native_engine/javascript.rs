@@ -44,6 +44,8 @@ const NATIVE_STORAGE_READER_LEASE_TTL: Duration = Duration::from_secs(15 * 60);
 const NATIVE_STORAGE_READER_HEARTBEAT: Duration = Duration::from_secs(30);
 pub(crate) const MAX_NATIVE_COOKIE_PROFILE_ENTRIES: usize = 128;
 pub(crate) const MAX_NATIVE_COOKIE_PROFILE_BYTES: usize = 4096;
+pub(crate) const MAX_NATIVE_DIALOGS: usize = 32;
+pub(crate) const MAX_NATIVE_DIALOG_TEXT_BYTES: usize = 256;
 const MAX_NATIVE_INDEXED_DB_DATABASES: usize = 16;
 const MAX_NATIVE_INDEXED_DB_STORES: usize = 128;
 const MAX_NATIVE_INDEXED_DB_INDEXES: usize = 128;
@@ -103,6 +105,12 @@ pub(crate) enum NativeScriptCommand {
         redirect: Option<String>,
         #[serde(default)]
         timeout_ms: Option<u32>,
+    },
+    Dialog {
+        dialog_type: String,
+        message: String,
+        #[serde(default)]
+        default_value: Option<String>,
     },
     StorageSet {
         scope: String,
@@ -172,6 +180,16 @@ pub(crate) struct NativePageNavigation {
 pub(crate) struct NativePageScriptResult {
     pub(crate) pending_fetches: Vec<NativeScriptCommand>,
     pub(crate) navigation: Option<NativePageNavigation>,
+    pub(crate) dialogs: Vec<NativeDialog>,
+}
+
+/// A bounded JavaScript dialog emitted by a native page realm.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub(crate) struct NativeDialog {
+    pub(crate) dialog_type: String,
+    pub(crate) message: String,
+    #[serde(default)]
+    pub(crate) default_value: Option<String>,
 }
 
 /// Origin-keyed page storage retained by the native runtime owner.
@@ -2563,6 +2581,10 @@ pub(crate) fn execute_page_scripts(
     Ok(NativePageScriptResult {
         pending_fetches,
         navigation,
+        dialogs: runtime
+            .as_ref()
+            .expect("page script runtime initialized")
+            .take_dialog_events(),
     })
 }
 
@@ -2790,6 +2812,7 @@ pub(crate) struct NativeJavaScriptRuntime {
     pending_storage_events: Arc<Mutex<Vec<NativeStorageEvent>>>,
     cookie: Arc<Mutex<String>>,
     cookie_updates: Arc<Mutex<Vec<String>>>,
+    dialog_events: Arc<Mutex<Vec<NativeDialog>>>,
     storage_context_id: String,
     ready_state: String,
     clock_origin: Instant,
@@ -2837,6 +2860,7 @@ impl NativeJavaScriptRuntime {
             pending_storage_events: Arc::new(Mutex::new(Vec::new())),
             cookie: Arc::new(Mutex::new(String::new())),
             cookie_updates: Arc::new(Mutex::new(Vec::new())),
+            dialog_events: Arc::new(Mutex::new(Vec::new())),
             storage_context_id: context_id.into(),
             ready_state: "complete".into(),
             clock_origin: Instant::now(),
@@ -2953,6 +2977,13 @@ impl NativeJavaScriptRuntime {
         self.cookie_updates
             .lock()
             .map(|mut updates| std::mem::take(&mut *updates))
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn take_dialog_events(&self) -> Vec<NativeDialog> {
+        self.dialog_events
+            .lock()
+            .map(|mut dialogs| std::mem::take(&mut *dialogs))
             .unwrap_or_default()
     }
 
@@ -3145,6 +3176,63 @@ impl NativeJavaScriptRuntime {
         Ok(true)
     }
 
+    fn apply_dialog_command(
+        &self,
+        command: &NativeScriptCommand,
+    ) -> Result<bool, NativeEngineError> {
+        let NativeScriptCommand::Dialog {
+            dialog_type,
+            message,
+            default_value,
+        } = command
+        else {
+            return Ok(false);
+        };
+        if !matches!(dialog_type.as_str(), "alert" | "confirm" | "prompt") {
+            return Err(NativeEngineError::invalid(
+                "native dialog type",
+                "must be alert, confirm, or prompt",
+            ));
+        }
+        if message.len() > MAX_NATIVE_DIALOG_TEXT_BYTES {
+            return Err(NativeEngineError::limit(
+                "native dialog message",
+                MAX_NATIVE_DIALOG_TEXT_BYTES,
+                message.len(),
+            ));
+        }
+        if default_value
+            .as_ref()
+            .is_some_and(|value| value.len() > MAX_NATIVE_DIALOG_TEXT_BYTES)
+        {
+            return Err(NativeEngineError::limit(
+                "native dialog default value",
+                MAX_NATIVE_DIALOG_TEXT_BYTES,
+                default_value.as_ref().map_or(0, String::len),
+            ));
+        }
+        let mut dialogs = self
+            .dialog_events
+            .lock()
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "record native dialog".into(),
+                reason: "native dialog queue is unavailable".into(),
+            })?;
+        if dialogs.len() >= MAX_NATIVE_DIALOGS {
+            return Err(NativeEngineError::limit(
+                "native dialogs",
+                MAX_NATIVE_DIALOGS,
+                dialogs.len().saturating_add(1),
+            ));
+        }
+        dialogs.push(NativeDialog {
+            dialog_type: dialog_type.clone(),
+            message: message.clone(),
+            default_value: default_value.clone(),
+        });
+        Ok(true)
+    }
+
     fn set_module_sources(&self, sources: BTreeMap<String, String>) {
         if let Ok(mut current) = self.module_sources.lock() {
             *current = sources;
@@ -3235,6 +3323,9 @@ impl NativeJavaScriptRuntime {
                     continue;
                 }
                 if self.apply_cookie_command(&command)? {
+                    continue;
+                }
+                if self.apply_dialog_command(&command)? {
                     continue;
                 }
                 document_commands.push(command);
@@ -3394,6 +3485,9 @@ impl NativeJavaScriptRuntime {
                     continue;
                 }
                 if self.apply_cookie_command(&command)? {
+                    continue;
+                }
+                if self.apply_dialog_command(&command)? {
                     continue;
                 }
                 document_commands.push(command);
@@ -7009,6 +7103,34 @@ fn document_bootstrap(
     return dispatchTarget(target, event);
   }});
   globalThis.window = globalThis;
+  const dialogText = (value, field) => {{
+    const text = String(value === undefined || value === null ? "" : value);
+    if (text.length > {dialog_text_limit}) throw new RangeError("native dialog " + field + " exceeds its limit");
+    return text;
+  }};
+  let dialogQueued = false;
+  const queueDialog = (dialogType, message, defaultValue) => {{
+    if (dialogQueued) throw new Error("native JavaScript dialog is already pending");
+    dialogQueued = true;
+    pushCommand({{
+      kind: "dialog",
+      dialog_type: dialogType,
+      message: dialogText(message, "message"),
+      default_value: defaultValue === undefined ? null : dialogText(defaultValue, "default value"),
+    }});
+  }};
+  globalThis.alert = (message) => {{
+    queueDialog("alert", message);
+    return undefined;
+  }};
+  globalThis.confirm = (message) => {{
+    queueDialog("confirm", message);
+    return false;
+  }};
+  globalThis.prompt = (message, defaultValue = "") => {{
+    queueDialog("prompt", message, defaultValue);
+    return null;
+  }};
   globalThis.__glassHostCommands = commands;
   globalThis.__glassHostCommandBuffer = commands;
   globalThis.document = document;
@@ -7137,6 +7259,7 @@ fn document_bootstrap(
         fetch_header_value_limit = MAX_NATIVE_FETCH_HEADER_VALUE_BYTES,
         fetch_header_bytes_limit = MAX_NATIVE_FETCH_HEADER_BYTES,
         max_native_xhr_timeout_ms = MAX_NATIVE_XHR_TIMEOUT_MS,
+        dialog_text_limit = MAX_NATIVE_DIALOG_TEXT_BYTES,
         run_timers = run_timers,
         width = viewport.width,
         height = viewport.height,

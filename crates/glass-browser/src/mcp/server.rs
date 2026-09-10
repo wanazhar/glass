@@ -3750,6 +3750,18 @@ async fn call_native_tool(
         ToolInvocation::SelectFrame { id } => {
             serialized_result_mode(&session.native_select_frame(id).await?, response_mode)
         }
+        ToolInvocation::AcceptDialog => serialized_result_mode(
+            &session
+                .native_resolve_dialog(crate::browser_backend::PromptDecision::Accept)
+                .await?,
+            response_mode,
+        ),
+        ToolInvocation::DismissDialog => serialized_result_mode(
+            &session
+                .native_resolve_dialog(crate::browser_backend::PromptDecision::Dismiss)
+                .await?,
+            response_mode,
+        ),
         ToolInvocation::Cookies => {
             serialized_result_mode(&session.native_cookies().await?, response_mode)
         }
@@ -6311,6 +6323,90 @@ mod tests {
         .unwrap();
         assert_eq!(javascript["last_state"], "true");
         assert!(native_session.is_some());
+        native_session.take().unwrap().close().await.unwrap();
+    }
+
+    #[cfg(feature = "native-engine")]
+    #[tokio::test]
+    async fn native_mcp_routes_dialog_lifecycle_without_chromium() {
+        let mut session = None;
+        let mut native_session = None;
+        let options = SessionOptions::default();
+        let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
+
+        let navigate = invoke_native_mcp_tool(
+            "navigate",
+            json!({"url": "data:text/html,%3Ctitle%3EDialog%3C%2Ftitle%3E"}),
+            &mut session,
+            &mut native_session,
+            &options,
+            &policy,
+        )
+        .await;
+        assert!(navigate.error.is_none());
+
+        let evaluate = invoke_native_mcp_tool(
+            "evaluate",
+            json!({"expression": "alert('MCP dialog'); 'continued'"}),
+            &mut session,
+            &mut native_session,
+            &options,
+            &policy,
+        )
+        .await;
+        assert!(evaluate.error.is_none());
+        let value: Value = serde_json::from_str(
+            evaluate.result.unwrap()["content"][0]["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(value["result"], "continued");
+
+        let open = invoke_native_mcp_tool(
+            "verify",
+            json!({"predicate": {"dialogOpen": true}, "timeoutMs": 100}),
+            &mut session,
+            &mut native_session,
+            &options,
+            &policy,
+        )
+        .await;
+        assert!(open.error.is_none());
+        let open: Value =
+            serde_json::from_str(open.result.unwrap()["content"][0]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(open["status"], "satisfied");
+
+        let accepted = invoke_native_mcp_tool(
+            "acceptDialog",
+            json!({}),
+            &mut session,
+            &mut native_session,
+            &options,
+            &policy,
+        )
+        .await;
+        assert!(accepted.error.is_none());
+        let accepted: Value = serde_json::from_str(
+            accepted.result.unwrap()["content"][0]["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(accepted["handled"], true);
+
+        let closed = invoke_native_mcp_tool(
+            "verify",
+            json!({"predicate": {"dialogOpen": false}, "timeoutMs": 100}),
+            &mut session,
+            &mut native_session,
+            &options,
+            &policy,
+        )
+        .await;
+        assert!(closed.error.is_none());
+
         native_session.take().unwrap().close().await.unwrap();
     }
 

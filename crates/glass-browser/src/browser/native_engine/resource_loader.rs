@@ -25,6 +25,10 @@ const MAX_NATIVE_FETCH_HEADERS: usize = 16;
 const MAX_NATIVE_FETCH_HEADER_NAME_BYTES: usize = 128;
 const MAX_NATIVE_FETCH_HEADER_VALUE_BYTES: usize = 64 * 1024;
 const MAX_NATIVE_FETCH_HEADER_BYTES: usize = 128 * 1024;
+pub(crate) const MAX_NATIVE_RESPONSE_HEADERS: usize = 64;
+pub(crate) const MAX_NATIVE_RESPONSE_HEADER_NAME_BYTES: usize = 128;
+pub(crate) const MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_NATIVE_RESPONSE_HEADER_BYTES: usize = 128 * 1024;
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,6 +146,7 @@ pub struct NativeFetchResponse {
     pub url: String,
     pub status: u16,
     pub content_type: Option<String>,
+    pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
 }
 
@@ -979,10 +984,16 @@ impl NativeResourceLoader {
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
+        let headers = exposed_response_headers(
+            &response_headers,
+            document_url.origin() == final_url.origin(),
+            credentials,
+        )?;
         Ok(NativeFetchResponse {
             url: without_fragment(final_url.as_str()).to_owned(),
             status,
             content_type,
+            headers,
             body,
         })
     }
@@ -1691,6 +1702,83 @@ pub(crate) fn cors_response_allowed(
                 .get(reqwest::header::ACCESS_CONTROL_ALLOW_CREDENTIALS)
                 .and_then(|value| value.to_str().ok())
                 .is_some_and(|value| value.trim().eq_ignore_ascii_case("true")))
+}
+
+fn exposed_response_headers(
+    headers: &HeaderMap,
+    same_origin: bool,
+    credentials: bool,
+) -> Result<Vec<(String, String)>, NativeEngineError> {
+    let mut exposed = Vec::new();
+    let mut total_bytes = 0usize;
+    for (name, value) in headers {
+        let name = name.as_str();
+        if matches!(name, "set-cookie" | "set-cookie2")
+            || (!same_origin && !cors_response_header_exposed(headers, name, credentials))
+        {
+            continue;
+        }
+        let Ok(value) = value.to_str() else {
+            continue;
+        };
+        if name.len() > MAX_NATIVE_RESPONSE_HEADER_NAME_BYTES {
+            return Err(NativeEngineError::limit(
+                "response header name",
+                MAX_NATIVE_RESPONSE_HEADER_NAME_BYTES,
+                name.len(),
+            ));
+        }
+        if value.len() > MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES {
+            return Err(NativeEngineError::limit(
+                "response header value",
+                MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES,
+                value.len(),
+            ));
+        }
+        let next_bytes = total_bytes
+            .saturating_add(name.len())
+            .saturating_add(value.len());
+        if next_bytes > MAX_NATIVE_RESPONSE_HEADER_BYTES {
+            return Err(NativeEngineError::limit(
+                "response headers",
+                MAX_NATIVE_RESPONSE_HEADER_BYTES,
+                next_bytes,
+            ));
+        }
+        if exposed.len() >= MAX_NATIVE_RESPONSE_HEADERS {
+            return Err(NativeEngineError::limit(
+                "response headers",
+                MAX_NATIVE_RESPONSE_HEADERS,
+                exposed.len().saturating_add(1),
+            ));
+        }
+        total_bytes = next_bytes;
+        exposed.push((name.to_owned(), value.to_owned()));
+    }
+    Ok(exposed)
+}
+
+fn cors_response_header_exposed(headers: &HeaderMap, name: &str, credentials: bool) -> bool {
+    if matches!(
+        name,
+        "cache-control"
+            | "content-language"
+            | "content-length"
+            | "content-type"
+            | "expires"
+            | "last-modified"
+            | "pragma"
+    ) {
+        return true;
+    }
+    let allow_wildcard = !credentials;
+    headers
+        .get_all("access-control-expose-headers")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .any(|token| token == "*" && allow_wildcard || token.eq_ignore_ascii_case(name))
 }
 
 fn content_type_is(

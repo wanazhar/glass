@@ -3867,7 +3867,16 @@ fn document_bootstrap(
     if (seen.has(value)) throw indexedDbError("DataCloneError", "cyclic value cannot be cloned by native IndexedDB");
     seen.add(value);
     let encoded;
-    if (value instanceof Date) {{
+    if (value && value.__glassNativeBlob === true) {{
+      encoded = {{
+        [indexedDbTypeKey]: "blob",
+        text: String(value._text || ""),
+        type: String(value.type || ""),
+        file: value.__glassNativeFile === true,
+        name: value.__glassNativeFile === true ? String(value.name || "") : "",
+        lastModified: value.__glassNativeFile === true ? Number(value.lastModified || 0) : 0,
+      }};
+    }} else if (value instanceof Date) {{
       const timestamp = value.getTime();
       if (!Number.isFinite(timestamp)) throw indexedDbError("DataCloneError", "invalid date cannot be cloned by native IndexedDB");
       encoded = {{ [indexedDbTypeKey]: "date", value: timestamp }};
@@ -3906,6 +3915,9 @@ fn document_bootstrap(
     if (type === "regexp") return new RegExp(value.source, value.flags);
     if (type === "map") return new Map((value.entries || []).map(entry => [indexedDbDecode(entry[0]), indexedDbDecode(entry[1])]));
     if (type === "set") return new Set((value.values || []).map(entry => indexedDbDecode(entry)));
+    if (type === "blob") return value.file
+      ? new File([value.text], value.name, {{ type: value.type, lastModified: value.lastModified }})
+      : new Blob([value.text], {{ type: value.type }});
     const decoded = {{}};
     for (const key of Object.keys(value)) Object.defineProperty(decoded, key, {{
       value: indexedDbDecode(value[key]),

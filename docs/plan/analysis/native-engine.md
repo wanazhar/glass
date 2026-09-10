@@ -2518,6 +2518,13 @@ persistence, and restart; cyclic, unsupported, reserved-tag, invalid-date,
 and oversize values fail closed. Binary buffers, typed arrays, Blob/File
 payloads, BigInt, transfer lists, and full clone/prototype parity remain open.
 
+The completed bounded IndexedDB Blob/File clone follow-up is
+[native-engine-browser-087](../tasks/native-engine-browser-087.md). Existing
+text-backed native `Blob` and `File` values retain payload, MIME type, file
+name, and non-negative `lastModified` across IndexedDB reads and profile
+restart. Byte-exact binary buffers, typed arrays, streams, transfer lists, and
+full clone/prototype parity remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

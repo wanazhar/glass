@@ -20,8 +20,8 @@ use super::javascript::{
 };
 use super::origin::NativeOrigin;
 use super::resource_loader::{
-    NativeFetchRequest, NativeFetchResponse, NativeNavigationMethod, NativeNavigationRequest,
-    NativeResourceLoader,
+    NativeFetchBody, NativeFetchRequest, NativeFetchResponse, NativeNavigationMethod,
+    NativeNavigationRequest, NativeResourceLoader,
 };
 #[cfg(windows)]
 use super::sandbox::NativeContentSandbox;
@@ -3255,7 +3255,7 @@ fn fetch_commands(
         String,
         NativeNavigationMethod,
         BTreeMap<String, String>,
-        Option<String>,
+        Option<NativeFetchBody>,
         Option<String>,
         bool,
     )>,
@@ -3271,6 +3271,7 @@ fn fetch_commands(
                 method,
                 headers,
                 body,
+                body_base64,
                 content_type,
             } => Some((
                 *request_id,
@@ -3278,13 +3279,14 @@ fn fetch_commands(
                 method,
                 headers.clone(),
                 body.clone(),
+                body_base64.clone(),
                 content_type.clone(),
                 *credentials,
             )),
             _ => None,
         })
         .map(
-            |(request_id, href, method, headers, body, content_type, credentials)| {
+            |(request_id, href, method, headers, body, body_base64, content_type, credentials)| {
                 let method = match method.as_str() {
                     "GET" => NativeNavigationMethod::Get,
                     "POST" => NativeNavigationMethod::Post,
@@ -3294,6 +3296,27 @@ fn fetch_commands(
                             "must be GET or POST",
                         ));
                     }
+                };
+                let body = match body_base64 {
+                    Some(encoded) => {
+                        let decoded = base64::engine::general_purpose::STANDARD
+                            .decode(encoded)
+                            .map_err(|_| {
+                                NativeEngineError::invalid(
+                                    "script fetch binary body",
+                                    "must be valid base64",
+                                )
+                            })?;
+                        if decoded.len() > crate::browser_backend::MAX_TEXT_BYTES {
+                            return Err(NativeEngineError::limit(
+                                "script fetch binary body",
+                                crate::browser_backend::MAX_TEXT_BYTES,
+                                decoded.len(),
+                            ));
+                        }
+                        Some(NativeFetchBody::Bytes(decoded))
+                    }
+                    None => body.map(NativeFetchBody::Text),
                 };
                 Ok((
                     request_id,

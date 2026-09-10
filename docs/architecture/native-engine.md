@@ -783,6 +783,16 @@ revision field remain readable. The profile remains a local-storage snapshot,
 session storage remains volatile, and cross-process event delivery, cookie
 profile persistence, and IndexedDB remain open.
 
+The completed native-engine-browser-075 batch replaces the process-local
+storage-event coordinator with a bounded profile-adjacent newline-delimited
+journal. Each live profile-backed engine has a unique writer ID and byte
+cursor; local and session changes are appended under the retained profile lock,
+and receivers poll before page operations, exclude their writer, and apply
+origin/context routing before updating state and dispatching the page event.
+Malformed records are typed failures, incomplete tails are safely repaired at
+the next append, and the journal is capped at 4 MiB without compaction in this
+slice. Cookie profile persistence and IndexedDB remain open.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature
@@ -3844,7 +3854,7 @@ The native profile is `experimental` and declares:
 | effects | available | current revision and changed signal; bounded event metadata is Rust-only |
 | script | available | bounded QuickJS ECMAScript with a refreshed `window`/`document` snapshot, bounded inline/classic/module-root page-script loading and parser/lifecycle ordering, HTTP(S) static module graphs, literal dynamic imports, bounded due-time `setTimeout`/`setInterval` turns, policy-owned bounded GET, same-origin string-body POST, and bounded cross-origin simple/preflighted POST `fetch()` promises, bounded text-only `FormData(form)` construction, text-backed Blob/File parts, and multipart bodies with Rust-owned form association, and string-only `URLSearchParams` URL-encoded bodies, plus asynchronous bounded GET/POST `XMLHttpRequest` with string bodies and response callbacks, from explicit evaluations and initial page scripts, typed click/form-submit/attribute/focus commands, persistent listener records, bounded Event/CustomEvent capture/target/bubble dispatch, cancelable click preflight, transactional type/input/change event re-entry, bounded common constraint validation for required/email/URL/length/numeric/date/month/time/datetime-local/pattern controls, bounded `validity`/`validationMessage`/`willValidate` snapshots with `checkValidity()`/`reportValidity()` and custom validity, submitter event metadata and successful-control serialization, bounded external form ownership, bounded multipart/text/plain form encodings and validated `formaction`/`formmethod`/`formenctype` overrides, bounded `readyState`/`readystatechange`/DOMContentLoaded/load phase ordering, form `novalidate`/`formnovalidate` bypass, top-level link/form navigation handoff, and relative HTTP(S)/same-document resolution; no live Web IDL identity, target contexts, resource-specific lifecycle parity, beforeinput/composition, full JavaScript RegExp `v`-flag/Unicode-set and file constraint validation or picker/UI parity, full live `ValidityState` identity, binary Blob/File FormData parity, FormData iterator identity, preflight caching, custom fetch headers, private-network access, opaque `no-cors` responses, binary/stream FormData body parity, URLSearchParams full constructor/sorting/iterator parity, synchronous XHR, XHR upload/progress/binary-response/timeout/abort/streaming parity, callback navigation during initial publication, AbortController, service workers, WebSocket/EventSource, animation/idle callbacks, task-source fairness, background page scheduling, computed imports, bare specifiers/import maps, local external subresources, or general page loading |
 | capture | available | bounded PNG of the current logical RGBA surface; JPEG/PDF and screenshot-containing evidence are unavailable |
-| storage | partial | process-owned session cookies with bounded `document.cookie` synchronization, bounded document cache, origin-keyed page local/session storage with opt-in localStorage profiles, same-profile origin-filtered localStorage events, same-context sessionStorage events, and revisioned stale-snapshot localStorage delta merge across local and process-backed documents in one Glass process; no independent-process event delivery, cookie profile persistence, or IndexedDB |
+| storage | partial | process-owned session cookies with bounded `document.cookie` synchronization, bounded document cache, origin-keyed page local/session storage with opt-in localStorage profiles, revisioned stale-snapshot localStorage delta merge, and profile-journal local/session events across live local and process-backed documents; no cookie profile persistence or IndexedDB |
 | prompts | omitted | no dialogs |
 | downloads | omitted | no download pipeline |
 

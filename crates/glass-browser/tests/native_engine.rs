@@ -29041,7 +29041,16 @@ async fn native_content_process_delivers_local_storage_events_between_documents(
         "glass-native-web-storage-{}-content-events.json",
         std::process::id()
     ));
+    let observer_path = profile_path
+        .parent()
+        .unwrap()
+        .join(".")
+        .join(profile_path.file_name().unwrap());
+    let lock_path = profile_path.with_extension("lock");
+    let events_path = profile_path.with_extension("events");
     let _ = fs::remove_file(&profile_path);
+    let _ = fs::remove_file(&lock_path);
+    let _ = fs::remove_file(&events_path);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
@@ -29062,7 +29071,7 @@ async fn native_content_process_delivers_local_storage_events_between_documents(
         .with_storage_path(profile_path.clone())
         .with_initial_url(url.clone());
     let mut owner = NativeEngine::new(config.clone()).unwrap();
-    let mut observer = NativeEngine::new(config).unwrap();
+    let mut observer = NativeEngine::new(config.with_storage_path(observer_path)).unwrap();
     owner.initialize_async().await.unwrap();
     observer.initialize_async().await.unwrap();
 
@@ -29106,6 +29115,8 @@ async fn native_content_process_delivers_local_storage_events_between_documents(
     owner.close_async().await.unwrap();
     server.await.unwrap();
     let _ = fs::remove_file(profile_path);
+    let _ = fs::remove_file(lock_path);
+    let _ = fs::remove_file(events_path);
 }
 
 #[tokio::test]

@@ -5,10 +5,10 @@
 //! capability has an explicit resource and security contract.
 
 use super::browsing_context::NATIVE_CONTEXT_ID;
-use super::config::Viewport;
+use super::config::{Viewport, validate_context_id};
 use super::dom::{NativeDocument, NativePageScriptSource, NativePageScriptTiming};
 use super::error::NativeEngineError;
-use super::interaction::{MAX_NATIVE_EFFECTS, NativeEventKind};
+use super::interaction::NativeEventKind;
 use super::origin::NativeOrigin;
 use fs2::FileExt;
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
@@ -16,9 +16,10 @@ use rquickjs::{Context, Error, Module, Runtime, Value};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::ErrorKind;
-use std::path::Path;
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::io::{ErrorKind, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use url::Url;
 
@@ -34,6 +35,7 @@ const NATIVE_SCRIPT_STACK_BYTES: usize = 1024 * 1024;
 const NATIVE_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_WEB_STORAGE_PROFILE_BYTES: usize = 4 * 1024 * 1024;
 const WEB_STORAGE_PROFILE_VERSION: u64 = 1;
+const MAX_WEB_STORAGE_EVENT_JOURNAL_BYTES: usize = 4 * 1024 * 1024;
 const MAX_NATIVE_STORAGE_EVENTS: usize = 64;
 const NATIVE_STORAGE_PROFILE_LOCK_TIMEOUT: Duration = Duration::from_millis(500);
 const NATIVE_STORAGE_PROFILE_LOCK_RETRY: Duration = Duration::from_millis(10);
@@ -183,96 +185,30 @@ pub(crate) struct NativeStorageEvent {
     pub(crate) url: String,
 }
 
-pub(crate) type NativeStorageEventQueue = Arc<Mutex<Vec<NativeStorageEvent>>>;
-
-#[derive(Debug, Default)]
-pub(crate) struct NativeStorageCoordinator {
-    subscribers: Mutex<Vec<Weak<Mutex<Vec<NativeStorageEvent>>>>>,
-}
-
-impl NativeStorageCoordinator {
-    pub(crate) fn subscribe(&self) -> Result<NativeStorageEventQueue, NativeEngineError> {
-        let queue = Arc::new(Mutex::new(Vec::new()));
-        let mut subscribers = self
-            .subscribers
-            .lock()
-            .map_err(|_| NativeEngineError::Worker {
-                operation: "subscribe native storage events".into(),
-                reason: "native storage subscriber registry is unavailable".into(),
-            })?;
-        subscribers.retain(|subscriber| subscriber.strong_count() > 0);
-        if subscribers.len() >= MAX_NATIVE_EFFECTS {
-            return Err(NativeEngineError::limit(
-                "native storage subscribers",
-                MAX_NATIVE_EFFECTS,
-                subscribers.len().saturating_add(1),
-            ));
-        }
-        subscribers.push(Arc::downgrade(&queue));
-        Ok(queue)
-    }
-
-    pub(crate) fn publish(
-        &self,
-        source: &NativeStorageEventQueue,
-        event: NativeStorageEvent,
-    ) -> Result<(), NativeEngineError> {
-        let mut subscribers = self
-            .subscribers
-            .lock()
-            .map_err(|_| NativeEngineError::Worker {
-                operation: "publish native storage event".into(),
-                reason: "native storage subscriber registry is unavailable".into(),
-            })?;
-        subscribers.retain(|subscriber| subscriber.strong_count() > 0);
-        for subscriber in subscribers.iter().filter_map(Weak::upgrade) {
-            if Arc::ptr_eq(&subscriber, source) {
-                continue;
-            }
-            let mut events = subscriber.lock().map_err(|_| NativeEngineError::Worker {
-                operation: "publish native storage event".into(),
-                reason: "native storage event queue is unavailable".into(),
-            })?;
-            if events.len() >= MAX_NATIVE_STORAGE_EVENTS {
-                return Err(NativeEngineError::limit(
-                    "native storage events",
-                    MAX_NATIVE_STORAGE_EVENTS,
-                    events.len().saturating_add(1),
-                ));
-            }
-            events.push(event.clone());
-        }
-        Ok(())
-    }
-}
-
-static NATIVE_STORAGE_COORDINATORS: OnceLock<
-    Mutex<BTreeMap<String, Weak<NativeStorageCoordinator>>>,
-> = OnceLock::new();
-
-pub(crate) fn storage_coordinator_for(
-    path: &Path,
-) -> Result<Arc<NativeStorageCoordinator>, NativeEngineError> {
-    let key = path.to_string_lossy().into_owned();
-    let registry = NATIVE_STORAGE_COORDINATORS.get_or_init(|| Mutex::new(BTreeMap::new()));
-    let mut registry = registry.lock().map_err(|_| NativeEngineError::Worker {
-        operation: "open native storage coordinator".into(),
-        reason: "native storage coordinator registry is unavailable".into(),
-    })?;
-    if let Some(coordinator) = registry.get(&key).and_then(Weak::upgrade) {
-        return Ok(coordinator);
-    }
-    let coordinator = Arc::new(NativeStorageCoordinator::default());
-    registry.insert(key, Arc::downgrade(&coordinator));
-    Ok(coordinator)
-}
-
 #[derive(Debug, Deserialize, Serialize)]
 struct NativeWebStorageProfile {
     version: u64,
     #[serde(default)]
     revision: u64,
     local: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub(crate) struct NativeStorageJournalRecord {
+    pub(crate) writer_id: String,
+    pub(crate) event: NativeStorageEvent,
+}
+
+static NATIVE_STORAGE_WRITER_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+pub(crate) fn new_storage_writer_id() -> Result<String, NativeEngineError> {
+    let writer_id = format!(
+        "{}-{}",
+        std::process::id(),
+        NATIVE_STORAGE_WRITER_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    );
+    validate_context_id(&writer_id)?;
+    Ok(writer_id)
 }
 
 /// Cross-process ownership of one bounded Web Storage profile I/O operation.
@@ -348,6 +284,226 @@ fn lock_web_storage_profile(
 
 fn profile_lock_is_contended(error: &std::io::Error) -> bool {
     error.kind() == ErrorKind::WouldBlock || (cfg!(windows) && error.raw_os_error() == Some(33))
+}
+
+fn storage_event_journal_path(path: &Path) -> PathBuf {
+    path.with_extension("events")
+}
+
+pub(crate) fn storage_event_cursor(path: Option<&Path>) -> Result<u64, NativeEngineError> {
+    let Some(path) = path else {
+        return Ok(0);
+    };
+    let _lock = lock_web_storage_profile(path, false)?;
+    let journal_path = storage_event_journal_path(path);
+    let metadata = match fs::metadata(&journal_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(0),
+        Err(_) => {
+            return Err(NativeEngineError::Worker {
+                operation: "open native Web Storage event journal".into(),
+                reason: "native Web Storage event journal metadata is unavailable".into(),
+            });
+        }
+    };
+    let bytes = usize::try_from(metadata.len()).unwrap_or(usize::MAX);
+    if bytes > MAX_WEB_STORAGE_EVENT_JOURNAL_BYTES {
+        return Err(NativeEngineError::limit(
+            "native Web Storage event journal",
+            MAX_WEB_STORAGE_EVENT_JOURNAL_BYTES,
+            bytes,
+        ));
+    }
+    Ok(metadata.len())
+}
+
+fn validate_storage_journal_event(event: &NativeStorageEvent) -> Result<(), NativeEngineError> {
+    validate_context_id(&event.source_context_id)?;
+    if event.url.len() > MAX_NATIVE_SCRIPT_BYTES {
+        return Err(NativeEngineError::limit(
+            "native Web Storage event URL",
+            MAX_NATIVE_SCRIPT_BYTES,
+            event.url.len(),
+        ));
+    }
+    if event
+        .old_value
+        .as_ref()
+        .is_some_and(|value| value.len() > crate::browser_backend::MAX_TEXT_BYTES)
+    {
+        let actual = event.old_value.as_ref().map_or(0, String::len);
+        return Err(NativeEngineError::limit(
+            "native Web Storage old value",
+            crate::browser_backend::MAX_TEXT_BYTES,
+            actual,
+        ));
+    }
+    let mut state = NativeWebStorageState::default();
+    state.apply_storage_event(event)
+}
+
+fn decode_storage_journal_record(
+    bytes: &[u8],
+) -> Result<NativeStorageJournalRecord, NativeEngineError> {
+    let record: NativeStorageJournalRecord = serde_json::from_slice(bytes).map_err(|_| {
+        NativeEngineError::invalid(
+            "native Web Storage event journal",
+            "must contain newline-delimited storage event records",
+        )
+    })?;
+    validate_context_id(&record.writer_id)?;
+    validate_storage_journal_event(&record.event)?;
+    Ok(record)
+}
+
+pub(crate) fn read_storage_event_journal(
+    path: Option<&Path>,
+    cursor: &mut u64,
+) -> Result<Vec<NativeStorageJournalRecord>, NativeEngineError> {
+    let Some(path) = path else {
+        return Ok(Vec::new());
+    };
+    let _lock = lock_web_storage_profile(path, false)?;
+    let journal_path = storage_event_journal_path(path);
+    let metadata = match fs::metadata(&journal_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            *cursor = 0;
+            return Ok(Vec::new());
+        }
+        Err(_) => {
+            return Err(NativeEngineError::Worker {
+                operation: "read native Web Storage event journal".into(),
+                reason: "native Web Storage event journal metadata is unavailable".into(),
+            });
+        }
+    };
+    let journal_bytes = usize::try_from(metadata.len()).unwrap_or(usize::MAX);
+    if journal_bytes > MAX_WEB_STORAGE_EVENT_JOURNAL_BYTES {
+        return Err(NativeEngineError::limit(
+            "native Web Storage event journal",
+            MAX_WEB_STORAGE_EVENT_JOURNAL_BYTES,
+            journal_bytes,
+        ));
+    }
+    if *cursor > metadata.len() {
+        return Err(NativeEngineError::Worker {
+            operation: "read native Web Storage event journal".into(),
+            reason: "native Web Storage event journal was truncated while in use".into(),
+        });
+    }
+    let bytes = fs::read(&journal_path).map_err(|_| NativeEngineError::Worker {
+        operation: "read native Web Storage event journal".into(),
+        reason: "native Web Storage event journal cannot be read".into(),
+    })?;
+    let start = usize::try_from(*cursor).unwrap_or(usize::MAX);
+    let mut next_cursor = *cursor;
+    let mut records = Vec::new();
+    for line in bytes[start..].split_inclusive(|byte| *byte == b'\n') {
+        if line.last() != Some(&b'\n') {
+            break;
+        }
+        let record_bytes = &line[..line.len().saturating_sub(1)];
+        if record_bytes.is_empty() {
+            return Err(NativeEngineError::invalid(
+                "native Web Storage event journal",
+                "must not contain empty records",
+            ));
+        }
+        records.push(decode_storage_journal_record(record_bytes)?);
+        next_cursor = next_cursor.saturating_add(u64::try_from(line.len()).unwrap_or(u64::MAX));
+    }
+    *cursor = next_cursor;
+    Ok(records)
+}
+
+pub(crate) fn append_storage_events(
+    path: Option<&Path>,
+    writer_id: &str,
+    events: &[NativeStorageEvent],
+) -> Result<(), NativeEngineError> {
+    let Some(path) = path else {
+        return Ok(());
+    };
+    if events.is_empty() {
+        return Ok(());
+    }
+    validate_context_id(writer_id)?;
+    let _lock = lock_web_storage_profile(path, true)?;
+    let journal_path = storage_event_journal_path(path);
+    let mut existing = match fs::read(&journal_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == ErrorKind::NotFound => Vec::new(),
+        Err(_) => {
+            return Err(NativeEngineError::Worker {
+                operation: "append native Web Storage event journal".into(),
+                reason: "native Web Storage event journal cannot be read".into(),
+            });
+        }
+    };
+    if existing.len() > MAX_WEB_STORAGE_EVENT_JOURNAL_BYTES {
+        return Err(NativeEngineError::limit(
+            "native Web Storage event journal",
+            MAX_WEB_STORAGE_EVENT_JOURNAL_BYTES,
+            existing.len(),
+        ));
+    }
+    let complete_len = existing
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(0, |index| index.saturating_add(1));
+    if complete_len < existing.len() {
+        let file = OpenOptions::new()
+            .write(true)
+            .open(&journal_path)
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "repair native Web Storage event journal".into(),
+                reason: "native Web Storage event journal cannot be opened".into(),
+            })?;
+        file.set_len(u64::try_from(complete_len).unwrap_or(u64::MAX))
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "repair native Web Storage event journal".into(),
+                reason: "native Web Storage event journal cannot be truncated".into(),
+            })?;
+        existing.truncate(complete_len);
+    }
+    let mut payload = Vec::new();
+    for event in events {
+        validate_storage_journal_event(event)?;
+        let record = NativeStorageJournalRecord {
+            writer_id: writer_id.to_owned(),
+            event: event.clone(),
+        };
+        let mut encoded = serde_json::to_vec(&record).map_err(|_| NativeEngineError::Worker {
+            operation: "encode native Web Storage event journal".into(),
+            reason: "native Web Storage event journal record cannot be encoded".into(),
+        })?;
+        encoded.push(b'\n');
+        payload.extend(encoded);
+    }
+    let total = existing.len().saturating_add(payload.len());
+    if total > MAX_WEB_STORAGE_EVENT_JOURNAL_BYTES {
+        return Err(NativeEngineError::limit(
+            "native Web Storage event journal",
+            MAX_WEB_STORAGE_EVENT_JOURNAL_BYTES,
+            total,
+        ));
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&journal_path)
+        .map_err(|_| NativeEngineError::Worker {
+            operation: "append native Web Storage event journal".into(),
+            reason: "native Web Storage event journal cannot be opened".into(),
+        })?;
+    file.write_all(&payload)
+        .and_then(|_| file.sync_data())
+        .map_err(|_| NativeEngineError::Worker {
+            operation: "append native Web Storage event journal".into(),
+            reason: "native Web Storage event journal cannot be committed".into(),
+        })?;
+    Ok(())
 }
 
 pub(crate) fn load_web_storage_profile(

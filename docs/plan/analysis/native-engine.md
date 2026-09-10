@@ -2582,8 +2582,9 @@ The completed bounded fetch response-headers follow-up is
 [native-engine-browser-095](../tasks/native-engine-browser-095.md). The
 response now exposes a read-only normalized content-type snapshot through
 case-insensitive lookup, `has`, `get`, bounded iterators, and `forEach`.
-Multiple/raw headers, request-header dictionaries, trailers, mutation, and
-full Headers/Web IDL parity remain open.
+Multiple/raw response headers, trailers, mutation, and full Headers/Web IDL
+parity remain open; bounded request-header dictionaries are covered by the
+later 097 slice.
 
 The completed bounded XHR-abort follow-up is
 [native-engine-browser-096](../tasks/native-engine-browser-096.md). An active

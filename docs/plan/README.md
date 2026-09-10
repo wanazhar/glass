@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-095` locally. The versioned
+`native-engine-browser-097` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -911,8 +911,8 @@ The completed bounded fetch response-headers slice is
 [native-engine-browser-095](tasks/native-engine-browser-095.md). `Response.headers`
 now offers read-only case-insensitive content-type lookup plus bounded
 `get`/`has`/iterator/`forEach` snapshots over the transferred header. Multiple
-headers, request-header dictionaries, trailers, and full Headers/Web IDL
-parity remain open.
+response headers, trailers, and full Headers/Web IDL parity remain open;
+bounded request-header dictionaries are covered by the later 097 slice.
 
 The completed bounded XHR-abort slice is
 [native-engine-browser-096](tasks/native-engine-browser-096.md). Asynchronous
@@ -920,6 +920,14 @@ The completed bounded XHR-abort slice is
 requests to `UNSENT`, emits the bounded `readystatechange`/`abort` callbacks,
 and ignores late `load`/`error` continuations. Transport cancellation,
 timeout/progress, and complete XHR/Web IDL parity remain open.
+
+The completed bounded Fetch request-header slice is
+[native-engine-browser-097](tasks/native-engine-browser-097.md). Fetch now
+accepts bounded plain-object custom request headers with early and Rust-side
+validation, forbidden/internal-header rejection, same-origin wire delivery,
+and sorted multi-header CORS preflight authorization. Full `Headers`
+constructor/identity and mutation parity, duplicate-value list semantics,
+response-header exposure, and trailers remain open.
 
 Full cookie policy/Web IDL parity and the remaining browser-complete gates
 remain open.

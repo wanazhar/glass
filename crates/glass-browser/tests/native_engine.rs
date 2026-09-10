@@ -30537,6 +30537,53 @@ async fn native_content_process_exposes_bounded_xhr_fetch_bridge() {
 }
 
 #[tokio::test]
+async fn native_xhr_abort_is_observable_and_ignores_late_callbacks() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = "<p>XHR abort</p>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+    let config = NativeEngineConfig::default().with_initial_url(format!("http://{address}/page"));
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            r#"(() => {
+                const xhr = new XMLHttpRequest();
+                const events = [];
+                xhr.onreadystatechange = () => events.push(`state:${xhr.readyState}`);
+                xhr.onload = () => events.push('load');
+                xhr.onerror = () => events.push('error');
+                xhr.onabort = event => events.push(`${event.type}:${xhr.readyState}`);
+                xhr.open('GET', 'data:text/plain,never');
+                xhr.send();
+                xhr.abort();
+                globalThis.xhrAbortResult = [xhr.readyState, xhr.status, xhr.responseText, xhr.responseURL, events];
+            })()"#,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.xhrAbortResult")
+            .await
+            .unwrap(),
+        serde_json::json!([0, 0, "", "", ["state:1", "state:0", "abort:0"]])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_fetches_bounded_text_form_data() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

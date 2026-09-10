@@ -2585,6 +2585,13 @@ case-insensitive lookup, `has`, `get`, bounded iterators, and `forEach`.
 Multiple/raw headers, request-header dictionaries, trailers, mutation, and
 full Headers/Web IDL parity remain open.
 
+The completed bounded XHR-abort follow-up is
+[native-engine-browser-096](../tasks/native-engine-browser-096.md). An active
+asynchronous XHR abort now uses a request-local signal, resets observable
+state to `UNSENT`, emits bounded `readystatechange`/`abort` callbacks, and
+guards against late `load`/`error` continuations. Transport cancellation,
+timeout/progress, and complete XHR/Web IDL parity remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

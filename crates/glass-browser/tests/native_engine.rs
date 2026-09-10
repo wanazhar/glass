@@ -30684,7 +30684,7 @@ async fn native_content_process_exposes_bounded_xhr_fetch_bridge() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
-        for expected_path in ["/page", "/xhr", "/binary", "/xhr-binary"] {
+        for expected_path in ["/page", "/xhr", "/binary", "/xhr-binary", "/xhr-blob"] {
             let (mut stream, _) = listener.accept().await.unwrap();
             let request_bytes = read_http_request_bytes(&mut stream).await;
             let request = String::from_utf8_lossy(&request_bytes);
@@ -30718,7 +30718,7 @@ async fn native_content_process_exposes_bounded_xhr_fetch_bridge() {
                     + 4;
                 assert_eq!(&request_bytes[header_end..], [0_u8, 0xff, 0x80, b'A']);
             }
-            if expected_path == "/binary" {
+            if matches!(expected_path, "/binary" | "/xhr-binary" | "/xhr-blob") {
                 let body = [0_u8, 0xff, 0x80, b'A'];
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -30763,9 +30763,17 @@ async fn native_content_process_exposes_bounded_xhr_fetch_bridge() {
                     const binaryBlob = await binaryResponse.blob();
                     const binaryXhr = new XMLHttpRequest();
                     binaryXhr.open('POST', '/xhr-binary');
+                    binaryXhr.responseType = 'arraybuffer';
                     binaryXhr.setRequestHeader('Content-Type', 'application/octet-stream');
-                    binaryXhr.onload = () => {
-                        globalThis.xhrBinaryResult = [binaryXhr.status, binaryXhr.responseText, binaryXhr.responseURL];
+                    binaryXhr.onload = async () => {
+                        globalThis.xhrBinaryResult = [binaryXhr.status, binaryXhr.response instanceof ArrayBuffer, Array.from(new Uint8Array(binaryXhr.response)), binaryXhr.responseText, binaryXhr.responseURL];
+                        const blobXhr = new XMLHttpRequest();
+                        blobXhr.open('GET', '/xhr-blob');
+                        blobXhr.responseType = 'blob';
+                        blobXhr.onload = async () => {
+                            globalThis.xhrBlobResult = [blobXhr.status, blobXhr.response instanceof Blob, blobXhr.response.size, Array.from(await blobXhr.response.bytes()), blobXhr.responseText, blobXhr.responseURL];
+                        };
+                        blobXhr.send();
                     };
                     binaryXhr.send(binaryBlob);
                 };
@@ -30790,7 +30798,27 @@ async fn native_content_process_exposes_bounded_xhr_fetch_bridge() {
             .evaluate_async("globalThis.xhrBinaryResult")
             .await
             .unwrap(),
-        serde_json::json!([200, "xhr-response", format!("http://{address}/xhr-binary")])
+        serde_json::json!([
+            200,
+            true,
+            [0, 255, 128, 65],
+            "",
+            format!("http://{address}/xhr-binary")
+        ])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.xhrBlobResult")
+            .await
+            .unwrap(),
+        serde_json::json!([
+            200,
+            true,
+            4,
+            [0, 255, 128, 65],
+            "",
+            format!("http://{address}/xhr-blob")
+        ])
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

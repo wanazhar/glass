@@ -974,6 +974,13 @@ instances with case-insensitive append/set/delete/get/iteration behavior;
 response headers remain read-only snapshots, and full Headers Web IDL identity
 and exotic iterable parity remain open.
 
+The completed bounded XHR binary-response slice is
+[native-engine-browser-104](tasks/native-engine-browser-104.md). Async XHR
+now supports bounded `arraybuffer` and `blob` response types with byte-
+preserving `response` values while retaining text-mode behavior; upload
+progress, timeout, streaming, synchronous XHR, and complete XHR Web IDL parity
+remain open.
+
 Full cookie policy/Web IDL parity and the remaining browser-complete gates
 remain open.
 

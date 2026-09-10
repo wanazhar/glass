@@ -2778,6 +2778,14 @@ Stream input, body disturbance/`bodyUsed`, complete factory and redirect/error
 internals, trailers, shared tee/backpressure, and complete Response Web IDL
 identity remain open.
 
+The completed bounded response-Headers-identity follow-up is
+[native-engine-browser-121](../tasks/native-engine-browser-121.md). Fetch and
+asynchronous XHR response-header views now satisfy `headers instanceof Headers`
+while remaining immutable normalized snapshots; lookup, duplicate combination,
+iteration, filtering, and `forEach()` remain unchanged, and response mutation
+methods reject. Raw header bytes, trailers, live mutation, descriptor parity,
+and complete Headers/Fetch/XHR Web IDL parity remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

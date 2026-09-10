@@ -1176,6 +1176,13 @@ remaining `body === null`. Stream input, body disturbance/`bodyUsed`, full
 factory and redirect/error internals, trailers, shared tee/backpressure, and
 complete Response Web IDL identity remain open.
 
+The completed native-engine-browser-121 batch gives Fetch and asynchronous XHR
+response-header views native `Headers` identity while retaining immutable
+normalized snapshots. Lookup, duplicate combination, iteration, filtering, and
+`forEach()` remain unchanged; response `append()`/`set()`/`delete()` reject
+with a typed immutability error. Raw header bytes, trailers, live mutation,
+descriptor parity, and complete Headers/Fetch/XHR Web IDL parity remain open.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature

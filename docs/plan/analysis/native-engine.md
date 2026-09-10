@@ -2877,6 +2877,17 @@ passed with no Chromium endpoint, while universal workflow parity, profile,
 frame, download, prompt, checkpoint, recovery, and production replacement of
 CDP remain open.
 
+The completed native-engine-browser-134 batch extends the native observation
+seam to agent discovery. The backend now returns one atomic page, semantic
+node, and layout snapshot; `BrowserRuntimeSession` projects it into the
+standard Glass semantic inspection envelope, and native `findTarget` reuses
+the existing pure intent resolver for constraint filtering, confidence,
+ambiguity, revisions, and candidate fingerprints. CLI and MCP expose both
+operations without creating Chromium or changing the document. The first
+projection deliberately has one bounded main region and the native supported
+interactive set; landmark regions, rich accessibility, extraction, and full
+browser parity remain issue #40 work.
+
 The completed native-engine-browser-133 batch extends the native target seam
 with a side-effect-free preflight result. The engine resolves the current
 semantic locator and derives viewport geometry and actionability under the

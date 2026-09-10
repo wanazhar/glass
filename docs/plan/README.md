@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-133` locally. The versioned
+`native-engine-browser-134` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1217,6 +1217,16 @@ geometry, actionability, resolution failure kind, and navigation/form hints
 without scrolling, focusing, event dispatch, or storage mutation. The
 existing Chromium preflight path remains unchanged. Universal workflow
 parity, native promotion, and CDP replacement remain issue #40 gates.
+
+The completed bounded native agent-inspection batch is
+[native-engine-browser-134](tasks/native-engine-browser-134.md). Native
+`inspectPage` and `findTarget` now build the standard Glass semantic result
+envelopes from one revision-consistent page/node/layout snapshot. The native
+intent path reuses Glass's pure resolver for constraints, confidence,
+ambiguity, revision, and candidate fingerprints; CLI, MCP, and the portable
+session expose the same discovery loop without creating Chromium. Rich
+landmark regions, structured extraction, TUI, and CDP replacement remain
+issue #40 gates.
 
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and

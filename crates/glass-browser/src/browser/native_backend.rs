@@ -5,8 +5,8 @@
 //! `browser_backend` contract.
 
 use super::native_engine::{
-    NativeAction, NativeEngine, NativeEngineConfig, NativeEngineError, NativePreflightAction,
-    NativeTargetPreflight,
+    NativeAction, NativeEngine, NativeEngineConfig, NativeEngineError, NativeInspectionSnapshot,
+    NativePreflightAction, NativeTargetPreflight,
 };
 use crate::browser_backend::{
     ActionResult, BROWSER_BACKEND_SCHEMA_VERSION, BackendFuture, BackendOperation, BackendProfile,
@@ -114,6 +114,13 @@ impl NativeEngineBackend {
     ) -> Result<NativeTargetPreflight, BrowserBackendError> {
         self.lock_engine(BackendOperation::Evidence)?
             .preflight_target(target, action)
+            .map_err(native_error)
+    }
+
+    /// Return one atomic page/semantic/layout snapshot for agent discovery.
+    pub fn inspection_snapshot(&self) -> Result<NativeInspectionSnapshot, BrowserBackendError> {
+        self.lock_engine(BackendOperation::Evidence)?
+            .inspection_snapshot()
             .map_err(native_error)
     }
 

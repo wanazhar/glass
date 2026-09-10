@@ -538,6 +538,7 @@ fn validate_alternative_runtime_command(
         }
         Commands::Evaluate { .. } if native => Ok(()),
         Commands::Preflight { .. } if native => Ok(()),
+        Commands::InspectPage | Commands::FindTarget { .. } if native => Ok(()),
         Commands::Dom | Commands::ClickAt { .. } | Commands::Scroll { .. } if native => Ok(()),
         Commands::Clear { .. }
         | Commands::Check { .. }
@@ -651,6 +652,25 @@ async fn run_alternative_runtime_command(
                     &session.native_preflight_target(target, action).await?,
                     response_mode,
                 )
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
+        }
+        Commands::InspectPage if session.runtime().is_native() => {
+            #[cfg(feature = "native-engine")]
+            {
+                print_json_mode(&session.native_inspect_page().await?, response_mode)
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
+        }
+        Commands::FindTarget { input } if session.runtime().is_native() => {
+            #[cfg(feature = "native-engine")]
+            {
+                let request = SemanticIntentRequest::from_json(&serde_json::to_string(
+                    &read_json_input(Some(input))?,
+                )?)?;
+                print_json_mode(&session.native_find_target(&request).await?, response_mode)
             }
             #[cfg(not(feature = "native-engine"))]
             unreachable!("native runtime is feature-gated")
@@ -3500,6 +3520,14 @@ mod tests {
                 "native",
                 "preflight",
                 "id=save",
+            ],
+            vec!["glass", "--browser-runtime", "native", "inspect-page"],
+            vec![
+                "glass",
+                "--browser-runtime",
+                "native",
+                "find-target",
+                "intent.json",
             ],
         ] {
             let cli = Cli::try_parse_from(arguments).unwrap();

@@ -20,6 +20,8 @@ use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
 use super::session::{ActionContractError, BrowserResult};
+#[cfg(feature = "native-engine")]
+use super::session::{FindTargetResult, InspectPageResult};
 use tokio::sync::Mutex;
 
 /// Browser runtimes supported by the portable semantic session.
@@ -251,6 +253,131 @@ impl BrowserRuntimeSession {
         }
     }
 
+    /// Build the standard Glass agent inspection envelope from one atomic
+    /// native page/semantic/layout snapshot.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_inspect_page(&self) -> BrowserResult<InspectPageResult> {
+        let observation = self.native_semantic_observation().await?;
+        Ok(InspectPageResult {
+            page: observation.page,
+            revision: observation.revision,
+            regions: observation.regions,
+            limits: observation.limits,
+            focused_target: None,
+            alerts: Vec::new(),
+        })
+    }
+
+    /// Resolve native candidates through the same pure intent resolver used by
+    /// the Chromium session, backed by one current native observation.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_find_target(
+        &self,
+        request: &super::session::SemanticIntentRequest,
+    ) -> BrowserResult<FindTargetResult> {
+        let observation = self.native_semantic_observation().await?;
+        let result = super::session::resolve_intent(request, &observation);
+        let ambiguity = match result.resolution {
+            super::session::SemanticResolution::Exact
+            | super::session::SemanticResolution::UniqueHighConfidence
+            | super::session::SemanticResolution::UniqueLowConfidence => "none",
+            super::session::SemanticResolution::Ambiguous => "ambiguous",
+            super::session::SemanticResolution::NotFound => "not_found",
+            super::session::SemanticResolution::StaleRevision => "stale_revision",
+            super::session::SemanticResolution::PolicyRejected => "policy_rejected",
+            super::session::SemanticResolution::UnsupportedIntent => "unsupported_intent",
+        };
+        Ok(FindTargetResult {
+            normalized_intent: result.normalized_intent,
+            revision: result.revision,
+            candidates: result.candidates,
+            ambiguity: ambiguity.into(),
+            suggested_constraints: result.suggested_constraints,
+        })
+    }
+
+    #[cfg(feature = "native-engine")]
+    async fn native_semantic_observation(
+        &self,
+    ) -> BrowserResult<super::session::SemanticObservation> {
+        let _operation = self.operation_lock.lock().await;
+        let native = match &self.backend {
+            BackendStartup::Native(backend) => backend.inspection_snapshot()?,
+            _ => {
+                return Err(
+                    "native semantic inspection is only available on the native runtime".into(),
+                );
+            }
+        };
+        let route = super::session::SemanticRouteIdentity {
+            target_id: native.context_id.clone(),
+            frame_id: format!("{}:main", native.context_id),
+            url: native.snapshot.url.clone(),
+        };
+        let targets = native
+            .nodes
+            .iter()
+            .map(native_semantic_target)
+            .collect::<Vec<_>>();
+        let region = super::session::SemanticRegion {
+            id: "region_main".into(),
+            kind: super::session::SemanticRegionKind::Main,
+            label: "Main content".into(),
+            interactive_count: targets.len(),
+            item_count: Some(targets.len()),
+            confidence: super::session::SemanticConfidence::High,
+            structured_records: Vec::new(),
+            evidence: vec!["native semantic node projection".into()],
+            targets,
+            expansion: Some(super::session::SemanticExpansionHandle {
+                region_id: "region_main".into(),
+                revision: native.snapshot.revision,
+                route: route.clone(),
+            }),
+        };
+        let viewport = native.layout.viewport;
+        let scroll_offset = native.layout.scroll_offset;
+        let observation = super::session::SemanticObservation {
+            schema_version: super::session::SEMANTIC_OBSERVATION_SCHEMA_VERSION,
+            revision: native.snapshot.revision,
+            level: super::session::SemanticObservationLevel::Structured,
+            route: route.clone(),
+            page: super::session::SemanticPage {
+                kind: super::session::SemanticPageKind::Generic,
+                title: native.snapshot.title,
+                url: native.snapshot.url,
+                target_id: route.target_id.clone(),
+                frame_id: route.frame_id.clone(),
+                confidence: super::session::SemanticConfidence::Medium,
+                evidence: vec!["native page snapshot".into()],
+            },
+            regions: vec![region],
+            text: Some(native.snapshot.visible_text.clone()),
+            accessibility: None,
+            raw_accessibility: None,
+            changes: None,
+            limits: super::session::SemanticObservationLimits {
+                truncated: native.snapshot.title_truncated || native.snapshot.text_truncated,
+                omitted_regions: 0,
+                omitted_targets: 0,
+                omitted_structured_records: 0,
+                structured_bytes: Some(0),
+                omitted_bytes: None,
+                text_bytes: Some(native.snapshot.visible_text.len()),
+                text_truncated: native.snapshot.text_truncated,
+                viewport: Some(super::session::SemanticViewport {
+                    scroll_x: f64::from(scroll_offset.x),
+                    scroll_y: f64::from(scroll_offset.y),
+                    width: f64::from(viewport.width),
+                    height: f64::from(viewport.height),
+                    document_width: f64::from(native.layout.content_width),
+                    document_height: f64::from(native.layout.content_height),
+                }),
+            },
+        };
+        Ok(observation)
+    }
+
     pub async fn close(self) -> BrowserResult<()> {
         Ok(BrowserBackendDispatcher::new(&self.backend).close().await?)
     }
@@ -274,5 +401,22 @@ impl BrowserRuntimeSession {
             .find(|context| context.active)
             .map(|context| context.context_id)
             .ok_or("alternative runtime returned no active context")?)
+    }
+}
+
+#[cfg(feature = "native-engine")]
+fn native_semantic_target(
+    node: &super::native_engine::NativeSemanticNode,
+) -> super::session::SemanticTarget {
+    super::session::SemanticTarget {
+        reference: node.reference.clone(),
+        role: node.role.clone(),
+        name: node.name.clone(),
+        input_type: node.input_type.clone(),
+        disabled: Some(node.disabled),
+        read_only: Some(node.read_only),
+        required: Some(node.required),
+        checked: node.checked,
+        empty: node.empty,
     }
 }

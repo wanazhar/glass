@@ -325,9 +325,9 @@ downloads, prompts, workflows, TUI, MCP, and revision-aware high-level
 operations remain on the Chromium session until independently certified.
 
 The feature-gated Glass-owned native engine is an experimental Rust backend
-inside `glass-browser`. Its current Phase 2 and initial Phase 3 slices are
-deterministic and limited to `about:blank`, `data:text/html`, and registered
-local fixtures, with bounded presentation, normal-flow geometry, point
+inside `glass-browser`. Its current slices include deterministic local
+resources and bounded external HTTP(S) HTML navigation, with bounded
+presentation, normal-flow geometry, point
 hit-testing, bounded physical four-side padding/margin shorthands and
 longhands, explicit content-box or border-box sizing, bounded physical
 min/max width/height constraints with bounded case-insensitive 15-layer/
@@ -604,7 +604,10 @@ plus bounded revisioned Rust
 diagnostics for unsupported CSS without raw stylesheet echo. A
 `native-engine` feature build exposes the explicit local
 `--browser-runtime native` one-shot path; its default CLI configuration does
-not register fixture files or contact endpoints. It is not a browser-parity
+not register fixture files or contact endpoints. Native anchor downloads now
+have a bounded parent-owned HTTP(S) transfer path through the runtime, CLI,
+and MCP, with existing-directory file writes and completion evidence. It is
+not yet a browser-parity
 implementation or hostile-content security boundary. See the [native engine
 architecture](docs/architecture/native-engine.md).
 
@@ -926,7 +929,7 @@ workflows.
 | Chrome / Chromium | Supported browser families on environments with native evidence |
 | Firefox automation | Experimental portable semantic session over Firefox WebDriver BiDi |
 | Safari automation | Experimental portable semantic session over SafariDriver W3C WebDriver |
-| Native engine | Experimental default-off local-content Rust backend with bounded layout/display-list/software-surface artifacts. Its current Flexbox slice includes stable visual `order`, integer `flex-grow`/`flex-shrink` allocation, `flex-basis:auto|Npx` base-size selection, finite `flex` expansion, and case-insensitive 15-layer/unlayered `revert-layer` rollback for those non-inherited owners including standalone `flex:revert-layer`, `flex-flow:revert-layer`, and `place-content:revert-layer` shorthand rollback with native fallbacks and finite expansion, plus independent finite-pixel gap-family rollback for `gap`, `row-gap`, and `column-gap`; inherited text presentation also has bounded case-insensitive 15-layer/unlayered rollback for `text-transform`, `font-weight`, `font-style`, and `word-break` with finite parent/root fallbacks; the bounded horizontal-tb logical border family maps block start/end to top/bottom and direction-aware inline start/end for `ltr`/`rtl` through the existing physical border consumers; explicit Rust or feature-gated local CLI path. See the [native-engine architecture](docs/architecture/native-engine.md) for the bounded contract and exclusions. |
+| Native engine | Experimental default-off Glass-owned Rust backend with bounded local and external HTTP(S) HTML navigation, layout/display-list/software-surface artifacts, and parent-owned anchor downloads with completion evidence. Its current Flexbox slice includes stable visual `order`, integer `flex-grow`/`flex-shrink` allocation, `flex-basis:auto|Npx` base-size selection, finite `flex` expansion, and case-insensitive 15-layer/unlayered `revert-layer` rollback for those non-inherited owners including standalone `flex:revert-layer`, `flex-flow:revert-layer`, and `place-content:revert-layer` shorthand rollback with native fallbacks and finite expansion, plus independent finite-pixel gap-family rollback for `gap`, `row-gap`, and `column-gap`; inherited text presentation also has bounded case-insensitive 15-layer/unlayered rollback for `text-transform`, `font-weight`, `font-style`, and `word-break` with finite parent/root fallbacks; the bounded horizontal-tb logical border family maps block start/end to top/bottom and direction-aware inline start/end for `ltr`/`rtl` through the existing physical border consumers; explicit Rust or feature-gated local CLI path. See the [native-engine architecture](docs/architecture/native-engine.md) for the bounded contract and exclusions. |
 The native engine also accepts bounded case-insensitive 15-layer/unlayered
 `revert-layer` for local `display` and `visibility`. Rollback resolves through
 lower concrete candidates or the established normal-flow `display:auto` and

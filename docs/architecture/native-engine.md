@@ -101,7 +101,8 @@ bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
 bounded-legacy-name-fragment-targets/bounded-text-fragment-targets/
 bounded-text-fragment-affixes/bounded-root-horizontal-scroll/
-bounded-prompt-lifecycle/bounded-request-lifecycle/bounded-external-link-activation,
+bounded-prompt-lifecycle/bounded-request-lifecycle/bounded-external-link-activation/
+bounded-anchor-download-ownership,
 including bounded style
 inheritance, paint clipping, solid/dashed/dotted border painting, rounded
 fill/border masks, inline-box line placement, fixed pixel line-height floors,
@@ -1392,6 +1393,20 @@ worker, and request-ledger paths. A canceled link click mutates only the
 observable click state and does not navigate. Download attributes, popup or
 new-target behavior, child-frame ownership, and full browser topology remain
 open.
+
+The completed native-engine-browser-143 batch adds the first usable native
+download owner. An allowed anchor carrying `download` is kept on the current
+committed page and queues a bounded parent-owned transfer; the same rule is
+applied to the script-navigation handoff. The navigation-mode loader permits
+cross-origin HTTP(S) download bytes without exposing them to page script,
+applies bounded redirect and response-size policy, and returns the transfer to
+the parent for exclusive, sanitized, collision-free file creation. Runtime,
+CLI, and MCP expose completion into an existing destination directory, while
+stable GUIDs, target/frame ownership, SHA-256 evidence, bounded list/cancel
+state, and download-start verification remain on the same engine owner. This
+does not yet claim chooser UI, programmatic or object-URL downloads,
+streaming/progress, service-worker interception, or multi-target/frame
+download parity.
 
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
@@ -3623,13 +3638,11 @@ forms fail closed.
 Visible local fragment targets may position the root viewport at the exact
 case-sensitive `id` obtained after bounded percent-decoding; the active history
 entry retains the bounded scroll offset for restoration.
-The engine does not
-yet own
-general CSS, nested/smooth/keyboard scrolling, scrollbars, nested overflow
-scrolling, or scrolling/stacking layout,
-screenshot semantics, font/image
-fidelity, hit-test visuals, JavaScript,
-subresource loading and network security policy, storage, downloads, prompts,
+The engine does not yet own general CSS, nested/smooth/keyboard scrolling,
+scrollbars, nested overflow scrolling, or scrolling/stacking layout, complete
+screenshot semantics, font/image fidelity, full visual hit-test fidelity,
+full external subresource loading and network security policy, full storage
+and cookie policy, chooser/programmatic downloads, continuation-aware prompts,
 or platform windows. Unsupported
 CSS is not silently indistinguishable from supported CSS: the native Rust API
 exposes bounded revisioned diagnostics for ignored selectors, properties,
@@ -3722,10 +3735,11 @@ Rust callers can still register bounded `fixture://` documents through
 `NativeEngineConfig`; fixture registration is not a CLI file-loading or
 network capability. Native CLI commands include revision-guarded navigate,
 click, type, clear, check, uncheck, select, key, key-down, key-up, shortcut,
-scroll, text, observe, targets, DOM, evaluate, and PNG screenshot operations,
-with semantic locators instead of CSS selectors. Endpoint, external
-lifecycle, profile, storage, download, prompt, MCP, and TUI paths fail closed
-until their native owners are brought through the same session boundary.
+scroll, text, observe, targets, DOM, evaluate, PNG screenshot, and bounded
+anchor-download operations, with semantic locators instead of CSS selectors.
+Endpoint access, external subresource/lifecycle streams, profiles, full
+storage, prompt continuation, and TUI parity remain bounded or unsupported;
+native MCP routes supported operations through the same session boundary.
 
 ## Configuration and limits
 
@@ -3817,15 +3831,17 @@ commit, while same-resource fragment entries reuse the current document and
 restore the target history entry's saved root offset.
 
 Semantic anchor clicks use the existing action path as one bounded default
-action. Fragment-only hrefs resolve against the current local resource, and
-absolute about:blank, data:text/html, and registered fixture:// hrefs use the
-existing loader. Non-fragment relative references resolve only against the
-current registered fixture:// host; non-fragment relative links from
-about:blank or data: URLs, host-changing references, remote schemes, and other
-unsupported destinations fail before mutation. Empty hrefs remain click-only.
-Successful link
-activation commits the existing same-document or parse-before-commit
-different-resource navigation path without adding a transport-level operation.
+action. Fragment-only hrefs resolve against the current resource; fixture
+relative links use the registered fixture host; and HTTP(S) links in an
+HTTP(S) document use the asynchronous content-process navigation owner with
+bounded request accounting. An allowed link click remains in the current
+content-process event path until cancellation is known. An anchor with a
+`download` attribute queues a parent-owned cross-origin HTTP(S) transfer
+instead of navigating, and the explicit runtime download operation owns the
+authorized file write. Relative links from about:blank/data URLs, credentials,
+unsupported schemes, and other invalid destinations fail before mutation.
+Empty hrefs remain click-only. Successful non-download link activation commits
+the existing same-document or parse-before-commit different-resource path.
 
 The scheduler owns a deterministic logical clock and bounded ordered task
 queue. It commits navigation in a reproducible order. Interaction mutation is
@@ -4461,7 +4477,7 @@ The native profile is `experimental` and declares:
 | capture | available | bounded PNG of the current logical RGBA surface; JPEG/PDF and screenshot-containing evidence are unavailable |
 | storage | partial | process-owned cookies with bounded `document.cookie` synchronization, bounded document cache, origin-keyed page local/session storage with opt-in revisioned localStorage/cookie/IndexedDB profiles, stale-snapshot key-level merge for Web Storage and cookies, profile-journal local/session events across live local and process-backed documents, bounded reader-lease retention, acknowledged-prefix compaction, profile-snapshot recovery, a bounded StorageManager estimate against the fixed 4 MiB profile quota, and a bounded tagged JSON/structured-clone IndexedDB subset with text-backed Blob/File values plus byte-vector ArrayBuffer/typed-array/DataView values, bounded Blob/File `arrayBuffer()`/`bytes()` reads, version upgrades, same-realm version-change/deletion coordination, serialized atomic ordinary transactions, object stores, indexes, key ranges, cursors, and CRUD; no full cookie policy or IndexedDB parity |
 | prompts | partial | bounded alert/confirm/prompt metadata, FIFO pending state, `dialogOpen`, and accept/dismiss resolution; suspended modal continuation and response injection remain open |
-| downloads | omitted | no download pipeline |
+| downloads | available | bounded HTTP(S) anchor `download` attributes queue a parent-owned transfer; runtime, CLI, and MCP complete the oldest queued download into an existing directory with sanitized collision-free file creation, SHA-256 evidence, stable completion IDs, and bounded cancellation/listing; chooser UI, programmatic/object-URL downloads, streaming/progress, service-worker interception, and multi-target/frame parity remain open |
 
 Within the available script profile, native Fetch `Response.clone()` creates a
 bounded fresh response/header/body owner; full disturbance and Web IDL
@@ -4512,7 +4528,8 @@ reader that prevents the 4 MiB bound receives typed backpressure.
 Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 
 - lifecycle transitions and repeated/invalid close behavior;
-- `about:blank`, percent-decoded `data:` HTML, and registered fixtures;
+- `about:blank`, percent-decoded `data:` HTML, registered fixtures, and
+  bounded external HTTP(S) HTML documents;
 - raw-fragment URL retention and bounded same-document local navigation;
 - exact visible fragment-target scroll and saved history offsets;
 - bounded percent-decoded fragment identifiers for exact visible local IDs;
@@ -4536,6 +4553,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
   operations;
 - direct external anchor activation through the content-process event bridge,
   click cancellation, and asynchronous native navigation;
+- cross-origin anchor `download` activation, parent-owned queued transfer,
+  collision-free existing-directory writes, completion digest/IDs, and
+  download-start verification;
 - deterministic scheduler ordering and queue bounds;
 - failed navigation preserving the previous state;
 - dispatcher capability denial and explicit-only backend selection;
@@ -4733,8 +4753,8 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
   viewport-to-document hit-test mapping, translated software replay/capture,
   clamping, and revision/effect behavior for moved scroll actions.
 - explicit Rust native-session construction and feature-gated CLI dispatch for
-  local URL shapes, including rejection of remote endpoints and unsupported
-  browser-only flags.
+  local and bounded HTTP(S) URL shapes, including rejection of remote browser
+  endpoints and unsupported browser-only flags.
 
 This slice is not browser parity. It cannot be promoted or advertised as safe
 for arbitrary remote content until CSS/layout/paint, security policy, process

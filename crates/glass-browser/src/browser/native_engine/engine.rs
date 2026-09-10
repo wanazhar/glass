@@ -38,19 +38,35 @@ use super::resource_loader::{
 use super::runtime::{NativeRuntimeState, NativeRuntimeTraceEvent};
 use super::scheduler::{DeterministicScheduler, NativeTask};
 use super::worker::{NativeRuntimeShared, NativeRuntimeWorker};
-use crate::browser::session::{Cookie, PendingDialog};
+use crate::browser::session::{Cookie, DownloadOutcome, PendingDialog};
 use crate::browser_backend::{PromptDecision, PromptResult, StorageOperation, StorageScope};
+use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use tokio::io::AsyncWriteExt;
 
 const MAX_NATIVE_PAGE_NAVIGATION_HANDOFFS: usize = 8;
 const MAX_NATIVE_IN_FLIGHT_REQUESTS: usize = 64;
+const MAX_NATIVE_PENDING_DOWNLOADS: usize = 8;
+const MAX_NATIVE_COMPLETED_DOWNLOAD_IDS: usize = 8;
+const MAX_NATIVE_DOWNLOAD_FILENAME_BYTES: usize = 128;
+const MAX_NATIVE_DOWNLOAD_DEADLINE: Duration = Duration::from_secs(30);
 
 #[derive(Debug)]
 struct NativeRequestLedger {
     in_flight: usize,
     completed: u64,
     last_activity: Instant,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativePendingDownload {
+    guid: String,
+    url: String,
+    suggested_filename: String,
+    target_id: String,
+    frame_id: String,
 }
 
 impl NativeRequestLedger {
@@ -317,6 +333,10 @@ pub struct NativeEngine {
     pending_external_storage_events: Vec<NativeStorageEvent>,
     pending_dialogs: VecDeque<PendingDialog>,
     request_ledger: NativeRequestLedger,
+    pending_downloads: VecDeque<NativePendingDownload>,
+    completed_download_ids: VecDeque<String>,
+    completed_downloads: u64,
+    next_download_id: u64,
     history: NativeHistory,
     lifecycle: NativeLifecycleState,
     document: NativeDocument,
@@ -363,6 +383,10 @@ impl NativeEngine {
             pending_external_storage_events: Vec::new(),
             pending_dialogs: VecDeque::new(),
             request_ledger: NativeRequestLedger::new(),
+            pending_downloads: VecDeque::new(),
+            completed_download_ids: VecDeque::new(),
+            completed_downloads: 0,
+            next_download_id: 1,
             history: NativeHistory::new(max_history_entries),
             lifecycle: NativeLifecycleState::New,
             document: NativeDocument::empty(),
@@ -1261,6 +1285,150 @@ impl NativeEngine {
         Ok(self.request_ledger.quiet(duration))
     }
 
+    /// Return the bounded native download IDs visible to the browser backend.
+    pub fn download_ids(&self) -> Result<Vec<String>, NativeEngineError> {
+        self.require_running("list downloads")?;
+        Ok(self
+            .pending_downloads
+            .iter()
+            .map(|download| download.guid.clone())
+            .chain(self.completed_download_ids.iter().cloned())
+            .collect())
+    }
+
+    /// Cancel one queued native download before its bytes are fetched.
+    pub fn cancel_download(&mut self, download_id: &str) -> Result<bool, NativeEngineError> {
+        self.require_running("cancel download")?;
+        if download_id.is_empty()
+            || download_id.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES
+        {
+            return Err(NativeEngineError::invalid(
+                "download id",
+                "must be a non-empty bounded value",
+            ));
+        }
+        let before = self.pending_downloads.len();
+        self.pending_downloads
+            .retain(|download| download.guid != download_id);
+        Ok(self.pending_downloads.len() != before)
+    }
+
+    /// Complete the oldest queued native download into an already-authorized
+    /// directory. The click action only queues the request, which keeps the
+    /// action boundary responsive and lets the caller choose its destination.
+    pub async fn wait_for_download_async(
+        &mut self,
+        destination: &Path,
+        deadline: Duration,
+    ) -> Result<DownloadOutcome, NativeEngineError> {
+        self.require_running("download")?;
+        if deadline.is_zero() || deadline > MAX_NATIVE_DOWNLOAD_DEADLINE {
+            return Err(NativeEngineError::invalid(
+                "download deadline",
+                "must be between 1 ms and 30 seconds",
+            ));
+        }
+        if !std::fs::metadata(destination).is_ok_and(|metadata| metadata.is_dir()) {
+            return Err(NativeEngineError::invalid(
+                "download destination",
+                "must be an existing directory",
+            ));
+        }
+        let Some(pending) = self.pending_downloads.pop_front() else {
+            return Err(NativeEngineError::Network {
+                operation: "download".into(),
+                reason: "no native download is pending; activate a download link first".into(),
+            });
+        };
+        self.request_ledger.begin()?;
+        let response = match tokio::time::timeout(
+            deadline,
+            self.loader.download_async(&self.url, &pending.url),
+        )
+        .await
+        {
+            Ok(Ok(response)) => response,
+            Ok(Err(error)) => {
+                self.pending_downloads.push_front(pending);
+                self.request_ledger.finish();
+                return Err(error);
+            }
+            Err(_) => {
+                self.pending_downloads.push_front(pending);
+                self.request_ledger.finish();
+                return Err(NativeEngineError::Network {
+                    operation: "download".into(),
+                    reason: "download exceeded its deadline".into(),
+                });
+            }
+        };
+        self.request_ledger.finish();
+        if !(200..=299).contains(&response.status) {
+            self.pending_downloads.push_front(pending);
+            return Err(NativeEngineError::Network {
+                operation: "download".into(),
+                reason: format!("server returned HTTP {}", response.status),
+            });
+        }
+        match write_native_download(destination, &pending.suggested_filename, &response.body).await
+        {
+            Ok(_) => {}
+            Err(error) => {
+                self.pending_downloads.push_front(pending);
+                return Err(error);
+            }
+        };
+        let mut digest = Sha256::new();
+        digest.update(&response.body);
+        let sha256 = format!("{:x}", digest.finalize());
+        self.completed_downloads = self.completed_downloads.saturating_add(1);
+        self.completed_download_ids.push_back(pending.guid.clone());
+        while self.completed_download_ids.len() > MAX_NATIVE_COMPLETED_DOWNLOAD_IDS {
+            self.completed_download_ids.pop_front();
+        }
+        Ok(DownloadOutcome {
+            guid: pending.guid,
+            suggested_filename: pending.suggested_filename,
+            state: "completed".into(),
+            received_bytes: response.body.len() as u64,
+            total_bytes: response.body.len() as u64,
+            target_id: pending.target_id,
+            frame_id: pending.frame_id,
+            sha256: Some(sha256),
+        })
+    }
+
+    /// Number of native downloads that completed in this engine instance.
+    pub fn completed_download_count(&self) -> Result<u64, NativeEngineError> {
+        self.require_running("inspect downloads")?;
+        Ok(self.completed_downloads)
+    }
+
+    fn queue_download(
+        &mut self,
+        url: String,
+        download_attribute: &str,
+    ) -> Result<(), NativeEngineError> {
+        if self.pending_downloads.len() >= MAX_NATIVE_PENDING_DOWNLOADS {
+            return Err(NativeEngineError::limit(
+                "native pending downloads",
+                MAX_NATIVE_PENDING_DOWNLOADS,
+                self.pending_downloads.len().saturating_add(1),
+            ));
+        }
+        let guid = format!("native-download-{}", self.next_download_id);
+        self.next_download_id = self.next_download_id.saturating_add(1);
+        let suggested_filename = native_download_filename(download_attribute, &url);
+        self.pending_downloads.push_back(NativePendingDownload {
+            guid,
+            url,
+            suggested_filename,
+            target_id: self.config.context_id.clone(),
+            frame_id: format!("{}:main", self.config.context_id),
+        });
+        Ok(())
+    }
+
     /// Resolve one queued JavaScript dialog without creating a browser or
     /// routing through CDP. The page realm's bounded alert/confirm/prompt
     /// result is deterministic for the current script batch; resolution
@@ -1601,6 +1769,17 @@ impl NativeEngine {
                     .link_href(id)
                     .filter(|href| !href.is_empty())
                     .map(str::to_owned);
+                let download_attribute =
+                    self.document.link_download_attribute(id).map(str::to_owned);
+                if download_attribute.is_some()
+                    && self.pending_downloads.len() >= MAX_NATIVE_PENDING_DOWNLOADS
+                {
+                    return Err(NativeEngineError::limit(
+                        "native pending downloads",
+                        MAX_NATIVE_PENDING_DOWNLOADS,
+                        self.pending_downloads.len().saturating_add(1),
+                    ));
+                }
                 let mut preview = self.document.clone();
                 preview.apply_click(id)?;
                 let mutation = {
@@ -1628,6 +1807,13 @@ impl NativeEngine {
                 }
                 if click_allowed && let Some(href) = link_href {
                     let target_url = self.resolve_link_href(&href)?;
+                    if let Some(download_attribute) = download_attribute {
+                        self.queue_download(target_url, &download_attribute)?;
+                        return Ok(NativeActionResult {
+                            revision: self.revision,
+                            accepted: outcome.accepted,
+                        });
+                    }
                     self.navigate_request_async(NativeNavigationRequest::get(target_url), 0)
                         .await?;
                     return Ok(NativeActionResult {
@@ -2060,6 +2246,7 @@ impl NativeEngine {
         let submitter = navigation
             .submitter_node_index
             .map(|index| NativeNodeId::from_parts(self.document.generation(), index));
+        let download_attribute = self.document.link_download_attribute(id).map(str::to_owned);
         let mut request =
             if let Some(href) = self.document.link_href(id).filter(|href| !href.is_empty()) {
                 NativeNavigationRequest::get(href)
@@ -2073,6 +2260,10 @@ impl NativeEngine {
             });
         }
         let target_url = self.resolve_link_href(&request.url)?;
+        if let Some(download_attribute) = download_attribute {
+            self.queue_download(target_url, &download_attribute)?;
+            return Ok(());
+        }
         request.url = target_url.clone();
         request.replace_history = navigation.replace_history;
         if request.method == NativeNavigationMethod::Get
@@ -2979,6 +3170,32 @@ impl NativeEngine {
         click_already_applied: bool,
     ) -> Result<NativeActionResult, NativeEngineError> {
         let target_url = self.resolve_link_href(href)?;
+        if let Some(download_attribute) =
+            self.document.link_download_attribute(id).map(str::to_owned)
+        {
+            if self.pending_downloads.len() >= MAX_NATIVE_PENDING_DOWNLOADS {
+                return Err(NativeEngineError::limit(
+                    "native pending downloads",
+                    MAX_NATIVE_PENDING_DOWNLOADS,
+                    self.pending_downloads.len().saturating_add(1),
+                ));
+            }
+            let events = if click_already_applied {
+                Vec::new()
+            } else {
+                self.document.apply_click(id)?
+            };
+            let revision = self.next_revision()?;
+            self.document.set_revision(revision);
+            self.revision = revision;
+            self.history.update_current_scroll(self.scroll_offset);
+            self.record_effects(events);
+            self.queue_download(target_url, &download_attribute)?;
+            return Ok(NativeActionResult {
+                revision,
+                accepted: true,
+            });
+        }
         let resource = self.loader.load(&target_url)?;
         let revision = self.next_revision()?;
         if self.is_same_document_navigation(&resource.url) {
@@ -3916,6 +4133,106 @@ struct PreparedNavigation {
     document: NativeDocument,
     dialogs: Vec<NativeDialog>,
     execute_inline_scripts: bool,
+}
+
+fn native_download_filename(download_attribute: &str, url: &str) -> String {
+    let candidate = if download_attribute.trim().is_empty() {
+        url::Url::parse(without_fragment(url))
+            .ok()
+            .and_then(|url| {
+                url.path_segments().and_then(|segments| {
+                    segments
+                        .filter(|segment| !segment.is_empty())
+                        .next_back()
+                        .map(str::to_owned)
+                })
+            })
+            .unwrap_or_else(|| "download".into())
+    } else {
+        download_attribute.trim().to_owned()
+    };
+    let candidate = candidate
+        .split(|character| character == '/' || character == '\\')
+        .next_back()
+        .unwrap_or_default();
+    let mut sanitized = String::new();
+    for character in candidate.chars() {
+        if character.is_control() || matches!(character, ':' | '/' | '\\') {
+            continue;
+        }
+        if sanitized.len().saturating_add(character.len_utf8()) > MAX_NATIVE_DOWNLOAD_FILENAME_BYTES
+        {
+            break;
+        }
+        sanitized.push(character);
+    }
+    let sanitized = sanitized.trim().trim_matches('.');
+    if sanitized.is_empty() || sanitized == "." || sanitized == ".." {
+        "download".into()
+    } else {
+        sanitized.into()
+    }
+}
+
+async fn write_native_download(
+    destination: &Path,
+    filename: &str,
+    bytes: &[u8],
+) -> Result<PathBuf, NativeEngineError> {
+    for suffix in 0..100_u16 {
+        let candidate_name = if suffix == 0 {
+            filename.to_owned()
+        } else {
+            let path = Path::new(filename);
+            let stem = path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or("download");
+            let extension = path.extension().and_then(|value| value.to_str());
+            match extension {
+                Some(extension) if !extension.is_empty() => {
+                    format!("{stem} ({suffix}).{extension}")
+                }
+                _ => format!("{stem} ({suffix})"),
+            }
+        };
+        let path = destination.join(candidate_name);
+        let file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .await;
+        let mut file = match file {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(NativeEngineError::Network {
+                    operation: "download write".into(),
+                    reason: error.to_string(),
+                });
+            }
+        };
+        if let Err(error) = file.write_all(bytes).await {
+            let _ = tokio::fs::remove_file(&path).await;
+            return Err(NativeEngineError::Network {
+                operation: "download write".into(),
+                reason: error.to_string(),
+            });
+        }
+        if let Err(error) = file.sync_all().await {
+            let _ = tokio::fs::remove_file(&path).await;
+            return Err(NativeEngineError::Network {
+                operation: "download write".into(),
+                reason: error.to_string(),
+            });
+        }
+        return Ok(path);
+    }
+    Err(NativeEngineError::limit(
+        "download filename collisions",
+        100,
+        100,
+    ))
 }
 
 enum ScriptNavigationTarget {

@@ -3762,6 +3762,22 @@ async fn call_native_tool(
                 .await?,
             response_mode,
         ),
+        ToolInvocation::Download {
+            destination,
+            timeout_ms,
+        } => {
+            policy.require(crate::browser::policy::PolicyCapability::Download)?;
+            let destination = policy.require_existing_path(&destination)?;
+            if !destination.is_dir() {
+                return Err("native download destination must be an existing directory".into());
+            }
+            serialized_result_mode(
+                &session
+                    .native_wait_for_download(&destination, Duration::from_millis(timeout_ms))
+                    .await?,
+                response_mode,
+            )
+        }
         ToolInvocation::Cookies => {
             serialized_result_mode(&session.native_cookies().await?, response_mode)
         }

@@ -31,6 +31,7 @@ pub(crate) const MAX_NATIVE_RESPONSE_HEADERS: usize = 64;
 pub(crate) const MAX_NATIVE_RESPONSE_HEADER_NAME_BYTES: usize = 128;
 pub(crate) const MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_NATIVE_RESPONSE_HEADER_BYTES: usize = 128 * 1024;
+pub(crate) const MAX_NATIVE_DOWNLOAD_BYTES: usize = 16 * 1024 * 1024;
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +52,10 @@ pub(crate) enum NativeCorsMode {
     NoCors,
     Cors,
     SameOrigin,
+    /// A browser navigation/download request. It is not a script-readable
+    /// CORS fetch, so cross-origin bytes remain available to the parent
+    /// download owner while page script receives no response object.
+    Navigation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,6 +153,7 @@ pub(crate) struct NativeFetchRequest<'a> {
     pub(crate) cors_mode: NativeCorsMode,
     pub(crate) redirect_mode: NativeFetchRedirectMode,
     pub(crate) timeout: Option<Duration>,
+    pub(crate) max_response_bytes: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -824,6 +830,32 @@ impl NativeResourceLoader {
             cors_mode: NativeCorsMode::Cors,
             redirect_mode: NativeFetchRedirectMode::Follow,
             timeout: None,
+            max_response_bytes: None,
+        })
+        .await
+    }
+
+    /// Fetch one browser download response through the navigation policy.
+    /// Unlike script `no-cors`, a download must retain cross-origin bytes for
+    /// the parent-owned file writer; the response is never exposed to page
+    /// JavaScript.
+    pub(crate) async fn download_async(
+        &mut self,
+        document_url: &str,
+        href: &str,
+    ) -> Result<NativeFetchResponse, NativeEngineError> {
+        self.fetch_request_with_headers_async(NativeFetchRequest {
+            document_url,
+            href,
+            method: NativeNavigationMethod::Get,
+            body: None,
+            content_type: None,
+            request_headers: BTreeMap::new(),
+            credentials: true,
+            cors_mode: NativeCorsMode::Navigation,
+            redirect_mode: NativeFetchRedirectMode::Follow,
+            timeout: None,
+            max_response_bytes: Some(MAX_NATIVE_DOWNLOAD_BYTES),
         })
         .await
     }
@@ -843,7 +875,15 @@ impl NativeResourceLoader {
             cors_mode,
             redirect_mode,
             timeout,
+            max_response_bytes,
         } = request;
+        let max_response_bytes = max_response_bytes.unwrap_or(self.max_document_bytes);
+        if max_response_bytes == 0 || max_response_bytes > MAX_NATIVE_DOWNLOAD_BYTES {
+            return Err(NativeEngineError::invalid(
+                "fetch response limit",
+                format!("must be between 1 and {MAX_NATIVE_DOWNLOAD_BYTES}"),
+            ));
+        }
         validate_url_text("fetch owner URL", document_url)?;
         validate_url_text("fetch URL", href)?;
         let mut current_headers = validate_fetch_request_headers(&request_headers)?;
@@ -918,7 +958,9 @@ impl NativeResourceLoader {
             .get(&cache_key(&document_url))
             .cloned()
             .unwrap_or_default();
-        if !policy.allows(NativeSubresourceKind::Connect, &document_url, &target_url) {
+        if cors_mode != NativeCorsMode::Navigation
+            && !policy.allows(NativeSubresourceKind::Connect, &document_url, &target_url)
+        {
             return Err(NativeEngineError::Network {
                 operation: "fetch policy".into(),
                 reason: "document CSP blocked the connect target".into(),
@@ -1061,7 +1103,8 @@ impl NativeResourceLoader {
             reject_credentials(&next_url)?;
             if !is_network_url(without_fragment(next_url.as_str()))
                 || !mixed_content_allowed(&document_url, &next_url)
-                || !policy.allows(NativeSubresourceKind::Connect, &document_url, &next_url)
+                || (cors_mode != NativeCorsMode::Navigation
+                    && !policy.allows(NativeSubresourceKind::Connect, &document_url, &next_url))
             {
                 return Err(NativeEngineError::Network {
                     operation: "fetch redirect policy".into(),
@@ -1102,10 +1145,10 @@ impl NativeResourceLoader {
             });
         }
         let content_length = response.content_length();
-        if content_length.is_some_and(|length| length > self.max_document_bytes as u64) {
+        if content_length.is_some_and(|length| length > max_response_bytes as u64) {
             return Err(NativeEngineError::limit(
                 "fetch response",
-                self.max_document_bytes,
+                max_response_bytes,
                 content_length
                     .and_then(|length| usize::try_from(length).ok())
                     .unwrap_or(usize::MAX),
@@ -1115,15 +1158,15 @@ impl NativeResourceLoader {
         let mut body = Vec::with_capacity(
             content_length
                 .unwrap_or_default()
-                .min(self.max_document_bytes as u64) as usize,
+                .min(max_response_bytes as u64) as usize,
         );
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|error| network_error("fetch response body", error))?;
             let next_len = body.len().saturating_add(chunk.len());
-            if next_len > self.max_document_bytes {
+            if next_len > max_response_bytes {
                 return Err(NativeEngineError::limit(
                     "fetch response",
-                    self.max_document_bytes,
+                    max_response_bytes,
                     next_len,
                 ));
             }

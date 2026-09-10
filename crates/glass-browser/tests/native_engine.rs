@@ -1313,13 +1313,17 @@ async fn native_local_interval_reschedules_until_cleared() {
         .evaluate_async("clearInterval(globalThis.intervalId)")
         .await
         .unwrap();
+    let cleared_count = engine
+        .evaluate_async("globalThis.intervalCount")
+        .await
+        .unwrap();
     tokio::time::sleep(Duration::from_millis(60)).await;
     assert_eq!(
         engine
             .evaluate_async("globalThis.intervalCount")
             .await
             .unwrap(),
-        second_count
+        cleared_count
     );
     engine.close_async().await.unwrap();
 }

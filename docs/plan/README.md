@@ -1004,6 +1004,13 @@ and `[Symbol.iterator]()` with self-iterating `next()` results, while
 Blob/File entry owner. Live mutation during iteration, exotic iterables, and
 complete FormData/Web IDL parity remain open.
 
+The completed bounded URLSearchParams-iterable slice is
+[native-engine-browser-108](tasks/native-engine-browser-108.md). The
+constructor now accepts bounded Map, Set, and other pair-iterable inputs as
+two-value sequences while retaining insertion order and the existing mutation,
+sorting, encoding, and snapshot-iterator owners. Live iterator mutation/
+identity and complete URLSearchParams Web IDL parity remain open.
+
 Full cookie policy/Web IDL parity and the remaining browser-complete gates
 remain open.
 

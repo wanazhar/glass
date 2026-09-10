@@ -5210,6 +5210,15 @@ fn document_bootstrap(
       }}
       return;
     }}
+    if (typeof init[Symbol.iterator] === "function") {{
+      for (const pair of init) {{
+        if (!pair || typeof pair[Symbol.iterator] !== "function") throw new TypeError("native URLSearchParams iterable pairs must be iterable");
+        const values = Array.from(pair);
+        if (values.length !== 2) throw new TypeError("native URLSearchParams iterable pairs must contain two values");
+        appendUrlSearchParam(this, values[0], values[1]);
+      }}
+      return;
+    }}
     if (typeof init === "object") {{
       for (const name of Object.keys(init)) appendUrlSearchParam(this, name, init[name]);
       return;

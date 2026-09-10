@@ -5383,10 +5383,23 @@ fn document_bootstrap(
   HeadersNative.prototype.has = function(name) {{
     return this.get(name) !== null;
   }};
-  const nativeHeaderIterator = entries => entries.map(entry => [entry[0], entry[1]])[Symbol.iterator]();
-  HeadersNative.prototype.entries = function() {{ return nativeHeaderIterator(this._entries); }};
-  HeadersNative.prototype.keys = function() {{ return this._entries.map(entry => entry[0])[Symbol.iterator](); }};
-  HeadersNative.prototype.values = function() {{ return this._entries.map(entry => entry[1])[Symbol.iterator](); }};
+  const nativeHeaderIterator = (owner, kind) => {{
+    let index = 0;
+    const iterator = {{
+      next() {{
+        if (index >= owner._entries.length) return {{ value: undefined, done: true }};
+        const entry = owner._entries[index++];
+        if (kind === "keys") return {{ value: entry[0], done: false }};
+        if (kind === "values") return {{ value: entry[1], done: false }};
+        return {{ value: [entry[0], entry[1]], done: false }};
+      }},
+      [Symbol.iterator]() {{ return this; }},
+    }};
+    return iterator;
+  }};
+  HeadersNative.prototype.entries = function() {{ return nativeHeaderIterator(this, "entries"); }};
+  HeadersNative.prototype.keys = function() {{ return nativeHeaderIterator(this, "keys"); }};
+  HeadersNative.prototype.values = function() {{ return nativeHeaderIterator(this, "values"); }};
   HeadersNative.prototype.forEach = function(callback, thisArg) {{
     if (typeof callback !== "function") throw new TypeError("native Headers callback must be callable");
     this._entries.slice().forEach(entry => callback.call(thisArg, entry[1], entry[0], this));

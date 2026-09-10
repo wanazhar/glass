@@ -3069,6 +3069,16 @@ opener name is snapshotted at child creation; live arbitrary cross-context
 property access, popup permission/geometry, frame lifecycle/shared scripting,
 and complete browser parity remain issue #40 gates.
 
+The completed native-engine-browser-151 slice closes the most important missing
+WindowProxy lifecycle operation. A proxy `close()` call becomes a typed,
+bounded effect; local and HTTP(S) engines transfer it through the existing
+protocol-6 worker response, and the parent resolves the target by private
+handle, context identity, or name before invoking the target owner's normal
+shutdown. Immediate close after popup creation is ordered after registration,
+the requesting proxy reports closed, and topology no longer publishes the
+target. Stale repeats are harmless. The remaining identity work is live
+observation of target closure through every already-held proxy.
+
 The completed native-engine-browser-133 batch extends the native target seam
 with a side-effect-free preflight result. The engine resolves the current
 semantic locator and derives viewport geometry and actionability under the

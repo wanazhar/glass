@@ -17,7 +17,7 @@ use super::javascript::{
     NativeCookieProfileEntry, NativeDialog, NativeIndexedDbChange, NativeIndexedDbState,
     NativeJavaScriptRuntime, NativePageScript, NativePopupRequest, NativePostMessageRequest,
     NativeScriptCommand, NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState,
-    diff_indexed_db_changes, execute_page_scripts, host_event_script,
+    NativeWindowCloseRequest, diff_indexed_db_changes, execute_page_scripts, host_event_script,
     host_hash_change_event_script, host_key_event_script, host_key_event_script_with_modifiers,
     host_submit_event_script, literal_dynamic_module_specifiers, load_indexed_db_profile,
     load_web_storage_profile, order_page_scripts, save_web_storage_profile,
@@ -65,6 +65,7 @@ pub(crate) struct NativeContentLoad {
     pub(crate) dialogs: Vec<NativeDialog>,
     pub(crate) popups: Vec<NativePopupRequest>,
     pub(crate) post_messages: Vec<NativePostMessageRequest>,
+    pub(crate) window_closes: Vec<NativeWindowCloseRequest>,
     pub(crate) window_name: String,
 }
 
@@ -93,6 +94,7 @@ pub(crate) struct NativeContentMutation {
     pub(crate) dialogs: Vec<NativeDialog>,
     pub(crate) popups: Vec<NativePopupRequest>,
     pub(crate) post_messages: Vec<NativePostMessageRequest>,
+    pub(crate) window_closes: Vec<NativeWindowCloseRequest>,
     pub(crate) window_name: String,
 }
 
@@ -104,6 +106,7 @@ pub(crate) struct NativeContentScriptResult {
     pub(crate) dialogs: Vec<NativeDialog>,
     pub(crate) popups: Vec<NativePopupRequest>,
     pub(crate) post_messages: Vec<NativePostMessageRequest>,
+    pub(crate) window_closes: Vec<NativeWindowCloseRequest>,
     pub(crate) window_name: String,
 }
 
@@ -959,6 +962,7 @@ fn decode_loaded_response(
     let dialogs = decode_dialogs(response, "decode content process load")?;
     let popups = decode_popup_requests(response, "decode content process load")?;
     let post_messages = decode_post_message_requests(response, "decode content process load")?;
+    let window_closes = decode_window_close_requests(response, "decode content process load")?;
     let window_name = decode_window_name(response, "decode content process load")?;
     let frame_sources = decode_frame_sources(response, "decode content process load")?;
     Ok(NativeContentLoad {
@@ -972,6 +976,7 @@ fn decode_loaded_response(
         dialogs,
         popups,
         post_messages,
+        window_closes,
         window_name,
     })
 }
@@ -1128,6 +1133,7 @@ fn decode_mutation_payload(
     let dialogs = decode_dialogs(response, operation)?;
     let popups = decode_popup_requests(response, operation)?;
     let post_messages = decode_post_message_requests(response, operation)?;
+    let window_closes = decode_window_close_requests(response, operation)?;
     let window_name = decode_window_name(response, operation)?;
     Ok(NativeContentMutation {
         document,
@@ -1142,6 +1148,7 @@ fn decode_mutation_payload(
         dialogs,
         popups,
         post_messages,
+        window_closes,
         window_name,
     })
 }
@@ -1504,6 +1511,7 @@ fn decode_script_response(
     };
     let has_mutation = mutation.is_some();
     let post_messages = decode_post_message_requests(&response, "decode content process script")?;
+    let window_closes = decode_window_close_requests(&response, "decode content process script")?;
     let window_name = decode_window_name(&response, "decode content process script")?;
     Ok(NativeContentScriptResult {
         value,
@@ -1525,6 +1533,11 @@ fn decode_script_response(
         } else {
             post_messages
         },
+        window_closes: if has_mutation {
+            Vec::new()
+        } else {
+            window_closes
+        },
         window_name,
     })
 }
@@ -1536,6 +1549,40 @@ fn decode_window_name(response: &Value, _operation: &str) -> Result<String, Nati
         .unwrap_or_default();
     validate_window_name(value)?;
     Ok(value.to_owned())
+}
+
+fn decode_window_close_requests(
+    response: &Value,
+    operation: &str,
+) -> Result<Vec<NativeWindowCloseRequest>, NativeEngineError> {
+    let Some(value) = response.get("window_closes") else {
+        return Ok(Vec::new());
+    };
+    let values = value.as_array().ok_or_else(|| NativeEngineError::Worker {
+        operation: operation.into(),
+        reason: "content process returned invalid window close requests".into(),
+    })?;
+    if values.len() > MAX_NATIVE_EFFECTS {
+        return Err(NativeEngineError::limit(
+            "content-process window close requests",
+            MAX_NATIVE_EFFECTS,
+            values.len(),
+        ));
+    }
+    let requests =
+        serde_json::from_value::<Vec<NativeWindowCloseRequest>>(value.clone()).map_err(|_| {
+            NativeEngineError::Worker {
+                operation: operation.into(),
+                reason: "content process returned malformed window close requests".into(),
+            }
+        })?;
+    for request in &requests {
+        validate_url_text("content-process window close target", &request.target)?;
+        if let Some(target_context_id) = request.target_context_id.as_deref() {
+            validate_context_id(target_context_id)?;
+        }
+    }
+    Ok(requests)
 }
 
 fn decode_dialogs(
@@ -3012,6 +3059,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     _dialogs,
                     _popups,
                     _post_messages,
+                    _window_closes,
                     _window_name,
                 ) = sync_content_runtime_state(
                     javascript_runtime.as_ref(),
@@ -3046,6 +3094,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             dialogs,
             popups,
             post_messages,
+            window_closes,
             response_window_name,
         ) = sync_content_runtime_state(
             javascript_runtime.as_ref(),
@@ -3083,6 +3132,16 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 "content-process postMessage requests",
                 MAX_NATIVE_EFFECTS,
                 response_post_messages.len(),
+            ));
+        }
+        let mut response_window_closes =
+            decode_window_close_requests(&response, "merge content process window close")?;
+        response_window_closes.extend(window_closes);
+        if response_window_closes.len() > MAX_NATIVE_EFFECTS {
+            return Err(NativeEngineError::limit(
+                "content-process window close requests",
+                MAX_NATIVE_EFFECTS,
+                response_window_closes.len(),
             ));
         }
         if let Some(object) = response.as_object_mut() {
@@ -3125,6 +3184,15 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     }
                 })?,
             );
+            object.insert(
+                "window_closes".into(),
+                serde_json::to_value(response_window_closes).map_err(|_| {
+                    NativeEngineError::Worker {
+                        operation: "encode content process window close requests".into(),
+                        reason: "content process window close requests could not be encoded".into(),
+                    }
+                })?,
+            );
             object.insert("window_name".into(), Value::String(response_window_name));
         }
         write_value_frame(&mut stdout, &response).await?;
@@ -3145,12 +3213,14 @@ fn sync_content_runtime_state(
         Vec<NativeDialog>,
         Vec<NativePopupRequest>,
         Vec<NativePostMessageRequest>,
+        Vec<NativeWindowCloseRequest>,
         String,
     ),
     NativeEngineError,
 > {
     let Some(runtime) = runtime else {
         return Ok((
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -3182,6 +3252,7 @@ fn sync_content_runtime_state(
         runtime.take_dialog_events(),
         runtime.take_popup_events(),
         runtime.take_post_message_events(),
+        runtime.take_window_close_events(),
         runtime.window_name(),
     ))
 }
@@ -3438,6 +3509,7 @@ async fn load_content_resource(
             dialogs: Vec::new(),
             popups: Vec::new(),
             post_messages: Vec::new(),
+            window_closes: Vec::new(),
             window_name: String::new(),
         },
         document,
@@ -3752,6 +3824,7 @@ fn mutate_click_with_event_preflight(
         dialogs: Vec::new(),
         popups: Vec::new(),
         post_messages: Vec::new(),
+        window_closes: Vec::new(),
         window_name: String::new(),
     };
     Ok((next, mutation))
@@ -3861,6 +3934,7 @@ fn mutate_type_with_event_bridge(
         dialogs: Vec::new(),
         popups: Vec::new(),
         post_messages: Vec::new(),
+        window_closes: Vec::new(),
         window_name: String::new(),
     };
     Ok((next, mutation))
@@ -3919,6 +3993,7 @@ fn mutate_form_action_with_event_bridge(
         dialogs: Vec::new(),
         popups: Vec::new(),
         post_messages: Vec::new(),
+        window_closes: Vec::new(),
         window_name: String::new(),
     };
     Ok((next, mutation))
@@ -4022,6 +4097,7 @@ fn mutate_key_with_event_bridge(
         dialogs: Vec::new(),
         popups: Vec::new(),
         post_messages: Vec::new(),
+        window_closes: Vec::new(),
         window_name: String::new(),
     };
     Ok((next, mutation))
@@ -4085,6 +4161,7 @@ fn mutate_key_event_with_event_bridge(
             dialogs: Vec::new(),
             popups: Vec::new(),
             post_messages: Vec::new(),
+            window_closes: Vec::new(),
             window_name: String::new(),
         },
     ))
@@ -4198,6 +4275,7 @@ fn mutate_key_shortcut_with_event_bridge(
             dialogs: Vec::new(),
             popups: Vec::new(),
             post_messages: Vec::new(),
+            window_closes: Vec::new(),
             window_name: String::new(),
         },
     ))
@@ -4301,6 +4379,7 @@ fn mutate_before_unload(
             dialogs: Vec::new(),
             popups: Vec::new(),
             post_messages: Vec::new(),
+            window_closes: Vec::new(),
             window_name: String::new(),
         },
     ))
@@ -4327,6 +4406,7 @@ fn mutate_lifecycle_events(
                 dialogs: Vec::new(),
                 popups: Vec::new(),
                 post_messages: Vec::new(),
+                window_closes: Vec::new(),
                 window_name: String::new(),
             },
         ));
@@ -4374,6 +4454,7 @@ fn mutate_lifecycle_events(
             dialogs: Vec::new(),
             popups: Vec::new(),
             post_messages: Vec::new(),
+            window_closes: Vec::new(),
             window_name: String::new(),
         },
     ))
@@ -4427,6 +4508,7 @@ fn mutate_hash_change(
             dialogs: Vec::new(),
             popups: Vec::new(),
             post_messages: Vec::new(),
+            window_closes: Vec::new(),
             window_name: String::new(),
         },
     ))
@@ -4551,6 +4633,7 @@ fn mutate_script_document(
         dialogs: Vec::new(),
         popups: Vec::new(),
         post_messages: Vec::new(),
+        window_closes: Vec::new(),
         window_name: String::new(),
     };
     Ok((next, mutation))

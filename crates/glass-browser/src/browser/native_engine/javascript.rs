@@ -101,6 +101,11 @@ pub(crate) enum NativeScriptCommand {
     SetWindowName {
         value: String,
     },
+    CloseWindow {
+        target: String,
+        #[serde(default)]
+        target_context_id: Option<String>,
+    },
     PostMessage {
         target: String,
         target_origin: String,
@@ -221,6 +226,16 @@ pub(crate) struct NativePostMessageRequest {
     pub(crate) source_context_id: String,
     #[serde(default, skip_serializing)]
     pub(crate) source_origin: String,
+}
+
+/// A bounded request for the parent target owner to close a WindowProxy target.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub(crate) struct NativeWindowCloseRequest {
+    pub(crate) target: String,
+    #[serde(default)]
+    pub(crate) target_context_id: Option<String>,
+    #[serde(default, skip_serializing)]
+    pub(crate) source_context_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -2912,6 +2927,7 @@ pub(crate) struct NativeJavaScriptRuntime {
     dialog_events: Arc<Mutex<Vec<NativeDialog>>>,
     popup_events: Arc<Mutex<Vec<NativePopupRequest>>>,
     post_message_events: Arc<Mutex<Vec<NativePostMessageRequest>>>,
+    window_close_events: Arc<Mutex<Vec<NativeWindowCloseRequest>>>,
     window_name: Arc<Mutex<String>>,
     opener_context_id: Option<String>,
     opener_window_name: String,
@@ -2983,6 +2999,7 @@ impl NativeJavaScriptRuntime {
             dialog_events: Arc::new(Mutex::new(Vec::new())),
             popup_events: Arc::new(Mutex::new(Vec::new())),
             post_message_events: Arc::new(Mutex::new(Vec::new())),
+            window_close_events: Arc::new(Mutex::new(Vec::new())),
             window_name: Arc::new(Mutex::new(window_name)),
             opener_context_id: opener_context_id.map(str::to_owned),
             opener_window_name,
@@ -3141,6 +3158,13 @@ impl NativeJavaScriptRuntime {
             .unwrap_or_default()
     }
 
+    pub(crate) fn take_window_close_events(&self) -> Vec<NativeWindowCloseRequest> {
+        self.window_close_events
+            .lock()
+            .map(|mut requests| std::mem::take(&mut *requests))
+            .unwrap_or_default()
+    }
+
     fn apply_window_name_command(
         &self,
         command: &NativeScriptCommand,
@@ -3157,6 +3181,43 @@ impl NativeJavaScriptRuntime {
                 reason: "native window name state lock is unavailable".into(),
             })?;
         *current = value.clone();
+        Ok(true)
+    }
+
+    fn apply_window_close_command(
+        &self,
+        command: &NativeScriptCommand,
+    ) -> Result<bool, NativeEngineError> {
+        let NativeScriptCommand::CloseWindow {
+            target,
+            target_context_id,
+        } = command
+        else {
+            return Ok(false);
+        };
+        validate_url_text("window close target", target)?;
+        if let Some(target_context_id) = target_context_id {
+            validate_context_id(target_context_id)?;
+        }
+        let mut requests =
+            self.window_close_events
+                .lock()
+                .map_err(|_| NativeEngineError::Worker {
+                    operation: "record native window close".into(),
+                    reason: "native window close queue is unavailable".into(),
+                })?;
+        if requests.len() >= super::interaction::MAX_NATIVE_EFFECTS {
+            return Err(NativeEngineError::limit(
+                "native window close requests",
+                super::interaction::MAX_NATIVE_EFFECTS,
+                requests.len().saturating_add(1),
+            ));
+        }
+        requests.push(NativeWindowCloseRequest {
+            target: target.clone(),
+            target_context_id: target_context_id.clone(),
+            source_context_id: String::new(),
+        });
         Ok(true)
     }
 
@@ -3604,6 +3665,9 @@ impl NativeJavaScriptRuntime {
                 if self.apply_window_name_command(&command)? {
                     continue;
                 }
+                if self.apply_window_close_command(&command)? {
+                    continue;
+                }
                 if self.apply_post_message_command(&command)? {
                     continue;
                 }
@@ -3782,6 +3846,9 @@ impl NativeJavaScriptRuntime {
                     continue;
                 }
                 if self.apply_window_name_command(&command)? {
+                    continue;
+                }
+                if self.apply_window_close_command(&command)? {
                     continue;
                 }
                 if self.apply_post_message_command(&command)? {
@@ -7506,7 +7573,14 @@ fn document_bootstrap(
     const proxy = {{
       get name() {{ return String(targetName || ""); }},
       get closed() {{ return closed; }},
-      close() {{ closed = true; }},
+      close() {{
+        closed = true;
+        pushCommand({{
+          kind: "closeWindow",
+          target: String(handle || ""),
+          target_context_id: targetContextId || null,
+        }});
+      }},
       postMessage(message, targetOrigin = "/") {{
         queueWindowMessage(handle, targetContextId, message, targetOrigin);
       }},

@@ -1044,6 +1044,77 @@ async fn native_window_identity_exposes_opener_and_persists_name() {
 }
 
 #[tokio::test]
+async fn native_window_proxy_close_removes_popup_target() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://close-parent",
+            "<title>Close parent</title><script>globalThis.popup = window.open('fixture://close-child', 'close-target');</script><p>parent</p>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://close-child",
+            "<title>Close child</title><p>child</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://close-parent");
+    let session = BrowserRuntimeSession::connect_native(config).await.unwrap();
+
+    assert_eq!(session.native_list_targets().await.unwrap().len(), 2);
+    let result = session
+        .script("[popup.closed, (popup.close(), popup.closed)]")
+        .await
+        .unwrap();
+    assert_eq!(result.value, serde_json::json!([false, true]));
+    let targets = session.native_list_targets().await.unwrap();
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].id, "native-context");
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_http_window_proxy_close_removes_content_process_target() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap();
+            let body = match path {
+                "/close-parent" => {
+                    "<title>HTTP close parent</title><script>globalThis.popup = window.open('/close-child', 'close-target');</script><p>parent</p>"
+                }
+                "/close-child" => "<title>HTTP close child</title><p>child</p>",
+                other => panic!("unexpected window.close request path: {other}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/close-parent")),
+    )
+    .await
+    .unwrap();
+    assert_eq!(session.native_list_targets().await.unwrap().len(), 2);
+    let result = session
+        .script("[popup.closed, (popup.close(), popup.closed)]")
+        .await
+        .unwrap();
+    assert_eq!(result.value, serde_json::json!([false, true]));
+    let targets = session.native_list_targets().await.unwrap();
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].id, "native-context");
+    session.close().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_http_window_identity_crosses_content_worker() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

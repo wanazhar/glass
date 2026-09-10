@@ -5427,6 +5427,58 @@ fn document_bootstrap(
     this.signal.reason = reason === undefined ? nativeAbortError() : reason;
     dispatchAbort(this.signal);
   }};
+  AbortSignalNative.timeout = function(delay) {{
+    const numeric = Number(delay);
+    if (!Number.isFinite(numeric) || numeric < 0 || numeric > 2147483647)
+      throw new RangeError("native AbortSignal timeout is outside the bounded range");
+    const signal = new AbortSignalNative();
+    scheduleTimer(() => {{
+      if (signal.aborted) return;
+      signal.aborted = true;
+      signal.reason = nativeTimeoutError();
+      dispatchAbort(signal);
+    }}, Math.trunc(numeric), [], false);
+    return signal;
+  }};
+  AbortSignalNative.any = function(signals) {{
+    if (!signals || typeof signals[Symbol.iterator] !== "function")
+      throw new TypeError("native AbortSignal.any requires an iterable");
+    const iterator = signals[Symbol.iterator]();
+    if (!iterator || typeof iterator.next !== "function")
+      throw new TypeError("native AbortSignal.any iterable is invalid");
+    const inputs = [];
+    while (true) {{
+      const step = iterator.next();
+      if (!step || typeof step !== "object") throw new TypeError("native AbortSignal.any iterator is invalid");
+      if (step.done) break;
+      if (inputs.length >= {max_commands}) throw new RangeError("native AbortSignal.any signal limit exceeded");
+      const signal = step.value;
+      if (!signal || typeof signal !== "object" || typeof signal.aborted !== "boolean" || typeof signal.addEventListener !== "function" || typeof signal.removeEventListener !== "function")
+        throw new TypeError("native AbortSignal.any input is invalid");
+      inputs.push(signal);
+    }}
+    const combined = new AbortSignalNative();
+    const alreadyAborted = inputs.find(signal => signal.aborted);
+    if (alreadyAborted) {{
+      combined.aborted = true;
+      combined.reason = alreadyAborted.reason === undefined ? nativeAbortError() : alreadyAborted.reason;
+      return combined;
+    }}
+    const listeners = [];
+    const abortFrom = (source) => {{
+      if (combined.aborted) return;
+      combined.aborted = true;
+      combined.reason = source.reason === undefined ? nativeAbortError() : source.reason;
+      dispatchAbort(combined);
+      for (const [signal, listener] of listeners) signal.removeEventListener("abort", listener);
+    }};
+    for (const signal of inputs) {{
+      const listener = () => abortFrom(signal);
+      listeners.push([signal, listener]);
+      signal.addEventListener("abort", listener);
+    }}
+    return combined;
+  }};
   globalThis.AbortSignal = AbortSignalNative;
   globalThis.AbortController = AbortControllerNative;
   const clearFetchAbortListener = (pending) => {{

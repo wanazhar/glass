@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-082` locally. The versioned
+`native-engine-browser-083` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -814,6 +814,14 @@ removes the database only after the final connection calls `close()`. Missing
 deletes remain successful no-ops, and a subsequent open can recreate the
 database. Cross-process live connection identity, full factory operation-queue
 ordering, rollback, and the remaining browser-complete gates remain open.
+
+The completed bounded IndexedDB transaction-rollback slice is
+[native-engine-browser-083](tasks/native-engine-browser-083.md). Ordinary
+write transactions now snapshot bounded JSON state, restore it on request
+failure or explicit `abort()`, and deliver one `onabort` without a false
+`oncomplete`. Concurrent transaction scheduling, upgrade-failure rollback,
+structured-clone values, quota APIs, and the remaining browser-complete gates
+remain open.
 
 Full cookie policy/Web IDL parity and the remaining browser-complete gates
 remain open.

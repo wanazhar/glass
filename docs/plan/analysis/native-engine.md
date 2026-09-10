@@ -2485,6 +2485,14 @@ recreate the database. Cross-process live connection identity, full factory
 operation-queue ordering, rollback, and the remaining browser-complete gates
 remain open.
 
+The completed bounded IndexedDB transaction-rollback follow-up is
+[native-engine-browser-083](../tasks/native-engine-browser-083.md). Ordinary
+write transactions snapshot the bounded JSON state and restore it on request
+failure or explicit `abort()`, delivering one `onabort` and never a false
+`oncomplete`. Concurrent transaction scheduling, upgrade-failure rollback,
+structured-clone values, quota APIs, and the remaining browser-complete gates
+remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

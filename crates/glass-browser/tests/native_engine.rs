@@ -29166,6 +29166,103 @@ async fn native_local_indexed_db_delete_blocks_open_connection() {
 }
 
 #[tokio::test]
+async fn native_local_indexed_db_transaction_rolls_back_failed_write() {
+    let profile_path = std::env::temp_dir().join(format!(
+        "glass-native-indexed-db-{}-rollback.json",
+        std::process::id()
+    ));
+    let _ = fs::remove_file(&profile_path);
+    let config = NativeEngineConfig::default()
+        .with_storage_path(profile_path.clone())
+        .with_fixture("fixture://indexed-db-rollback", "<p>IndexedDB rollback</p>")
+        .unwrap()
+        .with_initial_url("fixture://indexed-db-rollback");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize().unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await (async () => { const request = indexedDB.open('rollback', 1); request.onupgradeneeded = event => event.target.result.createObjectStore('records'); return await new Promise((resolve, reject) => { request.onsuccess = () => resolve(true); request.onerror = () => reject(request.error); }); })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await (async () => { const request = indexedDB.open('rollback'); const db = await new Promise((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); }); return await new Promise((resolve, reject) => { const events = []; const transaction = db.transaction('records', 'readwrite'); const store = transaction.objectStore('records'); const first = store.put({ id: 'one' }, 'one'); const second = store.add({ id: 'one' }, 'one'); second.onerror = () => events.push(`request:${second.error.name}`); transaction.onabort = () => { events.push('abort'); const read = db.transaction('records', 'readonly').objectStore('records').count(); read.onsuccess = () => resolve({ events, count: read.result, transactionError: transaction.error.name }); read.onerror = () => reject(read.error); }; transaction.oncomplete = () => reject(new Error('failed transaction unexpectedly completed')); }); })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "events": ["request:ConstraintError", "abort"],
+            "count": 0,
+            "transactionError": "ConstraintError",
+        })
+    );
+    engine.close().unwrap();
+    for suffix in ["", "lock", "events", "readers"] {
+        let path = if suffix.is_empty() {
+            profile_path.clone()
+        } else {
+            profile_path.with_extension(suffix)
+        };
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[tokio::test]
+async fn native_local_indexed_db_explicit_abort_rolls_back_write() {
+    let profile_path = std::env::temp_dir().join(format!(
+        "glass-native-indexed-db-{}-explicit-abort.json",
+        std::process::id()
+    ));
+    let _ = fs::remove_file(&profile_path);
+    let config = NativeEngineConfig::default()
+        .with_storage_path(profile_path.clone())
+        .with_fixture(
+            "fixture://indexed-db-explicit-abort",
+            "<p>IndexedDB abort</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://indexed-db-explicit-abort");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize().unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await (async () => { const request = indexedDB.open('abort', 1); request.onupgradeneeded = event => event.target.result.createObjectStore('records'); return await new Promise((resolve, reject) => { request.onsuccess = () => resolve(true); request.onerror = () => reject(request.error); }); })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await (async () => { const request = indexedDB.open('abort'); const db = await new Promise((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); }); return await new Promise((resolve, reject) => { const events = []; const transaction = db.transaction('records', 'readwrite'); const write = transaction.objectStore('records').put({ id: 'one' }, 'one'); write.onsuccess = () => { events.push('write'); transaction.abort(); }; transaction.onabort = () => { events.push('abort'); const read = db.transaction('records', 'readonly').objectStore('records').count(); read.onsuccess = () => resolve({ events, count: read.result, transactionError: transaction.error.name }); read.onerror = () => reject(read.error); }; transaction.oncomplete = () => reject(new Error('aborted transaction unexpectedly completed')); }); })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "events": ["write", "abort"],
+            "count": 0,
+            "transactionError": "AbortError",
+        })
+    );
+    engine.close().unwrap();
+    for suffix in ["", "lock", "events", "readers"] {
+        let path = if suffix.is_empty() {
+            profile_path.clone()
+        } else {
+            profile_path.with_extension(suffix)
+        };
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[tokio::test]
 async fn native_local_indexed_db_journal_merges_live_origin_writers() {
     let profile_path = std::env::temp_dir().join(format!(
         "glass-native-indexed-db-{}-journal.json",

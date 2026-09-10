@@ -29225,7 +29225,7 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
     engine.initialize_async().await.unwrap();
     engine
         .evaluate_async(
-            "(() => { const headers = new Headers([['X-Glass-Token', 'alpha']]); headers.append('x-glass-token', 'beta'); headers.set('X-Glass-Extra', 'gamma'); headers.delete('x-glass-extra'); const endpoint = new URL('/headers', location.href); const query = new URL('?source=request#part', endpoint.href); const nested = new URL('../target?x=one#frag', 'http://example.test/a/b/page'); const protocolRelative = new URL('//api.example.test/v1', endpoint.href); const request = new Request(endpoint, { headers }); const requestClone = request.clone(); globalThis.urlObjectView = [endpoint instanceof URL, endpoint.origin === location.origin, endpoint.pathname, endpoint.search, endpoint.hash, query.searchParams.get('source'), query.hash, nested.pathname, nested.searchParams.get('x'), nested.hash, protocolRelative.origin, protocolRelative.pathname]; globalThis.requestObjectView = [request instanceof Request, request.method, request.url === endpoint.href, request.mode, request.redirect, request.headers.get('x-glass-token'), requestClone.headers.get('x-glass-token'), requestClone !== request]; globalThis.requestHeaderView = [headers.get('x-glass-token'), headers.has('X-Glass-Token'), Array.from(headers.entries()), Array.from(headers.keys()), Array.from(headers.values()), headers.size]; fetch(requestClone).then(response => response.text()).then(value => { globalThis.headerFetch = value; }); })()",
+            "(() => { const headers = new Headers([['X-Glass-Token', 'alpha']]); headers.append('x-glass-token', 'beta'); headers.set('X-Glass-Extra', 'gamma'); headers.delete('x-glass-extra'); const endpoint = new URL('/headers', location.href); const query = new URL('?source=request#part', endpoint.href); const nested = new URL('../target?x=one#frag', 'http://example.test/a/b/page'); const protocolRelative = new URL('//api.example.test/v1', endpoint.href); const mutable = new URL('/headers?old=one', location.href); mutable.searchParams.set('old', 'two'); mutable.searchParams.append('z', '3'); mutable.hash = 'changed'; const request = new Request(endpoint, { headers }); const requestClone = request.clone(); globalThis.urlObjectView = [endpoint instanceof URL, endpoint.origin === location.origin, endpoint.pathname, endpoint.search, endpoint.hash, query.searchParams.get('source'), query.hash, nested.pathname, nested.searchParams.get('x'), nested.hash, protocolRelative.origin, protocolRelative.pathname, mutable.search, mutable.searchParams.get('old'), mutable.href.endsWith('/headers?old=two&z=3#changed')]; globalThis.requestObjectView = [request instanceof Request, request.method, request.url === endpoint.href, request.mode, request.redirect, request.headers.get('x-glass-token'), requestClone.headers.get('x-glass-token'), requestClone !== request]; globalThis.requestHeaderView = [headers.get('x-glass-token'), headers.has('X-Glass-Token'), Array.from(headers.entries()), Array.from(headers.keys()), Array.from(headers.values()), headers.size]; fetch(requestClone).then(response => response.text()).then(value => { globalThis.headerFetch = value; }); })()",
         )
         .await
         .unwrap();
@@ -29277,6 +29277,9 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
             "#frag",
             "http://api.example.test",
             "/v1",
+            "?old=two&z=3",
+            "two",
+            true,
         ])
     );
     assert_eq!(

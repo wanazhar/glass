@@ -13,8 +13,7 @@ use crate::browser_backend::{
     BackendRequest, BackendResponse, BrowserBackend, BrowserBackendError, BrowserCapability,
     BrowsingContext, CapabilityDescriptor, CaptureFormat, CaptureResult, CertificationLevel,
     CertificationProfile, EffectsResult, EvidenceLevel, EvidenceResult, NavigationResult,
-    Portability, ScriptResult, SemanticAction, StorageOperation, StorageResult, StorageScope,
-    SupportLevel,
+    Portability, ScriptResult, SemanticAction, StorageResult, StorageScope, SupportLevel,
 };
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -28,51 +27,6 @@ const NATIVE_ENGINE_BROWSER_FAMILY: &str = "native";
 pub struct NativeEngineBackend {
     profile: BackendProfile,
     engine: Mutex<NativeEngine>,
-    storage: Mutex<NativeBackendStorage>,
-}
-
-/// Bounded state for explicit semantic backend storage calls.
-///
-/// This is intentionally separate from the page realm and resource loader.
-/// It makes the semantic backend contract executable while page-visible Web
-/// Storage, durable profiles, and the network cookie jar retain their own
-/// origin-aware contracts.
-#[derive(Debug, Default)]
-struct NativeBackendStorage {
-    local: BTreeMap<String, String>,
-    session: BTreeMap<String, String>,
-}
-
-impl NativeBackendStorage {
-    fn entries(
-        &self,
-        scope: &StorageScope,
-    ) -> Result<&BTreeMap<String, String>, BrowserBackendError> {
-        match scope {
-            StorageScope::Local => Ok(&self.local),
-            StorageScope::Session => Ok(&self.session),
-            StorageScope::Cookies => Err(BrowserBackendError::UnsupportedOperation {
-                operation: "storage".into(),
-                reason: "native cookie storage is not yet exposed through the semantic backend map"
-                    .into(),
-            }),
-        }
-    }
-
-    fn entries_mut(
-        &mut self,
-        scope: &StorageScope,
-    ) -> Result<&mut BTreeMap<String, String>, BrowserBackendError> {
-        match scope {
-            StorageScope::Local => Ok(&mut self.local),
-            StorageScope::Session => Ok(&mut self.session),
-            StorageScope::Cookies => Err(BrowserBackendError::UnsupportedOperation {
-                operation: "storage".into(),
-                reason: "native cookie storage is not yet exposed through the semantic backend map"
-                    .into(),
-            }),
-        }
-    }
 }
 
 impl NativeEngineBackend {
@@ -82,7 +36,6 @@ impl NativeEngineBackend {
         Ok(Self {
             profile,
             engine: Mutex::new(engine),
-            storage: Mutex::new(NativeBackendStorage::default()),
         })
     }
 
@@ -229,19 +182,6 @@ impl NativeEngineBackend {
                 reason: "native engine state lock is unavailable".into(),
             })
     }
-
-    fn lock_storage(
-        &self,
-        operation: BackendOperation,
-    ) -> Result<std::sync::MutexGuard<'_, NativeBackendStorage>, BrowserBackendError> {
-        self.storage
-            .lock()
-            .map_err(|_| BrowserBackendError::Lifecycle {
-                operation: operation_name(operation).into(),
-                state: "poisoned".into(),
-                reason: "native backend storage state lock is unavailable".into(),
-            })
-    }
 }
 
 impl BrowserBackend for NativeEngineBackend {
@@ -375,21 +315,18 @@ impl BrowserBackend for NativeEngineBackend {
                 }
                 (BackendOperation::Storage, BackendRequest::Storage(request)) => {
                     require_context_id(&request.context_id, &active_context_id)?;
-                    drop(engine);
-                    let mut storage = self.lock_storage(operation)?;
-                    let entries = match request.operation {
-                        StorageOperation::Read => storage.entries(&request.scope)?.clone(),
-                        StorageOperation::Write { key, value } => {
-                            let entries = storage.entries_mut(&request.scope)?;
-                            entries.insert(key, value);
-                            entries.clone()
-                        }
-                        StorageOperation::Clear => {
-                            let entries = storage.entries_mut(&request.scope)?;
-                            entries.clear();
-                            entries.clone()
-                        }
-                    };
+                    if matches!(&request.scope, StorageScope::Cookies) {
+                        return Err(BrowserBackendError::UnsupportedOperation {
+                            operation: "storage".into(),
+                            reason:
+                                "native cookie metadata is not yet exposed through semantic storage"
+                                    .into(),
+                        });
+                    }
+                    let entries = engine
+                        .storage_async(request.scope, request.operation)
+                        .await
+                        .map_err(native_error)?;
                     Ok(BackendResponse::Storage(StorageResult { entries }))
                 }
                 (operation, _) => Err(BrowserBackendError::UnsupportedOperation {

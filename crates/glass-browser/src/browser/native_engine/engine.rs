@@ -37,6 +37,7 @@ use super::resource_loader::{
 use super::runtime::{NativeRuntimeState, NativeRuntimeTraceEvent};
 use super::scheduler::{DeterministicScheduler, NativeTask};
 use super::worker::{NativeRuntimeShared, NativeRuntimeWorker};
+use crate::browser_backend::{StorageOperation, StorageScope};
 use std::collections::VecDeque;
 
 const MAX_NATIVE_PAGE_NAVIGATION_HANDOFFS: usize = 8;
@@ -950,6 +951,68 @@ impl NativeEngine {
             self.navigate_request_async(navigation, 0).await?;
         }
         Ok(evaluation.value)
+    }
+
+    /// Read or mutate the page-visible Web Storage owned by this engine.
+    ///
+    /// Semantic backend storage must use the same origin-keyed state as the
+    /// JavaScript realm. Keeping a second adapter-owned map would make a
+    /// successful `storage` operation invisible to page script (and vice
+    /// versa), which is a correctness failure for a browser backend.
+    pub async fn storage_async(
+        &mut self,
+        scope: StorageScope,
+        operation: StorageOperation,
+    ) -> Result<std::collections::BTreeMap<String, String>, NativeEngineError> {
+        self.require_running("storage")?;
+        self.sync_external_storage_events()?;
+        self.deliver_pending_external_storage_events().await?;
+
+        let storage_name = match scope {
+            StorageScope::Local => "localStorage",
+            StorageScope::Session => "sessionStorage",
+            StorageScope::Cookies => {
+                return Err(NativeEngineError::invalid(
+                    "storage cookies",
+                    "native cookie metadata is not yet exposed through semantic storage",
+                ));
+            }
+        };
+
+        match operation {
+            StorageOperation::Read => {}
+            StorageOperation::Write { key, value } => {
+                let key = serde_json::to_string(&key).map_err(|_| NativeEngineError::Worker {
+                    operation: "native storage write".into(),
+                    reason: "storage key could not be encoded".into(),
+                })?;
+                let value =
+                    serde_json::to_string(&value).map_err(|_| NativeEngineError::Worker {
+                        operation: "native storage write".into(),
+                        reason: "storage value could not be encoded".into(),
+                    })?;
+                self.evaluate_async(format!(
+                    "window.{storage_name}.setItem({key}, {value}); true"
+                ))
+                .await?;
+            }
+            StorageOperation::Clear => {
+                self.evaluate_async(format!("window.{storage_name}.clear(); true"))
+                    .await?;
+            }
+        }
+
+        self.sync_external_storage_events()?;
+        self.deliver_pending_external_storage_events().await?;
+        let storage_key = storage_key(&self.url, &self.origin);
+        Ok(self.web_storage.entries_for(
+            match scope {
+                StorageScope::Local => "local",
+                StorageScope::Session => "session",
+                StorageScope::Cookies => unreachable!("cookies are rejected above"),
+            },
+            &storage_key,
+        ))
     }
 
     /// Return diagnostics for CSS that the bounded native presentation model

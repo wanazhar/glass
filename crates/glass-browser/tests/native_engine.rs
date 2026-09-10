@@ -29380,7 +29380,7 @@ async fn native_local_indexed_db_round_trips_bounded_structured_clone_extensions
     assert_eq!(
         engine
             .evaluate_async(
-                "await (async () => { const request = indexedDB.open('structured'); const db = await new Promise((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); }); return await new Promise((resolve, reject) => { const transaction = db.transaction('records', 'readwrite'); const value = { undefinedValue: undefined, date: new Date('2026-01-02T03:04:05.000Z'), pattern: /glass/gi, numbers: [NaN, Infinity, -Infinity, -0], map: new Map([['missing', undefined], ['date', new Date('2026-01-02T03:04:05.000Z')]]), set: new Set(['a', 'b']), blob: new Blob(['payload'], { type: 'text/plain' }), file: new File(['note'], 'note.txt', { type: 'text/plain', lastModified: 7 }) }; const write = transaction.objectStore('records').put(value, 'special'); write.onerror = () => reject(write.error); transaction.oncomplete = () => resolve(true); transaction.onabort = () => reject(transaction.error); }); })()",
+                "await (async () => { const request = indexedDB.open('structured'); const db = await new Promise((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); }); return await new Promise((resolve, reject) => { const transaction = db.transaction('records', 'readwrite'); const value = { undefinedValue: undefined, date: new Date('2026-01-02T03:04:05.000Z'), pattern: /glass/gi, numbers: [NaN, Infinity, -Infinity, -0], map: new Map([['missing', undefined], ['date', new Date('2026-01-02T03:04:05.000Z')]]), set: new Set(['a', 'b']), blob: new Blob(['payload'], { type: 'text/plain' }), file: new File(['note'], 'note.txt', { type: 'text/plain', lastModified: 7 }), buffer: new Uint8Array([1, 2, 255]).buffer, bytes: new Uint16Array([258, 513]), view: new DataView(new Uint8Array([9, 8]).buffer) }; const write = transaction.objectStore('records').put(value, 'special'); write.onerror = () => reject(write.error); transaction.oncomplete = () => resolve(true); transaction.onabort = () => reject(transaction.error); }); })()",
             )
             .await
             .unwrap(),
@@ -29393,7 +29393,7 @@ async fn native_local_indexed_db_round_trips_bounded_structured_clone_extensions
     assert_eq!(
         restarted
             .evaluate_async(
-                "await (async () => { const request = indexedDB.open('structured'); const db = await new Promise((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); }); const read = db.transaction('records', 'readonly').objectStore('records').get('special'); const value = await new Promise((resolve, reject) => { read.onsuccess = () => resolve(read.result); read.onerror = () => reject(read.error); }); return { undefinedValue: Object.prototype.hasOwnProperty.call(value, 'undefinedValue') && value.undefinedValue === undefined, date: value.date instanceof Date && value.date.toISOString(), regexp: value.pattern instanceof RegExp && value.pattern.source === 'glass' && value.pattern.flags === 'gi' && value.pattern.lastIndex === 0, nan: Number.isNaN(value.numbers[0]), positiveInfinity: value.numbers[1] === Infinity, negativeInfinity: value.numbers[2] === -Infinity, negativeZero: Object.is(value.numbers[3], -0), map: value.map instanceof Map && value.map.get('missing') === undefined && value.map.get('date') instanceof Date, set: value.set instanceof Set && value.set.has('a') && value.set.has('b'), blob: value.blob instanceof Blob && value.blob.type === 'text/plain' && await value.blob.text() === 'payload', file: value.file instanceof File && value.file.name === 'note.txt' && value.file.lastModified === 7 && await value.file.text() === 'note' }; })()",
+                "await (async () => { const request = indexedDB.open('structured'); const db = await new Promise((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); }); const read = db.transaction('records', 'readonly').objectStore('records').get('special'); const value = await new Promise((resolve, reject) => { read.onsuccess = () => resolve(read.result); read.onerror = () => reject(read.error); }); return { undefinedValue: Object.prototype.hasOwnProperty.call(value, 'undefinedValue') && value.undefinedValue === undefined, date: value.date instanceof Date && value.date.toISOString(), regexp: value.pattern instanceof RegExp && value.pattern.source === 'glass' && value.pattern.flags === 'gi' && value.pattern.lastIndex === 0, nan: Number.isNaN(value.numbers[0]), positiveInfinity: value.numbers[1] === Infinity, negativeInfinity: value.numbers[2] === -Infinity, negativeZero: Object.is(value.numbers[3], -0), map: value.map instanceof Map && value.map.get('missing') === undefined && value.map.get('date') instanceof Date, set: value.set instanceof Set && value.set.has('a') && value.set.has('b'), blob: value.blob instanceof Blob && value.blob.type === 'text/plain' && await value.blob.text() === 'payload', file: value.file instanceof File && value.file.name === 'note.txt' && value.file.lastModified === 7 && await value.file.text() === 'note', buffer: value.buffer instanceof ArrayBuffer && Array.from(new Uint8Array(value.buffer)).join(',') === '1,2,255', typedArray: value.bytes instanceof Uint16Array && value.bytes[0] === 258 && value.bytes[1] === 513, dataView: value.view instanceof DataView && value.view.getUint8(0) === 9 && value.view.getUint8(1) === 8 }; })()",
             )
             .await
             .unwrap(),
@@ -29409,7 +29409,19 @@ async fn native_local_indexed_db_round_trips_bounded_structured_clone_extensions
             "set": true,
             "blob": true,
             "file": true,
+            "buffer": true,
+            "typedArray": true,
+            "dataView": true,
         })
+    );
+    assert_eq!(
+        restarted
+            .evaluate_async(
+                "await (async () => { if (typeof SharedArrayBuffer !== 'function') return true; const request = indexedDB.open('structured'); const db = await new Promise((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); }); const transaction = db.transaction('records', 'readwrite'); const write = transaction.objectStore('records').put(new SharedArrayBuffer(2), 'shared'); return await new Promise(resolve => { write.onsuccess = () => resolve(false); write.onerror = () => resolve(write.error && write.error.name === 'DataCloneError'); }); })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
     );
     restarted.close().unwrap();
     for suffix in ["", "lock", "events", "readers"] {

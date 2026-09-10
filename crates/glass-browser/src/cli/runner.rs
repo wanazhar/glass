@@ -331,14 +331,15 @@ async fn dispatch_alternative_runtime(cli: &Cli, policy: &mut BrowserPolicy) -> 
         );
     }
     let native = cli.browser_runtime.is_native();
-    if cli.mcp {
-        return Err(if native {
-            "native runtime supports only local one-shot commands; MCP remains on the full Chromium session".into()
-        } else {
-            "Firefox and Safari currently support the portable one-shot semantic session; MCP remains on the full Chromium session".into()
-        });
-    }
     validate_alternative_runtime_flags(cli, cli.browser_runtime)?;
+    if cli.mcp {
+        if native {
+            return crate::mcp::server::run_mcp_server(cli).await;
+        }
+        return Err(
+            "Firefox and Safari currently support the portable one-shot semantic session; MCP remains on the full Chromium session".into(),
+        );
+    }
     if !native
         && matches!(
             policy.preset(),

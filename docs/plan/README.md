@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-130` locally. The versioned
+`native-engine-browser-132` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1196,8 +1196,18 @@ The completed bounded native public-session revision batch is
 dispatch, returns the shared typed stale-revision error, and accepts native
 CLI `--expected-revision` values for navigation, form, keyboard, and scroll
 commands. This removes the one-shot revision gap; normal `BrowserSession` /
-MCP / TUI routing, the rest of the browser profile, native promotion, and CDP
+TUI routing, the rest of the browser profile, native promotion, and CDP
 replacement remain issue #40 gates.
+
+The completed bounded native MCP routing batch is
+[native-engine-browser-132](tasks/native-engine-browser-132.md). Native MCP
+now owns a separate lazy `BrowserRuntimeSession` slot and routes core
+navigation, evidence, semantic actions, script, PNG capture, targets, and
+storage tools through the native backend without creating Chromium or falling
+through to `BrowserSession`. Unsupported richer MCP tools return an explicit
+error, while offline tools and the existing Chromium path retain their
+behavior. Universal MCP workflow parity, TUI/profile/frame/download/prompt
+owners, native promotion, and CDP replacement remain issue #40 gates.
 
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and

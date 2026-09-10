@@ -17,13 +17,13 @@ use super::interaction::{
     validate_native_edit_key, validate_native_key,
 };
 use super::javascript::{
-    NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime, NativePageNavigation,
-    NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState, append_storage_changes,
-    apply_indexed_db_changes, diff_indexed_db_changes, execute_inline_scripts, host_event_script,
-    host_hash_change_event_script, host_submit_event_script, load_indexed_db_profile,
-    load_web_storage_profile, new_storage_writer_id, read_storage_event_journal,
-    register_storage_reader, save_web_storage_profile, storage_event_cursor, storage_key,
-    unregister_storage_reader,
+    NativeCookieProfileEntry, NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime,
+    NativePageNavigation, NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState,
+    append_storage_changes, apply_indexed_db_changes, diff_indexed_db_changes,
+    execute_inline_scripts, host_event_script, host_hash_change_event_script,
+    host_submit_event_script, load_indexed_db_profile, load_web_storage_profile,
+    new_storage_writer_id, read_storage_event_journal, register_storage_reader,
+    save_web_storage_profile, storage_event_cursor, storage_key, unregister_storage_reader,
 };
 use super::layout::{NativeLayoutSnapshot, NativePoint, NativeRect};
 use super::lifecycle::NativeLifecycleState;
@@ -37,6 +37,7 @@ use super::resource_loader::{
 use super::runtime::{NativeRuntimeState, NativeRuntimeTraceEvent};
 use super::scheduler::{DeterministicScheduler, NativeTask};
 use super::worker::{NativeRuntimeShared, NativeRuntimeWorker};
+use crate::browser::session::Cookie;
 use crate::browser_backend::{StorageOperation, StorageScope};
 use std::collections::VecDeque;
 
@@ -53,6 +54,75 @@ fn should_apply_native_key_default(key: &str, modifiers: i64) -> bool {
                 key,
                 "Backspace" | "Delete" | "ArrowLeft" | "ArrowRight" | "Home" | "End"
             ))
+}
+
+fn public_cookie_from_profile(
+    profile: NativeCookieProfileEntry,
+) -> Result<Cookie, NativeEngineError> {
+    let size = profile
+        .name
+        .len()
+        .saturating_add(profile.value.len())
+        .try_into()
+        .ok();
+    Ok(Cookie {
+        name: profile.name,
+        value: profile.value,
+        domain: profile.domain,
+        path: profile.path,
+        expires: profile
+            .expires_at_unix_seconds
+            .map_or(0.0, |expires| expires as f64),
+        http_only: profile.http_only,
+        secure: profile.secure,
+        same_site: None,
+        is_session: profile.expires_at_unix_seconds.is_none(),
+        size,
+        priority: None,
+    })
+}
+
+fn profile_from_public_cookie(
+    cookie: &Cookie,
+) -> Result<NativeCookieProfileEntry, NativeEngineError> {
+    if cookie.name.is_empty() || cookie.domain.is_empty() {
+        return Err(NativeEngineError::invalid(
+            "cookie",
+            "name and domain must not be empty",
+        ));
+    }
+    if !cookie.expires.is_finite() || cookie.expires < 0.0 {
+        return Err(NativeEngineError::invalid(
+            "cookie expiration",
+            "must be a finite non-negative Unix timestamp",
+        ));
+    }
+    let expires_at_unix_seconds = if cookie.is_session || cookie.expires == 0.0 {
+        None
+    } else if cookie.expires > u64::MAX as f64 {
+        return Err(NativeEngineError::invalid(
+            "cookie expiration",
+            "exceeds the supported Unix timestamp range",
+        ));
+    } else {
+        Some(cookie.expires.floor() as u64)
+    };
+    let domain = cookie.domain.trim_start_matches('.').to_ascii_lowercase();
+    let path = if cookie.path.is_empty() {
+        "/".to_owned()
+    } else {
+        cookie.path.clone()
+    };
+    Ok(NativeCookieProfileEntry {
+        name: cookie.name.clone(),
+        value: cookie.value.clone(),
+        domain,
+        path,
+        host_only: !cookie.domain.starts_with('.'),
+        secure: cookie.secure,
+        http_only: cookie.http_only,
+        expires_at_unix_seconds,
+    })
 }
 
 fn native_action_supported(
@@ -968,15 +1038,31 @@ impl NativeEngine {
         self.sync_external_storage_events()?;
         self.deliver_pending_external_storage_events().await?;
 
+        if matches!(&scope, StorageScope::Cookies) {
+            return match operation {
+                StorageOperation::Read => {
+                    let cookies = self.cookies_async().await?;
+                    let mut entries = std::collections::BTreeMap::new();
+                    for cookie in cookies {
+                        entries.entry(cookie.name).or_insert(cookie.value);
+                    }
+                    Ok(entries)
+                }
+                StorageOperation::Clear => {
+                    self.clear_cookies_async().await?;
+                    Ok(std::collections::BTreeMap::new())
+                }
+                StorageOperation::Write { .. } => Err(NativeEngineError::invalid(
+                    "storage cookies",
+                    "cookie writes require domain, path, and security metadata",
+                )),
+            };
+        }
+
         let storage_name = match scope {
             StorageScope::Local => "localStorage",
             StorageScope::Session => "sessionStorage",
-            StorageScope::Cookies => {
-                return Err(NativeEngineError::invalid(
-                    "storage cookies",
-                    "native cookie metadata is not yet exposed through semantic storage",
-                ));
-            }
+            StorageScope::Cookies => unreachable!("cookies are handled above"),
         };
 
         match operation {
@@ -1013,6 +1099,62 @@ impl NativeEngine {
             },
             &storage_key,
         ))
+    }
+
+    /// Return cookies matching the current document URL, including HTTP-only
+    /// entries that are not visible to `document.cookie`.
+    pub async fn cookies_async(&mut self) -> Result<Vec<Cookie>, NativeEngineError> {
+        self.require_running("cookies")?;
+        self.sync_external_storage_events()?;
+        self.deliver_pending_external_storage_events().await?;
+        let profiles = if let Some(process) = self.content_process.as_mut() {
+            process.cookies(&self.url).await?
+        } else {
+            self.loader.cookies_for_document(&self.url)?
+        };
+        profiles
+            .into_iter()
+            .map(public_cookie_from_profile)
+            .collect()
+    }
+
+    /// Import cookies into the current native profile and refresh the active
+    /// content realm. Cookie attributes are retained rather than flattened
+    /// into a name/value map.
+    pub async fn set_cookies_async(&mut self, cookies: &[Cookie]) -> Result<(), NativeEngineError> {
+        self.require_running("set cookies")?;
+        if cookies.len() > super::javascript::MAX_NATIVE_COOKIE_PROFILE_ENTRIES {
+            return Err(NativeEngineError::limit(
+                "native cookie profile entries",
+                super::javascript::MAX_NATIVE_COOKIE_PROFILE_ENTRIES,
+                cookies.len(),
+            ));
+        }
+        let profiles = cookies
+            .iter()
+            .map(profile_from_public_cookie)
+            .collect::<Result<Vec<_>, _>>()?;
+        if let Some(process) = self.content_process.as_mut() {
+            process.set_cookies(&profiles).await?;
+        }
+        self.loader.set_cookie_profiles(&profiles)?;
+        if self.content_process.is_none() {
+            self.persist_local_web_storage()?;
+        }
+        Ok(())
+    }
+
+    /// Clear all cookies in the native profile and active content realm.
+    pub async fn clear_cookies_async(&mut self) -> Result<(), NativeEngineError> {
+        self.require_running("clear cookies")?;
+        if let Some(process) = self.content_process.as_mut() {
+            process.clear_cookies().await?;
+        }
+        self.loader.clear_cookies();
+        if self.content_process.is_none() {
+            self.persist_local_web_storage()?;
+        }
+        Ok(())
     }
 
     /// Return diagnostics for CSS that the bounded native presentation model

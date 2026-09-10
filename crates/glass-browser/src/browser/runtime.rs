@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "native-engine")]
 use super::session::{
     ActAndVerifyResult, ActionFailureKind, ActionFailurePhase, ActionKind, ActionOutcome,
-    ActionStatus, ActionTarget, ActionVerificationError, ActionVerificationEvidence,
+    ActionStatus, ActionTarget, ActionVerificationError, ActionVerificationEvidence, Cookie,
     FindTargetResult, InspectPageResult, IntentPolicyDecision, RecoveryStrategy,
     SemanticIntentAction, SemanticIntentExecutionRequest, SemanticIntentExecutionResult,
     SemanticIntentExecutionStatus, SemanticIntentResult, SemanticResolution, VerificationOutcome,
@@ -240,6 +240,33 @@ impl BrowserRuntimeSession {
         Ok(BrowserBackendDispatcher::new(&self.backend)
             .storage(request)
             .await?)
+    }
+
+    #[cfg(feature = "native-engine")]
+    pub async fn native_cookies(&self) -> BrowserResult<Vec<Cookie>> {
+        let _operation = self.operation_lock.lock().await;
+        match &self.backend {
+            BackendStartup::Native(backend) => Ok(backend.cookies().await?),
+            _ => Err("native cookies are only available on the native runtime".into()),
+        }
+    }
+
+    #[cfg(feature = "native-engine")]
+    pub async fn native_set_cookies(&self, cookies: &[Cookie]) -> BrowserResult<()> {
+        let _operation = self.operation_lock.lock().await;
+        match &self.backend {
+            BackendStartup::Native(backend) => Ok(backend.set_cookies(cookies).await?),
+            _ => Err("native cookie import is only available on the native runtime".into()),
+        }
+    }
+
+    #[cfg(feature = "native-engine")]
+    pub async fn native_clear_cookies(&self) -> BrowserResult<()> {
+        let _operation = self.operation_lock.lock().await;
+        match &self.backend {
+            BackendStartup::Native(backend) => Ok(backend.clear_cookies().await?),
+            _ => Err("native cookie clearing is only available on the native runtime".into()),
+        }
     }
 
     /// Return the native engine's bounded semantic accessibility projection.

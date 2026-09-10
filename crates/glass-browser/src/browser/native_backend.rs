@@ -77,6 +77,32 @@ impl NativeEngineBackend {
             .map_err(native_error)
     }
 
+    pub async fn cookies(
+        &self,
+    ) -> Result<Vec<crate::browser::session::Cookie>, BrowserBackendError> {
+        self.lock_engine(BackendOperation::Storage)?
+            .cookies_async()
+            .await
+            .map_err(native_error)
+    }
+
+    pub async fn set_cookies(
+        &self,
+        cookies: &[crate::browser::session::Cookie],
+    ) -> Result<(), BrowserBackendError> {
+        self.lock_engine(BackendOperation::Storage)?
+            .set_cookies_async(cookies)
+            .await
+            .map_err(native_error)
+    }
+
+    pub async fn clear_cookies(&self) -> Result<(), BrowserBackendError> {
+        self.lock_engine(BackendOperation::Storage)?
+            .clear_cookies_async()
+            .await
+            .map_err(native_error)
+    }
+
     pub fn profile_for(glass_version: &str) -> Result<BackendProfile, BrowserBackendError> {
         if glass_version.is_empty() {
             return Err(BrowserBackendError::InvalidConfiguration {
@@ -315,12 +341,16 @@ impl BrowserBackend for NativeEngineBackend {
                 }
                 (BackendOperation::Storage, BackendRequest::Storage(request)) => {
                     require_context_id(&request.context_id, &active_context_id)?;
-                    if matches!(&request.scope, StorageScope::Cookies) {
+                    if matches!(&request.scope, StorageScope::Cookies)
+                        && matches!(
+                            &request.operation,
+                            crate::browser_backend::StorageOperation::Write { .. }
+                        )
+                    {
                         return Err(BrowserBackendError::UnsupportedOperation {
                             operation: "storage".into(),
-                            reason:
-                                "native cookie metadata is not yet exposed through semantic storage"
-                                    .into(),
+                            reason: "cookie writes require domain, path, and security metadata"
+                                .into(),
                         });
                     }
                     let entries = engine

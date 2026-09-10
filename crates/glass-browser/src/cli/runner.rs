@@ -541,6 +541,11 @@ fn validate_alternative_runtime_command(
         Commands::InspectPage | Commands::FindTarget { .. } if native => Ok(()),
         Commands::Verify { .. } | Commands::Wait { .. } if native => Ok(()),
         Commands::ActAndVerify { .. } if native => Ok(()),
+        Commands::Cookies | Commands::ExportCookies { .. } | Commands::ImportCookies { .. }
+            if native =>
+        {
+            Ok(())
+        }
         Commands::Dom | Commands::ClickAt { .. } | Commands::Scroll { .. } if native => Ok(()),
         Commands::Clear { .. }
         | Commands::Check { .. }
@@ -742,6 +747,48 @@ async fn run_alternative_runtime_command(
                         .await?,
                     response_mode,
                 )
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
+        }
+        Commands::Cookies if session.runtime().is_native() => {
+            #[cfg(feature = "native-engine")]
+            {
+                print_json_mode(&session.native_cookies().await?, response_mode)
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
+        }
+        Commands::ExportCookies { output } if session.runtime().is_native() => {
+            #[cfg(feature = "native-engine")]
+            {
+                let output = policy.require_output_path(Path::new(output))?;
+                let cookies = session.native_cookies().await?;
+                let bytes = serde_json::to_vec_pretty(&cookies)?;
+                tokio::fs::write(&output, bytes).await?;
+                println!("cookies exported to {}", output.display());
+                Ok(())
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
+        }
+        Commands::ImportCookies { input } if session.runtime().is_native() => {
+            #[cfg(feature = "native-engine")]
+            {
+                const MAX_COOKIE_FILE_BYTES: u64 = 512 * 1024;
+                let input = policy.require_existing_path(input)?;
+                let metadata = tokio::fs::metadata(&input).await?;
+                if metadata.len() > MAX_COOKIE_FILE_BYTES {
+                    return Err(format!(
+                        "cookie file exceeds the {MAX_COOKIE_FILE_BYTES}-byte limit"
+                    )
+                    .into());
+                }
+                let bytes = tokio::fs::read(&input).await?;
+                let cookies: Vec<Cookie> = serde_json::from_slice(&bytes)?;
+                session.native_set_cookies(&cookies).await?;
+                println!("{} cookies imported", cookies.len());
+                Ok(())
             }
             #[cfg(not(feature = "native-engine"))]
             unreachable!("native runtime is feature-gated")

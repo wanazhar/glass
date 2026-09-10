@@ -5144,7 +5144,7 @@ fn document_bootstrap(
   }};
   XMLHttpRequestNative.prototype.send = function(body) {{
     if (this.readyState !== 1) throw new TypeError("native XMLHttpRequest is not open");
-    const requestBody = body && (body.__glassFormData === true || body.__glassUrlSearchParams === true)
+    const requestBody = body && (body.__glassFormData === true || body.__glassUrlSearchParams === true || body.__glassNativeBlob === true)
       ? body
       : body === undefined || body === null ? null : String(body);
     const request = fetchNative(this._url, {{

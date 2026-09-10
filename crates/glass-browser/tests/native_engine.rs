@@ -30480,7 +30480,7 @@ async fn native_content_process_exposes_bounded_xhr_fetch_bridge() {
                 xhr.onload = () => {
                     globalThis.xhrResult = [xhr.status, xhr.responseText, xhr.responseURL, xhr.getResponseHeader('content-type')];
                 };
-                xhr.send('{"name":"glass"}');
+                xhr.send(new Blob(['{"name":"glass"}'], { type: 'application/json' }));
             })()"#,
         )
         .await

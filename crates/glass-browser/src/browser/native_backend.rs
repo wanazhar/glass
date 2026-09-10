@@ -20,7 +20,7 @@ use crate::browser_backend::{
     EvidenceResult, NavigationResult, Portability, PromptDecision, PromptResult, ScriptResult,
     SemanticAction, StorageResult, StorageScope, SupportLevel,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Mutex, MutexGuard};
 
 /// Stable backend ID for the Glass-owned native engine.
@@ -29,15 +29,84 @@ const NATIVE_ENGINE_BACKEND_VERSION: &str = "0.1";
 const NATIVE_ENGINE_BROWSER_FAMILY: &str = "native";
 
 const NATIVE_MAX_TARGETS: usize = crate::browser::session::TOPOLOGY_MAX_TARGETS;
+const NATIVE_MAX_FRAMES: usize = crate::browser::session::TOPOLOGY_MAX_FRAMES;
+
+struct NativeParkedFrame {
+    engine: NativeEngine,
+    parent_id: Option<String>,
+}
+
+struct NativeFrameState {
+    active_frame_id: String,
+    active_parent_id: Option<String>,
+    parked: BTreeMap<String, NativeParkedFrame>,
+    next_frame_number: u64,
+    discovered_generation: Option<u32>,
+}
+
+impl NativeFrameState {
+    fn new(target_id: &str) -> Self {
+        Self {
+            active_frame_id: native_main_frame_id(target_id),
+            active_parent_id: None,
+            parked: BTreeMap::new(),
+            next_frame_number: 1,
+            discovered_generation: None,
+        }
+    }
+
+    fn empty() -> Self {
+        Self {
+            active_frame_id: String::new(),
+            active_parent_id: None,
+            parked: BTreeMap::new(),
+            next_frame_number: 1,
+            discovered_generation: None,
+        }
+    }
+
+    fn frame_count(&self) -> usize {
+        self.parked.len() + usize::from(!self.active_frame_id.is_empty())
+    }
+
+    fn next_frame_id(&mut self, target_id: &str) -> String {
+        loop {
+            let number = self.next_frame_number;
+            self.next_frame_number = self.next_frame_number.saturating_add(1);
+            let candidate = format!("{target_id}:frame-{number}");
+            if self.active_frame_id != candidate && !self.parked.contains_key(&candidate) {
+                return candidate;
+            }
+        }
+    }
+
+    fn descendant_ids(&self, ancestor_id: &str) -> Vec<String> {
+        let mut descendants = Vec::new();
+        let mut parents = vec![ancestor_id.to_owned()];
+        while let Some(parent_id) = parents.pop() {
+            for (frame_id, frame) in &self.parked {
+                if frame.parent_id.as_deref() == Some(parent_id.as_str())
+                    && !descendants.contains(frame_id)
+                {
+                    descendants.push(frame_id.clone());
+                    parents.push(frame_id.clone());
+                }
+            }
+        }
+        descendants
+    }
+}
 
 struct NativeParkedTarget {
     engine: NativeEngine,
     opener_id: Option<String>,
+    frames: NativeFrameState,
 }
 
 struct NativeTargetState {
     active_target_id: Option<String>,
     active_opener_id: Option<String>,
+    active_frames: NativeFrameState,
     parked: BTreeMap<String, NativeParkedTarget>,
     next_target_number: u64,
 }
@@ -45,8 +114,9 @@ struct NativeTargetState {
 impl NativeTargetState {
     fn new(active_target_id: String) -> Self {
         Self {
-            active_target_id: Some(active_target_id),
+            active_target_id: Some(active_target_id.clone()),
             active_opener_id: None,
+            active_frames: NativeFrameState::new(&active_target_id),
             parked: BTreeMap::new(),
             next_target_number: 1,
         }
@@ -234,19 +304,48 @@ impl NativeEngineBackend {
         Ok(projected)
     }
 
-    /// Project the selected native document's main browsing frame into the
-    /// standard frame contract. Child-frame ownership is added separately; a
-    /// frame request is never redirected to another target.
-    pub fn list_frames(&self) -> Result<Vec<FrameInfo>, BrowserBackendError> {
-        let engine = self.lock_engine(BackendOperation::Contexts)?;
-        let context = engine.context().map_err(native_error)?;
-        Ok(vec![FrameInfo {
-            id: native_main_frame_id(&context.context_id),
-            parent_id: None,
-            url: redact_diagnostic_url(&context.url),
-            active: true,
-            out_of_process: false,
-        }])
+    /// Project the selected native target's complete bounded frame tree. A
+    /// child frame is initialized before publication, so every returned frame
+    /// has a live native document owner.
+    pub async fn list_frames(&self) -> Result<Vec<FrameInfo>, BrowserBackendError> {
+        let mut targets = self.lock_targets(BackendOperation::Contexts)?;
+        if targets.active_target_id.is_none() {
+            return Err(BrowserBackendError::Lifecycle {
+                operation: "contexts".into(),
+                state: "no-target-selected".into(),
+                reason: "select an available native page target before frame discovery".into(),
+            });
+        }
+        let engine = self.lock_engine_raw(BackendOperation::Contexts)?;
+        reconcile_native_frames(&mut targets.active_frames, &engine).await?;
+        let active_frame = project_native_frame(
+            &engine,
+            &targets.active_frames.active_frame_id,
+            targets.active_frames.active_parent_id.clone(),
+            true,
+        )?;
+        let mut frames = vec![active_frame];
+        for (frame_id, frame) in &targets.active_frames.parked {
+            frames.push(project_native_frame(
+                &frame.engine,
+                frame_id,
+                frame.parent_id.clone(),
+                false,
+            )?);
+        }
+        Ok(order_native_frames(frames))
+    }
+
+    pub fn active_frame_id(&self) -> Result<String, BrowserBackendError> {
+        let targets = self.lock_targets(BackendOperation::Contexts)?;
+        if targets.active_target_id.is_none() {
+            return Err(BrowserBackendError::Lifecycle {
+                operation: "contexts".into(),
+                state: "no-target-selected".into(),
+                reason: "select an available native page target before frame discovery".into(),
+            });
+        }
+        Ok(targets.active_frames.active_frame_id.clone())
     }
 
     pub fn select_target(&self, target_id: &str) -> Result<PageTargetInfo, BrowserBackendError> {
@@ -275,9 +374,11 @@ impl NativeEngineBackend {
         let NativeParkedTarget {
             engine: parked_engine,
             opener_id,
+            frames: parked_frames,
         } = parked;
         let mut active_engine = self.lock_engine_raw(BackendOperation::Contexts)?;
         let old_engine = std::mem::replace(&mut *active_engine, parked_engine);
+        let old_frames = std::mem::replace(&mut targets.active_frames, parked_frames);
         let old_target_id = targets.active_target_id.replace(target_id.to_owned());
         let old_opener_id = std::mem::replace(&mut targets.active_opener_id, opener_id);
         if let Some(old_target_id) = old_target_id {
@@ -286,6 +387,7 @@ impl NativeEngineBackend {
                 NativeParkedTarget {
                     engine: old_engine,
                     opener_id: old_opener_id,
+                    frames: old_frames,
                 },
             );
         }
@@ -339,9 +441,14 @@ impl NativeEngineBackend {
                 reason: format!("native target limit reached ({NATIVE_MAX_TARGETS})"),
             });
         }
-        targets
-            .parked
-            .insert(target_id, NativeParkedTarget { engine, opener_id });
+        targets.parked.insert(
+            target_id.clone(),
+            NativeParkedTarget {
+                engine,
+                opener_id,
+                frames: NativeFrameState::new(&target_id),
+            },
+        );
         Ok(target)
     }
 
@@ -354,9 +461,11 @@ impl NativeEngineBackend {
         if targets.active_target_id.as_deref() == Some(target_id) {
             let mut engine = self.lock_engine_raw(BackendOperation::Close)?;
             engine.close_async().await.map_err(native_error)?;
+            let mut frames =
+                std::mem::replace(&mut targets.active_frames, NativeFrameState::empty());
             targets.active_target_id = None;
             targets.active_opener_id = None;
-            return Ok(());
+            return close_parked_frames(&mut frames).await;
         }
         let Some(mut parked) = targets.parked.remove(target_id) else {
             return Err(BrowserBackendError::SelectionFailed {
@@ -368,11 +477,11 @@ impl NativeEngineBackend {
             targets.parked.insert(target_id.to_owned(), parked);
             return Err(native_error(error));
         }
-        Ok(())
+        close_parked_frames(&mut parked.frames).await
     }
 
     async fn close_all(&self) -> Result<(), BrowserBackendError> {
-        let (active_error, parked) = {
+        let (active_error, active_frames, parked) = {
             let mut targets = self.lock_targets(BackendOperation::Close)?;
             let mut active_engine = self.lock_engine_raw(BackendOperation::Close)?;
             let active_error = if targets.active_target_id.is_some()
@@ -382,17 +491,31 @@ impl NativeEngineBackend {
             } else {
                 None
             };
+            let active_frames =
+                std::mem::replace(&mut targets.active_frames, NativeFrameState::empty());
             targets.active_target_id = None;
             targets.active_opener_id = None;
-            (active_error, std::mem::take(&mut targets.parked))
+            (
+                active_error,
+                active_frames,
+                std::mem::take(&mut targets.parked),
+            )
         };
 
         let mut first_error = active_error;
+        let mut active_frames = active_frames;
+        if let Err(error) = close_parked_frames(&mut active_frames).await {
+            first_error.get_or_insert(error);
+        }
         for (_, mut parked) in parked {
-            if parked.engine.lifecycle() != super::native_engine::NativeLifecycleState::Running {
-                continue;
+            if parked.engine.lifecycle() == super::native_engine::NativeLifecycleState::Running
+                && let Err(error) = parked.engine.close_async().await.map_err(native_error)
+            {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
             }
-            if let Err(error) = parked.engine.close_async().await.map_err(native_error) {
+            if let Err(error) = close_parked_frames(&mut parked.frames).await {
                 if first_error.is_none() {
                     first_error = Some(error);
                 }
@@ -401,14 +524,56 @@ impl NativeEngineBackend {
         first_error.map_or(Ok(()), Err)
     }
 
-    pub fn select_frame(&self, frame_id: &str) -> Result<FrameInfo, BrowserBackendError> {
+    pub async fn select_frame(&self, frame_id: &str) -> Result<FrameInfo, BrowserBackendError> {
         validate_native_topology_id(frame_id)?;
-        self.list_frames()?
+        self.list_frames()
+            .await?
             .into_iter()
             .find(|frame| frame.id == frame_id)
             .ok_or_else(|| BrowserBackendError::SelectionFailed {
                 reason: "native frame was not found; call listFrames to refresh topology".into(),
-            })
+            })?;
+        let mut targets = self.lock_targets(BackendOperation::Contexts)?;
+        if targets.active_frames.active_frame_id == frame_id {
+            let engine = self.lock_engine_raw(BackendOperation::Contexts)?;
+            return project_native_frame(
+                &engine,
+                frame_id,
+                targets.active_frames.active_parent_id.clone(),
+                true,
+            );
+        }
+        let Some(parked) = targets.active_frames.parked.remove(frame_id) else {
+            return Err(BrowserBackendError::SelectionFailed {
+                reason: "native frame was not found; call listFrames to refresh topology".into(),
+            });
+        };
+        let NativeParkedFrame {
+            engine: parked_engine,
+            parent_id,
+        } = parked;
+        let mut active_engine = self.lock_engine_raw(BackendOperation::Contexts)?;
+        let old_engine = std::mem::replace(&mut *active_engine, parked_engine);
+        let old_frame_id = std::mem::replace(
+            &mut targets.active_frames.active_frame_id,
+            frame_id.to_owned(),
+        );
+        let old_parent_id =
+            std::mem::replace(&mut targets.active_frames.active_parent_id, parent_id);
+        targets.active_frames.discovered_generation = None;
+        targets.active_frames.parked.insert(
+            old_frame_id,
+            NativeParkedFrame {
+                engine: old_engine,
+                parent_id: old_parent_id,
+            },
+        );
+        project_native_frame(
+            &active_engine,
+            frame_id,
+            targets.active_frames.active_parent_id.clone(),
+            true,
+        )
     }
 
     pub async fn navigate_history(
@@ -781,6 +946,157 @@ fn project_native_target(
         opener_id,
         active,
     })
+}
+
+fn project_native_frame(
+    engine: &NativeEngine,
+    frame_id: &str,
+    parent_id: Option<String>,
+    active: bool,
+) -> Result<FrameInfo, BrowserBackendError> {
+    let context = engine.context().map_err(native_error)?;
+    Ok(FrameInfo {
+        id: frame_id.to_owned(),
+        parent_id,
+        url: redact_diagnostic_url(&context.url),
+        active,
+        out_of_process: false,
+    })
+}
+
+async fn reconcile_native_frames(
+    frames: &mut NativeFrameState,
+    engine: &NativeEngine,
+) -> Result<(), BrowserBackendError> {
+    let generation = engine.document_generation().map_err(native_error)?;
+    if frames.discovered_generation == Some(generation) {
+        return Ok(());
+    }
+    let active_frame_id = frames.active_frame_id.clone();
+    for frame_id in frames.descendant_ids(&active_frame_id) {
+        if let Some(mut frame) = frames.parked.remove(&frame_id)
+            && frame.engine.lifecycle() == super::native_engine::NativeLifecycleState::Running
+        {
+            let _ = frame.engine.close_async().await;
+        }
+    }
+    let target_id = engine.config().context_id.clone();
+    let mut created: BTreeMap<String, NativeParkedFrame> = BTreeMap::new();
+    let mut pending_parents = VecDeque::from([active_frame_id.clone()]);
+    while let Some(parent_id) = pending_parents.pop_front() {
+        let (sources, base_config) = if parent_id == active_frame_id {
+            (
+                engine.embedded_frame_sources().map_err(native_error)?,
+                engine.config().clone(),
+            )
+        } else {
+            let parent =
+                created
+                    .get(&parent_id)
+                    .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                        reason: "native frame parent disappeared during discovery".into(),
+                    })?;
+            (
+                parent
+                    .engine
+                    .embedded_frame_sources()
+                    .map_err(native_error)?,
+                parent.engine.config().clone(),
+            )
+        };
+        for (_node_index, source) in sources {
+            if frames.frame_count().saturating_add(created.len()) >= NATIVE_MAX_FRAMES {
+                return Err(BrowserBackendError::SelectionFailed {
+                    reason: format!("native frame limit reached ({NATIVE_MAX_FRAMES})"),
+                });
+            }
+            let frame_id = frames.next_frame_id(&target_id);
+            let frame_url = if parent_id == active_frame_id {
+                engine
+                    .resolve_embedded_frame_url(&source)
+                    .map_err(native_error)?
+            } else {
+                created
+                    .get(&parent_id)
+                    .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                        reason: "native frame parent disappeared during discovery".into(),
+                    })?
+                    .engine
+                    .resolve_embedded_frame_url(&source)
+                    .map_err(native_error)?
+            };
+            let mut child = NativeEngine::new(base_config.clone().with_initial_url(frame_url))
+                .map_err(native_error)?;
+            child.set_frame_id(frame_id.clone());
+            if let Err(error) = child.initialize_async().await {
+                let _ = child.close_async().await;
+                return Err(native_error(error));
+            }
+            pending_parents.push_back(frame_id.clone());
+            created.insert(
+                frame_id,
+                NativeParkedFrame {
+                    engine: child,
+                    parent_id: Some(parent_id.clone()),
+                },
+            );
+        }
+    }
+    frames.parked.extend(created);
+    frames.discovered_generation = Some(generation);
+    Ok(())
+}
+
+fn order_native_frames(frames: Vec<FrameInfo>) -> Vec<FrameInfo> {
+    fn visit(id: &str, remaining: &mut BTreeMap<String, FrameInfo>, ordered: &mut Vec<FrameInfo>) {
+        let Some(frame) = remaining.remove(id) else {
+            return;
+        };
+        let child_ids = remaining
+            .iter()
+            .filter(|(_, child)| child.parent_id.as_deref() == Some(id))
+            .map(|(child_id, _)| child_id.clone())
+            .collect::<Vec<_>>();
+        ordered.push(frame);
+        for child_id in child_ids {
+            visit(&child_id, remaining, ordered);
+        }
+    }
+
+    let mut remaining = frames
+        .into_iter()
+        .map(|frame| (frame.id.clone(), frame))
+        .collect::<BTreeMap<_, _>>();
+    let root_ids = remaining
+        .iter()
+        .filter(|(_, frame)| frame.parent_id.is_none())
+        .map(|(id, _)| id.clone())
+        .collect::<Vec<_>>();
+    let mut ordered = Vec::new();
+    for root_id in root_ids {
+        visit(&root_id, &mut remaining, &mut ordered);
+    }
+    let remaining_ids = remaining.keys().cloned().collect::<Vec<_>>();
+    for frame_id in remaining_ids {
+        visit(&frame_id, &mut remaining, &mut ordered);
+    }
+    ordered
+}
+
+async fn close_parked_frames(frames: &mut NativeFrameState) -> Result<(), BrowserBackendError> {
+    let parked = std::mem::take(&mut frames.parked);
+    let mut first_error = None;
+    for (_, mut frame) in parked {
+        if frame.engine.lifecycle() != super::native_engine::NativeLifecycleState::Running {
+            continue;
+        }
+        if let Err(error) = frame.engine.close_async().await.map_err(native_error)
+            && first_error.is_none()
+        {
+            first_error = Some(error);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
 }
 
 fn poisoned_lock_error(operation: BackendOperation, owner: &str) -> BrowserBackendError {

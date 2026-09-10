@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-144` locally. The versioned
+`native-engine-browser-145` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1331,6 +1331,18 @@ explicit active target. Runtime, CLI, and MCP route the lifecycle without
 Chromium or CDP, and session close drains parked and active engines. Child
 browsing contexts, popup-default-action creation, and frame-scoped operations
 remain the next topology gates rather than being inferred from target support.
+
+The completed native-engine-browser-145 batch is
+[native-engine-browser-145](tasks/native-engine-browser-145.md). Native
+targets now own a bounded nested frame tree with stable `target:main` and
+`target:frame-N` identities, parent linkage, `src`/`srcdoc` discovery, and
+initialized child engine owners. Explicit frame selection swaps complete
+document/realm/history state, so normal navigation, evidence, script, action,
+storage, prompt, download, wait, and capture routes operate on the selected
+frame; parent and sibling state remains parked and recoverable. Frame close
+and session close drain every child owner. CSP frame-source enforcement,
+frame event/load parity, shared frame scripting, popup creation, and complete
+browser topology remain open issue #40 gates.
 
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and

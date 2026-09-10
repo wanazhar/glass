@@ -609,7 +609,10 @@ have a bounded parent-owned HTTP(S) transfer path through the runtime, CLI,
 and MCP, with existing-directory file writes and completion evidence. Native
 target lifecycle now also supports up to 32 independently owned page targets
 with explicit selection, opener linkage, parked-target retention, and
-all-target session cleanup. It is not yet a browser-parity
+all-target session cleanup. Native target sessions now also discover bounded
+nested `iframe`/`frame` trees, including `srcdoc`, and route normal browser
+operations through the explicitly selected live frame owner while retaining
+parked parent and sibling state. It is not yet a browser-parity
 implementation or hostile-content security boundary. See the [native engine
 architecture](docs/architecture/native-engine.md).
 

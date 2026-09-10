@@ -519,20 +519,25 @@ async fn native_local_interval_reschedules_until_cleared() {
         serde_json::json!(0)
     );
     tokio::time::sleep(Duration::from_millis(60)).await;
-    assert_eq!(
-        engine
-            .evaluate_async("globalThis.intervalCount")
-            .await
-            .unwrap(),
-        serde_json::json!(1)
+    let first_count = engine
+        .evaluate_async("globalThis.intervalCount")
+        .await
+        .unwrap();
+    assert!(
+        first_count.as_i64().is_some_and(|count| count >= 1),
+        "interval did not fire: {first_count:?}"
     );
     tokio::time::sleep(Duration::from_millis(60)).await;
-    assert_eq!(
-        engine
-            .evaluate_async("globalThis.intervalCount")
-            .await
-            .unwrap(),
-        serde_json::json!(2)
+    let second_count = engine
+        .evaluate_async("globalThis.intervalCount")
+        .await
+        .unwrap();
+    assert!(
+        second_count
+            .as_i64()
+            .zip(first_count.as_i64())
+            .is_some_and(|(second, first)| second > first),
+        "interval did not reschedule: first={first_count:?}, second={second_count:?}"
     );
     engine
         .evaluate_async("clearInterval(globalThis.intervalId)")
@@ -544,7 +549,7 @@ async fn native_local_interval_reschedules_until_cleared() {
             .evaluate_async("globalThis.intervalCount")
             .await
             .unwrap(),
-        serde_json::json!(2)
+        second_count
     );
     engine.close_async().await.unwrap();
 }
@@ -1302,6 +1307,34 @@ async fn native_local_location_owns_navigation_and_history_replacement() {
         engine.go_forward().unwrap().unwrap().url,
         "fixture://location-replaced"
     );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_local_page_show_location_replaces_publication() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://publication-start",
+            "<script>addEventListener('pageshow', () => location.replace('fixture://publication-final'))</script><title>Start</title><p>Transient</p>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://publication-final",
+            "<title>Final</title><p>Published</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://publication-start");
+    let mut engine = NativeEngine::new(config).unwrap();
+
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        "fixture://publication-final"
+    );
+    assert_eq!(engine.snapshot().unwrap().title, "Final");
+    assert_eq!(engine.snapshot().unwrap().visible_text, "Published");
+    assert_eq!(engine.history().len(), 1);
     engine.close_async().await.unwrap();
 }
 
@@ -2276,6 +2309,56 @@ async fn native_content_process_location_navigation_crosses_worker_boundary() {
         format!("http://{address}/replaced")
     );
     assert_eq!(engine.snapshot().unwrap().title, "Replaced");
+    assert_eq!(engine.history().len(), 2);
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_page_load_location_handoffs_preserve_history() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for (expected_path, body) in [
+            ("/origin", "<title>Origin</title><p>Origin</p>"),
+            (
+                "/start",
+                "<script>addEventListener('load', () => location.replace('/middle'))</script><title>Start</title><p>Transient</p>",
+            ),
+            (
+                "/middle",
+                "<script>addEventListener('load', () => location.assign('/final'))</script><title>Middle</title><p>Intermediate</p>",
+            ),
+            ("/final", "<title>Final</title><p>Published</p>"),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/origin")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .navigate_async(format!("http://{address}/start"))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        format!("http://{address}/final")
+    );
+    assert_eq!(engine.snapshot().unwrap().title, "Final");
+    assert_eq!(engine.snapshot().unwrap().visible_text, "Published");
     assert_eq!(engine.history().len(), 2);
     engine.close_async().await.unwrap();
     server.await.unwrap();

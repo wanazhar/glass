@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-125` locally. The versioned
+`native-engine-browser-126` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1133,8 +1133,20 @@ JavaScript realm now exposes a frozen live `location` projection with bounded
 `assign()`, `replace()`, `reload()`, `href`, component setters, and
 `toString()`; local and content-process script commands route through the
 existing Rust loader/commit owner, and `replace()` updates the current history
-entry without adding one. Page-load/lifecycle re-entrant navigation, nested
-contexts, full Location/Web IDL parity, and complete URL parsing remain open.
+entry without adding one. At that checkpoint, publication/lifecycle
+re-entrant navigation, nested contexts, full Location/Web IDL parity, and
+complete URL parsing remained open; the publication subset is covered by the
+follow-up below.
+
+The completed bounded page-publication-navigation slice is
+[native-engine-browser-126](tasks/native-engine-browser-126.md). Initial local
+and content-process page-script phases, including `DOMContentLoaded`, `load`,
+and `pageshow` publication, can return one typed `location` handoff to the
+Rust navigation owner. Local and HTTP(S) content navigation follows bounded
+handoffs, preserves `assign()`/`replace()` history semantics, and rejects
+malformed or multiple handoffs. Outgoing `beforeunload`/`pagehide`/`unload`,
+`hashchange`, nested contexts, full Location/Web IDL parity, and complete URL
+parsing remain open.
 
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and

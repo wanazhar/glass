@@ -5,7 +5,7 @@
 //! capability has an explicit resource and security contract.
 
 use super::browsing_context::NATIVE_CONTEXT_ID;
-use super::config::{Viewport, validate_context_id};
+use super::config::{Viewport, validate_context_id, validate_url_text};
 use super::dom::{NativeDocument, NativePageScriptSource, NativePageScriptTiming};
 use super::error::NativeEngineError;
 use super::interaction::NativeEventKind;
@@ -155,6 +155,17 @@ pub(crate) enum NativeScriptCommand {
 pub(crate) struct NativeScriptEvaluation {
     pub(crate) value: serde_json::Value,
     pub(crate) commands: Vec<NativeScriptCommand>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct NativePageNavigation {
+    pub(crate) href: String,
+    pub(crate) replace_history: bool,
+}
+
+pub(crate) struct NativePageScriptResult {
+    pub(crate) pending_fetches: Vec<NativeScriptCommand>,
+    pub(crate) navigation: Option<NativePageNavigation>,
 }
 
 /// Origin-keyed page storage retained by the native runtime owner.
@@ -2334,8 +2345,8 @@ pub(crate) fn order_page_scripts(
 ///
 /// The caller owns the realm so local documents and the child content process
 /// can both retain globals and listeners after the document commit. Script
-/// navigation is intentionally rejected during parsing; navigation only has a
-/// defined owner after the document has been committed.
+/// navigation is returned as a typed handoff for the current navigation owner;
+/// it is never executed recursively inside the JavaScript evaluator.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_inline_scripts(
     document: &mut NativeDocument,
@@ -2346,7 +2357,7 @@ pub(crate) fn execute_inline_scripts(
     storage_state: &NativeWebStorageState,
     indexed_db_state: &NativeIndexedDbState,
     cookie: &str,
-) -> Result<(), NativeEngineError> {
+) -> Result<NativePageScriptResult, NativeEngineError> {
     let sources = document
         .page_script_sources(MAX_NATIVE_INLINE_SCRIPTS, MAX_NATIVE_SCRIPT_BYTES)
         .into_iter()
@@ -2379,7 +2390,6 @@ pub(crate) fn execute_inline_scripts(
         cookie,
         &[],
     )
-    .map(|_| ())
 }
 
 pub(crate) fn execute_page_scripts(
@@ -2393,7 +2403,7 @@ pub(crate) fn execute_page_scripts(
     indexed_db_state: &NativeIndexedDbState,
     cookie: &str,
     resource_load_nodes: &[u32],
-) -> Result<Vec<NativeScriptCommand>, NativeEngineError> {
+) -> Result<NativePageScriptResult, NativeEngineError> {
     if runtime.is_none() {
         *runtime = Some(NativeJavaScriptRuntime::new_with_context_id(
             NATIVE_CONTEXT_ID,
@@ -2434,6 +2444,7 @@ pub(crate) fn execute_page_scripts(
         .expect("page script runtime initialized")
         .set_module_sources(module_sources);
     let mut pending_fetches = Vec::new();
+    let mut navigation = None;
     for source in sources {
         let evaluation = {
             let script_runtime = runtime.as_ref().expect("page script runtime initialized");
@@ -2461,7 +2472,7 @@ pub(crate) fn execute_page_scripts(
             Err(error) if is_ignorable_page_script_error(&error) => continue,
             Err(error) => return Err(error),
         };
-        apply_page_script_evaluation(document, evaluation, &mut pending_fetches)?;
+        apply_page_script_evaluation(document, evaluation, &mut pending_fetches, &mut navigation)?;
     }
     for node_index in resource_load_nodes {
         let Some(event_source) = host_event_script(&[(*node_index, NativeEventKind::Load)])? else {
@@ -2477,7 +2488,7 @@ pub(crate) fn execute_page_scripts(
                 document_origin,
                 viewport,
             )?;
-        apply_page_script_evaluation(document, evaluation, &mut pending_fetches)?;
+        apply_page_script_evaluation(document, evaluation, &mut pending_fetches, &mut navigation)?;
     }
     runtime
         .as_mut()
@@ -2500,7 +2511,7 @@ pub(crate) fn execute_page_scripts(
                 document_origin,
                 viewport,
             )?;
-        apply_page_script_evaluation(document, evaluation, &mut pending_fetches)?;
+        apply_page_script_evaluation(document, evaluation, &mut pending_fetches, &mut navigation)?;
     }
     runtime
         .as_mut()
@@ -2523,7 +2534,7 @@ pub(crate) fn execute_page_scripts(
                 document_origin,
                 viewport,
             )?;
-        apply_page_script_evaluation(document, evaluation, &mut pending_fetches)?;
+        apply_page_script_evaluation(document, evaluation, &mut pending_fetches, &mut navigation)?;
     }
     runtime
         .as_mut()
@@ -2533,7 +2544,10 @@ pub(crate) fn execute_page_scripts(
         .as_mut()
         .expect("page script runtime initialized")
         .reset_timer_clock();
-    Ok(pending_fetches)
+    Ok(NativePageScriptResult {
+        pending_fetches,
+        navigation,
+    })
 }
 
 fn is_ignorable_page_script_error(error: &NativeEngineError) -> bool {
@@ -2549,13 +2563,25 @@ fn apply_page_script_evaluation(
     document: &mut NativeDocument,
     evaluation: NativeScriptEvaluation,
     pending_fetches: &mut Vec<NativeScriptCommand>,
+    navigation: &mut Option<NativePageNavigation>,
 ) -> Result<(), NativeEngineError> {
     let mut commands = Vec::new();
     for command in evaluation.commands {
-        if matches!(command, NativeScriptCommand::Fetch { .. }) {
-            pending_fetches.push(command);
-        } else {
-            commands.push(command);
+        match command {
+            command @ NativeScriptCommand::Fetch { .. } => pending_fetches.push(command),
+            NativeScriptCommand::Navigate { href, replace } => {
+                validate_url_text("page script navigation href", &href)?;
+                if navigation.is_some() {
+                    return Err(NativeEngineError::TargetNotActionable {
+                        reason: "one page-script batch cannot activate multiple navigations".into(),
+                    });
+                }
+                *navigation = Some(NativePageNavigation {
+                    href,
+                    replace_history: replace,
+                });
+            }
+            command => commands.push(command),
         }
     }
     if commands.is_empty() {

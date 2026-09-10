@@ -53,6 +53,7 @@ pub(crate) struct NativeContentLoad {
     pub(crate) url: String,
     pub(crate) origin: NativeOrigin,
     pub(crate) document: NativeDocumentWire,
+    pub(crate) navigation: Option<NativeContentNavigation>,
     pub(crate) storage_events: Vec<NativeStorageEvent>,
     pub(crate) indexed_db_changes: Vec<NativeIndexedDbChange>,
 }
@@ -795,12 +796,18 @@ fn decode_loaded_response(
             reason: "content process returned invalid final URL syntax".into(),
         })?;
     let origin = NativeOrigin::from_url(&origin_url)?;
+    let navigation = response
+        .get("navigation")
+        .filter(|value| !value.is_null())
+        .map(|value| decode_content_navigation(value, "decode content process load"))
+        .transpose()?;
     let storage_events = decode_storage_events(response, "decode content process load")?;
     let indexed_db_changes = decode_indexed_db_changes(response, "decode content process load")?;
     Ok(NativeContentLoad {
         url: url.into(),
         origin,
         document,
+        navigation,
         storage_events,
         indexed_db_changes,
     })
@@ -869,68 +876,7 @@ fn decode_mutation_payload(
     let navigation = response
         .get("navigation")
         .filter(|value| !value.is_null())
-        .map(|value| {
-            let node_index = value
-                .get("node_index")
-                .and_then(Value::as_u64)
-                .and_then(|value| u32::try_from(value).ok())
-                .ok_or_else(|| NativeEngineError::Worker {
-                    operation: operation.into(),
-                    reason: "content process returned an invalid navigation node".into(),
-                })?;
-            let href = value.get("href").and_then(Value::as_str).ok_or_else(|| {
-                NativeEngineError::Worker {
-                    operation: operation.into(),
-                    reason: "content process returned an invalid navigation href".into(),
-                }
-            })?;
-            validate_url_text("content process navigation href", href)?;
-            let submitter_node_index = match value.get("submitter_node_index") {
-                None | Some(Value::Null) => None,
-                Some(value) => Some(
-                    value
-                        .as_u64()
-                        .and_then(|value| u32::try_from(value).ok())
-                        .ok_or_else(|| NativeEngineError::Worker {
-                            operation: operation.into(),
-                            reason: "content process returned an invalid submitter node".into(),
-                        })?,
-                ),
-            };
-            let location = match value.get("location") {
-                None => false,
-                Some(value) => value.as_bool().ok_or_else(|| NativeEngineError::Worker {
-                    operation: operation.into(),
-                    reason: "content process returned an invalid location navigation flag".into(),
-                })?,
-            };
-            let replace_history = match value.get("replace_history") {
-                None => false,
-                Some(value) => value.as_bool().ok_or_else(|| NativeEngineError::Worker {
-                    operation: operation.into(),
-                    reason: "content process returned an invalid history replacement flag".into(),
-                })?,
-            };
-            if location && (node_index != 0 || submitter_node_index.is_some()) {
-                return Err(NativeEngineError::Worker {
-                    operation: operation.into(),
-                    reason: "location navigation carried a DOM target".into(),
-                });
-            }
-            if replace_history && !location {
-                return Err(NativeEngineError::Worker {
-                    operation: operation.into(),
-                    reason: "history replacement was returned without location navigation".into(),
-                });
-            }
-            Ok(NativeContentNavigation {
-                node_index,
-                href: href.to_owned(),
-                submitter_node_index,
-                location,
-                replace_history,
-            })
-        })
+        .map(|value| decode_content_navigation(value, operation))
         .transpose()?;
     let storage_events = decode_storage_events(response, operation)?;
     let indexed_db_changes = decode_indexed_db_changes(response, operation)?;
@@ -944,6 +890,74 @@ fn decode_mutation_payload(
             .unwrap_or(true),
         storage_events,
         indexed_db_changes,
+    })
+}
+
+fn decode_content_navigation(
+    value: &Value,
+    operation: &str,
+) -> Result<NativeContentNavigation, NativeEngineError> {
+    let node_index = value
+        .get("node_index")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| NativeEngineError::Worker {
+            operation: operation.into(),
+            reason: "content process returned an invalid navigation node".into(),
+        })?;
+    let href =
+        value
+            .get("href")
+            .and_then(Value::as_str)
+            .ok_or_else(|| NativeEngineError::Worker {
+                operation: operation.into(),
+                reason: "content process returned an invalid navigation href".into(),
+            })?;
+    validate_url_text("content process navigation href", href)?;
+    let submitter_node_index = match value.get("submitter_node_index") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(
+            value
+                .as_u64()
+                .and_then(|value| u32::try_from(value).ok())
+                .ok_or_else(|| NativeEngineError::Worker {
+                    operation: operation.into(),
+                    reason: "content process returned an invalid submitter node".into(),
+                })?,
+        ),
+    };
+    let location = match value.get("location") {
+        None => false,
+        Some(value) => value.as_bool().ok_or_else(|| NativeEngineError::Worker {
+            operation: operation.into(),
+            reason: "content process returned an invalid location navigation flag".into(),
+        })?,
+    };
+    let replace_history = match value.get("replace_history") {
+        None => false,
+        Some(value) => value.as_bool().ok_or_else(|| NativeEngineError::Worker {
+            operation: operation.into(),
+            reason: "content process returned an invalid history replacement flag".into(),
+        })?,
+    };
+    if location && (node_index != 0 || submitter_node_index.is_some()) {
+        return Err(NativeEngineError::Worker {
+            operation: operation.into(),
+            reason: "location navigation carried a DOM target".into(),
+        });
+    }
+    if replace_history && !location {
+        return Err(NativeEngineError::Worker {
+            operation: operation.into(),
+            reason: "history replacement was returned without location navigation".into(),
+        });
+    }
+    Ok(NativeContentNavigation {
+        node_index,
+        href: href.to_owned(),
+        submitter_node_index,
+        location,
+        replace_history,
     })
 }
 
@@ -1445,7 +1459,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             .map(|loader| loader.document_cookie(&resource.url))
                             .transpose()?
                             .unwrap_or_default();
-                        let prepared = match execute_page_scripts(
+                        let page_scripts = execute_page_scripts(
                             &mut parsed,
                             &mut script_runtime,
                             &script_sources,
@@ -1456,9 +1470,24 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             &indexed_db_state,
                             &document_cookie,
                             &resource_load_nodes,
-                        ) {
-                            Ok(pending_fetches) if pending_fetches.is_empty() => Ok(parsed),
-                            Ok(pending_fetches) => {
+                        );
+                        let prepared = match page_scripts {
+                            Ok(page_scripts) if page_scripts.navigation.is_some() => {
+                                let navigation = page_scripts.navigation.map(|navigation| {
+                                    NativeContentNavigation {
+                                        node_index: 0,
+                                        href: navigation.href,
+                                        submitter_node_index: None,
+                                        location: true,
+                                        replace_history: navigation.replace_history,
+                                    }
+                                });
+                                Ok((parsed, navigation))
+                            }
+                            Ok(page_scripts) if page_scripts.pending_fetches.is_empty() => {
+                                Ok((parsed, None))
+                            }
+                            Ok(page_scripts) => {
                                 match (script_runtime.as_ref(), resource_loader.as_mut()) {
                                     (Some(runtime), Some(loader)) => {
                                         match resolve_script_fetches(
@@ -1470,19 +1499,17 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                             loaded_viewport,
                                             NativeScriptEvaluation {
                                                 value: Value::Null,
-                                                commands: pending_fetches,
+                                                commands: page_scripts.pending_fetches,
                                             },
                                         )
                                         .await
                                         {
-                                            Ok((next, mutation)) if mutation.navigation.is_none() => {
-                                                Ok(next)
+                                            Ok((next, mutation))
+                                                if mutation.navigation.is_none() =>
+                                            {
+                                                Ok((next, None))
                                             }
-                                            Ok((_next, _mutation)) => Err(
-                                                NativeEngineError::TargetNotActionable {
-                                                    reason: "page-load fetch callback navigation is not available".into(),
-                                                },
-                                            ),
+                                            Ok((next, mutation)) => Ok((next, mutation.navigation)),
                                             Err(error) => Err(error),
                                         }
                                     }
@@ -1495,7 +1522,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             Err(error) => Err(error),
                         };
                         match prepared {
-                            Ok(parsed) => {
+                            Ok((parsed, navigation)) => {
                                 if let Some(runtime) = script_runtime.as_ref() {
                                     storage_state = runtime.storage_state();
                                     indexed_db_state.replace_origin(
@@ -1513,6 +1540,13 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                     "kind": "loaded",
                                     "id": id,
                                     "url": resource.url,
+                                    "navigation": navigation.as_ref().map(|navigation| json!({
+                                        "node_index": navigation.node_index,
+                                        "href": navigation.href,
+                                        "submitter_node_index": navigation.submitter_node_index,
+                                        "location": navigation.location,
+                                        "replace_history": navigation.replace_history,
+                                    })),
                                     "document_base64": base64::engine::general_purpose::STANDARD
                                         .encode(serde_json::to_vec(&document_wire).unwrap_or_default()),
                                 })
@@ -2059,6 +2093,13 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 "node_index": event.node_index,
                                 "kind": event_kind_text(event.kind),
                             })).collect::<Vec<_>>(),
+                            "navigation": mutation.navigation.as_ref().map(|navigation| json!({
+                                "node_index": navigation.node_index,
+                                "href": navigation.href,
+                                "submitter_node_index": navigation.submitter_node_index,
+                                "location": navigation.location,
+                                "replace_history": navigation.replace_history,
+                            })),
                         })
                     }
                     Err(error) => content_error_response(id, error),
@@ -2163,6 +2204,13 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 "node_index": event.node_index,
                                 "kind": event_kind_text(event.kind),
                             })).collect::<Vec<_>>(),
+                            "navigation": mutation.navigation.as_ref().map(|navigation| json!({
+                                "node_index": navigation.node_index,
+                                "href": navigation.href,
+                                "submitter_node_index": navigation.submitter_node_index,
+                                "location": navigation.location,
+                                "replace_history": navigation.replace_history,
+                            })),
                         })
                     }
                     Err(error) => content_error_response(id, error),
@@ -2247,6 +2295,13 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 "node_index": event.node_index,
                                 "kind": event_kind_text(event.kind),
                             })).collect::<Vec<_>>(),
+                            "navigation": mutation.navigation.as_ref().map(|navigation| json!({
+                                "node_index": navigation.node_index,
+                                "href": navigation.href,
+                                "submitter_node_index": navigation.submitter_node_index,
+                                "location": navigation.location,
+                                "replace_history": navigation.replace_history,
+                            })),
                         })
                     }
                     Err(error) => content_error_response(id, error),
@@ -2593,6 +2648,7 @@ async fn load_content_resource(
             url: resource.url,
             origin: resource.origin,
             document: wire,
+            navigation: None,
             storage_events: Vec::new(),
             indexed_db_changes: Vec::new(),
         },
@@ -3113,6 +3169,34 @@ fn mutate_key_with_event_bridge(
     Ok((next, mutation))
 }
 
+fn split_location_navigation(
+    commands: Vec<NativeScriptCommand>,
+) -> Result<(Vec<NativeScriptCommand>, Option<NativeContentNavigation>), NativeEngineError> {
+    let mut retained = Vec::new();
+    let mut navigation = None;
+    for command in commands {
+        match command {
+            NativeScriptCommand::Navigate { href, replace } => {
+                validate_url_text("script location href", &href)?;
+                if navigation.is_some() {
+                    return Err(NativeEngineError::TargetNotActionable {
+                        reason: "one lifecycle event cannot activate multiple navigations".into(),
+                    });
+                }
+                navigation = Some(NativeContentNavigation {
+                    node_index: 0,
+                    href,
+                    submitter_node_index: None,
+                    location: true,
+                    replace_history: replace,
+                });
+            }
+            command => retained.push(command),
+        }
+    }
+    Ok((retained, navigation))
+}
+
 fn mutate_before_unload(
     current: &NativeDocument,
     runtime: &NativeJavaScriptRuntime,
@@ -3142,8 +3226,9 @@ fn mutate_before_unload(
         node_index: 0,
         kind: NativeEventKind::BeforeUnload,
     }];
+    let (commands, navigation) = split_location_navigation(evaluation.commands)?;
     events.extend(
-        next.apply_script_commands(&evaluation.commands)?
+        next.apply_script_commands(&commands)?
             .into_iter()
             .map(|(node, kind)| NativeContentEvent {
                 node_index: node.index(),
@@ -3162,7 +3247,7 @@ fn mutate_before_unload(
         NativeContentMutation {
             document: next.to_content_wire(),
             events,
-            navigation: None,
+            navigation,
             allowed,
             storage_events: Vec::new(),
             indexed_db_changes: Vec::new(),
@@ -3201,7 +3286,8 @@ fn mutate_lifecycle_events(
     })?;
     let evaluation = runtime.evaluate(&source, current, document_url, document_origin, viewport)?;
     let mut next = current.clone();
-    let effects = next.apply_script_commands(&evaluation.commands)?;
+    let (commands, navigation) = split_location_navigation(evaluation.commands)?;
+    let effects = next.apply_script_commands(&commands)?;
     let mut events = kinds
         .iter()
         .copied()
@@ -3226,7 +3312,7 @@ fn mutate_lifecycle_events(
         NativeContentMutation {
             document: next.to_content_wire(),
             events,
-            navigation: None,
+            navigation,
             allowed: true,
             storage_events: Vec::new(),
             indexed_db_changes: Vec::new(),
@@ -3250,12 +3336,13 @@ fn mutate_hash_change(
     })?;
     let evaluation = runtime.evaluate(&source, current, new_url, document_origin, viewport)?;
     let mut next = current.clone();
+    let (commands, navigation) = split_location_navigation(evaluation.commands)?;
     let mut events = vec![NativeContentEvent {
         node_index: 0,
         kind: NativeEventKind::HashChange,
     }];
     events.extend(
-        next.apply_script_commands(&evaluation.commands)?
+        next.apply_script_commands(&commands)?
             .into_iter()
             .map(|(node, kind)| NativeContentEvent {
                 node_index: node.index(),
@@ -3274,7 +3361,7 @@ fn mutate_hash_change(
         NativeContentMutation {
             document: next.to_content_wire(),
             events,
-            navigation: None,
+            navigation,
             allowed: true,
             storage_events: Vec::new(),
             indexed_db_changes: Vec::new(),

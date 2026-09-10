@@ -368,7 +368,7 @@ async fn dispatch_alternative_runtime(cli: &Cli, policy: &mut BrowserPolicy) -> 
     }
     validate_alternative_runtime_command(command, cli.browser_runtime)?;
 
-    if let Commands::Navigate { url, .. } = command {
+    if let Commands::Navigate { url, .. } | Commands::NewTarget { url } = command {
         if native {
             #[cfg(feature = "native-engine")]
             validate_native_navigation_url(url)?;
@@ -547,7 +547,9 @@ fn validate_alternative_runtime_command(
             Ok(())
         }
         Commands::ArchiveTargets { .. }
+        | Commands::NewTarget { .. }
         | Commands::SelectTarget { .. }
+        | Commands::CloseTarget { .. }
         | Commands::Frames
         | Commands::SelectFrame { .. }
             if native =>
@@ -1015,6 +1017,15 @@ async fn run_alternative_runtime_command(
             #[cfg(not(feature = "native-engine"))]
             unreachable!("native runtime is feature-gated")
         }
+        Commands::NewTarget { url } if session.runtime().is_native() => {
+            #[cfg(feature = "native-engine")]
+            {
+                let url = crate::browser::session::normalize_url(url);
+                print_json_mode(&session.native_create_target(&url).await?, response_mode)
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
+        }
         Commands::ArchiveTargets { output } if session.runtime().is_native() => {
             #[cfg(feature = "native-engine")]
             {
@@ -1048,6 +1059,15 @@ async fn run_alternative_runtime_command(
             #[cfg(feature = "native-engine")]
             {
                 print_json_mode(&session.native_select_target(id).await?, response_mode)
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
+        }
+        Commands::CloseTarget { id } if session.runtime().is_native() => {
+            #[cfg(feature = "native-engine")]
+            {
+                session.native_close_target(id).await?;
+                print_json_mode(&serde_json::json!({"closed": id}), response_mode)
             }
             #[cfg(not(feature = "native-engine"))]
             unreachable!("native runtime is feature-gated")

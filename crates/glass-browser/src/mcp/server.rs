@@ -3741,8 +3741,17 @@ async fn call_native_tool(
         ToolInvocation::ListTargets => {
             serialized_result_mode(&session.native_list_targets().await?, response_mode)
         }
+        ToolInvocation::CreateTarget { url } => {
+            let url = crate::browser::session::normalize_url(url);
+            policy.require_url(&url).await?;
+            serialized_result_mode(&session.native_create_target(&url).await?, response_mode)
+        }
         ToolInvocation::SelectTarget { id } => {
             serialized_result_mode(&session.native_select_target(id).await?, response_mode)
+        }
+        ToolInvocation::CloseTarget { id } => {
+            session.native_close_target(id).await?;
+            serialized_result_mode(&json!({"closed": id}), response_mode)
         }
         ToolInvocation::ListFrames => {
             serialized_result_mode(&session.native_list_frames().await?, response_mode)
@@ -6339,6 +6348,118 @@ mod tests {
         .unwrap();
         assert_eq!(javascript["last_state"], "true");
         assert!(native_session.is_some());
+        native_session.take().unwrap().close().await.unwrap();
+    }
+
+    #[cfg(feature = "native-engine")]
+    #[tokio::test]
+    async fn native_mcp_routes_target_lifecycle_without_chromium() {
+        let mut session = None;
+        let mut native_session = None;
+        let options = SessionOptions::default();
+        let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
+        let first = invoke_native_mcp_tool(
+            "navigate",
+            json!({"url": "data:text/html,%3Ctitle%3EFirst%3C%2Ftitle%3E%3Cp%3Efirst%3C%2Fp%3E"}),
+            &mut session,
+            &mut native_session,
+            &options,
+            &policy,
+        )
+        .await;
+        assert!(first.error.is_none());
+
+        let created = invoke_native_mcp_tool(
+            "createTarget",
+            json!({"url": "data:text/html,%3Ctitle%3ESecond%3C%2Ftitle%3E%3Cp%3Esecond%3C%2Fp%3E"}),
+            &mut session,
+            &mut native_session,
+            &options,
+            &policy,
+        )
+        .await;
+        assert!(created.error.is_none());
+        let created: Value = serde_json::from_str(
+            created.result.unwrap()["content"][0]["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(created["id"], "native-target-1");
+        assert_eq!(created["title"], "Second");
+        assert_eq!(created["active"], false);
+        assert_eq!(created["opener_id"], "native-context");
+
+        let selected = invoke_native_mcp_tool(
+            "selectTarget",
+            json!({"id": "native-target-1"}),
+            &mut session,
+            &mut native_session,
+            &options,
+            &policy,
+        )
+        .await;
+        assert!(selected.error.is_none());
+        let selected: Value = serde_json::from_str(
+            selected.result.unwrap()["content"][0]["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(selected["active"], true);
+
+        let second_text = invoke_native_mcp_tool(
+            "getText",
+            json!({}),
+            &mut session,
+            &mut native_session,
+            &options,
+            &policy,
+        )
+        .await;
+        assert!(second_text.error.is_none());
+        assert_eq!(second_text.result.unwrap()["content"][0]["text"], "second");
+
+        let restored = invoke_native_mcp_tool(
+            "selectTarget",
+            json!({"id": "native-context"}),
+            &mut session,
+            &mut native_session,
+            &options,
+            &policy,
+        )
+        .await;
+        assert!(restored.error.is_none());
+
+        let closed = invoke_native_mcp_tool(
+            "closeTarget",
+            json!({"id": "native-target-1"}),
+            &mut session,
+            &mut native_session,
+            &options,
+            &policy,
+        )
+        .await;
+        assert!(closed.error.is_none());
+
+        let targets = invoke_native_mcp_tool(
+            "listTargets",
+            json!({}),
+            &mut session,
+            &mut native_session,
+            &options,
+            &policy,
+        )
+        .await;
+        assert!(targets.error.is_none());
+        let targets: Value = serde_json::from_str(
+            targets.result.unwrap()["content"][0]["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(targets["result"].as_array().unwrap().len(), 1);
+        assert_eq!(targets["result"][0]["id"], "native-context");
         native_session.take().unwrap().close().await.unwrap();
     }
 

@@ -2988,6 +2988,16 @@ the text-only selection API. Popup/new-target behavior, child frames,
 chooser/programmatic downloads, per-resource events, universal workflow
 parity, and native production promotion remain open.
 
+The completed native-engine-browser-144 batch replaces the native backend's
+single-engine topology with a bounded registry of up to 32 independently
+owned page engines. Stable target IDs, opener linkage, explicit selection,
+parked-target retention, and selected/parked close operations preserve each
+target's document, history, content-worker, request, prompt, download, and
+profile-reader state. Runtime, CLI, and MCP target lifecycle calls use the
+same native owner, and session close drains all target engines. Child browsing
+contexts, popup-default-action creation, and frame-scoped operations remain
+open topology gates; this batch does not claim browser-wide frame parity.
+
 The completed native-engine-browser-133 batch extends the native target seam
 with a side-effect-free preflight result. The engine resolves the current
 semantic locator and derives viewport geometry and actionability under the

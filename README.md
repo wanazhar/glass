@@ -606,8 +606,10 @@ diagnostics for unsupported CSS without raw stylesheet echo. A
 `--browser-runtime native` one-shot path; its default CLI configuration does
 not register fixture files or contact endpoints. Native anchor downloads now
 have a bounded parent-owned HTTP(S) transfer path through the runtime, CLI,
-and MCP, with existing-directory file writes and completion evidence. It is
-not yet a browser-parity
+and MCP, with existing-directory file writes and completion evidence. Native
+target lifecycle now also supports up to 32 independently owned page targets
+with explicit selection, opener linkage, parked-target retention, and
+all-target session cleanup. It is not yet a browser-parity
 implementation or hostile-content security boundary. See the [native engine
 architecture](docs/architecture/native-engine.md).
 

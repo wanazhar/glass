@@ -408,6 +408,83 @@ async fn native_runtime_session_exposes_agent_inspection_and_target_discovery() 
 }
 
 #[tokio::test]
+async fn native_runtime_session_preserves_independent_target_state_and_lifecycle() {
+    let first_url = "data:text/html,%3Ctitle%3EFirst%3C%2Ftitle%3E%3Cp%3Efirst%20target%3C%2Fp%3E";
+    let second_url =
+        "data:text/html,%3Ctitle%3ESecond%3C%2Ftitle%3E%3Cp%3Esecond%20target%3C%2Fp%3E";
+    let third_url = "data:text/html,%3Ctitle%3EThird%3C%2Ftitle%3E%3Cp%3Ethird%20target%3C%2Fp%3E";
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(first_url),
+    )
+    .await
+    .unwrap();
+
+    let initial_targets = session.native_list_targets().await.unwrap();
+    assert_eq!(initial_targets.len(), 1);
+    assert_eq!(initial_targets[0].id, "native-context");
+    assert!(initial_targets[0].active);
+
+    let second = session.native_create_target(second_url).await.unwrap();
+    assert_eq!(second.id, "native-target-1");
+    assert!(!second.active);
+    assert_eq!(second.opener_id.as_deref(), Some("native-context"));
+    assert_eq!(second.title, "Second");
+
+    let targets = session.native_list_targets().await.unwrap();
+    assert_eq!(targets.len(), 2);
+    assert_eq!(targets[0].id, "native-context");
+    assert!(targets[0].active);
+    assert_eq!(targets[1].id, "native-target-1");
+    assert!(!targets[1].active);
+
+    let selected = session.native_select_target(&second.id).await.unwrap();
+    assert_eq!(selected.id, second.id);
+    assert!(selected.active);
+    assert_eq!(
+        session.contexts().await.unwrap()[0].context_id,
+        "native-target-1"
+    );
+    assert_eq!(
+        session
+            .evidence(EvidenceLevel::Compact)
+            .await
+            .unwrap()
+            .title,
+        "Second"
+    );
+
+    session
+        .native_select_target("native-context")
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .evidence(EvidenceLevel::Compact)
+            .await
+            .unwrap()
+            .title,
+        "First"
+    );
+
+    let third = session.native_create_target(third_url).await.unwrap();
+    session.native_close_target(&third.id).await.unwrap();
+    assert_eq!(session.native_list_targets().await.unwrap().len(), 2);
+
+    session.native_close_target(&second.id).await.unwrap();
+    let remaining = session.native_list_targets().await.unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].id, "native-context");
+    assert!(remaining[0].active);
+
+    session.native_close_target("native-context").await.unwrap();
+    assert!(session.native_list_targets().await.unwrap().is_empty());
+    assert!(session.contexts().await.is_err());
+    assert!(session.native_list_frames().await.is_err());
+
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_async_history_traversal_uses_the_runtime_owner() {
     let config = NativeEngineConfig::default()
         .with_fixture("fixture://history-async", "<p>First</p>")

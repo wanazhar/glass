@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-143` locally. The versioned
+`native-engine-browser-144` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1320,6 +1320,17 @@ cancel/list bookkeeping. Non-download external links retain the 142
 asynchronous navigation path. Popup/new-target behavior, child-frame
 ownership, chooser/programmatic downloads, universal workflow parity, and
 native production promotion remain issue #40 work.
+
+The completed native-engine-browser-144 batch is
+[native-engine-browser-144](tasks/native-engine-browser-144.md). Native
+sessions now own a bounded registry of up to 32 independent page engines.
+Create, select, list, and close operations preserve target-local document,
+history, content-worker, request, prompt, and download state; projections
+include stable IDs, opener linkage, redacted URL/title evidence, and one
+explicit active target. Runtime, CLI, and MCP route the lifecycle without
+Chromium or CDP, and session close drains parked and active engines. Child
+browsing contexts, popup-default-action creation, and frame-scoped operations
+remain the next topology gates rather than being inferred from target support.
 
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and

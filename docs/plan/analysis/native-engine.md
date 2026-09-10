@@ -3008,7 +3008,19 @@ script, action, storage, prompt, download, wait, capture, and semantic
 inspection therefore operate on the selected frame. Frame close and target
 close drain parked owners. Native frames remain internal (`out_of_process` is
 false); CSP frame directives, frame lifecycle events, shared frame scripting,
-postMessage, popup creation, and complete browser topology remain open.
+postMessage, and complete browser topology remain open.
+
+The completed native-engine-browser-146 batch adds the first default-action
+popup owner. An allowed local or content-process anchor click with
+`target="_blank"` now remains on the opener, queues a bounded popup intent, and
+materializes one initialized parked native page target with opener linkage.
+The same rule is applied to page-script `element.click()` activation. Generic
+native action/script dispatch drains that owner queue, while the runtime, CLI,
+and MCP `clickExpectPopup` path returns revision-safe causal evidence and
+`popupOpened` observes the live target registry. Download attributes retain
+precedence. Named browsing contexts, `window.open`, popup permission/geometry,
+shared opener scripting, and complete browser topology remain open issue #40
+gates.
 
 The completed native-engine-browser-133 batch extends the native target seam
 with a side-effect-free preflight result. The engine resolves the current

@@ -3452,6 +3452,15 @@ async fn call_native_tool(
             )
             .await
         }
+        ToolInvocation::ClickExpectPopup {
+            target,
+            expected_revision,
+        } => serialized_result_mode(
+            &session
+                .native_click_expect_popup(target.as_ref(), expected_revision)
+                .await?,
+            response_mode,
+        ),
         ToolInvocation::Preflight { target, action } => {
             let action = match action {
                 PreflightAction::Click => {

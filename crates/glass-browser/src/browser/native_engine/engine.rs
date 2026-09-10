@@ -49,6 +49,7 @@ use tokio::io::AsyncWriteExt;
 const MAX_NATIVE_PAGE_NAVIGATION_HANDOFFS: usize = 8;
 const MAX_NATIVE_IN_FLIGHT_REQUESTS: usize = 64;
 const MAX_NATIVE_PENDING_DOWNLOADS: usize = 8;
+const MAX_NATIVE_PENDING_POPUPS: usize = 8;
 const MAX_NATIVE_COMPLETED_DOWNLOAD_IDS: usize = 8;
 const MAX_NATIVE_DOWNLOAD_FILENAME_BYTES: usize = 128;
 const MAX_NATIVE_DOWNLOAD_DEADLINE: Duration = Duration::from_secs(30);
@@ -67,6 +68,11 @@ struct NativePendingDownload {
     suggested_filename: String,
     target_id: String,
     frame_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativePendingPopup {
+    pub(crate) url: String,
 }
 
 impl NativeRequestLedger {
@@ -335,6 +341,7 @@ pub struct NativeEngine {
     pending_dialogs: VecDeque<PendingDialog>,
     request_ledger: NativeRequestLedger,
     pending_downloads: VecDeque<NativePendingDownload>,
+    pending_popups: VecDeque<NativePendingPopup>,
     completed_download_ids: VecDeque<String>,
     completed_downloads: u64,
     next_download_id: u64,
@@ -400,6 +407,7 @@ impl NativeEngine {
             pending_dialogs: VecDeque::new(),
             request_ledger: NativeRequestLedger::new(),
             pending_downloads: VecDeque::new(),
+            pending_popups: VecDeque::new(),
             completed_download_ids: VecDeque::new(),
             completed_downloads: 0,
             next_download_id: 1,
@@ -1472,6 +1480,26 @@ impl NativeEngine {
         Ok(())
     }
 
+    fn queue_popup(&mut self, url: String) -> Result<(), NativeEngineError> {
+        if self.pending_popups.len() >= MAX_NATIVE_PENDING_POPUPS {
+            return Err(NativeEngineError::limit(
+                "native pending popups",
+                MAX_NATIVE_PENDING_POPUPS,
+                self.pending_popups.len().saturating_add(1),
+            ));
+        }
+        validate_url_text("popup target URL", &url)?;
+        self.pending_popups.push_back(NativePendingPopup { url });
+        Ok(())
+    }
+
+    pub(crate) fn take_pending_popup_urls(&mut self) -> Vec<String> {
+        self.pending_popups
+            .drain(..)
+            .map(|popup| popup.url)
+            .collect()
+    }
+
     /// Resolve one queued JavaScript dialog without creating a browser or
     /// routing through CDP. The page realm's bounded alert/confirm/prompt
     /// result is deterministic for the current script batch; resolution
@@ -1679,6 +1707,9 @@ impl NativeEngine {
                 if let Some(href) = self.document.link_href(id).map(str::to_owned)
                     && !href.is_empty()
                 {
+                    if self.javascript.is_some() {
+                        return self.action_local_click_with_event_preflight(id);
+                    }
                     return self.activate_link(id, &href, false);
                 }
                 if let Some(form_id) = self.document.submit_control_form(id)
@@ -2159,26 +2190,32 @@ impl NativeEngine {
         self.revision = next_revision;
         self.history.update_current_scroll(self.scroll_offset);
         self.record_effects(events);
-        let navigation = navigation
-            .map(|navigation| match navigation {
-                ScriptNavigationTarget::Link { href, .. } => self
-                    .resolve_link_href(&href)
-                    .map(NativeNavigationRequest::get),
-                ScriptNavigationTarget::Form {
-                    form_id, submitter, ..
-                } => self
-                    .document
-                    .form_submission_request_with_submitter(form_id, &self.url, submitter),
-                ScriptNavigationTarget::Location {
-                    href,
-                    replace_history,
-                } => {
-                    let mut request = NativeNavigationRequest::get(self.resolve_link_href(&href)?);
-                    request.replace_history = replace_history;
-                    Ok(request)
+        let navigation = match navigation {
+            Some(ScriptNavigationTarget::Link { href, popup }) => {
+                let target_url = self.resolve_link_href(&href)?;
+                if popup {
+                    self.queue_popup(target_url)?;
+                    None
+                } else {
+                    Some(NativeNavigationRequest::get(target_url))
                 }
-            })
-            .transpose()?;
+            }
+            Some(ScriptNavigationTarget::Form {
+                form_id, submitter, ..
+            }) => Some(
+                self.document
+                    .form_submission_request_with_submitter(form_id, &self.url, submitter)?,
+            ),
+            Some(ScriptNavigationTarget::Location {
+                href,
+                replace_history,
+            }) => {
+                let mut request = NativeNavigationRequest::get(self.resolve_link_href(&href)?);
+                request.replace_history = replace_history;
+                Some(request)
+            }
+            None => None,
+        };
         Ok(navigation)
     }
 
@@ -2195,6 +2232,7 @@ impl NativeEngine {
                     if let Some(href) = document.link_href(id).filter(|href| !href.is_empty()) {
                         Some(ScriptNavigationTarget::Link {
                             href: href.to_owned(),
+                            popup: document.link_opens_new_target(id),
                         })
                     } else if let Some(form_id) = document.submit_control_form(id) {
                         document.form_submission_request_with_submitter(
@@ -2305,6 +2343,10 @@ impl NativeEngine {
         let target_url = self.resolve_link_href(&request.url)?;
         if let Some(download_attribute) = download_attribute {
             self.queue_download(target_url, &download_attribute)?;
+            return Ok(());
+        }
+        if self.document.link_opens_new_target(id) {
+            self.queue_popup(target_url)?;
             return Ok(());
         }
         request.url = target_url.clone();
@@ -2824,9 +2866,12 @@ impl NativeEngine {
             })?;
         events.extend(document.apply_script_commands(&click_evaluation.commands)?);
         let mut navigation: Option<(NativeNodeId, NativeNodeId)> = None;
+        let mut link_navigation = None;
         if click_allowed {
             events.extend(document.apply_click(id)?);
-            if let Some(form_id) = document.submit_control_form(id) {
+            if let Some(href) = document.link_href(id).filter(|href| !href.is_empty()) {
+                link_navigation = Some(href.to_owned());
+            } else if let Some(form_id) = document.submit_control_form(id) {
                 let invalid = document.invalid_form_controls(form_id, Some(id))?;
                 if invalid.is_empty() {
                     let submit_evaluation = self
@@ -2881,6 +2926,9 @@ impl NativeEngine {
         self.revision = next_revision;
         self.history.update_current_scroll(self.scroll_offset);
         self.record_effects(events);
+        if let Some(href) = link_navigation {
+            return self.activate_link(id, &href, true);
+        }
         if let Some((form_id, submitter)) = navigation {
             let request = self.document.form_submission_request_with_submitter(
                 form_id,
@@ -3234,6 +3282,23 @@ impl NativeEngine {
             self.history.update_current_scroll(self.scroll_offset);
             self.record_effects(events);
             self.queue_download(target_url, &download_attribute)?;
+            return Ok(NativeActionResult {
+                revision,
+                accepted: true,
+            });
+        }
+        if self.document.link_opens_new_target(id) {
+            let events = if click_already_applied {
+                Vec::new()
+            } else {
+                self.document.apply_click(id)?
+            };
+            let revision = self.next_revision()?;
+            self.document.set_revision(revision);
+            self.revision = revision;
+            self.history.update_current_scroll(self.scroll_offset);
+            self.record_effects(events);
+            self.queue_popup(target_url)?;
             return Ok(NativeActionResult {
                 revision,
                 accepted: true,
@@ -4281,6 +4346,7 @@ async fn write_native_download(
 enum ScriptNavigationTarget {
     Link {
         href: String,
+        popup: bool,
     },
     Form {
         form_id: NativeNodeId,

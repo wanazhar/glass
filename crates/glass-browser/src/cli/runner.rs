@@ -539,6 +539,7 @@ fn validate_alternative_runtime_command(
         Commands::Evaluate { .. } if native => Ok(()),
         Commands::Preflight { .. } if native => Ok(()),
         Commands::InspectPage | Commands::FindTarget { .. } if native => Ok(()),
+        Commands::ClickExpectPopup { .. } if native => Ok(()),
         Commands::Verify { .. } | Commands::Wait { .. } if native => Ok(()),
         Commands::ActAndVerify { .. } if native => Ok(()),
         Commands::Cookies | Commands::ExportCookies { .. } | Commands::ImportCookies { .. }
@@ -647,6 +648,22 @@ async fn run_alternative_runtime_command(
             .await?,
             response_mode,
         ),
+        Commands::ClickExpectPopup {
+            target,
+            expected_revision,
+        } if session.runtime().is_native() => {
+            #[cfg(feature = "native-engine")]
+            {
+                print_json_mode(
+                    &session
+                        .native_click_expect_popup(target, *expected_revision)
+                        .await?,
+                    response_mode,
+                )
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
+        }
         Commands::Preflight { target, action } if session.runtime().is_native() => {
             #[cfg(feature = "native-engine")]
             {

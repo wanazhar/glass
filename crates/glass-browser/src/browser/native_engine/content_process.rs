@@ -1,5 +1,7 @@
+use super::browsing_context::NATIVE_CONTEXT_ID;
 use super::config::{
-    NativeEngineLimits, Viewport, is_network_url, validate_url_text, without_fragment,
+    NativeEngineLimits, Viewport, is_network_url, validate_context_id, validate_url_text,
+    without_fragment,
 };
 use super::dom::{
     NativeDocument, NativeDocumentWire, NativeNodeId, NativePageScriptSource,
@@ -34,7 +36,7 @@ use url::Url;
 
 const MAX_CONTENT_IPC_FRAME_BYTES: usize = 4 * 1024 * 1024;
 const MAX_CONTENT_DOCUMENT_WIRE_BYTES: usize = 2 * 1024 * 1024;
-const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 1;
+const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 2;
 const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTENT_PROCESS_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -161,6 +163,7 @@ impl NativeContentProcess {
     pub(crate) async fn start(
         &mut self,
         storage_path: Option<&Path>,
+        context_id: &str,
     ) -> Result<(), NativeEngineError> {
         let id = self.next_id();
         let response = self
@@ -169,6 +172,7 @@ impl NativeContentProcess {
                 "id": id,
                 "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
                 "storage_path": storage_path.map(|path| path.to_string_lossy().into_owned()),
+                "context_id": context_id,
             }))
             .await?;
         let result = require_response_kind(&response, "started", id, "content process start");
@@ -1010,6 +1014,7 @@ fn decode_storage_event_value(
                 event.storage_key.len(),
             ));
         }
+        validate_context_id(&event.source_context_id)?;
         if event.url.len() > MAX_NATIVE_SCRIPT_BYTES {
             return Err(NativeEngineError::limit(
                 "content-process storage event URL",
@@ -1070,6 +1075,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut javascript_runtime: Option<NativeJavaScriptRuntime> = None;
     let mut storage_state = NativeWebStorageState::default();
     let mut storage_profile_path: Option<PathBuf> = None;
+    let mut storage_context_id = NATIVE_CONTEXT_ID.to_owned();
     loop {
         let payload = read_frame(&mut stdin).await?;
         let request: Value =
@@ -1092,6 +1098,13 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 json!({"kind":"pong","id":id,"protocol":CONTENT_WORKER_PROTOCOL_VERSION})
             }
             "start" if protocol_matches(&request) && !running => {
+                let requested_context_id = request
+                    .get("context_id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        NativeEngineError::invalid("content-process context id", "must be text")
+                    })?;
+                validate_context_id(requested_context_id)?;
                 let requested_path = request
                     .get("storage_path")
                     .and_then(Value::as_str)
@@ -1106,6 +1119,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             storage_state = loaded;
                         }
                         storage_profile_path = requested_path;
+                        storage_context_id = requested_context_id.to_owned();
                         running = true;
                         json!({"kind":"started","id":id})
                     }
@@ -1142,7 +1156,16 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         script_sources,
                         resource_load_nodes,
                     )) => {
-                        let mut script_runtime = None;
+                        let mut script_runtime =
+                            match NativeJavaScriptRuntime::new_with_context_id(&storage_context_id)
+                            {
+                                Ok(runtime) => Some(runtime),
+                                Err(error) => {
+                                    let response = content_error_response(id, error);
+                                    write_value_frame(&mut stdout, &response).await?;
+                                    continue;
+                                }
+                            };
                         let document_cookie = resource_loader
                             .as_ref()
                             .map(|loader| loader.document_cookie(&resource.url))
@@ -1294,7 +1317,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         NativeEngineError::invalid("content-process script source", "must be text")
                     })?;
                 if javascript_runtime.is_none() {
-                    match NativeJavaScriptRuntime::new() {
+                    match NativeJavaScriptRuntime::new_with_context_id(&storage_context_id) {
                         Ok(runtime) => {
                             runtime.set_storage_state(storage_state.clone());
                             javascript_runtime = Some(runtime);
@@ -1447,7 +1470,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     continue;
                 };
                 if javascript_runtime.is_none() {
-                    match NativeJavaScriptRuntime::new() {
+                    match NativeJavaScriptRuntime::new_with_context_id(&storage_context_id) {
                         Ok(runtime) => {
                             runtime.set_storage_state(storage_state.clone());
                             javascript_runtime = Some(runtime);
@@ -1540,7 +1563,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     continue;
                 };
                 if javascript_runtime.is_none() {
-                    match NativeJavaScriptRuntime::new() {
+                    match NativeJavaScriptRuntime::new_with_context_id(&storage_context_id) {
                         Ok(runtime) => {
                             runtime.set_storage_state(storage_state.clone());
                             javascript_runtime = Some(runtime);
@@ -1631,7 +1654,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     continue;
                 };
                 if javascript_runtime.is_none() {
-                    match NativeJavaScriptRuntime::new() {
+                    match NativeJavaScriptRuntime::new_with_context_id(&storage_context_id) {
                         Ok(runtime) => {
                             runtime.set_storage_state(storage_state.clone());
                             javascript_runtime = Some(runtime);

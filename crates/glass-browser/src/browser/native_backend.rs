@@ -4,9 +4,7 @@
 //! lifecycle state, while this module translates only the stable
 //! `browser_backend` contract.
 
-use super::native_engine::{
-    NATIVE_CONTEXT_ID, NativeAction, NativeEngine, NativeEngineConfig, NativeEngineError,
-};
+use super::native_engine::{NativeAction, NativeEngine, NativeEngineConfig, NativeEngineError};
 use crate::browser_backend::{
     ActionResult, BROWSER_BACKEND_SCHEMA_VERSION, BackendFuture, BackendOperation, BackendProfile,
     BackendRequest, BackendResponse, BrowserBackend, BrowserBackendError, BrowserCapability,
@@ -137,7 +135,7 @@ impl NativeEngineBackend {
                 }
                 BrowserCapability::Contexts => vec!["one active context only".into()],
                 BrowserCapability::Storage => vec![
-                    "bounded semantic maps plus origin-keyed page local/session Web Storage and session document.cookie synchronization; localStorage profile persistence is opt-in, while storage events, cookie profile persistence, and IndexedDB remain open".into(),
+                    "origin-keyed page local/session Web Storage; opt-in localStorage profiles; same-process events; cross-process events, stale-profile merge, cookie profile persistence, and IndexedDB remain open".into(),
                 ],
                 BrowserCapability::Lifecycle => {
                     vec!["close is terminal for the engine instance".into()]
@@ -171,7 +169,7 @@ impl NativeEngineBackend {
                     limitations: vec![
                         "network navigation and scripting are bounded web-platform slices, not browser parity".into(),
                         "in-process local execution is not a security boundary for hostile content; external documents use the sandboxed content worker".into(),
-                        "page Web Storage is bounded; localStorage persistence is opt-in, sessionStorage is volatile, document.cookie shares the session HTTP cookie jar, and storage events, cookie profile persistence, and IndexedDB remain unavailable".into(),
+                        "bounded page Web Storage and session document.cookie; opt-in localStorage profiles; per-context sessionStorage; same-process events; cross-process events, stale-profile merge, cookie profile persistence, and IndexedDB unavailable".into(),
                         "actions are limited to bounded click/type/key/scroll, select controls, form defaults, root scrolling, and native point targets".into(),
                     ],
                 },
@@ -224,6 +222,7 @@ impl BrowserBackend for NativeEngineBackend {
             self.profile
                 .require_operation(operation, SupportLevel::Available)?;
             let mut engine = self.lock_engine(operation)?;
+            let active_context_id = engine.config().context_id.clone();
             match (operation, request) {
                 (BackendOperation::Initialize, BackendRequest::Initialize) => {
                     engine.initialize_async().await.map_err(native_error)?;
@@ -252,7 +251,7 @@ impl BrowserBackend for NativeEngineBackend {
                     }]))
                 }
                 (BackendOperation::Evidence, BackendRequest::Evidence(request)) => {
-                    require_context_id(&request.context_id)?;
+                    require_context_id(&request.context_id, &active_context_id)?;
                     if matches!(
                         request.level,
                         EvidenceLevel::Screenshot | EvidenceLevel::Combined
@@ -264,7 +263,7 @@ impl BrowserBackend for NativeEngineBackend {
                     }
                     let snapshot = engine.snapshot().map_err(native_error)?;
                     Ok(BackendResponse::Evidence(EvidenceResult {
-                        context_id: NATIVE_CONTEXT_ID.into(),
+                        context_id: active_context_id.clone(),
                         revision: snapshot.revision,
                         url: snapshot.url,
                         title: snapshot.title,
@@ -275,7 +274,7 @@ impl BrowserBackend for NativeEngineBackend {
                     }))
                 }
                 (BackendOperation::Action, BackendRequest::Action(request)) => {
-                    require_context_id(&request.context_id)?;
+                    require_context_id(&request.context_id, &active_context_id)?;
                     let action = match request.action {
                         SemanticAction::Click { target } => NativeAction::Click { target },
                         SemanticAction::Type { target, text } => {
@@ -288,24 +287,24 @@ impl BrowserBackend for NativeEngineBackend {
                     };
                     let outcome = engine.action_async(action).await.map_err(native_error)?;
                     Ok(BackendResponse::Action(ActionResult {
-                        context_id: NATIVE_CONTEXT_ID.into(),
+                        context_id: active_context_id.clone(),
                         revision: outcome.revision,
                         accepted: outcome.accepted,
                     }))
                 }
                 (BackendOperation::Effects, BackendRequest::Effects(request)) => {
-                    require_context_id(&request.context_id)?;
+                    require_context_id(&request.context_id, &active_context_id)?;
                     let snapshot = engine
                         .effects_since(request.since_revision)
                         .map_err(native_error)?;
                     Ok(BackendResponse::Effects(EffectsResult {
-                        context_id: NATIVE_CONTEXT_ID.into(),
+                        context_id: active_context_id.clone(),
                         revision: snapshot.revision,
                         changed: snapshot.changed,
                     }))
                 }
                 (BackendOperation::Script, BackendRequest::Script(request)) => {
-                    require_context_id(&request.context_id)?;
+                    require_context_id(&request.context_id, &active_context_id)?;
                     let value = engine
                         .evaluate_async(request.source)
                         .await
@@ -313,7 +312,7 @@ impl BrowserBackend for NativeEngineBackend {
                     Ok(BackendResponse::Script(ScriptResult { value }))
                 }
                 (BackendOperation::Capture, BackendRequest::Capture(request)) => {
-                    require_context_id(&request.context_id)?;
+                    require_context_id(&request.context_id, &active_context_id)?;
                     if request.format != CaptureFormat::Png {
                         return Err(BrowserBackendError::UnsupportedOperation {
                             operation: "capture".into(),
@@ -327,7 +326,7 @@ impl BrowserBackend for NativeEngineBackend {
                     }))
                 }
                 (BackendOperation::Storage, BackendRequest::Storage(request)) => {
-                    require_context_id(&request.context_id)?;
+                    require_context_id(&request.context_id, &active_context_id)?;
                     drop(engine);
                     let mut storage = self.lock_storage(operation)?;
                     let entries = match request.operation {
@@ -354,8 +353,11 @@ impl BrowserBackend for NativeEngineBackend {
     }
 }
 
-fn require_context_id(context_id: &str) -> Result<(), BrowserBackendError> {
-    if context_id == NATIVE_CONTEXT_ID {
+fn require_context_id(
+    context_id: &str,
+    active_context_id: &str,
+) -> Result<(), BrowserBackendError> {
+    if context_id == active_context_id {
         return Ok(());
     }
     Err(BrowserBackendError::InvalidConfiguration {

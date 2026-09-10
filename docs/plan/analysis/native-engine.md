@@ -2359,12 +2359,25 @@ binary/stream FormData support, full task ordering/navigation edge cases,
 remaining full pattern-regex/file constraint validation, target contexts, and
 the remaining browser-context primitives remain open.
 
-The next bounded workstream is session-storage browsing-context routing and an
-explicit stale-snapshot ownership or merge protocol, followed by cross-process
-event delivery, IndexedDB, full binary/stream FormData support, full task
+The completed bounded session-storage routing follow-up is
+[native-engine-browser-073](../tasks/native-engine-browser-073.md). Each native
+engine now carries an explicit bounded browsing-context identity through local
+and sandboxed JavaScript realms. Same-profile `sessionStorage` events are
+origin-filtered and delivered only to other live engines with the same context
+identity; different contexts receive no event or state mutation, and the
+configured identity is reflected by native backend context validation and
+responses. The coordinator is still process-local, session state is still
+volatile, and cross-process event delivery is not claimed. Stale-snapshot
+ownership or merge, IndexedDB, full binary/stream FormData support, full task
 ordering/navigation edge cases, remaining full
 pattern-regex/file constraint validation, target contexts, and the remaining
 browser-context primitives remain open.
+
+The next bounded workstream is an explicit stale-snapshot ownership or merge
+protocol, followed by cross-process event delivery, IndexedDB, full
+binary/stream FormData support, full task ordering/navigation edge cases,
+remaining full pattern-regex/file constraint validation, target contexts, and
+the remaining browser-context primitives remain open.
 
 ## Baseline and constraints
 

@@ -1,3 +1,4 @@
+use super::browsing_context::NATIVE_CONTEXT_ID;
 use super::error::NativeEngineError;
 use std::path::PathBuf;
 use url::Url;
@@ -149,6 +150,7 @@ impl NativeFixture {
 /// Startup configuration for one native engine instance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeEngineConfig {
+    pub context_id: String,
     pub initial_url: String,
     pub viewport: Viewport,
     pub limits: NativeEngineLimits,
@@ -159,6 +161,7 @@ pub struct NativeEngineConfig {
 impl Default for NativeEngineConfig {
     fn default() -> Self {
         Self {
+            context_id: NATIVE_CONTEXT_ID.into(),
             initial_url: "about:blank".into(),
             viewport: Viewport::default(),
             limits: NativeEngineLimits::default(),
@@ -169,6 +172,11 @@ impl Default for NativeEngineConfig {
 }
 
 impl NativeEngineConfig {
+    pub fn with_context_id(mut self, context_id: impl Into<String>) -> Self {
+        self.context_id = context_id.into();
+        self
+    }
+
     pub fn with_initial_url(mut self, url: impl Into<String>) -> Self {
         self.initial_url = url.into();
         self
@@ -202,6 +210,7 @@ impl NativeEngineConfig {
     pub fn validate(&self) -> Result<(), NativeEngineError> {
         self.limits.validate()?;
         self.viewport.validate()?;
+        validate_context_id(&self.context_id)?;
         validate_url_text("initial URL", &self.initial_url)?;
         if self
             .storage_path
@@ -264,6 +273,23 @@ impl NativeEngineConfig {
         }
         Ok(())
     }
+}
+
+pub(crate) fn validate_context_id(value: &str) -> Result<(), NativeEngineError> {
+    if value.is_empty() {
+        return Err(NativeEngineError::invalid(
+            "context id",
+            "must not be empty",
+        ));
+    }
+    if value.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES {
+        return Err(NativeEngineError::limit(
+            "context id",
+            crate::browser_backend::MAX_BACKEND_ID_BYTES,
+            value.len(),
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_url_text(field: &str, value: &str) -> Result<(), NativeEngineError> {

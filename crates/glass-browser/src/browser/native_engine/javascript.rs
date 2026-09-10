@@ -4,6 +4,7 @@
 //! objects and Web APIs, which are added in separate slices so every exposed
 //! capability has an explicit resource and security contract.
 
+use super::browsing_context::NATIVE_CONTEXT_ID;
 use super::config::Viewport;
 use super::dom::{NativeDocument, NativePageScriptSource, NativePageScriptTiming};
 use super::error::NativeEngineError;
@@ -173,6 +174,7 @@ impl NativeWebStorageState {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct NativeStorageEvent {
+    pub(crate) source_context_id: String,
     pub(crate) scope: String,
     pub(crate) storage_key: String,
     pub(crate) key: Option<String>,
@@ -649,7 +651,9 @@ pub(crate) fn execute_page_scripts(
     resource_load_nodes: &[u32],
 ) -> Result<Vec<NativeScriptCommand>, NativeEngineError> {
     if runtime.is_none() {
-        *runtime = Some(NativeJavaScriptRuntime::new()?);
+        *runtime = Some(NativeJavaScriptRuntime::new_with_context_id(
+            NATIVE_CONTEXT_ID,
+        )?);
     }
     runtime
         .as_mut()
@@ -973,12 +977,15 @@ pub(crate) struct NativeJavaScriptRuntime {
     pending_storage_events: Arc<Mutex<Vec<NativeStorageEvent>>>,
     cookie: Arc<Mutex<String>>,
     cookie_updates: Arc<Mutex<Vec<String>>>,
+    storage_context_id: String,
     ready_state: String,
     clock_origin: Instant,
 }
 
 impl NativeJavaScriptRuntime {
-    pub(crate) fn new() -> Result<Self, NativeEngineError> {
+    pub(crate) fn new_with_context_id(
+        context_id: impl Into<String>,
+    ) -> Result<Self, NativeEngineError> {
         let runtime = Runtime::new().map_err(|_| NativeEngineError::Worker {
             operation: "create JavaScript runtime".into(),
             reason: "native JavaScript runtime could not be created".into(),
@@ -1015,6 +1022,7 @@ impl NativeJavaScriptRuntime {
             pending_storage_events: Arc::new(Mutex::new(Vec::new())),
             cookie: Arc::new(Mutex::new(String::new())),
             cookie_updates: Arc::new(Mutex::new(Vec::new())),
+            storage_context_id: context_id.into(),
             ready_state: "complete".into(),
             clock_origin: Instant::now(),
         })
@@ -1147,6 +1155,7 @@ impl NativeJavaScriptRuntime {
             operation: "native Web Storage".into(),
             reason: "native Web Storage state lock is unavailable".into(),
         })?;
+        let source_context_id = self.storage_context_id.clone();
         let storage = match scope {
             "local" => &mut state.local,
             "session" => &mut state.session,
@@ -1196,6 +1205,7 @@ impl NativeJavaScriptRuntime {
                 } else {
                     entries.insert(key.to_owned(), value.to_owned());
                     Some(NativeStorageEvent {
+                        source_context_id: source_context_id.clone(),
                         scope: scope.to_owned(),
                         storage_key: origin_key,
                         key: Some(key.to_owned()),
@@ -1208,6 +1218,7 @@ impl NativeJavaScriptRuntime {
             "remove" => {
                 let key = entry_key.expect("storage remove key");
                 entries.remove(key).map(|old_value| NativeStorageEvent {
+                    source_context_id: source_context_id.clone(),
                     scope: scope.to_owned(),
                     storage_key: origin_key,
                     key: Some(key.to_owned()),
@@ -1220,6 +1231,7 @@ impl NativeJavaScriptRuntime {
             "clear" => {
                 entries.clear();
                 Some(NativeStorageEvent {
+                    source_context_id,
                     scope: scope.to_owned(),
                     storage_key: origin_key,
                     key: None,

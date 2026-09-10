@@ -6,10 +6,10 @@ use glass_browser::browser::native_engine::{
     MAX_NATIVE_DIAGNOSTIC_DETAIL_BYTES, MAX_NATIVE_DIAGNOSTICS, NativeAction, NativeBorderRadius,
     NativeBorderStyle, NativeColor, NativeDiagnosticCode, NativeDiagnosticSource,
     NativeDisplayCommand, NativeDocument, NativeEngine, NativeEngineConfig, NativeEngineError,
-    NativeEngineLimits, NativeEventKind, NativeLifecycleState, NativeNodeId, NativePoint,
-    NativePreflightAction, NativeRect, NativeRuntimeState, NativeRuntimeTraceKind, NativeSurface,
-    NativeTextDecorationSkipInk, NativeTextDecorationSkipSpaces, NativeTextDecorationStyle,
-    NativeWorkerFailureKind, Viewport,
+    NativeEngineLimits, NativeEventKind, NativeHistoryDirection, NativeLifecycleState,
+    NativeNodeId, NativePoint, NativePreflightAction, NativeRect, NativeRuntimeState,
+    NativeRuntimeTraceKind, NativeSurface, NativeTextDecorationSkipInk,
+    NativeTextDecorationSkipSpaces, NativeTextDecorationStyle, NativeWorkerFailureKind, Viewport,
 };
 use glass_browser::browser::session::{
     Cookie, IntentConfidence, IntentConstraints, SemanticIntentAction,
@@ -244,7 +244,164 @@ async fn native_runtime_session_exposes_agent_inspection_and_target_discovery() 
         .unwrap();
     assert!(preflight.unique);
     assert_eq!(preflight.revision, inspection.revision);
+
+    let targets = session.native_list_targets().await.unwrap();
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].id, "native-context");
+    assert_eq!(targets[0].title, "Inspect");
+    assert!(targets[0].active);
+    assert_eq!(
+        session
+            .native_select_target(&targets[0].id)
+            .await
+            .unwrap()
+            .id,
+        "native-context"
+    );
+
+    let frames = session.native_list_frames().await.unwrap();
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0].id, "native-context:main");
+    assert!(frames[0].active);
+    assert!(!frames[0].out_of_process);
+    assert_eq!(
+        session.native_select_frame(&frames[0].id).await.unwrap().id,
+        "native-context:main"
+    );
+    assert!(
+        session
+            .native_select_target("missing-target")
+            .await
+            .is_err()
+    );
+    assert!(session.native_select_frame("missing-frame").await.is_err());
     session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_async_history_traversal_uses_the_runtime_owner() {
+    let config = NativeEngineConfig::default()
+        .with_fixture("fixture://history-async", "<p>First</p>")
+        .unwrap()
+        .with_fixture("fixture://history-async-next", "<p>Second</p>")
+        .unwrap()
+        .with_initial_url("fixture://history-async");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    let first = engine.snapshot().unwrap();
+    let second = engine
+        .navigate_async("fixture://history-async-next")
+        .await
+        .unwrap();
+    assert_eq!(first.visible_text, "First");
+    assert_eq!(second.visible_text, "Second");
+
+    let restored = engine.go_back_async().await.unwrap().unwrap();
+    assert_eq!(restored.url, "fixture://history-async");
+    assert_eq!(restored.visible_text, "First");
+    assert_eq!(
+        engine.history().current().unwrap().url,
+        "fixture://history-async"
+    );
+
+    let forward = engine.go_forward_async().await.unwrap().unwrap();
+    assert_eq!(forward.url, "fixture://history-async-next");
+    assert_eq!(forward.visible_text, "Second");
+    assert!(engine.go_forward_async().await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn native_runtime_session_exposes_revisioned_history_controls() {
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default()
+            .with_fixture("fixture://runtime-history-first", "<p>First</p>")
+            .unwrap()
+            .with_fixture("fixture://runtime-history-second", "<p>Second</p>")
+            .unwrap()
+            .with_initial_url("fixture://runtime-history-first"),
+    )
+    .await
+    .unwrap();
+    let initial = session.evidence(EvidenceLevel::Compact).await.unwrap();
+    session
+        .navigate("fixture://runtime-history-second")
+        .await
+        .unwrap();
+
+    let back = session
+        .native_navigate_history(NativeHistoryDirection::Back)
+        .await
+        .unwrap();
+    assert_eq!(back.action, "back");
+    assert_eq!(back.previous_revision, initial.revision + 1);
+    assert!(back.current_revision > back.previous_revision);
+    assert_eq!(
+        session
+            .evidence(EvidenceLevel::Compact)
+            .await
+            .unwrap()
+            .visible_text,
+        "First"
+    );
+
+    let forward = session
+        .native_navigate_history(NativeHistoryDirection::Forward)
+        .await
+        .unwrap();
+    assert_eq!(forward.action, "forward");
+    assert_eq!(
+        session
+            .evidence(EvidenceLevel::Compact)
+            .await
+            .unwrap()
+            .visible_text,
+        "Second"
+    );
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_async_http_history_traversal_reloads_through_content_process() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/first", "/second"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let (title, body) = if expected_path == "/first" {
+                ("First", "One")
+            } else {
+                ("Second", "Two")
+            };
+            let body = format!("<title>{title}</title><p>{body}</p>");
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let first_url = format!("http://{address}/first");
+    let second_url = format!("http://{address}/second");
+    let mut engine =
+        NativeEngine::new(NativeEngineConfig::default().with_initial_url(first_url.clone()))
+            .unwrap();
+    engine.initialize_async().await.unwrap();
+    let second = engine.navigate_async(second_url.clone()).await.unwrap();
+    assert_eq!(second.title, "Second");
+
+    let first = engine.go_back_async().await.unwrap().unwrap();
+    assert_eq!(first.url, first_url);
+    assert_eq!(first.title, "First");
+    let second = engine.go_forward_async().await.unwrap().unwrap();
+    assert_eq!(second.url, second_url);
+    assert_eq!(second.title, "Second");
+
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
 }
 
 #[tokio::test]

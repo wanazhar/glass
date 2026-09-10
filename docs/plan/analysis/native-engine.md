@@ -2931,6 +2931,16 @@ attribute, so unsupported attributes are not invented. Multi-target/frame
 ownership, request accounting, popup/dialog/download witnesses, universal
 workflow parity, and CDP replacement remain open.
 
+The completed native-engine-browser-139 batch closes the async history and
+basic topology projection seam. Native back/forward traversals use the
+existing runtime worker and sandboxed content-process owner for local and
+HTTP(S) entries, with explicit boundary failures. Runtime, CLI, and MCP
+topology calls now return the standard bounded target/frame records for the
+single native context and main frame, and unknown selections fail closed.
+Target creation/closure, child-frame execution, popup/dialog/download
+witnesses, request accounting, universal workflow parity, and CDP replacement
+remain open.
+
 The completed native-engine-browser-133 batch extends the native target seam
 with a side-effect-free preflight result. The engine resolves the current
 semantic locator and derives viewport geometry and actionability under the

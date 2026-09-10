@@ -5,8 +5,12 @@
 //! `browser_backend` contract.
 
 use super::native_engine::{
-    NativeAction, NativeEngine, NativeEngineConfig, NativeEngineError, NativeInspectionSnapshot,
-    NativePreflightAction, NativeTargetPreflight,
+    NativeAction, NativeEngine, NativeEngineConfig, NativeEngineError, NativeHistoryDirection,
+    NativeInspectionSnapshot, NativePreflightAction, NativeTargetPreflight,
+};
+use crate::browser::session::{
+    FrameInfo, NavigationControlOutcome, PageTargetInfo, redact_diagnostic_text,
+    redact_diagnostic_url,
 };
 use crate::browser_backend::{
     ActionResult, BROWSER_BACKEND_SCHEMA_VERSION, BackendFuture, BackendOperation, BackendProfile,
@@ -101,6 +105,92 @@ impl NativeEngineBackend {
             .clear_cookies_async()
             .await
             .map_err(native_error)
+    }
+
+    /// Project the native engine's single browsing context into the standard
+    /// page-target contract. The native owner deliberately exposes no hidden
+    /// targets and never invents a second selection.
+    pub fn list_targets(&self) -> Result<Vec<PageTargetInfo>, BrowserBackendError> {
+        let engine = self.lock_engine(BackendOperation::Contexts)?;
+        let context = engine.context().map_err(native_error)?;
+        let snapshot = engine.snapshot().map_err(native_error)?;
+        Ok(vec![PageTargetInfo {
+            id: context.context_id,
+            url: redact_diagnostic_url(&context.url),
+            title: redact_diagnostic_text(&snapshot.title),
+            opener_id: None,
+            active: context.active,
+        }])
+    }
+
+    /// Project the native document's main browsing frame into the standard
+    /// frame contract. Child-frame execution is not silently redirected to the
+    /// main frame; callers must select this explicit main-frame identity.
+    pub fn list_frames(&self) -> Result<Vec<FrameInfo>, BrowserBackendError> {
+        let engine = self.lock_engine(BackendOperation::Contexts)?;
+        let context = engine.context().map_err(native_error)?;
+        Ok(vec![FrameInfo {
+            id: native_main_frame_id(&context.context_id),
+            parent_id: None,
+            url: redact_diagnostic_url(&context.url),
+            active: true,
+            out_of_process: false,
+        }])
+    }
+
+    pub fn select_target(&self, target_id: &str) -> Result<PageTargetInfo, BrowserBackendError> {
+        validate_native_topology_id(target_id)?;
+        self.list_targets()?
+            .into_iter()
+            .find(|target| target.id == target_id)
+            .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                reason: "native page target was not found; call listTargets to refresh topology"
+                    .into(),
+            })
+    }
+
+    pub fn select_frame(&self, frame_id: &str) -> Result<FrameInfo, BrowserBackendError> {
+        validate_native_topology_id(frame_id)?;
+        self.list_frames()?
+            .into_iter()
+            .find(|frame| frame.id == frame_id)
+            .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                reason: "native frame was not found; call listFrames to refresh topology".into(),
+            })
+    }
+
+    pub async fn navigate_history(
+        &self,
+        direction: NativeHistoryDirection,
+    ) -> Result<NavigationControlOutcome, BrowserBackendError> {
+        let mut engine = self.lock_engine(BackendOperation::Navigate)?;
+        let previous_revision = engine.revision();
+        let snapshot = match direction {
+            NativeHistoryDirection::Back => engine.go_back_async().await,
+            NativeHistoryDirection::Forward => engine.go_forward_async().await,
+        }
+        .map_err(native_error)?
+        .ok_or_else(|| BrowserBackendError::UnsupportedOperation {
+            operation: match direction {
+                NativeHistoryDirection::Back => "back",
+                NativeHistoryDirection::Forward => "forward",
+            }
+            .into(),
+            reason: match direction {
+                NativeHistoryDirection::Back => "no previous history entry",
+                NativeHistoryDirection::Forward => "no forward history entry",
+            }
+            .into(),
+        })?;
+        Ok(NavigationControlOutcome {
+            action: match direction {
+                NativeHistoryDirection::Back => "back",
+                NativeHistoryDirection::Forward => "forward",
+            }
+            .into(),
+            previous_revision,
+            current_revision: snapshot.revision,
+        })
     }
 
     pub fn profile_for(glass_version: &str) -> Result<BackendProfile, BrowserBackendError> {
@@ -379,6 +469,18 @@ fn require_context_id(
         field: "context id".into(),
         reason: "native engine accepts only its active context".into(),
     })
+}
+
+fn validate_native_topology_id(id: &str) -> Result<(), BrowserBackendError> {
+    crate::browser::session::validate_topology_id(id).map_err(|error| {
+        BrowserBackendError::SelectionFailed {
+            reason: error.to_string(),
+        }
+    })
+}
+
+fn native_main_frame_id(context_id: &str) -> String {
+    format!("{context_id}:main")
 }
 
 fn native_error(error: NativeEngineError) -> BrowserBackendError {

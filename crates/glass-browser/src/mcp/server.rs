@@ -3739,7 +3739,16 @@ async fn call_native_tool(
             }))
         }
         ToolInvocation::ListTargets => {
-            serialized_result_mode(&session.contexts().await?, response_mode)
+            serialized_result_mode(&session.native_list_targets().await?, response_mode)
+        }
+        ToolInvocation::SelectTarget { id } => {
+            serialized_result_mode(&session.native_select_target(id).await?, response_mode)
+        }
+        ToolInvocation::ListFrames => {
+            serialized_result_mode(&session.native_list_frames().await?, response_mode)
+        }
+        ToolInvocation::SelectFrame { id } => {
+            serialized_result_mode(&session.native_select_frame(id).await?, response_mode)
         }
         ToolInvocation::Cookies => {
             serialized_result_mode(&session.native_cookies().await?, response_mode)
@@ -6006,6 +6015,66 @@ mod tests {
         .unwrap();
         assert_eq!(inspection["page"]["title"], "MCP");
         assert_eq!(inspection["regions"][0]["targets"][0]["role"], "button");
+
+        let targets = invoke_native_mcp_tool(
+            "listTargets",
+            json!({}),
+            &mut session,
+            &mut native_session,
+            &options,
+            &policy,
+        )
+        .await;
+        assert!(targets.error.is_none());
+        let targets: Value = serde_json::from_str(
+            targets.result.unwrap()["content"][0]["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(targets["result"][0]["id"], "native-context");
+        assert_eq!(targets["result"][0]["title"], "MCP");
+
+        let selected_target = invoke_native_mcp_tool(
+            "selectTarget",
+            json!({"id": "native-context"}),
+            &mut session,
+            &mut native_session,
+            &options,
+            &policy,
+        )
+        .await;
+        assert!(selected_target.error.is_none());
+
+        let frames = invoke_native_mcp_tool(
+            "listFrames",
+            json!({}),
+            &mut session,
+            &mut native_session,
+            &options,
+            &policy,
+        )
+        .await;
+        assert!(frames.error.is_none());
+        let frames: Value = serde_json::from_str(
+            frames.result.unwrap()["content"][0]["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(frames["result"][0]["id"], "native-context:main");
+        assert_eq!(frames["result"][0]["out_of_process"], false);
+
+        let selected_frame = invoke_native_mcp_tool(
+            "selectFrame",
+            json!({"id": "native-context:main"}),
+            &mut session,
+            &mut native_session,
+            &options,
+            &policy,
+        )
+        .await;
+        assert!(selected_frame.error.is_none());
 
         let find_target = invoke_native_mcp_tool(
             "findTarget",

@@ -1347,6 +1347,18 @@ route the native cookie surfaces without allocating Chromium. A map-shaped
 cookie write remains rejected because name/value alone cannot safely express
 domain, path, expiry, or security attributes.
 
+The completed native-engine-browser-139 batch closes the asynchronous history
+and basic topology projection seam. Native back/forward traversal now routes
+local and HTTP(S) history entries through the existing runtime worker and
+sandboxed content process, while boundary traversal remains explicit and
+cannot become a fresh navigation or CDP fallback. The native runtime, CLI,
+and MCP project one active page target (`native-context`) and one explicit main
+frame (`native-context:main`) through the standard target/frame records;
+selection is idempotent for those identities and fails closed for unknown
+ones. Native target archives use the same bounded redacted projection. This
+does not yet claim target creation/closure, child-frame execution, popup
+witnesses, dialogs, downloads, or browser-wide topology parity.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature

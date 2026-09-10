@@ -164,6 +164,7 @@ mod knowledge;
 mod knowledge_store;
 mod locator;
 mod navigate;
+pub use navigate::NavigationControlOutcome;
 pub(crate) use navigate::{
     NavigationExecution, NavigationReadiness, NavigationReadinessPhase, NavigationReadinessStatus,
 };

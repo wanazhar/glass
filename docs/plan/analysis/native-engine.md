@@ -2393,12 +2393,8 @@ newline-delimited event journal protected by the retained profile lock. Local
 and session changes are appended and live receivers poll before page
 operations, exclude their writer, and apply origin/context routing before
 dispatch. Incomplete tails are repaired, malformed records are typed errors,
-and the journal is capped at 4 MiB without compaction in this slice. Cookie
-profile persistence is recorded in the following slice. IndexedDB, full
-binary/stream FormData support, full task
-ordering/navigation edge cases, remaining full pattern-regex/file constraint
-validation, target contexts, and the remaining browser-context primitives
-remain open.
+and the journal is capped at 4 MiB. Retention and crash recovery are recorded
+in the following slice.
 
 The completed bounded cookie-profile persistence follow-up is
 [native-engine-browser-076](../tasks/native-engine-browser-076.md). Supplying
@@ -2412,10 +2408,19 @@ for the explicit profile lifetime. Without a profile path cookies remain
 volatile; the profile is sensitive credential-bearing state, and IndexedDB
 plus full cookie policy/Web IDL parity remain open.
 
-The next bounded workstream is IndexedDB, followed by full binary/stream
-FormData support, full task ordering/navigation edge cases, remaining full
-pattern-regex/file constraint validation, target contexts, and the remaining
-browser-context primitives.
+The current bounded journal-retention and recovery follow-up is
+[native-engine-browser-077](../tasks/native-engine-browser-077.md). Profile-
+backed engines register bounded leases at `P.readers` beside the `P.events`
+journal, refresh healthy cursors on a bounded heartbeat, and explicitly remove
+their lease on close. A 15-minute stale lease is reclaimable. When an append
+would exceed 4 MiB, only a complete prefix acknowledged by every live lease is
+compacted; retained cursors are shifted under `P.lock`, while a slow live
+reader receives typed backpressure if it pins too much data. Missing leases and
+out-of-range cursors trigger authoritative profile reload and a full-state
+replacement in the local or sandboxed runtime; event callbacks discarded by
+that recovery are not replayed, and a live engine preserves its volatile
+session state. IndexedDB, full cookie policy/Web IDL parity, and the remaining
+browser-complete gates remain open.
 
 ## Baseline and constraints
 

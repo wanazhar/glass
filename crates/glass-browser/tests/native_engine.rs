@@ -29199,6 +29199,64 @@ async fn native_content_process_delivers_local_storage_events_between_documents(
 }
 
 #[tokio::test]
+async fn native_content_process_recovers_after_storage_reader_lease_loss() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let profile_path = std::env::temp_dir().join(format!(
+        "glass-native-web-storage-{}-content-reader-recovery.json",
+        std::process::id()
+    ));
+    let lock_path = profile_path.with_extension("lock");
+    let events_path = profile_path.with_extension("events");
+    let readers_path = profile_path.with_extension("readers");
+    let _ = fs::remove_file(&profile_path);
+    let _ = fs::remove_file(&lock_path);
+    let _ = fs::remove_file(&events_path);
+    let _ = fs::remove_file(&readers_path);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = "<p>Content storage recovery</p>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+    let url = format!("http://{address}/page");
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_storage_path(profile_path.clone())
+            .with_initial_url(url),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+
+    fs::remove_file(&readers_path).unwrap();
+    engine
+        .evaluate_async("localStorage.setItem('recovered', 'yes'); true")
+        .await
+        .unwrap();
+    fs::remove_file(&readers_path).unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("localStorage.getItem('recovered')")
+            .await
+            .unwrap(),
+        serde_json::json!("yes")
+    );
+
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+    let _ = fs::remove_file(profile_path);
+    let _ = fs::remove_file(lock_path);
+    let _ = fs::remove_file(events_path);
+    let _ = fs::remove_file(readers_path);
+}
+
+#[tokio::test]
 async fn native_content_process_merges_stale_profile_deltas() {
     let _guard = native_content_process_test_lock().lock().await;
     let file_name = format!(

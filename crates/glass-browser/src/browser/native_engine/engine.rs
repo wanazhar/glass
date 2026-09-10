@@ -20,7 +20,8 @@ use super::javascript::{
     append_storage_events, execute_inline_scripts, host_event_script,
     host_hash_change_event_script, host_key_event_script, host_submit_event_script,
     load_web_storage_profile, new_storage_writer_id, read_storage_event_journal,
-    save_web_storage_profile, storage_event_cursor, storage_key,
+    register_storage_reader, save_web_storage_profile, storage_event_cursor, storage_key,
+    unregister_storage_reader,
 };
 use super::layout::{NativeLayoutSnapshot, NativePoint};
 use super::lifecycle::NativeLifecycleState;
@@ -84,6 +85,7 @@ pub struct NativeEngine {
     web_storage: NativeWebStorageState,
     storage_writer_id: String,
     storage_event_offset: u64,
+    storage_state_recovery_pending: bool,
     pending_external_storage_events: Vec<NativeStorageEvent>,
     history: NativeHistory,
     lifecycle: NativeLifecycleState,
@@ -108,6 +110,11 @@ impl NativeEngine {
         }
         let runtime = NativeRuntimeShared::new(config.limits.max_scheduler_tasks)?;
         let max_history_entries = config.limits.max_history_entries;
+        register_storage_reader(
+            config.storage_path.as_deref(),
+            &storage_writer_id,
+            storage_event_offset,
+        )?;
         Ok(Self {
             url: config.initial_url.clone(),
             config,
@@ -119,6 +126,7 @@ impl NativeEngine {
             web_storage,
             storage_writer_id,
             storage_event_offset,
+            storage_state_recovery_pending: false,
             pending_external_storage_events: Vec::new(),
             history: NativeHistory::new(max_history_entries),
             lifecycle: NativeLifecycleState::New,
@@ -228,6 +236,10 @@ impl NativeEngine {
         match self.lifecycle {
             NativeLifecycleState::Running => {
                 self.persist_local_web_storage()?;
+                unregister_storage_reader(
+                    self.config.storage_path.as_deref(),
+                    &self.storage_writer_id,
+                )?;
                 self.runtime.close()?;
                 self.runtime_worker.take();
                 self.content_process.take();
@@ -248,6 +260,10 @@ impl NativeEngine {
         match self.lifecycle {
             NativeLifecycleState::Running => {
                 self.persist_local_web_storage()?;
+                unregister_storage_reader(
+                    self.config.storage_path.as_deref(),
+                    &self.storage_writer_id,
+                )?;
                 self.runtime.close()?;
                 self.runtime_worker.take();
                 self.lifecycle = NativeLifecycleState::Closed;
@@ -1117,12 +1133,23 @@ impl NativeEngine {
     }
 
     fn sync_external_storage_events(&mut self) -> Result<(), NativeEngineError> {
-        let records = read_storage_event_journal(
+        let journal = read_storage_event_journal(
             self.config.storage_path.as_deref(),
+            &self.storage_writer_id,
             &mut self.storage_event_offset,
         )?;
+        if journal.recovered {
+            let profile_state = load_web_storage_profile(self.config.storage_path.as_deref())?;
+            self.web_storage.replace_profile_state(profile_state);
+            self.storage_state_recovery_pending = true;
+            self.pending_external_storage_events.clear();
+            if let Some(javascript) = self.javascript.as_ref() {
+                javascript.replace_storage_state(self.web_storage.clone());
+            }
+        }
         let current_storage_key = storage_key(&self.url, &self.origin);
-        let events = records
+        let events = journal
+            .records
             .into_iter()
             .filter(|record| record.writer_id != self.storage_writer_id)
             .map(|record| record.event)
@@ -1160,12 +1187,15 @@ impl NativeEngine {
     }
 
     async fn deliver_pending_external_storage_events(&mut self) -> Result<(), NativeEngineError> {
-        if self.pending_external_storage_events.is_empty() {
+        if self.pending_external_storage_events.is_empty() && !self.storage_state_recovery_pending {
             return Ok(());
         }
         let events = std::mem::take(&mut self.pending_external_storage_events);
+        let storage_state = self.web_storage.clone();
+        let recovery_pending = self.storage_state_recovery_pending;
         if let Some(process) = self.content_process.as_mut() {
             if !process.is_healthy() {
+                self.pending_external_storage_events = events;
                 return Err(NativeEngineError::worker_failure(
                     "content process storage events",
                     process
@@ -1174,10 +1204,36 @@ impl NativeEngine {
                     "content process is unavailable after a failed operation; navigate to recover it",
                 ));
             }
-            process.sync_storage_events(&events).await
+            let result = async {
+                if recovery_pending {
+                    process.sync_storage_state(&storage_state).await?;
+                }
+                process.sync_storage_events(&events).await
+            }
+            .await;
+            match result {
+                Ok(()) => {
+                    self.storage_state_recovery_pending = false;
+                    Ok(())
+                }
+                Err(error) => {
+                    self.pending_external_storage_events = events;
+                    Err(error)
+                }
+            }
         } else if let Some(javascript) = self.javascript.as_ref() {
-            javascript.set_storage_state(self.web_storage.clone());
-            javascript.set_storage_events(events)
+            if recovery_pending {
+                javascript.replace_storage_state(storage_state);
+            } else {
+                javascript.set_storage_state(storage_state);
+            }
+            let result = javascript.set_storage_events(events.clone());
+            if result.is_ok() {
+                self.storage_state_recovery_pending = false;
+            } else {
+                self.pending_external_storage_events = events;
+            }
+            result
         } else {
             self.pending_external_storage_events = events;
             Ok(())

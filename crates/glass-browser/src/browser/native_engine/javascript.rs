@@ -37,6 +37,11 @@ const MAX_WEB_STORAGE_PROFILE_BYTES: usize = 4 * 1024 * 1024;
 const WEB_STORAGE_PROFILE_VERSION: u64 = 1;
 const MAX_WEB_STORAGE_EVENT_JOURNAL_BYTES: usize = 4 * 1024 * 1024;
 const MAX_NATIVE_STORAGE_EVENTS: usize = 64;
+const MAX_NATIVE_STORAGE_READER_LEASES: usize = 128;
+const MAX_NATIVE_STORAGE_READER_LEASE_BYTES: usize = 64 * 1024;
+const NATIVE_STORAGE_READER_LEASE_VERSION: u64 = 1;
+const NATIVE_STORAGE_READER_LEASE_TTL: Duration = Duration::from_secs(15 * 60);
+const NATIVE_STORAGE_READER_HEARTBEAT: Duration = Duration::from_secs(30);
 pub(crate) const MAX_NATIVE_COOKIE_PROFILE_ENTRIES: usize = 128;
 pub(crate) const MAX_NATIVE_COOKIE_PROFILE_BYTES: usize = 4096;
 const NATIVE_STORAGE_PROFILE_LOCK_TIMEOUT: Duration = Duration::from_millis(500);
@@ -133,6 +138,15 @@ pub(crate) struct NativeWebStorageState {
 }
 
 impl NativeWebStorageState {
+    pub(crate) fn validate(&self) -> Result<(), NativeEngineError> {
+        validate_web_storage_state(self)
+    }
+
+    pub(crate) fn replace_profile_state(&mut self, mut profile_state: Self) {
+        profile_state.session = std::mem::take(&mut self.session);
+        *self = profile_state;
+    }
+
     pub(crate) fn apply_storage_event(
         &mut self,
         event: &NativeStorageEvent,
@@ -218,10 +232,29 @@ pub(crate) struct NativeCookieChange {
     pub(crate) cookie: Option<NativeCookieProfileEntry>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct NativeStorageJournalRecord {
     pub(crate) writer_id: String,
     pub(crate) event: NativeStorageEvent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeStorageJournalRead {
+    pub(crate) records: Vec<NativeStorageJournalRecord>,
+    pub(crate) recovered: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct NativeStorageReaderLease {
+    reader_id: String,
+    cursor: u64,
+    heartbeat_unix_seconds: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct NativeStorageReaderLeaseFile {
+    version: u64,
+    readers: Vec<NativeStorageReaderLease>,
 }
 
 static NATIVE_STORAGE_WRITER_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -315,31 +348,263 @@ fn storage_event_journal_path(path: &Path) -> PathBuf {
     path.with_extension("events")
 }
 
+fn storage_reader_lease_path(path: &Path) -> PathBuf {
+    path.with_extension("readers")
+}
+
+fn complete_storage_journal_len(bytes: &[u8]) -> usize {
+    bytes
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(0, |index| index.saturating_add(1))
+}
+
+fn complete_storage_journal_prefix(bytes: &[u8], maximum: usize) -> usize {
+    let maximum = maximum.min(bytes.len());
+    if maximum == bytes.len() {
+        return maximum;
+    }
+    bytes[..maximum]
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(0, |index| index.saturating_add(1))
+}
+
+fn read_storage_reader_leases(
+    path: &Path,
+) -> Result<Vec<NativeStorageReaderLease>, NativeEngineError> {
+    let lease_path = storage_reader_lease_path(path);
+    let metadata = match fs::metadata(&lease_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => {
+            return Err(NativeEngineError::Worker {
+                operation: "read native Web Storage reader leases".into(),
+                reason: "native Web Storage reader lease metadata is unavailable".into(),
+            });
+        }
+    };
+    let lease_bytes = usize::try_from(metadata.len()).unwrap_or(usize::MAX);
+    if lease_bytes > MAX_NATIVE_STORAGE_READER_LEASE_BYTES {
+        return Err(NativeEngineError::limit(
+            "native Web Storage reader leases",
+            MAX_NATIVE_STORAGE_READER_LEASE_BYTES,
+            lease_bytes,
+        ));
+    }
+    let bytes = fs::read(&lease_path).map_err(|_| NativeEngineError::Worker {
+        operation: "read native Web Storage reader leases".into(),
+        reason: "native Web Storage reader leases cannot be read".into(),
+    })?;
+    let file: NativeStorageReaderLeaseFile = serde_json::from_slice(&bytes).map_err(|_| {
+        NativeEngineError::invalid(
+            "native Web Storage reader leases",
+            "must contain a valid reader lease file",
+        )
+    })?;
+    if file.version != NATIVE_STORAGE_READER_LEASE_VERSION {
+        return Err(NativeEngineError::invalid(
+            "native Web Storage reader lease version",
+            "is unsupported",
+        ));
+    }
+    if file.readers.len() > MAX_NATIVE_STORAGE_READER_LEASES {
+        return Err(NativeEngineError::limit(
+            "native Web Storage reader leases",
+            MAX_NATIVE_STORAGE_READER_LEASES,
+            file.readers.len(),
+        ));
+    }
+    for (index, reader) in file.readers.iter().enumerate() {
+        validate_context_id(&reader.reader_id)?;
+        if file.readers[..index]
+            .iter()
+            .any(|previous| previous.reader_id == reader.reader_id)
+        {
+            return Err(NativeEngineError::invalid(
+                "native Web Storage reader leases",
+                "must not contain duplicate reader IDs",
+            ));
+        }
+    }
+    Ok(file.readers)
+}
+
+fn write_storage_reader_leases(
+    path: &Path,
+    readers: &[NativeStorageReaderLease],
+) -> Result<(), NativeEngineError> {
+    let lease_path = storage_reader_lease_path(path);
+    if readers.is_empty() {
+        match fs::remove_file(&lease_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(_) => {
+                return Err(NativeEngineError::Worker {
+                    operation: "remove native Web Storage reader leases".into(),
+                    reason: "native Web Storage reader leases cannot be removed".into(),
+                });
+            }
+        }
+        return Ok(());
+    }
+    let file = NativeStorageReaderLeaseFile {
+        version: NATIVE_STORAGE_READER_LEASE_VERSION,
+        readers: readers.to_vec(),
+    };
+    let bytes = serde_json::to_vec(&file).map_err(|_| NativeEngineError::Worker {
+        operation: "encode native Web Storage reader leases".into(),
+        reason: "native Web Storage reader leases cannot be encoded".into(),
+    })?;
+    if bytes.len() > MAX_NATIVE_STORAGE_READER_LEASE_BYTES {
+        return Err(NativeEngineError::limit(
+            "native Web Storage reader leases",
+            MAX_NATIVE_STORAGE_READER_LEASE_BYTES,
+            bytes.len(),
+        ));
+    }
+    let temporary_path = lease_path.with_extension(format!("readers-tmp-{}", std::process::id()));
+    let mut temporary = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&temporary_path)
+        .map_err(|_| NativeEngineError::Worker {
+            operation: "write native Web Storage reader leases".into(),
+            reason: "native Web Storage reader leases cannot be opened".into(),
+        })?;
+    temporary
+        .write_all(&bytes)
+        .and_then(|_| temporary.sync_data())
+        .map_err(|_| NativeEngineError::Worker {
+            operation: "write native Web Storage reader leases".into(),
+            reason: "native Web Storage reader leases cannot be committed".into(),
+        })?;
+    drop(temporary);
+    if let Err(rename_error) = fs::rename(&temporary_path, &lease_path) {
+        let expected_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        let fallback = fs::copy(&temporary_path, &lease_path).and_then(|copied_bytes| {
+            (copied_bytes == expected_bytes)
+                .then_some(())
+                .ok_or_else(|| std::io::Error::from(ErrorKind::WriteZero))
+        });
+        if fallback.is_err() {
+            let _ = fs::remove_file(&temporary_path);
+            return Err(NativeEngineError::Worker {
+                operation: "write native Web Storage reader leases".into(),
+                reason: format!(
+                    "native Web Storage reader leases cannot be committed: {rename_error}"
+                ),
+            });
+        }
+        let _ = fs::remove_file(&temporary_path);
+    }
+    Ok(())
+}
+
+fn prune_storage_reader_leases(readers: &mut Vec<NativeStorageReaderLease>, now: u64) -> bool {
+    let original_len = readers.len();
+    readers.retain(|reader| {
+        now.saturating_sub(reader.heartbeat_unix_seconds)
+            <= NATIVE_STORAGE_READER_LEASE_TTL.as_secs()
+    });
+    readers.len() != original_len
+}
+
+fn upsert_storage_reader_lease(
+    readers: &mut Vec<NativeStorageReaderLease>,
+    reader_id: &str,
+    cursor: u64,
+    heartbeat_unix_seconds: u64,
+) -> Result<bool, NativeEngineError> {
+    validate_context_id(reader_id)?;
+    if let Some(reader) = readers
+        .iter_mut()
+        .find(|reader| reader.reader_id == reader_id)
+    {
+        let changed =
+            reader.cursor != cursor || reader.heartbeat_unix_seconds != heartbeat_unix_seconds;
+        reader.cursor = cursor;
+        reader.heartbeat_unix_seconds = heartbeat_unix_seconds;
+        return Ok(changed);
+    }
+    if readers.len() >= MAX_NATIVE_STORAGE_READER_LEASES {
+        return Err(NativeEngineError::limit(
+            "native Web Storage reader leases",
+            MAX_NATIVE_STORAGE_READER_LEASES,
+            readers.len().saturating_add(1),
+        ));
+    }
+    readers.push(NativeStorageReaderLease {
+        reader_id: reader_id.to_owned(),
+        cursor,
+        heartbeat_unix_seconds,
+    });
+    Ok(true)
+}
+
+pub(crate) fn register_storage_reader(
+    path: Option<&Path>,
+    reader_id: &str,
+    cursor: u64,
+) -> Result<(), NativeEngineError> {
+    let Some(path) = path else {
+        return Ok(());
+    };
+    let _lock = lock_web_storage_profile(path, true)?;
+    let now = unix_time_seconds();
+    let mut readers = read_storage_reader_leases(path)?;
+    let pruned = prune_storage_reader_leases(&mut readers, now);
+    let changed = upsert_storage_reader_lease(&mut readers, reader_id, cursor, now)?;
+    if pruned || changed {
+        write_storage_reader_leases(path, &readers)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn unregister_storage_reader(
+    path: Option<&Path>,
+    reader_id: &str,
+) -> Result<(), NativeEngineError> {
+    let Some(path) = path else {
+        return Ok(());
+    };
+    validate_context_id(reader_id)?;
+    let _lock = lock_web_storage_profile(path, true)?;
+    let mut readers = read_storage_reader_leases(path)?;
+    let original_len = readers.len();
+    readers.retain(|reader| reader.reader_id != reader_id);
+    if readers.len() != original_len {
+        write_storage_reader_leases(path, &readers)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn storage_event_cursor(path: Option<&Path>) -> Result<u64, NativeEngineError> {
     let Some(path) = path else {
         return Ok(0);
     };
     let _lock = lock_web_storage_profile(path, false)?;
     let journal_path = storage_event_journal_path(path);
-    let metadata = match fs::metadata(&journal_path) {
-        Ok(metadata) => metadata,
+    let bytes = match fs::read(&journal_path) {
+        Ok(bytes) => bytes,
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(0),
         Err(_) => {
             return Err(NativeEngineError::Worker {
                 operation: "open native Web Storage event journal".into(),
-                reason: "native Web Storage event journal metadata is unavailable".into(),
+                reason: "native Web Storage event journal cannot be read".into(),
             });
         }
     };
-    let bytes = usize::try_from(metadata.len()).unwrap_or(usize::MAX);
-    if bytes > MAX_WEB_STORAGE_EVENT_JOURNAL_BYTES {
+    let byte_len = bytes.len();
+    if byte_len > MAX_WEB_STORAGE_EVENT_JOURNAL_BYTES {
         return Err(NativeEngineError::limit(
             "native Web Storage event journal",
             MAX_WEB_STORAGE_EVENT_JOURNAL_BYTES,
-            bytes,
+            byte_len,
         ));
     }
-    Ok(metadata.len())
+    Ok(u64::try_from(complete_storage_journal_len(&bytes)).unwrap_or(u64::MAX))
 }
 
 fn validate_storage_journal_event(event: &NativeStorageEvent) -> Result<(), NativeEngineError> {
@@ -383,27 +648,36 @@ fn decode_storage_journal_record(
 
 pub(crate) fn read_storage_event_journal(
     path: Option<&Path>,
+    reader_id: &str,
     cursor: &mut u64,
-) -> Result<Vec<NativeStorageJournalRecord>, NativeEngineError> {
+) -> Result<NativeStorageJournalRead, NativeEngineError> {
     let Some(path) = path else {
-        return Ok(Vec::new());
+        return Ok(NativeStorageJournalRead {
+            records: Vec::new(),
+            recovered: false,
+        });
     };
-    let _lock = lock_web_storage_profile(path, false)?;
+    validate_context_id(reader_id)?;
+    let _lock = lock_web_storage_profile(path, true)?;
+    let now = unix_time_seconds();
+    let mut readers = read_storage_reader_leases(path)?;
+    let pruned = prune_storage_reader_leases(&mut readers, now);
+    let lease = readers
+        .iter()
+        .find(|reader| reader.reader_id == reader_id)
+        .cloned();
     let journal_path = storage_event_journal_path(path);
-    let metadata = match fs::metadata(&journal_path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == ErrorKind::NotFound => {
-            *cursor = 0;
-            return Ok(Vec::new());
-        }
+    let bytes = match fs::read(&journal_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == ErrorKind::NotFound => Vec::new(),
         Err(_) => {
             return Err(NativeEngineError::Worker {
                 operation: "read native Web Storage event journal".into(),
-                reason: "native Web Storage event journal metadata is unavailable".into(),
+                reason: "native Web Storage event journal cannot be read".into(),
             });
         }
     };
-    let journal_bytes = usize::try_from(metadata.len()).unwrap_or(usize::MAX);
+    let journal_bytes = bytes.len();
     if journal_bytes > MAX_WEB_STORAGE_EVENT_JOURNAL_BYTES {
         return Err(NativeEngineError::limit(
             "native Web Storage event journal",
@@ -411,35 +685,45 @@ pub(crate) fn read_storage_event_journal(
             journal_bytes,
         ));
     }
-    if *cursor > metadata.len() {
-        return Err(NativeEngineError::Worker {
-            operation: "read native Web Storage event journal".into(),
-            reason: "native Web Storage event journal was truncated while in use".into(),
-        });
+    let complete_len = complete_storage_journal_len(&bytes);
+    let mut recovered = false;
+    if let Some(lease) = lease.as_ref() {
+        *cursor = lease.cursor;
+    } else {
+        recovered = true;
+        *cursor = u64::try_from(complete_len).unwrap_or(u64::MAX);
     }
-    let bytes = fs::read(&journal_path).map_err(|_| NativeEngineError::Worker {
-        operation: "read native Web Storage event journal".into(),
-        reason: "native Web Storage event journal cannot be read".into(),
-    })?;
-    let start = usize::try_from(*cursor).unwrap_or(usize::MAX);
+    if *cursor > u64::try_from(complete_len).unwrap_or(u64::MAX) {
+        recovered = true;
+        *cursor = u64::try_from(complete_len).unwrap_or(u64::MAX);
+    }
     let mut next_cursor = *cursor;
     let mut records = Vec::new();
-    for line in bytes[start..].split_inclusive(|byte| *byte == b'\n') {
-        if line.last() != Some(&b'\n') {
-            break;
+    if !recovered {
+        let start = usize::try_from(*cursor).unwrap_or(usize::MAX);
+        for line in bytes[start..complete_len].split_inclusive(|byte| *byte == b'\n') {
+            let record_bytes = &line[..line.len().saturating_sub(1)];
+            if record_bytes.is_empty() {
+                return Err(NativeEngineError::invalid(
+                    "native Web Storage event journal",
+                    "must not contain empty records",
+                ));
+            }
+            records.push(decode_storage_journal_record(record_bytes)?);
+            next_cursor = next_cursor.saturating_add(u64::try_from(line.len()).unwrap_or(u64::MAX));
         }
-        let record_bytes = &line[..line.len().saturating_sub(1)];
-        if record_bytes.is_empty() {
-            return Err(NativeEngineError::invalid(
-                "native Web Storage event journal",
-                "must not contain empty records",
-            ));
-        }
-        records.push(decode_storage_journal_record(record_bytes)?);
-        next_cursor = next_cursor.saturating_add(u64::try_from(line.len()).unwrap_or(u64::MAX));
     }
     *cursor = next_cursor;
-    Ok(records)
+    let cursor_changed = lease.as_ref().is_none_or(|lease| lease.cursor != *cursor);
+    let heartbeat_due = lease.as_ref().is_none_or(|lease| {
+        now.saturating_sub(lease.heartbeat_unix_seconds)
+            >= NATIVE_STORAGE_READER_HEARTBEAT.as_secs()
+    });
+    if pruned || lease.is_none() || cursor_changed || heartbeat_due {
+        upsert_storage_reader_lease(&mut readers, reader_id, *cursor, now)?;
+        write_storage_reader_leases(path, &readers)?;
+    }
+    Ok(NativeStorageJournalRead { records, recovered })
 }
 
 pub(crate) fn append_storage_events(
@@ -473,10 +757,7 @@ pub(crate) fn append_storage_events(
             existing.len(),
         ));
     }
-    let complete_len = existing
-        .iter()
-        .rposition(|byte| *byte == b'\n')
-        .map_or(0, |index| index.saturating_add(1));
+    let complete_len = complete_storage_journal_len(&existing);
     if complete_len < existing.len() {
         let file = OpenOptions::new()
             .write(true)
@@ -506,29 +787,228 @@ pub(crate) fn append_storage_events(
         encoded.push(b'\n');
         payload.extend(encoded);
     }
-    let total = existing.len().saturating_add(payload.len());
-    if total > MAX_WEB_STORAGE_EVENT_JOURNAL_BYTES {
+    if payload.len() > MAX_WEB_STORAGE_EVENT_JOURNAL_BYTES {
         return Err(NativeEngineError::limit(
             "native Web Storage event journal",
             MAX_WEB_STORAGE_EVENT_JOURNAL_BYTES,
-            total,
+            payload.len(),
         ));
     }
-    let mut file = OpenOptions::new()
+    let now = unix_time_seconds();
+    let mut readers = read_storage_reader_leases(path)?;
+    let mut leases_changed = prune_storage_reader_leases(&mut readers, now);
+    let writer_can_acknowledge_existing = readers.iter().any(|reader| {
+        reader.reader_id == writer_id
+            && reader.cursor >= u64::try_from(existing.len()).unwrap_or(u64::MAX)
+    });
+    let total = existing.len().saturating_add(payload.len());
+    let mut compacted = false;
+    if total > MAX_WEB_STORAGE_EVENT_JOURNAL_BYTES {
+        let maximum_drop = readers
+            .iter()
+            .map(|reader| {
+                usize::try_from(reader.cursor)
+                    .unwrap_or(existing.len())
+                    .min(existing.len())
+            })
+            .min()
+            .unwrap_or(existing.len());
+        let drop_len = complete_storage_journal_prefix(&existing, maximum_drop);
+        if drop_len > 0 {
+            existing = existing[drop_len..].to_vec();
+            let dropped = u64::try_from(drop_len).unwrap_or(u64::MAX);
+            for reader in &mut readers {
+                reader.cursor = reader.cursor.saturating_sub(dropped);
+            }
+            compacted = true;
+        }
+    }
+    let total_after_compaction = existing.len().saturating_add(payload.len());
+    if total_after_compaction > MAX_WEB_STORAGE_EVENT_JOURNAL_BYTES {
+        return Err(NativeEngineError::limit(
+            "native Web Storage event journal",
+            MAX_WEB_STORAGE_EVENT_JOURNAL_BYTES,
+            total_after_compaction,
+        ));
+    }
+    if compacted {
+        existing.extend(payload);
+        write_storage_event_journal(&journal_path, &existing)?;
+    } else {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&journal_path)
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "append native Web Storage event journal".into(),
+                reason: "native Web Storage event journal cannot be opened".into(),
+            })?;
+        file.write_all(&payload)
+            .and_then(|_| file.sync_data())
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "append native Web Storage event journal".into(),
+                reason: "native Web Storage event journal cannot be committed".into(),
+            })?;
+    }
+    if writer_can_acknowledge_existing {
+        leases_changed |= upsert_storage_reader_lease(
+            &mut readers,
+            writer_id,
+            u64::try_from(total_after_compaction).unwrap_or(u64::MAX),
+            now,
+        )?;
+    }
+    if compacted || leases_changed {
+        write_storage_reader_leases(path, &readers)?;
+    }
+    Ok(())
+}
+
+fn write_storage_event_journal(path: &Path, bytes: &[u8]) -> Result<(), NativeEngineError> {
+    let temporary_path = path.with_extension(format!("events-tmp-{}", std::process::id()));
+    let mut temporary = OpenOptions::new()
         .create(true)
-        .append(true)
-        .open(&journal_path)
+        .truncate(true)
+        .write(true)
+        .open(&temporary_path)
         .map_err(|_| NativeEngineError::Worker {
-            operation: "append native Web Storage event journal".into(),
+            operation: "rewrite native Web Storage event journal".into(),
             reason: "native Web Storage event journal cannot be opened".into(),
         })?;
-    file.write_all(&payload)
-        .and_then(|_| file.sync_data())
+    temporary
+        .write_all(bytes)
+        .and_then(|_| temporary.sync_data())
         .map_err(|_| NativeEngineError::Worker {
-            operation: "append native Web Storage event journal".into(),
+            operation: "rewrite native Web Storage event journal".into(),
             reason: "native Web Storage event journal cannot be committed".into(),
         })?;
+    drop(temporary);
+    if let Err(rename_error) = fs::rename(&temporary_path, path) {
+        let expected_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        let fallback = fs::copy(&temporary_path, path).and_then(|copied_bytes| {
+            (copied_bytes == expected_bytes)
+                .then_some(())
+                .ok_or_else(|| std::io::Error::from(ErrorKind::WriteZero))
+        });
+        if fallback.is_err() {
+            let _ = fs::remove_file(&temporary_path);
+            return Err(NativeEngineError::Worker {
+                operation: "rewrite native Web Storage event journal".into(),
+                reason: format!(
+                    "native Web Storage event journal cannot be committed: {rename_error}"
+                ),
+            });
+        }
+        let _ = fs::remove_file(&temporary_path);
+    }
     Ok(())
+}
+
+#[cfg(test)]
+mod storage_journal_tests {
+    use super::*;
+
+    fn test_profile_path(label: &str) -> PathBuf {
+        let sequence = NATIVE_STORAGE_WRITER_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "glass-native-storage-journal-{}-{label}-{sequence}.json",
+            std::process::id()
+        ))
+    }
+
+    fn remove_test_profile(path: &Path) {
+        for suffix in ["", "lock", "events", "readers"] {
+            let candidate = if suffix.is_empty() {
+                path.to_owned()
+            } else {
+                path.with_extension(suffix)
+            };
+            let _ = fs::remove_file(candidate);
+        }
+        let _ = fs::remove_file(path.with_extension(format!("events-tmp-{}", std::process::id())));
+        let _ = fs::remove_file(path.with_extension(format!("readers-tmp-{}", std::process::id())));
+    }
+
+    fn journal_event(index: usize) -> NativeStorageEvent {
+        NativeStorageEvent {
+            source_context_id: "source".into(),
+            scope: "local".into(),
+            storage_key: "https://journal.test".into(),
+            key: Some(format!("key-{index}")),
+            old_value: None,
+            new_value: Some("x".repeat(crate::browser_backend::MAX_TEXT_BYTES)),
+            url: "https://journal.test/".into(),
+        }
+    }
+
+    #[test]
+    fn storage_event_journal_compacts_acknowledged_records() {
+        let profile_path = test_profile_path("compaction");
+        remove_test_profile(&profile_path);
+        let first_batch = (0..128).map(journal_event).collect::<Vec<_>>();
+        let second_batch = (128..256).map(journal_event).collect::<Vec<_>>();
+
+        register_storage_reader(Some(&profile_path), "reader", 0).unwrap();
+        append_storage_events(Some(&profile_path), "writer", &first_batch).unwrap();
+        let mut cursor = 0;
+        let first_read =
+            read_storage_event_journal(Some(&profile_path), "reader", &mut cursor).unwrap();
+        assert!(!first_read.recovered);
+        assert_eq!(first_read.records.len(), first_batch.len());
+        let first_end = cursor;
+        assert!(first_end > 0);
+
+        append_storage_events(Some(&profile_path), "writer", &second_batch).unwrap();
+        let journal_size = fs::metadata(storage_event_journal_path(&profile_path))
+            .unwrap()
+            .len();
+        assert!(journal_size <= MAX_WEB_STORAGE_EVENT_JOURNAL_BYTES as u64);
+
+        let second_read =
+            read_storage_event_journal(Some(&profile_path), "reader", &mut cursor).unwrap();
+        assert!(!second_read.recovered);
+        assert_eq!(second_read.records.len(), second_batch.len());
+        assert_eq!(second_read.records[0].event.key.as_deref(), Some("key-128"));
+        assert!(cursor > 0);
+
+        unregister_storage_reader(Some(&profile_path), "reader").unwrap();
+        remove_test_profile(&profile_path);
+    }
+
+    #[test]
+    fn storage_event_journal_recovers_without_reader_lease() {
+        let profile_path = test_profile_path("recovery");
+        remove_test_profile(&profile_path);
+        append_storage_events(
+            Some(&profile_path),
+            "writer",
+            &[NativeStorageEvent {
+                source_context_id: "source".into(),
+                scope: "local".into(),
+                storage_key: "https://journal.test".into(),
+                key: Some("key".into()),
+                old_value: None,
+                new_value: Some("value".into()),
+                url: "https://journal.test/".into(),
+            }],
+        )
+        .unwrap();
+
+        let mut cursor = 0;
+        let recovered =
+            read_storage_event_journal(Some(&profile_path), "crashed-reader", &mut cursor).unwrap();
+        assert!(recovered.recovered);
+        assert!(recovered.records.is_empty());
+        let recovered_cursor = cursor;
+        let next =
+            read_storage_event_journal(Some(&profile_path), "crashed-reader", &mut cursor).unwrap();
+        assert!(!next.recovered);
+        assert!(next.records.is_empty());
+        assert_eq!(cursor, recovered_cursor);
+
+        unregister_storage_reader(Some(&profile_path), "crashed-reader").unwrap();
+        remove_test_profile(&profile_path);
+    }
 }
 
 pub(crate) fn load_web_storage_profile(
@@ -1456,6 +1936,13 @@ impl NativeJavaScriptRuntime {
     pub(crate) fn set_storage_state(&self, state: NativeWebStorageState) {
         if let Ok(mut current) = self.storage.lock() {
             *current = state;
+        }
+    }
+
+    pub(crate) fn replace_storage_state(&self, state: NativeWebStorageState) {
+        self.set_storage_state(state);
+        if let Ok(mut pending) = self.pending_storage_events.lock() {
+            pending.clear();
         }
     }
 

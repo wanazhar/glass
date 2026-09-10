@@ -3377,6 +3377,37 @@ async fn call_native_tool(
         ToolInvocation::FindTarget { request } => {
             serialized_result_mode(&session.native_find_target(&request).await?, response_mode)
         }
+        ToolInvocation::Verify {
+            predicate,
+            timeout_ms,
+        } => {
+            let predicate: VerificationPredicate = serde_json::from_value(predicate)
+                .map_err(|error| format!("invalid verification predicate: {error}"))?;
+            if native_predicate_uses_javascript(&predicate) {
+                policy.require(crate::browser::policy::PolicyCapability::Evaluate)?;
+            }
+            serialized_result_mode(
+                &session
+                    .native_verify(predicate, Duration::from_millis(timeout_ms))
+                    .await?,
+                response_mode,
+            )
+        }
+        ToolInvocation::Wait {
+            condition,
+            timeout_ms,
+        } => {
+            let condition = WaitCondition::parse(condition)?;
+            if matches!(condition, WaitCondition::JavaScript(_)) {
+                policy.require(crate::browser::policy::PolicyCapability::Evaluate)?;
+            }
+            serialized_result_mode(
+                &session
+                    .native_wait(condition, Duration::from_millis(timeout_ms))
+                    .await?,
+                response_mode,
+            )
+        }
         ToolInvocation::Navigate {
             url,
             timeout_ms,
@@ -3817,6 +3848,23 @@ fn native_mcp_scroll_deltas(dx: f64, dy: f64) -> BrowserResult<(i32, i32)> {
         return Err("native MCP scroll deltas must be finite 32-bit integers".into());
     }
     Ok((dx as i32, dy as i32))
+}
+
+#[cfg(feature = "native-engine")]
+fn native_predicate_uses_javascript(predicate: &VerificationPredicate) -> bool {
+    match predicate {
+        VerificationPredicate::All { all } => all.iter().any(native_predicate_uses_javascript),
+        VerificationPredicate::Any { any } => any.iter().any(native_predicate_uses_javascript),
+        VerificationPredicate::Not { not } => native_predicate_uses_javascript(not),
+        VerificationPredicate::UrlEquals { .. }
+        | VerificationPredicate::TitleContains { .. }
+        | VerificationPredicate::Visible { .. }
+        | VerificationPredicate::TextContains { .. }
+        | VerificationPredicate::PopupOpened { .. }
+        | VerificationPredicate::DialogOpen { .. }
+        | VerificationPredicate::DownloadStarted { .. }
+        | VerificationPredicate::RevisionEquals { .. } => false,
+    }
 }
 
 async fn ensure_session<'a>(
@@ -6049,17 +6097,64 @@ mod tests {
                 .contains("entries")
         );
 
-        let unsupported = invoke_native_mcp_tool(
+        let wait = invoke_native_mcp_tool(
             "wait",
-            json!({"condition": "document.readyState === 'complete'"}),
+            json!({"condition": "text=Save", "timeoutMs": 100}),
             &mut session,
             &mut native_session,
             &options,
             &policy,
         )
         .await;
-        assert!(unsupported.error.is_none());
-        assert_eq!(unsupported.result.unwrap()["isError"], true);
+        assert!(wait.error.is_none());
+        let wait: Value =
+            serde_json::from_str(wait.result.unwrap()["content"][0]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(wait["condition"], "text");
+
+        let verify = invoke_native_mcp_tool(
+            "verify",
+            json!({
+                "predicate": {
+                    "all": [
+                        {"titleContains": "MCP"},
+                        {"textContains": "Save"}
+                    ]
+                },
+                "timeoutMs": 100
+            }),
+            &mut session,
+            &mut native_session,
+            &options,
+            &policy,
+        )
+        .await;
+        assert!(verify.error.is_none());
+        let verify: Value = serde_json::from_str(
+            verify.result.unwrap()["content"][0]["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(verify["status"], "satisfied");
+
+        let javascript = invoke_native_mcp_tool(
+            "wait",
+            json!({"condition": "js=document.readyState === 'complete'", "timeoutMs": 100}),
+            &mut session,
+            &mut native_session,
+            &options,
+            &policy,
+        )
+        .await;
+        assert!(javascript.error.is_none());
+        let javascript: Value = serde_json::from_str(
+            javascript.result.unwrap()["content"][0]["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(javascript["last_state"], "true");
         assert!(native_session.is_some());
         native_session.take().unwrap().close().await.unwrap();
     }

@@ -1228,6 +1228,15 @@ session expose the same discovery loop without creating Chromium. Rich
 landmark regions, structured extraction, TUI, and CDP replacement remain
 issue #40 gates.
 
+The completed bounded native synchronization batch is
+[native-engine-browser-135](tasks/native-engine-browser-135.md). Native
+`wait` and `verify` now use bounded polling over the native semantic
+observation and target-preflight surfaces, with standard Glass outcomes,
+timeouts, composed predicates, target stability, and evaluate-policy gating
+through the runtime session, CLI, and MCP. Request lifecycle accounting,
+popup/dialog/download topology, action-specific `act-and-verify`, universal
+workflow parity, and CDP replacement remain issue #40 gates.
+
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and
 constructed responses now share `Response` identity; `new Response`,

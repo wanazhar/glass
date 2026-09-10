@@ -135,6 +135,8 @@ scroll --dy DY
 screenshot --output PATH --format png
 inspect-page
 find-target INPUT
+verify PREDICATE_JSON [--timeout-ms MS]
+wait CONDITION [--timeout-ms MS]
 ```
 
 Native locators use `ref`, `id`, `role`, `name`, or `text` forms, plus the
@@ -153,6 +155,12 @@ observations fail before mutation. The backend is experimental, and local
 execution is not a security boundary for hostile content; external HTTP(S)
 documents use the native content worker. It never enters automatic selection
 or silently falls back to Chromium.
+
+Native `wait` supports `lifecycle=`, `url=`, `url-prefix=`, `text=`,
+`semantic-region=`, `js=` boolean, and target-state conditions. Native
+`verify` accepts the same JSON predicate forms used by the full session for
+URL, title, visibility, text, revision, and bounded composition. Both use
+bounded deadlines; JavaScript waits are subject to the active evaluate policy.
 
 Place global options before or after the subcommand.
 Compatibility spellings are limited to the aliases defined by Clap:

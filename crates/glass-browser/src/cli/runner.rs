@@ -539,6 +539,7 @@ fn validate_alternative_runtime_command(
         Commands::Evaluate { .. } if native => Ok(()),
         Commands::Preflight { .. } if native => Ok(()),
         Commands::InspectPage | Commands::FindTarget { .. } if native => Ok(()),
+        Commands::Verify { .. } | Commands::Wait { .. } if native => Ok(()),
         Commands::Dom | Commands::ClickAt { .. } | Commands::Scroll { .. } if native => Ok(()),
         Commands::Clear { .. }
         | Commands::Check { .. }
@@ -671,6 +672,47 @@ async fn run_alternative_runtime_command(
                     &read_json_input(Some(input))?,
                 )?)?;
                 print_json_mode(&session.native_find_target(&request).await?, response_mode)
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
+        }
+        Commands::Verify {
+            predicate,
+            timeout_ms,
+        } if session.runtime().is_native() => {
+            #[cfg(feature = "native-engine")]
+            {
+                let predicate: VerificationPredicate = serde_json::from_str(predicate)
+                    .map_err(|error| format!("invalid verification predicate: {error}"))?;
+                if native_predicate_uses_javascript(&predicate) {
+                    policy.require(PolicyCapability::Evaluate)?;
+                }
+                print_json_mode(
+                    &session
+                        .native_verify(predicate, Duration::from_millis(*timeout_ms))
+                        .await?,
+                    response_mode,
+                )
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
+        }
+        Commands::Wait {
+            condition,
+            timeout_ms,
+        } if session.runtime().is_native() => {
+            #[cfg(feature = "native-engine")]
+            {
+                let condition = WaitCondition::parse(condition)?;
+                if matches!(condition, WaitCondition::JavaScript(_)) {
+                    policy.require(PolicyCapability::Evaluate)?;
+                }
+                print_json_mode(
+                    &session
+                        .native_wait(condition, Duration::from_millis(*timeout_ms))
+                        .await?,
+                    response_mode,
+                )
             }
             #[cfg(not(feature = "native-engine"))]
             unreachable!("native runtime is feature-gated")
@@ -971,6 +1013,23 @@ fn native_scroll_deltas(dx: f64, dy: f64) -> BrowserResult<(i32, i32)> {
         return Err("native scroll deltas must be finite 32-bit integers".into());
     }
     Ok((dx as i32, dy as i32))
+}
+
+#[cfg(feature = "native-engine")]
+fn native_predicate_uses_javascript(predicate: &VerificationPredicate) -> bool {
+    match predicate {
+        VerificationPredicate::All { all } => all.iter().any(native_predicate_uses_javascript),
+        VerificationPredicate::Any { any } => any.iter().any(native_predicate_uses_javascript),
+        VerificationPredicate::Not { not } => native_predicate_uses_javascript(not),
+        VerificationPredicate::UrlEquals { .. }
+        | VerificationPredicate::TitleContains { .. }
+        | VerificationPredicate::Visible { .. }
+        | VerificationPredicate::TextContains { .. }
+        | VerificationPredicate::PopupOpened { .. }
+        | VerificationPredicate::DialogOpen { .. }
+        | VerificationPredicate::DownloadStarted { .. }
+        | VerificationPredicate::RevisionEquals { .. } => false,
+    }
 }
 
 #[cfg(feature = "native-engine")]
@@ -3529,6 +3588,14 @@ mod tests {
                 "find-target",
                 "intent.json",
             ],
+            vec![
+                "glass",
+                "--browser-runtime",
+                "native",
+                "verify",
+                r#"{"textContains":"Save"}"#,
+            ],
+            vec!["glass", "--browser-runtime", "native", "wait", "text=Save"],
         ] {
             let cli = Cli::try_parse_from(arguments).unwrap();
             validate_alternative_runtime_command(

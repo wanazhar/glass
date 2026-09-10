@@ -22,9 +22,9 @@ use super::javascript::{
 use super::origin::NativeOrigin;
 use super::resource_loader::{
     MAX_NATIVE_RESPONSE_HEADER_BYTES, MAX_NATIVE_RESPONSE_HEADER_NAME_BYTES,
-    MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES, MAX_NATIVE_RESPONSE_HEADERS, NativeFetchBody,
-    NativeFetchRequest, NativeFetchResponse, NativeNavigationMethod, NativeNavigationRequest,
-    NativeResourceLoader,
+    MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES, MAX_NATIVE_RESPONSE_HEADERS, NativeCorsMode,
+    NativeFetchBody, NativeFetchRequest, NativeFetchResponse, NativeNavigationMethod,
+    NativeNavigationRequest, NativeResourceLoader,
 };
 #[cfg(windows)]
 use super::sandbox::NativeContentSandbox;
@@ -1039,6 +1039,10 @@ fn decode_fetch_response(
                 })
         })
         .transpose()?;
+    let opaque = response
+        .get("opaque")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let headers = decode_fetch_headers(response)?;
     let encoded_body = response
         .get("body_base64")
@@ -1066,6 +1070,7 @@ fn decode_fetch_response(
         content_type,
         headers,
         body,
+        opaque,
     })
 }
 
@@ -1526,6 +1531,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             "status": fetch.status,
                             "content_type": fetch.content_type,
                             "headers": fetch.headers,
+                            "opaque": fetch.opaque,
                             "body_base64": base64::engine::general_purpose::STANDARD
                                 .encode(fetch.body),
                         })
@@ -3344,6 +3350,7 @@ fn fetch_commands(
         BTreeMap<String, String>,
         Option<NativeFetchBody>,
         Option<String>,
+        NativeCorsMode,
         Option<Duration>,
         bool,
     )>,
@@ -3361,6 +3368,7 @@ fn fetch_commands(
                 body,
                 body_base64,
                 content_type,
+                mode,
                 timeout_ms,
             } => Some((
                 *request_id,
@@ -3370,6 +3378,7 @@ fn fetch_commands(
                 body.clone(),
                 body_base64.clone(),
                 content_type.clone(),
+                mode.clone(),
                 *timeout_ms,
                 *credentials,
             )),
@@ -3384,6 +3393,7 @@ fn fetch_commands(
                 body,
                 body_base64,
                 content_type,
+                mode,
                 timeout_ms,
                 credentials,
             )| {
@@ -3394,6 +3404,17 @@ fn fetch_commands(
                     ));
                 }
                 let timeout = timeout_ms.map(|value| Duration::from_millis(u64::from(value)));
+                let cors_mode = match mode.as_deref().unwrap_or("cors") {
+                    "cors" => NativeCorsMode::Cors,
+                    "no-cors" => NativeCorsMode::NoCors,
+                    "same-origin" => NativeCorsMode::SameOrigin,
+                    _ => {
+                        return Err(NativeEngineError::invalid(
+                            "script fetch mode",
+                            "must be cors, no-cors, or same-origin",
+                        ));
+                    }
+                };
                 let method = match method.as_str() {
                     "GET" => NativeNavigationMethod::Get,
                     "POST" => NativeNavigationMethod::Post,
@@ -3432,6 +3453,7 @@ fn fetch_commands(
                     headers,
                     body,
                     content_type,
+                    cors_mode,
                     timeout,
                     credentials,
                 ))
@@ -3449,6 +3471,7 @@ fn fetch_response_payload(result: Result<NativeFetchResponse, NativeEngineError>
             "headers": response.headers,
             "body": String::from_utf8_lossy(&response.body),
             "bodyBase64": base64::engine::general_purpose::STANDARD.encode(&response.body),
+            "opaque": response.opaque,
         }),
         Err(error) => json!({
             "error": error.to_string(),
@@ -3479,8 +3502,17 @@ async fn resolve_script_fetches(
     )?;
     let mut pending = fetch_commands(&evaluation.commands)?;
     let mut resolved_count = 0usize;
-    while let Some((request_id, href, method, headers, body, content_type, timeout, credentials)) =
-        pending.pop()
+    while let Some((
+        request_id,
+        href,
+        method,
+        headers,
+        body,
+        content_type,
+        cors_mode,
+        timeout,
+        credentials,
+    )) = pending.pop()
     {
         resolved_count = resolved_count.saturating_add(1);
         if resolved_count > MAX_NATIVE_EFFECTS {
@@ -3499,6 +3531,7 @@ async fn resolve_script_fetches(
                     body,
                     content_type,
                     request_headers: headers,
+                    cors_mode,
                     timeout,
                     credentials,
                 })

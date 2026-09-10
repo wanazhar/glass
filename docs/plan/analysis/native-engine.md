@@ -2753,6 +2753,14 @@ rejection for locked or consumed bodies, shared tee/backpressure semantics,
 Request/Response constructors, and complete Response Web IDL parity remain
 open.
 
+The completed bounded Fetch Request-object follow-up is
+[native-engine-browser-118](../tasks/native-engine-browser-118.md). Bounded
+`Request` construction, cloning, and `fetch(request, overrides)` now reuse the
+existing GET/POST, header, mode, redirect, credentials, body, signal, CORS,
+abort, and transport owners. Full Request body streams, disturbance rules,
+URL/cache/referrer/integrity fields, duplex, and complete Request/Headers Web
+IDL parity remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

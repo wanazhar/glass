@@ -29149,7 +29149,7 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
     engine.initialize_async().await.unwrap();
     engine
         .evaluate_async(
-            "(() => { const headers = new Headers([['X-Glass-Token', 'alpha']]); headers.append('x-glass-token', 'beta'); headers.set('X-Glass-Extra', 'gamma'); headers.delete('x-glass-extra'); globalThis.requestHeaderView = [headers.get('x-glass-token'), headers.has('X-Glass-Token'), Array.from(headers.entries()), Array.from(headers.keys()), Array.from(headers.values()), headers.size]; fetch('/headers', { headers }).then(response => response.text()).then(value => { globalThis.headerFetch = value; }); })()",
+            "(() => { const headers = new Headers([['X-Glass-Token', 'alpha']]); headers.append('x-glass-token', 'beta'); headers.set('X-Glass-Extra', 'gamma'); headers.delete('x-glass-extra'); const request = new Request('/headers', { headers }); const requestClone = request.clone(); globalThis.requestObjectView = [request instanceof Request, request.method, request.url, request.mode, request.redirect, request.headers.get('x-glass-token'), requestClone.headers.get('x-glass-token'), requestClone !== request]; globalThis.requestHeaderView = [headers.get('x-glass-token'), headers.has('X-Glass-Token'), Array.from(headers.entries()), Array.from(headers.keys()), Array.from(headers.values()), headers.size]; fetch(requestClone).then(response => response.text()).then(value => { globalThis.headerFetch = value; }); })()",
         )
         .await
         .unwrap();
@@ -29165,6 +29165,22 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
             ["x-glass-token"],
             ["alpha, beta"],
             1
+        ])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.requestObjectView")
+            .await
+            .unwrap(),
+        serde_json::json!([
+            true,
+            "GET",
+            "/headers",
+            "cors",
+            "follow",
+            "alpha, beta",
+            "alpha, beta",
+            true,
         ])
     );
     assert_eq!(

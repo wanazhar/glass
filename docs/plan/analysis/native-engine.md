@@ -2475,6 +2475,16 @@ current object-store list and runs the existing upgrade callbacks. Cross-
 process live connection identity, complete `deleteDatabase` blocking,
 rollback, and the remaining browser-complete gates remain open.
 
+The completed bounded IndexedDB deletion-lifecycle follow-up is
+[native-engine-browser-082](../tasks/native-engine-browser-082.md).
+Same-realm `deleteDatabase()` dispatches `versionchange` with
+`newVersion: null`, keeps the request pending behind one `blocked` event while
+an older connection remains open, and removes state after the final connection
+calls `close()`. Missing deletes are successful no-ops and a later open can
+recreate the database. Cross-process live connection identity, full factory
+operation-queue ordering, rollback, and the remaining browser-complete gates
+remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

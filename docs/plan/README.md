@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-081` locally. The versioned
+`native-engine-browser-082` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -805,6 +805,15 @@ version-change transaction exposes its current object-store list and runs the
 existing upgrade callbacks. Cross-process live connection identity, complete
 `deleteDatabase` blocking, rollback, and the remaining browser-complete gates
 remain open.
+
+The completed bounded IndexedDB deletion-lifecycle slice is
+[native-engine-browser-082](tasks/native-engine-browser-082.md). Same-realm
+`deleteDatabase()` now dispatches `versionchange` with `newVersion: null`,
+emits one `blocked` event while an earlier connection remains open, and
+removes the database only after the final connection calls `close()`. Missing
+deletes remain successful no-ops, and a subsequent open can recreate the
+database. Cross-process live connection identity, full factory operation-queue
+ordering, rollback, and the remaining browser-complete gates remain open.
 
 Full cookie policy/Web IDL parity and the remaining browser-complete gates
 remain open.

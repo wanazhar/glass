@@ -3824,8 +3824,12 @@ fn document_bootstrap(
   const indexedDbPendingOpens = globalThis.__glassIndexedDbPendingOpens instanceof Map
     ? globalThis.__glassIndexedDbPendingOpens
     : new Map();
+  const indexedDbPendingDeletes = globalThis.__glassIndexedDbPendingDeletes instanceof Map
+    ? globalThis.__glassIndexedDbPendingDeletes
+    : new Map();
   globalThis.__glassIndexedDbConnections = indexedDbConnections;
   globalThis.__glassIndexedDbPendingOpens = indexedDbPendingOpens;
+  globalThis.__glassIndexedDbPendingDeletes = indexedDbPendingDeletes;
   if (!globalThis.__glassNativeIndexedDBInstalled) {{
   const indexedDbDatabaseLimit = {indexed_db_database_limit};
   const indexedDbStoreLimit = {indexed_db_store_limit};
@@ -4399,6 +4403,12 @@ fn document_bootstrap(
     const remaining = connections.filter(candidate => candidate !== database && !candidate.__closed);
     if (remaining.length === 0) indexedDbConnections.delete(database.name);
     else indexedDbConnections.set(database.name, remaining);
+    const pendingDelete = indexedDbPendingDeletes.get(database.name);
+    if (pendingDelete && remaining.length === 0) {{
+      indexedDbPendingDeletes.delete(database.name);
+      indexedDbSchedule(() => processIndexedDbDelete(pendingDelete, database.name));
+      return;
+    }}
     const pending = indexedDbPendingOpens.get(database.name);
     if (pending && remaining.length === 0) {{
       indexedDbPendingOpens.delete(database.name);
@@ -4524,6 +4534,37 @@ fn document_bootstrap(
       finishIndexedDbRequest(request, database, null, null);
     }}
   }};
+  const processIndexedDbDelete = (request, normalizedName) => {{
+    const databaseState = indexedDbState().databases[normalizedName];
+    if (!databaseState) {{
+      finishIndexedDbRequest(request, undefined, null, null);
+      return;
+    }}
+    const oldVersion = Number(databaseState.version);
+    const connections = indexedDbConnections.get(normalizedName) || [];
+    if (!request.__versionChangeNotified) {{
+      request.__versionChangeNotified = true;
+      for (const connection of connections) {{
+        if (connection.__closed || typeof connection.onversionchange !== "function") continue;
+        try {{ connection.onversionchange.call(connection, {{ target: connection, oldVersion, newVersion: null }}); }} catch (_error) {{}}
+      }}
+    }}
+    const remaining = (indexedDbConnections.get(normalizedName) || []).filter(connection => !connection.__closed);
+    if (remaining.length > 0) {{
+      indexedDbConnections.set(normalizedName, remaining);
+      if (!request.__blocked) {{
+        request.__blocked = true;
+        indexedDbPendingDeletes.set(normalizedName, request);
+        indexedDbSchedule(() => {{
+          if (typeof request.onblocked === "function") request.onblocked.call(request, {{ target: request, oldVersion, newVersion: null }});
+        }});
+      }}
+      return;
+    }}
+    indexedDbConnections.delete(normalizedName);
+    delete indexedDbState().databases[normalizedName];
+    finishIndexedDbRequest(request, undefined, null, null);
+  }};
   const nativeIndexedDB = {{
     __glassNativeIndexedDB: true,
     open(name, version) {{
@@ -4537,7 +4578,7 @@ fn document_bootstrap(
     deleteDatabase(name) {{
       const normalizedName = indexedDbName(name, "database name");
       const request = makeIndexedDbRequest();
-      indexedDbSchedule(() => {{ delete indexedDbState().databases[normalizedName]; finishIndexedDbRequest(request, undefined, null, null); }});
+      indexedDbSchedule(() => processIndexedDbDelete(request, normalizedName));
       return request;
     }},
     databases() {{

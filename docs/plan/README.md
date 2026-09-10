@@ -1061,6 +1061,13 @@ later mutations, and return self-iterating cursors while multipart serialization
 and `forEach()` stay on their existing owners. Complex deletion/reordering
 semantics and complete FormData/Web IDL parity remain open.
 
+The completed bounded live-request-Headers slice is
+[native-engine-browser-115](tasks/native-engine-browser-115.md). Mutable
+request `Headers` `entries()`, `keys()`, and `values()` now retain their owner,
+observe bounded `append()`/`set()` mutations, and return self-iterating cursors;
+immutable response-header views remain bounded snapshots. Full Headers Web IDL
+parity, raw response headers, and trailers remain open.
+
 Full cookie policy/Web IDL parity and the remaining browser-complete gates
 remain open.
 

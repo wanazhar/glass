@@ -715,6 +715,64 @@ async fn native_local_form_data_iterators_are_live_and_self_iterating() {
 }
 
 #[tokio::test]
+async fn native_local_request_headers_iterators_are_live_and_self_iterating() {
+    let config = NativeEngineConfig::default()
+        .with_fixture("fixture://headers-live", "<p>Headers</p>")
+        .unwrap()
+        .with_initial_url("fixture://headers-live");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            r#"(() => {
+                const headers = new Headers([['X-First', 'one'], ['X-Second', 'two']]);
+                const entries = headers.entries();
+                const first = entries.next();
+                headers.set('x-second', 'updated');
+                headers.append('X-Third', 'three');
+                const second = entries.next();
+                const third = entries.next();
+                const complete = entries.next();
+                const keys = headers.keys();
+                const firstKey = keys.next();
+                headers.append('X-Fourth', 'four');
+                const remainingKeys = [keys.next().value, keys.next().value, keys.next().value, keys.next().done];
+                globalThis.liveHeaders = [
+                    headers[Symbol.iterator] === headers.entries,
+                    entries[Symbol.iterator]() === entries,
+                    first.value,
+                    first.done,
+                    second.value,
+                    third.value,
+                    complete.done,
+                    firstKey.value,
+                    remainingKeys,
+                ];
+            })()"#,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.liveHeaders")
+            .await
+            .unwrap(),
+        serde_json::json!([
+            true,
+            true,
+            ["x-first", "one"],
+            false,
+            ["x-second", "updated"],
+            ["x-third", "three"],
+            true,
+            "x-first",
+            ["x-second", "x-third", "x-fourth", true],
+        ])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_script_applies_bounded_dom_commands_once() {
     let config = NativeEngineConfig::default()
         .with_fixture(

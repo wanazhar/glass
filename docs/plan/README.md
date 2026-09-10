@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-083` locally. The versioned
+`native-engine-browser-084` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -822,6 +822,14 @@ failure or explicit `abort()`, and deliver one `onabort` without a false
 `oncomplete`. Concurrent transaction scheduling, upgrade-failure rollback,
 structured-clone values, quota APIs, and the remaining browser-complete gates
 remain open.
+
+The completed bounded StorageManager quota slice is
+[native-engine-browser-084](tasks/native-engine-browser-084.md).
+`navigator.storage.estimate()` now reports deterministic JSON-size usage and
+the fixed 4 MiB native profile quota, while `persist()` and `persisted()` are
+stable asynchronous APIs that explicitly return `false` until a permission
+policy exists. Quota prompts, reservation, cross-process arbitration,
+structured-clone values, and the remaining browser-complete gates remain open.
 
 Full cookie policy/Web IDL parity and the remaining browser-complete gates
 remain open.

@@ -1204,6 +1204,16 @@ retain path/query/fragment and live `searchParams` state. Full encoding, IDNA,
 IPv6/default-port canonicalization, non-HTTP schemes, and complete URL/Web IDL
 identity remain open.
 
+The completed native-engine-browser-125 batch adds a bounded live
+`window.location` projection and navigation handoff. `assign()`, `replace()`,
+`reload()`, `href`, and URL-component setters emit typed commands that the
+existing Rust navigation owner resolves, validates, loads, and commits for
+both local and content-process documents. Same-document fragments preserve the
+document owner; `replace()` replaces the current history entry. Page-load and
+ownerless lifecycle re-entrant navigation fails explicitly, while nested
+contexts, full Location/Web IDL descriptors, and complete URL parsing remain
+open.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature

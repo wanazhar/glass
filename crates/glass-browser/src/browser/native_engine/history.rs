@@ -48,6 +48,27 @@ impl NativeHistory {
         self.current = self.entries.len().checked_sub(1);
     }
 
+    pub(crate) fn replace_current(
+        &mut self,
+        url: String,
+        revision: u64,
+        scroll_offset: NativePoint,
+    ) {
+        let Some(current) = self.current else {
+            self.push(url, revision, scroll_offset);
+            return;
+        };
+        if let Some(entry) = self.entries.get_mut(current) {
+            *entry = NativeHistoryEntry {
+                url,
+                revision,
+                scroll_offset,
+            };
+        } else {
+            self.push(url, revision, scroll_offset);
+        }
+    }
+
     pub fn entries(&self) -> &[NativeHistoryEntry] {
         &self.entries
     }

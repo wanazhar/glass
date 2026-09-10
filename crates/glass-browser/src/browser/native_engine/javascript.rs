@@ -4849,9 +4849,10 @@ fn document_bootstrap(
   }};
   const BlobNative = function(parts, options) {{
     this.__glassNativeBlob = true;
-    this._text = boundedBlobText(parts);
-    this._bytes = null;
-    this.size = this._text.length;
+    const payload = boundedBlobParts(parts);
+    this._text = payload.text;
+    this._bytes = payload.bytes;
+    this.size = Array.isArray(this._bytes) ? this._bytes.length : this._text.length;
     this.type = normalizeBlobType(options);
   }};
   const blobUtf8Bytes = (text) => {{
@@ -4874,6 +4875,41 @@ fn document_bootstrap(
     }}
     if (bytes.length > storageValueLimit) throw new RangeError("native Blob binary size limit exceeded");
     return bytes;
+  }};
+  const isBinaryBlobPart = (part) => (part && part.__glassNativeBlob === true && Array.isArray(part._bytes))
+    || part instanceof ArrayBuffer
+    || (typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(part));
+  const blobPartBytes = (part) => {{
+    if (part && part.__glassNativeBlob === true) return Array.isArray(part._bytes)
+      ? part._bytes.slice()
+      : blobUtf8Bytes(part._text);
+    if (part instanceof ArrayBuffer) {{
+      if (part.byteLength > storageValueLimit) throw new RangeError("native Blob binary size limit exceeded");
+      return Array.from(new Uint8Array(part));
+    }}
+    if (typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(part)) {{
+      if (part.byteLength > storageValueLimit) throw new RangeError("native Blob binary size limit exceeded");
+      return Array.from(new Uint8Array(part.buffer, part.byteOffset, part.byteLength));
+    }}
+    throw new TypeError("native Blob supports only text, buffers, or Blob parts");
+  }};
+  const boundedBlobParts = (parts) => {{
+    if (parts === undefined || parts === null) return {{ text: "", bytes: null }};
+    if (!Array.isArray(parts)) throw new TypeError("native Blob parts must be an array");
+    let text = "";
+    let bytes = null;
+    for (const part of parts) {{
+      if (bytes === null && !isBinaryBlobPart(part)) {{
+        text += blobPartText(part);
+        if (text.length > storageValueLimit) throw new RangeError("native Blob size limit exceeded");
+        continue;
+      }}
+      if (bytes === null) bytes = blobUtf8Bytes(text);
+      const partBytes = blobPartBytes(part);
+      if (bytes.length + partBytes.length > storageValueLimit) throw new RangeError("native Blob binary size limit exceeded");
+      for (const value of partBytes) bytes.push(value);
+    }}
+    return {{ text: bytes === null ? text : utf8TextFromBytes(bytes), bytes }};
   }};
   const base64Digit = (character) => {{
     const code = character.charCodeAt(0);

@@ -1038,6 +1038,14 @@ signals with first-reason propagation, empty-input non-abortion, and listener
 cleanup. Transport cancellation, XHR integration, and complete AbortSignal/Web
 IDL parity remain open.
 
+The completed bounded live-iterator slice is
+[native-engine-browser-112](tasks/native-engine-browser-112.md).
+URLSearchParams `entries()`, `keys()`, and `values()` now retain their owner,
+observe bounded later mutations, and return self-iterating cursors, while
+`[Symbol.iterator]` remains the `entries` method and existing encoding/body
+owners stay unchanged. Full Web IDL descriptor parity and complex deletion or
+reordering mutation semantics remain open.
+
 Full cookie policy/Web IDL parity and the remaining browser-complete gates
 remain open.
 

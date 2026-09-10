@@ -4,7 +4,6 @@
 //! objects and Web APIs, which are added in separate slices so every exposed
 //! capability has an explicit resource and security contract.
 
-use super::browsing_context::NATIVE_CONTEXT_ID;
 use super::config::{Viewport, validate_context_id, validate_url_text};
 use super::dom::{NativeDocument, NativePageScriptSource, NativePageScriptTiming};
 use super::error::NativeEngineError;
@@ -27,6 +26,10 @@ use url::Url;
 pub(crate) const MAX_NATIVE_SCRIPT_BYTES: usize = crate::browser_backend::MAX_TEXT_BYTES;
 /// Maximum JSON representation returned to the semantic backend.
 pub(crate) const MAX_NATIVE_SCRIPT_RESULT_BYTES: usize = crate::browser_backend::MAX_JSON_BYTES;
+/// Maximum structured-clone payload accepted by the native `postMessage`
+/// bridge. The payload is JSON-backed today, but the limit is kept separate
+/// so future transferable values cannot silently enlarge IPC frames.
+pub(crate) const MAX_NATIVE_POST_MESSAGE_BYTES: usize = 256 * 1024;
 /// Maximum inline page scripts executed while committing one document.
 pub(crate) const MAX_NATIVE_INLINE_SCRIPTS: usize = 32;
 pub(crate) const MAX_NATIVE_MODULE_IMPORTS: usize = 128;
@@ -89,6 +92,15 @@ pub(crate) enum NativeScriptCommand {
     OpenWindow {
         href: String,
         target: String,
+        #[serde(default)]
+        handle: Option<String>,
+    },
+    PostMessage {
+        target: String,
+        target_origin: String,
+        data: serde_json::Value,
+        #[serde(default)]
+        target_context_id: Option<String>,
     },
     Fetch {
         request_id: u32,
@@ -185,6 +197,24 @@ pub(crate) struct NativeScriptEvaluation {
 pub(crate) struct NativePopupRequest {
     pub(crate) url: String,
     pub(crate) target: String,
+    #[serde(default)]
+    pub(crate) handle: Option<String>,
+    #[serde(default, skip_serializing)]
+    pub(crate) source_context_id: String,
+}
+
+/// A bounded cross-context message emitted by a native page realm.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct NativePostMessageRequest {
+    pub(crate) target: String,
+    pub(crate) target_origin: String,
+    pub(crate) data: serde_json::Value,
+    #[serde(default)]
+    pub(crate) target_context_id: Option<String>,
+    #[serde(default, skip_serializing)]
+    pub(crate) source_context_id: String,
+    #[serde(default, skip_serializing)]
+    pub(crate) source_origin: String,
 }
 
 #[derive(Debug, Clone)]
@@ -2401,6 +2431,7 @@ pub(crate) fn order_page_scripts(
 pub(crate) fn execute_inline_scripts(
     document: &mut NativeDocument,
     runtime: &mut Option<NativeJavaScriptRuntime>,
+    context_id: &str,
     document_url: &str,
     document_origin: &NativeOrigin,
     viewport: Viewport,
@@ -2431,6 +2462,7 @@ pub(crate) fn execute_inline_scripts(
     execute_page_scripts(
         document,
         runtime,
+        context_id,
         &sources,
         document_url,
         document_origin,
@@ -2445,6 +2477,7 @@ pub(crate) fn execute_inline_scripts(
 pub(crate) fn execute_page_scripts(
     document: &mut NativeDocument,
     runtime: &mut Option<NativeJavaScriptRuntime>,
+    context_id: &str,
     sources: &[NativePageScript],
     document_url: &str,
     document_origin: &NativeOrigin,
@@ -2455,9 +2488,7 @@ pub(crate) fn execute_page_scripts(
     resource_load_nodes: &[u32],
 ) -> Result<NativePageScriptResult, NativeEngineError> {
     if runtime.is_none() {
-        *runtime = Some(NativeJavaScriptRuntime::new_with_context_id(
-            NATIVE_CONTEXT_ID,
-        )?);
+        *runtime = Some(NativeJavaScriptRuntime::new_with_context_id(context_id)?);
     }
     runtime
         .as_mut()
@@ -2692,6 +2723,50 @@ pub(crate) fn host_hash_change_event_script(
     Ok(Some(source))
 }
 
+/// Build the internal source used to deliver a cross-context `message` event.
+/// All page-controlled values are serialized as JSON data before entering the
+/// generated source; the receiving realm never evaluates them as JavaScript.
+pub(crate) fn host_message_event_script(
+    source_context_id: &str,
+    source_origin: &str,
+    data: &serde_json::Value,
+) -> Result<Option<String>, NativeEngineError> {
+    validate_context_id(source_context_id)?;
+    validate_url_text("message source origin", source_origin)?;
+    let data = serde_json::to_string(data).map_err(|_| NativeEngineError::Worker {
+        operation: "serialize message event".into(),
+        reason: "message data could not be serialized".into(),
+    })?;
+    if data.len() > MAX_NATIVE_POST_MESSAGE_BYTES {
+        return Err(NativeEngineError::limit(
+            "message event data",
+            MAX_NATIVE_POST_MESSAGE_BYTES,
+            data.len(),
+        ));
+    }
+    let source_context_id =
+        serde_json::to_string(source_context_id).map_err(|_| NativeEngineError::Worker {
+            operation: "serialize message event".into(),
+            reason: "message source context could not be serialized".into(),
+        })?;
+    let source_origin =
+        serde_json::to_string(source_origin).map_err(|_| NativeEngineError::Worker {
+            operation: "serialize message event".into(),
+            reason: "message source origin could not be serialized".into(),
+        })?;
+    let source = format!(
+        "globalThis.__glassDispatchMessage({{\"source_context_id\":{source_context_id},\"source_origin\":{source_origin},\"data\":{data}}})"
+    );
+    if source.len() > MAX_NATIVE_SCRIPT_BYTES {
+        return Err(NativeEngineError::limit(
+            "message event",
+            MAX_NATIVE_SCRIPT_BYTES,
+            source.len(),
+        ));
+    }
+    Ok(Some(source))
+}
+
 fn host_event_script_with_submitters(
     events: &[(u32, NativeEventKind, Option<u32>)],
 ) -> Result<Option<String>, NativeEngineError> {
@@ -2830,6 +2905,7 @@ pub(crate) struct NativeJavaScriptRuntime {
     cookie_updates: Arc<Mutex<Vec<String>>>,
     dialog_events: Arc<Mutex<Vec<NativeDialog>>>,
     popup_events: Arc<Mutex<Vec<NativePopupRequest>>>,
+    post_message_events: Arc<Mutex<Vec<NativePostMessageRequest>>>,
     storage_context_id: String,
     ready_state: String,
     clock_origin: Instant,
@@ -2879,6 +2955,7 @@ impl NativeJavaScriptRuntime {
             cookie_updates: Arc::new(Mutex::new(Vec::new())),
             dialog_events: Arc::new(Mutex::new(Vec::new())),
             popup_events: Arc::new(Mutex::new(Vec::new())),
+            post_message_events: Arc::new(Mutex::new(Vec::new())),
             storage_context_id: context_id.into(),
             ready_state: "complete".into(),
             clock_origin: Instant::now(),
@@ -3009,6 +3086,13 @@ impl NativeJavaScriptRuntime {
         self.popup_events
             .lock()
             .map(|mut popups| std::mem::take(&mut *popups))
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn take_post_message_events(&self) -> Vec<NativePostMessageRequest> {
+        self.post_message_events
+            .lock()
+            .map(|mut messages| std::mem::take(&mut *messages))
             .unwrap_or_default()
     }
 
@@ -3262,7 +3346,12 @@ impl NativeJavaScriptRuntime {
         &self,
         command: &NativeScriptCommand,
     ) -> Result<bool, NativeEngineError> {
-        let NativeScriptCommand::OpenWindow { href, target } = command else {
+        let NativeScriptCommand::OpenWindow {
+            href,
+            target,
+            handle,
+        } = command
+        else {
             return Ok(false);
         };
         validate_url_text("window.open URL", href)?;
@@ -3284,6 +3373,62 @@ impl NativeJavaScriptRuntime {
         popups.push(NativePopupRequest {
             url: href.clone(),
             target: target.clone(),
+            handle: handle.clone(),
+            source_context_id: String::new(),
+        });
+        Ok(true)
+    }
+
+    fn apply_post_message_command(
+        &self,
+        command: &NativeScriptCommand,
+    ) -> Result<bool, NativeEngineError> {
+        let NativeScriptCommand::PostMessage {
+            target,
+            target_origin,
+            data,
+            target_context_id,
+        } = command
+        else {
+            return Ok(false);
+        };
+        validate_url_text("postMessage target", target)?;
+        validate_url_text("postMessage target origin", target_origin)?;
+        if let Some(target_context_id) = target_context_id {
+            validate_context_id(target_context_id)?;
+        }
+        let encoded = serde_json::to_vec(data).map_err(|_| NativeEngineError::Worker {
+            operation: "record native postMessage".into(),
+            reason: "postMessage data could not be serialized".into(),
+        })?;
+        if encoded.len() > MAX_NATIVE_POST_MESSAGE_BYTES {
+            return Err(NativeEngineError::limit(
+                "native postMessage data",
+                MAX_NATIVE_POST_MESSAGE_BYTES,
+                encoded.len(),
+            ));
+        }
+        let mut messages =
+            self.post_message_events
+                .lock()
+                .map_err(|_| NativeEngineError::Worker {
+                    operation: "record native postMessage".into(),
+                    reason: "native postMessage queue is unavailable".into(),
+                })?;
+        if messages.len() >= super::interaction::MAX_NATIVE_EFFECTS {
+            return Err(NativeEngineError::limit(
+                "native postMessage requests",
+                super::interaction::MAX_NATIVE_EFFECTS,
+                messages.len().saturating_add(1),
+            ));
+        }
+        messages.push(NativePostMessageRequest {
+            target: target.clone(),
+            target_origin: target_origin.clone(),
+            data: data.clone(),
+            target_context_id: target_context_id.clone(),
+            source_context_id: String::new(),
+            source_origin: String::new(),
         });
         Ok(true)
     }
@@ -3319,6 +3464,7 @@ impl NativeJavaScriptRuntime {
         let bootstrap = document_bootstrap(
             document,
             document_url,
+            &self.storage_context_id,
             origin,
             viewport,
             &self.ready_state,
@@ -3386,6 +3532,9 @@ impl NativeJavaScriptRuntime {
                 if self.apply_popup_command(&command)? {
                     continue;
                 }
+                if self.apply_post_message_command(&command)? {
+                    continue;
+                }
                 document_commands.push(command);
             }
             let commands = document_commands;
@@ -3393,9 +3542,12 @@ impl NativeJavaScriptRuntime {
             self.set_indexed_db_state(indexed_db_state);
             let json = ctx
                 .json_stringify(value)
-                .map_err(|_| NativeEngineError::Worker {
+                .map_err(|error| NativeEngineError::Worker {
                     operation: "serialize JavaScript result".into(),
-                    reason: "JavaScript result could not be serialized".into(),
+                    reason: format!(
+                        "JavaScript result could not be serialized: {}",
+                        CaughtError::from_error(&ctx, error)
+                    ),
                 })?;
             let Some(json) = json else {
                 return Ok(NativeScriptEvaluation {
@@ -3502,6 +3654,7 @@ impl NativeJavaScriptRuntime {
         let bootstrap = document_bootstrap(
             document,
             document_url,
+            &self.storage_context_id,
             origin,
             viewport,
             &self.ready_state,
@@ -3549,6 +3702,9 @@ impl NativeJavaScriptRuntime {
                     continue;
                 }
                 if self.apply_popup_command(&command)? {
+                    continue;
+                }
+                if self.apply_post_message_command(&command)? {
                     continue;
                 }
                 document_commands.push(command);
@@ -3907,6 +4063,7 @@ pub(crate) fn storage_key(document_url: &str, origin: &NativeOrigin) -> String {
 fn document_bootstrap(
     document: &NativeDocument,
     document_url: &str,
+    context_id: &str,
     origin: &NativeOrigin,
     viewport: Viewport,
     ready_state: &str,
@@ -3920,6 +4077,7 @@ fn document_bootstrap(
     let state = document.script_snapshot(crate::browser_backend::MAX_TEXT_BYTES);
     let serialized = serde_json::to_string(&serde_json::json!({
         "url": document_url,
+        "context_id": context_id,
         "origin": origin.serialized(),
         "state": state,
         "now_ms": now_ms,
@@ -7228,6 +7386,65 @@ fn document_bootstrap(
   }});
   Object.freeze(location);
   globalThis.location = location;
+  const windowProxyCache = globalThis.__glassWindowProxyCache instanceof Map
+    ? globalThis.__glassWindowProxyCache
+    : new Map();
+  globalThis.__glassWindowProxyCache = windowProxyCache;
+  const cloneMessageData = (value) => {{
+    let encoded;
+    try {{ encoded = JSON.stringify(value); }} catch (_error) {{
+      throw new TypeError("message could not be cloned");
+    }}
+    if (encoded === undefined) throw new TypeError("message could not be cloned");
+    if (encoded.length > {post_message_bytes_limit}) throw new RangeError("native postMessage data exceeds its limit");
+    try {{ return JSON.parse(encoded); }} catch (_error) {{
+      throw new TypeError("message could not be cloned");
+    }}
+  }};
+  const queueWindowMessage = (handle, targetContextId, message, targetOrigin) => {{
+    const origin = targetOrigin === undefined ? "/" : String(targetOrigin);
+    if (origin.length === 0 || origin.length > {storage_key_limit}) throw new TypeError("invalid postMessage target origin");
+    pushCommand({{
+      kind: "postMessage",
+      target: String(handle || ""),
+      target_origin: origin,
+      data: cloneMessageData(message),
+      target_context_id: targetContextId || null,
+    }});
+  }};
+    const makeWindowProxy = (handle, targetName, targetContextId) => {{
+    const cacheKey = String(targetContextId || "") + "\\u0000" + String(handle || "");
+    const existing = windowProxyCache.get(cacheKey);
+    if (existing) return existing;
+    let closed = false;
+    const proxy = {{
+      get name() {{ return String(targetName || ""); }},
+      get closed() {{ return closed; }},
+      close() {{ closed = true; }},
+      postMessage(message, targetOrigin = "/") {{
+        queueWindowMessage(handle, targetContextId, message, targetOrigin);
+      }},
+      toJSON() {{
+        return {{ name: this.name, closed: this.closed }};
+      }},
+    }};
+    windowProxyCache.set(cacheKey, proxy);
+    return proxy;
+  }};
+  globalThis.postMessage = (message, targetOrigin = "/") =>
+    queueWindowMessage("", host.context_id, message, targetOrigin);
+  globalThis.__glassDispatchMessage = (descriptor) => {{
+    const event = createEvent("message", {{ bubbles: false, cancelable: false }});
+    event.data = descriptor && Object.prototype.hasOwnProperty.call(descriptor, "data")
+      ? descriptor.data
+      : null;
+    event.origin = String(descriptor && descriptor.source_origin || "null");
+    event.source = descriptor && descriptor.source_context_id
+      ? makeWindowProxy("source:" + String(descriptor.source_context_id), "", String(descriptor.source_context_id))
+      : null;
+    event.ports = [];
+    return dispatchTarget(globalThis, event);
+  }};
   globalThis.open = function open(value, target) {{
     const rawTarget = target === undefined || target === null ? "_blank" : String(target);
     const normalizedTarget = rawTarget || "_blank";
@@ -7237,14 +7454,36 @@ fn document_bootstrap(
       : new URLNative(String(value), locationUrl.href).href;
     if (["_self", "_parent", "_top", "_unfencedtop"].includes(lowerTarget)) {{
       navigateLocation(href, false);
-      return globalThis;
+      return makeWindowProxy("", "", host.context_id);
     }}
-    pushCommand({{ kind: "openWindow", href, target: normalizedTarget }});
-    return {{
-      name: normalizedTarget === "_blank" ? "" : normalizedTarget,
-      closed: false,
-      close() {{ this.closed = true; }},
-    }};
+    const windowHandles = globalThis.__glassWindowHandles instanceof Map
+      ? globalThis.__glassWindowHandles
+      : new Map();
+    globalThis.__glassWindowHandles = windowHandles;
+    let handle;
+    if (normalizedTarget === "_blank") {{
+      const next = Number.isSafeInteger(globalThis.__glassNextWindowHandle)
+        ? globalThis.__glassNextWindowHandle
+        : 1;
+      handle = "glass-window-" + next;
+      globalThis.__glassNextWindowHandle = next + 1;
+    }} else {{
+      handle = windowHandles.get(normalizedTarget);
+      if (!handle) {{
+        const next = Number.isSafeInteger(globalThis.__glassNextWindowHandle)
+          ? globalThis.__glassNextWindowHandle
+          : 1;
+        handle = "glass-window-" + next;
+        globalThis.__glassNextWindowHandle = next + 1;
+        windowHandles.set(normalizedTarget, handle);
+      }}
+    }}
+    pushCommand({{ kind: "openWindow", href, target: normalizedTarget, handle }});
+    return makeWindowProxy(
+      handle,
+      normalizedTarget === "_blank" ? "" : normalizedTarget,
+      null,
+    );
   }};
   globalThis.innerWidth = {width};
   globalThis.innerHeight = {height};
@@ -7339,6 +7578,7 @@ fn document_bootstrap(
         fetch_header_bytes_limit = MAX_NATIVE_FETCH_HEADER_BYTES,
         max_native_xhr_timeout_ms = MAX_NATIVE_XHR_TIMEOUT_MS,
         dialog_text_limit = MAX_NATIVE_DIALOG_TEXT_BYTES,
+        post_message_bytes_limit = MAX_NATIVE_POST_MESSAGE_BYTES,
         run_timers = run_timers,
         width = viewport.width,
         height = viewport.height,

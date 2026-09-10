@@ -1624,7 +1624,8 @@ impl NativeDocument {
                 | NativeScriptCommand::StorageClear { .. }
                 | NativeScriptCommand::CookieSet { .. }
                 | NativeScriptCommand::Dialog { .. }
-                | NativeScriptCommand::OpenWindow { .. } => {}
+                | NativeScriptCommand::OpenWindow { .. }
+                | NativeScriptCommand::PostMessage { .. } => {}
                 NativeScriptCommand::SetValue { node_index, value } => {
                     let id = NativeNodeId::from_parts(self.generation, *node_index);
                     self.apply_script_value(id, value)?;

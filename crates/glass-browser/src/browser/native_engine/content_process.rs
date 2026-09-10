@@ -15,12 +15,13 @@ use super::javascript::{
     MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_DIALOGS, MAX_NATIVE_INDEXED_DB_CHANGES,
     MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_SCRIPT_BYTES, MAX_NATIVE_XHR_TIMEOUT_MS,
     NativeCookieProfileEntry, NativeDialog, NativeIndexedDbChange, NativeIndexedDbState,
-    NativeJavaScriptRuntime, NativePageScript, NativePopupRequest, NativeScriptCommand,
-    NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState, diff_indexed_db_changes,
-    execute_page_scripts, host_event_script, host_hash_change_event_script, host_key_event_script,
-    host_key_event_script_with_modifiers, host_submit_event_script,
-    literal_dynamic_module_specifiers, load_indexed_db_profile, load_web_storage_profile,
-    order_page_scripts, save_web_storage_profile, static_module_specifiers, storage_key,
+    NativeJavaScriptRuntime, NativePageScript, NativePopupRequest, NativePostMessageRequest,
+    NativeScriptCommand, NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState,
+    diff_indexed_db_changes, execute_page_scripts, host_event_script,
+    host_hash_change_event_script, host_key_event_script, host_key_event_script_with_modifiers,
+    host_submit_event_script, literal_dynamic_module_specifiers, load_indexed_db_profile,
+    load_web_storage_profile, order_page_scripts, save_web_storage_profile,
+    static_module_specifiers, storage_key,
 };
 use super::origin::NativeOrigin;
 use super::resource_loader::{
@@ -45,7 +46,7 @@ use url::Url;
 
 const MAX_CONTENT_IPC_FRAME_BYTES: usize = 4 * 1024 * 1024;
 const MAX_CONTENT_DOCUMENT_WIRE_BYTES: usize = 2 * 1024 * 1024;
-const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 5;
+const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 6;
 const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTENT_PROCESS_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -63,6 +64,7 @@ pub(crate) struct NativeContentLoad {
     pub(crate) indexed_db_changes: Vec<NativeIndexedDbChange>,
     pub(crate) dialogs: Vec<NativeDialog>,
     pub(crate) popups: Vec<NativePopupRequest>,
+    pub(crate) post_messages: Vec<NativePostMessageRequest>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -89,6 +91,7 @@ pub(crate) struct NativeContentMutation {
     pub(crate) indexed_db_changes: Vec<NativeIndexedDbChange>,
     pub(crate) dialogs: Vec<NativeDialog>,
     pub(crate) popups: Vec<NativePopupRequest>,
+    pub(crate) post_messages: Vec<NativePostMessageRequest>,
 }
 
 pub(crate) struct NativeContentScriptResult {
@@ -98,6 +101,7 @@ pub(crate) struct NativeContentScriptResult {
     pub(crate) indexed_db_changes: Vec<NativeIndexedDbChange>,
     pub(crate) dialogs: Vec<NativeDialog>,
     pub(crate) popups: Vec<NativePopupRequest>,
+    pub(crate) post_messages: Vec<NativePostMessageRequest>,
 }
 
 /// Process-backed lifecycle and bounded document-transfer channel for one
@@ -945,6 +949,7 @@ fn decode_loaded_response(
     let indexed_db_changes = decode_indexed_db_changes(response, "decode content process load")?;
     let dialogs = decode_dialogs(response, "decode content process load")?;
     let popups = decode_popup_requests(response, "decode content process load")?;
+    let post_messages = decode_post_message_requests(response, "decode content process load")?;
     let frame_sources = decode_frame_sources(response, "decode content process load")?;
     Ok(NativeContentLoad {
         url: url.into(),
@@ -956,6 +961,7 @@ fn decode_loaded_response(
         indexed_db_changes,
         dialogs,
         popups,
+        post_messages,
     })
 }
 
@@ -1110,6 +1116,7 @@ fn decode_mutation_payload(
     let indexed_db_changes = decode_indexed_db_changes(response, operation)?;
     let dialogs = decode_dialogs(response, operation)?;
     let popups = decode_popup_requests(response, operation)?;
+    let post_messages = decode_post_message_requests(response, operation)?;
     Ok(NativeContentMutation {
         document,
         events,
@@ -1122,6 +1129,7 @@ fn decode_mutation_payload(
         indexed_db_changes,
         dialogs,
         popups,
+        post_messages,
     })
 }
 
@@ -1159,6 +1167,55 @@ fn decode_popup_requests(
         }
     }
     Ok(popups)
+}
+
+fn decode_post_message_requests(
+    response: &Value,
+    operation: &str,
+) -> Result<Vec<NativePostMessageRequest>, NativeEngineError> {
+    let Some(value) = response.get("post_messages") else {
+        return Ok(Vec::new());
+    };
+    let values = value.as_array().ok_or_else(|| NativeEngineError::Worker {
+        operation: operation.into(),
+        reason: "content process returned invalid postMessage requests".into(),
+    })?;
+    if values.len() > MAX_NATIVE_EFFECTS {
+        return Err(NativeEngineError::limit(
+            "content-process postMessage requests",
+            MAX_NATIVE_EFFECTS,
+            values.len(),
+        ));
+    }
+    let messages =
+        serde_json::from_value::<Vec<NativePostMessageRequest>>(value.clone()).map_err(|_| {
+            NativeEngineError::Worker {
+                operation: operation.into(),
+                reason: "content process returned malformed postMessage requests".into(),
+            }
+        })?;
+    for message in &messages {
+        validate_url_text("content-process postMessage target", &message.target)?;
+        validate_url_text(
+            "content-process postMessage target origin",
+            &message.target_origin,
+        )?;
+        if let Some(target_context_id) = message.target_context_id.as_deref() {
+            validate_context_id(target_context_id)?;
+        }
+        let encoded = serde_json::to_vec(&message.data).map_err(|_| NativeEngineError::Worker {
+            operation: operation.into(),
+            reason: "content process returned unserializable postMessage data".into(),
+        })?;
+        if encoded.len() > super::javascript::MAX_NATIVE_POST_MESSAGE_BYTES {
+            return Err(NativeEngineError::limit(
+                "content-process postMessage data",
+                super::javascript::MAX_NATIVE_POST_MESSAGE_BYTES,
+                encoded.len(),
+            ));
+        }
+    }
+    Ok(messages)
 }
 
 fn decode_content_navigation(
@@ -1433,6 +1490,7 @@ fn decode_script_response(
         None
     };
     let has_mutation = mutation.is_some();
+    let post_messages = decode_post_message_requests(&response, "decode content process script")?;
     Ok(NativeContentScriptResult {
         value,
         storage_events: if has_mutation {
@@ -1447,6 +1505,11 @@ fn decode_script_response(
             Vec::new()
         } else {
             decode_popup_requests(&response, "decode content process script")?
+        },
+        post_messages: if has_mutation {
+            Vec::new()
+        } else {
+            post_messages
         },
     })
 }
@@ -1844,6 +1907,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         let page_scripts = execute_page_scripts(
                             &mut parsed,
                             &mut script_runtime,
+                            &storage_context_id,
                             &script_sources,
                             &resource.url,
                             &resource.origin,
@@ -2868,7 +2932,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 }
             }
             "close" if protocol_matches(&request) => {
-                let (storage_events, indexed_db_changes, _dialogs, _popups) =
+                let (storage_events, indexed_db_changes, _dialogs, _popups, _post_messages) =
                     sync_content_runtime_state(
                         javascript_runtime.as_ref(),
                         &mut storage_state,
@@ -2896,14 +2960,15 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 },
             ),
         };
-        let (storage_events, indexed_db_changes, dialogs, popups) = sync_content_runtime_state(
-            javascript_runtime.as_ref(),
-            &mut storage_state,
-            &mut indexed_db_state,
-            &mut resource_loader,
-            document_url.as_deref(),
-            document_origin.as_ref(),
-        )?;
+        let (storage_events, indexed_db_changes, dialogs, popups, post_messages) =
+            sync_content_runtime_state(
+                javascript_runtime.as_ref(),
+                &mut storage_state,
+                &mut indexed_db_state,
+                &mut resource_loader,
+                document_url.as_deref(),
+                document_origin.as_ref(),
+            )?;
         persist_content_profile(
             storage_profile_path.as_deref(),
             &storage_state,
@@ -2919,6 +2984,16 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 "content-process dialogs",
                 MAX_NATIVE_DIALOGS,
                 response_dialogs.len(),
+            ));
+        }
+        let mut response_post_messages =
+            decode_post_message_requests(&response, "merge content process postMessage")?;
+        response_post_messages.extend(post_messages);
+        if response_post_messages.len() > MAX_NATIVE_EFFECTS {
+            return Err(NativeEngineError::limit(
+                "content-process postMessage requests",
+                MAX_NATIVE_EFFECTS,
+                response_post_messages.len(),
             ));
         }
         if let Some(object) = response.as_object_mut() {
@@ -2952,6 +3027,15 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     reason: "content process popups could not be encoded".into(),
                 })?,
             );
+            object.insert(
+                "post_messages".into(),
+                serde_json::to_value(response_post_messages).map_err(|_| {
+                    NativeEngineError::Worker {
+                        operation: "encode content process postMessage requests".into(),
+                        reason: "content process postMessage requests could not be encoded".into(),
+                    }
+                })?,
+            );
         }
         write_value_frame(&mut stdout, &response).await?;
     }
@@ -2970,11 +3054,12 @@ fn sync_content_runtime_state(
         Vec<NativeIndexedDbChange>,
         Vec<NativeDialog>,
         Vec<NativePopupRequest>,
+        Vec<NativePostMessageRequest>,
     ),
     NativeEngineError,
 > {
     let Some(runtime) = runtime else {
-        return Ok((Vec::new(), Vec::new(), Vec::new(), Vec::new()));
+        return Ok((Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()));
     };
     let before_indexed_db = indexed_db_state.clone();
     *storage_state = runtime.storage_state();
@@ -2998,6 +3083,7 @@ fn sync_content_runtime_state(
         indexed_db_changes,
         runtime.take_dialog_events(),
         runtime.take_popup_events(),
+        runtime.take_post_message_events(),
     ))
 }
 
@@ -3252,6 +3338,7 @@ async fn load_content_resource(
             indexed_db_changes: Vec::new(),
             dialogs: Vec::new(),
             popups: Vec::new(),
+            post_messages: Vec::new(),
         },
         document,
         viewport,
@@ -3564,6 +3651,7 @@ fn mutate_click_with_event_preflight(
         indexed_db_changes: Vec::new(),
         dialogs: Vec::new(),
         popups: Vec::new(),
+        post_messages: Vec::new(),
     };
     Ok((next, mutation))
 }
@@ -3671,6 +3759,7 @@ fn mutate_type_with_event_bridge(
         indexed_db_changes: Vec::new(),
         dialogs: Vec::new(),
         popups: Vec::new(),
+        post_messages: Vec::new(),
     };
     Ok((next, mutation))
 }
@@ -3727,6 +3816,7 @@ fn mutate_form_action_with_event_bridge(
         indexed_db_changes: Vec::new(),
         dialogs: Vec::new(),
         popups: Vec::new(),
+        post_messages: Vec::new(),
     };
     Ok((next, mutation))
 }
@@ -3828,6 +3918,7 @@ fn mutate_key_with_event_bridge(
         indexed_db_changes: Vec::new(),
         dialogs: Vec::new(),
         popups: Vec::new(),
+        post_messages: Vec::new(),
     };
     Ok((next, mutation))
 }
@@ -3889,6 +3980,7 @@ fn mutate_key_event_with_event_bridge(
             indexed_db_changes: Vec::new(),
             dialogs: Vec::new(),
             popups: Vec::new(),
+            post_messages: Vec::new(),
         },
     ))
 }
@@ -4000,6 +4092,7 @@ fn mutate_key_shortcut_with_event_bridge(
             indexed_db_changes: Vec::new(),
             dialogs: Vec::new(),
             popups: Vec::new(),
+            post_messages: Vec::new(),
         },
     ))
 }
@@ -4101,6 +4194,7 @@ fn mutate_before_unload(
             indexed_db_changes: Vec::new(),
             dialogs: Vec::new(),
             popups: Vec::new(),
+            post_messages: Vec::new(),
         },
     ))
 }
@@ -4125,6 +4219,7 @@ fn mutate_lifecycle_events(
                 indexed_db_changes: Vec::new(),
                 dialogs: Vec::new(),
                 popups: Vec::new(),
+                post_messages: Vec::new(),
             },
         ));
     }
@@ -4170,6 +4265,7 @@ fn mutate_lifecycle_events(
             indexed_db_changes: Vec::new(),
             dialogs: Vec::new(),
             popups: Vec::new(),
+            post_messages: Vec::new(),
         },
     ))
 }
@@ -4221,6 +4317,7 @@ fn mutate_hash_change(
             indexed_db_changes: Vec::new(),
             dialogs: Vec::new(),
             popups: Vec::new(),
+            post_messages: Vec::new(),
         },
     ))
 }
@@ -4343,6 +4440,7 @@ fn mutate_script_document(
         indexed_db_changes: Vec::new(),
         dialogs: Vec::new(),
         popups: Vec::new(),
+        post_messages: Vec::new(),
     };
     Ok((next, mutation))
 }

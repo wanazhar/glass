@@ -19,12 +19,13 @@ use super::interaction::{
 use super::javascript::{
     MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_DIALOGS, NativeCookieProfileEntry, NativeDialog,
     NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime, NativePageNavigation,
-    NativePopupRequest, NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState,
-    append_storage_changes, apply_indexed_db_changes, diff_indexed_db_changes,
-    execute_inline_scripts, host_event_script, host_hash_change_event_script,
-    host_submit_event_script, load_indexed_db_profile, load_web_storage_profile,
-    new_storage_writer_id, read_storage_event_journal, register_storage_reader,
-    save_web_storage_profile, storage_event_cursor, storage_key, unregister_storage_reader,
+    NativePopupRequest, NativePostMessageRequest, NativeScriptEvaluation, NativeStorageEvent,
+    NativeWebStorageState, append_storage_changes, apply_indexed_db_changes,
+    diff_indexed_db_changes, execute_inline_scripts, host_event_script,
+    host_hash_change_event_script, host_message_event_script, host_submit_event_script,
+    load_indexed_db_profile, load_web_storage_profile, new_storage_writer_id,
+    read_storage_event_journal, register_storage_reader, save_web_storage_profile,
+    storage_event_cursor, storage_key, unregister_storage_reader,
 };
 use super::layout::{NativeLayoutSnapshot, NativePoint, NativeRect};
 use super::lifecycle::NativeLifecycleState;
@@ -337,6 +338,7 @@ pub struct NativeEngine {
     request_ledger: NativeRequestLedger,
     pending_downloads: VecDeque<NativePendingDownload>,
     pending_popups: VecDeque<NativePopupRequest>,
+    pending_post_messages: VecDeque<NativePostMessageRequest>,
     completed_download_ids: VecDeque<String>,
     completed_downloads: u64,
     next_download_id: u64,
@@ -406,6 +408,7 @@ impl NativeEngine {
             request_ledger: NativeRequestLedger::new(),
             pending_downloads: VecDeque::new(),
             pending_popups: VecDeque::new(),
+            pending_post_messages: VecDeque::new(),
             completed_download_ids: VecDeque::new(),
             completed_downloads: 0,
             next_download_id: 1,
@@ -875,6 +878,11 @@ impl NativeEngine {
             let mut content = content_result?;
             self.publish_content_state(&content.storage_events, &content.indexed_db_changes)?;
             self.queue_popup_requests(std::mem::take(&mut content.popups))?;
+            let content_origin = content.origin.clone();
+            self.queue_post_message_requests_from_origin(
+                std::mem::take(&mut content.post_messages),
+                &content_origin,
+            )?;
             let Some(page_navigation) = content.navigation.clone() else {
                 return Ok((content, history_commit, page_navigation_handoffs));
             };
@@ -1214,6 +1222,7 @@ impl NativeEngine {
                 indexed_db_changes,
                 dialogs,
                 popups,
+                post_messages,
             } = {
                 let process = self
                     .content_process
@@ -1242,6 +1251,7 @@ impl NativeEngine {
             } else {
                 self.publish_content_state(&storage_events, &indexed_db_changes)?;
                 self.queue_popup_requests(popups)?;
+                self.queue_post_message_requests(post_messages)?;
                 let dialog_url = self.url.clone();
                 self.install_dialogs(dialogs, &dialog_url)?;
             }
@@ -1578,10 +1588,15 @@ impl NativeEngine {
         self.queue_popup_request(NativePopupRequest {
             url,
             target: "_blank".into(),
+            handle: None,
+            source_context_id: String::new(),
         })
     }
 
-    fn queue_popup_request(&mut self, popup: NativePopupRequest) -> Result<(), NativeEngineError> {
+    fn queue_popup_request(
+        &mut self,
+        mut popup: NativePopupRequest,
+    ) -> Result<(), NativeEngineError> {
         if self.pending_popups.len() >= MAX_NATIVE_PENDING_POPUPS {
             return Err(NativeEngineError::limit(
                 "native pending popups",
@@ -1591,6 +1606,14 @@ impl NativeEngine {
         }
         validate_url_text("popup target URL", &popup.url)?;
         validate_url_text("popup target name", &popup.target)?;
+        if let Some(handle) = popup.handle.as_deref() {
+            validate_url_text("popup window handle", handle)?;
+        }
+        if popup.source_context_id.is_empty() {
+            popup.source_context_id = self.config.context_id.clone();
+        } else {
+            super::config::validate_context_id(&popup.source_context_id)?;
+        }
         self.pending_popups.push_back(popup);
         Ok(())
     }
@@ -1605,8 +1628,91 @@ impl NativeEngine {
         Ok(())
     }
 
+    fn queue_post_message_request(
+        &mut self,
+        mut message: NativePostMessageRequest,
+    ) -> Result<(), NativeEngineError> {
+        if self.pending_post_messages.len() >= MAX_NATIVE_PENDING_POPUPS {
+            return Err(NativeEngineError::limit(
+                "native pending postMessage requests",
+                MAX_NATIVE_PENDING_POPUPS,
+                self.pending_post_messages.len().saturating_add(1),
+            ));
+        }
+        validate_url_text("postMessage target", &message.target)?;
+        validate_url_text("postMessage target origin", &message.target_origin)?;
+        if let Some(target_context_id) = message.target_context_id.as_deref() {
+            super::config::validate_context_id(target_context_id)?;
+        }
+        let encoded = serde_json::to_vec(&message.data).map_err(|_| NativeEngineError::Worker {
+            operation: "queue native postMessage".into(),
+            reason: "postMessage data could not be serialized".into(),
+        })?;
+        if encoded.len() > super::javascript::MAX_NATIVE_POST_MESSAGE_BYTES {
+            return Err(NativeEngineError::limit(
+                "native postMessage data",
+                super::javascript::MAX_NATIVE_POST_MESSAGE_BYTES,
+                encoded.len(),
+            ));
+        }
+        if message.source_context_id.is_empty() {
+            message.source_context_id = self.config.context_id.clone();
+        } else {
+            super::config::validate_context_id(&message.source_context_id)?;
+        }
+        if message.source_origin.is_empty() {
+            message.source_origin = self.origin.serialized();
+        } else {
+            validate_url_text("postMessage source origin", &message.source_origin)?;
+        }
+        self.pending_post_messages.push_back(message);
+        Ok(())
+    }
+
+    fn queue_post_message_requests(
+        &mut self,
+        messages: Vec<NativePostMessageRequest>,
+    ) -> Result<(), NativeEngineError> {
+        for message in messages {
+            self.queue_post_message_request(message)?;
+        }
+        Ok(())
+    }
+
+    fn queue_post_message_requests_from_origin(
+        &mut self,
+        messages: Vec<NativePostMessageRequest>,
+        origin: &NativeOrigin,
+    ) -> Result<(), NativeEngineError> {
+        for mut message in messages {
+            if message.source_origin.is_empty() {
+                message.source_origin = origin.serialized();
+            }
+            self.queue_post_message_request(message)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn take_pending_popups(&mut self) -> Vec<NativePopupRequest> {
         self.pending_popups.drain(..).collect()
+    }
+
+    pub(crate) fn take_pending_post_messages(&mut self) -> Vec<NativePostMessageRequest> {
+        self.pending_post_messages.drain(..).collect()
+    }
+
+    pub(crate) async fn dispatch_post_message(
+        &mut self,
+        source_context_id: &str,
+        source_origin: &str,
+        data: &serde_json::Value,
+    ) -> Result<(), NativeEngineError> {
+        self.require_running("message event")?;
+        let Some(source) = host_message_event_script(source_context_id, source_origin, data)?
+        else {
+            return Ok(());
+        };
+        self.evaluate_async(source).await.map(|_| ())
     }
 
     /// Resolve one queued JavaScript dialog without creating a browser or
@@ -1817,6 +1923,7 @@ impl NativeEngine {
                     && !href.is_empty()
                 {
                     if self.javascript.is_some() {
+                        self.preflight_local_link_navigation(id, &href)?;
                         return self.action_local_click_with_event_preflight(id);
                     }
                     return self.activate_link(id, &href, false);
@@ -2719,7 +2826,13 @@ impl NativeEngine {
             .as_ref()
             .map(NativeJavaScriptRuntime::take_popup_events)
             .unwrap_or_default();
-        self.queue_popup_requests(popups)
+        self.queue_popup_requests(popups)?;
+        let messages = self
+            .javascript
+            .as_ref()
+            .map(NativeJavaScriptRuntime::take_post_message_events)
+            .unwrap_or_default();
+        self.queue_post_message_requests(messages)
     }
 
     fn dispatch_local_events(
@@ -3076,6 +3189,27 @@ impl NativeEngine {
         })
     }
 
+    /// Validate the synchronous local default-navigation path before running
+    /// click handlers. Event dispatch is transactional from the caller's
+    /// perspective: an unsupported destination must not leave focus, event
+    /// effects, or a revision behind merely because the handler ran first.
+    fn preflight_local_link_navigation(
+        &self,
+        id: NativeNodeId,
+        href: &str,
+    ) -> Result<(), NativeEngineError> {
+        if self.document.link_download_attribute(id).is_some()
+            || self.document.link_opens_new_target(id)
+        {
+            return Ok(());
+        }
+        let target_url = self.resolve_link_href(href)?;
+        if !self.allows_frame_navigation(&target_url)? {
+            return Ok(());
+        }
+        self.loader.load(&target_url).map(|_| ())
+    }
+
     fn action_local_submit_click_without_script(
         &mut self,
         id: NativeNodeId,
@@ -3304,6 +3438,7 @@ impl NativeEngine {
         mut mutation: NativeContentMutation,
     ) -> Result<NativeActionResult, NativeEngineError> {
         self.queue_popup_requests(std::mem::take(&mut mutation.popups))?;
+        self.queue_post_message_requests(std::mem::take(&mut mutation.post_messages))?;
         self.publish_content_state(&mutation.storage_events, &mutation.indexed_db_changes)?;
         let dialogs = mutation.dialogs.clone();
         let generation = self.document.generation();
@@ -3391,6 +3526,11 @@ impl NativeEngine {
         click_already_applied: bool,
     ) -> Result<NativeActionResult, NativeEngineError> {
         let target_url = self.resolve_link_href(href)?;
+        let revision = if click_already_applied {
+            self.revision
+        } else {
+            self.next_revision()?
+        };
         if let Some(download_attribute) =
             self.document.link_download_attribute(id).map(str::to_owned)
         {
@@ -3406,7 +3546,6 @@ impl NativeEngine {
             } else {
                 self.document.apply_click(id)?
             };
-            let revision = self.next_revision()?;
             self.document.set_revision(revision);
             self.revision = revision;
             self.history.update_current_scroll(self.scroll_offset);
@@ -3423,7 +3562,6 @@ impl NativeEngine {
             } else {
                 self.document.apply_click(id)?
             };
-            let revision = self.next_revision()?;
             self.document.set_revision(revision);
             self.revision = revision;
             self.history.update_current_scroll(self.scroll_offset);
@@ -3443,7 +3581,6 @@ impl NativeEngine {
             let revision = if click_already_applied {
                 self.revision
             } else {
-                let revision = self.next_revision()?;
                 self.document.set_revision(revision);
                 self.revision = revision;
                 self.history.update_current_scroll(self.scroll_offset);
@@ -3460,7 +3597,6 @@ impl NativeEngine {
             });
         }
         let resource = self.loader.load(&target_url)?;
-        let revision = self.next_revision()?;
         if self.is_same_document_navigation(&resource.url) {
             let scroll_offset = self.fragment_scroll_offset(&resource.url)?;
             self.run_commit_task(
@@ -3484,7 +3620,7 @@ impl NativeEngine {
             });
         }
 
-        let prepared = self.prepare_navigation_resource(resource)?;
+        let prepared = self.prepare_navigation_resource_at_revision(resource, revision)?;
         let scroll_offset = self.fragment_scroll_offset_for_document(
             &prepared.document,
             &prepared.resource.url,
@@ -3720,7 +3856,15 @@ impl NativeEngine {
         resource: NativeResource,
     ) -> Result<PreparedNavigation, NativeEngineError> {
         let next_revision = self.next_revision()?;
-        let generation = u32::try_from(next_revision).map_err(|_| {
+        self.prepare_navigation_resource_at_revision(resource, next_revision)
+    }
+
+    fn prepare_navigation_resource_at_revision(
+        &self,
+        resource: NativeResource,
+        revision: u64,
+    ) -> Result<PreparedNavigation, NativeEngineError> {
+        let generation = u32::try_from(revision).map_err(|_| {
             NativeEngineError::limit("document generations", u32::MAX as usize, usize::MAX)
         })?;
         let document =
@@ -3761,6 +3905,7 @@ impl NativeEngine {
             let result = execute_inline_scripts(
                 &mut prepared.document,
                 &mut javascript,
+                &self.config.context_id,
                 &prepared.resource.url,
                 &prepared.resource.origin,
                 self.config.viewport,
@@ -3774,6 +3919,11 @@ impl NativeEngine {
                 .map(NativeJavaScriptRuntime::take_popup_events)
                 .unwrap_or_default();
             self.queue_popup_requests(popups)?;
+            let messages = javascript
+                .as_ref()
+                .map(NativeJavaScriptRuntime::take_post_message_events)
+                .unwrap_or_default();
+            self.queue_post_message_requests_from_origin(messages, &prepared.resource.origin)?;
             result.navigation
         } else {
             None
@@ -3849,6 +3999,7 @@ impl NativeEngine {
             let result = execute_inline_scripts(
                 &mut prepared.document,
                 &mut javascript,
+                &self.config.context_id,
                 &prepared.resource.url,
                 &prepared.resource.origin,
                 self.config.viewport,
@@ -3862,6 +4013,11 @@ impl NativeEngine {
                 .map(NativeJavaScriptRuntime::take_popup_events)
                 .unwrap_or_default();
             self.queue_popup_requests(popups)?;
+            let messages = javascript
+                .as_ref()
+                .map(NativeJavaScriptRuntime::take_post_message_events)
+                .unwrap_or_default();
+            self.queue_post_message_requests_from_origin(messages, &prepared.resource.origin)?;
             result.navigation
         } else {
             None

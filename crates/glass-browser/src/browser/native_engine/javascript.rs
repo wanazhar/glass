@@ -12,7 +12,7 @@ use super::interaction::NativeEventKind;
 use super::origin::NativeOrigin;
 use fs2::FileExt;
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
-use rquickjs::{Context, Error, Module, Runtime, Value};
+use rquickjs::{CaughtError, Context, Error, Module, Runtime, Value};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
@@ -3141,16 +3141,22 @@ impl NativeJavaScriptRuntime {
                 Err(_) if contains_await_token(source) => (
                     ctx.eval_promise(source)
                         .and_then(|promise| promise.finish::<Value>())
-                        .map_err(|_| NativeEngineError::Worker {
+                        .map_err(|error| NativeEngineError::Worker {
                             operation: "evaluate JavaScript".into(),
-                            reason: "JavaScript evaluation failed".into(),
+                            reason: format!(
+                                "JavaScript evaluation failed: {}",
+                                CaughtError::from_error(&ctx, error)
+                            ),
                         })?,
                     true,
                 ),
-                Err(_) => {
+                Err(error) => {
                     return Err(NativeEngineError::Worker {
                         operation: "evaluate JavaScript".into(),
-                        reason: "JavaScript evaluation failed".into(),
+                        reason: format!(
+                            "JavaScript evaluation failed: {}",
+                            CaughtError::from_error(&ctx, error)
+                        ),
                     });
                 }
             };
@@ -5355,6 +5361,10 @@ fn document_bootstrap(
       }}
     }} else pathname = rest || ((protocol === "http:" || protocol === "https:") ? "/" : "");
     const at = authority.lastIndexOf("@");
+    const userInfo = at < 0 ? "" : authority.slice(0, at);
+    const credentialSeparator = userInfo.indexOf(":");
+    const username = credentialSeparator < 0 ? userInfo : userInfo.slice(0, credentialSeparator);
+    const password = credentialSeparator < 0 ? "" : userInfo.slice(credentialSeparator + 1);
     const hostPort = at < 0 ? authority : authority.slice(at + 1);
     let hostname = hostPort;
     let port = "";
@@ -5383,6 +5393,8 @@ fn document_bootstrap(
       protocol,
       origin,
       authority,
+      username,
+      password,
       host: hostPort,
       hostname,
       port,
@@ -5418,11 +5430,12 @@ fn document_bootstrap(
   const URLNative = function(input, base) {{
     const parts = nativeUrlParts(nativeUrlResolve(input && input.__glassUrl === true ? input.href : input, base));
     const state = {{
+      hasAuthority: Boolean(parts.authority),
       prefix: parts.authority ? parts.protocol + "//" + parts.authority : parts.protocol,
       origin: parts.origin,
       protocol: parts.protocol,
-      username: "",
-      password: "",
+      username: parts.username,
+      password: parts.password,
       host: parts.host,
       hostname: parts.hostname,
       port: parts.port,
@@ -5432,9 +5445,12 @@ fn document_bootstrap(
     }};
     const searchParams = new URLSearchParamsNative(parts.search);
     const updateParts = (next) => {{
+      state.hasAuthority = Boolean(next.authority);
       state.prefix = next.authority ? next.protocol + "//" + next.authority : next.protocol;
       state.origin = next.origin;
       state.protocol = next.protocol;
+      state.username = next.username;
+      state.password = next.password;
       state.host = next.host;
       state.hostname = next.hostname;
       state.port = next.port;
@@ -5443,6 +5459,30 @@ fn document_bootstrap(
       state.hash = next.hash;
       searchParams._entries = new URLSearchParamsNative(next.search)._entries;
     }};
+    const credentialsFor = (username, password) => username || password
+      ? username + (password ? ":" + password : "") + "@"
+      : "";
+    const currentCredentials = () => credentialsFor(state.username, state.password);
+    const currentAuthority = () => currentCredentials() + state.host;
+    const requireAuthority = () => {{
+      if (!state.hasAuthority) throw new TypeError("native URL authority mutation requires a host");
+    }};
+    const replaceAuthority = (authority, protocol = state.protocol) => {{
+      requireAuthority();
+      const next = nativeUrlParts(protocol + "//" + authority + state.pathname + state.search + state.hash);
+      updateParts(next);
+    }};
+    const validateHost = value => {{
+      const source = String(value);
+      if (!source || /[\/\?#@\s]/.test(source)) throw new TypeError("native URL host is invalid");
+      if (!source.startsWith("[") && source.includes(":") && !/:[0-9]+$/.test(source))
+        throw new TypeError("native URL host port is invalid");
+      const parsed = nativeUrlParts(state.protocol + "//" + source + "/");
+      if (!parsed.host || (parsed.port && Number(parsed.port) > 65535))
+        throw new TypeError("native URL host is invalid");
+      return parsed.host;
+    }};
+    const normalizeCredential = value => encodeURIComponent(String(value));
     const currentHref = () => state.prefix + state.pathname + state.search + state.hash;
     const syncSearch = () => {{
       const encoded = searchParams.toString();
@@ -5464,12 +5504,55 @@ fn document_bootstrap(
       set: value => updateParts(nativeUrlParts(nativeUrlResolve(value, currentHref()))),
     }});
     define("origin", () => state.origin);
-    define("protocol", () => state.protocol);
-    define("username", () => state.username);
-    define("password", () => state.password);
-    define("host", () => state.host);
-    define("hostname", () => state.hostname);
-    define("port", () => state.port);
+    Object.defineProperty(this, "protocol", {{
+      enumerable: true,
+      get: () => state.protocol,
+      set: value => {{
+        const source = String(value).toLowerCase();
+        const protocol = source.endsWith(":") ? source : source + ":";
+        if (!["http:", "https:"].includes(protocol)) throw new TypeError("native URL protocol is unsupported");
+        if (protocol !== state.protocol) replaceAuthority(currentAuthority(), protocol);
+      }},
+    }});
+    Object.defineProperty(this, "username", {{
+      enumerable: true,
+      get: () => state.username,
+      set: value => replaceAuthority(credentialsFor(normalizeCredential(value), state.password) + state.host),
+    }});
+    Object.defineProperty(this, "password", {{
+      enumerable: true,
+      get: () => state.password,
+      set: value => replaceAuthority(credentialsFor(state.username, normalizeCredential(value)) + state.host),
+    }});
+    Object.defineProperty(this, "host", {{
+      enumerable: true,
+      get: () => state.host,
+      set: value => replaceAuthority(currentCredentials() + validateHost(value)),
+    }});
+    Object.defineProperty(this, "hostname", {{
+      enumerable: true,
+      get: () => state.hostname,
+      set: value => {{
+        const source = String(value);
+        if (!source || /[\/\?#@\s]/.test(source) || (!source.startsWith("[") && source.includes(":")))
+          throw new TypeError("native URL hostname is invalid");
+        if (source.startsWith("[") && !/^\[[^\]]+\]$/.test(source))
+          throw new TypeError("native URL hostname is invalid");
+        const host = source + (state.port ? ":" + state.port : "");
+        replaceAuthority(currentCredentials() + validateHost(host));
+      }},
+    }});
+    Object.defineProperty(this, "port", {{
+      enumerable: true,
+      get: () => state.port,
+      set: value => {{
+        const source = String(value);
+        if (source && (!/^[0-9]+$/.test(source) || Number(source) > 65535))
+          throw new TypeError("native URL port is invalid");
+        const host = state.hostname + (source ? ":" + source : "");
+        replaceAuthority(currentCredentials() + validateHost(host));
+      }},
+    }});
     Object.defineProperty(this, "pathname", {{
       enumerable: true,
       get: () => state.pathname,

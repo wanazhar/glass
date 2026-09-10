@@ -2784,6 +2784,14 @@ The completed bounded URL-component-setter follow-up is
 Request/Fetch handoff. Authority/protocol setters, complete parser/encoding/
 IDNA/IPv6/default-port behavior, and complete URL/Web IDL identity remain open.
 
+The completed bounded URL-authority-setter follow-up is
+[native-engine-browser-124](../tasks/native-engine-browser-124.md). HTTP(S) URL
+`protocol`, `host`, `hostname`, `port`, `username`, and `password` setters now
+rebuild the same URL owner, refresh origin/href, retain path/query/fragment
+state, and preserve the live `searchParams` owner. Full URL encoding, IDNA,
+IPv6/default-port canonicalization, non-HTTP schemes, and complete URL/Web IDL
+parity remain open.
+
 The completed bounded Response-constructor follow-up is
 [native-engine-browser-120](../tasks/native-engine-browser-120.md). Fetched and
 constructed responses now share `Response` identity; `new Response`,

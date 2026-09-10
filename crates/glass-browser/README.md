@@ -469,7 +469,10 @@ versioned native owner. WindowProxy `postMessage()` now crosses local and
 HTTP(S) realms, including the content-worker boundary, with bounded cloned
 data, serialized origins, source proxies, and explicit `targetOrigin`
 filtering. Direct cross-context property scripting, popup permissions/geometry,
-and full browser topology remain later issue #40 gates.
+and full browser topology remain later issue #40 gates. Native browsing contexts
+also expose bounded `window.name` and `window.opener` metadata across local and
+HTTP(S) page loads, and a renamed target can be reused by later named
+`window.open` calls.
 
 ## Safety and support
 

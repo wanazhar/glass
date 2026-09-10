@@ -1,7 +1,8 @@
 # Native browser engine
 
-Status: Browser-complete expansion planned; the bounded Phase 2/initial Phase 3
-foundation below remains experimental until the issue #40 production gates pass.
+Status: Browser-complete expansion is active through the completed
+`native-engine-browser-150` slice; the bounded foundation below remains
+experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
 viewport-scroll/side-specific-border/bounded-pattern-border/bounded-corner-radius/
@@ -1478,6 +1479,16 @@ bounded JSON clones, so transferables and arbitrary cross-origin Window
 property access remain outside this slice. `window.opener`, mutable
 `window.name`, popup permission/geometry, frame lifecycle/shared scripting, and
 complete browser topology remain issue #40 gates.
+
+The completed native-engine-browser-150 batch adds browsing-context identity.
+Local and HTTP(S) realms now carry bounded `window.name` and opener metadata
+through target creation and content-worker startup. `window.opener` is null
+for root contexts and a bounded proxy for popup contexts; child scripts can
+read the opener name, mutate their own name, send opener messages, and have a
+later named-target open reuse the renamed context. The opener name is captured
+at child creation; live cross-context property scripting, popup
+permission/geometry, frame lifecycle/shared scripting, and complete browser
+topology remain separate issue #40 gates.
 
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third

@@ -1625,6 +1625,7 @@ impl NativeDocument {
                 | NativeScriptCommand::CookieSet { .. }
                 | NativeScriptCommand::Dialog { .. }
                 | NativeScriptCommand::OpenWindow { .. }
+                | NativeScriptCommand::SetWindowName { .. }
                 | NativeScriptCommand::PostMessage { .. } => {}
                 NativeScriptCommand::SetValue { node_index, value } => {
                     let id = NativeNodeId::from_parts(self.generation, *node_index);

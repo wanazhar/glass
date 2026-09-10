@@ -3056,8 +3056,18 @@ through `event.source` work for both local pages and HTTP(S) pages crossing the
 protocol-6 content-worker boundary. Source metadata is assigned by the trusted
 parent rather than accepted from worker output, and nested effects remain
 bounded. Transferables, arbitrary cross-origin Window property scripting,
-`window.opener`, mutable `window.name`, popup permission/geometry, frame
-lifecycle/shared scripting, and complete browser parity remain open.
+popup permission/geometry, frame lifecycle/shared scripting, and complete
+browser parity remain open.
+
+The completed native-engine-browser-150 slice adds browsing-context identity.
+Native target configuration and the versioned content-worker start path now
+carry bounded `window.name` and opener context metadata. Root realms expose a
+null opener; popup realms expose a bounded opener proxy with the opener name.
+Name setter effects are synchronized back to the parent target registry, so a
+later named `window.open` can reuse a context after its name changes. The
+opener name is snapshotted at child creation; live arbitrary cross-context
+property access, popup permission/geometry, frame lifecycle/shared scripting,
+and complete browser parity remain issue #40 gates.
 
 The completed native-engine-browser-133 batch extends the native target seam
 with a side-effect-free preflight result. The engine resolves the current

@@ -1037,6 +1037,12 @@ boundary, filename, MIME, and text-field contracts remain authoritative;
 streaming FormData, upload progress, iterator identity, and complete
 FormData/Blob Web IDL parity remain open.
 
+The completed native-engine-browser-103 batch adds a bounded mutable request
+`Headers` surface. Fetch accepts records, pair sequences, and native `Headers`
+instances; names and values use the existing bounds and forbidden-header
+policy, while response headers remain read-only snapshots. Full Headers Web
+IDL identity and exotic iterable parity remain open.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature

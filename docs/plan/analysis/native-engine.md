@@ -2632,6 +2632,13 @@ the existing bounded serializer, preserving boundary, filename, MIME, and
 text-field behavior. Streaming FormData, upload progress, iterator identity,
 and complete FormData/Blob Web IDL parity remain open.
 
+The completed bounded Fetch `Headers` init/mutation follow-up is
+[native-engine-browser-103](../tasks/native-engine-browser-103.md). Native
+Fetch now accepts bounded records, pair sequences, and native `Headers`
+instances with case-insensitive append/set/delete/get/iteration behavior;
+response headers remain read-only snapshots, and full Headers Web IDL identity
+and exotic iterable parity remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

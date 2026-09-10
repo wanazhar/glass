@@ -568,7 +568,8 @@ async fn native_local_abort_signal_timeout_and_any_follow_host_turns() {
                 const immediateController = new AbortController();
                 const immediate = AbortSignal.any([immediateController.signal]);
                 immediateController.abort();
-                globalThis.abortSignalState = { timeoutSignal, combined, events, immediate, empty: AbortSignal.any([]) };
+                const staticAbort = AbortSignal.abort('static-reason');
+                globalThis.abortSignalState = { timeoutSignal, combined, events, immediate, empty: AbortSignal.any([]), staticAbort };
             })()"#,
         )
         .await
@@ -576,11 +577,11 @@ async fn native_local_abort_signal_timeout_and_any_follow_host_turns() {
     assert_eq!(
         engine
             .evaluate_async(
-                "[abortSignalState.timeoutSignal.aborted, abortSignalState.combined.aborted, abortSignalState.immediate.aborted, abortSignalState.empty.aborted]",
+                "[abortSignalState.timeoutSignal.aborted, abortSignalState.combined.aborted, abortSignalState.immediate.aborted, abortSignalState.empty.aborted, abortSignalState.staticAbort.aborted, abortSignalState.staticAbort.reason]",
             )
             .await
             .unwrap(),
-        serde_json::json!([false, false, true, false])
+        serde_json::json!([false, false, true, false, true, "static-reason"])
     );
     tokio::time::sleep(Duration::from_millis(230)).await;
     assert_eq!(

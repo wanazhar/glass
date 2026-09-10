@@ -1046,6 +1046,14 @@ observe bounded later mutations, and return self-iterating cursors, while
 owners stay unchanged. Full Web IDL descriptor parity and complex deletion or
 reordering mutation semantics remain open.
 
+The completed bounded static-abort slice is
+[native-engine-browser-113](tasks/native-engine-browser-113.md).
+`AbortSignal.abort(reason)` now creates an already-aborted signal with the
+default or supplied reason through the existing signal consumers, without
+allocating a timer or dispatching a post-construction event. Transport
+cancellation, XHR integration, and complete AbortSignal/Web IDL parity remain
+open.
+
 Full cookie policy/Web IDL parity and the remaining browser-complete gates
 remain open.
 

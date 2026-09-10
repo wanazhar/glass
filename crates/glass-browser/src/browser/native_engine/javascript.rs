@@ -5453,6 +5453,12 @@ fn document_bootstrap(
     }}, Math.trunc(numeric), [], false);
     return signal;
   }};
+  AbortSignalNative.abort = function(reason) {{
+    const signal = new AbortSignalNative();
+    signal.aborted = true;
+    signal.reason = reason === undefined ? nativeAbortError() : reason;
+    return signal;
+  }};
   AbortSignalNative.any = function(signals) {{
     if (!signals || typeof signals[Symbol.iterator] !== "function")
       throw new TypeError("native AbortSignal.any requires an iterable");

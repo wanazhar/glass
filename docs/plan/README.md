@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-134` locally. The versioned
+`native-engine-browser-137` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1245,6 +1245,16 @@ revision evidence, and verifies the optional postcondition after dispatch
 through CLI and MCP. Specialized request, popup, dialog, and download
 witnesses, universal workflow parity, and CDP replacement remain issue #40
 gates.
+
+The completed native semantic-storage batch is
+[native-engine-browser-137](tasks/native-engine-browser-137.md). Native
+semantic localStorage and sessionStorage reads, writes, and clears now route
+through the engine-owned page realm, so backend results and page JavaScript
+observe the same origin-keyed state across local and content-process paths.
+The semantic cookie map remains intentionally rejected until native cookie
+metadata is exposed. Cookie/session metadata, target/frame ownership,
+request-ledger, popup/dialog/download witnesses, universal workflow parity,
+and CDP replacement remain issue #40 gates.
 
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and

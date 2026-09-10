@@ -28622,6 +28622,14 @@ async fn semantic_storage_uses_bounded_native_backend_state() {
         .await
         .unwrap();
     assert_eq!(written.entries.get("theme"), Some(&"dark".to_owned()));
+    let page_local = dispatcher
+        .script(ScriptRequest {
+            context_id: "native-context".into(),
+            source: "localStorage.getItem('theme')".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(page_local.value, serde_json::json!("dark"));
 
     let session = dispatcher
         .storage(StorageRequest {
@@ -28635,6 +28643,14 @@ async fn semantic_storage_uses_bounded_native_backend_state() {
         .await
         .unwrap();
     assert_eq!(session.entries.get("tab"), Some(&"one".to_owned()));
+    let page_session = dispatcher
+        .script(ScriptRequest {
+            context_id: "native-context".into(),
+            source: "sessionStorage.getItem('tab')".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(page_session.value, serde_json::json!("one"));
 
     let local = dispatcher
         .storage(StorageRequest {
@@ -28656,6 +28672,14 @@ async fn semantic_storage_uses_bounded_native_backend_state() {
         .await
         .unwrap();
     assert!(cleared.entries.is_empty());
+    let page_cleared = dispatcher
+        .script(ScriptRequest {
+            context_id: "native-context".into(),
+            source: "localStorage.getItem('theme')".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(page_cleared.value, serde_json::Value::Null);
 
     let cookie_error = dispatcher
         .storage(StorageRequest {

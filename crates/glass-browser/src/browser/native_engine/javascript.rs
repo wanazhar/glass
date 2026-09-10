@@ -899,6 +899,16 @@ pub(crate) fn apply_indexed_db_changes(
 }
 
 impl NativeWebStorageState {
+    pub(crate) fn entries_for(&self, scope: &str, storage_key: &str) -> BTreeMap<String, String> {
+        match scope {
+            "local" => self.local.get(storage_key),
+            "session" => self.session.get(storage_key),
+            _ => None,
+        }
+        .cloned()
+        .unwrap_or_default()
+    }
+
     pub(crate) fn validate(&self) -> Result<(), NativeEngineError> {
         validate_web_storage_state(self)
     }

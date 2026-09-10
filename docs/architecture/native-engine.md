@@ -1327,6 +1327,16 @@ surfaces route the operation without allocating Chromium. Specialized
 request-ledger, popup/dialog/download witnesses and universal workflow parity
 remain separate production gates.
 
+The completed native-engine-browser-137 batch repairs semantic storage
+ownership. Native localStorage and sessionStorage backend operations now use
+the engine's origin-keyed page realm through bounded script mutations and
+engine-owned state reads; a backend write is therefore immediately visible to
+page JavaScript, and a page-state clear is returned by the backend. The
+semantic cookie map remains rejected until native cookie metadata can be
+returned without losing domain, path, security, and expiry attributes. Target
+and frame ownership, request-ledger, popup/dialog/download witnesses, and full
+browser parity remain issue #40 work.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature

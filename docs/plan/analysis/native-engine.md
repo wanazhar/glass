@@ -2909,6 +2909,17 @@ before running `native_verify`. Native CLI and MCP expose the same
 without conflating a generic predicate with specialized request, popup,
 dialog, or download witnesses.
 
+The completed native-engine-browser-137 batch makes semantic Web Storage use
+the page engine as its source of truth. Local and session storage reads,
+writes, and clears now cross the same JavaScript command/state path used by
+page code, preserving origin partitioning, storage events, profile journals,
+and content-process synchronization. The adapter-local map was removed, and
+the integration test verifies backend-to-script visibility in both storage
+scopes. Cookies remain outside this map until a metadata-preserving native
+cookie projection is implemented; target/frame ownership, request accounting,
+popup/dialog/download witnesses, universal workflow parity, and CDP
+replacement remain open.
+
 The completed native-engine-browser-133 batch extends the native target seam
 with a side-effect-free preflight result. The engine resolves the current
 semantic locator and derives viewport geometry and actionability under the

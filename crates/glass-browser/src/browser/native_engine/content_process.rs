@@ -3316,6 +3316,7 @@ fn fetch_response_payload(result: Result<NativeFetchResponse, NativeEngineError>
             "status": response.status,
             "contentType": response.content_type,
             "body": String::from_utf8_lossy(&response.body),
+            "bodyBase64": base64::engine::general_purpose::STANDARD.encode(&response.body),
         }),
         Err(error) => json!({"error": error.to_string()}),
     }

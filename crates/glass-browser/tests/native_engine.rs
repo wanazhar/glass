@@ -28499,7 +28499,7 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
-        for expected_path in ["/page", "/data", "/data"] {
+        for expected_path in ["/page", "/data", "/binary", "/data"] {
             let (mut stream, _) = listener.accept().await.unwrap();
             let request = read_http_request(&mut stream).await;
             assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
@@ -28509,6 +28509,16 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
                         name.eq_ignore_ascii_case("x-glass-token") && value.trim() == "alpha"
                     })
                 }));
+            }
+            if expected_path == "/binary" {
+                let body = [0_u8, 0xff, 0x80, b'A'];
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.write_all(&body).await.unwrap();
+                continue;
             }
             let (content_type, body) = if expected_path == "/page" {
                 ("text/html", "<input id='result' value='pending'>")
@@ -28530,7 +28540,7 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
     engine.initialize_async().await.unwrap();
     engine
         .evaluate_async(
-            "fetch('/data', { headers: { 'X-Glass-Token': 'alpha' } }).then(response => { const headerEvents = []; response.headers.forEach((value, name) => headerEvents.push(name + '=' + value)); globalThis.fetchHeaders = [response.headers.get('CONTENT-TYPE'), response.headers.has('content-type'), Array.from(response.headers.entries()), Array.from(response.headers.keys()), Array.from(response.headers.values()), Array.from(response.headers), headerEvents]; return Promise.all([response.json(), response.text(), response.blob(), response.arrayBuffer(), response.bytes()]); }).then(async ([data, text, blob, buffer, bytes]) => { globalThis.fetchValue = data.value; globalThis.fetchBody = [text, blob instanceof Blob, buffer instanceof ArrayBuffer && Array.from(new Uint8Array(buffer)), Array.from(bytes), await blob.text()]; document.getElementById('result').value = data.value; const controller = new AbortController(); const events = []; controller.signal.addEventListener('abort', () => events.push('listener')); controller.signal.onabort = () => events.push('property'); const request = fetch('/data', { signal: controller.signal, headers: { 'X-Glass-Token': 'alpha' } }); controller.abort(); controller.abort(); request.catch(error => { globalThis.abortValue = [error.name, controller.signal.aborted, controller.signal.reason.name, events]; }); });",
+            "fetch('/data', { headers: { 'X-Glass-Token': 'alpha' } }).then(response => { const headerEvents = []; response.headers.forEach((value, name) => headerEvents.push(name + '=' + value)); globalThis.fetchHeaders = [response.headers.get('CONTENT-TYPE'), response.headers.has('content-type'), Array.from(response.headers.entries()), Array.from(response.headers.keys()), Array.from(response.headers.values()), Array.from(response.headers), headerEvents]; return Promise.all([response.json(), response.text(), response.blob(), response.arrayBuffer(), response.bytes()]); }).then(async ([data, text, blob, buffer, bytes]) => { globalThis.fetchValue = data.value; globalThis.fetchBody = [text, blob instanceof Blob, buffer instanceof ArrayBuffer && Array.from(new Uint8Array(buffer)), Array.from(bytes), await blob.text()]; const binaryResponse = await fetch('/binary'); const binaryBuffer = await binaryResponse.arrayBuffer(); const binaryBytes = await binaryResponse.bytes(); const binaryBlob = await binaryResponse.blob(); globalThis.binaryFetchBody = [Array.from(new Uint8Array(binaryBuffer)), Array.from(binaryBytes), binaryBlob.size, Array.from(await binaryBlob.slice(1, 3).bytes()), await binaryBlob.text()]; document.getElementById('result').value = data.value; const controller = new AbortController(); const events = []; controller.signal.addEventListener('abort', () => events.push('listener')); controller.signal.onabort = () => events.push('property'); const request = fetch('/data', { signal: controller.signal, headers: { 'X-Glass-Token': 'alpha' } }); controller.abort(); controller.abort(); request.catch(error => { globalThis.abortValue = [error.name, controller.signal.aborted, controller.signal.reason.name, events]; }); });",
         )
         .await
         .unwrap();
@@ -28577,6 +28587,19 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
             ["application/json"],
             [["content-type", "application/json"]],
             ["content-type=application/json"],
+        ])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.binaryFetchBody")
+            .await
+            .unwrap(),
+        serde_json::json!([
+            [0, 255, 128, 65],
+            [0, 255, 128, 65],
+            4,
+            [255, 128],
+            "\u{0}\u{fffd}\u{fffd}A",
         ])
     );
     engine

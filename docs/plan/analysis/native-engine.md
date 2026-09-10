@@ -2593,6 +2593,14 @@ state to `UNSENT`, emits bounded `readystatechange`/`abort` callbacks, and
 guards against late `load`/`error` continuations. Transport cancellation,
 timeout/progress, and complete XHR/Web IDL parity remain open.
 
+The completed bounded byte-preserving response follow-up is
+[native-engine-browser-098](../tasks/native-engine-browser-098.md). A bounded
+base64 response payload now preserves raw bytes for Fetch `Blob`,
+`ArrayBuffer`, `bytes()`, and binary `Blob.slice()` reads, while text and JSON
+remain replacement-decoded UTF-8 views. Streaming/BYOB, transfer identity,
+binary request-body/FormData parity, and complete Fetch/Blob Web IDL parity
+remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

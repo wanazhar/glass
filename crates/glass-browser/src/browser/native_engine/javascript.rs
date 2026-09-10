@@ -5262,15 +5262,28 @@ fn document_bootstrap(
   Object.defineProperty(URLSearchParamsNative.prototype, "size", {{
     get() {{ return this._entries.length; }},
   }});
-  const urlSearchParamsIterator = entries => entries[Symbol.iterator]();
+  const urlSearchParamsIterator = (owner, kind) => {{
+    let index = 0;
+    const iterator = {{
+      next() {{
+        if (index >= owner._entries.length) return {{ value: undefined, done: true }};
+        const entry = owner._entries[index++];
+        if (kind === "keys") return {{ value: entry[0], done: false }};
+        if (kind === "values") return {{ value: entry[1], done: false }};
+        return {{ value: [entry[0], entry[1]], done: false }};
+      }},
+      [Symbol.iterator]() {{ return this; }},
+    }};
+    return iterator;
+  }};
   URLSearchParamsNative.prototype.entries = function() {{
-    return urlSearchParamsIterator(this._entries.map(entry => [entry[0], entry[1]]));
+    return urlSearchParamsIterator(this, "entries");
   }};
   URLSearchParamsNative.prototype.keys = function() {{
-    return urlSearchParamsIterator(this._entries.map(entry => entry[0]));
+    return urlSearchParamsIterator(this, "keys");
   }};
   URLSearchParamsNative.prototype.values = function() {{
-    return urlSearchParamsIterator(this._entries.map(entry => entry[1]));
+    return urlSearchParamsIterator(this, "values");
   }};
   URLSearchParamsNative.prototype.forEach = function(callback, thisArg) {{
     if (typeof callback !== "function") throw new TypeError("native URLSearchParams callback must be callable");

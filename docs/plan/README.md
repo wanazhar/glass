@@ -945,6 +945,14 @@ headers, redirects, and abort behavior remain unchanged. Binary Blob/File
 construction, multipart FormData byte parity, streaming, upload progress,
 and full Fetch/XHR/Blob Web IDL parity remain open.
 
+The completed bounded binary Blob/File construction slice is
+[native-engine-browser-100](tasks/native-engine-browser-100.md). Native
+`Blob` and `File` now accept bounded `ArrayBuffer` and typed-array parts,
+retain exact bytes and byte length, and feed the 099 Fetch/XHR request-body
+bridge; text-only parts keep their established behavior. Binary multipart
+FormData, streams, upload progress, and full Blob/File Web IDL parity remain
+open.
+
 Full cookie policy/Web IDL parity and the remaining browser-complete gates
 remain open.
 

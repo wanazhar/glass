@@ -2610,6 +2610,13 @@ MIME propagation, redirects, and abort behavior remain stable. Binary
 Blob/File construction, multipart FormData byte parity, streaming, upload
 progress, and complete Fetch/XHR/Blob parity remain open.
 
+The completed bounded binary Blob/File construction follow-up is
+[native-engine-browser-100](../tasks/native-engine-browser-100.md). Native
+`Blob` and `File` accept bounded `ArrayBuffer` and typed-array parts, retain
+exact bytes and byte length, and feed the 099 Fetch/XHR request-body bridge;
+text-only parts retain their established behavior. Binary multipart FormData,
+streams, upload progress, and full Blob/File Web IDL parity remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

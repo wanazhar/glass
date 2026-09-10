@@ -50,6 +50,7 @@ pub(crate) enum NativeSubresourceKind {
 pub(crate) enum NativeCorsMode {
     NoCors,
     Cors,
+    SameOrigin,
 }
 
 /// A bounded HTML resource accepted by the native engine.
@@ -134,6 +135,7 @@ pub(crate) struct NativeFetchRequest<'a> {
     pub(crate) content_type: Option<String>,
     pub(crate) request_headers: BTreeMap<String, String>,
     pub(crate) credentials: bool,
+    pub(crate) cors_mode: NativeCorsMode,
     pub(crate) timeout: Option<Duration>,
 }
 
@@ -151,6 +153,7 @@ pub struct NativeFetchResponse {
     pub content_type: Option<String>,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+    pub opaque: bool,
 }
 
 /// Bounded resource loader for local documents and HTTP(S) HTML responses.
@@ -735,6 +738,7 @@ impl NativeResourceLoader {
             content_type,
             request_headers: BTreeMap::new(),
             credentials,
+            cors_mode: NativeCorsMode::Cors,
             timeout: None,
         })
         .await
@@ -752,6 +756,7 @@ impl NativeResourceLoader {
             content_type,
             request_headers,
             credentials,
+            cors_mode,
             timeout,
         } = request;
         validate_url_text("fetch owner URL", document_url)?;
@@ -809,6 +814,13 @@ impl NativeResourceLoader {
                 reason: "native fetch URL is not an HTTP(S) resource".into(),
             });
         };
+        let cross_origin = document_url.origin() != target_url.origin();
+        if cors_mode == NativeCorsMode::SameOrigin && cross_origin {
+            return Err(NativeEngineError::Network {
+                operation: "fetch mode".into(),
+                reason: "same-origin fetch target has a different origin".into(),
+            });
+        }
         if !mixed_content_allowed(&document_url, &target_url) {
             return Err(NativeEngineError::Network {
                 operation: "fetch policy".into(),
@@ -849,7 +861,19 @@ impl NativeResourceLoader {
             request_url.set_fragment(None);
             let requested_headers =
                 cors_preflight_request_headers(current_content_type.as_deref(), &current_headers);
+            if cors_mode == NativeCorsMode::NoCors
+                && document_url.origin() != current_url.origin()
+                && !requested_headers.is_empty()
+            {
+                return Err(NativeEngineError::Network {
+                    operation: "fetch mode".into(),
+                    reason:
+                        "no-cors fetch contains a non-safelisted request header or content type"
+                            .into(),
+                });
+            }
             if !requested_headers.is_empty()
+                && cors_mode == NativeCorsMode::Cors
                 && cors_origin_header(&document_url, &current_url, NativeCorsMode::Cors).is_some()
             {
                 self.verify_cors_preflight(
@@ -879,9 +903,7 @@ impl NativeResourceLoader {
             for (name, value) in &current_headers {
                 request = request.header(name, value);
             }
-            if let Some(origin) =
-                cors_origin_header(&document_url, &current_url, NativeCorsMode::Cors)
-            {
+            if let Some(origin) = cors_origin_header(&document_url, &current_url, cors_mode) {
                 request = request.header(reqwest::header::ORIGIN, origin);
             }
             if let Some(referrer) = request_referrer.as_deref() {
@@ -953,7 +975,9 @@ impl NativeResourceLoader {
         let final_url = current_url;
         let status = response.status().as_u16();
         let response_headers = response.headers().clone();
-        if !cors_response_allowed(&response_headers, &document_url, &final_url, credentials) {
+        if cors_mode == NativeCorsMode::Cors
+            && !cors_response_allowed(&response_headers, &document_url, &final_url, credentials)
+        {
             return Err(NativeEngineError::Network {
                 operation: "fetch CORS policy".into(),
                 reason: "cross-origin fetch response did not authorize the document origin".into(),
@@ -991,21 +1015,32 @@ impl NativeResourceLoader {
             self.cookie_changes
                 .extend(self.network.store_cookie(&cookie_url, &cookie));
         }
-        let content_type = response_headers
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned);
-        let headers = exposed_response_headers(
-            &response_headers,
-            document_url.origin() == final_url.origin(),
-            credentials,
-        )?;
+        let opaque =
+            cors_mode == NativeCorsMode::NoCors && document_url.origin() != final_url.origin();
+        let content_type = if opaque {
+            None
+        } else {
+            response_headers
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned)
+        };
+        let headers = if opaque {
+            Vec::new()
+        } else {
+            exposed_response_headers(
+                &response_headers,
+                document_url.origin() == final_url.origin(),
+                credentials,
+            )?
+        };
         Ok(NativeFetchResponse {
             url: without_fragment(final_url.as_str()).to_owned(),
             status,
             content_type,
             headers,
-            body,
+            body: if opaque { Vec::new() } else { body },
+            opaque,
         })
     }
 

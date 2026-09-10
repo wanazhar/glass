@@ -1011,6 +1011,16 @@ two-value sequences while retaining insertion order and the existing mutation,
 sorting, encoding, and snapshot-iterator owners. Live iterator mutation/
 identity and complete URLSearchParams Web IDL parity remain open.
 
+The completed bounded Fetch-mode slice is
+[native-engine-browser-109](tasks/native-engine-browser-109.md). Fetch now
+defaults to `cors`, supports bounded `cors`, `no-cors`, and `same-origin`
+policy, rejects cross-origin `same-origin` targets and non-safelisted
+cross-origin `no-cors` request headers/content types before network I/O, and
+projects successful cross-origin `no-cors` requests as opaque responses with
+status zero, an empty URL/header view, and rejected body reads. Service-worker
+and private-network integration, streaming, redirect parity, and complete
+Fetch/Response Web IDL parity remain open.
+
 Full cookie policy/Web IDL parity and the remaining browser-complete gates
 remain open.
 

@@ -28586,6 +28586,91 @@ async fn native_content_process_fetches_cross_origin_simple_post_without_preflig
 }
 
 #[tokio::test]
+async fn native_content_process_exposes_opaque_no_cors_response() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let document_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let document_address = document_listener.local_addr().unwrap();
+    let api_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let api_address = api_listener.local_addr().unwrap();
+    let document_origin = format!("http://{document_address}");
+
+    let document_server = tokio::spawn(async move {
+        let (mut stream, _) = document_listener.accept().await.unwrap();
+        let _request = read_http_request(&mut stream).await;
+        let body = "<title>Fetch owner</title><p>Native fetch</p>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: connect-src *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+    let api_server = tokio::spawn(async move {
+        let (mut stream, _) = api_listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().next(), Some("GET"));
+        assert_eq!(request.split_whitespace().nth(1), Some("/opaque"));
+        assert!(!request.lines().any(|line| {
+            line.split_once(':')
+                .is_some_and(|(name, _)| name.eq_ignore_ascii_case("origin"))
+        }));
+        let body = "secret cross-origin body";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nX-Private: hidden\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("{document_origin}/index.html")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(&format!(
+            "fetch('http://{api_address}/opaque', {{ mode: 'same-origin' }}).then(() => {{ globalThis.sameOriginModeValue = ['fulfilled', false]; }}, error => {{ globalThis.sameOriginModeValue = [error.name, error.message.includes('different origin')]; }});"
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.sameOriginModeValue")
+            .await
+            .unwrap(),
+        serde_json::json!(["Error", true])
+    );
+    engine
+        .evaluate_async(&format!(
+            "fetch('http://{api_address}/opaque', {{ mode: 'no-cors', headers: {{ 'X-Not-Safelisted': 'blocked' }} }}).then(() => {{ globalThis.noCorsHeaderValue = ['fulfilled', false]; }}, error => {{ globalThis.noCorsHeaderValue = [error.name, error.message.includes('non-safelisted')]; }});"
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.noCorsHeaderValue")
+            .await
+            .unwrap(),
+        serde_json::json!(["Error", true])
+    );
+    engine
+        .evaluate_async(&format!(
+            "fetch('http://{api_address}/opaque', {{ mode: 'no-cors', credentials: 'omit' }}).then(async response => {{ const bodyRead = await response.text().then(() => 'readable', error => error.name); globalThis.opaqueFetchValue = [response.type, response.status, response.ok, response.url, Array.from(response.headers.entries()), bodyRead]; }});"
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.opaqueFetchValue")
+            .await
+            .unwrap(),
+        serde_json::json!(["opaque", 0, false, "", [], "TypeError"])
+    );
+    engine.close_async().await.unwrap();
+    document_server.await.unwrap();
+    api_server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_exposes_bounded_script_fetch_promises() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

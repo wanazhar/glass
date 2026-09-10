@@ -11,12 +11,13 @@ use super::error::{NativeEngineError, NativeWorkerFailureKind};
 use super::interaction::{MAX_NATIVE_EFFECTS, NativeEventKind, validate_native_edit_key};
 use super::javascript::{
     MAX_NATIVE_INDEXED_DB_CHANGES, MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_SCRIPT_BYTES,
-    NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime, NativePageScript,
-    NativeScriptCommand, NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState,
-    diff_indexed_db_changes, execute_page_scripts, host_event_script,
-    host_hash_change_event_script, host_key_event_script, host_submit_event_script,
-    literal_dynamic_module_specifiers, load_indexed_db_profile, load_web_storage_profile,
-    order_page_scripts, save_web_storage_profile, static_module_specifiers, storage_key,
+    MAX_NATIVE_XHR_TIMEOUT_MS, NativeIndexedDbChange, NativeIndexedDbState,
+    NativeJavaScriptRuntime, NativePageScript, NativeScriptCommand, NativeScriptEvaluation,
+    NativeStorageEvent, NativeWebStorageState, diff_indexed_db_changes, execute_page_scripts,
+    host_event_script, host_hash_change_event_script, host_key_event_script,
+    host_submit_event_script, literal_dynamic_module_specifiers, load_indexed_db_profile,
+    load_web_storage_profile, order_page_scripts, save_web_storage_profile,
+    static_module_specifiers, storage_key,
 };
 use super::origin::NativeOrigin;
 use super::resource_loader::{
@@ -3343,6 +3344,7 @@ fn fetch_commands(
         BTreeMap<String, String>,
         Option<NativeFetchBody>,
         Option<String>,
+        Option<Duration>,
         bool,
     )>,
     NativeEngineError,
@@ -3359,6 +3361,7 @@ fn fetch_commands(
                 body,
                 body_base64,
                 content_type,
+                timeout_ms,
             } => Some((
                 *request_id,
                 href.clone(),
@@ -3367,12 +3370,30 @@ fn fetch_commands(
                 body.clone(),
                 body_base64.clone(),
                 content_type.clone(),
+                *timeout_ms,
                 *credentials,
             )),
             _ => None,
         })
         .map(
-            |(request_id, href, method, headers, body, body_base64, content_type, credentials)| {
+            |(
+                request_id,
+                href,
+                method,
+                headers,
+                body,
+                body_base64,
+                content_type,
+                timeout_ms,
+                credentials,
+            )| {
+                if timeout_ms.is_some_and(|value| value > MAX_NATIVE_XHR_TIMEOUT_MS) {
+                    return Err(NativeEngineError::invalid(
+                        "script fetch timeout",
+                        "must not exceed the native XHR timeout limit",
+                    ));
+                }
+                let timeout = timeout_ms.map(|value| Duration::from_millis(u64::from(value)));
                 let method = match method.as_str() {
                     "GET" => NativeNavigationMethod::Get,
                     "POST" => NativeNavigationMethod::Post,
@@ -3411,6 +3432,7 @@ fn fetch_commands(
                     headers,
                     body,
                     content_type,
+                    timeout,
                     credentials,
                 ))
             },
@@ -3428,7 +3450,13 @@ fn fetch_response_payload(result: Result<NativeFetchResponse, NativeEngineError>
             "body": String::from_utf8_lossy(&response.body),
             "bodyBase64": base64::engine::general_purpose::STANDARD.encode(&response.body),
         }),
-        Err(error) => json!({"error": error.to_string()}),
+        Err(error) => json!({
+            "error": error.to_string(),
+            "timeout": matches!(
+                error,
+                NativeEngineError::Network { reason, .. } if reason == "request timed out"
+            ),
+        }),
     }
 }
 
@@ -3451,7 +3479,7 @@ async fn resolve_script_fetches(
     )?;
     let mut pending = fetch_commands(&evaluation.commands)?;
     let mut resolved_count = 0usize;
-    while let Some((request_id, href, method, headers, body, content_type, credentials)) =
+    while let Some((request_id, href, method, headers, body, content_type, timeout, credentials)) =
         pending.pop()
     {
         resolved_count = resolved_count.saturating_add(1);
@@ -3471,6 +3499,7 @@ async fn resolve_script_fetches(
                     body,
                     content_type,
                     request_headers: headers,
+                    timeout,
                     credentials,
                 })
                 .await,

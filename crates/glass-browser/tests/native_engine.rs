@@ -1401,7 +1401,7 @@ async fn native_local_form_data_constructor_collects_text_controls() {
     assert_eq!(
         engine
             .evaluate_async(
-                "(() => { const data = new FormData(document.getElementById('search')); data.append('extra', 'three'); const fileRejected = (() => { try { new FormData(document.getElementById('files')); return false; } catch (error) { return error instanceof TypeError && String(error).includes('file controls are unsupported'); } })(); return { entries: data.entries(), first: data.get('first'), checked: data.get('checked'), unchecked: data.has('unchecked'), outside: data.get('outside'), extra: data.get('extra'), fileRejected }; })()",
+                "(() => { const data = new FormData(document.getElementById('search')); data.append('extra', 'three'); const fileRejected = (() => { try { new FormData(document.getElementById('files')); return false; } catch (error) { return error instanceof TypeError && String(error).includes('file controls are unsupported'); } })(); return { entries: Array.from(data.entries()), first: data.get('first'), checked: data.get('checked'), unchecked: data.has('unchecked'), outside: data.get('outside'), extra: data.get('extra'), fileRejected }; })()",
             )
             .await
             .unwrap(),
@@ -1429,7 +1429,7 @@ async fn native_local_file_and_blob_form_data_are_bounded_and_text_backed() {
     assert_eq!(
         engine
             .evaluate_async(
-                "const blob = new Blob(['hello', new Blob(['!'])], { type: 'TEXT/PLAIN' }); const file = new File(['world'], 'note.txt', { type: 'text/plain', lastModified: 7 }); const data = new FormData(); data.append('blob', blob); data.append('file', file); data.append('text', 'value'); const sliced = blob.slice(1, 4, 'text/custom'); const blobText = await blob.text(); const blobArrayBuffer = Array.from(new Uint8Array(await blob.arrayBuffer())); const blobBytes = typeof blob.bytes === 'function' ? Array.from(await blob.bytes()) : null; const unicodeBytes = Array.from(new Uint8Array(await new Blob(['hé😀']).arrayBuffer())); const sliceText = await sliced.text(); const fileText = await file.text(); const fileBytes = Array.from(new Uint8Array(await file.arrayBuffer())); const limitRejected = (() => { try { new Blob(['x'.repeat(20000)]); return false; } catch (error) { return error instanceof RangeError; } })(); ({ blob: [blob.size, blob.type, blobText], blobArrayBuffer, blobBytes, unicodeBytes, slice: [sliced.size, sliced.type, sliceText], file: [file.name, file.size, file.type, file.lastModified, fileText, fileBytes], limitRejected, entries: data.entries().map(([name, value]) => [name, value.__glassNativeBlob ? { name: value.name || null, type: value.type, text: value._text } : value]) })",
+                "const blob = new Blob(['hello', new Blob(['!'])], { type: 'TEXT/PLAIN' }); const file = new File(['world'], 'note.txt', { type: 'text/plain', lastModified: 7 }); const data = new FormData(); data.append('blob', blob); data.append('file', file); data.append('text', 'value'); const sliced = blob.slice(1, 4, 'text/custom'); const blobText = await blob.text(); const blobArrayBuffer = Array.from(new Uint8Array(await blob.arrayBuffer())); const blobBytes = typeof blob.bytes === 'function' ? Array.from(await blob.bytes()) : null; const unicodeBytes = Array.from(new Uint8Array(await new Blob(['hé😀']).arrayBuffer())); const sliceText = await sliced.text(); const fileText = await file.text(); const fileBytes = Array.from(new Uint8Array(await file.arrayBuffer())); const limitRejected = (() => { try { new Blob(['x'.repeat(20000)]); return false; } catch (error) { return error instanceof RangeError; } })(); ({ blob: [blob.size, blob.type, blobText], blobArrayBuffer, blobBytes, unicodeBytes, slice: [sliced.size, sliced.type, sliceText], file: [file.name, file.size, file.type, file.lastModified, fileText, fileBytes], limitRejected, entries: Array.from(data.entries()).map(([name, value]) => [name, value.__glassNativeBlob ? { name: value.name || null, type: value.type, text: value._text } : value]) })",
             )
             .await
             .unwrap(),
@@ -1476,7 +1476,7 @@ async fn native_content_process_form_data_constructor_collects_text_controls() {
     assert_eq!(
         engine
             .evaluate_async(
-                "(() => { const many = document.getElementById('many'); many.options[2].selected = true; const data = new FormData(document.getElementById('search')); return { entries: data.entries(), first: data.get('first'), checked: data.get('checked'), unchecked: data.has('unchecked'), outside: data.get('outside'), selected: many.selectedOptions.map(option => option.value) }; })()",
+                "(() => { const many = document.getElementById('many'); many.options[2].selected = true; const data = new FormData(document.getElementById('search')); return { entries: Array.from(data.entries()), first: data.get('first'), checked: data.get('checked'), unchecked: data.has('unchecked'), outside: data.get('outside'), selected: many.selectedOptions.map(option => option.value) }; })()",
             )
             .await
             .unwrap(),
@@ -31081,6 +31081,22 @@ async fn native_content_process_fetches_bounded_text_form_data() {
                 formData.append('name', 'Glass');
                 formData.append('tag', 'old');
                 formData.set('tag', 'engine');
+                const iterator = formData.entries();
+                const first = iterator.next();
+                const second = iterator.next();
+                const done = iterator.next();
+                const visited = [];
+                formData.forEach((value, name) => visited.push(name + '=' + value));
+                globalThis.formDataIterator = [
+                    iterator[Symbol.iterator]() === iterator,
+                    first.value,
+                    second.value,
+                    done.done,
+                    Array.from(formData.keys()),
+                    Array.from(formData.values()),
+                    Array.from(formData).map(entry => entry.join('=')),
+                    visited,
+                ];
                 fetch('/formdata', { method: 'POST', body: formData })
                     .then(response => response.text())
                     .then(text => { globalThis.formDataResponse = text; });
@@ -31094,6 +31110,22 @@ async fn native_content_process_fetches_bounded_text_form_data() {
             .await
             .unwrap(),
         serde_json::json!("formdata-accepted")
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.formDataIterator")
+            .await
+            .unwrap(),
+        serde_json::json!([
+            true,
+            ["name", "Glass"],
+            ["tag", "engine"],
+            true,
+            ["name", "tag"],
+            ["Glass", "engine"],
+            ["name=Glass", "tag=engine"],
+            ["name=Glass", "tag=engine"]
+        ])
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

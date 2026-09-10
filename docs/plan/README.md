@@ -1096,6 +1096,14 @@ abort, and transport owners. Full Request body streams, disturbance rules,
 URL/cache/referrer/integrity fields, duplex, and complete Request/Headers Web
 IDL parity remain open.
 
+The completed bounded URL-object slice is
+[native-engine-browser-119](tasks/native-engine-browser-119.md). HTTP(S)-focused
+`URL` construction, relative path/query/fragment resolution, component
+inspection, and snapshot `searchParams` now feed bounded Request and Fetch URL
+inputs. URL setters, full percent-encoding/IDNA/IPv6/default-port parity, live
+search-parameter synchronization, non-HTTP scheme parity, and complete
+URL/Web IDL identity remain open.
+
 Full cookie policy/Web IDL parity and the remaining browser-complete gates
 remain open.
 

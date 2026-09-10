@@ -29149,7 +29149,7 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
     engine.initialize_async().await.unwrap();
     engine
         .evaluate_async(
-            "(() => { const headers = new Headers([['X-Glass-Token', 'alpha']]); headers.append('x-glass-token', 'beta'); headers.set('X-Glass-Extra', 'gamma'); headers.delete('x-glass-extra'); const request = new Request('/headers', { headers }); const requestClone = request.clone(); globalThis.requestObjectView = [request instanceof Request, request.method, request.url, request.mode, request.redirect, request.headers.get('x-glass-token'), requestClone.headers.get('x-glass-token'), requestClone !== request]; globalThis.requestHeaderView = [headers.get('x-glass-token'), headers.has('X-Glass-Token'), Array.from(headers.entries()), Array.from(headers.keys()), Array.from(headers.values()), headers.size]; fetch(requestClone).then(response => response.text()).then(value => { globalThis.headerFetch = value; }); })()",
+            "(() => { const headers = new Headers([['X-Glass-Token', 'alpha']]); headers.append('x-glass-token', 'beta'); headers.set('X-Glass-Extra', 'gamma'); headers.delete('x-glass-extra'); const endpoint = new URL('/headers', location.href); const query = new URL('?source=request#part', endpoint.href); const nested = new URL('../target?x=one#frag', 'http://example.test/a/b/page'); const protocolRelative = new URL('//api.example.test/v1', endpoint.href); const request = new Request(endpoint, { headers }); const requestClone = request.clone(); globalThis.urlObjectView = [endpoint instanceof URL, endpoint.origin === location.origin, endpoint.pathname, endpoint.search, endpoint.hash, query.searchParams.get('source'), query.hash, nested.pathname, nested.searchParams.get('x'), nested.hash, protocolRelative.origin, protocolRelative.pathname]; globalThis.requestObjectView = [request instanceof Request, request.method, request.url === endpoint.href, request.mode, request.redirect, request.headers.get('x-glass-token'), requestClone.headers.get('x-glass-token'), requestClone !== request]; globalThis.requestHeaderView = [headers.get('x-glass-token'), headers.has('X-Glass-Token'), Array.from(headers.entries()), Array.from(headers.keys()), Array.from(headers.values()), headers.size]; fetch(requestClone).then(response => response.text()).then(value => { globalThis.headerFetch = value; }); })()",
         )
         .await
         .unwrap();
@@ -29175,12 +29175,32 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
         serde_json::json!([
             true,
             "GET",
-            "/headers",
+            true,
             "cors",
             "follow",
             "alpha, beta",
             "alpha, beta",
             true,
+        ])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.urlObjectView")
+            .await
+            .unwrap(),
+        serde_json::json!([
+            true,
+            true,
+            "/headers",
+            "",
+            "",
+            "request",
+            "#part",
+            "/a/target",
+            "one",
+            "#frag",
+            "http://api.example.test",
+            "/v1",
         ])
     );
     assert_eq!(

@@ -2855,6 +2855,16 @@ now use the same cancelable keydown/default-action/keyup transaction.
 Grapheme/bidi caret geometry, clipboard, IME/composition, dead keys, repeat,
 and accessibility selection events remain issue #40 gates.
 
+The completed native-engine-browser-131 public-session batch adds the missing
+revision guard at the portable runtime seam. `BrowserRuntimeSession` now
+serializes guarded navigation and semantic mutation calls, compares the
+current compact evidence revision before dispatch, and returns the existing
+typed stale-revision error. Native CLI revision fields are accepted and
+forwarded for navigation, form actions, keyboard actions, and scrolling;
+unchecked calls retain the same session serialization. This removes a
+correctness gap without changing the backend wire schema or adding a CDP
+fallback.
+
 The completed bounded Response-constructor follow-up is
 [native-engine-browser-120](../tasks/native-engine-browser-120.md). Fetched and
 constructed responses now share `Response` identity; `new Response`,
@@ -2875,9 +2885,10 @@ and complete Headers/Fetch/XHR Web IDL parity remain open.
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine
-must stay inside `glass-browser`, remain default-off, and keep native-only
-dependencies optional behind the `native-engine` feature. Chromium/CDP remains
-the production path; native selection is explicit-only.
+must stay inside `glass-browser`, remain default-off until its complete
+promotion gates pass, and keep native-only dependencies optional behind the
+`native-engine` feature. Chromium/CDP remains the production path at this
+checkpoint; native selection is explicit-only.
 
 The normal browser-free platform matrix uses `--no-default-features`; a
 dedicated Linux `Native engine core` job owns the explicit `native-engine`

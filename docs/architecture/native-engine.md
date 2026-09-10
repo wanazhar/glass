@@ -1267,6 +1267,15 @@ extension now use the native default-action owner while keydown cancellation
 still prevents editing. Grapheme/bidi caret geometry, clipboard,
 IME/composition, repeat, and accessibility selection events remain open.
 
+The completed native-engine-browser-131 batch closes the first public-session
+revision gap. `BrowserRuntimeSession` now serializes its read/dispatch pair and
+exposes guarded navigation and semantic actions; a stale expectation returns
+the same typed `ActionContractError` used by the normal Glass session. Native
+one-shot `navigate`, `click`, `type`, `clear`, `check`, `uncheck`, `select`,
+`key`, `key-down`, `key-up`, `shortcut`, and `scroll` commands pass through
+their existing `--expected-revision` fields. The backend still owns revision
+increments, and no guard or unchecked operation creates a CDP fallback.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature
@@ -3585,18 +3594,21 @@ types never cross the transport-neutral backend boundary.
 When the feature is enabled, `BrowserRuntimeSession::connect_native` is the
 explicit user-facing Rust session constructor. It accepts a
 `NativeEngineConfig`, initializes one native backend, and never interprets a
-network endpoint. The native runtime is not selected by omission or automatic
-backend ranking.
+network endpoint. Its revision-aware navigation and action methods serialize
+the observation guard with the mutation dispatch. The native runtime is not
+selected by omission or automatic backend ranking.
 
 The same feature exposes `--browser-runtime native` in the one-shot CLI. The
 CLI constructs the default local configuration, so it accepts `about:blank` and
 bounded percent-decoded or standard padded-base64 `data:text/html` navigation.
-Rust callers can still register bounded
-`fixture://` documents through `NativeEngineConfig`; fixture registration is
-not a CLI file-loading or network capability. Native CLI commands are limited
-to navigate, click, type, text, observe, and targets, with semantic locators
-instead of CSS selectors. Endpoint, external lifecycle, profile, screenshot,
-storage, download, prompt, script/evaluate, MCP, and TUI paths fail closed.
+Rust callers can still register bounded `fixture://` documents through
+`NativeEngineConfig`; fixture registration is not a CLI file-loading or
+network capability. Native CLI commands include revision-guarded navigate,
+click, type, clear, check, uncheck, select, key, key-down, key-up, shortcut,
+scroll, text, observe, targets, DOM, evaluate, and PNG screenshot operations,
+with semantic locators instead of CSS selectors. Endpoint, external
+lifecycle, profile, storage, download, prompt, MCP, and TUI paths fail closed
+until their native owners are brought through the same session boundary.
 
 ## Configuration and limits
 

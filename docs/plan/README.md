@@ -1112,6 +1112,13 @@ assignment updates the same URL owner, and Request/Fetch handoff observes the
 current href. Full URL setter/parser and encoding parity, default-port/
 IDNA/IPv6 behavior, and complete URL/Web IDL identity remain open.
 
+The completed bounded URL-component-setter slice is
+[native-engine-browser-123](tasks/native-engine-browser-123.md). Bounded
+`pathname` normalization and `href` replacement now refresh the same URL and
+`searchParams` owners while retaining query/fragment synchronization and
+Request/Fetch handoff. Authority/protocol setters, complete parser/encoding/
+IDNA/IPv6/default-port behavior, and complete URL/Web IDL identity remain open.
+
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and
 constructed responses now share `Response` identity; `new Response`,

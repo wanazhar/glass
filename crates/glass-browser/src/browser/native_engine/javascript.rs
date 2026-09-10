@@ -5431,6 +5431,19 @@ fn document_bootstrap(
       hash: parts.hash,
     }};
     const searchParams = new URLSearchParamsNative(parts.search);
+    const updateParts = (next) => {{
+      state.prefix = next.authority ? next.protocol + "//" + next.authority : next.protocol;
+      state.origin = next.origin;
+      state.protocol = next.protocol;
+      state.host = next.host;
+      state.hostname = next.hostname;
+      state.port = next.port;
+      state.pathname = next.pathname;
+      state.search = next.search;
+      state.hash = next.hash;
+      searchParams._entries = new URLSearchParamsNative(next.search)._entries;
+    }};
+    const currentHref = () => state.prefix + state.pathname + state.search + state.hash;
     const syncSearch = () => {{
       const encoded = searchParams.toString();
       state.search = encoded ? "?" + encoded : "";
@@ -5445,7 +5458,11 @@ fn document_bootstrap(
     }}
     Object.defineProperty(this, "__glassUrl", {{ value: true }});
     const define = (name, getter) => Object.defineProperty(this, name, {{ enumerable: true, get: getter }});
-    define("href", () => state.prefix + state.pathname + state.search + state.hash);
+    Object.defineProperty(this, "href", {{
+      enumerable: true,
+      get: currentHref,
+      set: value => updateParts(nativeUrlParts(nativeUrlResolve(value, currentHref()))),
+    }});
     define("origin", () => state.origin);
     define("protocol", () => state.protocol);
     define("username", () => state.username);
@@ -5453,7 +5470,11 @@ fn document_bootstrap(
     define("host", () => state.host);
     define("hostname", () => state.hostname);
     define("port", () => state.port);
-    define("pathname", () => state.pathname);
+    Object.defineProperty(this, "pathname", {{
+      enumerable: true,
+      get: () => state.pathname,
+      set: value => {{ state.pathname = nativeUrlNormalizePath(String(value)); }},
+    }});
     Object.defineProperty(this, "search", {{
       enumerable: true,
       get: () => state.search,

@@ -123,6 +123,12 @@ pub(crate) enum NativeScriptCommand {
         node_index: u32,
         value: String,
     },
+    SetSelection {
+        node_index: u32,
+        start: usize,
+        end: usize,
+        direction: String,
+    },
     SetChecked {
         node_index: u32,
         checked: bool,
@@ -6608,6 +6614,37 @@ fn document_bootstrap(
   }};
   const makeElement = (initialEntry) => {{
     let entry = initialEntry;
+    let value = entry.value === null
+      ? (entry.tagName.toLowerCase() === "option"
+        ? (entry.attributes.value === undefined ? entry.text : entry.attributes.value)
+        : "")
+      : entry.value;
+    let selectionStart = entry.selectionStart;
+    let selectionEnd = entry.selectionEnd;
+    let selectionDirection = entry.selectionDirection || "none";
+    const selectionLength = () => Array.from(String(value)).length;
+    const selectionIndex = (candidate) => {{
+      const numeric = Number(candidate);
+      if (!Number.isFinite(numeric) || Math.trunc(numeric) !== numeric) {{
+        throw new TypeError("selection offset must be a finite integer");
+      }}
+      return Math.max(0, Math.min(selectionLength(), numeric));
+    }};
+    const applySelection = (start, end, direction) => {{
+      if (selectionStart == null || selectionEnd == null) {{
+        throw new TypeError("selection is unavailable on this element");
+      }}
+      const nextStart = selectionIndex(start);
+      const nextEnd = selectionIndex(end);
+      const normalizedDirection = String(direction).toLowerCase();
+      if (!["none", "forward", "backward"].includes(normalizedDirection)) {{
+        throw new TypeError("invalid selection direction");
+      }}
+      selectionStart = Math.min(nextStart, nextEnd);
+      selectionEnd = Math.max(nextStart, nextEnd);
+      selectionDirection = normalizedDirection;
+      pushCommand({{ kind: "setSelection", node_index: entry.nodeIndex, start: selectionStart, end: selectionEnd, direction: selectionDirection }});
+    }};
     const element = {{
       nodeIndex: entry.nodeIndex,
       parentIndex: entry.parentIndex,
@@ -6628,6 +6665,9 @@ fn document_bootstrap(
       disabled: entry.disabled,
       hidden: entry.hidden,
       focused: entry.focused,
+      selectionStart: entry.selectionStart,
+      selectionEnd: entry.selectionEnd,
+      selectionDirection: entry.selectionDirection,
       get validity() {{ return validityFlags(entry); }},
       get validationMessage() {{
         return validationMessageFor(entry, validityFlags(entry));
@@ -6659,6 +6699,12 @@ fn document_bootstrap(
         this.focused = false;
         pushCommand({{ kind: "blur", node_index: entry.nodeIndex }});
         dispatchTarget(this, createEvent("blur"));
+      }},
+      setSelectionRange(start, end, direction = "none") {{
+        applySelection(start, end, direction);
+      }},
+      select() {{
+        applySelection(0, selectionLength(), "forward");
       }},
       click() {{
         if (this.disabled || this.hidden) return;
@@ -6722,15 +6768,46 @@ fn document_bootstrap(
         pushCommand({{ kind: "removeAttribute", node_index: entry.nodeIndex, name: key }});
       }}
     }};
-    let value = element.value;
+    value = element.value;
     Object.defineProperty(element, "value", {{
       enumerable: true,
       configurable: false,
       get() {{ return value; }},
       set(next) {{
         value = String(next);
+        if (selectionStart !== null) {{
+          selectionStart = selectionLength();
+          selectionEnd = selectionStart;
+          selectionDirection = "none";
+        }}
         pushCommand({{ kind: "setValue", node_index: entry.nodeIndex, value }});
       }}
+    }});
+    Object.defineProperty(element, "selectionStart", {{
+      enumerable: true,
+      configurable: false,
+      get() {{ return selectionStart ?? entry.selectionStart ?? null; }},
+      set(next) {{
+        if (selectionStart == null) throw new TypeError("selection is unavailable on this element");
+        applySelection(next, selectionEnd, selectionDirection);
+      }},
+    }});
+    Object.defineProperty(element, "selectionEnd", {{
+      enumerable: true,
+      configurable: false,
+      get() {{ return selectionEnd ?? entry.selectionEnd ?? null; }},
+      set(next) {{
+        if (selectionEnd == null) throw new TypeError("selection is unavailable on this element");
+        applySelection(selectionStart, next, selectionDirection);
+      }},
+    }});
+    Object.defineProperty(element, "selectionDirection", {{
+      enumerable: true,
+      configurable: false,
+      get() {{ return selectionDirection ?? entry.selectionDirection ?? "none"; }},
+      set(next) {{
+        applySelection(selectionStart, selectionEnd, next);
+      }},
     }});
     let checked = element.checked;
     Object.defineProperty(element, "checked", {{
@@ -6773,6 +6850,9 @@ fn document_bootstrap(
             ? (nextEntry.attributes.value === undefined ? nextEntry.text : nextEntry.attributes.value)
             : "")
           : nextEntry.value;
+        selectionStart = nextEntry.selectionStart;
+        selectionEnd = nextEntry.selectionEnd;
+        selectionDirection = nextEntry.selectionDirection || "none";
         checked = nextEntry.checked;
         selected = nextEntry.selected;
       }}

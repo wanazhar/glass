@@ -42,8 +42,16 @@ use std::collections::VecDeque;
 const MAX_NATIVE_PAGE_NAVIGATION_HANDOFFS: usize = 8;
 
 fn should_apply_native_key_default(key: &str, modifiers: i64) -> bool {
-    modifiers & (1 | 2 | 4) == 0
-        && (key.chars().count() == 1 || matches!(key, "Backspace" | "Delete"))
+    let primary_modifier = modifiers & (2 | 4) != 0;
+    if primary_modifier {
+        return key.eq_ignore_ascii_case("a") && modifiers & 1 == 0;
+    }
+    modifiers & 1 == 0
+        && (key.chars().count() == 1
+            || matches!(
+                key,
+                "Backspace" | "Delete" | "ArrowLeft" | "ArrowRight" | "Home" | "End"
+            ))
 }
 
 /// Bounded observation of the current native document.
@@ -2273,7 +2281,7 @@ impl NativeEngine {
                 .focused_text_control()
                 .is_ok_and(|focused| focused == id)
         {
-            let input_events = document.apply_key_press(id, key)?;
+            let input_events = document.apply_key_default(id, key, modifiers)?;
             events.extend(input_events.clone());
             for (event_node, event_kind) in input_events {
                 if let Some(evaluation) =

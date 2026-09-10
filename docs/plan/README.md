@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-084` locally. The versioned
+`native-engine-browser-085` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -830,6 +830,15 @@ the fixed 4 MiB native profile quota, while `persist()` and `persisted()` are
 stable asynchronous APIs that explicitly return `false` until a permission
 policy exists. Quota prompts, reservation, cross-process arbitration,
 structured-clone values, and the remaining browser-complete gates remain open.
+
+The completed bounded IndexedDB transaction-serialization slice is
+[native-engine-browser-085](tasks/native-engine-browser-085.md). Same-realm
+transactions for one database now execute through an ordered queue, request
+callbacks run before the next operation, and queued transactions snapshot
+state only when they begin. This keeps rollback from erasing a predecessor’s
+committed work. Cross-realm/process scheduling, upgrade-failure rollback,
+structured-clone values, quota permission policy, and the remaining
+browser-complete gates remain open.
 
 Full cookie policy/Web IDL parity and the remaining browser-complete gates
 remain open.

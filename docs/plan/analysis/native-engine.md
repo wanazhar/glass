@@ -2501,6 +2501,15 @@ asynchronous APIs that return `false` until an explicit permission policy is
 implemented. Quota prompts, reservation, cross-process arbitration,
 structured-clone values, and the remaining browser-complete gates remain open.
 
+The completed bounded IndexedDB transaction-serialization follow-up is
+[native-engine-browser-085](../tasks/native-engine-browser-085.md). Same-realm
+transactions for one database execute through an ordered queue; request
+callbacks precede the next operation, and queued transactions snapshot state
+only when they begin. Rollback therefore cannot erase a predecessor’s
+committed work. Cross-realm/process scheduling, upgrade-failure rollback,
+structured-clone values, quota permission policy, and the remaining
+browser-complete gates remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

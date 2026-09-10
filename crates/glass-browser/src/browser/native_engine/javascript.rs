@@ -270,6 +270,8 @@ pub(crate) fn storage_coordinator_for(
 #[derive(Debug, Deserialize, Serialize)]
 struct NativeWebStorageProfile {
     version: u64,
+    #[serde(default)]
+    revision: u64,
     local: BTreeMap<String, BTreeMap<String, String>>,
 }
 
@@ -355,10 +357,22 @@ pub(crate) fn load_web_storage_profile(
         return Ok(NativeWebStorageState::default());
     };
     let _lock = lock_web_storage_profile(path, false)?;
+    let Some(profile) = read_web_storage_profile(path)? else {
+        return Ok(NativeWebStorageState::default());
+    };
+    Ok(NativeWebStorageState {
+        local: profile.local,
+        session: BTreeMap::new(),
+    })
+}
+
+fn read_web_storage_profile(
+    path: &Path,
+) -> Result<Option<NativeWebStorageProfile>, NativeEngineError> {
     let metadata = match fs::metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(NativeWebStorageState::default());
+            return Ok(None);
         }
         Err(_) => {
             return Err(NativeEngineError::Worker {
@@ -402,20 +416,58 @@ pub(crate) fn load_web_storage_profile(
         session: BTreeMap::new(),
     };
     validate_web_storage_state(&state)?;
-    Ok(state)
+    Ok(Some(NativeWebStorageProfile {
+        version: WEB_STORAGE_PROFILE_VERSION,
+        revision: profile.revision,
+        local: state.local,
+    }))
 }
 
 pub(crate) fn save_web_storage_profile(
     path: Option<&Path>,
     state: &NativeWebStorageState,
+    storage_changes: &[NativeStorageEvent],
 ) -> Result<(), NativeEngineError> {
     let Some(path) = path else {
         return Ok(());
     };
     validate_web_storage_state(state)?;
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent).map_err(|_| NativeEngineError::Worker {
+            operation: "save native Web Storage profile".into(),
+            reason: "native Web Storage profile directory cannot be created".into(),
+        })?;
+    }
+    let _lock = lock_web_storage_profile(path, true)?;
+    let current = read_web_storage_profile(path)?;
+    let mut local = current
+        .as_ref()
+        .map(|profile| profile.local.clone())
+        .unwrap_or_else(|| state.local.clone());
+    if current.is_some() {
+        merge_local_storage_changes(&mut local, storage_changes)?;
+    }
+    let revision = match current.as_ref().map(|profile| profile.revision) {
+        Some(revision) => revision
+            .checked_add(1)
+            .ok_or_else(|| NativeEngineError::Worker {
+                operation: "save native Web Storage profile".into(),
+                reason: "native Web Storage profile revision overflowed".into(),
+            })?,
+        None => 1,
+    };
+    let merged_state = NativeWebStorageState {
+        local,
+        session: state.session.clone(),
+    };
+    validate_web_storage_state(&merged_state)?;
     let profile = NativeWebStorageProfile {
         version: WEB_STORAGE_PROFILE_VERSION,
-        local: state.local.clone(),
+        revision,
+        local: merged_state.local,
     };
     let bytes = serde_json::to_vec(&profile).map_err(|_| NativeEngineError::Worker {
         operation: "save native Web Storage profile".into(),
@@ -428,16 +480,6 @@ pub(crate) fn save_web_storage_profile(
             bytes.len(),
         ));
     }
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        fs::create_dir_all(parent).map_err(|_| NativeEngineError::Worker {
-            operation: "save native Web Storage profile".into(),
-            reason: "native Web Storage profile directory cannot be created".into(),
-        })?;
-    }
-    let _lock = lock_web_storage_profile(path, true)?;
     let temporary_path = path.with_extension(format!("tmp-{}", std::process::id()));
     fs::write(&temporary_path, &bytes).map_err(|_| NativeEngineError::Worker {
         operation: "save native Web Storage profile".into(),
@@ -462,6 +504,30 @@ pub(crate) fn save_web_storage_profile(
         }
         let _ = fs::remove_file(&temporary_path);
     }
+    Ok(())
+}
+
+fn merge_local_storage_changes(
+    local: &mut BTreeMap<String, BTreeMap<String, String>>,
+    storage_changes: &[NativeStorageEvent],
+) -> Result<(), NativeEngineError> {
+    let mut merged = NativeWebStorageState {
+        local: std::mem::take(local),
+        session: BTreeMap::new(),
+    };
+    for event in storage_changes {
+        match event.scope.as_str() {
+            "local" => merged.apply_storage_event(event)?,
+            "session" => {}
+            _ => {
+                return Err(NativeEngineError::invalid(
+                    "native Web Storage scope",
+                    "must be local or session",
+                ));
+            }
+        }
+    }
+    *local = merged.local;
     Ok(())
 }
 

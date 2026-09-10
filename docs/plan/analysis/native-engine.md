@@ -2373,11 +2373,23 @@ ordering/navigation edge cases, remaining full
 pattern-regex/file constraint validation, target contexts, and the remaining
 browser-context primitives remain open.
 
-The next bounded workstream is an explicit stale-snapshot ownership or merge
-protocol, followed by cross-process event delivery, IndexedDB, full
+The completed bounded profile convergence follow-up is
+[native-engine-browser-074](../tasks/native-engine-browser-074.md). Profile
+snapshots carry a revision, and an exclusive write re-reads the current
+snapshot then applies only the writer's bounded local-storage deltas. This
+prevents unrelated keys from being lost when independent stale snapshots are
+serialized, while same-key mutations retain lock-order last-writer behavior;
+profiles written before the revision field remain readable. Session storage is
+still volatile, and cross-process event delivery, cookie profile persistence,
+IndexedDB, full
 binary/stream FormData support, full task ordering/navigation edge cases,
 remaining full pattern-regex/file constraint validation, target contexts, and
 the remaining browser-context primitives remain open.
+
+The next bounded workstream is cross-process event delivery, followed by
+IndexedDB, full binary/stream FormData support, full task ordering/navigation
+edge cases, remaining full pattern-regex/file constraint validation, target
+contexts, and the remaining browser-context primitives.
 
 ## Baseline and constraints
 

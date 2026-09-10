@@ -1190,6 +1190,13 @@ assignment updates the same URL owner, and Request/Fetch URL handoff observes
 the current href. Full URL setter/parser and encoding parity, default-port/
 IDNA/IPv6 behavior, and complete URL/Web IDL identity remain open.
 
+The completed native-engine-browser-123 batch adds bounded URL `pathname` and
+`href` setters. Pathname assignment normalizes dot segments in place; href
+replacement refreshes components and the existing `searchParams` owner, while
+query/fragment synchronization and Request/Fetch handoff remain active.
+Authority/protocol setters, complete parser/encoding/IDNA/IPv6/default-port
+behavior, and complete URL/Web IDL identity remain open.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature

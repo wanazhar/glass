@@ -3,19 +3,22 @@ use super::config::{
     validate_url_text, without_fragment,
 };
 use super::error::NativeEngineError;
+use super::javascript::{
+    MAX_NATIVE_COOKIE_PROFILE_ENTRIES, NativeCookieChange, NativeCookieProfileEntry,
+    load_cookie_profile,
+};
 use super::origin::NativeOrigin;
 use base64::Engine as _;
 use futures_util::StreamExt;
 use reqwest::header::HeaderMap;
 use std::collections::BTreeMap;
 use std::fmt;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use url::Url;
 
 const MAX_NATIVE_NETWORK_REDIRECTS: usize = 8;
 const NATIVE_NETWORK_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_NATIVE_CACHE_ENTRIES: usize = 32;
-const MAX_NATIVE_COOKIES: usize = 128;
 const MAX_NATIVE_COOKIE_BYTES: usize = 4096;
 const MAX_NATIVE_FORM_BODY_BYTES: usize = crate::browser_backend::MAX_TEXT_BYTES;
 
@@ -119,6 +122,7 @@ pub struct NativeResourceLoader {
     fixtures: BTreeMap<String, String>,
     max_document_bytes: usize,
     network: NativeNetworkState,
+    cookie_changes: Vec<NativeCookieChange>,
 }
 
 impl fmt::Debug for NativeResourceLoader {
@@ -154,6 +158,66 @@ struct NativeCookie {
     secure: bool,
     http_only: bool,
     expires_at: Option<Instant>,
+    expires_at_unix_seconds: Option<u64>,
+}
+
+impl NativeCookie {
+    fn from_profile(profile: NativeCookieProfileEntry) -> Result<Option<Self>, NativeEngineError> {
+        if profile.name.is_empty()
+            || !valid_cookie_text(&profile.name, true)
+            || !valid_cookie_text(&profile.value, false)
+            || profile.value.contains(';')
+            || profile.name.len().saturating_add(profile.value.len()) > MAX_NATIVE_COOKIE_BYTES
+            || profile.domain.is_empty()
+            || !valid_cookie_domain(&profile.domain)
+            || profile.path.is_empty()
+            || !profile.path.starts_with('/')
+        {
+            return Err(NativeEngineError::invalid(
+                "native cookie profile",
+                "contains an invalid cookie entry",
+            ));
+        }
+        let expires_at = profile.expires_at_unix_seconds.map(|expires_at| {
+            Instant::now() + Duration::from_secs(expires_at.saturating_sub(unix_time_seconds()))
+        });
+        if profile
+            .expires_at_unix_seconds
+            .is_some_and(|expires_at| expires_at <= unix_time_seconds())
+        {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            name: profile.name,
+            value: profile.value,
+            domain: profile.domain,
+            path: profile.path,
+            host_only: profile.host_only,
+            secure: profile.secure,
+            http_only: profile.http_only,
+            expires_at,
+            expires_at_unix_seconds: profile.expires_at_unix_seconds,
+        }))
+    }
+
+    fn to_profile(&self) -> Option<NativeCookieProfileEntry> {
+        if self
+            .expires_at_unix_seconds
+            .is_some_and(|expires_at| expires_at <= unix_time_seconds())
+        {
+            return None;
+        }
+        Some(NativeCookieProfileEntry {
+            name: self.name.clone(),
+            value: self.value.clone(),
+            domain: self.domain.clone(),
+            path: self.path.clone(),
+            host_only: self.host_only,
+            secure: self.secure,
+            http_only: self.http_only,
+            expires_at_unix_seconds: self.expires_at_unix_seconds,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -226,15 +290,18 @@ impl NativeResourceLoader {
             .iter()
             .map(|fixture| (fixture.url.clone(), fixture.html.clone()))
             .collect();
+        let cookies = load_cookie_profile(config.storage_path.as_deref())?;
         Ok(Self {
             fixtures,
             max_document_bytes: config.limits.max_document_bytes,
-            network: NativeNetworkState::default(),
+            network: NativeNetworkState::from_profile(cookies)?,
+            cookie_changes: Vec::new(),
         })
     }
 
     pub(crate) fn for_content_process(
         max_document_bytes: usize,
+        storage_path: Option<&std::path::Path>,
     ) -> Result<Self, NativeEngineError> {
         if max_document_bytes == 0 || max_document_bytes > MAX_NATIVE_DOCUMENT_BYTES {
             return Err(NativeEngineError::invalid(
@@ -242,15 +309,25 @@ impl NativeResourceLoader {
                 format!("must be between 1 and {MAX_NATIVE_DOCUMENT_BYTES}"),
             ));
         }
+        let cookies = load_cookie_profile(storage_path)?;
         Ok(Self {
             fixtures: BTreeMap::new(),
             max_document_bytes,
-            network: NativeNetworkState::default(),
+            network: NativeNetworkState::from_profile(cookies)?,
+            cookie_changes: Vec::new(),
         })
     }
 
     pub(crate) fn max_document_bytes(&self) -> usize {
         self.max_document_bytes
+    }
+
+    pub(crate) fn cookie_profile(&self) -> Vec<NativeCookieProfileEntry> {
+        self.network.cookie_profile()
+    }
+
+    pub(crate) fn take_cookie_changes(&mut self) -> Vec<NativeCookieChange> {
+        std::mem::take(&mut self.cookie_changes)
     }
 
     pub(crate) fn document_cookie(&self, document_url: &str) -> Result<String, NativeEngineError> {
@@ -293,7 +370,8 @@ impl NativeResourceLoader {
         {
             return Ok(());
         }
-        self.network.store_cookie(&document_url, value);
+        self.cookie_changes
+            .extend(self.network.store_cookie(&document_url, value));
         Ok(())
     }
 
@@ -571,7 +649,8 @@ impl NativeResourceLoader {
         };
         let has_set_cookie = !pending_cookies.is_empty();
         for (cookie_url, cookie) in pending_cookies {
-            self.network.store_cookie(&cookie_url, &cookie);
+            self.cookie_changes
+                .extend(self.network.store_cookie(&cookie_url, &cookie));
         }
         self.network.store_document_policy(
             cache_key(&final_url),
@@ -824,7 +903,8 @@ impl NativeResourceLoader {
             body.extend_from_slice(&chunk);
         }
         for (cookie_url, cookie) in pending_cookies {
-            self.network.store_cookie(&cookie_url, &cookie);
+            self.cookie_changes
+                .extend(self.network.store_cookie(&cookie_url, &cookie));
         }
         let content_type = response_headers
             .get(reqwest::header::CONTENT_TYPE)
@@ -1032,7 +1112,8 @@ impl NativeResourceLoader {
             reason: "CSS subresource is not valid UTF-8".into(),
         })?;
         for (cookie_url, cookie) in pending_cookies {
-            self.network.store_cookie(&cookie_url, &cookie);
+            self.cookie_changes
+                .extend(self.network.store_cookie(&cookie_url, &cookie));
         }
         Ok(Some(body))
     }
@@ -1188,7 +1269,8 @@ impl NativeResourceLoader {
             reason: "script subresource is not valid UTF-8".into(),
         })?;
         for (cookie_url, cookie) in pending_cookies {
-            self.network.store_cookie(&cookie_url, &cookie);
+            self.cookie_changes
+                .extend(self.network.store_cookie(&cookie_url, &cookie));
         }
         Ok(Some(NativeScriptResource {
             url: current_url.to_string(),
@@ -1532,6 +1614,24 @@ fn cacheable_response(headers: &HeaderMap) -> bool {
 }
 
 impl NativeNetworkState {
+    fn from_profile(profile: Vec<NativeCookieProfileEntry>) -> Result<Self, NativeEngineError> {
+        let mut state = Self::default();
+        for cookie in profile {
+            let Some(cookie) = NativeCookie::from_profile(cookie)? else {
+                continue;
+            };
+            state.cookies.push(cookie);
+        }
+        Ok(state)
+    }
+
+    fn cookie_profile(&self) -> Vec<NativeCookieProfileEntry> {
+        self.cookies
+            .iter()
+            .filter_map(NativeCookie::to_profile)
+            .collect()
+    }
+
     fn cookie_header(&self, url: &Url) -> Option<String> {
         self.cookie_header_with_visibility(url, true)
     }
@@ -1589,16 +1689,16 @@ impl NativeNetworkState {
         (!header.is_empty()).then_some(header)
     }
 
-    fn store_cookie(&mut self, url: &Url, line: &str) {
+    fn store_cookie(&mut self, url: &Url, line: &str) -> Vec<NativeCookieChange> {
         if line.len() > MAX_NATIVE_COOKIE_BYTES {
-            return;
+            return Vec::new();
         }
         let Some(host) = url.host_str().map(str::to_ascii_lowercase) else {
-            return;
+            return Vec::new();
         };
         let (pair, attributes) = line.split_once(';').unwrap_or((line, ""));
         let Some((name, value)) = pair.trim().split_once('=') else {
-            return;
+            return Vec::new();
         };
         let name = name.trim();
         let value = value.trim();
@@ -1607,7 +1707,7 @@ impl NativeNetworkState {
             || !valid_cookie_text(value, false)
             || name.len().saturating_add(value.len()) > MAX_NATIVE_COOKIE_BYTES
         {
-            return;
+            return Vec::new();
         }
 
         let mut domain = host.clone();
@@ -1638,7 +1738,7 @@ impl NativeNetworkState {
                         || !valid_cookie_domain(&candidate)
                         || !host_matches_domain(&host, &candidate)
                     {
-                        return;
+                        return Vec::new();
                     }
                     domain = candidate;
                     host_only = false;
@@ -1655,36 +1755,72 @@ impl NativeNetworkState {
             }
         }
         if secure && !url.scheme().eq_ignore_ascii_case("https") {
-            return;
+            return Vec::new();
         }
 
         let same_cookie = |cookie: &NativeCookie| {
             cookie.name == name && cookie.domain == domain && cookie.path == path
         };
+        let change_key = || NativeCookieChange {
+            name: name.to_owned(),
+            domain: domain.clone(),
+            path: path.clone(),
+            cookie: None,
+        };
         if max_age.is_some_and(|age| age <= 0) {
+            let removed = self.cookies.iter().any(same_cookie);
             self.cookies.retain(|cookie| !same_cookie(cookie));
-            return;
+            return removed.then(change_key).into_iter().collect();
         }
-        let expires_at = max_age.map(|age| {
+        let expires_at_unix_seconds = max_age.map(|age| {
             let seconds = u64::try_from(age)
                 .unwrap_or_default()
                 .min(60 * 60 * 24 * 365 * 10);
-            Instant::now() + Duration::from_secs(seconds)
+            unix_time_seconds().saturating_add(seconds)
         });
-        self.cookies.retain(|cookie| !same_cookie(cookie));
-        if self.cookies.len() >= MAX_NATIVE_COOKIES {
-            self.cookies.remove(0);
-        }
-        self.cookies.push(NativeCookie {
+        let expires_at = expires_at_unix_seconds.map(|expires_at| {
+            Instant::now() + Duration::from_secs(expires_at.saturating_sub(unix_time_seconds()))
+        });
+        let profile = NativeCookieProfileEntry {
             name: name.to_owned(),
             value: value.to_owned(),
-            domain,
-            path,
+            domain: domain.clone(),
+            path: path.clone(),
+            host_only,
+            secure,
+            http_only,
+            expires_at_unix_seconds,
+        };
+        let had_existing = self.cookies.iter().any(same_cookie);
+        self.cookies.retain(|cookie| !same_cookie(cookie));
+        let mut changes = Vec::new();
+        if !had_existing && self.cookies.len() >= MAX_NATIVE_COOKIE_PROFILE_ENTRIES {
+            let removed = self.cookies.remove(0);
+            changes.push(NativeCookieChange {
+                name: removed.name,
+                domain: removed.domain,
+                path: removed.path,
+                cookie: None,
+            });
+        }
+        self.cookies.push(NativeCookie {
+            name: profile.name.clone(),
+            value: profile.value.clone(),
+            domain: profile.domain.clone(),
+            path: profile.path.clone(),
             host_only,
             secure,
             http_only,
             expires_at,
+            expires_at_unix_seconds,
         });
+        changes.push(NativeCookieChange {
+            name: profile.name.clone(),
+            domain: profile.domain.clone(),
+            path: profile.path.clone(),
+            cookie: Some(profile),
+        });
+        changes
     }
 
     fn store_cache(&mut self, key: String, resource: NativeResource) {
@@ -1735,6 +1871,12 @@ fn valid_cookie_text(value: &str, name: bool) -> bool {
                 | b'\t'
         )
     })
+}
+
+fn unix_time_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
 }
 
 fn valid_cookie_domain(domain: &str) -> bool {
@@ -2010,17 +2152,20 @@ fn hex_value(value: u8) -> Option<u8> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::javascript::{NativeWebStorageState, save_web_storage_profile};
     use super::{
-        MAX_NATIVE_CACHE_ENTRIES, NativeCorsMode, NativeNetworkState, NativeResource,
-        NativeSubresourceKind, cacheable_response, content_security_policy, cors_origin_header,
-        cors_preflight_response_allowed, cors_response_allowed, decode_html_body,
-        mixed_content_allowed, referrer_for_navigation, resolve_subresource_url,
+        MAX_NATIVE_CACHE_ENTRIES, NativeCorsMode, NativeEngineConfig, NativeNetworkState,
+        NativeResource, NativeResourceLoader, NativeSubresourceKind, cacheable_response,
+        content_security_policy, cors_origin_header, cors_preflight_response_allowed,
+        cors_response_allowed, decode_html_body, mixed_content_allowed, referrer_for_navigation,
+        resolve_subresource_url,
     };
     use reqwest::header::{
         ACCESS_CONTROL_ALLOW_CREDENTIALS, ACCESS_CONTROL_ALLOW_HEADERS,
         ACCESS_CONTROL_ALLOW_METHODS, ACCESS_CONTROL_ALLOW_ORIGIN, CACHE_CONTROL,
         CONTENT_SECURITY_POLICY, HeaderMap, HeaderValue, PRAGMA, VARY,
     };
+    use std::fs;
     use url::Url;
 
     #[test]
@@ -2082,6 +2227,56 @@ mod tests {
             );
         }
         assert_eq!(state.cache.len(), MAX_NATIVE_CACHE_ENTRIES);
+    }
+
+    #[test]
+    fn cookie_profile_merges_stale_key_changes() {
+        let profile_path = std::env::temp_dir().join(format!(
+            "glass-native-web-storage-{}-cookie-merge.json",
+            std::process::id()
+        ));
+        let lock_path = profile_path.with_extension("lock");
+        let _ = fs::remove_file(&profile_path);
+        let _ = fs::remove_file(&lock_path);
+        let config = NativeEngineConfig::default().with_storage_path(profile_path.clone());
+        let page = "https://example.test/account/page";
+        let mut first = NativeResourceLoader::new(&config).unwrap();
+        let mut second = NativeResourceLoader::new(&config).unwrap();
+        first
+            .set_document_cookie(page, "first=one; Path=/")
+            .unwrap();
+        second
+            .set_document_cookie(page, "second=two; Path=/")
+            .unwrap();
+
+        let first_state = first.cookie_profile();
+        let first_changes = first.take_cookie_changes();
+        save_web_storage_profile(
+            Some(&profile_path),
+            &NativeWebStorageState::default(),
+            &[],
+            &first_state,
+            &first_changes,
+        )
+        .unwrap();
+        let second_state = second.cookie_profile();
+        let second_changes = second.take_cookie_changes();
+        save_web_storage_profile(
+            Some(&profile_path),
+            &NativeWebStorageState::default(),
+            &[],
+            &second_state,
+            &second_changes,
+        )
+        .unwrap();
+
+        let reopened = NativeResourceLoader::new(&config).unwrap();
+        assert_eq!(
+            reopened.document_cookie(page).unwrap(),
+            "first=one; second=two"
+        );
+        let _ = fs::remove_file(profile_path);
+        let _ = fs::remove_file(lock_path);
     }
 
     #[test]

@@ -31,9 +31,9 @@ pub struct NativeEngineBackend {
 /// Bounded state for explicit semantic backend storage calls.
 ///
 /// This is intentionally separate from the page realm and resource loader.
-/// It makes the backend contract executable without implying that page-visible
-/// Web Storage, durable profile persistence, or the network cookie jar has
-/// already been wired through the native engine.
+/// It makes the semantic backend contract executable while page-visible Web
+/// Storage, durable profiles, and the network cookie jar retain their own
+/// origin-aware contracts.
 #[derive(Debug, Default)]
 struct NativeBackendStorage {
     local: BTreeMap<String, String>,
@@ -135,7 +135,7 @@ impl NativeEngineBackend {
                 }
                 BrowserCapability::Contexts => vec!["one active context only".into()],
                 BrowserCapability::Storage => vec![
-                    "origin-keyed page local/session Web Storage; opt-in localStorage profiles; profile-journal events; revisioned localStorage merge; cookie profile persistence and IndexedDB remain open".into(),
+                    "origin-keyed page local/session Web Storage; opt-in revisioned localStorage and cookie profiles; profile-journal events; IndexedDB remains open".into(),
                 ],
                 BrowserCapability::Lifecycle => {
                     vec!["close is terminal for the engine instance".into()]
@@ -169,7 +169,7 @@ impl NativeEngineBackend {
                     limitations: vec![
                         "network navigation and scripting are bounded web-platform slices, not browser parity".into(),
                         "in-process local execution is not a security boundary for hostile content; external documents use the sandboxed content worker".into(),
-                        "bounded page Web Storage and session document.cookie; opt-in localStorage profiles; per-context sessionStorage; profile-journal events; cookie profile persistence and IndexedDB unavailable".into(),
+                        "bounded page Web Storage and session document.cookie; opt-in revisioned localStorage/cookie profiles; per-context sessionStorage; profile-journal events; IndexedDB unavailable".into(),
                         "actions are limited to bounded click/type/key/scroll, select controls, form defaults, root scrolling, and native point targets".into(),
                     ],
                 },

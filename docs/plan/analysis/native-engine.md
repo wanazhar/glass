@@ -2394,15 +2394,28 @@ and session changes are appended and live receivers poll before page
 operations, exclude their writer, and apply origin/context routing before
 dispatch. Incomplete tails are repaired, malformed records are typed errors,
 and the journal is capped at 4 MiB without compaction in this slice. Cookie
-profile persistence, IndexedDB, full binary/stream FormData support, full task
+profile persistence is recorded in the following slice. IndexedDB, full
+binary/stream FormData support, full task
 ordering/navigation edge cases, remaining full pattern-regex/file constraint
 validation, target contexts, and the remaining browser-context primitives
 remain open.
 
-The next bounded workstream is cookie profile persistence, followed by
-IndexedDB, full binary/stream FormData support, full task ordering/navigation
-edge cases, remaining full pattern-regex/file constraint validation, target
-contexts, and the remaining browser-context primitives.
+The completed bounded cookie-profile persistence follow-up is
+[native-engine-browser-076](../tasks/native-engine-browser-076.md). Supplying
+the existing explicit profile path restores accepted Rust-owned cookies for
+page `document.cookie`, HTTP navigation/fetch, and sandboxed content workers;
+profiles without the optional cookie field remain readable. Cookie updates
+re-read the latest locked snapshot and merge key-level replacements,
+deletions, and bounded-jar evictions before the existing atomic commit path.
+Expiry uses bounded wall-clock metadata, while session cookies are retained
+for the explicit profile lifetime. Without a profile path cookies remain
+volatile; the profile is sensitive credential-bearing state, and IndexedDB
+plus full cookie policy/Web IDL parity remain open.
+
+The next bounded workstream is IndexedDB, followed by full binary/stream
+FormData support, full task ordering/navigation edge cases, remaining full
+pattern-regex/file constraint validation, target contexts, and the remaining
+browser-context primitives.
 
 ## Baseline and constraints
 

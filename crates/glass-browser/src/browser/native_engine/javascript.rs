@@ -37,6 +37,8 @@ const MAX_WEB_STORAGE_PROFILE_BYTES: usize = 4 * 1024 * 1024;
 const WEB_STORAGE_PROFILE_VERSION: u64 = 1;
 const MAX_WEB_STORAGE_EVENT_JOURNAL_BYTES: usize = 4 * 1024 * 1024;
 const MAX_NATIVE_STORAGE_EVENTS: usize = 64;
+pub(crate) const MAX_NATIVE_COOKIE_PROFILE_ENTRIES: usize = 128;
+pub(crate) const MAX_NATIVE_COOKIE_PROFILE_BYTES: usize = 4096;
 const NATIVE_STORAGE_PROFILE_LOCK_TIMEOUT: Duration = Duration::from_millis(500);
 const NATIVE_STORAGE_PROFILE_LOCK_RETRY: Duration = Duration::from_millis(10);
 
@@ -191,6 +193,29 @@ struct NativeWebStorageProfile {
     #[serde(default)]
     revision: u64,
     local: BTreeMap<String, BTreeMap<String, String>>,
+    #[serde(default)]
+    cookies: Vec<NativeCookieProfileEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub(crate) struct NativeCookieProfileEntry {
+    pub(crate) name: String,
+    pub(crate) value: String,
+    pub(crate) domain: String,
+    pub(crate) path: String,
+    pub(crate) host_only: bool,
+    pub(crate) secure: bool,
+    pub(crate) http_only: bool,
+    #[serde(default)]
+    pub(crate) expires_at_unix_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeCookieChange {
+    pub(crate) name: String,
+    pub(crate) domain: String,
+    pub(crate) path: String,
+    pub(crate) cookie: Option<NativeCookieProfileEntry>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -522,6 +547,19 @@ pub(crate) fn load_web_storage_profile(
     })
 }
 
+pub(crate) fn load_cookie_profile(
+    path: Option<&Path>,
+) -> Result<Vec<NativeCookieProfileEntry>, NativeEngineError> {
+    let Some(path) = path else {
+        return Ok(Vec::new());
+    };
+    let _lock = lock_web_storage_profile(path, false)?;
+    let Some(profile) = read_web_storage_profile(path)? else {
+        return Ok(Vec::new());
+    };
+    Ok(profile.cookies)
+}
+
 fn read_web_storage_profile(
     path: &Path,
 ) -> Result<Option<NativeWebStorageProfile>, NativeEngineError> {
@@ -567,15 +605,31 @@ fn read_web_storage_profile(
             "is unsupported",
         ));
     }
+    let NativeWebStorageProfile {
+        revision,
+        local,
+        cookies,
+        ..
+    } = profile;
     let state = NativeWebStorageState {
-        local: profile.local,
+        local,
         session: BTreeMap::new(),
     };
     validate_web_storage_state(&state)?;
+    validate_cookie_profile(&cookies)?;
+    let cookies = cookies
+        .into_iter()
+        .filter(|cookie| {
+            cookie
+                .expires_at_unix_seconds
+                .is_none_or(|expires_at| expires_at > unix_time_seconds())
+        })
+        .collect();
     Ok(Some(NativeWebStorageProfile {
         version: WEB_STORAGE_PROFILE_VERSION,
-        revision: profile.revision,
+        revision,
         local: state.local,
+        cookies,
     }))
 }
 
@@ -583,6 +637,8 @@ pub(crate) fn save_web_storage_profile(
     path: Option<&Path>,
     state: &NativeWebStorageState,
     storage_changes: &[NativeStorageEvent],
+    cookie_state: &[NativeCookieProfileEntry],
+    cookie_changes: &[NativeCookieChange],
 ) -> Result<(), NativeEngineError> {
     let Some(path) = path else {
         return Ok(());
@@ -603,8 +659,16 @@ pub(crate) fn save_web_storage_profile(
         .as_ref()
         .map(|profile| profile.local.clone())
         .unwrap_or_else(|| state.local.clone());
+    validate_cookie_profile(cookie_state)?;
     if current.is_some() {
         merge_local_storage_changes(&mut local, storage_changes)?;
+    }
+    let mut cookies = current
+        .as_ref()
+        .map(|profile| profile.cookies.clone())
+        .unwrap_or_else(|| cookie_state.to_vec());
+    if current.is_some() {
+        merge_cookie_changes(&mut cookies, cookie_changes)?;
     }
     let revision = match current.as_ref().map(|profile| profile.revision) {
         Some(revision) => revision
@@ -624,6 +688,7 @@ pub(crate) fn save_web_storage_profile(
         version: WEB_STORAGE_PROFILE_VERSION,
         revision,
         local: merged_state.local,
+        cookies,
     };
     let bytes = serde_json::to_vec(&profile).map_err(|_| NativeEngineError::Worker {
         operation: "save native Web Storage profile".into(),
@@ -685,6 +750,144 @@ fn merge_local_storage_changes(
     }
     *local = merged.local;
     Ok(())
+}
+
+fn merge_cookie_changes(
+    cookies: &mut Vec<NativeCookieProfileEntry>,
+    changes: &[NativeCookieChange],
+) -> Result<(), NativeEngineError> {
+    for change in changes {
+        if let Some(cookie) = change.cookie.as_ref() {
+            if cookie.name != change.name
+                || cookie.domain != change.domain
+                || cookie.path != change.path
+            {
+                return Err(NativeEngineError::invalid(
+                    "native cookie change",
+                    "cookie key does not match its change key",
+                ));
+            }
+            validate_cookie_profile_entry(cookie)?;
+        }
+        cookies.retain(|cookie| {
+            cookie.name != change.name
+                || cookie.domain != change.domain
+                || cookie.path != change.path
+        });
+        if let Some(cookie) = change.cookie.clone() {
+            if cookies.len() >= MAX_NATIVE_COOKIE_PROFILE_ENTRIES {
+                cookies.remove(0);
+            }
+            cookies.push(cookie);
+        }
+    }
+    validate_cookie_profile(cookies)
+}
+
+fn validate_cookie_profile(cookies: &[NativeCookieProfileEntry]) -> Result<(), NativeEngineError> {
+    if cookies.len() > MAX_NATIVE_COOKIE_PROFILE_ENTRIES {
+        return Err(NativeEngineError::limit(
+            "native cookie profile entries",
+            MAX_NATIVE_COOKIE_PROFILE_ENTRIES,
+            cookies.len(),
+        ));
+    }
+    for cookie in cookies {
+        validate_cookie_profile_entry(cookie)?;
+    }
+    for (index, cookie) in cookies.iter().enumerate() {
+        if cookies[..index].iter().any(|previous| {
+            previous.name == cookie.name
+                && previous.domain == cookie.domain
+                && previous.path == cookie.path
+        }) {
+            return Err(NativeEngineError::invalid(
+                "native cookie profile",
+                "must not contain duplicate cookie keys",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_cookie_profile_entry(
+    cookie: &NativeCookieProfileEntry,
+) -> Result<(), NativeEngineError> {
+    if cookie.name.is_empty() {
+        return Err(NativeEngineError::invalid(
+            "native cookie profile name",
+            "must not be empty",
+        ));
+    }
+    if cookie.name.len() > MAX_NATIVE_COOKIE_PROFILE_BYTES {
+        return Err(NativeEngineError::limit(
+            "native cookie profile name",
+            MAX_NATIVE_COOKIE_PROFILE_BYTES,
+            cookie.name.len(),
+        ));
+    }
+    if cookie.value.len() > MAX_NATIVE_COOKIE_PROFILE_BYTES {
+        return Err(NativeEngineError::limit(
+            "native cookie profile value",
+            MAX_NATIVE_COOKIE_PROFILE_BYTES,
+            cookie.value.len(),
+        ));
+    }
+    if cookie.name.bytes().any(|byte| {
+        byte.is_ascii_control()
+            || matches!(
+                byte,
+                b'(' | b')'
+                    | b'<'
+                    | b'>'
+                    | b'@'
+                    | b','
+                    | b';'
+                    | b':'
+                    | b'\\'
+                    | b'"'
+                    | b'/'
+                    | b'['
+                    | b']'
+                    | b'?'
+                    | b'='
+                    | b'{'
+                    | b'}'
+                    | b' '
+                    | b'\t'
+            )
+    }) || cookie
+        .value
+        .bytes()
+        .any(|byte| byte.is_ascii_control() || byte == b';')
+    {
+        return Err(NativeEngineError::invalid(
+            "native cookie profile",
+            "name and value contain unsupported cookie bytes",
+        ));
+    }
+    if cookie.domain.is_empty() || cookie.domain.len() > MAX_NATIVE_COOKIE_PROFILE_BYTES {
+        return Err(NativeEngineError::invalid(
+            "native cookie profile domain",
+            "must be a non-empty bounded value",
+        ));
+    }
+    if cookie.path.is_empty()
+        || cookie.path.len() > MAX_NATIVE_COOKIE_PROFILE_BYTES
+        || !cookie.path.starts_with('/')
+    {
+        return Err(NativeEngineError::invalid(
+            "native cookie profile path",
+            "must be a bounded absolute path",
+        ));
+    }
+    Ok(())
+}
+
+fn unix_time_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
 }
 
 fn validate_web_storage_state(state: &NativeWebStorageState) -> Result<(), NativeEngineError> {

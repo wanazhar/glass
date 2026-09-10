@@ -732,11 +732,21 @@ storage changes are appended under the existing profile lock; live receivers
 poll before page operations, exclude their writer, and apply origin and
 browsing-context filters before dispatch. The journal repairs an incomplete
 tail, rejects malformed records, and is capped at 4 MiB; acknowledged
-records are not compacted by this slice. The next storage gates are cookie
-profile persistence, IndexedDB, full
+records are not compacted by this slice. The next storage gates are IndexedDB, full
 binary/stream FormData support, full task ordering/navigation edge cases,
 remaining full pattern-regex/file constraint validation, target contexts, and
 the remaining browser-context primitives.
+
+The current bounded cookie-profile persistence slice is
+[native-engine-browser-076](tasks/native-engine-browser-076.md). Supplying the
+existing explicit profile path now restores accepted Rust-owned cookies for
+page `document.cookie`, HTTP navigation/fetch, and sandboxed content workers;
+profiles without the optional cookie field remain readable. Cookie snapshots
+share the profile lock and atomic commit path, expire against bounded
+wall-clock metadata, and merge key-level changes from stale live contexts.
+Without a profile path cookies remain volatile. Full SameSite, partitioned,
+third-party, Expires-date, cookie-change-event, and Cookie/Document Web IDL
+parity remain open, as does IndexedDB.
 
 The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,

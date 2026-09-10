@@ -2964,6 +2964,16 @@ this stage: it does not pretend to observe each subresource, redirect,
 service-worker fetch, or transport cancellation. Those finer events and the
 remaining browser-complete parity gates remain open.
 
+The completed native-engine-browser-142 batch repairs a high-impact action
+handoff. Direct semantic clicks on anchors in external HTTP(S) documents no
+longer discard the content process and enter the synchronous local loader.
+The content-process click event bridge now transfers its default-action
+decision; an allowed link is resolved by the asynchronous native navigation
+owner, while a prevented link remains on the current page. The click and
+navigation each retain their own bounded revision transition and request
+accounting. Download attributes, popup/new-target behavior, child frames,
+and universal browser parity remain open.
+
 The completed native-engine-browser-133 batch extends the native target seam
 with a side-effect-free preflight result. The engine resolves the current
 semantic locator and derives viewport geometry and actionability under the

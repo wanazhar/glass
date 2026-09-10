@@ -2096,6 +2096,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         json!({
                             "kind": "mutated",
                             "id": id,
+                            "allowed": mutation.allowed,
                             "document_base64": base64::engine::general_purpose::STANDARD
                                 .encode(serde_json::to_vec(&mutation.document).unwrap_or_default()),
                             "events": mutation.events.iter().map(|event| json!({
@@ -3437,7 +3438,7 @@ fn mutate_click_with_event_preflight(
             })
             .collect(),
         navigation,
-        allowed: true,
+        allowed: click_allowed,
         storage_events: Vec::new(),
         indexed_db_changes: Vec::new(),
         dialogs: Vec::new(),

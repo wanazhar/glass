@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-141` locally. The versioned
+`native-engine-browser-142` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1298,6 +1298,16 @@ subresource, redirect, service worker, or transport cancellation; those
 browser-complete contracts remain issue #40 work alongside continuation-aware
 prompts, target/frame expansion, popup/download witnesses, universal workflow
 parity, and CDP replacement.
+
+The completed native external-link activation batch is
+[native-engine-browser-142](tasks/native-engine-browser-142.md). Direct
+semantic clicks on anchors in external HTTP(S) documents now stay in the
+content-process event path, honor click cancellation, and hand an allowed link
+to the asynchronous native navigation owner. The action revision records the
+click and the navigation separately, preserving the existing lifecycle,
+history, request-ledger, and no-CDP guarantees. Download targets, target/frame
+expansion, and the remaining browser-complete workflow gates remain issue #40
+work.
 
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and

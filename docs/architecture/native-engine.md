@@ -101,7 +101,7 @@ bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
 bounded-legacy-name-fragment-targets/bounded-text-fragment-targets/
 bounded-text-fragment-affixes/bounded-root-horizontal-scroll/
-bounded-prompt-lifecycle/bounded-request-lifecycle,
+bounded-prompt-lifecycle/bounded-request-lifecycle/bounded-external-link-activation,
 including bounded style
 inheritance, paint clipping, solid/dashed/dotted border painting, rounded
 fill/border masks, inline-box line placement, fixed pixel line-height floors,
@@ -1381,6 +1381,17 @@ in-flight count, elapsed quiet time, required quiet time, and completion
 count. Because the current content worker still owns a whole bounded load or
 script operation at this seam, this does not claim per-resource subresource,
 redirect, service-worker, or transport-cancellation lifecycle parity.
+
+The completed native-engine-browser-142 batch closes the direct external-link
+activation seam. A semantic anchor click in a process-backed HTTP(S) document
+now remains in the content-process event bridge, carries the click
+preventDefault result across IPC, and only then hands an allowed link to the
+asynchronous native navigation owner. The click revision and navigation
+revision remain separate and use the normal lifecycle, history, content
+worker, and request-ledger paths. A canceled link click mutates only the
+observable click state and does not navigate. Download attributes, popup or
+new-target behavior, child-frame ownership, and full browser topology remain
+open.
 
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
@@ -4523,6 +4534,8 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded native request operation accounting, completion sequencing, and
   `network-quiet` waits across navigation, direct fetch, and external script
   operations;
+- direct external anchor activation through the content-process event bridge,
+  click cancellation, and asynchronous native navigation;
 - deterministic scheduler ordering and queue bounds;
 - failed navigation preserving the previous state;
 - dispatcher capability denial and explicit-only backend selection;

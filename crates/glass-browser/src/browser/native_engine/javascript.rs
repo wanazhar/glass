@@ -5113,6 +5113,34 @@ fn document_bootstrap(
     .replace(/\n/g, "%0A");
   const serializeFormData = (formData, requestId) => {{
     const boundary = "----GlassNativeForm" + requestId;
+    const hasBinaryFile = formData._entries.some(entry =>
+      entry[1].kind === "file" && Array.isArray(entry[1].value._bytes)
+    );
+    if (hasBinaryFile) {{
+      const bytes = [];
+      const appendBytes = source => {{
+        if (bytes.length + source.length > storageValueLimit) throw new RangeError("native FormData body limit exceeded");
+        for (const value of source) bytes.push(value);
+      }};
+      const appendText = value => appendBytes(blobUtf8Bytes(String(value)));
+      for (const entry of formData._entries) {{
+        appendText("--" + boundary + "\r\n");
+        const file = entry[1].kind === "file" ? entry[1] : null;
+        appendText("Content-Disposition: form-data; name=\"" + escapeFormDataName(entry[0]) + "\"");
+        if (file) appendText("; filename=\"" + escapeFormDataName(file.filename) + "\"");
+        appendText("\r\n");
+        if (file) appendText("Content-Type: " + (file.value.type || "application/octet-stream") + "\r\n");
+        appendText("\r\n");
+        appendBytes(file ? blobBytes(file.value) : blobUtf8Bytes(entry[1]));
+        appendText("\r\n");
+      }}
+      appendText("--" + boundary + "--\r\n");
+      return {{
+        body: utf8TextFromBytes(bytes),
+        bodyBase64: encodeBase64(bytes),
+        contentType: "multipart/form-data; boundary=" + boundary,
+      }};
+    }}
     let body = "";
     for (const entry of formData._entries) {{
       body += "--" + boundary + "\r\n";
@@ -5126,7 +5154,7 @@ fn document_bootstrap(
       body += "\r\n";
     }}
     body += "--" + boundary + "--\r\n";
-    return {{ body, contentType: "multipart/form-data; boundary=" + boundary }};
+    return {{ body, bodyBase64: null, contentType: "multipart/form-data; boundary=" + boundary }};
   }};
   globalThis.FormData = FormDataNative;
   const appendUrlSearchParam = (target, name, value) => {{
@@ -5347,7 +5375,7 @@ fn document_bootstrap(
       if (contentType !== null) return Promise.reject(new TypeError("FormData chooses its own Content-Type boundary"));
       const serialized = serializeFormData(formData, requestId);
       body = serialized.body;
-      bodyBase64 = null;
+      bodyBase64 = serialized.bodyBase64;
       contentType = serialized.contentType;
     }}
     if (urlSearchParams) {{

@@ -949,7 +949,7 @@ The completed bounded binary Blob/File construction slice is
 [native-engine-browser-100](tasks/native-engine-browser-100.md). Native
 `Blob` and `File` now accept bounded `ArrayBuffer` and typed-array parts,
 retain exact bytes and byte length, and feed the 099 Fetch/XHR request-body
-bridge; text-only parts keep their established behavior. Binary multipart
+bridge; text-only parts keep their established behavior. Streaming multipart
 FormData, streams, upload progress, and full Blob/File Web IDL parity remain
 open.
 
@@ -958,6 +958,13 @@ The completed bounded response-header slice is
 asynchronous XHR now expose bounded normalized response-header snapshots,
 combine duplicate names, and apply same-origin/CORS-exposed filtering;
 `Set-Cookie`, invalid raw header bytes, trailers, mutation, and full Headers
+Web IDL parity remain open.
+
+The completed bounded binary FormData-part slice is
+[native-engine-browser-102](tasks/native-engine-browser-102.md). Multipart
+Fetch and asynchronous XHR now preserve raw-byte-backed Blob/File parts while
+retaining the existing boundary, filename, MIME, and text-field contracts;
+streaming FormData, upload progress, iterator identity, and full FormData/Blob
 Web IDL parity remain open.
 
 Full cookie policy/Web IDL parity and the remaining browser-complete gates

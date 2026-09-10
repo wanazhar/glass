@@ -475,6 +475,10 @@ HTTP(S) page loads, and a renamed target can be reused by later named
 `window.open` calls. `WindowProxy.close()` now removes its target through the
 same parent-owned lifecycle path across local and HTTP(S) pages; the requesting
 proxy reports `closed === true`, and repeated stale closes are harmless.
+`WindowProxy.location` now provides a bounded URL snapshot with component
+getters, `href` assignment, `assign()`, `replace()`, and `reload()`; navigation
+effects resolve through the same parent-owned target and history path across
+local and HTTP(S) pages, and child opener projections carry the opener URL.
 
 ## Safety and support
 

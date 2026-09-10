@@ -20,12 +20,13 @@ use super::javascript::{
     MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_DIALOGS, NativeCookieProfileEntry, NativeDialog,
     NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime, NativePageNavigation,
     NativePopupRequest, NativePostMessageRequest, NativeScriptEvaluation, NativeStorageEvent,
-    NativeWebStorageState, NativeWindowCloseRequest, append_storage_changes,
-    apply_indexed_db_changes, diff_indexed_db_changes, execute_inline_scripts, host_event_script,
-    host_hash_change_event_script, host_message_event_script, host_submit_event_script,
-    load_indexed_db_profile, load_web_storage_profile, new_storage_writer_id,
-    read_storage_event_journal, register_storage_reader, save_web_storage_profile,
-    storage_event_cursor, storage_key, unregister_storage_reader,
+    NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
+    append_storage_changes, apply_indexed_db_changes, diff_indexed_db_changes,
+    execute_inline_scripts, host_event_script, host_hash_change_event_script,
+    host_message_event_script, host_submit_event_script, load_indexed_db_profile,
+    load_web_storage_profile, new_storage_writer_id, read_storage_event_journal,
+    register_storage_reader, save_web_storage_profile, storage_event_cursor, storage_key,
+    unregister_storage_reader,
 };
 use super::layout::{NativeLayoutSnapshot, NativePoint, NativeRect};
 use super::lifecycle::NativeLifecycleState;
@@ -340,6 +341,7 @@ pub struct NativeEngine {
     pending_popups: VecDeque<NativePopupRequest>,
     pending_post_messages: VecDeque<NativePostMessageRequest>,
     pending_window_closes: VecDeque<NativeWindowCloseRequest>,
+    pending_window_navigations: VecDeque<NativeWindowNavigationRequest>,
     completed_download_ids: VecDeque<String>,
     completed_downloads: u64,
     next_download_id: u64,
@@ -411,6 +413,7 @@ impl NativeEngine {
             pending_popups: VecDeque::new(),
             pending_post_messages: VecDeque::new(),
             pending_window_closes: VecDeque::new(),
+            pending_window_navigations: VecDeque::new(),
             completed_download_ids: VecDeque::new(),
             completed_downloads: 0,
             next_download_id: 1,
@@ -583,6 +586,7 @@ impl NativeEngine {
                     &self.config.window_name,
                     self.config.opener_context_id.as_deref(),
                     &self.config.opener_window_name,
+                    &self.config.opener_url,
                 )
                 .await?;
         }
@@ -733,6 +737,16 @@ impl NativeEngine {
             .await
     }
 
+    pub(crate) async fn navigate_async_with_history(
+        &mut self,
+        url: impl Into<String>,
+        replace_history: bool,
+    ) -> Result<NativeEngineSnapshot, NativeEngineError> {
+        let mut request = NativeNavigationRequest::get(url);
+        request.replace_history = replace_history;
+        self.navigate_request_async(request, 0).await
+    }
+
     async fn navigate_request_async(
         &mut self,
         navigation: NativeNavigationRequest,
@@ -849,6 +863,7 @@ impl NativeEngine {
                     &self.config.window_name,
                     self.config.opener_context_id.as_deref(),
                     &self.config.opener_window_name,
+                    &self.config.opener_url,
                 )
                 .await?;
             self.content_process = Some(process);
@@ -899,6 +914,7 @@ impl NativeEngine {
                 &content_origin,
             )?;
             self.queue_window_close_requests(std::mem::take(&mut content.window_closes))?;
+            self.queue_window_navigation_requests(std::mem::take(&mut content.window_navigations))?;
             let Some(page_navigation) = content.navigation.clone() else {
                 return Ok((content, history_commit, page_navigation_handoffs));
             };
@@ -1240,6 +1256,7 @@ impl NativeEngine {
                 popups,
                 post_messages,
                 window_closes,
+                window_navigations,
                 window_name,
             } = {
                 let process = self
@@ -1272,6 +1289,7 @@ impl NativeEngine {
                 self.queue_popup_requests(popups)?;
                 self.queue_post_message_requests(post_messages)?;
                 self.queue_window_close_requests(window_closes)?;
+                self.queue_window_navigation_requests(window_navigations)?;
                 let dialog_url = self.url.clone();
                 self.install_dialogs(dialogs, &dialog_url)?;
             }
@@ -1283,6 +1301,7 @@ impl NativeEngine {
                 &self.config.window_name,
                 self.config.opener_context_id.as_deref(),
                 &self.config.opener_window_name,
+                &self.config.opener_url,
             )?;
             javascript.set_storage_state(self.web_storage.clone());
             javascript.set_indexed_db_state(
@@ -1752,6 +1771,41 @@ impl NativeEngine {
         Ok(())
     }
 
+    fn queue_window_navigation_request(
+        &mut self,
+        mut request: NativeWindowNavigationRequest,
+    ) -> Result<(), NativeEngineError> {
+        if self.pending_window_navigations.len() >= MAX_NATIVE_PENDING_POPUPS {
+            return Err(NativeEngineError::limit(
+                "native pending window navigation requests",
+                MAX_NATIVE_PENDING_POPUPS,
+                self.pending_window_navigations.len().saturating_add(1),
+            ));
+        }
+        validate_url_text("window navigation target", &request.target)?;
+        validate_url_text("window navigation href", &request.href)?;
+        if let Some(target_context_id) = request.target_context_id.as_deref() {
+            super::config::validate_context_id(target_context_id)?;
+        }
+        if request.source_context_id.is_empty() {
+            request.source_context_id = self.config.context_id.clone();
+        } else {
+            super::config::validate_context_id(&request.source_context_id)?;
+        }
+        self.pending_window_navigations.push_back(request);
+        Ok(())
+    }
+
+    fn queue_window_navigation_requests(
+        &mut self,
+        requests: Vec<NativeWindowNavigationRequest>,
+    ) -> Result<(), NativeEngineError> {
+        for request in requests {
+            self.queue_window_navigation_request(request)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn take_pending_popups(&mut self) -> Vec<NativePopupRequest> {
         self.pending_popups.drain(..).collect()
     }
@@ -1762,6 +1816,10 @@ impl NativeEngine {
 
     pub(crate) fn take_pending_window_closes(&mut self) -> Vec<NativeWindowCloseRequest> {
         self.pending_window_closes.drain(..).collect()
+    }
+
+    pub(crate) fn take_pending_window_navigations(&mut self) -> Vec<NativeWindowNavigationRequest> {
+        self.pending_window_navigations.drain(..).collect()
     }
 
     pub(crate) async fn dispatch_post_message(
@@ -2904,7 +2962,13 @@ impl NativeEngine {
             .as_ref()
             .map(NativeJavaScriptRuntime::take_window_close_events)
             .unwrap_or_default();
-        self.queue_window_close_requests(window_closes)
+        self.queue_window_close_requests(window_closes)?;
+        let window_navigations = self
+            .javascript
+            .as_ref()
+            .map(NativeJavaScriptRuntime::take_window_navigation_events)
+            .unwrap_or_default();
+        self.queue_window_navigation_requests(window_navigations)
     }
 
     fn dispatch_local_events(
@@ -3513,6 +3577,7 @@ impl NativeEngine {
         self.queue_popup_requests(std::mem::take(&mut mutation.popups))?;
         self.queue_post_message_requests(std::mem::take(&mut mutation.post_messages))?;
         self.queue_window_close_requests(std::mem::take(&mut mutation.window_closes))?;
+        self.queue_window_navigation_requests(std::mem::take(&mut mutation.window_navigations))?;
         self.publish_content_state(&mutation.storage_events, &mutation.indexed_db_changes)?;
         let dialogs = mutation.dialogs.clone();
         let generation = self.document.generation();
@@ -3973,6 +4038,7 @@ impl NativeEngine {
                 &self.config.window_name,
                 self.config.opener_context_id.as_deref(),
                 &self.config.opener_window_name,
+                &self.config.opener_url,
             )?)
         } else {
             None
@@ -4006,6 +4072,11 @@ impl NativeEngine {
                 .map(NativeJavaScriptRuntime::take_window_close_events)
                 .unwrap_or_default();
             self.queue_window_close_requests(window_closes)?;
+            let window_navigations = javascript
+                .as_ref()
+                .map(NativeJavaScriptRuntime::take_window_navigation_events)
+                .unwrap_or_default();
+            self.queue_window_navigation_requests(window_navigations)?;
             if let Some(javascript) = javascript.as_ref() {
                 self.config.window_name = javascript.window_name();
             }
@@ -4078,6 +4149,7 @@ impl NativeEngine {
                 &self.config.window_name,
                 self.config.opener_context_id.as_deref(),
                 &self.config.opener_window_name,
+                &self.config.opener_url,
             )?)
         } else {
             None
@@ -4111,6 +4183,11 @@ impl NativeEngine {
                 .map(NativeJavaScriptRuntime::take_window_close_events)
                 .unwrap_or_default();
             self.queue_window_close_requests(window_closes)?;
+            let window_navigations = javascript
+                .as_ref()
+                .map(NativeJavaScriptRuntime::take_window_navigation_events)
+                .unwrap_or_default();
+            self.queue_window_navigation_requests(window_navigations)?;
             if let Some(javascript) = javascript.as_ref() {
                 self.config.window_name = javascript.window_name();
             }

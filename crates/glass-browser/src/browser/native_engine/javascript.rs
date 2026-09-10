@@ -106,6 +106,14 @@ pub(crate) enum NativeScriptCommand {
         #[serde(default)]
         target_context_id: Option<String>,
     },
+    NavigateWindow {
+        target: String,
+        #[serde(default)]
+        target_context_id: Option<String>,
+        href: String,
+        #[serde(default)]
+        replace: bool,
+    },
     PostMessage {
         target: String,
         target_origin: String,
@@ -234,6 +242,19 @@ pub(crate) struct NativeWindowCloseRequest {
     pub(crate) target: String,
     #[serde(default)]
     pub(crate) target_context_id: Option<String>,
+    #[serde(default, skip_serializing)]
+    pub(crate) source_context_id: String,
+}
+
+/// A bounded request for the parent target owner to navigate a WindowProxy.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub(crate) struct NativeWindowNavigationRequest {
+    pub(crate) target: String,
+    #[serde(default)]
+    pub(crate) target_context_id: Option<String>,
+    pub(crate) href: String,
+    #[serde(default)]
+    pub(crate) replace: bool,
     #[serde(default, skip_serializing)]
     pub(crate) source_context_id: String,
 }
@@ -2928,9 +2949,11 @@ pub(crate) struct NativeJavaScriptRuntime {
     popup_events: Arc<Mutex<Vec<NativePopupRequest>>>,
     post_message_events: Arc<Mutex<Vec<NativePostMessageRequest>>>,
     window_close_events: Arc<Mutex<Vec<NativeWindowCloseRequest>>>,
+    window_navigation_events: Arc<Mutex<Vec<NativeWindowNavigationRequest>>>,
     window_name: Arc<Mutex<String>>,
     opener_context_id: Option<String>,
     opener_window_name: String,
+    opener_url: String,
     storage_context_id: String,
     ready_state: String,
     clock_origin: Instant,
@@ -2940,7 +2963,7 @@ impl NativeJavaScriptRuntime {
     pub(crate) fn new_with_context_id(
         context_id: impl Into<String>,
     ) -> Result<Self, NativeEngineError> {
-        Self::new_with_context_metadata(context_id, "", None, "")
+        Self::new_with_context_metadata(context_id, "", None, "", "")
     }
 
     pub(crate) fn new_with_context_metadata(
@@ -2948,13 +2971,18 @@ impl NativeJavaScriptRuntime {
         window_name: impl Into<String>,
         opener_context_id: Option<&str>,
         opener_window_name: impl Into<String>,
+        opener_url: impl Into<String>,
     ) -> Result<Self, NativeEngineError> {
         let context_id = context_id.into();
         let window_name = window_name.into();
         let opener_window_name = opener_window_name.into();
+        let opener_url = opener_url.into();
         validate_context_id(&context_id)?;
         validate_window_name(&window_name)?;
         validate_window_name(&opener_window_name)?;
+        if !opener_url.is_empty() {
+            validate_url_text("opener URL", &opener_url)?;
+        }
         if let Some(opener_context_id) = opener_context_id {
             validate_context_id(opener_context_id)?;
         }
@@ -3000,9 +3028,11 @@ impl NativeJavaScriptRuntime {
             popup_events: Arc::new(Mutex::new(Vec::new())),
             post_message_events: Arc::new(Mutex::new(Vec::new())),
             window_close_events: Arc::new(Mutex::new(Vec::new())),
+            window_navigation_events: Arc::new(Mutex::new(Vec::new())),
             window_name: Arc::new(Mutex::new(window_name)),
             opener_context_id: opener_context_id.map(str::to_owned),
             opener_window_name,
+            opener_url,
             storage_context_id: context_id,
             ready_state: "complete".into(),
             clock_origin: Instant::now(),
@@ -3165,6 +3195,13 @@ impl NativeJavaScriptRuntime {
             .unwrap_or_default()
     }
 
+    pub(crate) fn take_window_navigation_events(&self) -> Vec<NativeWindowNavigationRequest> {
+        self.window_navigation_events
+            .lock()
+            .map(|mut requests| std::mem::take(&mut *requests))
+            .unwrap_or_default()
+    }
+
     fn apply_window_name_command(
         &self,
         command: &NativeScriptCommand,
@@ -3216,6 +3253,48 @@ impl NativeJavaScriptRuntime {
         requests.push(NativeWindowCloseRequest {
             target: target.clone(),
             target_context_id: target_context_id.clone(),
+            source_context_id: String::new(),
+        });
+        Ok(true)
+    }
+
+    fn apply_window_navigation_command(
+        &self,
+        command: &NativeScriptCommand,
+    ) -> Result<bool, NativeEngineError> {
+        let NativeScriptCommand::NavigateWindow {
+            target,
+            target_context_id,
+            href,
+            replace,
+        } = command
+        else {
+            return Ok(false);
+        };
+        validate_url_text("window navigation target", target)?;
+        validate_url_text("window navigation href", href)?;
+        if let Some(target_context_id) = target_context_id {
+            validate_context_id(target_context_id)?;
+        }
+        let mut requests =
+            self.window_navigation_events
+                .lock()
+                .map_err(|_| NativeEngineError::Worker {
+                    operation: "record native window navigation".into(),
+                    reason: "native window navigation queue is unavailable".into(),
+                })?;
+        if requests.len() >= super::interaction::MAX_NATIVE_EFFECTS {
+            return Err(NativeEngineError::limit(
+                "native window navigation requests",
+                super::interaction::MAX_NATIVE_EFFECTS,
+                requests.len().saturating_add(1),
+            ));
+        }
+        requests.push(NativeWindowNavigationRequest {
+            target: target.clone(),
+            target_context_id: target_context_id.clone(),
+            href: href.clone(),
+            replace: *replace,
             source_context_id: String::new(),
         });
         Ok(true)
@@ -3595,6 +3674,7 @@ impl NativeJavaScriptRuntime {
             &window_name,
             self.opener_context_id(),
             opener_window_name,
+            &self.opener_url,
             origin,
             viewport,
             &self.ready_state,
@@ -3666,6 +3746,9 @@ impl NativeJavaScriptRuntime {
                     continue;
                 }
                 if self.apply_window_close_command(&command)? {
+                    continue;
+                }
+                if self.apply_window_navigation_command(&command)? {
                     continue;
                 }
                 if self.apply_post_message_command(&command)? {
@@ -3796,6 +3879,7 @@ impl NativeJavaScriptRuntime {
             &window_name,
             self.opener_context_id(),
             opener_window_name,
+            &self.opener_url,
             origin,
             viewport,
             &self.ready_state,
@@ -3849,6 +3933,9 @@ impl NativeJavaScriptRuntime {
                     continue;
                 }
                 if self.apply_window_close_command(&command)? {
+                    continue;
+                }
+                if self.apply_window_navigation_command(&command)? {
                     continue;
                 }
                 if self.apply_post_message_command(&command)? {
@@ -4214,6 +4301,7 @@ fn document_bootstrap(
     window_name: &str,
     opener_context_id: Option<&str>,
     opener_window_name: &str,
+    opener_url: &str,
     origin: &NativeOrigin,
     viewport: Viewport,
     ready_state: &str,
@@ -4231,6 +4319,7 @@ fn document_bootstrap(
         "window_name": window_name,
         "opener_context_id": opener_context_id,
         "opener_window_name": opener_window_name,
+        "opener_url": opener_url,
         "origin": origin.serialized(),
         "state": state,
         "now_ms": now_ms,
@@ -7565,14 +7654,45 @@ fn document_bootstrap(
       target_context_id: targetContextId || null,
     }});
   }};
-  const makeWindowProxy = (handle, targetName, targetContextId) => {{
+  const makeWindowProxy = (handle, targetName, targetContextId, targetUrl) => {{
     const cacheKey = String(targetContextId || "") + "\\u0000" + String(handle || "");
     const existing = windowProxyCache.get(cacheKey);
     if (existing) return existing;
     let closed = false;
+    let targetLocationHref = String(targetUrl || "about:blank");
+    const navigateTarget = (value, replaceHistory) => {{
+      if (closed) return;
+      const next = new URLNative(String(value), targetLocationHref || locationUrl.href).href;
+      targetLocationHref = next;
+      pushCommand({{
+        kind: "navigateWindow",
+        target: String(handle || ""),
+        target_context_id: targetContextId || null,
+        href: next,
+        replace: Boolean(replaceHistory),
+      }});
+    }};
+    const targetLocation = {{
+      get href() {{ return targetLocationHref; }},
+      set href(value) {{ navigateTarget(value, false); }},
+      get protocol() {{ return new URLNative(targetLocationHref).protocol; }},
+      get host() {{ return new URLNative(targetLocationHref).host; }},
+      get hostname() {{ return new URLNative(targetLocationHref).hostname; }},
+      get port() {{ return new URLNative(targetLocationHref).port; }},
+      get pathname() {{ return new URLNative(targetLocationHref).pathname; }},
+      get search() {{ return new URLNative(targetLocationHref).search; }},
+      get hash() {{ return new URLNative(targetLocationHref).hash; }},
+      get origin() {{ return new URLNative(targetLocationHref).origin; }},
+      assign(value) {{ navigateTarget(value, false); }},
+      replace(value) {{ navigateTarget(value, true); }},
+      reload() {{ navigateTarget(targetLocationHref, false); }},
+      toString() {{ return targetLocationHref; }},
+    }};
+    Object.freeze(targetLocation);
     const proxy = {{
       get name() {{ return String(targetName || ""); }},
       get closed() {{ return closed; }},
+      get location() {{ return targetLocation; }},
       close() {{
         closed = true;
         pushCommand({{
@@ -7613,7 +7733,7 @@ fn document_bootstrap(
     set: setWindowName,
   }});
   const openerProxy = host.opener_context_id
-    ? makeWindowProxy("opener:" + String(host.opener_context_id), String(host.opener_window_name || ""), String(host.opener_context_id))
+    ? makeWindowProxy("opener:" + String(host.opener_context_id), String(host.opener_window_name || ""), String(host.opener_context_id), String(host.opener_url || "about:blank"))
     : null;
   Object.defineProperty(globalThis, "opener", {{
     configurable: true,
@@ -7629,7 +7749,7 @@ fn document_bootstrap(
       : null;
     event.origin = String(descriptor && descriptor.source_origin || "null");
     event.source = descriptor && descriptor.source_context_id
-      ? makeWindowProxy("source:" + String(descriptor.source_context_id), "", String(descriptor.source_context_id))
+      ? makeWindowProxy("source:" + String(descriptor.source_context_id), "", String(descriptor.source_context_id), "about:blank")
       : null;
     event.ports = [];
     return dispatchTarget(globalThis, event);
@@ -7643,7 +7763,7 @@ fn document_bootstrap(
       : new URLNative(String(value), locationUrl.href).href;
     if (["_self", "_parent", "_top", "_unfencedtop"].includes(lowerTarget)) {{
       navigateLocation(href, false);
-      return makeWindowProxy("", "", host.context_id);
+      return makeWindowProxy("", "", host.context_id, href);
     }}
     const windowHandles = globalThis.__glassWindowHandles instanceof Map
       ? globalThis.__glassWindowHandles
@@ -7672,6 +7792,7 @@ fn document_bootstrap(
       handle,
       normalizedTarget === "_blank" ? "" : normalizedTarget,
       null,
+      href,
     );
   }};
   globalThis.innerWidth = {width};

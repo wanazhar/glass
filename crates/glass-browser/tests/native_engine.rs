@@ -31,7 +31,7 @@ fn native_content_process_test_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
-async fn read_http_request(stream: &mut TcpStream) -> String {
+async fn read_http_request_bytes(stream: &mut TcpStream) -> Vec<u8> {
     let mut request = Vec::new();
     let mut chunk = [0_u8; 4096];
     loop {
@@ -57,7 +57,11 @@ async fn read_http_request(stream: &mut TcpStream) -> String {
             break;
         }
     }
-    String::from_utf8_lossy(&request).into_owned()
+    request
+}
+
+async fn read_http_request(stream: &mut TcpStream) -> String {
+    String::from_utf8_lossy(&read_http_request_bytes(stream).await).into_owned()
 }
 
 fn find_element_with_attribute(
@@ -28499,9 +28503,10 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
-        for expected_path in ["/page", "/data", "/binary", "/data"] {
+        for expected_path in ["/page", "/data", "/binary", "/upload", "/data"] {
             let (mut stream, _) = listener.accept().await.unwrap();
-            let request = read_http_request(&mut stream).await;
+            let request_bytes = read_http_request_bytes(&mut stream).await;
+            let request = String::from_utf8_lossy(&request_bytes);
             assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
             if expected_path == "/data" {
                 assert!(request.lines().any(|line| {
@@ -28509,6 +28514,20 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
                         name.eq_ignore_ascii_case("x-glass-token") && value.trim() == "alpha"
                     })
                 }));
+            }
+            if expected_path == "/upload" {
+                let header_end = request_bytes
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .unwrap()
+                    + 4;
+                assert!(request.lines().any(|line| {
+                    line.split_once(':').is_some_and(|(name, value)| {
+                        name.eq_ignore_ascii_case("content-type")
+                            && value.trim() == "application/octet-stream"
+                    })
+                }));
+                assert_eq!(&request_bytes[header_end..], [0_u8, 0xff, 0x80, b'A']);
             }
             if expected_path == "/binary" {
                 let body = [0_u8, 0xff, 0x80, b'A'];
@@ -28522,6 +28541,8 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
             }
             let (content_type, body) = if expected_path == "/page" {
                 ("text/html", "<input id='result' value='pending'>")
+            } else if expected_path == "/upload" {
+                ("text/plain", "uploaded")
             } else {
                 ("application/json", "{\"value\":\"fetched\"}")
             };
@@ -28540,7 +28561,7 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
     engine.initialize_async().await.unwrap();
     engine
         .evaluate_async(
-            "fetch('/data', { headers: { 'X-Glass-Token': 'alpha' } }).then(response => { const headerEvents = []; response.headers.forEach((value, name) => headerEvents.push(name + '=' + value)); globalThis.fetchHeaders = [response.headers.get('CONTENT-TYPE'), response.headers.has('content-type'), Array.from(response.headers.entries()), Array.from(response.headers.keys()), Array.from(response.headers.values()), Array.from(response.headers), headerEvents]; return Promise.all([response.json(), response.text(), response.blob(), response.arrayBuffer(), response.bytes()]); }).then(async ([data, text, blob, buffer, bytes]) => { globalThis.fetchValue = data.value; globalThis.fetchBody = [text, blob instanceof Blob, buffer instanceof ArrayBuffer && Array.from(new Uint8Array(buffer)), Array.from(bytes), await blob.text()]; const binaryResponse = await fetch('/binary'); const binaryBuffer = await binaryResponse.arrayBuffer(); const binaryBytes = await binaryResponse.bytes(); const binaryBlob = await binaryResponse.blob(); globalThis.binaryFetchBody = [Array.from(new Uint8Array(binaryBuffer)), Array.from(binaryBytes), binaryBlob.size, Array.from(await binaryBlob.slice(1, 3).bytes()), await binaryBlob.text()]; document.getElementById('result').value = data.value; const controller = new AbortController(); const events = []; controller.signal.addEventListener('abort', () => events.push('listener')); controller.signal.onabort = () => events.push('property'); const request = fetch('/data', { signal: controller.signal, headers: { 'X-Glass-Token': 'alpha' } }); controller.abort(); controller.abort(); request.catch(error => { globalThis.abortValue = [error.name, controller.signal.aborted, controller.signal.reason.name, events]; }); });",
+            "fetch('/data', { headers: { 'X-Glass-Token': 'alpha' } }).then(response => { const headerEvents = []; response.headers.forEach((value, name) => headerEvents.push(name + '=' + value)); globalThis.fetchHeaders = [response.headers.get('CONTENT-TYPE'), response.headers.has('content-type'), Array.from(response.headers.entries()), Array.from(response.headers.keys()), Array.from(response.headers.values()), Array.from(response.headers), headerEvents]; return Promise.all([response.json(), response.text(), response.blob(), response.arrayBuffer(), response.bytes()]); }).then(async ([data, text, blob, buffer, bytes]) => { globalThis.fetchValue = data.value; globalThis.fetchBody = [text, blob instanceof Blob, buffer instanceof ArrayBuffer && Array.from(new Uint8Array(buffer)), Array.from(bytes), await blob.text()]; const binaryResponse = await fetch('/binary'); const binaryBuffer = await binaryResponse.arrayBuffer(); const binaryBytes = await binaryResponse.bytes(); const binaryBlob = await binaryResponse.blob(); globalThis.binaryFetchBody = [Array.from(new Uint8Array(binaryBuffer)), Array.from(binaryBytes), binaryBlob.size, Array.from(await binaryBlob.slice(1, 3).bytes()), await binaryBlob.text()]; const uploadResponse = await fetch('/upload', { method: 'POST', body: binaryBlob, headers: { 'Content-Type': 'application/octet-stream' } }); globalThis.binaryUpload = await uploadResponse.text(); document.getElementById('result').value = data.value; const controller = new AbortController(); const events = []; controller.signal.addEventListener('abort', () => events.push('listener')); controller.signal.onabort = () => events.push('property'); const request = fetch('/data', { signal: controller.signal, headers: { 'X-Glass-Token': 'alpha' } }); controller.abort(); controller.abort(); request.catch(error => { globalThis.abortValue = [error.name, controller.signal.aborted, controller.signal.reason.name, events]; }); });",
         )
         .await
         .unwrap();
@@ -28601,6 +28622,13 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
             [255, 128],
             "\u{0}\u{fffd}\u{fffd}A",
         ])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.binaryUpload")
+            .await
+            .unwrap(),
+        serde_json::json!("uploaded")
     );
     engine
         .evaluate_async(
@@ -30523,9 +30551,10 @@ async fn native_content_process_exposes_bounded_xhr_fetch_bridge() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
-        for expected_path in ["/page", "/xhr"] {
+        for expected_path in ["/page", "/xhr", "/binary", "/xhr-binary"] {
             let (mut stream, _) = listener.accept().await.unwrap();
-            let request = read_http_request(&mut stream).await;
+            let request_bytes = read_http_request_bytes(&mut stream).await;
+            let request = String::from_utf8_lossy(&request_bytes);
             assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
             if expected_path == "/xhr" {
                 assert_eq!(request.split_whitespace().next(), Some("POST"));
@@ -30540,6 +30569,31 @@ async fn native_content_process_exposes_bounded_xhr_fetch_bridge() {
                     .map(|(_, body)| body)
                     .unwrap_or_default();
                 assert_eq!(body, r#"{"name":"glass"}"#);
+            }
+            if expected_path == "/xhr-binary" {
+                assert_eq!(request.split_whitespace().next(), Some("POST"));
+                assert!(request.lines().any(|line| {
+                    line.split_once(':').is_some_and(|(name, value)| {
+                        name.eq_ignore_ascii_case("content-type")
+                            && value.trim() == "application/octet-stream"
+                    })
+                }));
+                let header_end = request_bytes
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .unwrap()
+                    + 4;
+                assert_eq!(&request_bytes[header_end..], [0_u8, 0xff, 0x80, b'A']);
+            }
+            if expected_path == "/binary" {
+                let body = [0_u8, 0xff, 0x80, b'A'];
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.write_all(&body).await.unwrap();
+                continue;
             }
             let (content_type, body) = if expected_path == "/page" {
                 ("text/html", "<p>XHR owner</p>")
@@ -30565,8 +30619,17 @@ async fn native_content_process_exposes_bounded_xhr_fetch_bridge() {
                 const xhr = new XMLHttpRequest();
                 xhr.open('POST', '/xhr');
                 xhr.setRequestHeader('Content-Type', 'application/json');
-                xhr.onload = () => {
+                xhr.onload = async () => {
                     globalThis.xhrResult = [xhr.status, xhr.responseText, xhr.responseURL, xhr.getResponseHeader('content-type')];
+                    const binaryResponse = await fetch('/binary');
+                    const binaryBlob = await binaryResponse.blob();
+                    const binaryXhr = new XMLHttpRequest();
+                    binaryXhr.open('POST', '/xhr-binary');
+                    binaryXhr.setRequestHeader('Content-Type', 'application/octet-stream');
+                    binaryXhr.onload = () => {
+                        globalThis.xhrBinaryResult = [binaryXhr.status, binaryXhr.responseText, binaryXhr.responseURL];
+                    };
+                    binaryXhr.send(binaryBlob);
                 };
                 xhr.send(new Blob(['{"name":"glass"}'], { type: 'application/json' }));
             })()"#,
@@ -30581,6 +30644,13 @@ async fn native_content_process_exposes_bounded_xhr_fetch_bridge() {
             format!("http://{address}/xhr"),
             "text/plain"
         ])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.xhrBinaryResult")
+            .await
+            .unwrap(),
+        serde_json::json!([200, "xhr-response", format!("http://{address}/xhr-binary")])
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

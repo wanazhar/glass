@@ -88,6 +88,8 @@ pub(crate) enum NativeScriptCommand {
         #[serde(default)]
         body: Option<String>,
         #[serde(default)]
+        body_base64: Option<String>,
+        #[serde(default)]
         content_type: Option<String>,
     },
     StorageSet {
@@ -4902,6 +4904,25 @@ fn document_bootstrap(
     if (bytes.length > storageValueLimit) throw new RangeError("native Blob binary size limit exceeded");
     return bytes;
   }};
+  const encodeBase64 = (bytes) => {{
+    if (!Array.isArray(bytes)) throw new TypeError("native Blob bytes are invalid");
+    if (bytes.length > storageValueLimit) throw new RangeError("native Blob binary size limit exceeded");
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let encoded = "";
+    for (let index = 0; index < bytes.length; index += 3) {{
+      const first = bytes[index];
+      const second = index + 1 < bytes.length ? bytes[index + 1] : 0;
+      const third = index + 2 < bytes.length ? bytes[index + 2] : 0;
+      for (const value of [first, second, third]) {{
+        if (!Number.isInteger(value) || value < 0 || value > 255) throw new TypeError("native Blob bytes are invalid");
+      }}
+      encoded += alphabet[first >> 2];
+      encoded += alphabet[((first & 3) << 4) | (second >> 4)];
+      encoded += index + 1 < bytes.length ? alphabet[((second & 15) << 2) | (third >> 6)] : "=";
+      encoded += index + 2 < bytes.length ? alphabet[third & 63] : "=";
+    }}
+    return encoded;
+  }};
   const utf8TextFromBytes = (bytes) => {{
     const continuation = value => value >= 0x80 && value <= 0xbf;
     let text = "";
@@ -5242,6 +5263,9 @@ fn document_bootstrap(
       ? settings.body
       : null;
     let body = blobBody ? blobBody._text : rawBody;
+    let bodyBase64 = blobBody && Array.isArray(blobBody._bytes)
+      ? encodeBase64(blobBody._bytes)
+      : null;
     if (method !== "GET" && method !== "POST") {{
       return Promise.reject(new TypeError("native fetch supports only GET and POST requests"));
     }}
@@ -5287,11 +5311,13 @@ fn document_bootstrap(
       if (contentType !== null) return Promise.reject(new TypeError("FormData chooses its own Content-Type boundary"));
       const serialized = serializeFormData(formData, requestId);
       body = serialized.body;
+      bodyBase64 = null;
       contentType = serialized.contentType;
     }}
     if (urlSearchParams) {{
       if (contentType !== null) return Promise.reject(new TypeError("URLSearchParams chooses its own Content-Type"));
       body = urlSearchParams.toString();
+      bodyBase64 = null;
       contentType = "application/x-www-form-urlencoded;charset=UTF-8";
     }}
     if (blobBody && contentType === null && blobBody.type) contentType = blobBody.type;
@@ -5313,7 +5339,7 @@ fn document_bootstrap(
       fetchRequests.set(requestId, pending);
       if (signal) signal.addEventListener("abort", abort);
       if (!fetchRequests.has(requestId)) return;
-      pushCommand({{ kind: "fetch", request_id: requestId, href: input, credentials, method, headers: requestHeaders, body, content_type: contentType }});
+      pushCommand({{ kind: "fetch", request_id: requestId, href: input, credentials, method, headers: requestHeaders, body, body_base64: bodyBase64, content_type: contentType }});
     }});
   }};
   const responseHeaders = (contentType) => {{

@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-098` locally. The versioned
+`native-engine-browser-099` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -934,8 +934,16 @@ The completed bounded byte-preserving response slice is
 now carries a bounded raw-byte payload so `Response.blob()`,
 `arrayBuffer()`, `bytes()`, and binary `Blob.slice()` preserve non-UTF-8
 bytes, while `text()`/`json()` retain replacement-decoded text semantics.
-Streaming/BYOB, transfer identity, and binary request-body/FormData parity
-remain open.
+Streaming/BYOB, transfer identity, binary Blob/File construction, and
+binary/stream FormData parity remain open.
+
+The completed bounded binary Blob/File request-body slice is
+[native-engine-browser-099](tasks/native-engine-browser-099.md). Fetch and
+asynchronous XHR now preserve raw bytes for Blob/File values that already
+carry a bounded byte snapshot, while text-backed bodies, MIME propagation,
+headers, redirects, and abort behavior remain unchanged. Binary Blob/File
+construction, multipart FormData byte parity, streaming, upload progress,
+and full Fetch/XHR/Blob Web IDL parity remain open.
 
 Full cookie policy/Web IDL parity and the remaining browser-complete gates
 remain open.

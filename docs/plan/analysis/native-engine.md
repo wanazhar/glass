@@ -2598,8 +2598,17 @@ The completed bounded byte-preserving response follow-up is
 base64 response payload now preserves raw bytes for Fetch `Blob`,
 `ArrayBuffer`, `bytes()`, and binary `Blob.slice()` reads, while text and JSON
 remain replacement-decoded UTF-8 views. Streaming/BYOB, transfer identity,
-binary request-body/FormData parity, and complete Fetch/Blob Web IDL parity
-remain open.
+binary Blob/File construction, binary/stream FormData parity, and complete
+Fetch/Blob Web IDL parity remain open.
+
+The completed bounded binary Blob/File request-body follow-up is
+[native-engine-browser-099](../tasks/native-engine-browser-099.md). Fetch and
+asynchronous XHR now carry raw bytes for Blob/File values that already expose
+a bounded byte snapshot; the content process validates the base64 transfer and
+the resource loader sends the resulting bytes directly. Text-backed bodies,
+MIME propagation, redirects, and abort behavior remain stable. Binary
+Blob/File construction, multipart FormData byte parity, streaming, upload
+progress, and complete Fetch/XHR/Blob parity remain open.
 
 ## Baseline and constraints
 

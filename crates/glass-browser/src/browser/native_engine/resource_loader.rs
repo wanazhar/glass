@@ -105,11 +105,26 @@ impl NativeNavigationRequest {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum NativeFetchBody {
+    Text(String),
+    Bytes(Vec<u8>),
+}
+
+impl NativeFetchBody {
+    fn len(&self) -> usize {
+        match self {
+            Self::Text(body) => body.len(),
+            Self::Bytes(body) => body.len(),
+        }
+    }
+}
+
 pub(crate) struct NativeFetchRequest<'a> {
     pub(crate) document_url: &'a str,
     pub(crate) href: &'a str,
     pub(crate) method: NativeNavigationMethod,
-    pub(crate) body: Option<String>,
+    pub(crate) body: Option<NativeFetchBody>,
     pub(crate) content_type: Option<String>,
     pub(crate) request_headers: BTreeMap<String, String>,
     pub(crate) credentials: bool,
@@ -706,7 +721,7 @@ impl NativeResourceLoader {
             document_url,
             href,
             method,
-            body,
+            body: body.map(NativeFetchBody::Text),
             content_type,
             request_headers: BTreeMap::new(),
             credentials,
@@ -751,7 +766,7 @@ impl NativeResourceLoader {
                     return Err(NativeEngineError::limit(
                         "fetch request body",
                         MAX_NATIVE_FORM_BODY_BYTES,
-                        body.as_ref().map_or(0, String::len),
+                        body.as_ref().map_or(0, NativeFetchBody::len),
                     ));
                 }
                 if content_type
@@ -836,8 +851,11 @@ impl NativeResourceLoader {
                 NativeNavigationMethod::Post => client.post(request_url),
             }
             .header(reqwest::header::ACCEPT, "*/*");
-            if let Some(body) = current_body.as_deref() {
-                request = request.body(body.to_owned());
+            if let Some(body) = current_body.as_ref() {
+                request = match body {
+                    NativeFetchBody::Text(body) => request.body(body.clone()),
+                    NativeFetchBody::Bytes(body) => request.body(body.clone()),
+                };
             }
             if let Some(content_type) = current_content_type.as_deref() {
                 request = request.header(reqwest::header::CONTENT_TYPE, content_type);

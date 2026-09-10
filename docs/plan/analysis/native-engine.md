@@ -2533,6 +2533,14 @@ read and profile-restart reconstruction. `SharedArrayBuffer` fails closed;
 transfer lists, detached-buffer identity, binary Blob/File methods, streams,
 and full clone/prototype parity remain open.
 
+The completed bounded Blob/File binary-read follow-up is
+[native-engine-browser-089](../tasks/native-engine-browser-089.md). The
+existing text-backed objects now provide fresh UTF-8 `ArrayBuffer` and
+`Uint8Array` results through `arrayBuffer()` and `bytes()`, with deterministic
+surrogate handling and bounded output in local and worker realms. Binary Blob
+construction, streams, transfer semantics, upload progress, and full
+Blob/File Web IDL parity remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-088` locally. The versioned
+`native-engine-browser-089` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -860,7 +860,16 @@ The completed bounded IndexedDB binary structured-clone slice is
 common typed arrays, and `DataView` now persist as bounded byte-vector tags and
 reconstruct after API reads and profile restart; `SharedArrayBuffer` fails
 closed with `DataCloneError`. Transfer lists, detached-buffer identity,
-binary Blob/File methods, streams, and full clone parity remain open.
+binary Blob/File methods, streams, and full clone parity remained open at that
+checkpoint.
+
+The completed bounded Blob/File binary-read slice is
+[native-engine-browser-089](tasks/native-engine-browser-089.md).
+Text-backed `Blob` and `File` values now expose fresh UTF-8 bytes through
+`arrayBuffer()` and `bytes()`, including deterministic Unicode and surrogate
+handling, while the existing text-backed `size`, FormData, and persistence
+contracts remain unchanged. Binary Blob construction, streams, transfer
+semantics, and full Blob/File parity remain open.
 
 Full cookie policy/Web IDL parity and the remaining browser-complete gates
 remain open.

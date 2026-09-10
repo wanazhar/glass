@@ -4845,8 +4845,35 @@ fn document_bootstrap(
     this.size = this._text.length;
     this.type = normalizeBlobType(options);
   }};
+  const blobUtf8Bytes = (text) => {{
+    const bytes = [];
+    for (let index = 0; index < text.length; index += 1) {{
+      let code = text.charCodeAt(index);
+      if (code >= 0xd800 && code <= 0xdbff && index + 1 < text.length) {{
+        const low = text.charCodeAt(index + 1);
+        if (low >= 0xdc00 && low <= 0xdfff) {{
+          code = 0x10000 + ((code - 0xd800) << 10) + (low - 0xdc00);
+          index += 1;
+        }}
+      }} else if (code >= 0xd800 && code <= 0xdfff) {{
+        code = 0xfffd;
+      }}
+      if (code <= 0x7f) bytes.push(code);
+      else if (code <= 0x7ff) bytes.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f));
+      else if (code <= 0xffff) bytes.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
+      else bytes.push(0xf0 | (code >> 18), 0x80 | ((code >> 12) & 0x3f), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
+    }}
+    if (bytes.length > storageValueLimit) throw new RangeError("native Blob binary size limit exceeded");
+    return bytes;
+  }};
   BlobNative.prototype.text = function() {{
     return Promise.resolve(this._text);
+  }};
+  BlobNative.prototype.arrayBuffer = function() {{
+    return Promise.resolve(new Uint8Array(blobUtf8Bytes(this._text)).buffer);
+  }};
+  BlobNative.prototype.bytes = function() {{
+    return Promise.resolve(new Uint8Array(blobUtf8Bytes(this._text)));
   }};
   BlobNative.prototype.slice = function(start, end, contentType) {{
     const length = this._text.length;

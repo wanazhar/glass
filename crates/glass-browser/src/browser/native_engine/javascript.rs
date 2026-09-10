@@ -5509,7 +5509,28 @@ fn document_bootstrap(
   globalThis.location = Object.freeze({{ href: host.url, origin: host.origin }});
   globalThis.innerWidth = {width};
   globalThis.innerHeight = {height};
-  globalThis.navigator = globalThis.navigator || Object.freeze({{ userAgent: "GlassNative" }});
+  globalThis.navigator = globalThis.navigator || {{ userAgent: "GlassNative" }};
+  const nativeStorageUsage = () => {{
+    const encoded = (value) => {{
+      try {{ return JSON.stringify(value); }} catch (_error) {{ return ""; }}
+    }};
+    const mapBytes = (value) => {{
+      const text = value instanceof Map ? encoded(Array.from(value.entries())) : encoded(value);
+      return text ? text.length : 0;
+    }};
+    const usage = mapBytes(globalThis.__glassLocalStorageValues)
+      + mapBytes(globalThis.__glassSessionStorageValues)
+      + encoded(globalThis.__glassIndexedDbState || {{ databases: {{}} }}).length;
+    return Math.min({storage_quota}, usage);
+  }};
+  const nativeStorageManager = globalThis.__glassNativeStorageManager instanceof Object
+    ? globalThis.__glassNativeStorageManager
+    : {{}};
+  nativeStorageManager.estimate = () => Promise.resolve({{ usage: nativeStorageUsage(), quota: {storage_quota} }});
+  nativeStorageManager.persist = () => Promise.resolve(false);
+  nativeStorageManager.persisted = () => Promise.resolve(false);
+  globalThis.__glassNativeStorageManager = nativeStorageManager;
+  globalThis.navigator.storage = nativeStorageManager;
   globalThis.Event = globalThis.Event || function Event(type, options) {{
     return createEvent(type, options);
   }};
@@ -5572,6 +5593,7 @@ fn document_bootstrap(
         indexed_db_index_limit = MAX_NATIVE_INDEXED_DB_INDEXES,
         indexed_db_record_limit = MAX_NATIVE_INDEXED_DB_RECORDS,
         indexed_db_value_limit = MAX_NATIVE_INDEXED_DB_VALUE_BYTES,
+        storage_quota = MAX_WEB_STORAGE_PROFILE_BYTES,
         run_timers = run_timers,
         width = viewport.width,
         height = viewport.height,

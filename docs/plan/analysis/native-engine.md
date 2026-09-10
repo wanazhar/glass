@@ -2493,6 +2493,14 @@ failure or explicit `abort()`, delivering one `onabort` and never a false
 structured-clone values, quota APIs, and the remaining browser-complete gates
 remain open.
 
+The completed bounded StorageManager quota follow-up is
+[native-engine-browser-084](../tasks/native-engine-browser-084.md).
+`navigator.storage.estimate()` reports deterministic JSON-length usage against
+the fixed 4 MiB native profile quota; `persist()` and `persisted()` are stable
+asynchronous APIs that return `false` until an explicit permission policy is
+implemented. Quota prompts, reservation, cross-process arbitration,
+structured-clone values, and the remaining browser-complete gates remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

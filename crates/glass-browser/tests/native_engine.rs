@@ -29263,6 +29263,46 @@ async fn native_local_indexed_db_explicit_abort_rolls_back_write() {
 }
 
 #[tokio::test]
+async fn native_local_storage_manager_reports_bounded_estimate() {
+    let profile_path = std::env::temp_dir().join(format!(
+        "glass-native-storage-{}-estimate.json",
+        std::process::id()
+    ));
+    let _ = fs::remove_file(&profile_path);
+    let config = NativeEngineConfig::default()
+        .with_storage_path(profile_path.clone())
+        .with_fixture("fixture://storage-estimate", "<p>Storage estimate</p>")
+        .unwrap()
+        .with_initial_url("fixture://storage-estimate");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize().unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await (async () => { const before = await navigator.storage.estimate(); localStorage.setItem('quota-probe', 'x'.repeat(32)); const after = await navigator.storage.estimate(); return { available: typeof navigator.storage.estimate === 'function' && typeof navigator.storage.persist === 'function' && typeof navigator.storage.persisted === 'function', quota: after.quota, grew: after.usage >= before.usage, persisted: await navigator.storage.persisted(), requested: await navigator.storage.persist() }; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "available": true,
+            "quota": 4 * 1024 * 1024,
+            "grew": true,
+            "persisted": false,
+            "requested": false,
+        })
+    );
+    engine.close().unwrap();
+    for suffix in ["", "lock", "events", "readers"] {
+        let path = if suffix.is_empty() {
+            profile_path.clone()
+        } else {
+            profile_path.with_extension(suffix)
+        };
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[tokio::test]
 async fn native_local_indexed_db_journal_merges_live_origin_writers() {
     let profile_path = std::env::temp_dir().join(format!(
         "glass-native-indexed-db-{}-journal.json",

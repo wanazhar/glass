@@ -29225,7 +29225,7 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
     engine.initialize_async().await.unwrap();
     engine
         .evaluate_async(
-            "(() => { const headers = new Headers([['X-Glass-Token', 'alpha']]); headers.append('x-glass-token', 'beta'); headers.set('X-Glass-Extra', 'gamma'); headers.delete('x-glass-extra'); const endpoint = new URL('/headers', location.href); const query = new URL('?source=request#part', endpoint.href); const nested = new URL('../target?x=one#frag', 'http://example.test/a/b/page'); const protocolRelative = new URL('//api.example.test/v1', endpoint.href); const mutable = new URL('/headers?old=one', location.href); mutable.pathname = '/changed/../final'; mutable.searchParams.set('old', 'two'); mutable.searchParams.append('z', '3'); mutable.hash = 'changed'; const replacement = new URL('/headers?reset=yes#next', location.href); replacement.href = '/headers?reset=updated#final'; const request = new Request(endpoint, { headers }); const requestClone = request.clone(); globalThis.urlObjectView = [endpoint instanceof URL, endpoint.origin === location.origin, endpoint.pathname, endpoint.search, endpoint.hash, query.searchParams.get('source'), query.hash, nested.pathname, nested.searchParams.get('x'), nested.hash, protocolRelative.origin, protocolRelative.pathname, mutable.pathname, mutable.search, mutable.searchParams.get('old'), mutable.href.endsWith('/final?old=two&z=3#changed'), replacement.href.endsWith('/headers?reset=updated#final'), replacement.searchParams.get('reset'), replacement.hash]; globalThis.requestObjectView = [request instanceof Request, request.method, request.url === endpoint.href, request.mode, request.redirect, request.headers.get('x-glass-token'), requestClone.headers.get('x-glass-token'), requestClone !== request]; globalThis.requestHeaderView = [headers.get('x-glass-token'), headers.has('X-Glass-Token'), Array.from(headers.entries()), Array.from(headers.keys()), Array.from(headers.values()), headers.size]; fetch(requestClone).then(response => response.text()).then(value => { globalThis.headerFetch = value; }); })()",
+            "(() => { const headers = new Headers([['X-Glass-Token', 'alpha']]); headers.append('x-glass-token', 'beta'); headers.set('X-Glass-Extra', 'gamma'); headers.delete('x-glass-extra'); const endpoint = new URL('/headers', location.href); const query = new URL('?source=request#part', endpoint.href); const nested = new URL('../target?x=one#frag', 'http://example.test/a/b/page'); const protocolRelative = new URL('//api.example.test/v1', endpoint.href); const mutable = new URL('/headers?old=one', location.href); mutable.pathname = '/changed/../final'; mutable.searchParams.set('old', 'two'); mutable.searchParams.append('z', '3'); mutable.hash = 'changed'; const replacement = new URL('/headers?reset=yes#next', location.href); replacement.href = '/headers?reset=updated#final'; const authority = new URL('http://user:pass@api.example.test:8080/start', location.href); authority.protocol = 'https'; authority.hostname = 'other.example.test'; authority.port = '8443'; authority.username = 'next user'; authority.password = 'secret'; authority.host = 'final.example.test:9443'; const authorityBeforeInvalid = authority.href; const authorityErrors = []; try { authority.protocol = 'ftp'; } catch (error) { authorityErrors.push(error.name); } try { authority.host = 'bad/path'; } catch (error) { authorityErrors.push(error.name); } try { authority.port = '65536'; } catch (error) { authorityErrors.push(error.name); } globalThis.urlAuthorityView = [authority.protocol, authority.username, authority.password, authority.host, authority.hostname, authority.port, authority.href, authority.origin]; globalThis.urlAuthorityInvalid = [authorityErrors, authority.href === authorityBeforeInvalid]; const request = new Request(endpoint, { headers }); const requestClone = request.clone(); globalThis.urlObjectView = [endpoint instanceof URL, endpoint.origin === location.origin, endpoint.pathname, endpoint.search, endpoint.hash, query.searchParams.get('source'), query.hash, nested.pathname, nested.searchParams.get('x'), nested.hash, protocolRelative.origin, protocolRelative.pathname, mutable.pathname, mutable.search, mutable.searchParams.get('old'), mutable.href.endsWith('/final?old=two&z=3#changed'), replacement.href.endsWith('/headers?reset=updated#final'), replacement.searchParams.get('reset'), replacement.hash]; globalThis.requestObjectView = [request instanceof Request, request.method, request.url === endpoint.href, request.mode, request.redirect, request.headers.get('x-glass-token'), requestClone.headers.get('x-glass-token'), requestClone !== request]; globalThis.requestHeaderView = [headers.get('x-glass-token'), headers.has('X-Glass-Token'), Array.from(headers.entries()), Array.from(headers.keys()), Array.from(headers.values()), headers.size]; fetch(requestClone).then(response => response.text()).then(value => { globalThis.headerFetch = value; }); })()",
         )
         .await
         .unwrap();
@@ -29285,6 +29285,29 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
             "updated",
             "#final",
         ])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.urlAuthorityView")
+            .await
+            .unwrap(),
+        serde_json::json!([
+            "https:",
+            "next%20user",
+            "secret",
+            "final.example.test:9443",
+            "final.example.test",
+            "9443",
+            "https://next%20user:secret@final.example.test:9443/start",
+            "https://final.example.test:9443",
+        ])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.urlAuthorityInvalid")
+            .await
+            .unwrap(),
+        serde_json::json!([["TypeError", "TypeError", "TypeError"], true])
     );
     assert_eq!(
         engine

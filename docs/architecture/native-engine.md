@@ -1197,6 +1197,13 @@ query/fragment synchronization and Request/Fetch handoff remain active.
 Authority/protocol setters, complete parser/encoding/IDNA/IPv6/default-port
 behavior, and complete URL/Web IDL identity remain open.
 
+The completed native-engine-browser-124 batch adds bounded HTTP(S) URL
+authority/protocol setters. `protocol`, `host`, `hostname`, `port`,
+`username`, and `password` rebuild the same URL owner, refresh origin/href, and
+retain path/query/fragment and live `searchParams` state. Full encoding, IDNA,
+IPv6/default-port canonicalization, non-HTTP schemes, and complete URL/Web IDL
+identity remain open.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature

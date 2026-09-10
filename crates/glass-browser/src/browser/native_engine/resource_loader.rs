@@ -2152,7 +2152,9 @@ fn hex_value(value: u8) -> Option<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::javascript::{NativeWebStorageState, save_web_storage_profile};
+    use super::super::javascript::{
+        NativeIndexedDbState, NativeWebStorageState, save_web_storage_profile,
+    };
     use super::{
         MAX_NATIVE_CACHE_ENTRIES, NativeCorsMode, NativeEngineConfig, NativeNetworkState,
         NativeResource, NativeResourceLoader, NativeSubresourceKind, cacheable_response,
@@ -2257,6 +2259,7 @@ mod tests {
             &[],
             &first_state,
             &first_changes,
+            &NativeIndexedDbState::default(),
         )
         .unwrap();
         let second_state = second.cookie_profile();
@@ -2267,6 +2270,7 @@ mod tests {
             &[],
             &second_state,
             &second_changes,
+            &NativeIndexedDbState::default(),
         )
         .unwrap();
 

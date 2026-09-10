@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-077` locally. The versioned
+`native-engine-browser-078` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -754,8 +754,20 @@ prefix acknowledged by every live lease, shifting retained cursors under the
 same `P.lock`; an active slow reader can still produce a typed 4 MiB limit
 error. A missing/stale lease or out-of-range cursor reloads the authoritative
 revisioned profile snapshot and sends a full bounded state replacement to a
-sandboxed worker, so dropped event callbacks are not replayed. IndexedDB,
-full cookie policy/Web IDL parity, and the remaining browser-complete gates
+sandboxed worker, so dropped event callbacks are not replayed.
+
+The completed bounded IndexedDB persistence and transaction slice is
+[native-engine-browser-078](tasks/native-engine-browser-078.md). Local and
+sandboxed HTTP(S) content realms now share a bounded origin-keyed JSON
+IndexedDB subset with version upgrades, object-store creation/deletion,
+readonly/readwrite transactions, ordered request callbacks, key paths,
+auto-increment keys, and bounded CRUD. The validated snapshot is persisted in
+the existing profile and returned through the existing worker protocol; the
+worker remains a profile-file consumer only through IPC. Indexes, cursors, key
+ranges, non-JSON structured-clone values, full transaction/version-change
+coordination, and cross-process IndexedDB journal/delta merging remain open.
+
+Full cookie policy/Web IDL parity and the remaining browser-complete gates
 remain open.
 
 The first dependency-ordered checkpoint is

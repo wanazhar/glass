@@ -16,12 +16,12 @@ use super::interaction::{
     MAX_NATIVE_EFFECTS, NativeAction, NativeEffect, NativeEventKind, validate_native_edit_key,
 };
 use super::javascript::{
-    NativeJavaScriptRuntime, NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState,
-    append_storage_events, execute_inline_scripts, host_event_script,
+    NativeIndexedDbState, NativeJavaScriptRuntime, NativeScriptEvaluation, NativeStorageEvent,
+    NativeWebStorageState, append_storage_events, execute_inline_scripts, host_event_script,
     host_hash_change_event_script, host_key_event_script, host_submit_event_script,
-    load_web_storage_profile, new_storage_writer_id, read_storage_event_journal,
-    register_storage_reader, save_web_storage_profile, storage_event_cursor, storage_key,
-    unregister_storage_reader,
+    load_indexed_db_profile, load_web_storage_profile, new_storage_writer_id,
+    read_storage_event_journal, register_storage_reader, save_web_storage_profile,
+    storage_event_cursor, storage_key, unregister_storage_reader,
 };
 use super::layout::{NativeLayoutSnapshot, NativePoint};
 use super::lifecycle::NativeLifecycleState;
@@ -83,6 +83,7 @@ pub struct NativeEngine {
     content_process: Option<NativeContentProcess>,
     javascript: Option<NativeJavaScriptRuntime>,
     web_storage: NativeWebStorageState,
+    indexed_db: NativeIndexedDbState,
     storage_writer_id: String,
     storage_event_offset: u64,
     storage_state_recovery_pending: bool,
@@ -102,6 +103,7 @@ impl NativeEngine {
     pub fn new(config: NativeEngineConfig) -> Result<Self, NativeEngineError> {
         config.validate()?;
         let web_storage = load_web_storage_profile(config.storage_path.as_deref())?;
+        let indexed_db = load_indexed_db_profile(config.storage_path.as_deref())?;
         let storage_event_offset = storage_event_cursor(config.storage_path.as_deref())?;
         let storage_writer_id = new_storage_writer_id()?;
         let loader = NativeResourceLoader::new(&config)?;
@@ -124,6 +126,7 @@ impl NativeEngine {
             content_process: None,
             javascript: None,
             web_storage,
+            indexed_db,
             storage_writer_id,
             storage_event_offset,
             storage_state_recovery_pending: false,
@@ -208,6 +211,7 @@ impl NativeEngine {
                 )
                 .await?;
             self.publish_content_storage_events(&resource.storage_events)?;
+            self.indexed_db = resource.indexed_db_state.clone();
             self.prepare_navigation_content(resource)?
         } else {
             self.prepare_navigation_async(&initial_url).await?
@@ -443,6 +447,7 @@ impl NativeEngine {
         content: NativeContentLoad,
     ) -> Result<NativeEngineSnapshot, NativeEngineError> {
         self.publish_content_storage_events(&content.storage_events)?;
+        self.indexed_db = content.indexed_db_state.clone();
         if self.is_same_document_navigation(&content.url) {
             self.commit_same_document_navigation(content.url, HistoryCommit::Push)?;
         } else {
@@ -458,6 +463,7 @@ impl NativeEngine {
         worker: &NativeRuntimeWorker,
     ) -> Result<NativeEngineSnapshot, NativeEngineError> {
         self.publish_content_storage_events(&content.storage_events)?;
+        self.indexed_db = content.indexed_db_state.clone();
         let same_document = self.is_same_document_navigation(&content.url);
         if same_document {
             self.commit_same_document_navigation_async(content.url, HistoryCommit::Push, worker)
@@ -626,6 +632,7 @@ impl NativeEngine {
                 value,
                 mutation,
                 storage_events,
+                indexed_db_state,
             } = {
                 let process = self
                     .content_process
@@ -650,12 +657,17 @@ impl NativeEngine {
                 }
             } else {
                 self.publish_content_storage_events(&storage_events)?;
+                self.indexed_db = indexed_db_state;
             }
             return Ok(value);
         }
         if self.javascript.is_none() {
             let javascript = NativeJavaScriptRuntime::new_with_context_id(&self.config.context_id)?;
             javascript.set_storage_state(self.web_storage.clone());
+            javascript.set_indexed_db_state(
+                self.indexed_db
+                    .origin(&storage_key(&self.url, &self.origin)),
+            );
             self.javascript = Some(javascript);
         }
         self.deliver_pending_external_storage_events().await?;
@@ -1266,6 +1278,10 @@ impl NativeEngine {
         let storage_changes = if let Some(javascript) = self.javascript.as_ref() {
             let cookie_updates = javascript.take_cookie_updates();
             self.web_storage = javascript.storage_state();
+            self.indexed_db.replace_origin(
+                storage_key(&self.url, &self.origin),
+                javascript.indexed_db_state(),
+            )?;
             for value in cookie_updates {
                 self.loader.set_document_cookie(&self.url, &value)?;
             }
@@ -1281,6 +1297,7 @@ impl NativeEngine {
             &storage_changes,
             &cookie_state,
             &cookie_changes,
+            &self.indexed_db,
         )?;
         append_storage_events(
             self.config.storage_path.as_deref(),
@@ -1755,6 +1772,7 @@ impl NativeEngine {
         mutation: NativeContentMutation,
     ) -> Result<NativeActionResult, NativeEngineError> {
         self.publish_content_storage_events(&mutation.storage_events)?;
+        self.indexed_db = mutation.indexed_db_state.clone();
         let generation = self.document.generation();
         let mut document = match NativeDocument::from_content_wire(
             mutation.document,
@@ -2055,6 +2073,7 @@ impl NativeEngine {
                 &prepared.resource.origin,
                 self.config.viewport,
                 &storage_state,
+                &self.indexed_db,
                 &cookie,
             )?;
         }
@@ -2077,6 +2096,9 @@ impl NativeEngine {
             javascript.reset_timer_clock();
         }
         self.dispatch_local_page_show()?;
+        if let Some(javascript) = self.javascript.as_mut() {
+            javascript.reset_timer_clock();
+        }
         self.persist_local_web_storage()?;
         Ok(())
     }
@@ -2105,6 +2127,7 @@ impl NativeEngine {
                 &prepared.resource.origin,
                 self.config.viewport,
                 &storage_state,
+                &self.indexed_db,
                 &cookie,
             )?;
         }
@@ -2129,6 +2152,9 @@ impl NativeEngine {
                 javascript.reset_timer_clock();
             }
             self.dispatch_local_page_show()?;
+            if let Some(javascript) = self.javascript.as_mut() {
+                javascript.reset_timer_clock();
+            }
             self.persist_local_web_storage()?;
         }
         Ok(())

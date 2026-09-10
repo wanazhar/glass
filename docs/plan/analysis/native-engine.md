@@ -2422,6 +2422,20 @@ that recovery are not replayed, and a live engine preserves its volatile
 session state. IndexedDB, full cookie policy/Web IDL parity, and the remaining
 browser-complete gates remain open.
 
+The completed bounded IndexedDB persistence and transaction follow-up is
+[native-engine-browser-078](../tasks/native-engine-browser-078.md). Local and
+sandboxed HTTP(S) content realms now share an origin-keyed JSON IndexedDB
+subset with positive-version upgrades, object-store lifecycle, ordered
+readonly/readwrite transactions, key paths, auto-increment keys, and bounded
+CRUD requests. The profile carries at most 16 databases per origin, 128 stores
+per database, 128 records per store, 8 KiB per JSON value, and 64 KiB for the
+full IndexedDB state; content workers exchange validated snapshots through
+IPC and do not open profile files. Indexes, cursors, key ranges, non-JSON
+structured-clone values, full transaction/version-change coordination, quota
+APIs, and cross-process IndexedDB journal/delta merging remain open. The same
+follow-up suppresses the timer pump while initial page scripts are loaded and
+resets the deterministic timer clock at the page-operation boundary.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

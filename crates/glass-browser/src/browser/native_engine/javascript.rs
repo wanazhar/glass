@@ -3827,9 +3827,13 @@ fn document_bootstrap(
   const indexedDbPendingDeletes = globalThis.__glassIndexedDbPendingDeletes instanceof Map
     ? globalThis.__glassIndexedDbPendingDeletes
     : new Map();
+  const indexedDbTransactionQueues = globalThis.__glassIndexedDbTransactionQueues instanceof Map
+    ? globalThis.__glassIndexedDbTransactionQueues
+    : new Map();
   globalThis.__glassIndexedDbConnections = indexedDbConnections;
   globalThis.__glassIndexedDbPendingOpens = indexedDbPendingOpens;
   globalThis.__glassIndexedDbPendingDeletes = indexedDbPendingDeletes;
+  globalThis.__glassIndexedDbTransactionQueues = indexedDbTransactionQueues;
   if (!globalThis.__glassNativeIndexedDBInstalled) {{
   const indexedDbDatabaseLimit = {indexed_db_database_limit};
   const indexedDbStoreLimit = {indexed_db_store_limit};
@@ -4010,6 +4014,7 @@ fn document_bootstrap(
   const finishIndexedDbTransaction = (transaction) => {{
     if (transaction.__finished || transaction.__pending !== 0) return;
     transaction.__finished = true;
+    releaseIndexedDbTransaction(transaction);
     if (transaction.__aborted) {{
       if (!transaction.__abortDispatched) {{
         transaction.__abortDispatched = true;
@@ -4027,17 +4032,21 @@ fn document_bootstrap(
       finishIndexedDbTransaction(transaction);
     }});
   }};
-  const queueIndexedDbRequest = (transaction, operation) => {{
-    if (transaction.__finished || transaction.__aborted) throw indexedDbError("TransactionInactiveError", "native IndexedDB transaction is inactive");
-    const request = makeIndexedDbRequest();
-    transaction.__pending += 1;
+  const drainIndexedDbTransactions = (databaseName) => {{
+    const queue = indexedDbTransactionQueues.get(databaseName);
+    if (!queue || queue.length === 0) return;
+    const transaction = queue[0];
+    if (transaction.__running || transaction.__operationQueue.length === 0) return;
+    const next = transaction.__operationQueue.shift();
+    transaction.__running = true;
     indexedDbSchedule(() => {{
+      if (transaction.__initialState === null && !transaction.__aborted) transaction.__initialState = cloneIndexedDbDatabaseState(transaction.__databaseState);
       let value;
       let error = null;
       if (transaction.__aborted) {{
         error = indexedDbError("AbortError", "native IndexedDB transaction was aborted");
       }} else {{
-        try {{ value = operation(); }} catch (caught) {{
+        try {{ value = next.operation(); }} catch (caught) {{
           error = caught instanceof Error ? caught : indexedDbError("UnknownError", String(caught));
           transaction.__aborted = true;
           transaction.error = error;
@@ -4045,26 +4054,63 @@ fn document_bootstrap(
           if (typeof transaction.onerror === "function") transaction.onerror.call(transaction, {{ target: transaction }});
         }}
       }}
-      finishIndexedDbRequest(request, value, error, () => {{
+      finishIndexedDbRequest(next.request, value, error, () => {{
         transaction.__pending -= 1;
+        transaction.__running = false;
+        drainIndexedDbTransactions(databaseName);
         maybeFinishIndexedDbTransaction(transaction);
       }});
     }});
+  }};
+  const releaseIndexedDbTransaction = (transaction) => {{
+    const queue = indexedDbTransactionQueues.get(transaction.db.name);
+    if (!queue) return;
+    const position = queue.indexOf(transaction);
+    if (position >= 0) queue.splice(position, 1);
+    if (queue.length === 0) indexedDbTransactionQueues.delete(transaction.db.name);
+    else drainIndexedDbTransactions(transaction.db.name);
+  }};
+  const queueIndexedDbRequest = (transaction, operation) => {{
+    if (transaction.__finished || transaction.__aborted) throw indexedDbError("TransactionInactiveError", "native IndexedDB transaction is inactive");
+    const request = makeIndexedDbRequest();
+    transaction.__pending += 1;
+    transaction.__operationQueue.push({{ request, operation }});
+    let queue = indexedDbTransactionQueues.get(transaction.db.name);
+    if (!queue) {{
+      queue = [];
+      indexedDbTransactionQueues.set(transaction.db.name, queue);
+    }}
+    if (!queue.includes(transaction)) queue.push(transaction);
+    drainIndexedDbTransactions(transaction.db.name);
     return request;
   }};
   const cloneIndexedDbDatabaseState = (databaseState) => JSON.parse(JSON.stringify(databaseState));
   const restoreIndexedDbDatabaseState = (databaseState, snapshot) => {{
-    for (const key of Object.keys(databaseState)) delete databaseState[key];
-    for (const [key, value] of Object.entries(snapshot)) databaseState[key] = value;
+    const stores = databaseState.stores || {{}};
+    const snapshotStores = snapshot.stores || {{}};
+    for (const name of Object.keys(stores)) {{
+      if (!Object.prototype.hasOwnProperty.call(snapshotStores, name)) delete stores[name];
+    }}
+    for (const [name, snapshotStore] of Object.entries(snapshotStores)) {{
+      const currentStore = stores[name];
+      if (!currentStore) {{
+        stores[name] = snapshotStore;
+        continue;
+      }}
+      for (const key of Object.keys(currentStore)) delete currentStore[key];
+      for (const [key, value] of Object.entries(snapshotStore)) currentStore[key] = value;
+    }}
+    databaseState.version = snapshot.version;
+    databaseState.stores = stores;
   }};
   const makeIndexedDbTransaction = (database, databaseState, storeNames, mode, upgrade) => {{
-    const initialState = cloneIndexedDbDatabaseState(databaseState);
     const transaction = {{
       db: database,
       mode,
       error: null,
       __storeNames: storeNames,
-      __initialState: initialState,
+      __databaseState: databaseState,
+      __initialState: null,
       __rolledBack: false,
       get objectStoreNames() {{ return storeNames.slice().sort(); }},
       oncomplete: null,
@@ -4076,9 +4122,11 @@ fn document_bootstrap(
       __finished: false,
       __finishScheduled: false,
       __abortDispatched: false,
+      __operationQueue: [],
+      __running: false,
       __rollback() {{
         if (this.__rolledBack) return;
-        restoreIndexedDbDatabaseState(databaseState, this.__initialState);
+        if (this.__initialState !== null) restoreIndexedDbDatabaseState(databaseState, this.__initialState);
         this.__rolledBack = true;
       }},
       abort() {{

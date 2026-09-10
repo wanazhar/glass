@@ -462,8 +462,12 @@ CSP reporting/full source grammar, and shared same-origin frame scripting
 remain separate production gates in issue #40. Allowed `_blank` anchor activation now creates
 an initialized parked popup target, leaves its opener selected, and exposes
 the target through native runtime, CLI, MCP, and target-selection surfaces.
-Named contexts, `window.open`, popup permissions/geometry, and shared opener
-scripting remain later topology work.
+Page scripts now also expose `window.open(url, target)`: `_blank` and named
+targets create or reuse initialized parked contexts, while reserved
+same-context names use normal navigation; local and HTTP(S) paths share the
+versioned native owner. Cross-context WindowProxy scripting, `postMessage`,
+popup permissions/geometry, and full browser topology remain later issue #40
+gates.
 
 ## Safety and support
 

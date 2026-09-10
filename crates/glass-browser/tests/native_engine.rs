@@ -757,6 +757,111 @@ async fn native_page_script_blank_target_link_creates_popup_target() {
 }
 
 #[tokio::test]
+async fn native_window_open_creates_and_reuses_named_target() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://window-open-parent",
+            "<title>Window opener</title><script>globalThis.popup = window.open('fixture://window-open-child', 'report');</script><p>parent content</p>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://window-open-child",
+            "<title>First report</title><p>first report</p>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://window-open-child-next",
+            "<title>Second report</title><p>second report</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://window-open-parent");
+    let session = BrowserRuntimeSession::connect_native(config).await.unwrap();
+
+    let targets = session.native_list_targets().await.unwrap();
+    assert_eq!(targets.len(), 2);
+    assert!(targets[0].active);
+    let popup = &targets[1];
+    assert_eq!(popup.id, "native-target-1");
+    assert!(!popup.active);
+    assert_eq!(popup.opener_id.as_deref(), Some("native-context"));
+    assert_eq!(popup.title, "First report");
+
+    session
+        .script("window.open('fixture://window-open-child-next', 'report'); 'reused'")
+        .await
+        .unwrap();
+    let targets = session.native_list_targets().await.unwrap();
+    assert_eq!(targets.len(), 2);
+    assert_eq!(targets[1].id, "native-target-1");
+    assert_eq!(targets[1].title, "Second report");
+    assert!(targets[0].active);
+
+    session
+        .script("window.open('fixture://window-open-child', '_self');")
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .evidence(EvidenceLevel::Compact)
+            .await
+            .unwrap()
+            .title,
+        "First report"
+    );
+    assert_eq!(session.native_list_targets().await.unwrap().len(), 2);
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_http_window_open_crosses_content_worker_and_reuses_name() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..3 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap();
+            let body = match path {
+                "/window-open-parent" => {
+                    "<title>HTTP opener</title><script>window.open('/window-open-child', 'report');</script><p>parent</p>"
+                }
+                "/window-open-child" => "<title>HTTP first report</title><p>first</p>",
+                "/window-open-child-next" => "<title>HTTP second report</title><p>second</p>",
+                other => panic!("unexpected window.open request path: {other}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/window-open-parent")),
+    )
+    .await
+    .unwrap();
+    let targets = session.native_list_targets().await.unwrap();
+    assert_eq!(targets.len(), 2);
+    assert_eq!(targets[1].title, "HTTP first report");
+
+    session
+        .script("window.open('/window-open-child-next', 'report');")
+        .await
+        .unwrap();
+    let targets = session.native_list_targets().await.unwrap();
+    assert_eq!(targets.len(), 2);
+    assert_eq!(targets[1].id, "native-target-1");
+    assert_eq!(targets[1].title, "HTTP second report");
+    assert!(targets[0].active);
+    session.close().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_blank_link_honors_click_cancellation() {
     let config = NativeEngineConfig::default()
         .with_fixture(

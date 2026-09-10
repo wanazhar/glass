@@ -1457,6 +1457,16 @@ link, redirect, and history navigation as well. Frame lifecycle/load events,
 CSP reporting and complete source grammar, shared frame scripting,
 postMessage, and full browser topology remain issue #40 gates.
 
+The completed native-engine-browser-148 batch adds script-created browsing
+contexts. The native JavaScript host resolves `window.open` URLs, routes
+reserved same-context names through normal navigation, and emits typed popup
+intents for `_blank` and named targets. Local and HTTP(S) documents transfer
+those intents through version-5 content-worker IPC; the parent-owned target
+registry initializes parked targets, preserves opener selection, reuses named
+targets, resets their frame state on navigation, and bounds nested popup
+cascades. The returned WindowProxy-shaped value is deliberately bounded until
+cross-context scripting and `postMessage` have their own ownership contract.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature

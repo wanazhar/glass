@@ -3408,6 +3408,16 @@ async fn call_native_tool(
                 response_mode,
             )
         }
+        ToolInvocation::ActAndVerify {
+            request,
+            predicate,
+            timeout,
+        } => serialized_result_mode(
+            &session
+                .native_act_and_verify(&request, predicate, timeout)
+                .await?,
+            response_mode,
+        ),
         ToolInvocation::Navigate {
             url,
             timeout_ms,
@@ -6137,6 +6147,40 @@ mod tests {
         )
         .unwrap();
         assert_eq!(verify["status"], "satisfied");
+
+        let acted = invoke_native_mcp_tool(
+            "actAndVerify",
+            json!({
+                "request": {
+                    "schemaVersion": 1,
+                    "intent": "save",
+                    "action": "click",
+                    "constraints": {"role": "button", "name": "Save"},
+                    "resolutionPolicy": "requireExact"
+                },
+                "candidateId": "candidate_1",
+                "predicate": {"textContains": "Save"},
+                "timeoutMs": 100
+            }),
+            &mut session,
+            &mut native_session,
+            &options,
+            &policy,
+        )
+        .await;
+        assert!(acted.error.is_none());
+        let acted: Value = serde_json::from_str(
+            acted.result.unwrap()["content"][0]["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(acted["status"], "verified");
+        assert!(
+            acted["execution"]["action"]["executionId"]
+                .as_str()
+                .is_some()
+        );
 
         let javascript = invoke_native_mcp_tool(
             "wait",

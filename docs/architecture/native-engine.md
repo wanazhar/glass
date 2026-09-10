@@ -1317,6 +1317,16 @@ geometry sample is used for target stability. Request lifecycle accounting,
 popup/dialog/download topology, action-specific `act-and-verify`, and
 universal workflow parity remain open contracts.
 
+The completed native-engine-browser-136 batch closes the native discovery to
+mutation handoff for supported semantic intents. Native `actAndVerify` now
+validates and resolves a caller-selected candidate, dispatches click, type,
+clear, check, uncheck, or select under the same session lock, emits the
+standard execution/action result envelopes, and releases the lock before
+running the optional bounded verification predicate. The native CLI and MCP
+surfaces route the operation without allocating Chromium. Specialized
+request-ledger, popup/dialog/download witnesses and universal workflow parity
+remain separate production gates.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature

@@ -101,7 +101,7 @@ bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
 bounded-legacy-name-fragment-targets/bounded-text-fragment-targets/
 bounded-text-fragment-affixes/bounded-root-horizontal-scroll/
-bounded-prompt-lifecycle,
+bounded-prompt-lifecycle/bounded-request-lifecycle,
 including bounded style
 inheritance, paint clipping, solid/dashed/dotted border painting, rounded
 fill/border masks, inline-box line placement, fixed pixel line-height floors,
@@ -1370,6 +1370,17 @@ the worker cannot discard a prompt before publication. The current script
 bridge returns deterministic `false`/`null` values for confirm/prompt while it
 records pending state; suspended decision-aware continuation and response
 injection remain a separate scheduler milestone.
+
+The completed native-engine-browser-141 batch adds bounded request-lifecycle
+accounting to the same parent-owned model. Native navigation loads, direct
+fetches, and external content-process evaluations mark one request operation
+as in flight and then advance a completion sequence; the native runtime's
+`network-quiet` wait polls that ledger through CLI and MCP without creating
+Chromium. The quiet result is bounded and diagnostic-safe, exposing only
+in-flight count, elapsed quiet time, required quiet time, and completion
+count. Because the current content worker still owns a whole bounded load or
+script operation at this seam, this does not claim per-resource subresource,
+redirect, service-worker, or transport-cancellation lifecycle parity.
 
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
@@ -4509,6 +4520,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded alert/confirm/prompt metadata, content-worker forwarding, pending
   dialog inspection, `dialogOpen` verification, and native accept/dismiss
   routing;
+- bounded native request operation accounting, completion sequencing, and
+  `network-quiet` waits across navigation, direct fetch, and external script
+  operations;
 - deterministic scheduler ordering and queue bounds;
 - failed navigation preserving the previous state;
 - dispatcher capability denial and explicit-only backend selection;

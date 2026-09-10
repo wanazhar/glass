@@ -534,6 +534,43 @@ async fn native_async_http_history_traversal_reloads_through_content_process() {
 }
 
 #[tokio::test]
+async fn native_network_quiet_wait_reports_completed_request_activity() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/network-quiet"));
+        let body = "<title>Quiet</title><p>request complete</p>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/network-quiet")),
+    )
+    .await
+    .unwrap();
+    server.await.unwrap();
+
+    let outcome = session
+        .native_wait(
+            WaitCondition::NetworkQuiet(Duration::from_millis(25)),
+            Duration::from_millis(200),
+        )
+        .await
+        .unwrap();
+    assert_eq!(outcome.condition, "network_quiet");
+    assert!(outcome.last_state.contains("inFlight=0"));
+    assert!(outcome.last_state.contains("completed=1"));
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_runtime_session_exposes_bounded_wait_and_verification() {
     let session = BrowserRuntimeSession::connect_native(
         NativeEngineConfig::default().with_initial_url(

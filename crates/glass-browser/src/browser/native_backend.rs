@@ -116,6 +116,15 @@ impl NativeEngineBackend {
             .map_err(native_error)
     }
 
+    pub fn network_quiet(
+        &self,
+        duration: std::time::Duration,
+    ) -> Result<(bool, String), BrowserBackendError> {
+        self.lock_engine(BackendOperation::Effects)?
+            .network_quiet(duration)
+            .map_err(native_error)
+    }
+
     pub async fn resolve_dialog(
         &self,
         decision: PromptDecision,

@@ -41,8 +41,61 @@ use super::worker::{NativeRuntimeShared, NativeRuntimeWorker};
 use crate::browser::session::{Cookie, PendingDialog};
 use crate::browser_backend::{PromptDecision, PromptResult, StorageOperation, StorageScope};
 use std::collections::VecDeque;
+use std::time::{Duration, Instant};
 
 const MAX_NATIVE_PAGE_NAVIGATION_HANDOFFS: usize = 8;
+const MAX_NATIVE_IN_FLIGHT_REQUESTS: usize = 64;
+
+#[derive(Debug)]
+struct NativeRequestLedger {
+    in_flight: usize,
+    completed: u64,
+    last_activity: Instant,
+}
+
+impl NativeRequestLedger {
+    fn new() -> Self {
+        Self {
+            in_flight: 0,
+            completed: 0,
+            last_activity: Instant::now(),
+        }
+    }
+
+    fn begin(&mut self) -> Result<(), NativeEngineError> {
+        if self.in_flight >= MAX_NATIVE_IN_FLIGHT_REQUESTS {
+            return Err(NativeEngineError::limit(
+                "native in-flight requests",
+                MAX_NATIVE_IN_FLIGHT_REQUESTS,
+                self.in_flight.saturating_add(1),
+            ));
+        }
+        self.in_flight += 1;
+        self.last_activity = Instant::now();
+        Ok(())
+    }
+
+    fn finish(&mut self) {
+        self.in_flight = self.in_flight.saturating_sub(1);
+        self.completed = self.completed.saturating_add(1);
+        self.last_activity = Instant::now();
+    }
+
+    fn quiet(&self, duration: Duration) -> (bool, String) {
+        let quiet_for = self.last_activity.elapsed();
+        let matched = self.in_flight == 0 && quiet_for >= duration;
+        (
+            matched,
+            format!(
+                "inFlight={};quietForMs={};requiredMs={};completed={}",
+                self.in_flight,
+                quiet_for.as_millis(),
+                duration.as_millis(),
+                self.completed,
+            ),
+        )
+    }
+}
 
 fn should_apply_native_key_default(key: &str, modifiers: i64) -> bool {
     let primary_modifier = modifiers & (2 | 4) != 0;
@@ -263,6 +316,7 @@ pub struct NativeEngine {
     indexed_db_state_delivery_pending: bool,
     pending_external_storage_events: Vec<NativeStorageEvent>,
     pending_dialogs: VecDeque<PendingDialog>,
+    request_ledger: NativeRequestLedger,
     history: NativeHistory,
     lifecycle: NativeLifecycleState,
     document: NativeDocument,
@@ -308,6 +362,7 @@ impl NativeEngine {
             indexed_db_state_delivery_pending: false,
             pending_external_storage_events: Vec::new(),
             pending_dialogs: VecDeque::new(),
+            request_ledger: NativeRequestLedger::new(),
             history: NativeHistory::new(max_history_entries),
             lifecycle: NativeLifecycleState::New,
             document: NativeDocument::empty(),
@@ -639,20 +694,25 @@ impl NativeEngine {
             ));
         }
         loop {
-            let content = self
-                .content_process
-                .as_mut()
-                .ok_or_else(|| NativeEngineError::Worker {
+            self.request_ledger.begin()?;
+            let content_result = match self.content_process.as_mut() {
+                Some(process) => {
+                    process
+                        .load(
+                            &navigation,
+                            &self.config.limits,
+                            self.config.viewport,
+                            referrer.as_deref(),
+                        )
+                        .await
+                }
+                None => Err(NativeEngineError::Worker {
                     operation: "content process load".into(),
                     reason: "native content process is not running".into(),
-                })?
-                .load(
-                    &navigation,
-                    &self.config.limits,
-                    self.config.viewport,
-                    referrer.as_deref(),
-                )
-                .await?;
+                }),
+            };
+            self.request_ledger.finish();
+            let content = content_result?;
             self.publish_content_state(&content.storage_events, &content.indexed_db_changes)?;
             let Some(page_navigation) = content.navigation.clone() else {
                 return Ok((content, history_commit, page_navigation_handoffs));
@@ -957,14 +1017,16 @@ impl NativeEngine {
         self.deliver_pending_external_storage_events().await?;
         let href = href.into();
         self.ensure_content_process().await?;
-        self.content_process
-            .as_mut()
-            .ok_or_else(|| NativeEngineError::Worker {
+        self.request_ledger.begin()?;
+        let result = match self.content_process.as_mut() {
+            Some(process) => process.fetch(&self.url, &href, credentials).await,
+            None => Err(NativeEngineError::Worker {
                 operation: "content process fetch".into(),
                 reason: "native content process is not running".into(),
-            })?
-            .fetch(&self.url, &href, credentials)
-            .await
+            }),
+        };
+        self.request_ledger.finish();
+        result
     }
 
     /// Evaluate bounded ECMAScript in the current page realm. Network
@@ -999,7 +1061,10 @@ impl NativeEngine {
                         "content process is unavailable after a failed operation; navigate to recover it",
                     ));
                 }
-                process.evaluate(&source).await?
+                self.request_ledger.begin()?;
+                let result = process.evaluate(&source).await;
+                self.request_ledger.finish();
+                result?
             };
             if let Some(mutation) = mutation {
                 let navigation = mutation.navigation.clone();
@@ -1187,6 +1252,13 @@ impl NativeEngine {
     pub fn pending_dialog(&self) -> Result<Option<PendingDialog>, NativeEngineError> {
         self.require_running("inspect dialog")?;
         Ok(self.pending_dialogs.front().cloned())
+    }
+
+    /// Report whether the native request owner has remained idle for the
+    /// caller's bounded quiet interval.
+    pub fn network_quiet(&self, duration: Duration) -> Result<(bool, String), NativeEngineError> {
+        self.require_running("inspect network activity")?;
+        Ok(self.request_ledger.quiet(duration))
     }
 
     /// Resolve one queued JavaScript dialog without creating a browser or

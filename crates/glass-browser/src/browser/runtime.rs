@@ -19,7 +19,8 @@ use crate::browser_backend::{
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
-use super::session::BrowserResult;
+use super::session::{ActionContractError, BrowserResult};
+use tokio::sync::Mutex;
 
 /// Browser runtimes supported by the portable semantic session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
@@ -61,6 +62,10 @@ impl BrowserRuntime {
 pub struct BrowserRuntimeSession {
     runtime: BrowserRuntime,
     backend: BackendStartup,
+    /// Serializes the revision read and the following mutating dispatch for
+    /// one semantic session. The backend remains the owner of the actual
+    /// document revision and state transition.
+    operation_lock: Mutex<()>,
 }
 
 impl BrowserRuntimeSession {
@@ -85,7 +90,11 @@ impl BrowserRuntimeSession {
                 );
             }
         };
-        let session = Self { runtime, backend };
+        let session = Self {
+            runtime,
+            backend,
+            operation_lock: Mutex::new(()),
+        };
         BrowserBackendDispatcher::new(&session.backend)
             .initialize()
             .await?;
@@ -99,6 +108,7 @@ impl BrowserRuntimeSession {
         let session = Self {
             runtime: BrowserRuntime::Native,
             backend,
+            operation_lock: Mutex::new(()),
         };
         BrowserBackendDispatcher::new(&session.backend)
             .initialize()
@@ -115,8 +125,27 @@ impl BrowserRuntimeSession {
     }
 
     pub async fn navigate(&self, url: impl Into<String>) -> BrowserResult<NavigationResult> {
+        let _operation = self.operation_lock.lock().await;
+        self.navigate_unlocked(url.into()).await
+    }
+
+    /// Navigate only when the caller's observation is still current.
+    ///
+    /// The revision read and navigation dispatch share the session operation
+    /// lock, so two concurrent callers cannot both pass the same guard.
+    pub async fn navigate_with_revision(
+        &self,
+        url: impl Into<String>,
+        expected_revision: u64,
+    ) -> BrowserResult<NavigationResult> {
+        let _operation = self.operation_lock.lock().await;
+        self.require_current_revision(expected_revision).await?;
+        self.navigate_unlocked(url.into()).await
+    }
+
+    async fn navigate_unlocked(&self, url: String) -> BrowserResult<NavigationResult> {
         Ok(BrowserBackendDispatcher::new(&self.backend)
-            .navigate(NavigationRequest { url: url.into() })
+            .navigate(NavigationRequest { url })
             .await?)
     }
 
@@ -136,6 +165,7 @@ impl BrowserRuntimeSession {
     }
 
     pub async fn script(&self, source: impl Into<String>) -> BrowserResult<ScriptResult> {
+        let _operation = self.operation_lock.lock().await;
         let context_id = self.active_context_id().await?;
         Ok(BrowserBackendDispatcher::new(&self.backend)
             .script(ScriptRequest {
@@ -146,6 +176,23 @@ impl BrowserRuntimeSession {
     }
 
     pub async fn action(&self, action: SemanticAction) -> BrowserResult<ActionResult> {
+        let _operation = self.operation_lock.lock().await;
+        self.action_unlocked(action).await
+    }
+
+    /// Apply one semantic action only when the caller's observation is still
+    /// current. The guard covers the complete read/dispatch transaction.
+    pub async fn action_with_revision(
+        &self,
+        action: SemanticAction,
+        expected_revision: u64,
+    ) -> BrowserResult<ActionResult> {
+        let _operation = self.operation_lock.lock().await;
+        self.require_current_revision(expected_revision).await?;
+        self.action_unlocked(action).await
+    }
+
+    async fn action_unlocked(&self, action: SemanticAction) -> BrowserResult<ActionResult> {
         let context_id = self.active_context_id().await?;
         Ok(BrowserBackendDispatcher::new(&self.backend)
             .action(ActionRequest { context_id, action })
@@ -163,6 +210,7 @@ impl BrowserRuntimeSession {
     }
 
     pub async fn storage(&self, request: StorageRequest) -> BrowserResult<StorageResult> {
+        let _operation = self.operation_lock.lock().await;
         Ok(BrowserBackendDispatcher::new(&self.backend)
             .storage(request)
             .await?)
@@ -190,6 +238,17 @@ impl BrowserRuntimeSession {
 
     pub async fn close(self) -> BrowserResult<()> {
         Ok(BrowserBackendDispatcher::new(&self.backend).close().await?)
+    }
+
+    async fn require_current_revision(&self, expected_revision: u64) -> BrowserResult<()> {
+        let evidence = self.evidence(EvidenceLevel::Compact).await?;
+        if evidence.revision == expected_revision {
+            return Ok(());
+        }
+        Err(Box::new(ActionContractError::stale_revision(
+            expected_revision,
+            evidence.revision,
+        )))
     }
 
     async fn active_context_id(&self) -> BrowserResult<String> {

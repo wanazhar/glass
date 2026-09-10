@@ -193,6 +193,65 @@ async fn native_runtime_session_uses_explicit_local_constructor() {
 }
 
 #[tokio::test]
+async fn native_runtime_session_guards_mutations_and_serializes_races() {
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default()
+            .with_initial_url("data:text/html,%3Cbutton%20id%3D%27save%27%3ESave%3C%2Fbutton%3E"),
+    )
+    .await
+    .unwrap();
+
+    let revision = session
+        .evidence(EvidenceLevel::Compact)
+        .await
+        .unwrap()
+        .revision;
+    let stale = session
+        .action_with_revision(
+            SemanticAction::Click {
+                target: "id=save".into(),
+            },
+            revision.saturating_sub(1),
+        )
+        .await
+        .unwrap_err();
+    assert!(stale.to_string().contains("stale page revision"));
+
+    let (first, second) = tokio::join!(
+        session.action_with_revision(
+            SemanticAction::Click {
+                target: "id=save".into(),
+            },
+            revision,
+        ),
+        session.action_with_revision(
+            SemanticAction::Click {
+                target: "id=save".into(),
+            },
+            revision,
+        ),
+    );
+    assert_eq!(
+        first.as_ref().ok().map(|result| result.revision),
+        Some(revision + 1)
+    );
+    assert!(
+        second
+            .as_ref()
+            .err()
+            .is_some_and(|error| error.to_string().contains("stale page revision"))
+    );
+
+    let next_revision = first.unwrap().revision;
+    let navigation = session
+        .navigate_with_revision("data:text/html,%3Cp%3ANext%3C%2Fp%3E", next_revision)
+        .await
+        .unwrap();
+    assert_eq!(navigation.revision, next_revision + 1);
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_css_locators_share_the_stylesheet_selector_grammar() {
     let config = NativeEngineConfig::default()
         .with_initial_url("fixture://css-locator")

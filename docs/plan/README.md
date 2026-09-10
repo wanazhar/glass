@@ -1190,6 +1190,15 @@ left/right/Home/End movement with Shift extension. Grapheme/bidi geometry,
 clipboard, IME/composition, repeat, rich observation, automatic native
 selection, and production replacement of CDP remain issue #40 gates.
 
+The completed bounded native public-session revision batch is
+[native-engine-browser-131](tasks/native-engine-browser-131.md). The portable
+`BrowserRuntimeSession` now serializes guarded navigation and semantic action
+dispatch, returns the shared typed stale-revision error, and accepts native
+CLI `--expected-revision` values for navigation, form, keyboard, and scroll
+commands. This removes the one-shot revision gap; normal `BrowserSession` /
+MCP / TUI routing, the rest of the browser profile, native promotion, and CDP
+replacement remain issue #40 gates.
+
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and
 constructed responses now share `Response` identity; `new Response`,

@@ -485,40 +485,6 @@ fn validate_alternative_runtime_command(
 ) -> BrowserResult<()> {
     let native = runtime.is_native();
     match command {
-        Commands::Navigate {
-            expected_revision, ..
-        }
-        | Commands::Click {
-            expected_revision, ..
-        }
-        | Commands::Type {
-            expected_revision, ..
-        }
-        | Commands::Clear {
-            expected_revision, ..
-        }
-        | Commands::Check {
-            expected_revision, ..
-        }
-        | Commands::Uncheck {
-            expected_revision, ..
-        }
-        | Commands::Select {
-            expected_revision, ..
-        } if expected_revision.is_some() => {
-            Err("revision guards are not yet exposed by the portable runtime CLI".into())
-        }
-        Commands::KeyDown {
-            expected_revision, ..
-        }
-        | Commands::KeyUp {
-            expected_revision, ..
-        }
-        | Commands::Shortcut {
-            expected_revision, ..
-        } if expected_revision.is_some() => {
-            Err("revision guards are not yet exposed by the portable runtime CLI".into())
-        }
         Commands::Type { target, .. } if target.is_none() => Err(if native {
             "native type requires --target with a semantic locator".into()
         } else {
@@ -579,11 +545,6 @@ fn validate_alternative_runtime_command(
         {
             Ok(())
         }
-        Commands::Key {
-            expected_revision, ..
-        } if native && expected_revision.is_some() => {
-            Err("revision guards are not yet exposed by the portable runtime CLI".into())
-        }
         Commands::Key { .. } if native => Ok(()),
         Commands::KeyDown { .. } | Commands::KeyUp { .. } | Commands::Shortcut { .. } if native => {
             Ok(())
@@ -630,23 +591,45 @@ async fn run_alternative_runtime_command(
     response_mode: ResponseMode,
 ) -> BrowserResult<()> {
     match command {
-        Commands::Navigate { url, .. } => {
+        Commands::Navigate {
+            url,
+            expected_revision,
+            ..
+        } => {
             let url = if session.runtime().is_native() {
                 crate::browser::session::normalize_url(url)
             } else {
                 url.clone()
             };
-            print_json_mode(&session.navigate(url).await?, response_mode)
+            let result = match expected_revision {
+                Some(expected_revision) => {
+                    session
+                        .navigate_with_revision(url, *expected_revision)
+                        .await?
+                }
+                None => session.navigate(url).await?,
+            };
+            print_json_mode(&result, response_mode)
         }
-        Commands::Click { target, .. } => print_json_mode(
-            &session
-                .action(SemanticAction::Click {
+        Commands::Click {
+            target,
+            expected_revision,
+        } => print_json_mode(
+            &native_or_portable_action(
+                session,
+                SemanticAction::Click {
                     target: target.clone(),
-                })
-                .await?,
+                },
+                *expected_revision,
+            )
+            .await?,
             response_mode,
         ),
-        Commands::Type { text, target, .. } => {
+        Commands::Type {
+            text,
+            target,
+            expected_revision,
+        } => {
             let target = target.clone().ok_or_else(|| {
                 if session.runtime().is_native() {
                     "native type requires --target with a semantic locator".to_string()
@@ -655,46 +638,74 @@ async fn run_alternative_runtime_command(
                 }
             })?;
             print_json_mode(
-                &session
-                    .action(SemanticAction::Type {
+                &native_or_portable_action(
+                    session,
+                    SemanticAction::Type {
                         target,
                         text: text.clone(),
-                    })
-                    .await?,
+                    },
+                    *expected_revision,
+                )
+                .await?,
                 response_mode,
             )
         }
-        Commands::Clear { target, .. } => print_json_mode(
-            &session
-                .action(SemanticAction::Clear {
+        Commands::Clear {
+            target,
+            expected_revision,
+        } => print_json_mode(
+            &native_or_portable_action(
+                session,
+                SemanticAction::Clear {
                     target: target.clone(),
-                })
-                .await?,
+                },
+                *expected_revision,
+            )
+            .await?,
             response_mode,
         ),
-        Commands::Check { target, .. } => print_json_mode(
-            &session
-                .action(SemanticAction::Check {
+        Commands::Check {
+            target,
+            expected_revision,
+        } => print_json_mode(
+            &native_or_portable_action(
+                session,
+                SemanticAction::Check {
                     target: target.clone(),
-                })
-                .await?,
+                },
+                *expected_revision,
+            )
+            .await?,
             response_mode,
         ),
-        Commands::Uncheck { target, .. } => print_json_mode(
-            &session
-                .action(SemanticAction::Uncheck {
+        Commands::Uncheck {
+            target,
+            expected_revision,
+        } => print_json_mode(
+            &native_or_portable_action(
+                session,
+                SemanticAction::Uncheck {
                     target: target.clone(),
-                })
-                .await?,
+                },
+                *expected_revision,
+            )
+            .await?,
             response_mode,
         ),
-        Commands::Select { target, value, .. } => print_json_mode(
-            &session
-                .action(SemanticAction::Select {
+        Commands::Select {
+            target,
+            value,
+            expected_revision,
+        } => print_json_mode(
+            &native_or_portable_action(
+                session,
+                SemanticAction::Select {
                     target: target.clone(),
                     value: value.clone(),
-                })
-                .await?,
+                },
+                *expected_revision,
+            )
+            .await?,
             response_mode,
         ),
         Commands::ClickAt { x, y } if session.runtime().is_native() => {
@@ -704,30 +715,54 @@ async fn run_alternative_runtime_command(
                 response_mode,
             )
         }
-        Commands::Key { key, .. } if session.runtime().is_native() => print_json_mode(
-            &session
-                .action(SemanticAction::KeyPress { key: key.clone() })
-                .await?,
+        Commands::Key {
+            key,
+            expected_revision,
+        } if session.runtime().is_native() => print_json_mode(
+            &native_or_portable_action(
+                session,
+                SemanticAction::KeyPress { key: key.clone() },
+                *expected_revision,
+            )
+            .await?,
             response_mode,
         ),
-        Commands::KeyDown { key, .. } if session.runtime().is_native() => print_json_mode(
-            &session
-                .action(SemanticAction::KeyDown { key: key.clone() })
-                .await?,
+        Commands::KeyDown {
+            key,
+            expected_revision,
+        } if session.runtime().is_native() => print_json_mode(
+            &native_or_portable_action(
+                session,
+                SemanticAction::KeyDown { key: key.clone() },
+                *expected_revision,
+            )
+            .await?,
             response_mode,
         ),
-        Commands::KeyUp { key, .. } if session.runtime().is_native() => print_json_mode(
-            &session
-                .action(SemanticAction::KeyUp { key: key.clone() })
-                .await?,
+        Commands::KeyUp {
+            key,
+            expected_revision,
+        } if session.runtime().is_native() => print_json_mode(
+            &native_or_portable_action(
+                session,
+                SemanticAction::KeyUp { key: key.clone() },
+                *expected_revision,
+            )
+            .await?,
             response_mode,
         ),
-        Commands::Shortcut { shortcut, .. } if session.runtime().is_native() => print_json_mode(
-            &session
-                .action(SemanticAction::Shortcut {
+        Commands::Shortcut {
+            shortcut,
+            expected_revision,
+        } if session.runtime().is_native() => print_json_mode(
+            &native_or_portable_action(
+                session,
+                SemanticAction::Shortcut {
                     shortcut: shortcut.clone(),
-                })
-                .await?,
+                },
+                *expected_revision,
+            )
+            .await?,
             response_mode,
         ),
         Commands::Text => {
@@ -822,17 +857,35 @@ async fn run_alternative_runtime_command(
         Commands::Scroll {
             dx,
             dy,
-            expected_revision: _,
+            expected_revision,
         } if session.runtime().is_native() => {
             let (delta_x, delta_y) = native_scroll_deltas(*dx, *dy)?;
             print_json_mode(
-                &session
-                    .action(SemanticAction::Scroll { delta_x, delta_y })
-                    .await?,
+                &native_or_portable_action(
+                    session,
+                    SemanticAction::Scroll { delta_x, delta_y },
+                    *expected_revision,
+                )
+                .await?,
                 response_mode,
             )
         }
         _ => unreachable!("alternative runtime command was validated before dispatch"),
+    }
+}
+
+async fn native_or_portable_action(
+    session: &BrowserRuntimeSession,
+    action: SemanticAction,
+    expected_revision: Option<u64>,
+) -> BrowserResult<crate::browser_backend::ActionResult> {
+    match expected_revision {
+        Some(expected_revision) => {
+            session
+                .action_with_revision(action, expected_revision)
+                .await
+        }
+        None => session.action(action).await,
     }
 }
 
@@ -3314,6 +3367,57 @@ mod tests {
                 .unwrap();
         validate_alternative_runtime_command(cli.command.as_ref().unwrap(), cli.browser_runtime)
             .unwrap();
+    }
+
+    #[cfg(feature = "native-engine")]
+    #[test]
+    fn native_runtime_accepts_revision_guards_before_startup() {
+        for arguments in [
+            vec![
+                "glass",
+                "--browser-runtime",
+                "native",
+                "navigate",
+                "about:blank",
+                "--expected-revision",
+                "1",
+            ],
+            vec![
+                "glass",
+                "--browser-runtime",
+                "native",
+                "click",
+                "id=save",
+                "--expected-revision",
+                "1",
+            ],
+            vec![
+                "glass",
+                "--browser-runtime",
+                "native",
+                "shortcut",
+                "Control+A",
+                "--expected-revision",
+                "1",
+            ],
+            vec![
+                "glass",
+                "--browser-runtime",
+                "native",
+                "scroll",
+                "--dy",
+                "20",
+                "--expected-revision",
+                "1",
+            ],
+        ] {
+            let cli = Cli::try_parse_from(arguments).unwrap();
+            validate_alternative_runtime_command(
+                cli.command.as_ref().unwrap(),
+                cli.browser_runtime,
+            )
+            .unwrap();
+        }
     }
 
     #[cfg(feature = "native-engine")]

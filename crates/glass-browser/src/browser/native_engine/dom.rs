@@ -2,7 +2,7 @@ use super::config::{NativeEngineLimits, validate_url_text, without_fragment};
 use super::css::NativeStylesheet;
 use super::diagnostics::{NativeDiagnostic, NativeDiagnosticSink, NativeDiagnosticSource};
 use super::error::NativeEngineError;
-use super::interaction::{NativeEventKind, validate_native_edit_key};
+use super::interaction::{NativeEventKind, validate_native_edit_key, validate_native_key};
 use super::javascript::NativeScriptCommand;
 use super::layout::NativeLayoutSnapshot;
 use super::paint::NativeDisplayList;
@@ -70,6 +70,9 @@ pub(crate) struct NativeElementState {
     focused: bool,
     selected: bool,
     custom_validity: String,
+    selection_start: Option<usize>,
+    selection_end: Option<usize>,
+    selection_direction: Option<String>,
 }
 
 impl NativeElementState {
@@ -80,6 +83,9 @@ impl NativeElementState {
             focused: false,
             selected: attributes.contains_key("selected"),
             custom_validity: String::new(),
+            selection_start: None,
+            selection_end: None,
+            selection_direction: None,
         }
     }
 }
@@ -126,6 +132,12 @@ pub(crate) struct NativeElementStateWire {
     pub(crate) focused: bool,
     pub(crate) selected: bool,
     pub(crate) custom_validity: String,
+    #[serde(default)]
+    pub(crate) selection_start: Option<usize>,
+    #[serde(default)]
+    pub(crate) selection_end: Option<usize>,
+    #[serde(default)]
+    pub(crate) selection_direction: Option<String>,
 }
 
 /// One arena-owned node with parent and child links.
@@ -233,6 +245,9 @@ pub(crate) struct NativeScriptElementSnapshot {
     pub(crate) validation_message: String,
     pub(crate) custom_validity: String,
     pub(crate) will_validate: bool,
+    pub(crate) selection_start: Option<usize>,
+    pub(crate) selection_end: Option<usize>,
+    pub(crate) selection_direction: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -509,6 +524,9 @@ impl NativeDocument {
                     focused: node.state.focused,
                     selected: node.state.selected,
                     custom_validity: node.state.custom_validity.clone(),
+                    selection_start: node.state.selection_start,
+                    selection_end: node.state.selection_end,
+                    selection_direction: node.state.selection_direction.clone(),
                 },
             })
             .collect();
@@ -600,6 +618,9 @@ impl NativeDocument {
                     focused: wire_node.state.focused,
                     selected: wire_node.state.selected,
                     custom_validity: wire_node.state.custom_validity.clone(),
+                    selection_start: wire_node.state.selection_start,
+                    selection_end: wire_node.state.selection_end,
+                    selection_direction: wire_node.state.selection_direction.clone(),
                 },
             });
         }
@@ -731,6 +752,10 @@ impl NativeDocument {
                     .unwrap_or_default();
                 let (validity, validation_message, will_validate) =
                     self.script_validation_snapshot(node.id());
+                let (selection_start, selection_end, selection_direction) = self
+                    .selection_snapshot(node.id())
+                    .map(|(start, end, direction)| (Some(start), Some(end), Some(direction)))
+                    .unwrap_or((None, None, None));
                 Some(NativeScriptElementSnapshot {
                     node_index: node.id().index(),
                     parent_index: self.parent_element_index(node.id()),
@@ -748,6 +773,9 @@ impl NativeDocument {
                     validation_message,
                     custom_validity: node.state.custom_validity.clone(),
                     will_validate,
+                    selection_start,
+                    selection_end,
+                    selection_direction,
                 })
             })
             .collect();
@@ -1065,6 +1093,7 @@ impl NativeDocument {
             .ok_or(NativeEngineError::DetachedTarget)?
             .state
             .value = Some(text.to_owned());
+        self.set_selection_state(id, text.chars().count(), text.chars().count(), "none")?;
         events.push((id, NativeEventKind::Input));
         events.push((id, NativeEventKind::Change));
         Ok(events)
@@ -1106,6 +1135,7 @@ impl NativeDocument {
                 .ok_or(NativeEngineError::DetachedTarget)?
                 .state
                 .value = Some(String::new());
+            self.set_selection_state(id, 0, 0, "none")?;
             events.push((id, NativeEventKind::Input));
             events.push((id, NativeEventKind::Change));
         }
@@ -1231,15 +1261,93 @@ impl NativeDocument {
             .unwrap_or(self.root)
     }
 
-    /// Apply the bounded default edit for one key to a focused text control.
-    /// Selection, caret movement, composition, and form submission are kept
-    /// out of this slice; printable keys append at the current value end.
-    pub(crate) fn apply_key_press(
+    /// Return the bounded text-control selection as character offsets and a
+    /// direction. Non-text elements have no selection API in the native host.
+    fn selection_snapshot(&self, id: NativeNodeId) -> Option<(usize, usize, String)> {
+        let node = self.node(id)?;
+        if !matches!(node.element_name(), Some("input" | "textarea"))
+            || !self
+                .semantic_node(id)
+                .is_some_and(|semantic| semantic.role == "textbox")
+        {
+            return None;
+        }
+        let length = self.current_value(id).unwrap_or_default().chars().count();
+        let start = node.state.selection_start.unwrap_or(0).min(length);
+        let end = node.state.selection_end.unwrap_or(start).min(length);
+        Some((
+            start.min(end),
+            start.max(end),
+            node.state
+                .selection_direction
+                .clone()
+                .unwrap_or_else(|| "none".into()),
+        ))
+    }
+
+    fn set_selection_state(
+        &mut self,
+        id: NativeNodeId,
+        start: usize,
+        end: usize,
+        direction: &str,
+    ) -> Result<(), NativeEngineError> {
+        if !matches!(
+            self.node(id).and_then(NativeNode::element_name),
+            Some("input" | "textarea")
+        ) || !self
+            .semantic_node(id)
+            .is_some_and(|semantic| semantic.role == "textbox")
+        {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "selection requires an input or textarea".into(),
+            });
+        }
+        if !matches!(direction, "none" | "forward" | "backward") {
+            return Err(NativeEngineError::invalid(
+                "selection direction",
+                "must be none, forward, or backward",
+            ));
+        }
+        let length = self.current_value(id).unwrap_or_default().chars().count();
+        let start = start.min(length);
+        let end = end.min(length);
+        let (start, end) = (start.min(end), start.max(end));
+        let node = self.node_mut(id).ok_or(NativeEngineError::DetachedTarget)?;
+        node.state.selection_start = Some(start);
+        node.state.selection_end = Some(end);
+        node.state.selection_direction = Some(direction.to_owned());
+        Ok(())
+    }
+
+    fn initialize_selection_if_needed(&mut self, id: NativeNodeId) {
+        let Some((length, needs_initialization)) = self.node(id).and_then(|node| {
+            matches!(node.element_name(), Some("input" | "textarea")).then(|| {
+                (
+                    self.current_value(id).unwrap_or_default().chars().count(),
+                    node.state.selection_start.is_none() || node.state.selection_end.is_none(),
+                )
+            })
+        }) else {
+            return;
+        };
+        if needs_initialization && let Some(node) = self.node_mut(id) {
+            node.state.selection_start = Some(length);
+            node.state.selection_end = Some(length);
+            node.state.selection_direction = Some("none".into());
+        }
+    }
+
+    /// Apply the bounded default action for one keyboard sequence. The
+    /// returned input event is present only when the value changed; selection
+    /// and caret movement themselves remain silent DOM state changes.
+    pub(crate) fn apply_key_default(
         &mut self,
         id: NativeNodeId,
         key: &str,
+        modifiers: i64,
     ) -> Result<Vec<(NativeNodeId, NativeEventKind)>, NativeEngineError> {
-        validate_native_edit_key(key)?;
+        validate_native_key(key)?;
         let semantic = self
             .semantic_node(id)
             .ok_or(NativeEngineError::DetachedTarget)?;
@@ -1250,9 +1358,7 @@ impl NativeDocument {
         }
         if semantic.role != "textbox" || !matches!(semantic.tag_name.as_str(), "input" | "textarea")
         {
-            return Err(NativeEngineError::TargetNotActionable {
-                reason: "key press requires an input or textarea textbox".into(),
-            });
+            return Ok(Vec::new());
         }
         if semantic.disabled {
             return Err(NativeEngineError::DisabledTarget);
@@ -1262,45 +1368,126 @@ impl NativeDocument {
         }
         if !self.node(id).is_some_and(|node| node.state.focused) {
             return Err(NativeEngineError::TargetNotActionable {
-                reason: "key press target is not focused".into(),
+                reason: "key default target is not focused".into(),
             });
         }
+        self.initialize_selection_if_needed(id);
+        let (start, end, direction) = self
+            .selection_snapshot(id)
+            .ok_or(NativeEngineError::DetachedTarget)?;
+        let value = self.current_value(id).unwrap_or_default();
+        let characters = value.chars().collect::<Vec<_>>();
+        let length = characters.len();
+        let primary_modifier = modifiers & (2 | 4) != 0;
+        let shift = modifiers & 8 != 0;
+        let alt = modifiers & 1 != 0;
 
-        let current = self.current_value(id).unwrap_or_default();
-        let next = match key {
-            "Backspace" => {
-                let mut next = current.clone();
-                next.pop();
-                next
+        if primary_modifier && key.eq_ignore_ascii_case("a") {
+            self.set_selection_state(id, 0, length, "forward")?;
+            return Ok(Vec::new());
+        }
+        if primary_modifier || alt {
+            return Ok(Vec::new());
+        }
+
+        if matches!(key, "ArrowLeft" | "ArrowRight" | "Home" | "End") {
+            let current_focus = if direction == "backward" { start } else { end };
+            let focus = match key {
+                "ArrowLeft" => current_focus.saturating_sub(1),
+                "ArrowRight" => (current_focus + 1).min(length),
+                "Home" => 0,
+                "End" => length,
+                _ => unreachable!("matched edge key"),
+            };
+            if shift {
+                let anchor = if direction == "backward" { end } else { start };
+                let direction = if focus < anchor {
+                    "backward"
+                } else if focus > anchor {
+                    "forward"
+                } else {
+                    "none"
+                };
+                self.set_selection_state(id, anchor, focus, direction)?;
+            } else {
+                let caret = if start != end {
+                    if matches!(key, "ArrowLeft" | "Home") {
+                        start
+                    } else {
+                        end
+                    }
+                } else {
+                    focus
+                };
+                self.set_selection_state(id, caret, caret, "none")?;
             }
-            "Delete" => current.clone(),
-            _ if key.chars().count() == 1 => {
-                let mut next = current.clone();
-                next.push_str(key);
-                next
+            return Ok(Vec::new());
+        }
+
+        let (next_value, next_caret) = if key.chars().count() == 1 {
+            let mut next = Vec::with_capacity(length + 1);
+            next.extend_from_slice(&characters[..start]);
+            next.extend(key.chars());
+            next.extend_from_slice(&characters[end..]);
+            (next.into_iter().collect::<String>(), start + 1)
+        } else if key == "Backspace" {
+            let remove_start = if start != end {
+                start
+            } else {
+                start.saturating_sub(1)
+            };
+            let remove_end = if start != end { end } else { start };
+            if remove_start == remove_end {
+                self.set_selection_state(id, start, start, "none")?;
+                return Ok(Vec::new());
             }
-            _ => {
-                return Err(NativeEngineError::TargetNotActionable {
-                    reason: "native key press supports printable keys, Backspace, and Delete"
-                        .into(),
-                });
+            let mut next = Vec::with_capacity(length);
+            next.extend_from_slice(&characters[..remove_start]);
+            next.extend_from_slice(&characters[remove_end..]);
+            (next.into_iter().collect::<String>(), remove_start)
+        } else if key == "Delete" {
+            let remove_start = start;
+            let remove_end = if start != end {
+                end
+            } else {
+                (start + 1).min(length)
+            };
+            if remove_start == remove_end {
+                self.set_selection_state(id, start, start, "none")?;
+                return Ok(Vec::new());
             }
+            let mut next = Vec::with_capacity(length);
+            next.extend_from_slice(&characters[..remove_start]);
+            next.extend_from_slice(&characters[remove_end..]);
+            (next.into_iter().collect::<String>(), remove_start)
+        } else {
+            return Ok(Vec::new());
         };
-        if next.len() > MAX_LOCATOR_BYTES {
+        if next_value.len() > MAX_LOCATOR_BYTES {
             return Err(NativeEngineError::limit(
                 "native text value",
                 MAX_LOCATOR_BYTES,
-                next.len(),
+                next_value.len(),
             ));
-        }
-        if next == current {
-            return Ok(Vec::new());
         }
         self.node_mut(id)
             .ok_or(NativeEngineError::DetachedTarget)?
             .state
-            .value = Some(next);
+            .value = Some(next_value);
+        self.set_selection_state(id, next_caret, next_caret, "none")?;
         Ok(vec![(id, NativeEventKind::Input)])
+    }
+
+    /// Apply the bounded default edit for one key to a focused text control.
+    /// Selection, caret movement, composition, and form submission are kept
+    /// out of this slice; printable keys append at the current value end.
+    pub(crate) fn apply_key_press(
+        &mut self,
+        id: NativeNodeId,
+        key: &str,
+    ) -> Result<Vec<(NativeNodeId, NativeEventKind)>, NativeEngineError> {
+        validate_native_edit_key(key)?;
+        self.apply_key_default(id, key, 0)
     }
 
     /// Apply validated commands emitted by one JavaScript evaluation.
@@ -1413,6 +1600,15 @@ impl NativeDocument {
                 NativeScriptCommand::SetValue { node_index, value } => {
                     let id = NativeNodeId::from_parts(self.generation, *node_index);
                     self.apply_script_value(id, value)?;
+                }
+                NativeScriptCommand::SetSelection {
+                    node_index,
+                    start,
+                    end,
+                    direction,
+                } => {
+                    let id = NativeNodeId::from_parts(self.generation, *node_index);
+                    self.set_selection_state(id, *start, *end, direction)?;
                 }
                 NativeScriptCommand::SetChecked {
                     node_index,
@@ -1588,8 +1784,12 @@ impl NativeDocument {
                 reason: "script value requires an input or textarea".into(),
             });
         }
-        let node = self.node_mut(id).ok_or(NativeEngineError::DetachedTarget)?;
-        node.state.value = Some(value.to_owned());
+        {
+            let node = self.node_mut(id).ok_or(NativeEngineError::DetachedTarget)?;
+            node.state.value = Some(value.to_owned());
+        }
+        let end = value.chars().count();
+        self.set_selection_state(id, end, end, "none")?;
         Ok(())
     }
 
@@ -1885,6 +2085,7 @@ impl NativeDocument {
             node.state.focused = true;
             events.push((id, NativeEventKind::Focus));
         }
+        self.initialize_selection_if_needed(id);
         events
     }
 

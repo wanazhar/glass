@@ -2845,6 +2845,16 @@ proof adapters reject them explicitly. Selection/caret ranges, IME and
 composition, repeat, platform text services, rich observation, and native
 promotion remain issue #40 gates.
 
+The completed native-engine-browser-130 text-selection batch adds bounded
+caret and range state to focused `input` and `textarea` controls. The local
+and HTTP(S) content-process owners transfer the range through validated
+document snapshots, while the JavaScript host exposes selection offsets,
+direction, `setSelectionRange`, and `select`. Ctrl/Meta+A, range
+replacement/deletion, and left/right/Home/End movement with Shift extension
+now use the same cancelable keydown/default-action/keyup transaction.
+Grapheme/bidi caret geometry, clipboard, IME/composition, dead keys, repeat,
+and accessibility selection events remain issue #40 gates.
+
 The completed bounded Response-constructor follow-up is
 [native-engine-browser-120](../tasks/native-engine-browser-120.md). Fetched and
 constructed responses now share `Response` identity; `new Response`,

@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-129` locally. The versioned
+`native-engine-browser-130` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1179,6 +1179,16 @@ Chromium maps the new intents to its existing keyboard methods; other partial
 adapters reject them explicitly. Selection/caret state, IME/composition,
 repeat, text services, rich observation, automatic native selection, and
 production replacement of CDP remain issue #40 gates.
+
+The completed bounded native text-selection batch is
+[native-engine-browser-130](tasks/native-engine-browser-130.md). Focused
+`input` and `textarea` controls now retain bounded caret/range state through
+local and HTTP(S) content-process document commits. The JavaScript host
+exposes selection offsets, direction, `setSelectionRange`, and `select`; native
+shortcuts support Ctrl/Meta+A, range replacement/deletion, and bounded
+left/right/Home/End movement with Shift extension. Grapheme/bidi geometry,
+clipboard, IME/composition, repeat, rich observation, automatic native
+selection, and production replacement of CDP remain issue #40 gates.
 
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and

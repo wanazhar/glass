@@ -1234,8 +1234,52 @@ async fn native_local_keypress_edits_focused_text_and_honors_keydown_cancel() {
 
     engine
         .evaluate_async(
+            "(() => { const field = document.getElementById('name'); field.setSelectionRange(0, 1, 'forward'); return [field.selectionStart, field.selectionEnd, field.selectionDirection]; })()",
+        )
+        .await
+        .unwrap();
+    let replaced = engine
+        .action(NativeAction::Shortcut {
+            shortcut: "!".into(),
+        })
+        .unwrap();
+    assert!(replaced.accepted);
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({ value: document.getElementById('name').value, selectionStart: document.getElementById('name').selectionStart, selectionEnd: document.getElementById('name').selectionEnd })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({"value": "!b", "selectionStart": 1, "selectionEnd": 1})
+    );
+    engine
+        .evaluate_async(
             "(() => { const field = document.getElementById('name'); globalThis.shortcutEvents = []; field.addEventListener('keydown', event => globalThis.shortcutEvents.push([event.key, event.code, event.altKey, event.ctrlKey, event.metaKey, event.shiftKey])); field.addEventListener('keyup', event => globalThis.shortcutEvents.push([event.key, event.code, event.altKey, event.ctrlKey, event.metaKey, event.shiftKey])); globalThis.rawKeyEvents = []; field.addEventListener('keydown', event => globalThis.rawKeyEvents.push('down:' + event.key)); field.addEventListener('keyup', event => globalThis.rawKeyEvents.push('up:' + event.key)); })()",
         )
+        .await
+        .unwrap();
+    engine
+        .evaluate_async("document.getElementById('name').setSelectionRange(0, 2, 'forward')")
+        .await
+        .unwrap();
+    let extended = engine
+        .action(NativeAction::Shortcut {
+            shortcut: "Shift+ArrowLeft".into(),
+        })
+        .unwrap();
+    assert!(extended.accepted);
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({ selectionStart: document.getElementById('name').selectionStart, selectionEnd: document.getElementById('name').selectionEnd, selectionDirection: document.getElementById('name').selectionDirection })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({"selectionStart": 0, "selectionEnd": 1, "selectionDirection": "forward"})
+    );
+    engine
+        .evaluate_async("globalThis.shortcutEvents = []")
         .await
         .unwrap();
     let before_shortcut = engine.revision();
@@ -1249,17 +1293,36 @@ async fn native_local_keypress_edits_focused_text_and_honors_keydown_cancel() {
     assert_eq!(
         engine
             .evaluate_async(
-                "({ value: document.getElementById('name').value, events: globalThis.shortcutEvents })",
+                "({ value: document.getElementById('name').value, selectionStart: document.getElementById('name').selectionStart, selectionEnd: document.getElementById('name').selectionEnd, selectionDirection: document.getElementById('name').selectionDirection, events: globalThis.shortcutEvents })",
             )
             .await
             .unwrap(),
         serde_json::json!({
-            "value": "ab",
+            "value": "!b",
+            "selectionStart": 0,
+            "selectionEnd": 2,
+            "selectionDirection": "forward",
             "events": [
                 ["a", "KeyA", false, true, false, false],
                 ["a", "KeyA", false, true, false, false],
             ],
         })
+    );
+
+    let deleted = engine
+        .action(NativeAction::Shortcut {
+            shortcut: "Backspace".into(),
+        })
+        .unwrap();
+    assert!(deleted.accepted);
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({ value: document.getElementById('name').value, selectionStart: document.getElementById('name').selectionStart, selectionEnd: document.getElementById('name').selectionEnd })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({"value": "", "selectionStart": 0, "selectionEnd": 0})
     );
 
     let before_keydown = engine.revision();
@@ -2055,6 +2118,20 @@ async fn native_content_process_keyboard_actions_preserve_event_and_modifier_con
         .await
         .unwrap();
 
+    engine
+        .evaluate_async(
+            "(() => { const field = document.getElementById('name'); field.setSelectionRange(0, 1, 'forward'); return [field.selectionStart, field.selectionEnd, field.selectionDirection]; })()",
+        )
+        .await
+        .unwrap();
+    let replaced = engine
+        .action_async(NativeAction::Shortcut {
+            shortcut: "!".into(),
+        })
+        .await
+        .unwrap();
+    assert!(replaced.accepted);
+
     let before_shortcut = engine.revision();
     let shortcut = engine
         .action_async(NativeAction::Shortcut {
@@ -2064,6 +2141,15 @@ async fn native_content_process_keyboard_actions_preserve_event_and_modifier_con
         .unwrap();
     assert!(shortcut.accepted);
     assert_eq!(shortcut.revision, before_shortcut + 1);
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({ value: document.getElementById('name').value, selectionStart: document.getElementById('name').selectionStart, selectionEnd: document.getElementById('name').selectionEnd, selectionDirection: document.getElementById('name').selectionDirection })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({"value": "!b", "selectionStart": 0, "selectionEnd": 2, "selectionDirection": "forward"})
+    );
     let canceled = engine
         .action_async(NativeAction::Shortcut {
             shortcut: "x".into(),
@@ -2072,6 +2158,14 @@ async fn native_content_process_keyboard_actions_preserve_event_and_modifier_con
         .unwrap();
     assert!(canceled.accepted);
     assert_eq!(canceled.revision, before_shortcut + 2);
+    let deleted = engine
+        .action_async(NativeAction::Shortcut {
+            shortcut: "Backspace".into(),
+        })
+        .await
+        .unwrap();
+    assert!(deleted.accepted);
+    assert_eq!(deleted.revision, before_shortcut + 3);
     let keydown = engine
         .action_async(NativeAction::KeyDown {
             key: "Enter".into(),
@@ -2095,12 +2189,18 @@ async fn native_content_process_keyboard_actions_preserve_event_and_modifier_con
             .await
             .unwrap(),
         serde_json::json!({
-            "value": "ab",
+            "value": "",
             "events": [
+                ["down", "!", "!", false, false, false, false],
+                ["input", "!b"],
+                ["up", "!", "!", false, false, false, false],
                 ["down", "a", "KeyA", false, true, false, false],
                 ["up", "a", "KeyA", false, true, false, false],
                 ["down", "x", "KeyX", false, false, false, false],
                 ["up", "x", "KeyX", false, false, false, false],
+                ["down", "Backspace", "Backspace", false, false, false, false],
+                ["input", ""],
+                ["up", "Backspace", "Backspace", false, false, false, false],
                 ["down", "Enter", "Enter", false, false, false, false],
                 ["up", "Enter", "Enter", false, false, false, false],
             ],

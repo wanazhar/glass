@@ -3533,7 +3533,7 @@ fn mutate_key_shortcut_with_event_bridge(
     if apply_default && !should_apply_native_key_default(key, modifiers) {
         return Err(NativeEngineError::invalid(
             "content-process shortcut default",
-            "default editing is only valid for an unmodified printable, Backspace, or Delete key",
+            "default editing is only valid for Ctrl/Meta+A or a bounded text-editing key",
         ));
     }
     let node_id = NativeNodeId::from_parts(current.generation(), node_index);
@@ -3568,7 +3568,7 @@ fn mutate_key_shortcut_with_event_bridge(
     let mut events = vec![(node_id, NativeEventKind::KeyDown)];
     events.extend(next.apply_script_commands(&keydown.commands)?);
     if keydown_allowed && apply_default && next.focused_node() == node_id {
-        let input_events = next.apply_key_press(node_id, key)?;
+        let input_events = next.apply_key_default(node_id, key, modifiers)?;
         events.extend(input_events.clone());
         for (event_node, event_kind) in input_events {
             let source = host_event_script(&[(event_node.index(), event_kind)])?;
@@ -3622,8 +3622,16 @@ fn mutate_key_shortcut_with_event_bridge(
 }
 
 fn should_apply_native_key_default(key: &str, modifiers: i64) -> bool {
-    modifiers & (1 | 2 | 4) == 0
-        && (key.chars().count() == 1 || matches!(key, "Backspace" | "Delete"))
+    let primary_modifier = modifiers & (2 | 4) != 0;
+    if primary_modifier {
+        return key.eq_ignore_ascii_case("a") && modifiers & 1 == 0;
+    }
+    modifiers & 1 == 0
+        && (key.chars().count() == 1
+            || matches!(
+                key,
+                "Backspace" | "Delete" | "ArrowLeft" | "ArrowRight" | "Home" | "End"
+            ))
 }
 
 fn split_location_navigation(

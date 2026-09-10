@@ -1257,6 +1257,16 @@ keyboard methods, while partial adapters reject them explicitly. Persistent
 selection/caret ranges, IME/composition, repeat, text services, rich
 observation, and production replacement of CDP remain open.
 
+The completed native-engine-browser-130 batch adds bounded selection and caret
+state to focused text controls. Local and HTTP(S) content-process documents
+transfer range offsets and direction through the same validated wire; the
+JavaScript host exposes `selectionStart`, `selectionEnd`,
+`selectionDirection`, `setSelectionRange`, and `select`. Ctrl/Meta+A,
+range replacement/deletion, and left/right/Home/End movement with Shift
+extension now use the native default-action owner while keydown cancellation
+still prevents editing. Grapheme/bidi caret geometry, clipboard,
+IME/composition, repeat, and accessibility selection events remain open.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature
@@ -4278,8 +4288,8 @@ read-only textboxes, and unsupported action roles also fail before mutation.
 The grammar is a semantic locator contract, not a CSS selector implementation;
 general CSS selector coverage belongs to a later CSS/layout phase.
 
-The native backend accepts semantic `Click`, `Type`, focused-text `KeyPress`
-for printable keys plus `Backspace`/`Delete`, and bounded vertical
+The native backend accepts semantic `Click`, `Type`, focused-text `KeyPress`,
+`KeyDown`, `KeyUp`, and `Shortcut` actions plus bounded vertical
 `Scroll` actions plus the native `point=<x>,<y>` click-target extension. A
 point is checked against the
 viewport, resolved to the deepest visible layout box, and walked to the
@@ -4291,14 +4301,16 @@ supported buttons, links, checkboxes, radios, textboxes, and comboboxes;
 checkbox and radio state changes are retained in the document owner. Clicking
 an option in a single-select combobox selects it and clears its siblings. Type
 replaces private state for native `input` and `textarea` textboxes. KeyPress
-appends printable keys to the focused text control and removes the final
-Unicode scalar for Backspace; Delete is a bounded end-of-value no-op. A
+and unmodified editing shortcuts insert at the owned caret, replace selected
+ranges, and remove the adjacent Unicode scalar for Backspace/Delete; Ctrl/Meta+A
+and bounded arrow/Home/End defaults update the owned range. A
 bounded visibility gate recognizes `hidden`, `aria-hidden="true"`, and computed
 `display:none`/`visibility:hidden`; hidden subtrees are omitted from text,
 layout, and hit testing. Supported local links perform the bounded default
 navigation described above; unsupported links fail closed. No action performs
-selection, IME, keyboard navigation, or multi-select; form defaults are
-limited to the bounded GET submission path above.
+grapheme/bidi caret geometry, IME, clipboard, and platform keyboard services
+remain outside this bounded selection model; form defaults are limited to the
+bounded GET submission path above.
 Each accepted mutating action advances the document revision exactly once, so
 earlier references must be re-observed. The effects operation returns the current
 revision and changed bit; bounded native event metadata remains an internal

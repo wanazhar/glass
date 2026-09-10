@@ -132,7 +132,7 @@ impl NativeEngineBackend {
                 }
                 BrowserCapability::Action => {
                     vec![
-                        "bounded click/type/key-down/key-up/shortcut/key-press/clear/check/uncheck/select/scroll, single/multi-select, form defaults, root scrolling, and native point targets; selection, IME, and nested scrolling remain open".into(),
+                        "bounded click/type/key-down/key-up/shortcut/key-press/clear/check/uncheck/select/scroll, single/multi-select, form defaults, root scrolling, and native point targets; advanced selection geometry, IME, and nested scrolling remain open".into(),
                     ]
                 }
                 BrowserCapability::Effects => {

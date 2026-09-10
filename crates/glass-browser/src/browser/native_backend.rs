@@ -452,6 +452,70 @@ impl NativeEngineBackend {
         Ok(target)
     }
 
+    /// Click a native target and require the action to create exactly one
+    /// causally-owned page target. The returned popup remains parked and the
+    /// opener remains selected, matching the shared popup contract.
+    pub async fn click_expect_popup(
+        &self,
+        target: &str,
+    ) -> Result<(ActionResult, PageTargetInfo), BrowserBackendError> {
+        let mut engine = self.lock_engine(BackendOperation::Action)?;
+        let active_context_id = engine.config().context_id.clone();
+        let outcome = engine
+            .action_async(NativeAction::Click {
+                target: target.to_owned(),
+            })
+            .await
+            .map_err(native_error)?;
+        let popup_urls = engine.take_pending_popup_urls();
+        drop(engine);
+
+        if popup_urls.len() != 1 {
+            return Err(BrowserBackendError::UnsupportedOperation {
+                operation: "clickExpectPopup".into(),
+                reason: if popup_urls.is_empty() {
+                    "click did not create a new native page target".into()
+                } else {
+                    format!(
+                        "click created {} native page targets; exactly one is required",
+                        popup_urls.len()
+                    )
+                },
+            });
+        }
+        let mut created = self.materialize_pending_popups(popup_urls).await?;
+        let popup = created
+            .pop()
+            .expect("popup URL count was validated before materialization");
+        Ok((
+            ActionResult {
+                context_id: active_context_id,
+                revision: outcome.revision,
+                accepted: outcome.accepted,
+            },
+            popup,
+        ))
+    }
+
+    async fn materialize_pending_popups(
+        &self,
+        popup_urls: Vec<String>,
+    ) -> Result<Vec<PageTargetInfo>, BrowserBackendError> {
+        let mut created = Vec::with_capacity(popup_urls.len());
+        for url in popup_urls {
+            match self.create_target(&url).await {
+                Ok(target) => created.push(target),
+                Err(error) => {
+                    for target in created {
+                        let _ = self.close_target(&target.id).await;
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        Ok(created)
+    }
+
     /// Close one target and release its worker, storage lease, and document
     /// owner. Closing the selected target deliberately leaves no implicit
     /// selection, even when parked targets remain available.
@@ -841,6 +905,9 @@ impl BrowserBackend for NativeEngineBackend {
                         }
                     };
                     let outcome = engine.action_async(action).await.map_err(native_error)?;
+                    let popup_urls = engine.take_pending_popup_urls();
+                    drop(engine);
+                    self.materialize_pending_popups(popup_urls).await?;
                     Ok(BackendResponse::Action(ActionResult {
                         context_id: active_context_id.clone(),
                         revision: outcome.revision,
@@ -864,6 +931,9 @@ impl BrowserBackend for NativeEngineBackend {
                         .evaluate_async(request.source)
                         .await
                         .map_err(native_error)?;
+                    let popup_urls = engine.take_pending_popup_urls();
+                    drop(engine);
+                    self.materialize_pending_popups(popup_urls).await?;
                     Ok(BackendResponse::Script(ScriptResult { value }))
                 }
                 (BackendOperation::Capture, BackendRequest::Capture(request)) => {

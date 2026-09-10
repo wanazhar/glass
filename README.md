@@ -612,7 +612,10 @@ with explicit selection, opener linkage, parked-target retention, and
 all-target session cleanup. Native target sessions now also discover bounded
 nested `iframe`/`frame` trees, including `srcdoc`, and route normal browser
 operations through the explicitly selected live frame owner while retaining
-parked parent and sibling state. It is not yet a browser-parity
+parked parent and sibling state. Allowed local and external anchor clicks with
+`target="_blank"` also create initialized parked native popup targets while
+leaving the opener selected; popup targets are independently selectable and
+closable. It is not yet a browser-parity
 implementation or hostile-content security boundary. See the [native engine
 architecture](docs/architecture/native-engine.md).
 

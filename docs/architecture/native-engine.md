@@ -1429,8 +1429,20 @@ parked parents and siblings retain their state. Frame and target shutdown
 drain all owners. Native internal frames report `out_of_process=false` while
 external documents retain the existing sandboxed content worker boundary.
 CSP frame-source enforcement, frame lifecycle event parity, shared
-same-origin frame scripting, postMessage, popup creation, and complete
-browser topology remain open gates.
+same-origin frame scripting, postMessage, and complete browser topology remain
+open gates.
+
+The completed native-engine-browser-146 batch adds the first default-action
+popup owner. An allowed local or content-process anchor click with
+`target="_blank"` keeps the opener committed, queues a bounded popup intent,
+and materializes one initialized parked page target with opener linkage. The
+same owner path handles page-script `element.click()` activation; generic
+native action/script dispatch and the runtime, CLI, and MCP
+`clickExpectPopup` route all reach that target registry without CDP. Download
+attributes retain precedence over popup creation, and initialized popup state
+is independently selectable and closable. Named browsing contexts,
+`window.open`, popup permission/geometry, shared opener scripting, and complete
+browser topology remain issue #40 gates.
 
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third

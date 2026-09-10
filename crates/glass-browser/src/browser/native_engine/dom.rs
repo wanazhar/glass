@@ -2434,6 +2434,23 @@ impl NativeDocument {
             .then(|| node.attribute("download").unwrap_or(""))
     }
 
+    /// Return whether an anchor explicitly requests a fresh browsing context.
+    ///
+    /// Named browsing contexts are intentionally kept out of this bounded
+    /// topology projection until they have a stable public identity. The
+    /// reserved `_blank` target is the interoperable new-page contract used by
+    /// the native target owner today.
+    pub(crate) fn link_opens_new_target(&self, id: NativeNodeId) -> bool {
+        let Some(node) = self.node(id) else {
+            return false;
+        };
+        node.element_name() == Some("a")
+            && self.semantic_role(id) == Some("link")
+            && node
+                .attribute("target")
+                .is_some_and(|target| target.trim().eq_ignore_ascii_case("_blank"))
+    }
+
     pub(crate) fn form_submission_request(
         &self,
         id: NativeNodeId,

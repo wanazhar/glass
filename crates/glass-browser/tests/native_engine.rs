@@ -575,6 +575,165 @@ async fn native_runtime_session_owns_and_routes_child_frames() {
 }
 
 #[tokio::test]
+async fn native_runtime_opener_links_create_routable_popup_targets() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://popup-parent",
+            "<script>globalThis.ready = true;</script><title>Opener</title><a id='open' target='_blank' href='fixture://popup-child'>Open popup</a><p>opener stays here</p>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://popup-child",
+            "<title>Popup</title><p>popup content</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://popup-parent");
+    let session = BrowserRuntimeSession::connect_native(config).await.unwrap();
+
+    let action = session
+        .action(SemanticAction::Click {
+            target: "id=open".into(),
+        })
+        .await
+        .unwrap();
+    assert!(action.accepted);
+    assert_eq!(
+        session.evidence(EvidenceLevel::Compact).await.unwrap().url,
+        "fixture://popup-parent"
+    );
+    let targets = session.native_list_targets().await.unwrap();
+    assert_eq!(targets.len(), 2);
+    let popup = targets
+        .iter()
+        .find(|target| target.id == "native-target-1")
+        .unwrap();
+    assert!(!popup.active);
+    assert_eq!(popup.opener_id.as_deref(), Some("native-context"));
+    assert_eq!(popup.url, "fixture://popup-child");
+    assert_eq!(popup.title, "Popup");
+
+    session.native_select_target(&popup.id).await.unwrap();
+    let popup_evidence = session.evidence(EvidenceLevel::Compact).await.unwrap();
+    assert_eq!(popup_evidence.title, "Popup");
+    assert_eq!(popup_evidence.visible_text, "popup content");
+
+    session
+        .native_select_target("native-context")
+        .await
+        .unwrap();
+    let opener_evidence = session.evidence(EvidenceLevel::Compact).await.unwrap();
+    assert_eq!(opener_evidence.title, "Opener");
+    assert_eq!(opener_evidence.visible_text, "Open popup opener stays here");
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_click_expect_popup_returns_causal_target_evidence() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://popup-contract",
+            "<title>Opener</title><a id='open' target='_blank' href='fixture://popup-contract-child'>Open popup</a>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://popup-contract-child",
+            "<title>Popup contract</title><p>ready</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://popup-contract");
+    let session = BrowserRuntimeSession::connect_native(config).await.unwrap();
+
+    let before = session.evidence(EvidenceLevel::Compact).await.unwrap();
+    let outcome = session
+        .native_click_expect_popup("id=open", Some(before.revision))
+        .await
+        .unwrap();
+    assert_eq!(
+        outcome.action,
+        glass_browser::browser::session::ActionKind::ClickExpectPopup
+    );
+    assert_eq!(outcome.target_id, "native-context");
+    assert_eq!(outcome.frame_id, "native-context:main");
+    assert_eq!(outcome.opener_id, "native-context");
+    assert_eq!(outcome.popup_id, "native-target-1");
+    assert!(outcome.causally_verified_popup);
+    assert!(outcome.evidence.trusted_click_witness);
+    assert!(outcome.evidence.attached);
+    assert_eq!(outcome.evidence.ready_state, "complete");
+    assert!(!session.native_list_targets().await.unwrap()[1].active);
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_page_script_blank_target_link_creates_popup_target() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://script-popup-parent",
+            "<title>Script opener</title><a id='open' target='_blank' href='fixture://script-popup-child'>Open popup</a>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://script-popup-child",
+            "<title>Script popup</title><p>script target</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://script-popup-parent");
+    let session = BrowserRuntimeSession::connect_native(config).await.unwrap();
+
+    assert_eq!(
+        session
+            .script("document.getElementById('open').click(); 'done'")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("done")
+    );
+    let targets = session.native_list_targets().await.unwrap();
+    assert_eq!(targets.len(), 2);
+    assert_eq!(targets[1].title, "Script popup");
+    assert_eq!(
+        session
+            .evidence(EvidenceLevel::Compact)
+            .await
+            .unwrap()
+            .title,
+        "Script opener"
+    );
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_local_blank_link_honors_click_cancellation() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://cancel-popup-parent",
+            "<script>document.addEventListener('click', event => event.preventDefault());</script><title>Opener</title><a id='open' target='_blank' href='fixture://cancel-popup-child'>Open popup</a>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://cancel-popup-child",
+            "<title>Should not open</title><p>blocked</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://cancel-popup-parent");
+    let session = BrowserRuntimeSession::connect_native(config).await.unwrap();
+
+    let action = session
+        .action(SemanticAction::Click {
+            target: "id=open".into(),
+        })
+        .await
+        .unwrap();
+    assert!(action.accepted);
+    assert_eq!(session.native_list_targets().await.unwrap().len(), 1);
+    assert_eq!(
+        session.evidence(EvidenceLevel::Compact).await.unwrap().url,
+        "fixture://cancel-popup-parent"
+    );
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_async_history_traversal_uses_the_runtime_owner() {
     let config = NativeEngineConfig::default()
         .with_fixture("fixture://history-async", "<p>First</p>")

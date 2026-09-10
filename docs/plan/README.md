@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-145` locally. The versioned
+`native-engine-browser-146` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1341,8 +1341,19 @@ document/realm/history state, so normal navigation, evidence, script, action,
 storage, prompt, download, wait, and capture routes operate on the selected
 frame; parent and sibling state remains parked and recoverable. Frame close
 and session close drain every child owner. CSP frame-source enforcement,
-frame event/load parity, shared frame scripting, popup creation, and complete
-browser topology remain open issue #40 gates.
+frame event/load parity, shared frame scripting, and complete browser topology
+remain open issue #40 gates.
+
+The completed native-engine-browser-146 batch is
+[native-engine-browser-146](tasks/native-engine-browser-146.md). Allowed
+activation of an anchor with `target="_blank"` now keeps the opener committed,
+creates an initialized parked native page target with opener linkage, and
+routes through the same behavior for local documents, external content-worker
+documents, and page-script `element.click()`. Runtime, CLI, and MCP expose
+revision-safe `clickExpectPopup` evidence, while generic native actions and
+scripts materialize the same target owner without CDP. Named browsing
+contexts, `window.open`, popup permissions/geometry, shared opener scripting,
+and complete browser topology remain issue #40 gates.
 
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and

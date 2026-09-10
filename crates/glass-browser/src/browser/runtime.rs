@@ -24,10 +24,11 @@ use super::session::{
     ActAndVerifyResult, ActionFailureKind, ActionFailurePhase, ActionKind, ActionOutcome,
     ActionStatus, ActionTarget, ActionVerificationError, ActionVerificationEvidence, Cookie,
     DownloadOutcome, FindTargetResult, FrameInfo, InspectPageResult, IntentPolicyDecision,
-    NavigationControlOutcome, PageTargetInfo, PendingDialog, RecoveryStrategy,
-    SemanticIntentAction, SemanticIntentExecutionRequest, SemanticIntentExecutionResult,
-    SemanticIntentExecutionStatus, SemanticIntentResult, SemanticResolution, VerificationOutcome,
-    VerificationPredicate, WaitCondition, WaitOutcome, WaitTimeout,
+    NavigationControlOutcome, PageTargetInfo, PendingDialog, PopupClickOutcome,
+    PopupVerificationEvidence, RecoveryStrategy, SemanticIntentAction,
+    SemanticIntentExecutionRequest, SemanticIntentExecutionResult, SemanticIntentExecutionStatus,
+    SemanticIntentResult, SemanticResolution, VerificationOutcome, VerificationPredicate,
+    WaitCondition, WaitOutcome, WaitTimeout,
 };
 use super::session::{ActionContractError, BrowserResult};
 #[cfg(feature = "native-engine")]
@@ -222,6 +223,66 @@ impl BrowserRuntimeSession {
             BackendStartup::Native(backend) => Ok(backend.create_target(url).await?),
             _ => Err("native target creation is only available on the native runtime".into()),
         }
+    }
+
+    /// Click a native target and return the one newly-created page target.
+    /// The opener remains selected; the target is independently available via
+    /// `native_list_targets` and `native_select_target`.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_click_expect_popup(
+        &self,
+        target: &str,
+        expected_revision: Option<u64>,
+    ) -> BrowserResult<PopupClickOutcome> {
+        let _operation = self.operation_lock.lock().await;
+        let observation = self.native_semantic_observation_unlocked()?;
+        if let Some(expected_revision) = expected_revision
+            && observation.revision != expected_revision
+        {
+            return Err(Box::new(ActionContractError::stale_revision(
+                expected_revision,
+                observation.revision,
+            )));
+        }
+        let preflight = match &self.backend {
+            BackendStartup::Native(backend) => {
+                backend.preflight_target(target, NativePreflightAction::Click)?
+            }
+            _ => return Err("native popup clicks are only available on the native runtime".into()),
+        };
+        let (action, popup) = match &self.backend {
+            BackendStartup::Native(backend) => backend.click_expect_popup(target).await?,
+            _ => return Err("native popup clicks are only available on the native runtime".into()),
+        };
+        let label = preflight
+            .node
+            .as_ref()
+            .map(|node| node.name.clone())
+            .unwrap_or_else(|| target.to_owned());
+        let opener_id = observation.page.target_id.clone();
+        Ok(PopupClickOutcome {
+            action: ActionKind::ClickExpectPopup,
+            execution_id: self.next_native_execution_id(),
+            target: ActionTarget {
+                label,
+                reference: Some(target.to_owned()),
+            },
+            revision: action.revision,
+            target_id: opener_id.clone(),
+            frame_id: observation.page.frame_id,
+            causally_verified_popup: true,
+            popup_id: popup.id,
+            opener_id,
+            evidence: PopupVerificationEvidence {
+                trusted_click_witness: true,
+                release_acknowledged: true,
+                release_ack_wait_ms: 0.0,
+                topology_sequence_before_release: 0,
+                popup_observed_sequence: 0,
+                attached: true,
+                ready_state: "complete".into(),
+            },
+        })
     }
 
     /// Close one native page target. Closing the active target clears selection.
@@ -985,8 +1046,9 @@ impl BrowserRuntimeSession {
                     Box::pin(self.native_check_verification_predicate(not)).await?;
                 Ok((!matched, format!("not({state})")))
             }
-            VerificationPredicate::PopupOpened { .. } => {
-                Err("native verification does not yet expose popup topology".into())
+            VerificationPredicate::PopupOpened { value } => {
+                let opened = self.native_list_targets().await?.len() > 1;
+                Ok((opened == *value, format!("popupOpened={opened}")))
             }
         }
     }

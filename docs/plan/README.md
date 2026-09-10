@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-078` locally. The versioned
+`native-engine-browser-079` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -765,7 +765,23 @@ auto-increment keys, and bounded CRUD. The validated snapshot is persisted in
 the existing profile and returned through the existing worker protocol; the
 worker remains a profile-file consumer only through IPC. Indexes, cursors, key
 ranges, non-JSON structured-clone values, full transaction/version-change
-coordination, and cross-process IndexedDB journal/delta merging remain open.
+coordination, and cross-process IndexedDB journal/delta merging remained open
+at that checkpoint.
+
+The completed cross-process IndexedDB convergence slice is
+[native-engine-browser-079](tasks/native-engine-browser-079.md). Local realms
+and sandboxed content workers now publish bounded IndexedDB deltas beside
+their Web Storage journal records. Live receivers apply those deltas to the
+parent-owned origin state and deliver a bounded current-origin replacement to
+the persistent realm; profile writes re-read the latest snapshot and merge
+the same deltas under `P.lock`. The worker still never opens profile, journal,
+or lease files, and full snapshots remain reserved for bounded runtime state
+sync and reader-lease recovery. Disjoint live database writers are covered on
+both local and content-worker paths. Same-database structural conflicts use
+journal order as the explicit last-writer rule; indexes, cursors, key ranges,
+non-JSON structured-clone values, full transaction/version-change
+coordination, quota APIs, and the remaining browser-complete gates remain
+open.
 
 Full cookie policy/Web IDL parity and the remaining browser-complete gates
 remain open.

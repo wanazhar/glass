@@ -832,10 +832,26 @@ the full IndexedDB snapshot at 64 KiB. The parent owns profile persistence;
 the worker receives and returns validated snapshots through the existing IPC
 contract and never opens profile files. Indexes, cursors, key ranges, binary
 structured-clone values, full version-change/transaction scheduling, quota
-APIs, and independent cross-process IndexedDB journal/delta merging remain
-open. Page-setup scripts suppress the timer pump until initial publication,
-and the engine resets the deterministic timer clock at the page-operation
-boundary.
+APIs, and independent cross-process IndexedDB journal/delta merging remained
+open at that checkpoint. Page-setup scripts suppress the timer pump until
+initial publication, and the engine resets the deterministic timer clock at
+the page-operation boundary.
+
+The completed native-engine-browser-079 batch carries bounded IndexedDB
+changes beside the profile-adjacent Web Storage journal. Local realms and
+sandboxed content workers compute validated origin deltas; the parent applies
+them to its full state, merges them into the latest locked profile snapshot,
+and appends them in journal order. Live receivers apply IndexedDB-only records
+even when no Web Storage event is present, then replace the current origin in
+the persistent local realm or content worker through the existing bounded
+state-sync IPC. Worker responses carry deltas rather than full snapshots, and
+the worker remains unable to open profile, journal, lock, or lease files.
+Reader-lease recovery still reloads the authoritative full profile. Disjoint
+live database writers are covered for both local realms and content workers;
+same-database structural conflicts retain the explicit journal-order
+last-writer rule. Indexes, cursors, key ranges, non-JSON structured-clone
+values, full transaction/version-change coordination, quota APIs, and the
+remaining browser-complete gates remain open.
 
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third

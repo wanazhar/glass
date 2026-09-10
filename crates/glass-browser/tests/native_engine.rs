@@ -28636,6 +28636,83 @@ async fn native_content_process_indexed_db_round_trips_through_worker_ipc() {
 }
 
 #[tokio::test]
+async fn native_content_process_indexed_db_journal_merges_live_workers() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let profile_path = std::env::temp_dir().join(format!(
+        "glass-native-indexed-db-{}-content-journal.json",
+        std::process::id()
+    ));
+    let observer_path = profile_path
+        .parent()
+        .unwrap()
+        .join(".")
+        .join(profile_path.file_name().unwrap());
+    let lock_path = profile_path.with_extension("lock");
+    let events_path = profile_path.with_extension("events");
+    let readers_path = profile_path.with_extension("readers");
+    for path in [
+        profile_path.clone(),
+        lock_path.clone(),
+        events_path.clone(),
+        readers_path.clone(),
+    ] {
+        let _ = fs::remove_file(path);
+    }
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+            let body = "<p>Content IndexedDB journal</p>";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+    let url = format!("http://{address}/page");
+    let config = NativeEngineConfig::default()
+        .with_storage_path(profile_path.clone())
+        .with_initial_url(url.clone());
+    let mut first = NativeEngine::new(config.clone()).unwrap();
+    let mut second = NativeEngine::new(config.with_storage_path(observer_path)).unwrap();
+    first.initialize_async().await.unwrap();
+    second.initialize_async().await.unwrap();
+
+    first
+        .evaluate_async(
+            "await (async () => { const request = indexedDB.open('alpha', 1); request.onupgradeneeded = event => event.target.result.createObjectStore('records'); const db = await new Promise((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); }); const write = db.transaction('records', 'readwrite').objectStore('records').put({ owner: 'first' }, 'one'); return await new Promise((resolve, reject) => { write.onsuccess = () => resolve(true); write.onerror = () => reject(write.error); }); })()",
+        )
+        .await
+        .unwrap();
+    second
+        .evaluate_async(
+            "await (async () => { const request = indexedDB.open('beta', 1); request.onupgradeneeded = event => event.target.result.createObjectStore('records'); const db = await new Promise((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); }); const write = db.transaction('records', 'readwrite').objectStore('records').put({ owner: 'second' }, 'two'); return await new Promise((resolve, reject) => { write.onsuccess = () => resolve(true); write.onerror = () => reject(write.error); }); })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        first
+            .evaluate_async(
+                "await (async () => { const request = indexedDB.open('beta'); const db = await new Promise((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); }); const read = db.transaction('records', 'readonly').objectStore('records').get('two'); return await new Promise((resolve, reject) => { read.onsuccess = () => resolve(read.result); read.onerror = () => reject(read.error); }); })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({"owner": "second"})
+    );
+
+    second.close_async().await.unwrap();
+    first.close_async().await.unwrap();
+    server.await.unwrap();
+    for path in [profile_path, lock_path, events_path, readers_path] {
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[tokio::test]
 async fn native_content_process_synchronizes_document_cookie_with_http_session() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -28910,6 +28987,56 @@ async fn native_local_indexed_db_supports_upgrade_crud_and_profile_restart() {
         );
         engine.close().unwrap();
     }
+    for suffix in ["", "lock", "events", "readers"] {
+        let path = if suffix.is_empty() {
+            profile_path.clone()
+        } else {
+            profile_path.with_extension(suffix)
+        };
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[tokio::test]
+async fn native_local_indexed_db_journal_merges_live_origin_writers() {
+    let profile_path = std::env::temp_dir().join(format!(
+        "glass-native-indexed-db-{}-journal.json",
+        std::process::id()
+    ));
+    let _ = fs::remove_file(&profile_path);
+    let config = NativeEngineConfig::default()
+        .with_storage_path(profile_path.clone())
+        .with_fixture("fixture://indexed-db-journal", "<p>IndexedDB journal</p>")
+        .unwrap()
+        .with_initial_url("fixture://indexed-db-journal");
+    let mut first = NativeEngine::new(config.clone()).unwrap();
+    let mut second = NativeEngine::new(config).unwrap();
+    first.initialize().unwrap();
+    second.initialize().unwrap();
+
+    first
+        .evaluate_async(
+            "await (async () => { const request = indexedDB.open('alpha', 1); request.onupgradeneeded = event => event.target.result.createObjectStore('records'); const db = await new Promise((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); }); const write = db.transaction('records', 'readwrite').objectStore('records').put({ owner: 'first' }, 'one'); return await new Promise((resolve, reject) => { write.onsuccess = () => resolve(true); write.onerror = () => reject(write.error); }); })()",
+        )
+        .await
+        .unwrap();
+    second
+        .evaluate_async(
+            "await (async () => { const request = indexedDB.open('beta', 1); request.onupgradeneeded = event => event.target.result.createObjectStore('records'); const db = await new Promise((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); }); const write = db.transaction('records', 'readwrite').objectStore('records').put({ owner: 'second' }, 'two'); return await new Promise((resolve, reject) => { write.onsuccess = () => resolve(true); write.onerror = () => reject(write.error); }); })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        first
+            .evaluate_async(
+                "await (async () => { const request = indexedDB.open('beta'); const db = await new Promise((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); }); const read = db.transaction('records', 'readonly').objectStore('records').get('two'); return await new Promise((resolve, reject) => { read.onsuccess = () => resolve(read.result); read.onerror = () => reject(read.error); }); })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({"owner": "second"})
+    );
+    first.close().unwrap();
+    second.close().unwrap();
     for suffix in ["", "lock", "events", "readers"] {
         let path = if suffix.is_empty() {
             profile_path.clone()

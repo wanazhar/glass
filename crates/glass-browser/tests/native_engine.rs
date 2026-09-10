@@ -29111,6 +29111,61 @@ async fn native_local_indexed_db_versionchange_unblocks_closed_connection() {
 }
 
 #[tokio::test]
+async fn native_local_indexed_db_delete_blocks_open_connection() {
+    let profile_path = std::env::temp_dir().join(format!(
+        "glass-native-indexed-db-{}-delete.json",
+        std::process::id()
+    ));
+    let _ = fs::remove_file(&profile_path);
+    let config = NativeEngineConfig::default()
+        .with_storage_path(profile_path.clone())
+        .with_fixture("fixture://indexed-db-delete", "<p>IndexedDB deletion</p>")
+        .unwrap()
+        .with_initial_url("fixture://indexed-db-delete");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize().unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await (async () => { const request = indexedDB.open('discarded', 1); request.onupgradeneeded = event => event.target.result.createObjectStore('records'); const db = await new Promise((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); }); globalThis.discardedConnection = db; return { version: db.version, stores: db.objectStoreNames }; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({"version": 1, "stores": ["records"]})
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await new Promise((resolve, reject) => { const events = []; discardedConnection.onversionchange = event => events.push(`versionchange:${event.oldVersion}:${event.newVersion}`); const request = indexedDB.deleteDatabase('discarded'); request.onblocked = () => { events.push('blocked'); discardedConnection.close(); }; request.onsuccess = async () => resolve({ events, databases: await indexedDB.databases() }); request.onerror = () => reject(request.error); })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "events": ["versionchange:1:null", "blocked"],
+            "databases": [],
+        })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await (async () => { const request = indexedDB.open('discarded'); request.onupgradeneeded = event => event.target.result.createObjectStore('fresh'); const db = await new Promise((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); }); return { version: db.version, stores: db.objectStoreNames }; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({"version": 1, "stores": ["fresh"]})
+    );
+    engine.close().unwrap();
+    for suffix in ["", "lock", "events", "readers"] {
+        let path = if suffix.is_empty() {
+            profile_path.clone()
+        } else {
+            profile_path.with_extension(suffix)
+        };
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[tokio::test]
 async fn native_local_indexed_db_journal_merges_live_origin_writers() {
     let profile_path = std::env::temp_dir().join(format!(
         "glass-native-indexed-db-{}-journal.json",

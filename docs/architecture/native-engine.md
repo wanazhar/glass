@@ -1464,8 +1464,20 @@ intents for `_blank` and named targets. Local and HTTP(S) documents transfer
 those intents through version-5 content-worker IPC; the parent-owned target
 registry initializes parked targets, preserves opener selection, reuses named
 targets, resets their frame state on navigation, and bounds nested popup
-cascades. The returned WindowProxy-shaped value is deliberately bounded until
-cross-context scripting and `postMessage` have their own ownership contract.
+cascades. The returned WindowProxy-shaped value is bounded until direct
+cross-context property scripting has its own ownership contract.
+
+The completed native-engine-browser-149 batch adds parent-owned cross-context
+messaging. Local and HTTP(S) realms expose bounded WindowProxy
+`postMessage()` and message-event delivery; protocol-6 content-worker effects
+are decoded without trusting worker-supplied source metadata. The target
+registry resolves private handles, named targets, and direct context IDs,
+applies explicit `targetOrigin` matching, and routes `event.source` replies
+through the same queue while preserving the selected opener. Payloads are
+bounded JSON clones, so transferables and arbitrary cross-origin Window
+property access remain outside this slice. `window.opener`, mutable
+`window.name`, popup permission/geometry, frame lifecycle/shared scripting, and
+complete browser topology remain issue #40 gates.
 
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third

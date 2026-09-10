@@ -3044,8 +3044,20 @@ effects from page load, direct scripts, event/lifecycle dispatch, fetch
 continuations, and nested target loads. Named targets are initialized once,
 reused on later calls, remain independently parked, and reset their frame
 registry when navigated; the opener remains selected. Cross-context
-WindowProxy scripting, `postMessage`, popup permissions/geometry, and full
-browser topology remain issue #40 gates.
+WindowProxy property scripting, popup permissions/geometry, and full browser
+topology remain issue #40 gates.
+
+The completed native-engine-browser-149 slice adds the first usable
+cross-context messaging contract. A native WindowProxy can queue bounded JSON
+`postMessage` effects; the parent registry resolves private handles, named
+targets, and direct context IDs, applies `targetOrigin` matching, and dispatches
+message events with cloned data, serialized origin, and a source proxy. Replies
+through `event.source` work for both local pages and HTTP(S) pages crossing the
+protocol-6 content-worker boundary. Source metadata is assigned by the trusted
+parent rather than accepted from worker output, and nested effects remain
+bounded. Transferables, arbitrary cross-origin Window property scripting,
+`window.opener`, mutable `window.name`, popup permission/geometry, frame
+lifecycle/shared scripting, and complete browser parity remain open.
 
 The completed native-engine-browser-133 batch extends the native target seam
 with a side-effect-free preflight result. The engine resolves the current

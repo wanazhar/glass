@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-148` locally. The versioned
+`native-engine-browser-149` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1376,8 +1376,20 @@ reuse the same target on later calls. Popup intents are transferred through
 version-5 content-worker IPC, including page-load, direct-script, event,
 lifecycle, fetch-continuation, and nested-target paths; bounded popup cascades
 are materialized iteratively while the opener remains selected. Cross-context
-WindowProxy scripting, `postMessage`, popup permission policy, and geometry
-remain later issue #40 gates.
+WindowProxy property scripting, popup permission policy, and geometry remain
+later issue #40 gates.
+
+The completed native-engine-browser-149 batch is
+[native-engine-browser-149](tasks/native-engine-browser-149.md). Native
+WindowProxy handles now carry bounded `postMessage` effects across local and
+HTTP(S) page realms, including the content-worker boundary. The parent target
+registry resolves private handles, named targets, and direct context IDs;
+delivered events expose cloned data, serialized origin, a source proxy, and
+bounded `targetOrigin` filtering. Replies through `event.source`, page-load and
+script effects, protocol-6 transfer, and nested-effect draining all use the
+same native owner without CDP. Direct cross-context property scripting,
+`window.opener`/mutable `window.name`, popup permission policy and geometry,
+frame lifecycle/scripting, and complete browser parity remain issue #40 gates.
 
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and

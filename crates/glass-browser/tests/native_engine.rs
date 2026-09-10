@@ -862,6 +862,120 @@ async fn native_http_window_open_crosses_content_worker_and_reuses_name() {
 }
 
 #[tokio::test]
+async fn native_post_message_round_trip_uses_window_proxy_and_origin_filter() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://message-parent",
+            "<title>Message parent</title><script>addEventListener('message', event => { globalThis.reply = event.data.reply; }); globalThis.popup = window.open('fixture://message-child', 'message-child'); globalThis.popup.postMessage({ kind: 'greeting', count: 2 }, '*');</script><p>parent</p>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://message-child",
+            "<script>addEventListener('message', event => { globalThis.received = { kind: event.data.kind, count: event.data.count, origin: event.origin, hasSource: Boolean(event.source) }; event.source.postMessage({ reply: event.data.kind }, '*'); });</script><title>Message child</title><p>child</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://message-parent");
+    let session = BrowserRuntimeSession::connect_native(config).await.unwrap();
+
+    let targets = session.native_list_targets().await.unwrap();
+    assert_eq!(targets.len(), 2);
+    let child = targets.iter().find(|target| !target.active).unwrap();
+    session.native_select_target(&child.id).await.unwrap();
+    let child_message = session.script("globalThis.received").await.unwrap();
+    assert_eq!(
+        child_message.value,
+        serde_json::json!({
+            "kind": "greeting",
+            "count": 2,
+            "origin": "null",
+            "hasSource": true,
+        })
+    );
+
+    session
+        .native_select_target("native-context")
+        .await
+        .unwrap();
+    session
+        .script("popup.postMessage({ kind: 'blocked' }, 'https://blocked.test'); popup.postMessage({ kind: 'allowed' }, '*'); true")
+        .await
+        .unwrap();
+    session.native_select_target(&child.id).await.unwrap();
+    assert_eq!(
+        session.script("globalThis.received").await.unwrap().value,
+        serde_json::json!({
+            "kind": "allowed",
+            "origin": "null",
+            "hasSource": true,
+        })
+    );
+    session
+        .native_select_target("native-context")
+        .await
+        .unwrap();
+    let parent_reply = session.script("globalThis.reply || null").await.unwrap();
+    assert_eq!(parent_reply.value, serde_json::json!("allowed"));
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_http_post_message_crosses_content_worker_and_replies() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap();
+            let body = match path {
+                "/message-parent" => {
+                    "<title>HTTP message parent</title><script>addEventListener('message', event => { globalThis.reply = event.data.reply; }); const child = window.open('/message-child', 'message-child'); child.postMessage({ kind: 'worker-greeting' }, '*');</script><p>parent</p>"
+                }
+                "/message-child" => {
+                    "<script>addEventListener('message', event => { globalThis.received = [event.data.kind, event.origin, Boolean(event.source)]; event.source.postMessage({ reply: event.data.kind }, '*'); });</script><title>HTTP message child</title><p>child</p>"
+                }
+                other => panic!("unexpected postMessage request path: {other}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/message-parent")),
+    )
+    .await
+    .unwrap();
+    let targets = session.native_list_targets().await.unwrap();
+    assert_eq!(targets.len(), 2);
+    let child = targets.iter().find(|target| !target.active).unwrap();
+    session.native_select_target(&child.id).await.unwrap();
+    assert_eq!(
+        session.script("globalThis.received").await.unwrap().value,
+        serde_json::json!(["worker-greeting", format!("http://{address}"), true])
+    );
+    session
+        .native_select_target("native-context")
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("globalThis.reply || null")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("worker-greeting")
+    );
+
+    session.close().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_blank_link_honors_click_cancellation() {
     let config = NativeEngineConfig::default()
         .with_fixture(

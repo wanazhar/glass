@@ -5199,16 +5199,35 @@ fn document_bootstrap(
       pushCommand({{ kind: "fetch", request_id: requestId, href: input, credentials, method, body, content_type: contentType }});
     }});
   }};
+  const responseHeaders = (contentType) => {{
+    const entries = contentType === null || contentType === undefined
+      ? []
+      : [["content-type", String(contentType)]];
+    const iterator = values => values[Symbol.iterator]();
+    const headers = {{
+      get(name) {{
+        const key = String(name).toLowerCase();
+        const entry = entries.find(candidate => candidate[0] === key);
+        return entry ? entry[1] : null;
+      }},
+      has(name) {{ return this.get(name) !== null; }},
+      entries() {{ return iterator(entries.map(entry => [entry[0], entry[1]])); }},
+      keys() {{ return iterator(entries.map(entry => entry[0])); }},
+      values() {{ return iterator(entries.map(entry => entry[1])); }},
+      forEach(callback, thisArg) {{
+        if (typeof callback !== "function") throw new TypeError("native response header callback must be callable");
+        entries.slice().forEach(entry => callback.call(thisArg, entry[1], entry[0], headers));
+      }},
+      [Symbol.iterator]() {{ return this.entries(); }},
+    }};
+    return Object.freeze(headers);
+  }};
   const responseBodyBlob = (payload) => new Blob([payload.body], {{ type: payload.contentType || "" }});
   const responseFromFetch = (payload) => Object.freeze({{
     ok: payload.status >= 200 && payload.status < 300,
     status: payload.status,
     url: payload.url,
-    headers: Object.freeze({{
-      get(name) {{
-        return String(name).toLowerCase() === "content-type" ? payload.contentType : null;
-      }}
-    }}),
+    headers: responseHeaders(payload.contentType),
     text() {{ return Promise.resolve(payload.body); }},
     json() {{ return Promise.resolve(JSON.parse(payload.body)); }},
     blob() {{ return Promise.resolve(responseBodyBlob(payload)); }},

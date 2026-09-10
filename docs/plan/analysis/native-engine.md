@@ -2578,6 +2578,13 @@ results through `blob()`, `arrayBuffer()`, and `bytes()` while preserving
 independent text/json reads. Streaming and byte-preserving non-UTF-8 response
 transport remain open.
 
+The completed bounded fetch response-headers follow-up is
+[native-engine-browser-095](../tasks/native-engine-browser-095.md). The
+response now exposes a read-only normalized content-type snapshot through
+case-insensitive lookup, `has`, `get`, bounded iterators, and `forEach`.
+Multiple/raw headers, request-header dictionaries, trailers, mutation, and
+full Headers/Web IDL parity remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

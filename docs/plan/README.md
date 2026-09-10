@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-094` locally. The versioned
+`native-engine-browser-095` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -906,6 +906,13 @@ responses now expose fresh text-backed `Blob`, UTF-8 `ArrayBuffer`, and
 `Uint8Array` results through `blob()`, `arrayBuffer()`, and `bytes()` while
 retaining independent `text()`/`json()` reads. Streaming response bodies and
 byte-preserving non-UTF-8 response parity remain open.
+
+The completed bounded fetch response-headers slice is
+[native-engine-browser-095](tasks/native-engine-browser-095.md). `Response.headers`
+now offers read-only case-insensitive content-type lookup plus bounded
+`get`/`has`/iterator/`forEach` snapshots over the transferred header. Multiple
+headers, request-header dictionaries, trailers, and full Headers/Web IDL
+parity remain open.
 
 Full cookie policy/Web IDL parity and the remaining browser-complete gates
 remain open.

@@ -1227,6 +1227,16 @@ loops, and malformed or multiple handoffs fail closed. Outgoing
 `beforeunload`/`pagehide`/`unload`, `hashchange`, nested contexts, complete
 Location/Web IDL descriptors, and complete URL parsing remain open.
 
+The completed native-engine-browser-127 batch bridges the engine-owned
+inspection and targeting owners into the public native session and one-shot
+CLI. `css=` locators reuse the bounded stylesheet selector parser for compound
+and descendant matching, with unique-target enforcement before mutation.
+Native sessions now expose semantic-node JSON data and logical PNG capture;
+the CLI maps native `evaluate`, `click-at`, `key`, `scroll`, `dom`, and PNG
+`screenshot` commands without creating a CDP session. Rich form-value and
+semantic-region observation, revision guards, full selector/Web IDL parity,
+and default/native production promotion remain subsequent issue #40 gates.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature

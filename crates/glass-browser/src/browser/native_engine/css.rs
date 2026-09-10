@@ -8820,6 +8820,22 @@ fn parse_overflow_declaration(value: &str) -> Option<LocalCascadeDeclaration<Ove
     parse_local_reset_cascade_declaration(value, parse_overflow)
 }
 
+pub(crate) fn selector_matches_in_document(
+    document: &NativeDocument,
+    source: &str,
+) -> Result<Vec<NativeNodeId>, NativeEngineError> {
+    let selector = parse_selector(source).ok_or_else(|| {
+        NativeEngineError::invalid(
+            "CSS action locator",
+            "selector is malformed or outside the bounded native selector grammar",
+        )
+    })?;
+    Ok(document
+        .element_node_ids()
+        .filter(|node_id| selector.matches_in_document(document, *node_id))
+        .collect())
+}
+
 fn parse_selector(source: &str) -> Option<NativeSelector> {
     let source = source.trim();
     if source.is_empty() || source.len() > MAX_SELECTOR_BYTES {

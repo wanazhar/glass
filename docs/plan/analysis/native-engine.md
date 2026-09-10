@@ -2815,6 +2815,16 @@ eight handoffs; malformed or multiple navigation commands fail closed.
 Outgoing `beforeunload`/`pagehide`/`unload`, `hashchange`, nested contexts,
 complete Location/Web IDL descriptors, and full URL parsing remain open.
 
+The completed bounded native-inspection and CSS-target follow-up is
+[native-engine-browser-127](../tasks/native-engine-browser-127.md). The public
+native session now projects semantic nodes and logical PNG bytes from the same
+engine owner used for navigation and script. Native one-shot dispatch maps
+`evaluate`, `click-at`, `key`, `scroll`, `dom`, and PNG `screenshot`; `css=`
+locators reuse the stylesheet selector grammar and enforce unique resolution.
+Malformed selectors and unmapped rich observation options remain typed denials,
+and Firefox/Safari do not inherit native-only commands. This checkpoint does
+not yet promote native selection to the default or certify CDP replacement.
+
 The completed bounded Response-constructor follow-up is
 [native-engine-browser-120](../tasks/native-engine-browser-120.md). Fetched and
 constructed responses now share `Response` identity; `new Response`,

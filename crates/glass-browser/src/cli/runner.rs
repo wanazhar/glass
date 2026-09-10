@@ -11,7 +11,7 @@ use super::args::{
     WorkflowAuthoringCommand, WorkspaceCommand,
 };
 #[cfg(feature = "native-engine")]
-use crate::browser::native_engine::{NativeEngineConfig, NativeResourceLoader};
+use crate::browser::native_engine::NativeEngineConfig;
 use crate::browser::policy::{BrowserPolicy, PolicyCapability, PolicyPreset};
 use crate::browser::profile::ProfileManager;
 use crate::browser::runtime::{BrowserRuntime, BrowserRuntimeSession};
@@ -507,21 +507,53 @@ fn validate_alternative_runtime_command(
             form_values,
             semantic_level,
             region,
+            ..
         } if *deep_dom
             || *screenshot
             || *form_values
             || semantic_level.is_some()
             || region.is_some() =>
         {
-            Err(if native {
-                "native observation supports compact evidence only; DOM, screenshot, forms, and semantic regions require Chromium".into()
+            if native && !*form_values && semantic_level.is_none() && region.is_none() {
+                Ok(())
             } else {
-                "portable Firefox/Safari observation supports compact evidence only; DOM, screenshot, forms, and semantic regions require Chromium".into()
-            })
+                Err(if native {
+                    "native observation does not yet expose form values or semantic regions".into()
+                } else {
+                    "portable Firefox/Safari observation supports compact evidence only; DOM, screenshot, forms, and semantic regions require Chromium".into()
+                })
+            }
         }
-        Commands::Evaluate { .. } if native => {
-            Err("native runtime does not implement script/evaluate".into())
+        Commands::Screenshot {
+            format,
+            scale,
+            full_page,
+            clip,
+            target,
+            ..
+        } if native => {
+            if !matches!(format, crate::browser::session::VisualFormat::Png) {
+                return Err("native screenshot supports only --format png".into());
+            }
+            if (*scale - 1.0).abs() > f64::EPSILON
+                || *full_page
+                || clip.is_some()
+                || target.is_some()
+            {
+                return Err(
+                    "native screenshot supports only the current viewport PNG (scale 1.0)".into(),
+                );
+            }
+            Ok(())
         }
+        Commands::Evaluate { .. } if native => Ok(()),
+        Commands::Dom | Commands::ClickAt { .. } | Commands::Scroll { .. } if native => Ok(()),
+        Commands::Key {
+            expected_revision, ..
+        } if native && expected_revision.is_some() => {
+            Err("revision guards are not yet exposed by the portable runtime CLI".into())
+        }
+        Commands::Key { .. } if native => Ok(()),
         Commands::Navigate { .. }
         | Commands::Click { .. }
         | Commands::Type { .. }
@@ -591,10 +623,78 @@ async fn run_alternative_runtime_command(
                 response_mode,
             )
         }
+        Commands::ClickAt { x, y } if session.runtime().is_native() => {
+            let target = native_point_locator(*x, *y)?;
+            print_json_mode(
+                &session.action(SemanticAction::Click { target }).await?,
+                response_mode,
+            )
+        }
+        Commands::Key { key, .. } if session.runtime().is_native() => print_json_mode(
+            &session
+                .action(SemanticAction::KeyPress { key: key.clone() })
+                .await?,
+            response_mode,
+        ),
         Commands::Text => {
             let evidence = session.evidence(EvidenceLevel::Compact).await?;
             println!("{}", evidence.visible_text);
             Ok(())
+        }
+        Commands::Dom if session.runtime().is_native() => {
+            #[cfg(feature = "native-engine")]
+            {
+                let evidence = session.evidence(EvidenceLevel::Deep).await?;
+                let nodes = session.native_semantic_nodes()?;
+                print_json_mode(
+                    &serde_json::json!({
+                        "contextId": evidence.context_id,
+                        "revision": evidence.revision,
+                        "url": evidence.url,
+                        "title": evidence.title,
+                        "visibleText": evidence.visible_text,
+                        "nodes": nodes,
+                    }),
+                    response_mode,
+                )
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
+        }
+        Commands::Observe {
+            deep_dom,
+            screenshot,
+            ..
+        } if session.runtime().is_native() && (*deep_dom || *screenshot) => {
+            #[cfg(feature = "native-engine")]
+            {
+                let evidence = session.evidence(EvidenceLevel::Compact).await?;
+                let nodes = (*deep_dom)
+                    .then(|| session.native_semantic_nodes())
+                    .transpose()?;
+                let screenshot = if *screenshot {
+                    Some(
+                        base64::engine::general_purpose::STANDARD
+                            .encode(session.native_capture_png()?),
+                    )
+                } else {
+                    None
+                };
+                print_json_mode(
+                    &serde_json::json!({
+                        "contextId": evidence.context_id,
+                        "revision": evidence.revision,
+                        "url": evidence.url,
+                        "title": evidence.title,
+                        "visibleText": evidence.visible_text,
+                        "nodes": nodes,
+                        "screenshotPngBase64": screenshot,
+                    }),
+                    response_mode,
+                )
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
         }
         Commands::Observe { .. } => print_json_mode(
             &session.evidence(EvidenceLevel::Compact).await?,
@@ -606,14 +706,82 @@ async fn run_alternative_runtime_command(
             let result = session.script(expression).await?;
             print_json_mode(&result.value, response_mode)
         }
+        Commands::Screenshot { output, .. } if session.runtime().is_native() => {
+            policy.require(PolicyCapability::Screenshot)?;
+            #[cfg(feature = "native-engine")]
+            {
+                let output = policy.require_output_path(std::path::Path::new(output))?;
+                let bytes = session.native_capture_png()?;
+                tokio::fs::write(&output, bytes).await?;
+                println!("wrote {}", output.display());
+                print_json_mode(
+                    &serde_json::json!({
+                        "format": "png",
+                        "output": output,
+                    }),
+                    response_mode,
+                )
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
+        }
+        Commands::Scroll {
+            dx,
+            dy,
+            expected_revision: _,
+        } if session.runtime().is_native() => {
+            let (delta_x, delta_y) = native_scroll_deltas(*dx, *dy)?;
+            print_json_mode(
+                &session
+                    .action(SemanticAction::Scroll { delta_x, delta_y })
+                    .await?,
+                response_mode,
+            )
+        }
         _ => unreachable!("alternative runtime command was validated before dispatch"),
     }
 }
 
 #[cfg(feature = "native-engine")]
+fn native_point_locator(x: f64, y: f64) -> BrowserResult<String> {
+    if !x.is_finite()
+        || !y.is_finite()
+        || x < 0.0
+        || y < 0.0
+        || x.fract() != 0.0
+        || y.fract() != 0.0
+    {
+        return Err("native click-at coordinates must be finite unsigned integers".into());
+    }
+    Ok(format!("point={x:.0},{y:.0}"))
+}
+
+#[cfg(not(feature = "native-engine"))]
+fn native_point_locator(_x: f64, _y: f64) -> BrowserResult<String> {
+    Err("native runtime is unavailable in this build".into())
+}
+
+fn native_scroll_deltas(dx: f64, dy: f64) -> BrowserResult<(i32, i32)> {
+    if !dx.is_finite()
+        || !dy.is_finite()
+        || dx.fract() != 0.0
+        || dy.fract() != 0.0
+        || dx < f64::from(i32::MIN)
+        || dx > f64::from(i32::MAX)
+        || dy < f64::from(i32::MIN)
+        || dy > f64::from(i32::MAX)
+    {
+        return Err("native scroll deltas must be finite 32-bit integers".into());
+    }
+    Ok((dx as i32, dy as i32))
+}
+
+#[cfg(feature = "native-engine")]
 fn validate_native_navigation_url(value: &str) -> BrowserResult<()> {
     let url = crate::browser::session::normalize_url(value);
-    NativeResourceLoader::new(&NativeEngineConfig::default())?.load(&url)?;
+    NativeEngineConfig::default()
+        .with_initial_url(url)
+        .validate()?;
     Ok(())
 }
 
@@ -3046,30 +3214,116 @@ mod tests {
 
     #[cfg(feature = "native-engine")]
     #[test]
-    fn native_runtime_rejects_script_before_startup() {
+    fn native_runtime_accepts_script_before_startup() {
         let cli =
             Cli::try_parse_from(["glass", "--browser-runtime", "native", "evaluate", "1 + 1"])
                 .unwrap();
-        let error = validate_alternative_runtime_command(
-            cli.command.as_ref().unwrap(),
-            cli.browser_runtime,
-        )
-        .unwrap_err()
-        .to_string();
-        assert!(error.contains("does not implement script/evaluate"));
+        validate_alternative_runtime_command(cli.command.as_ref().unwrap(), cli.browser_runtime)
+            .unwrap();
     }
 
     #[cfg(feature = "native-engine")]
     #[test]
-    fn native_navigation_validation_accepts_local_data_and_rejects_network() {
+    fn native_runtime_accepts_mapped_inspection_commands_only_for_native() {
+        for arguments in [
+            vec!["glass", "--browser-runtime", "native", "dom"],
+            vec![
+                "glass",
+                "--browser-runtime",
+                "native",
+                "observe",
+                "--deep-dom",
+            ],
+            vec![
+                "glass",
+                "--browser-runtime",
+                "native",
+                "observe",
+                "--screenshot",
+            ],
+            vec![
+                "glass",
+                "--browser-runtime",
+                "native",
+                "click-at",
+                "10",
+                "20",
+            ],
+            vec!["glass", "--browser-runtime", "native", "key", "Enter"],
+            vec![
+                "glass",
+                "--browser-runtime",
+                "native",
+                "scroll",
+                "--dy",
+                "20",
+            ],
+            vec![
+                "glass",
+                "--browser-runtime",
+                "native",
+                "screenshot",
+                "--output",
+                "native.png",
+            ],
+        ] {
+            let cli = Cli::try_parse_from(arguments).unwrap();
+            validate_alternative_runtime_command(
+                cli.command.as_ref().unwrap(),
+                cli.browser_runtime,
+            )
+            .unwrap();
+        }
+
+        let cli = Cli::try_parse_from([
+            "glass",
+            "--browser-runtime",
+            "firefox",
+            "--browser-endpoint",
+            "ws://127.0.0.1:9222/session",
+            "observe",
+            "--deep-dom",
+        ])
+        .unwrap();
+        assert!(
+            validate_alternative_runtime_command(
+                cli.command.as_ref().unwrap(),
+                cli.browser_runtime,
+            )
+            .is_err()
+        );
+
+        let cli = Cli::try_parse_from([
+            "glass",
+            "--browser-runtime",
+            "firefox",
+            "--browser-endpoint",
+            "ws://127.0.0.1:9222/session",
+            "key",
+            "Enter",
+        ])
+        .unwrap();
+        assert!(
+            validate_alternative_runtime_command(
+                cli.command.as_ref().unwrap(),
+                cli.browser_runtime,
+            )
+            .is_err()
+        );
+    }
+
+    #[cfg(feature = "native-engine")]
+    #[test]
+    fn native_navigation_validation_accepts_supported_urls() {
         validate_native_navigation_url(
             "data:text/html,%3Ctitle%3ELocal%3C%2Ftitle%3E%3Cp%3EGlass%3C%2Fp%3E",
         )
         .unwrap();
-        let error = validate_native_navigation_url("https://example.com")
+        validate_native_navigation_url("https://example.com").unwrap();
+        let error = validate_native_navigation_url("javascript:alert(1)")
             .unwrap_err()
             .to_string();
-        assert!(error.contains("does not load network"));
+        assert!(error.contains("native navigation accepts"));
     }
 
     #[test]

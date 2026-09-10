@@ -21,7 +21,7 @@ pub const NATIVE_ENGINE_BACKEND_ID: &str = "native-engine";
 const NATIVE_ENGINE_BACKEND_VERSION: &str = "0.1";
 const NATIVE_ENGINE_BROWSER_FAMILY: &str = "native";
 
-/// Experimental semantic adapter around one native engine instance.
+/// Semantic adapter around one native engine instance.
 pub struct NativeEngineBackend {
     profile: BackendProfile,
     engine: Mutex<NativeEngine>,
@@ -85,6 +85,22 @@ impl NativeEngineBackend {
 
     pub fn profile(&self) -> &BackendProfile {
         &self.profile
+    }
+
+    /// Return the current bounded semantic tree from the engine owner.
+    pub fn semantic_nodes(
+        &self,
+    ) -> Result<Vec<super::native_engine::NativeSemanticNode>, BrowserBackendError> {
+        self.lock_engine(BackendOperation::Evidence)?
+            .semantic_nodes()
+            .map_err(native_error)
+    }
+
+    /// Capture the current logical native surface as PNG bytes.
+    pub fn capture_png(&self) -> Result<Vec<u8>, BrowserBackendError> {
+        self.lock_engine(BackendOperation::Capture)?
+            .capture_png()
+            .map_err(native_error)
     }
 
     pub fn profile_for(glass_version: &str) -> Result<BackendProfile, BrowserBackendError> {

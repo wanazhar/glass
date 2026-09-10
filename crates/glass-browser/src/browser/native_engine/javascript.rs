@@ -5067,6 +5067,17 @@ fn document_bootstrap(
     this._entries = [];
     if (form !== undefined && form !== null) this._entries = formDataEntries(form);
   }};
+  const formDataEntryValue = entry => entry[1].kind === "file" ? entry[1].value : entry[1];
+  const formDataIterator = values => {{
+    let index = 0;
+    return {{
+      next() {{
+        if (index >= values.length) return {{ value: undefined, done: true }};
+        return {{ value: values[index++], done: false }};
+      }},
+      [Symbol.iterator]() {{ return this; }},
+    }};
+  }};
   FormDataNative.prototype.append = function(name, value, filename) {{
     this._entries.push([String(name), formDataValue(value, filename)]);
   }};
@@ -5082,33 +5093,37 @@ fn document_bootstrap(
   FormDataNative.prototype.get = function(name) {{
     const key = String(name);
     const entry = this._entries.find(candidate => candidate[0] === key);
-    return entry ? (entry[1].kind === "file" ? entry[1].value : entry[1]) : null;
+    return entry ? formDataEntryValue(entry) : null;
   }};
   FormDataNative.prototype.getAll = function(name) {{
     const key = String(name);
     return this._entries
       .filter(entry => entry[0] === key)
-      .map(entry => entry[1].kind === "file" ? entry[1].value : entry[1]);
+      .map(formDataEntryValue);
   }};
   FormDataNative.prototype.has = function(name) {{
     const key = String(name);
     return this._entries.some(entry => entry[0] === key);
   }};
   FormDataNative.prototype.entries = function() {{
-    return this._entries.map(entry => [
-      entry[0],
-      entry[1].kind === "file" ? entry[1].value : entry[1],
-    ]);
+    return formDataIterator(this._entries.map(entry => [entry[0], formDataEntryValue(entry)]));
+  }};
+  FormDataNative.prototype.keys = function() {{
+    return formDataIterator(this._entries.map(entry => entry[0]));
+  }};
+  FormDataNative.prototype.values = function() {{
+    return formDataIterator(this._entries.map(formDataEntryValue));
   }};
   FormDataNative.prototype.forEach = function(callback, thisArg) {{
     if (typeof callback !== "function") throw new TypeError("FormData callback must be callable");
     this._entries.forEach(entry => callback.call(
       thisArg,
-      entry[1].kind === "file" ? entry[1].value : entry[1],
+      formDataEntryValue(entry),
       entry[0],
       this,
     ));
   }};
+  FormDataNative.prototype[Symbol.iterator] = FormDataNative.prototype.entries;
   const escapeFormDataName = value => String(value)
     .replace(/\\/g, "\\\\")
     .replace(/"/g, "\\\"")

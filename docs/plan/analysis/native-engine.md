@@ -2661,6 +2661,14 @@ a bounded 64-entry/10-minute budget; failed, invalid, and zero-age responses
 are not cached. Private-network access, opaque `no-cors` responses, and full
 Fetch/CORS Web IDL parity remain open.
 
+The completed bounded FormData-iterator follow-up is
+[native-engine-browser-107](../tasks/native-engine-browser-107.md). FormData
+now exposes deterministic snapshot iterators for `entries()`, `keys()`,
+`values()`, and `[Symbol.iterator]()` with self-iterating `next()` results,
+while `forEach()` and multipart serialization retain the existing ordered text
+and Blob/File entry owner. Live mutation during iteration, exotic iterables, and
+complete FormData/Web IDL parity remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

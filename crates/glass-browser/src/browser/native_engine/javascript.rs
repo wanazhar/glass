@@ -44,6 +44,11 @@ const NATIVE_STORAGE_READER_LEASE_TTL: Duration = Duration::from_secs(15 * 60);
 const NATIVE_STORAGE_READER_HEARTBEAT: Duration = Duration::from_secs(30);
 pub(crate) const MAX_NATIVE_COOKIE_PROFILE_ENTRIES: usize = 128;
 pub(crate) const MAX_NATIVE_COOKIE_PROFILE_BYTES: usize = 4096;
+const MAX_NATIVE_INDEXED_DB_DATABASES: usize = 16;
+const MAX_NATIVE_INDEXED_DB_STORES: usize = 128;
+const MAX_NATIVE_INDEXED_DB_RECORDS: usize = 128;
+const MAX_NATIVE_INDEXED_DB_VALUE_BYTES: usize = 8 * 1024;
+const MAX_NATIVE_INDEXED_DB_STATE_BYTES: usize = MAX_NATIVE_SCRIPT_RESULT_BYTES;
 const NATIVE_STORAGE_PROFILE_LOCK_TIMEOUT: Duration = Duration::from_millis(500);
 const NATIVE_STORAGE_PROFILE_LOCK_RETRY: Duration = Duration::from_millis(10);
 
@@ -137,6 +142,194 @@ pub(crate) struct NativeWebStorageState {
     session: BTreeMap<String, BTreeMap<String, String>>,
 }
 
+/// Bounded JSON-backed IndexedDB state for one storage origin.
+///
+/// The native engine intentionally stores the result of the supported
+/// structured-clone subset rather than pretending to implement every browser
+/// value type. Database and store metadata are durable; transactions and
+/// requests are represented by the JavaScript realm and validated at the
+/// profile boundary.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Serialize)]
+pub(crate) struct NativeIndexedDbState {
+    origins: BTreeMap<String, NativeIndexedDbOrigin>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Serialize)]
+pub(crate) struct NativeIndexedDbOrigin {
+    databases: BTreeMap<String, NativeIndexedDbDatabase>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
+struct NativeIndexedDbDatabase {
+    version: u64,
+    stores: BTreeMap<String, NativeIndexedDbObjectStore>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
+struct NativeIndexedDbObjectStore {
+    #[serde(default)]
+    key_path: Option<String>,
+    #[serde(default)]
+    auto_increment: bool,
+    #[serde(default = "default_indexed_db_next_key")]
+    next_key: u64,
+    records: BTreeMap<String, serde_json::Value>,
+}
+
+fn default_indexed_db_next_key() -> u64 {
+    1
+}
+
+impl NativeIndexedDbState {
+    pub(crate) fn validate(&self) -> Result<(), NativeEngineError> {
+        if self.origins.len() > crate::browser_backend::MAX_STORAGE_ENTRIES {
+            return Err(NativeEngineError::limit(
+                "native IndexedDB origins",
+                crate::browser_backend::MAX_STORAGE_ENTRIES,
+                self.origins.len(),
+            ));
+        }
+        for (storage_key, origin) in &self.origins {
+            if storage_key.is_empty() || storage_key.len() > crate::browser_backend::MAX_TEXT_BYTES
+            {
+                return Err(NativeEngineError::limit(
+                    "native IndexedDB storage key",
+                    crate::browser_backend::MAX_TEXT_BYTES,
+                    storage_key.len(),
+                ));
+            }
+            origin.validate()?;
+        }
+        validate_indexed_db_serialized_size(self)
+    }
+
+    pub(crate) fn origin(&self, storage_key: &str) -> NativeIndexedDbOrigin {
+        self.origins.get(storage_key).cloned().unwrap_or_default()
+    }
+
+    pub(crate) fn replace_origin(
+        &mut self,
+        storage_key: impl Into<String>,
+        origin: NativeIndexedDbOrigin,
+    ) -> Result<(), NativeEngineError> {
+        origin.validate()?;
+        let storage_key = storage_key.into();
+        if origin.databases.is_empty() {
+            self.origins.remove(&storage_key);
+        } else {
+            self.origins.insert(storage_key, origin);
+        }
+        self.validate()
+    }
+}
+
+impl NativeIndexedDbOrigin {
+    fn validate(&self) -> Result<(), NativeEngineError> {
+        if self.databases.len() > MAX_NATIVE_INDEXED_DB_DATABASES {
+            return Err(NativeEngineError::limit(
+                "native IndexedDB databases",
+                MAX_NATIVE_INDEXED_DB_DATABASES,
+                self.databases.len(),
+            ));
+        }
+        for (name, database) in &self.databases {
+            validate_indexed_db_name("native IndexedDB database name", name)?;
+            if database.version == 0 {
+                return Err(NativeEngineError::invalid(
+                    "native IndexedDB database version",
+                    "must be greater than zero",
+                ));
+            }
+            if database.stores.len() > MAX_NATIVE_INDEXED_DB_STORES {
+                return Err(NativeEngineError::limit(
+                    "native IndexedDB object stores",
+                    MAX_NATIVE_INDEXED_DB_STORES,
+                    database.stores.len(),
+                ));
+            }
+            for (store_name, store) in &database.stores {
+                validate_indexed_db_name("native IndexedDB object store name", store_name)?;
+                if let Some(key_path) = store.key_path.as_deref()
+                    && key_path.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES
+                {
+                    return Err(NativeEngineError::limit(
+                        "native IndexedDB key path",
+                        crate::browser_backend::MAX_BACKEND_ID_BYTES,
+                        key_path.len(),
+                    ));
+                }
+                if store.next_key == 0 {
+                    return Err(NativeEngineError::invalid(
+                        "native IndexedDB auto-increment key",
+                        "must be greater than zero",
+                    ));
+                }
+                if store.records.len() > MAX_NATIVE_INDEXED_DB_RECORDS {
+                    return Err(NativeEngineError::limit(
+                        "native IndexedDB records",
+                        MAX_NATIVE_INDEXED_DB_RECORDS,
+                        store.records.len(),
+                    ));
+                }
+                for (key, value) in &store.records {
+                    if key.is_empty() || key.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES {
+                        return Err(NativeEngineError::limit(
+                            "native IndexedDB record key",
+                            crate::browser_backend::MAX_BACKEND_ID_BYTES,
+                            key.len(),
+                        ));
+                    }
+                    let value_bytes = serde_json::to_vec(value).map_err(|_| {
+                        NativeEngineError::invalid(
+                            "native IndexedDB record",
+                            "must contain a JSON structured-clone value",
+                        )
+                    })?;
+                    if value_bytes.len() > MAX_NATIVE_INDEXED_DB_VALUE_BYTES {
+                        return Err(NativeEngineError::limit(
+                            "native IndexedDB record value",
+                            MAX_NATIVE_INDEXED_DB_VALUE_BYTES,
+                            value_bytes.len(),
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn validate_indexed_db_name(field: &str, value: &str) -> Result<(), NativeEngineError> {
+    if value.is_empty() {
+        return Err(NativeEngineError::invalid(field, "must not be empty"));
+    }
+    if value.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES {
+        return Err(NativeEngineError::limit(
+            field,
+            crate::browser_backend::MAX_BACKEND_ID_BYTES,
+            value.len(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_indexed_db_serialized_size(
+    state: &NativeIndexedDbState,
+) -> Result<(), NativeEngineError> {
+    let bytes = serde_json::to_vec(state).map_err(|_| NativeEngineError::Worker {
+        operation: "validate native IndexedDB state".into(),
+        reason: "native IndexedDB state cannot be encoded".into(),
+    })?;
+    if bytes.len() > MAX_NATIVE_INDEXED_DB_STATE_BYTES {
+        return Err(NativeEngineError::limit(
+            "native IndexedDB state",
+            MAX_NATIVE_INDEXED_DB_STATE_BYTES,
+            bytes.len(),
+        ));
+    }
+    Ok(())
+}
+
 impl NativeWebStorageState {
     pub(crate) fn validate(&self) -> Result<(), NativeEngineError> {
         validate_web_storage_state(self)
@@ -209,6 +402,8 @@ struct NativeWebStorageProfile {
     local: BTreeMap<String, BTreeMap<String, String>>,
     #[serde(default)]
     cookies: Vec<NativeCookieProfileEntry>,
+    #[serde(default)]
+    indexed_db: NativeIndexedDbState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -1040,6 +1235,19 @@ pub(crate) fn load_cookie_profile(
     Ok(profile.cookies)
 }
 
+pub(crate) fn load_indexed_db_profile(
+    path: Option<&Path>,
+) -> Result<NativeIndexedDbState, NativeEngineError> {
+    let Some(path) = path else {
+        return Ok(NativeIndexedDbState::default());
+    };
+    let _lock = lock_web_storage_profile(path, false)?;
+    let Some(profile) = read_web_storage_profile(path)? else {
+        return Ok(NativeIndexedDbState::default());
+    };
+    Ok(profile.indexed_db)
+}
+
 fn read_web_storage_profile(
     path: &Path,
 ) -> Result<Option<NativeWebStorageProfile>, NativeEngineError> {
@@ -1089,6 +1297,7 @@ fn read_web_storage_profile(
         revision,
         local,
         cookies,
+        indexed_db,
         ..
     } = profile;
     let state = NativeWebStorageState {
@@ -1096,6 +1305,7 @@ fn read_web_storage_profile(
         session: BTreeMap::new(),
     };
     validate_web_storage_state(&state)?;
+    indexed_db.validate()?;
     validate_cookie_profile(&cookies)?;
     let cookies = cookies
         .into_iter()
@@ -1110,6 +1320,7 @@ fn read_web_storage_profile(
         revision,
         local: state.local,
         cookies,
+        indexed_db,
     }))
 }
 
@@ -1119,11 +1330,13 @@ pub(crate) fn save_web_storage_profile(
     storage_changes: &[NativeStorageEvent],
     cookie_state: &[NativeCookieProfileEntry],
     cookie_changes: &[NativeCookieChange],
+    indexed_db: &NativeIndexedDbState,
 ) -> Result<(), NativeEngineError> {
     let Some(path) = path else {
         return Ok(());
     };
     validate_web_storage_state(state)?;
+    indexed_db.validate()?;
     if let Some(parent) = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -1169,6 +1382,7 @@ pub(crate) fn save_web_storage_profile(
         revision,
         local: merged_state.local,
         cookies,
+        indexed_db: indexed_db.clone(),
     };
     let bytes = serde_json::to_vec(&profile).map_err(|_| NativeEngineError::Worker {
         operation: "save native Web Storage profile".into(),
@@ -1501,6 +1715,7 @@ pub(crate) fn order_page_scripts(
 /// can both retain globals and listeners after the document commit. Script
 /// navigation is intentionally rejected during parsing; navigation only has a
 /// defined owner after the document has been committed.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_inline_scripts(
     document: &mut NativeDocument,
     runtime: &mut Option<NativeJavaScriptRuntime>,
@@ -1508,6 +1723,7 @@ pub(crate) fn execute_inline_scripts(
     document_origin: &NativeOrigin,
     viewport: Viewport,
     storage_state: &NativeWebStorageState,
+    indexed_db_state: &NativeIndexedDbState,
     cookie: &str,
 ) -> Result<(), NativeEngineError> {
     let sources = document
@@ -1538,6 +1754,7 @@ pub(crate) fn execute_inline_scripts(
         document_origin,
         viewport,
         storage_state,
+        indexed_db_state,
         cookie,
         &[],
     )
@@ -1552,6 +1769,7 @@ pub(crate) fn execute_page_scripts(
     document_origin: &NativeOrigin,
     viewport: Viewport,
     storage_state: &NativeWebStorageState,
+    indexed_db_state: &NativeIndexedDbState,
     cookie: &str,
     resource_load_nodes: &[u32],
 ) -> Result<Vec<NativeScriptCommand>, NativeEngineError> {
@@ -1567,7 +1785,15 @@ pub(crate) fn execute_page_scripts(
     runtime
         .as_ref()
         .expect("page script runtime initialized")
+        .set_indexed_db_state(indexed_db_state.origin(&storage_key(document_url, document_origin)));
+    runtime
+        .as_ref()
+        .expect("page script runtime initialized")
         .set_cookie_state(cookie.to_owned());
+    runtime
+        .as_ref()
+        .expect("page script runtime initialized")
+        .set_timer_pump_enabled(false);
     runtime
         .as_mut()
         .expect("page script runtime initialized")
@@ -1678,6 +1904,10 @@ pub(crate) fn execute_page_scripts(
             )?;
         apply_page_script_evaluation(document, evaluation, &mut pending_fetches)?;
     }
+    runtime
+        .as_mut()
+        .expect("page script runtime initialized")
+        .set_timer_pump_enabled(true);
     runtime
         .as_mut()
         .expect("page script runtime initialized")
@@ -1877,7 +2107,9 @@ pub(crate) struct NativeJavaScriptRuntime {
     context: Context,
     deadline: Arc<Mutex<Option<Instant>>>,
     module_sources: Arc<Mutex<BTreeMap<String, String>>>,
+    timer_pump_enabled: Arc<Mutex<bool>>,
     storage: Arc<Mutex<NativeWebStorageState>>,
+    indexed_db: Arc<Mutex<NativeIndexedDbOrigin>>,
     storage_changes: Arc<Mutex<Vec<NativeStorageEvent>>>,
     pending_storage_events: Arc<Mutex<Vec<NativeStorageEvent>>>,
     cookie: Arc<Mutex<String>>,
@@ -1922,7 +2154,9 @@ impl NativeJavaScriptRuntime {
             context,
             deadline,
             module_sources,
+            timer_pump_enabled: Arc::new(Mutex::new(true)),
             storage: Arc::new(Mutex::new(NativeWebStorageState::default())),
+            indexed_db: Arc::new(Mutex::new(NativeIndexedDbOrigin::default())),
             storage_changes: Arc::new(Mutex::new(Vec::new())),
             pending_storage_events: Arc::new(Mutex::new(Vec::new())),
             cookie: Arc::new(Mutex::new(String::new())),
@@ -1948,6 +2182,35 @@ impl NativeJavaScriptRuntime {
 
     pub(crate) fn storage_state(&self) -> NativeWebStorageState {
         self.storage
+            .lock()
+            .map(|state| state.clone())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn set_indexed_db_state(&self, state: NativeIndexedDbOrigin) {
+        if state.validate().is_err() {
+            return;
+        }
+        if let Ok(mut current) = self.indexed_db.lock() {
+            *current = state;
+        }
+    }
+
+    pub(crate) fn set_timer_pump_enabled(&self, enabled: bool) {
+        if let Ok(mut current) = self.timer_pump_enabled.lock() {
+            *current = enabled;
+        }
+    }
+
+    fn timer_pump_enabled(&self) -> bool {
+        self.timer_pump_enabled
+            .lock()
+            .map(|enabled| *enabled)
+            .unwrap_or(true)
+    }
+
+    pub(crate) fn indexed_db_state(&self) -> NativeIndexedDbOrigin {
+        self.indexed_db
             .lock()
             .map(|state| state.clone())
             .unwrap_or_default()
@@ -2242,8 +2505,10 @@ impl NativeJavaScriptRuntime {
             &self.ready_state,
             self.now_ms(),
             &self.storage_view(document_url, origin),
+            &self.indexed_db_state(),
             &storage_events,
             &self.cookie_state(),
+            self.timer_pump_enabled(),
         )?;
         let deadline = Instant::now() + NATIVE_SCRIPT_TIMEOUT;
         if let Ok(mut current) = self.deadline.lock() {
@@ -2293,6 +2558,8 @@ impl NativeJavaScriptRuntime {
                 document_commands.push(command);
             }
             let commands = document_commands;
+            let indexed_db_state = read_indexed_db_state(ctx.clone())?;
+            self.set_indexed_db_state(indexed_db_state);
             let json = ctx
                 .json_stringify(value)
                 .map_err(|_| NativeEngineError::Worker {
@@ -2409,8 +2676,10 @@ impl NativeJavaScriptRuntime {
             &self.ready_state,
             self.now_ms(),
             &self.storage_view(document_url, origin),
+            &self.indexed_db_state(),
             &storage_events,
             &self.cookie_state(),
+            self.timer_pump_enabled(),
         )?;
         let deadline = Instant::now() + NATIVE_SCRIPT_TIMEOUT;
         if let Ok(mut current) = self.deadline.lock() {
@@ -2447,6 +2716,8 @@ impl NativeJavaScriptRuntime {
                 }
                 document_commands.push(command);
             }
+            let indexed_db_state = read_indexed_db_state(ctx.clone())?;
+            self.set_indexed_db_state(indexed_db_state);
             Ok(NativeScriptEvaluation {
                 value: serde_json::Value::Null,
                 commands: document_commands,
@@ -2494,6 +2765,31 @@ fn read_script_commands<'js>(
         ));
     }
     Ok(commands)
+}
+
+fn read_indexed_db_state<'js>(
+    ctx: rquickjs::Ctx<'js>,
+) -> Result<NativeIndexedDbOrigin, NativeEngineError> {
+    let json: String = ctx
+        .eval("JSON.stringify(globalThis.__glassIndexedDbState || {databases:{}})")
+        .map_err(|_| NativeEngineError::Worker {
+            operation: "collect JavaScript IndexedDB state".into(),
+            reason: "native IndexedDB state could not be collected".into(),
+        })?;
+    if json.len() > MAX_NATIVE_INDEXED_DB_STATE_BYTES {
+        return Err(NativeEngineError::limit(
+            "native IndexedDB state",
+            MAX_NATIVE_INDEXED_DB_STATE_BYTES,
+            json.len(),
+        ));
+    }
+    let state: NativeIndexedDbOrigin =
+        serde_json::from_str(&json).map_err(|_| NativeEngineError::Worker {
+            operation: "decode JavaScript IndexedDB state".into(),
+            reason: "native IndexedDB state was malformed".into(),
+        })?;
+    state.validate()?;
+    Ok(state)
 }
 
 fn contains_await_token(source: &str) -> bool {
@@ -2779,8 +3075,10 @@ fn document_bootstrap(
     ready_state: &str,
     now_ms: u64,
     storage: &NativeWebStorageView,
+    indexed_db: &NativeIndexedDbOrigin,
     storage_events: &[NativeStorageEvent],
     cookie: &str,
+    run_timers: bool,
 ) -> Result<String, NativeEngineError> {
     let state = document.script_snapshot(crate::browser_backend::MAX_TEXT_BYTES);
     let serialized = serde_json::to_string(&serde_json::json!({
@@ -2789,6 +3087,7 @@ fn document_bootstrap(
         "state": state,
         "now_ms": now_ms,
         "storage": storage,
+        "indexed_db": indexed_db,
         "storage_events": storage_events,
         "cookie": cookie,
     }))
@@ -2912,6 +3211,340 @@ fn document_bootstrap(
   }};
   globalThis.localStorage = createStorage("__glassLocalStorageValues", "__glassLocalStorageObject", host.storage.local);
   globalThis.sessionStorage = createStorage("__glassSessionStorageValues", "__glassSessionStorageObject", host.storage.session);
+  const indexedDbState = globalThis.__glassIndexedDbState
+    && typeof globalThis.__glassIndexedDbState === "object"
+    ? globalThis.__glassIndexedDbState
+    : (host.indexed_db && typeof host.indexed_db === "object"
+      ? host.indexed_db
+      : {{ databases: {{}} }});
+  if (!indexedDbState.databases || typeof indexedDbState.databases !== "object") indexedDbState.databases = {{}};
+  globalThis.__glassIndexedDbState = indexedDbState;
+  if (!globalThis.__glassNativeIndexedDBInstalled) {{
+  const indexedDbDatabaseLimit = {indexed_db_database_limit};
+  const indexedDbStoreLimit = {indexed_db_store_limit};
+  const indexedDbRecordLimit = {indexed_db_record_limit};
+  const indexedDbValueLimit = {indexed_db_value_limit};
+  const indexedDbSchedule = (callback) => Promise.resolve().then(callback);
+  const indexedDbError = (name, message) => {{
+    const error = new Error(message);
+    error.name = name;
+    return error;
+  }};
+  const indexedDbName = (value, field) => {{
+    const name = String(value);
+    if (!name || name.length > storageKeyLimit) throw indexedDbError("TypeError", field + " is outside the native limit");
+    return name;
+  }};
+  const indexedDbClone = (value) => {{
+    let encoded;
+    try {{ encoded = JSON.stringify(value); }} catch (_error) {{
+      throw indexedDbError("DataCloneError", "value cannot be cloned by native IndexedDB");
+    }}
+    if (encoded === undefined) throw indexedDbError("DataCloneError", "value cannot be cloned by native IndexedDB");
+    if (encoded.length > indexedDbValueLimit) throw indexedDbError("QuotaExceededError", "native IndexedDB value limit exceeded");
+    return JSON.parse(encoded);
+  }};
+  const indexedDbKeyToken = (key, allowUndefined) => {{
+    if (key === undefined && allowUndefined) return undefined;
+    if (typeof key === "string") {{
+      if (key.length > storageKeyLimit) throw indexedDbError("DataError", "native IndexedDB key limit exceeded");
+      return "s:" + key;
+    }}
+    if (typeof key === "number" && Number.isFinite(key)) {{
+      const normalized = Object.is(key, -0) ? 0 : key;
+      return "n:" + String(normalized);
+    }}
+    throw indexedDbError("DataError", "native IndexedDB supports only string and finite number keys");
+  }};
+  const indexedDbKeyValue = (token) => token.startsWith("s:")
+    ? token.slice(2)
+    : Number(token.slice(2));
+  const indexedDbReadKeyPath = (value, keyPath) => {{
+    if (!keyPath) return undefined;
+    let current = value;
+    for (const part of keyPath.split(".")) {{
+      if (current === null || current === undefined || typeof current !== "object") return undefined;
+      current = current[part];
+    }}
+    return current;
+  }};
+  const indexedDbWriteKeyPath = (value, keyPath, key) => {{
+    if (!keyPath || value === null || typeof value !== "object") throw indexedDbError("DataError", "auto-increment key path requires an object");
+    const parts = keyPath.split(".");
+    let current = value;
+    for (let index = 0; index < parts.length - 1; index += 1) {{
+      const part = parts[index];
+      if (!current[part] || typeof current[part] !== "object") current[part] = {{}};
+      current = current[part];
+    }}
+    current[parts[parts.length - 1]] = key;
+  }};
+  const makeIndexedDbRequest = () => ({{
+    result: undefined,
+    error: null,
+    readyState: "pending",
+    onupgradeneeded: null,
+    onsuccess: null,
+    onerror: null,
+  }});
+  const finishIndexedDbRequest = (request, value, error, after) => {{
+    indexedDbSchedule(() => {{
+      request.readyState = "done";
+      if (error) {{
+        request.error = error;
+        if (typeof request.onerror === "function") request.onerror.call(request, {{ target: request }});
+      }} else {{
+        request.result = value;
+        if (typeof request.onsuccess === "function") request.onsuccess.call(request, {{ target: request }});
+      }}
+      if (typeof after === "function") after();
+    }});
+  }};
+  const finishIndexedDbTransaction = (transaction) => {{
+    if (transaction.__finished || transaction.__pending !== 0) return;
+    transaction.__finished = true;
+    if (typeof transaction.oncomplete === "function") transaction.oncomplete.call(transaction, {{ target: transaction }});
+  }};
+  const maybeFinishIndexedDbTransaction = (transaction) => {{
+    if (transaction.__pending !== 0 || transaction.__finished || transaction.__finishScheduled) return;
+    transaction.__finishScheduled = true;
+    indexedDbSchedule(() => {{
+      transaction.__finishScheduled = false;
+      finishIndexedDbTransaction(transaction);
+    }});
+  }};
+  const queueIndexedDbRequest = (transaction, operation) => {{
+    if (transaction.__finished || transaction.__aborted) throw indexedDbError("TransactionInactiveError", "native IndexedDB transaction is inactive");
+    const request = makeIndexedDbRequest();
+    transaction.__pending += 1;
+    indexedDbSchedule(() => {{
+      let value;
+      let error = null;
+      if (transaction.__aborted) {{
+        error = indexedDbError("AbortError", "native IndexedDB transaction was aborted");
+      }} else {{
+        try {{ value = operation(); }} catch (caught) {{
+          error = caught instanceof Error ? caught : indexedDbError("UnknownError", String(caught));
+          transaction.__aborted = true;
+          transaction.error = error;
+          if (typeof transaction.onerror === "function") transaction.onerror.call(transaction, {{ target: transaction }});
+        }}
+      }}
+      finishIndexedDbRequest(request, value, error, () => {{
+        transaction.__pending -= 1;
+        maybeFinishIndexedDbTransaction(transaction);
+      }});
+    }});
+    return request;
+  }};
+  const makeIndexedDbTransaction = (database, databaseState, storeNames, mode, upgrade) => {{
+    const transaction = {{
+      db: database,
+      mode,
+      error: null,
+      oncomplete: null,
+      onerror: null,
+      onabort: null,
+      __upgrade: upgrade,
+      __pending: 0,
+      __aborted: false,
+      __finished: false,
+      __finishScheduled: false,
+      abort() {{
+        if (this.__finished) throw indexedDbError("InvalidStateError", "native IndexedDB transaction is inactive");
+        this.__aborted = true;
+        this.error = indexedDbError("AbortError", "native IndexedDB transaction was aborted");
+        if (typeof this.onabort === "function") this.onabort.call(this, {{ target: this }});
+      }},
+      objectStore(name) {{
+        const normalizedName = indexedDbName(name, "object store name");
+        if (!storeNames.includes(normalizedName)) throw indexedDbError("NotFoundError", "object store is not in this transaction");
+        const store = databaseState.stores[normalizedName];
+        if (!store) throw indexedDbError("NotFoundError", "object store does not exist");
+        return makeIndexedDbObjectStore(this, store, normalizedName);
+      }},
+    }};
+    indexedDbSchedule(() => indexedDbSchedule(() => maybeFinishIndexedDbTransaction(transaction)));
+    return transaction;
+  }};
+  const makeIndexedDbObjectStore = (transaction, store, name) => {{
+    const requireWritable = () => {{
+      if (transaction.mode === "readonly") throw indexedDbError("ReadOnlyError", "native IndexedDB transaction is read-only");
+    }};
+    const resolveRecord = (value, key) => {{
+      const cloned = indexedDbClone(value);
+      if (store.key_path && key !== undefined) throw indexedDbError("InvalidAccessError", "key path stores do not accept an explicit key");
+      let resolved = store.key_path ? indexedDbReadKeyPath(cloned, store.key_path) : key;
+      if (resolved === undefined && store.auto_increment) {{
+        if (!Number.isSafeInteger(store.next_key) || store.next_key <= 0) throw indexedDbError("QuotaExceededError", "native IndexedDB key space exhausted");
+        resolved = store.next_key;
+        store.next_key += 1;
+        indexedDbWriteKeyPath(cloned, store.key_path, resolved);
+      }}
+      const token = indexedDbKeyToken(resolved, false);
+      return {{ token, value: cloned, key: indexedDbKeyValue(token) }};
+    }};
+    const queryToken = (query) => query === undefined ? undefined : indexedDbKeyToken(query, false);
+    return {{
+      name,
+      keyPath: store.key_path,
+      autoIncrement: store.auto_increment,
+      get(key) {{
+        const token = queryToken(key);
+        return queueIndexedDbRequest(transaction, () => token === undefined || store.records[token] === undefined
+          ? undefined
+          : indexedDbClone(store.records[token]));
+      }},
+      getAll(query, count) {{
+        const token = queryToken(query);
+        const limit = count === undefined ? indexedDbRecordLimit : Math.max(0, Math.min(indexedDbRecordLimit, Number(count)));
+        if (!Number.isInteger(limit) || limit < 0) throw indexedDbError("TypeError", "native IndexedDB count must be a non-negative integer");
+        return queueIndexedDbRequest(transaction, () => Object.keys(store.records)
+          .filter(candidate => token === undefined || candidate === token)
+          .slice(0, limit)
+          .map(candidate => indexedDbClone(store.records[candidate])));
+      }},
+      count(query) {{
+        const token = queryToken(query);
+        return queueIndexedDbRequest(transaction, () => Object.keys(store.records)
+          .filter(candidate => token === undefined || candidate === token).length);
+      }},
+      put(value, key) {{
+        requireWritable();
+        return queueIndexedDbRequest(transaction, () => {{
+          const record = resolveRecord(value, key);
+          if (store.records[record.token] === undefined && Object.keys(store.records).length >= indexedDbRecordLimit) throw indexedDbError("QuotaExceededError", "native IndexedDB record limit exceeded");
+          store.records[record.token] = record.value;
+          return record.key;
+        }});
+      }},
+      add(value, key) {{
+        requireWritable();
+        return queueIndexedDbRequest(transaction, () => {{
+          const record = resolveRecord(value, key);
+          if (store.records[record.token] !== undefined) throw indexedDbError("ConstraintError", "native IndexedDB key already exists");
+          if (Object.keys(store.records).length >= indexedDbRecordLimit) throw indexedDbError("QuotaExceededError", "native IndexedDB record limit exceeded");
+          store.records[record.token] = record.value;
+          return record.key;
+        }});
+      }},
+      delete(key) {{
+        requireWritable();
+        const token = queryToken(key);
+        return queueIndexedDbRequest(transaction, () => {{ delete store.records[token]; return undefined; }});
+      }},
+      clear() {{
+        requireWritable();
+        return queueIndexedDbRequest(transaction, () => {{ store.records = {{}}; return undefined; }});
+      }},
+    }};
+  }};
+  const makeIndexedDbDatabase = (name, databaseState, upgradeTransaction) => {{
+    let closed = false;
+    const database = {{
+      name,
+      __upgradeTransaction: upgradeTransaction,
+      get version() {{ return databaseState.version; }},
+      get objectStoreNames() {{ return Object.keys(databaseState.stores); }},
+      createObjectStore(storeName, options) {{
+        const activeUpgradeTransaction = database.__upgradeTransaction;
+        if (!activeUpgradeTransaction || activeUpgradeTransaction.__finished) throw indexedDbError("InvalidStateError", "object stores can only be created during upgrade");
+        const normalizedName = indexedDbName(storeName, "object store name");
+        if (Object.keys(databaseState.stores).length >= indexedDbStoreLimit && !databaseState.stores[normalizedName]) throw indexedDbError("QuotaExceededError", "native IndexedDB object store limit exceeded");
+        if (databaseState.stores[normalizedName]) throw indexedDbError("ConstraintError", "native IndexedDB object store already exists");
+        const keyPath = options && options.keyPath !== undefined && options.keyPath !== null
+          ? indexedDbName(options.keyPath, "key path")
+          : null;
+        const autoIncrement = Boolean(options && options.autoIncrement);
+        if (autoIncrement && !keyPath) throw indexedDbError("InvalidAccessError", "auto-increment stores require a key path");
+        databaseState.stores[normalizedName] = {{
+          key_path: keyPath,
+          auto_increment: autoIncrement,
+          next_key: 1,
+          records: {{}},
+        }};
+        return makeIndexedDbObjectStore(activeUpgradeTransaction, databaseState.stores[normalizedName], normalizedName);
+      }},
+      deleteObjectStore(storeName) {{
+        const activeUpgradeTransaction = database.__upgradeTransaction;
+        if (!activeUpgradeTransaction || activeUpgradeTransaction.__finished) throw indexedDbError("InvalidStateError", "object stores can only be deleted during upgrade");
+        const normalizedName = indexedDbName(storeName, "object store name");
+        if (!databaseState.stores[normalizedName]) throw indexedDbError("NotFoundError", "object store does not exist");
+        delete databaseState.stores[normalizedName];
+      }},
+      transaction(storeNames, mode) {{
+        if (closed) throw indexedDbError("InvalidStateError", "native IndexedDB database is closed");
+        const names = Array.isArray(storeNames) ? storeNames.map(value => indexedDbName(value, "object store name")) : [indexedDbName(storeNames, "object store name")];
+        const selectedMode = mode === undefined ? "readonly" : String(mode);
+        if (!["readonly", "readwrite"].includes(selectedMode)) throw indexedDbError("TypeError", "native IndexedDB transaction mode is unsupported");
+        for (const storeName of names) if (!databaseState.stores[storeName]) throw indexedDbError("NotFoundError", "object store does not exist");
+        return makeIndexedDbTransaction(database, databaseState, names, selectedMode, false);
+      }},
+      close() {{ closed = true; }},
+    }};
+    return database;
+  }};
+  const nativeIndexedDB = {{
+    __glassNativeIndexedDB: true,
+    open(name, version) {{
+      const normalizedName = indexedDbName(name, "database name");
+      if (version !== undefined && (!Number.isSafeInteger(Number(version)) || Number(version) < 1)) throw indexedDbError("TypeError", "native IndexedDB version must be a positive integer");
+      const requestedVersion = version === undefined ? undefined : Number(version);
+      const request = makeIndexedDbRequest();
+      indexedDbSchedule(() => {{
+        let databaseState = indexedDbState.databases[normalizedName];
+        const oldVersion = databaseState ? Number(databaseState.version) : 0;
+        const nextVersion = requestedVersion === undefined ? (databaseState ? oldVersion : 1) : requestedVersion;
+        if (databaseState && nextVersion < oldVersion) {{
+          finishIndexedDbRequest(request, undefined, indexedDbError("VersionError", "native IndexedDB version is older than the database"), null);
+          return;
+        }}
+        let upgradeTransaction = null;
+        if (!databaseState) {{
+          if (Object.keys(indexedDbState.databases).length >= indexedDbDatabaseLimit) {{
+            finishIndexedDbRequest(request, undefined, indexedDbError("QuotaExceededError", "native IndexedDB database limit exceeded"), null);
+            return;
+          }}
+          databaseState = {{ version: nextVersion, stores: {{}} }};
+          indexedDbState.databases[normalizedName] = databaseState;
+        }} else if (nextVersion > oldVersion) {{
+          databaseState.version = nextVersion;
+        }}
+        const upgraded = nextVersion > oldVersion;
+        const database = makeIndexedDbDatabase(normalizedName, databaseState, null);
+        if (upgraded) {{
+          upgradeTransaction = makeIndexedDbTransaction(database, databaseState, Object.keys(databaseState.stores), "versionchange", true);
+          database.__upgradeTransaction = upgradeTransaction;
+          request.result = database;
+          request.transaction = upgradeTransaction;
+          try {{
+            if (typeof request.onupgradeneeded === "function") request.onupgradeneeded.call(request, {{ target: request, oldVersion, newVersion: nextVersion }});
+            finishIndexedDbRequest(request, database, null, null);
+          }} catch (error) {{
+            finishIndexedDbRequest(request, undefined, error instanceof Error ? error : indexedDbError("AbortError", String(error)), null);
+          }}
+        }} else {{
+          finishIndexedDbRequest(request, database, null, null);
+        }}
+      }});
+      return request;
+    }},
+    deleteDatabase(name) {{
+      const normalizedName = indexedDbName(name, "database name");
+      const request = makeIndexedDbRequest();
+      indexedDbSchedule(() => {{ delete indexedDbState.databases[normalizedName]; finishIndexedDbRequest(request, undefined, null, null); }});
+      return request;
+    }},
+    databases() {{
+      return Promise.resolve(Object.keys(indexedDbState.databases).map(name => ({{ name, version: indexedDbState.databases[name].version }})));
+    }},
+  }};
+  globalThis.indexedDB = nativeIndexedDB;
+  globalThis.__glassNativeIndexedDB = nativeIndexedDB;
+  globalThis.__glassNativeIndexedDBInstalled = true;
+  }} else if (globalThis.indexedDB !== globalThis.__glassNativeIndexedDB) {{
+    globalThis.indexedDB = globalThis.__glassNativeIndexedDB;
+  }}
   globalThis.__glassTimers = timers;
   globalThis.__glassRunningTimers = runningTimers;
   globalThis.__glassNextTimerId = nextTimerId;
@@ -3846,7 +4479,9 @@ fn document_bootstrap(
   if (Array.isArray(host.storage_events) && host.storage_events.length > 0) {{
     globalThis.__glassDispatchStorageEvents(host.storage_events);
   }}
-  globalThis.__glassRunTimers(host.now_ms);
+  if ({run_timers}) {{
+    globalThis.__glassRunTimers(host.now_ms);
+  }}
 }})();"###,
         serialized = serialized,
         max_commands = super::interaction::MAX_NATIVE_EFFECTS,
@@ -3855,6 +4490,11 @@ fn document_bootstrap(
         storage_entry_limit = crate::browser_backend::MAX_STORAGE_ENTRIES,
         storage_key_limit = crate::browser_backend::MAX_BACKEND_ID_BYTES,
         storage_value_limit = crate::browser_backend::MAX_TEXT_BYTES,
+        indexed_db_database_limit = MAX_NATIVE_INDEXED_DB_DATABASES,
+        indexed_db_store_limit = MAX_NATIVE_INDEXED_DB_STORES,
+        indexed_db_record_limit = MAX_NATIVE_INDEXED_DB_RECORDS,
+        indexed_db_value_limit = MAX_NATIVE_INDEXED_DB_VALUE_BYTES,
+        run_timers = run_timers,
         width = viewport.width,
         height = viewport.height,
         ready_state = ready_state,

@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-085` locally. The versioned
+`native-engine-browser-086` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -839,6 +839,14 @@ state only when they begin. This keeps rollback from erasing a predecessor’s
 committed work. Cross-realm/process scheduling, upgrade-failure rollback,
 structured-clone values, quota permission policy, and the remaining
 browser-complete gates remain open.
+
+The completed bounded IndexedDB structured-clone extension slice is
+[native-engine-browser-086](tasks/native-engine-browser-086.md). The native
+profile now retains tagged `undefined`, non-finite/negative-zero numbers,
+`Date`, `RegExp`, `Map`, and `Set` values across reads and restart, with
+bounded recursive encoding and explicit `DataCloneError` handling. Binary
+buffers, typed arrays, Blob/File payloads, BigInt, and full clone parity remain
+open.
 
 Full cookie policy/Web IDL parity and the remaining browser-complete gates
 remain open.

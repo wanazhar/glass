@@ -2510,6 +2510,14 @@ committed work. Cross-realm/process scheduling, upgrade-failure rollback,
 structured-clone values, quota permission policy, and the remaining
 browser-complete gates remain open.
 
+The completed bounded IndexedDB structured-clone follow-up is
+[native-engine-browser-086](../tasks/native-engine-browser-086.md). Tagged
+JSON preserves `undefined`, non-finite and negative-zero numbers, `Date`,
+`RegExp`, `Map`, and `Set` across API reads, worker transfer, profile
+persistence, and restart; cyclic, unsupported, reserved-tag, invalid-date,
+and oversize values fail closed. Binary buffers, typed arrays, Blob/File
+payloads, BigInt, transfer lists, and full clone/prototype parity remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

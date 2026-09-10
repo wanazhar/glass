@@ -3851,14 +3851,80 @@ fn document_bootstrap(
     if (!name || name.length > storageKeyLimit) throw indexedDbError("TypeError", field + " is outside the native limit");
     return name;
   }};
-  const indexedDbClone = (value) => {{
+  const indexedDbTypeKey = "__glassNativeIndexedDbType";
+  const indexedDbEncode = (value, seen = new Set(), depth = 0) => {{
+    if (depth > 64) throw indexedDbError("DataCloneError", "native IndexedDB value is too deeply nested");
+    if (value === undefined) return {{ [indexedDbTypeKey]: "undefined" }};
+    if (value === null || typeof value === "boolean" || typeof value === "string") return value;
+    if (typeof value === "number") {{
+      if (Number.isFinite(value) && !Object.is(value, -0)) return value;
+      return {{
+        [indexedDbTypeKey]: "number",
+        value: Number.isNaN(value) ? "NaN" : (value === Infinity ? "Infinity" : (value === -Infinity ? "-Infinity" : "-0")),
+      }};
+    }}
+    if (typeof value === "bigint" || typeof value === "function" || typeof value === "symbol") throw indexedDbError("DataCloneError", "value cannot be cloned by native IndexedDB");
+    if (seen.has(value)) throw indexedDbError("DataCloneError", "cyclic value cannot be cloned by native IndexedDB");
+    seen.add(value);
     let encoded;
-    try {{ encoded = JSON.stringify(value); }} catch (_error) {{
+    if (value instanceof Date) {{
+      const timestamp = value.getTime();
+      if (!Number.isFinite(timestamp)) throw indexedDbError("DataCloneError", "invalid date cannot be cloned by native IndexedDB");
+      encoded = {{ [indexedDbTypeKey]: "date", value: timestamp }};
+    }} else if (value instanceof RegExp) {{
+      encoded = {{ [indexedDbTypeKey]: "regexp", source: value.source, flags: value.flags }};
+    }} else if (value instanceof Map) {{
+      encoded = {{
+        [indexedDbTypeKey]: "map",
+        entries: Array.from(value.entries(), entry => [
+          indexedDbEncode(entry[0], seen, depth + 1),
+          indexedDbEncode(entry[1], seen, depth + 1),
+        ]),
+      }};
+    }} else if (value instanceof Set) {{
+      encoded = {{
+        [indexedDbTypeKey]: "set",
+        values: Array.from(value.values(), entry => indexedDbEncode(entry, seen, depth + 1)),
+      }};
+    }} else if (Array.isArray(value)) {{
+      encoded = Array.from(value, entry => indexedDbEncode(entry, seen, depth + 1));
+    }} else {{
+      if (Object.prototype.hasOwnProperty.call(value, indexedDbTypeKey)) throw indexedDbError("DataCloneError", "reserved native IndexedDB value tag is not writable");
+      encoded = Object.create(null);
+      for (const key of Object.keys(value)) encoded[key] = indexedDbEncode(value[key], seen, depth + 1);
+    }}
+    seen.delete(value);
+    return encoded;
+  }};
+  const indexedDbDecode = (value) => {{
+    if (Array.isArray(value)) return value.map(entry => indexedDbDecode(entry));
+    if (!value || typeof value !== "object") return value;
+    const type = value[indexedDbTypeKey];
+    if (type === "undefined") return undefined;
+    if (type === "number") return value.value === "NaN" ? NaN : (value.value === "Infinity" ? Infinity : (value.value === "-Infinity" ? -Infinity : -0));
+    if (type === "date") return new Date(value.value);
+    if (type === "regexp") return new RegExp(value.source, value.flags);
+    if (type === "map") return new Map((value.entries || []).map(entry => [indexedDbDecode(entry[0]), indexedDbDecode(entry[1])]));
+    if (type === "set") return new Set((value.values || []).map(entry => indexedDbDecode(entry)));
+    const decoded = {{}};
+    for (const key of Object.keys(value)) Object.defineProperty(decoded, key, {{
+      value: indexedDbDecode(value[key]),
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    }});
+    return decoded;
+  }};
+  const indexedDbStoredClone = (value) => indexedDbDecode(value);
+  const indexedDbClone = (value) => {{
+    let serialized;
+    try {{ serialized = JSON.stringify(indexedDbEncode(value)); }} catch (error) {{
+      if (error && (error.name === "DataCloneError" || error.name === "QuotaExceededError")) throw error;
       throw indexedDbError("DataCloneError", "value cannot be cloned by native IndexedDB");
     }}
-    if (encoded === undefined) throw indexedDbError("DataCloneError", "value cannot be cloned by native IndexedDB");
-    if (encoded.length > indexedDbValueLimit) throw indexedDbError("QuotaExceededError", "native IndexedDB value limit exceeded");
-    return JSON.parse(encoded);
+    if (serialized === undefined) throw indexedDbError("DataCloneError", "value cannot be cloned by native IndexedDB");
+    if (serialized.length > indexedDbValueLimit) throw indexedDbError("QuotaExceededError", "native IndexedDB value limit exceeded");
+    return indexedDbDecode(JSON.parse(serialized));
   }};
   const indexedDbKeyToken = (key, allowUndefined) => {{
     if (key === undefined && allowUndefined) return undefined;
@@ -3952,7 +4018,7 @@ fn document_bootstrap(
     current[parts[parts.length - 1]] = key;
   }};
   const indexedDbIndexKeys = (value, index) => {{
-    const extracted = indexedDbReadKeyPath(value, index.key_path);
+    const extracted = indexedDbReadKeyPath(indexedDbDecode(value), index.key_path);
     if (extracted === undefined) return [];
     const candidates = index.multi_entry && Array.isArray(extracted) ? extracted : [extracted];
     const keys = [];
@@ -4207,7 +4273,7 @@ fn document_bootstrap(
       get value() {{
         if (keyOnly) return undefined;
         const entry = currentEntry();
-        return entry ? indexedDbClone(entry.value) : undefined;
+        return entry ? indexedDbStoredClone(entry.value) : undefined;
       }},
       continue(key) {{
         if (!currentEntry()) throw indexedDbError("InvalidStateError", "native IndexedDB cursor is exhausted");
@@ -4268,7 +4334,7 @@ fn document_bootstrap(
         const range = indexedDbQueryRange(query);
         return queueIndexedDbRequest(transaction, () => {{
           const entry = queryEntries(range, "next")[0];
-          return entry ? indexedDbClone(entry.value) : undefined;
+          return entry ? indexedDbStoredClone(entry.value) : undefined;
         }});
       }},
       getKey(query) {{
@@ -4281,7 +4347,7 @@ fn document_bootstrap(
       getAll(query, count) {{
         const range = indexedDbQueryRange(query);
         const limit = indexedDbQueryLimit(count);
-        return queueIndexedDbRequest(transaction, () => queryEntries(range, "next").slice(0, limit).map(entry => indexedDbClone(entry.value)));
+        return queueIndexedDbRequest(transaction, () => queryEntries(range, "next").slice(0, limit).map(entry => indexedDbStoredClone(entry.value)));
       }},
       getAllKeys(query, count) {{
         const range = indexedDbQueryRange(query);
@@ -4324,7 +4390,7 @@ fn document_bootstrap(
         indexedDbWriteKeyPath(cloned, store.key_path, resolved);
       }}
       const token = indexedDbKeyToken(resolved, false);
-      return {{ token, value: cloned, key: indexedDbKeyValue(token) }};
+      return {{ token, value: indexedDbEncode(cloned), key: indexedDbKeyValue(token) }};
     }};
     const resolveCursorRecord = (value, primaryToken) => {{
       const cloned = indexedDbClone(value);
@@ -4332,7 +4398,7 @@ fn document_bootstrap(
         ? indexedDbKeyToken(indexedDbReadKeyPath(cloned, store.key_path), false)
         : primaryToken;
       if (token !== primaryToken) throw indexedDbError("DataError", "native IndexedDB cursor update cannot change the primary key");
-      return {{ token, value: cloned, key: indexedDbKeyValue(token) }};
+      return {{ token, value: indexedDbEncode(cloned), key: indexedDbKeyValue(token) }};
     }};
     const ensureIndexConstraints = (primaryToken, value) => {{
       for (const index of Object.values(store.indexes)) {{
@@ -4383,7 +4449,7 @@ fn document_bootstrap(
         const range = indexedDbQueryRange(query);
         return queueIndexedDbRequest(transaction, () => {{
           const entry = indexedDbObjectEntries(store).find(candidate => indexedDbRangeIncludes(range, candidate.indexToken));
-          return entry ? indexedDbClone(entry.value) : undefined;
+          return entry ? indexedDbStoredClone(entry.value) : undefined;
         }});
       }},
       getKey(query) {{
@@ -4399,7 +4465,7 @@ fn document_bootstrap(
         return queueIndexedDbRequest(transaction, () => indexedDbObjectEntries(store)
           .filter(entry => indexedDbRangeIncludes(range, entry.indexToken))
           .slice(0, limit)
-          .map(entry => indexedDbClone(entry.value)));
+          .map(entry => indexedDbStoredClone(entry.value)));
       }},
       getAllKeys(query, count) {{
         const range = indexedDbQueryRange(query);

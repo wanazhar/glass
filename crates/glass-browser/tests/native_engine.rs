@@ -1425,14 +1425,17 @@ async fn native_local_file_and_blob_form_data_are_bounded_and_text_backed() {
     assert_eq!(
         engine
             .evaluate_async(
-                "const blob = new Blob(['hello', new Blob(['!'])], { type: 'TEXT/PLAIN' }); const file = new File(['world'], 'note.txt', { type: 'text/plain', lastModified: 7 }); const data = new FormData(); data.append('blob', blob); data.append('file', file); data.append('text', 'value'); const sliced = blob.slice(1, 4, 'text/custom'); const blobText = await blob.text(); const sliceText = await sliced.text(); const fileText = await file.text(); const limitRejected = (() => { try { new Blob(['x'.repeat(20000)]); return false; } catch (error) { return error instanceof RangeError; } })(); ({ blob: [blob.size, blob.type, blobText], slice: [sliced.size, sliced.type, sliceText], file: [file.name, file.size, file.type, file.lastModified, fileText], limitRejected, entries: data.entries().map(([name, value]) => [name, value.__glassNativeBlob ? { name: value.name || null, type: value.type, text: value._text } : value]) })",
+                "const blob = new Blob(['hello', new Blob(['!'])], { type: 'TEXT/PLAIN' }); const file = new File(['world'], 'note.txt', { type: 'text/plain', lastModified: 7 }); const data = new FormData(); data.append('blob', blob); data.append('file', file); data.append('text', 'value'); const sliced = blob.slice(1, 4, 'text/custom'); const blobText = await blob.text(); const blobArrayBuffer = Array.from(new Uint8Array(await blob.arrayBuffer())); const blobBytes = typeof blob.bytes === 'function' ? Array.from(await blob.bytes()) : null; const unicodeBytes = Array.from(new Uint8Array(await new Blob(['hé😀']).arrayBuffer())); const sliceText = await sliced.text(); const fileText = await file.text(); const fileBytes = Array.from(new Uint8Array(await file.arrayBuffer())); const limitRejected = (() => { try { new Blob(['x'.repeat(20000)]); return false; } catch (error) { return error instanceof RangeError; } })(); ({ blob: [blob.size, blob.type, blobText], blobArrayBuffer, blobBytes, unicodeBytes, slice: [sliced.size, sliced.type, sliceText], file: [file.name, file.size, file.type, file.lastModified, fileText, fileBytes], limitRejected, entries: data.entries().map(([name, value]) => [name, value.__glassNativeBlob ? { name: value.name || null, type: value.type, text: value._text } : value]) })",
             )
             .await
             .unwrap(),
         serde_json::json!({
             "blob": [6, "text/plain", "hello!"],
+            "blobArrayBuffer": [104, 101, 108, 108, 111, 33],
+            "blobBytes": [104, 101, 108, 108, 111, 33],
+            "unicodeBytes": [104, 195, 169, 240, 159, 152, 128],
             "slice": [3, "text/custom", "ell"],
-            "file": ["note.txt", 5, "text/plain", 7, "world"],
+            "file": ["note.txt", 5, "text/plain", 7, "world", [119, 111, 114, 108, 100]],
             "limitRejected": true,
             "entries": [
                 ["blob", {"name": null, "type": "text/plain", "text": "hello!"}],
@@ -28609,7 +28612,7 @@ async fn native_content_process_indexed_db_round_trips_through_worker_ipc() {
     assert_eq!(
         engine
             .evaluate_async(
-                "await (async () => { const request = indexedDB.open('content', 1); request.onupgradeneeded = event => { const store = event.target.result.createObjectStore('records'); store.createIndex('byStatus', 'status'); }; const db = await new Promise((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); }); const tx = db.transaction('records', 'readwrite'); tx.objectStore('records').put({ ready: true, status: 'ready' }, 'status'); await new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); }); const records = db.transaction('records', 'readonly').objectStore('records'); const read = records.index('byStatus').get('ready'); return await new Promise((resolve, reject) => { read.onsuccess = () => resolve({ version: db.version, stores: records.indexNames, value: read.result }); read.onerror = () => reject(read.error); }); })()",
+                "await (async () => { const request = indexedDB.open('content', 1); request.onupgradeneeded = event => { const store = event.target.result.createObjectStore('records'); store.createIndex('byStatus', 'status'); }; const db = await new Promise((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); }); const tx = db.transaction('records', 'readwrite'); tx.objectStore('records').put({ ready: true, status: 'ready', buffer: new Uint8Array([3, 5, 8]).buffer, bytes: new Uint16Array([258, 513]) }, 'status'); await new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); }); const records = db.transaction('records', 'readonly').objectStore('records'); const read = records.index('byStatus').get('ready'); return await new Promise((resolve, reject) => { read.onsuccess = () => { const value = read.result; resolve({ version: db.version, stores: records.indexNames, value: { ready: value.ready, status: value.status }, buffer: Array.from(new Uint8Array(value.buffer)), typedArray: Array.from(value.bytes) }); }; read.onerror = () => reject(read.error); }); })()",
             )
             .await
             .unwrap(),
@@ -28617,6 +28620,8 @@ async fn native_content_process_indexed_db_round_trips_through_worker_ipc() {
             "version": 1,
             "stores": ["byStatus"],
             "value": {"ready": true, "status": "ready"},
+            "buffer": [3, 5, 8],
+            "typedArray": [258, 513],
         })
     );
     engine.close_async().await.unwrap();

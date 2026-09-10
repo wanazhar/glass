@@ -976,6 +976,131 @@ async fn native_http_post_message_crosses_content_worker_and_replies() {
 }
 
 #[tokio::test]
+async fn native_window_identity_exposes_opener_and_persists_name() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://identity-parent",
+            "<title>Identity parent</title><script>globalThis.received = []; addEventListener('message', event => { globalThis.received.push([event.data.kind, Boolean(event.source), event.origin]); }); window.name = 'parent'; globalThis.child = window.open('fixture://identity-child', 'report');</script><p>parent</p>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://identity-child",
+            "<title>Identity child</title><script>globalThis.observed = [window.name, window.opener !== null, window.opener.name]; window.opener.postMessage({ kind: 'child-ready' }, '*');</script><p>child</p>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://identity-child-next",
+            "<title>Identity child next</title><p>next child</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://identity-parent");
+    let session = BrowserRuntimeSession::connect_native(config).await.unwrap();
+
+    let targets = session.native_list_targets().await.unwrap();
+    assert_eq!(targets.len(), 2);
+    let child_id = targets
+        .iter()
+        .find(|target| !target.active)
+        .unwrap()
+        .id
+        .clone();
+    session.native_select_target(&child_id).await.unwrap();
+    assert_eq!(
+        session.script("globalThis.observed").await.unwrap().value,
+        serde_json::json!(["report", true, "parent"])
+    );
+
+    session
+        .native_select_target("native-context")
+        .await
+        .unwrap();
+    assert_eq!(
+        session.script("globalThis.received").await.unwrap().value,
+        serde_json::json!([["child-ready", true, "null"]])
+    );
+
+    session.native_select_target(&child_id).await.unwrap();
+    assert_eq!(
+        session
+            .script("window.name = 'renamed'; [window.name, window.opener !== null]")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!(["renamed", true])
+    );
+    session
+        .native_select_target("native-context")
+        .await
+        .unwrap();
+    session
+        .script("window.open('fixture://identity-child-next', 'renamed'); 'reused'")
+        .await
+        .unwrap();
+    let targets = session.native_list_targets().await.unwrap();
+    assert_eq!(targets.len(), 2);
+    assert_eq!(targets[1].id, child_id);
+    assert_eq!(targets[1].title, "Identity child next");
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_http_window_identity_crosses_content_worker() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap();
+            let body = match path {
+                "/identity-parent" => {
+                    "<title>HTTP identity parent</title><script>globalThis.received = []; addEventListener('message', event => { globalThis.received.push([event.data.kind, Boolean(event.source), event.origin]); }); window.name = 'http-parent'; window.open('/identity-child', 'report');</script><p>parent</p>"
+                }
+                "/identity-child" => {
+                    "<title>HTTP identity child</title><script>globalThis.observed = [window.name, window.opener !== null, window.opener.name]; window.opener.postMessage({ kind: 'child-ready' }, '*');</script><p>child</p>"
+                }
+                other => panic!("unexpected window identity request path: {other}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/identity-parent")),
+    )
+    .await
+    .unwrap();
+    let targets = session.native_list_targets().await.unwrap();
+    assert_eq!(targets.len(), 2);
+    let child_id = targets
+        .iter()
+        .find(|target| !target.active)
+        .unwrap()
+        .id
+        .clone();
+    session.native_select_target(&child_id).await.unwrap();
+    assert_eq!(
+        session.script("globalThis.observed").await.unwrap().value,
+        serde_json::json!(["report", true, "http-parent"])
+    );
+    session
+        .native_select_target("native-context")
+        .await
+        .unwrap();
+    assert_eq!(
+        session.script("globalThis.received").await.unwrap().value,
+        serde_json::json!([["child-ready", true, format!("http://{address}")]])
+    );
+    session.close().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_blank_link_honors_click_cancellation() {
     let config = NativeEngineConfig::default()
         .with_fixture(

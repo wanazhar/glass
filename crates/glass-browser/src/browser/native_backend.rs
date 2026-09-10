@@ -116,11 +116,11 @@ struct NativeTargetState {
 }
 
 impl NativeTargetState {
-    fn new(active_target_id: String) -> Self {
+    fn new(active_target_id: String, active_name: Option<String>) -> Self {
         Self {
             active_target_id: Some(active_target_id.clone()),
             active_opener_id: None,
-            active_name: None,
+            active_name,
             active_frames: NativeFrameState::new(&active_target_id),
             parked: BTreeMap::new(),
             window_handles: BTreeMap::new(),
@@ -158,10 +158,11 @@ impl NativeEngineBackend {
         let profile = Self::profile_for(env!("CARGO_PKG_VERSION"))?;
         let active_target_id = config.context_id.clone();
         let engine = NativeEngine::new(config).map_err(native_error)?;
+        let active_name = native_window_name(&engine.config().window_name);
         Ok(Self {
             profile,
             engine: Mutex::new(engine),
-            targets: Mutex::new(NativeTargetState::new(active_target_id)),
+            targets: Mutex::new(NativeTargetState::new(active_target_id, active_name)),
         })
     }
 
@@ -438,7 +439,7 @@ impl NativeEngineBackend {
             .map_err(|_| poisoned_lock_error(BackendOperation::Contexts, "engine"))?
             .config()
             .clone();
-        let (target_id, opener_id) = {
+        let (target_id, opener_id, opener_window_name) = {
             let mut targets = self.lock_targets(BackendOperation::Contexts)?;
             if targets.target_count() >= NATIVE_MAX_TARGETS {
                 return Err(BrowserBackendError::SelectionFailed {
@@ -447,11 +448,32 @@ impl NativeEngineBackend {
             }
             let target_id = targets.next_target_id();
             let opener_id = opener_id.or_else(|| targets.active_target_id.clone());
-            (target_id, opener_id)
+            let opener_window_name = opener_id
+                .as_deref()
+                .and_then(|opener_id| {
+                    if targets.active_target_id.as_deref() == Some(opener_id) {
+                        targets.active_name.clone()
+                    } else {
+                        targets
+                            .parked
+                            .get(opener_id)
+                            .and_then(|target| target.name.clone())
+                    }
+                })
+                .unwrap_or_default();
+            (target_id, opener_id, opener_window_name)
         };
+        let initial_window_name = name.clone().unwrap_or_default();
         let config = base_config
             .with_context_id(target_id.clone())
+            .with_opener_window_name(opener_window_name)
+            .with_window_name(initial_window_name)
             .with_initial_url(url.to_owned());
+        let config = if let Some(opener_id) = opener_id.as_deref() {
+            config.with_opener_context_id(opener_id.to_owned())
+        } else {
+            config
+        };
         let mut engine = NativeEngine::new(config).map_err(native_error)?;
         if let Err(error) = engine.initialize_async().await {
             let _ = engine.close_async().await;
@@ -459,6 +481,7 @@ impl NativeEngineBackend {
         }
         let nested = engine.take_pending_popups();
         let nested_messages = engine.take_pending_post_messages();
+        let target_name = native_window_name(&engine.config().window_name);
         let target = match project_native_target(&engine, &target_id, opener_id.clone(), false) {
             Ok(target) => target,
             Err(error) => {
@@ -479,7 +502,7 @@ impl NativeEngineBackend {
                 engine,
                 opener_id,
                 frames: NativeFrameState::new(&target_id),
-                name,
+                name: target_name,
             },
         );
         Ok((target, nested, nested_messages))
@@ -502,7 +525,9 @@ impl NativeEngineBackend {
             .map_err(native_error)?;
         let popup_requests = engine.take_pending_popups();
         let post_messages = engine.take_pending_post_messages();
+        let window_name = engine.config().window_name.clone();
         drop(engine);
+        self.sync_target_name(&active_context_id, &window_name)?;
 
         if popup_requests.len() != 1 {
             return Err(BrowserBackendError::UnsupportedOperation {
@@ -627,6 +652,21 @@ impl NativeEngineBackend {
             .map(|(target_id, _)| (target_id.clone(), false)))
     }
 
+    fn sync_target_name(&self, target_id: &str, name: &str) -> Result<(), BrowserBackendError> {
+        validate_native_topology_id(target_id)?;
+        if !name.is_empty() {
+            validate_native_popup_name(name)?;
+        }
+        let mut targets = self.lock_targets(BackendOperation::Contexts)?;
+        let target_name = native_window_name(name);
+        if targets.active_target_id.as_deref() == Some(target_id) {
+            targets.active_name = target_name;
+        } else if let Some(target) = targets.parked.get_mut(target_id) {
+            target.name = target_name;
+        }
+        Ok(())
+    }
+
     fn message_target(
         &self,
         message: &NativePostMessageRequest,
@@ -683,10 +723,12 @@ impl NativeEngineBackend {
                 )
                 .await
                 .map_err(native_error)?;
-            return Ok((
-                engine.take_pending_popups(),
-                engine.take_pending_post_messages(),
-            ));
+            let popup_requests = engine.take_pending_popups();
+            let post_messages = engine.take_pending_post_messages();
+            let window_name = engine.config().window_name.clone();
+            drop(engine);
+            self.sync_target_name(&target_id, &window_name)?;
+            return Ok((popup_requests, post_messages));
         }
         let mut targets = self.lock_targets(BackendOperation::Script)?;
         let Some(parked) = targets.parked.get_mut(&target_id) else {
@@ -714,10 +756,12 @@ impl NativeEngineBackend {
             )
             .await
             .map_err(native_error)?;
-        Ok((
-            parked.engine.take_pending_popups(),
-            parked.engine.take_pending_post_messages(),
-        ))
+        let popup_requests = parked.engine.take_pending_popups();
+        let post_messages = parked.engine.take_pending_post_messages();
+        let window_name = parked.engine.config().window_name.clone();
+        drop(targets);
+        self.sync_target_name(&target_id, &window_name)?;
+        Ok((popup_requests, post_messages))
     }
 
     async fn navigate_named_target(
@@ -738,16 +782,18 @@ impl NativeEngineBackend {
                 .lock_targets(BackendOperation::Contexts)?
                 .active_opener_id
                 .clone();
-            let (target, nested, nested_messages) = {
+            let (target, nested, nested_messages, window_name) = {
                 let mut engine = self.lock_engine_raw(BackendOperation::Navigate)?;
                 engine.navigate_async(url).await.map_err(native_error)?;
                 let nested = engine.take_pending_popups();
                 let nested_messages = engine.take_pending_post_messages();
+                let window_name = engine.config().window_name.clone();
                 let target = project_native_target(&engine, target_id, opener_id, true)?;
-                (target, nested, nested_messages)
+                (target, nested, nested_messages, window_name)
             };
             let mut targets = self.lock_targets(BackendOperation::Contexts)?;
             targets.active_frames = NativeFrameState::new(target_id);
+            targets.active_name = native_window_name(&window_name);
             Ok((target, nested, nested_messages))
         } else {
             let parked = {
@@ -766,6 +812,7 @@ impl NativeEngineBackend {
             let result = engine.navigate_async(url).await;
             let nested = engine.take_pending_popups();
             let nested_messages = engine.take_pending_post_messages();
+            let window_name = engine.config().window_name.clone();
             let mut targets = self.lock_targets(BackendOperation::Contexts)?;
             if let Err(error) = result {
                 targets.parked.insert(
@@ -787,7 +834,7 @@ impl NativeEngineBackend {
                     engine,
                     opener_id,
                     frames,
-                    name,
+                    name: native_window_name(&window_name),
                 },
             );
             Ok((target, nested, nested_messages))
@@ -1127,7 +1174,9 @@ impl BrowserBackend for NativeEngineBackend {
                     engine.initialize_async().await.map_err(native_error)?;
                     let popup_requests = engine.take_pending_popups();
                     let post_messages = engine.take_pending_post_messages();
+                    let window_name = engine.config().window_name.clone();
                     drop(engine);
+                    self.sync_target_name(&active_context_id, &window_name)?;
                     self.process_pending_browser_effects(popup_requests, post_messages)
                         .await?;
                     Ok(BackendResponse::Unit)
@@ -1139,7 +1188,9 @@ impl BrowserBackend for NativeEngineBackend {
                         .map_err(native_error)?;
                     let popup_requests = engine.take_pending_popups();
                     let post_messages = engine.take_pending_post_messages();
+                    let window_name = engine.config().window_name.clone();
                     drop(engine);
+                    self.sync_target_name(&active_context_id, &window_name)?;
                     self.process_pending_browser_effects(popup_requests, post_messages)
                         .await?;
                     Ok(BackendResponse::Navigation(NavigationResult {
@@ -1204,7 +1255,9 @@ impl BrowserBackend for NativeEngineBackend {
                     let outcome = engine.action_async(action).await.map_err(native_error)?;
                     let popup_requests = engine.take_pending_popups();
                     let post_messages = engine.take_pending_post_messages();
+                    let window_name = engine.config().window_name.clone();
                     drop(engine);
+                    self.sync_target_name(&active_context_id, &window_name)?;
                     self.process_pending_browser_effects(popup_requests, post_messages)
                         .await?;
                     Ok(BackendResponse::Action(ActionResult {
@@ -1232,7 +1285,9 @@ impl BrowserBackend for NativeEngineBackend {
                         .map_err(native_error)?;
                     let popup_requests = engine.take_pending_popups();
                     let post_messages = engine.take_pending_post_messages();
+                    let window_name = engine.config().window_name.clone();
                     drop(engine);
+                    self.sync_target_name(&active_context_id, &window_name)?;
                     self.process_pending_browser_effects(popup_requests, post_messages)
                         .await?;
                     Ok(BackendResponse::Script(ScriptResult { value }))
@@ -1317,6 +1372,10 @@ fn project_native_target(
         opener_id,
         active,
     })
+}
+
+fn native_window_name(name: &str) -> Option<String> {
+    (!name.is_empty()).then(|| name.to_owned())
 }
 
 fn native_popup_name(target: &str) -> Option<String> {

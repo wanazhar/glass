@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-149` locally. The versioned
+`native-engine-browser-150` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1390,6 +1390,16 @@ script effects, protocol-6 transfer, and nested-effect draining all use the
 same native owner without CDP. Direct cross-context property scripting,
 `window.opener`/mutable `window.name`, popup permission policy and geometry,
 frame lifecycle/scripting, and complete browser parity remain issue #40 gates.
+
+The completed native-engine-browser-150 batch is
+[native-engine-browser-150](tasks/native-engine-browser-150.md). Native
+browsing contexts now carry bounded `window.name` and opener metadata through
+local and HTTP(S) realms, including content-worker initialization. Script can
+read `window.opener` and its opener name, mutate its own name, send opener
+messages, and cause later named-target calls to reuse the renamed target. The
+opener projection is intentionally snapshotted at child creation; live
+cross-context property scripting, popup permission policy and geometry, frame
+lifecycle/scripting, and complete browser parity remain issue #40 gates.
 
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and

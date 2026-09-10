@@ -17,6 +17,10 @@ pub const MAX_NATIVE_SCHEDULER_TASKS: usize = 256;
 pub const MAX_NATIVE_FIXTURES: usize = 32;
 /// Maximum viewport dimension accepted before layout exists.
 pub const MAX_NATIVE_VIEWPORT_DIMENSION: u32 = 16_384;
+/// Maximum persisted `window.name` text retained by one native browsing
+/// context. Names are browser-visible state but are not allowed to become an
+/// unbounded IPC or target-routing payload.
+pub(crate) const MAX_NATIVE_WINDOW_NAME_BYTES: usize = 256;
 
 /// Viewport inputs reserved for future layout and rendering phases.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,6 +155,9 @@ impl NativeFixture {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeEngineConfig {
     pub context_id: String,
+    pub opener_context_id: Option<String>,
+    pub opener_window_name: String,
+    pub window_name: String,
     pub initial_url: String,
     pub viewport: Viewport,
     pub limits: NativeEngineLimits,
@@ -162,6 +169,9 @@ impl Default for NativeEngineConfig {
     fn default() -> Self {
         Self {
             context_id: NATIVE_CONTEXT_ID.into(),
+            opener_context_id: None,
+            opener_window_name: String::new(),
+            window_name: String::new(),
             initial_url: "about:blank".into(),
             viewport: Viewport::default(),
             limits: NativeEngineLimits::default(),
@@ -174,6 +184,21 @@ impl Default for NativeEngineConfig {
 impl NativeEngineConfig {
     pub fn with_context_id(mut self, context_id: impl Into<String>) -> Self {
         self.context_id = context_id.into();
+        self
+    }
+
+    pub fn with_opener_context_id(mut self, context_id: impl Into<String>) -> Self {
+        self.opener_context_id = Some(context_id.into());
+        self
+    }
+
+    pub fn with_opener_window_name(mut self, name: impl Into<String>) -> Self {
+        self.opener_window_name = name.into();
+        self
+    }
+
+    pub fn with_window_name(mut self, name: impl Into<String>) -> Self {
+        self.window_name = name.into();
         self
     }
 
@@ -211,6 +236,11 @@ impl NativeEngineConfig {
         self.limits.validate()?;
         self.viewport.validate()?;
         validate_context_id(&self.context_id)?;
+        if let Some(opener_context_id) = self.opener_context_id.as_deref() {
+            validate_context_id(opener_context_id)?;
+        }
+        validate_window_name(&self.opener_window_name)?;
+        validate_window_name(&self.window_name)?;
         validate_url_text("initial URL", &self.initial_url)?;
         if self
             .storage_path
@@ -273,6 +303,23 @@ impl NativeEngineConfig {
         }
         Ok(())
     }
+}
+
+pub(crate) fn validate_window_name(value: &str) -> Result<(), NativeEngineError> {
+    if value.len() > MAX_NATIVE_WINDOW_NAME_BYTES {
+        return Err(NativeEngineError::limit(
+            "window name",
+            MAX_NATIVE_WINDOW_NAME_BYTES,
+            value.len(),
+        ));
+    }
+    if value.chars().any(char::is_control) {
+        return Err(NativeEngineError::invalid(
+            "window name",
+            "must not contain control characters",
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_context_id(value: &str) -> Result<(), NativeEngineError> {

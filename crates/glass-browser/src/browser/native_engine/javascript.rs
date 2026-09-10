@@ -4,7 +4,10 @@
 //! objects and Web APIs, which are added in separate slices so every exposed
 //! capability has an explicit resource and security contract.
 
-use super::config::{Viewport, validate_context_id, validate_url_text};
+use super::config::{
+    MAX_NATIVE_WINDOW_NAME_BYTES, Viewport, validate_context_id, validate_url_text,
+    validate_window_name,
+};
 use super::dom::{NativeDocument, NativePageScriptSource, NativePageScriptTiming};
 use super::error::NativeEngineError;
 use super::interaction::NativeEventKind;
@@ -94,6 +97,9 @@ pub(crate) enum NativeScriptCommand {
         target: String,
         #[serde(default)]
         handle: Option<String>,
+    },
+    SetWindowName {
+        value: String,
     },
     PostMessage {
         target: String,
@@ -2906,6 +2912,9 @@ pub(crate) struct NativeJavaScriptRuntime {
     dialog_events: Arc<Mutex<Vec<NativeDialog>>>,
     popup_events: Arc<Mutex<Vec<NativePopupRequest>>>,
     post_message_events: Arc<Mutex<Vec<NativePostMessageRequest>>>,
+    window_name: Arc<Mutex<String>>,
+    opener_context_id: Option<String>,
+    opener_window_name: String,
     storage_context_id: String,
     ready_state: String,
     clock_origin: Instant,
@@ -2915,6 +2924,24 @@ impl NativeJavaScriptRuntime {
     pub(crate) fn new_with_context_id(
         context_id: impl Into<String>,
     ) -> Result<Self, NativeEngineError> {
+        Self::new_with_context_metadata(context_id, "", None, "")
+    }
+
+    pub(crate) fn new_with_context_metadata(
+        context_id: impl Into<String>,
+        window_name: impl Into<String>,
+        opener_context_id: Option<&str>,
+        opener_window_name: impl Into<String>,
+    ) -> Result<Self, NativeEngineError> {
+        let context_id = context_id.into();
+        let window_name = window_name.into();
+        let opener_window_name = opener_window_name.into();
+        validate_context_id(&context_id)?;
+        validate_window_name(&window_name)?;
+        validate_window_name(&opener_window_name)?;
+        if let Some(opener_context_id) = opener_context_id {
+            validate_context_id(opener_context_id)?;
+        }
         let runtime = Runtime::new().map_err(|_| NativeEngineError::Worker {
             operation: "create JavaScript runtime".into(),
             reason: "native JavaScript runtime could not be created".into(),
@@ -2956,10 +2983,28 @@ impl NativeJavaScriptRuntime {
             dialog_events: Arc::new(Mutex::new(Vec::new())),
             popup_events: Arc::new(Mutex::new(Vec::new())),
             post_message_events: Arc::new(Mutex::new(Vec::new())),
-            storage_context_id: context_id.into(),
+            window_name: Arc::new(Mutex::new(window_name)),
+            opener_context_id: opener_context_id.map(str::to_owned),
+            opener_window_name,
+            storage_context_id: context_id,
             ready_state: "complete".into(),
             clock_origin: Instant::now(),
         })
+    }
+
+    pub(crate) fn window_name(&self) -> String {
+        self.window_name
+            .lock()
+            .map(|value| value.clone())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn opener_context_id(&self) -> Option<&str> {
+        self.opener_context_id.as_deref()
+    }
+
+    pub(crate) fn opener_window_name(&self) -> &str {
+        &self.opener_window_name
     }
 
     pub(crate) fn set_storage_state(&self, state: NativeWebStorageState) {
@@ -3094,6 +3139,25 @@ impl NativeJavaScriptRuntime {
             .lock()
             .map(|mut messages| std::mem::take(&mut *messages))
             .unwrap_or_default()
+    }
+
+    fn apply_window_name_command(
+        &self,
+        command: &NativeScriptCommand,
+    ) -> Result<bool, NativeEngineError> {
+        let NativeScriptCommand::SetWindowName { value } = command else {
+            return Ok(false);
+        };
+        validate_window_name(value)?;
+        let mut current = self
+            .window_name
+            .lock()
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "set window name".into(),
+                reason: "native window name state lock is unavailable".into(),
+            })?;
+        *current = value.clone();
+        Ok(true)
     }
 
     fn now_ms(&self) -> u64 {
@@ -3461,10 +3525,15 @@ impl NativeJavaScriptRuntime {
             ));
         }
         let storage_events = self.take_storage_events();
+        let window_name = self.window_name();
+        let opener_window_name = self.opener_window_name();
         let bootstrap = document_bootstrap(
             document,
             document_url,
             &self.storage_context_id,
+            &window_name,
+            self.opener_context_id(),
+            opener_window_name,
             origin,
             viewport,
             &self.ready_state,
@@ -3530,6 +3599,9 @@ impl NativeJavaScriptRuntime {
                     continue;
                 }
                 if self.apply_popup_command(&command)? {
+                    continue;
+                }
+                if self.apply_window_name_command(&command)? {
                     continue;
                 }
                 if self.apply_post_message_command(&command)? {
@@ -3651,10 +3723,15 @@ impl NativeJavaScriptRuntime {
             ));
         }
         let storage_events = self.take_storage_events();
+        let window_name = self.window_name();
+        let opener_window_name = self.opener_window_name();
         let bootstrap = document_bootstrap(
             document,
             document_url,
             &self.storage_context_id,
+            &window_name,
+            self.opener_context_id(),
+            opener_window_name,
             origin,
             viewport,
             &self.ready_state,
@@ -3702,6 +3779,9 @@ impl NativeJavaScriptRuntime {
                     continue;
                 }
                 if self.apply_popup_command(&command)? {
+                    continue;
+                }
+                if self.apply_window_name_command(&command)? {
                     continue;
                 }
                 if self.apply_post_message_command(&command)? {
@@ -4064,6 +4144,9 @@ fn document_bootstrap(
     document: &NativeDocument,
     document_url: &str,
     context_id: &str,
+    window_name: &str,
+    opener_context_id: Option<&str>,
+    opener_window_name: &str,
     origin: &NativeOrigin,
     viewport: Viewport,
     ready_state: &str,
@@ -4078,6 +4161,9 @@ fn document_bootstrap(
     let serialized = serde_json::to_string(&serde_json::json!({
         "url": document_url,
         "context_id": context_id,
+        "window_name": window_name,
+        "opener_context_id": opener_context_id,
+        "opener_window_name": opener_window_name,
         "origin": origin.serialized(),
         "state": state,
         "now_ms": now_ms,
@@ -7412,7 +7498,7 @@ fn document_bootstrap(
       target_context_id: targetContextId || null,
     }});
   }};
-    const makeWindowProxy = (handle, targetName, targetContextId) => {{
+  const makeWindowProxy = (handle, targetName, targetContextId) => {{
     const cacheKey = String(targetContextId || "") + "\\u0000" + String(handle || "");
     const existing = windowProxyCache.get(cacheKey);
     if (existing) return existing;
@@ -7431,6 +7517,35 @@ fn document_bootstrap(
     windowProxyCache.set(cacheKey, proxy);
     return proxy;
   }};
+  let windowName = typeof globalThis.__glassWindowName === "string"
+    ? globalThis.__glassWindowName
+    : String(host.window_name || "");
+  globalThis.__glassWindowName = windowName;
+  const setWindowName = (value) => {{
+    const next = String(value);
+    if (next.length > {window_name_bytes_limit}) throw new RangeError("native window.name exceeds its limit");
+    if ([...next].some((character) => {{
+      const code = character.codePointAt(0);
+      return code < 0x20 || code === 0x7f;
+    }})) throw new TypeError("native window.name contains a control character");
+    windowName = next;
+    globalThis.__glassWindowName = next;
+    pushCommand({{ kind: "setWindowName", value: next }});
+  }};
+  Object.defineProperty(globalThis, "name", {{
+    configurable: true,
+    enumerable: true,
+    get: () => windowName,
+    set: setWindowName,
+  }});
+  const openerProxy = host.opener_context_id
+    ? makeWindowProxy("opener:" + String(host.opener_context_id), String(host.opener_window_name || ""), String(host.opener_context_id))
+    : null;
+  Object.defineProperty(globalThis, "opener", {{
+    configurable: true,
+    enumerable: true,
+    get: () => openerProxy,
+  }});
   globalThis.postMessage = (message, targetOrigin = "/") =>
     queueWindowMessage("", host.context_id, message, targetOrigin);
   globalThis.__glassDispatchMessage = (descriptor) => {{
@@ -7579,6 +7694,7 @@ fn document_bootstrap(
         max_native_xhr_timeout_ms = MAX_NATIVE_XHR_TIMEOUT_MS,
         dialog_text_limit = MAX_NATIVE_DIALOG_TEXT_BYTES,
         post_message_bytes_limit = MAX_NATIVE_POST_MESSAGE_BYTES,
+        window_name_bytes_limit = MAX_NATIVE_WINDOW_NAME_BYTES,
         run_timers = run_timers,
         width = viewport.width,
         height = viewport.height,

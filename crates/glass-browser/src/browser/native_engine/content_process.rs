@@ -1,7 +1,7 @@
 use super::browsing_context::NATIVE_CONTEXT_ID;
 use super::config::{
     NativeEngineLimits, Viewport, is_network_url, validate_context_id, validate_url_text,
-    without_fragment,
+    validate_window_name, without_fragment,
 };
 use super::dom::{
     NativeDocument, NativeDocumentWire, NativeNodeId, NativePageScriptSource,
@@ -65,6 +65,7 @@ pub(crate) struct NativeContentLoad {
     pub(crate) dialogs: Vec<NativeDialog>,
     pub(crate) popups: Vec<NativePopupRequest>,
     pub(crate) post_messages: Vec<NativePostMessageRequest>,
+    pub(crate) window_name: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -92,6 +93,7 @@ pub(crate) struct NativeContentMutation {
     pub(crate) dialogs: Vec<NativeDialog>,
     pub(crate) popups: Vec<NativePopupRequest>,
     pub(crate) post_messages: Vec<NativePostMessageRequest>,
+    pub(crate) window_name: String,
 }
 
 pub(crate) struct NativeContentScriptResult {
@@ -102,6 +104,7 @@ pub(crate) struct NativeContentScriptResult {
     pub(crate) dialogs: Vec<NativeDialog>,
     pub(crate) popups: Vec<NativePopupRequest>,
     pub(crate) post_messages: Vec<NativePostMessageRequest>,
+    pub(crate) window_name: String,
 }
 
 /// Process-backed lifecycle and bounded document-transfer channel for one
@@ -199,6 +202,9 @@ impl NativeContentProcess {
         &mut self,
         storage_path: Option<&Path>,
         context_id: &str,
+        window_name: &str,
+        opener_context_id: Option<&str>,
+        opener_window_name: &str,
     ) -> Result<(), NativeEngineError> {
         let id = self.next_id();
         let response = self
@@ -208,6 +214,9 @@ impl NativeContentProcess {
                 "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
                 "storage_path": storage_path.map(|path| path.to_string_lossy().into_owned()),
                 "context_id": context_id,
+                "window_name": window_name,
+                "opener_context_id": opener_context_id,
+                "opener_window_name": opener_window_name,
             }))
             .await?;
         let result = require_response_kind(&response, "started", id, "content process start");
@@ -950,6 +959,7 @@ fn decode_loaded_response(
     let dialogs = decode_dialogs(response, "decode content process load")?;
     let popups = decode_popup_requests(response, "decode content process load")?;
     let post_messages = decode_post_message_requests(response, "decode content process load")?;
+    let window_name = decode_window_name(response, "decode content process load")?;
     let frame_sources = decode_frame_sources(response, "decode content process load")?;
     Ok(NativeContentLoad {
         url: url.into(),
@@ -962,6 +972,7 @@ fn decode_loaded_response(
         dialogs,
         popups,
         post_messages,
+        window_name,
     })
 }
 
@@ -1117,6 +1128,7 @@ fn decode_mutation_payload(
     let dialogs = decode_dialogs(response, operation)?;
     let popups = decode_popup_requests(response, operation)?;
     let post_messages = decode_post_message_requests(response, operation)?;
+    let window_name = decode_window_name(response, operation)?;
     Ok(NativeContentMutation {
         document,
         events,
@@ -1130,6 +1142,7 @@ fn decode_mutation_payload(
         dialogs,
         popups,
         post_messages,
+        window_name,
     })
 }
 
@@ -1491,6 +1504,7 @@ fn decode_script_response(
     };
     let has_mutation = mutation.is_some();
     let post_messages = decode_post_message_requests(&response, "decode content process script")?;
+    let window_name = decode_window_name(&response, "decode content process script")?;
     Ok(NativeContentScriptResult {
         value,
         storage_events: if has_mutation {
@@ -1511,7 +1525,17 @@ fn decode_script_response(
         } else {
             post_messages
         },
+        window_name,
     })
+}
+
+fn decode_window_name(response: &Value, _operation: &str) -> Result<String, NativeEngineError> {
+    let value = response
+        .get("window_name")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    validate_window_name(value)?;
+    Ok(value.to_owned())
 }
 
 fn decode_dialogs(
@@ -1695,6 +1719,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut indexed_db_state = NativeIndexedDbState::default();
     let mut storage_profile_path: Option<PathBuf> = None;
     let mut storage_context_id = NATIVE_CONTEXT_ID.to_owned();
+    let mut window_name = String::new();
+    let mut opener_context_id: Option<String> = None;
+    let mut opener_window_name = String::new();
     loop {
         let payload = read_frame(&mut stdin).await?;
         let request: Value =
@@ -1733,6 +1760,21 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         NativeEngineError::invalid("content-process context id", "must be text")
                     })?;
                 validate_context_id(requested_context_id)?;
+                let requested_window_name = request
+                    .get("window_name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                validate_window_name(requested_window_name)?;
+                let requested_opener_context_id =
+                    request.get("opener_context_id").and_then(Value::as_str);
+                if let Some(opener_context_id) = requested_opener_context_id {
+                    validate_context_id(opener_context_id)?;
+                }
+                let requested_opener_window_name = request
+                    .get("opener_window_name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                validate_window_name(requested_opener_window_name)?;
                 let requested_path = request
                     .get("storage_path")
                     .and_then(Value::as_str)
@@ -1755,6 +1797,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         }
                         storage_profile_path = requested_path;
                         storage_context_id = requested_context_id.to_owned();
+                        window_name = requested_window_name.to_owned();
+                        opener_context_id = requested_opener_context_id.map(str::to_owned);
+                        opener_window_name = requested_opener_window_name.to_owned();
                         running = true;
                         json!({"kind":"started","id":id})
                     }
@@ -1890,8 +1935,12 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         resource_load_nodes,
                     )) => {
                         let mut script_runtime =
-                            match NativeJavaScriptRuntime::new_with_context_id(&storage_context_id)
-                            {
+                            match NativeJavaScriptRuntime::new_with_context_metadata(
+                                &storage_context_id,
+                                &window_name,
+                                opener_context_id.as_deref(),
+                                &opener_window_name,
+                            ) {
                                 Ok(runtime) => Some(runtime),
                                 Err(error) => {
                                     let response = content_error_response(id, error);
@@ -2081,7 +2130,12 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         NativeEngineError::invalid("content-process script source", "must be text")
                     })?;
                 if javascript_runtime.is_none() {
-                    match NativeJavaScriptRuntime::new_with_context_id(&storage_context_id) {
+                    match NativeJavaScriptRuntime::new_with_context_metadata(
+                        &storage_context_id,
+                        &window_name,
+                        opener_context_id.as_deref(),
+                        &opener_window_name,
+                    ) {
                         Ok(runtime) => {
                             runtime.set_storage_state(storage_state.clone());
                             javascript_runtime = Some(runtime);
@@ -2239,7 +2293,12 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     continue;
                 };
                 if javascript_runtime.is_none() {
-                    match NativeJavaScriptRuntime::new_with_context_id(&storage_context_id) {
+                    match NativeJavaScriptRuntime::new_with_context_metadata(
+                        &storage_context_id,
+                        &window_name,
+                        opener_context_id.as_deref(),
+                        &opener_window_name,
+                    ) {
                         Ok(runtime) => {
                             runtime.set_storage_state(storage_state.clone());
                             javascript_runtime = Some(runtime);
@@ -2338,7 +2397,12 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     continue;
                 };
                 if javascript_runtime.is_none() {
-                    match NativeJavaScriptRuntime::new_with_context_id(&storage_context_id) {
+                    match NativeJavaScriptRuntime::new_with_context_metadata(
+                        &storage_context_id,
+                        &window_name,
+                        opener_context_id.as_deref(),
+                        &opener_window_name,
+                    ) {
                         Ok(runtime) => {
                             runtime.set_storage_state(storage_state.clone());
                             javascript_runtime = Some(runtime);
@@ -2453,7 +2517,12 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     continue;
                 };
                 if javascript_runtime.is_none() {
-                    match NativeJavaScriptRuntime::new_with_context_id(&storage_context_id) {
+                    match NativeJavaScriptRuntime::new_with_context_metadata(
+                        &storage_context_id,
+                        &window_name,
+                        opener_context_id.as_deref(),
+                        &opener_window_name,
+                    ) {
                         Ok(runtime) => {
                             runtime.set_storage_state(storage_state.clone());
                             javascript_runtime = Some(runtime);
@@ -2557,7 +2626,12 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     continue;
                 };
                 if javascript_runtime.is_none() {
-                    match NativeJavaScriptRuntime::new_with_context_id(&storage_context_id) {
+                    match NativeJavaScriptRuntime::new_with_context_metadata(
+                        &storage_context_id,
+                        &window_name,
+                        opener_context_id.as_deref(),
+                        &opener_window_name,
+                    ) {
                         Ok(runtime) => {
                             runtime.set_storage_state(storage_state.clone());
                             javascript_runtime = Some(runtime);
@@ -2932,15 +3006,21 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 }
             }
             "close" if protocol_matches(&request) => {
-                let (storage_events, indexed_db_changes, _dialogs, _popups, _post_messages) =
-                    sync_content_runtime_state(
-                        javascript_runtime.as_ref(),
-                        &mut storage_state,
-                        &mut indexed_db_state,
-                        &mut resource_loader,
-                        document_url.as_deref(),
-                        document_origin.as_ref(),
-                    )?;
+                let (
+                    storage_events,
+                    indexed_db_changes,
+                    _dialogs,
+                    _popups,
+                    _post_messages,
+                    _window_name,
+                ) = sync_content_runtime_state(
+                    javascript_runtime.as_ref(),
+                    &mut storage_state,
+                    &mut indexed_db_state,
+                    &mut resource_loader,
+                    document_url.as_deref(),
+                    document_origin.as_ref(),
+                )?;
                 persist_content_profile(
                     storage_profile_path.as_deref(),
                     &storage_state,
@@ -2960,15 +3040,24 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 },
             ),
         };
-        let (storage_events, indexed_db_changes, dialogs, popups, post_messages) =
-            sync_content_runtime_state(
-                javascript_runtime.as_ref(),
-                &mut storage_state,
-                &mut indexed_db_state,
-                &mut resource_loader,
-                document_url.as_deref(),
-                document_origin.as_ref(),
-            )?;
+        let (
+            storage_events,
+            indexed_db_changes,
+            dialogs,
+            popups,
+            post_messages,
+            response_window_name,
+        ) = sync_content_runtime_state(
+            javascript_runtime.as_ref(),
+            &mut storage_state,
+            &mut indexed_db_state,
+            &mut resource_loader,
+            document_url.as_deref(),
+            document_origin.as_ref(),
+        )?;
+        if javascript_runtime.is_some() {
+            window_name = response_window_name.clone();
+        }
         persist_content_profile(
             storage_profile_path.as_deref(),
             &storage_state,
@@ -3036,6 +3125,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     }
                 })?,
             );
+            object.insert("window_name".into(), Value::String(response_window_name));
         }
         write_value_frame(&mut stdout, &response).await?;
     }
@@ -3055,11 +3145,19 @@ fn sync_content_runtime_state(
         Vec<NativeDialog>,
         Vec<NativePopupRequest>,
         Vec<NativePostMessageRequest>,
+        String,
     ),
     NativeEngineError,
 > {
     let Some(runtime) = runtime else {
-        return Ok((Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()));
+        return Ok((
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            String::new(),
+        ));
     };
     let before_indexed_db = indexed_db_state.clone();
     *storage_state = runtime.storage_state();
@@ -3084,6 +3182,7 @@ fn sync_content_runtime_state(
         runtime.take_dialog_events(),
         runtime.take_popup_events(),
         runtime.take_post_message_events(),
+        runtime.window_name(),
     ))
 }
 
@@ -3339,6 +3438,7 @@ async fn load_content_resource(
             dialogs: Vec::new(),
             popups: Vec::new(),
             post_messages: Vec::new(),
+            window_name: String::new(),
         },
         document,
         viewport,
@@ -3652,6 +3752,7 @@ fn mutate_click_with_event_preflight(
         dialogs: Vec::new(),
         popups: Vec::new(),
         post_messages: Vec::new(),
+        window_name: String::new(),
     };
     Ok((next, mutation))
 }
@@ -3760,6 +3861,7 @@ fn mutate_type_with_event_bridge(
         dialogs: Vec::new(),
         popups: Vec::new(),
         post_messages: Vec::new(),
+        window_name: String::new(),
     };
     Ok((next, mutation))
 }
@@ -3817,6 +3919,7 @@ fn mutate_form_action_with_event_bridge(
         dialogs: Vec::new(),
         popups: Vec::new(),
         post_messages: Vec::new(),
+        window_name: String::new(),
     };
     Ok((next, mutation))
 }
@@ -3919,6 +4022,7 @@ fn mutate_key_with_event_bridge(
         dialogs: Vec::new(),
         popups: Vec::new(),
         post_messages: Vec::new(),
+        window_name: String::new(),
     };
     Ok((next, mutation))
 }
@@ -3981,6 +4085,7 @@ fn mutate_key_event_with_event_bridge(
             dialogs: Vec::new(),
             popups: Vec::new(),
             post_messages: Vec::new(),
+            window_name: String::new(),
         },
     ))
 }
@@ -4093,6 +4198,7 @@ fn mutate_key_shortcut_with_event_bridge(
             dialogs: Vec::new(),
             popups: Vec::new(),
             post_messages: Vec::new(),
+            window_name: String::new(),
         },
     ))
 }
@@ -4195,6 +4301,7 @@ fn mutate_before_unload(
             dialogs: Vec::new(),
             popups: Vec::new(),
             post_messages: Vec::new(),
+            window_name: String::new(),
         },
     ))
 }
@@ -4220,6 +4327,7 @@ fn mutate_lifecycle_events(
                 dialogs: Vec::new(),
                 popups: Vec::new(),
                 post_messages: Vec::new(),
+                window_name: String::new(),
             },
         ));
     }
@@ -4266,6 +4374,7 @@ fn mutate_lifecycle_events(
             dialogs: Vec::new(),
             popups: Vec::new(),
             post_messages: Vec::new(),
+            window_name: String::new(),
         },
     ))
 }
@@ -4318,6 +4427,7 @@ fn mutate_hash_change(
             dialogs: Vec::new(),
             popups: Vec::new(),
             post_messages: Vec::new(),
+            window_name: String::new(),
         },
     ))
 }
@@ -4441,6 +4551,7 @@ fn mutate_script_document(
         dialogs: Vec::new(),
         popups: Vec::new(),
         post_messages: Vec::new(),
+        window_name: String::new(),
     };
     Ok((next, mutation))
 }

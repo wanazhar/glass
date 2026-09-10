@@ -575,7 +575,13 @@ impl NativeEngine {
         };
         if let Some(process) = content_process.as_mut() {
             process
-                .start(self.config.storage_path.as_deref(), &self.config.context_id)
+                .start(
+                    self.config.storage_path.as_deref(),
+                    &self.config.context_id,
+                    &self.config.window_name,
+                    self.config.opener_context_id.as_deref(),
+                    &self.config.opener_window_name,
+                )
                 .await?;
         }
         let has_content_process = content_process.is_some();
@@ -835,7 +841,13 @@ impl NativeEngine {
             let mut process =
                 NativeContentProcess::spawn(self.config.storage_path.as_deref()).await?;
             process
-                .start(self.config.storage_path.as_deref(), &self.config.context_id)
+                .start(
+                    self.config.storage_path.as_deref(),
+                    &self.config.context_id,
+                    &self.config.window_name,
+                    self.config.opener_context_id.as_deref(),
+                    &self.config.opener_window_name,
+                )
                 .await?;
             self.content_process = Some(process);
         }
@@ -876,6 +888,7 @@ impl NativeEngine {
             };
             self.request_ledger.finish();
             let mut content = content_result?;
+            self.config.window_name = content.window_name.clone();
             self.publish_content_state(&content.storage_events, &content.indexed_db_changes)?;
             self.queue_popup_requests(std::mem::take(&mut content.popups))?;
             let content_origin = content.origin.clone();
@@ -1223,6 +1236,7 @@ impl NativeEngine {
                 dialogs,
                 popups,
                 post_messages,
+                window_name,
             } = {
                 let process = self
                     .content_process
@@ -1242,6 +1256,7 @@ impl NativeEngine {
                 self.request_ledger.finish();
                 result?
             };
+            self.config.window_name = window_name;
             if let Some(mutation) = mutation {
                 let navigation = mutation.navigation.clone();
                 self.apply_content_process_mutation(mutation)?;
@@ -1258,7 +1273,12 @@ impl NativeEngine {
             return Ok(value);
         }
         if self.javascript.is_none() {
-            let javascript = NativeJavaScriptRuntime::new_with_context_id(&self.config.context_id)?;
+            let javascript = NativeJavaScriptRuntime::new_with_context_metadata(
+                &self.config.context_id,
+                &self.config.window_name,
+                self.config.opener_context_id.as_deref(),
+                &self.config.opener_window_name,
+            )?;
             javascript.set_storage_state(self.web_storage.clone());
             javascript.set_indexed_db_state(
                 self.indexed_db
@@ -2821,6 +2841,9 @@ impl NativeEngine {
     }
 
     fn drain_local_popups(&mut self) -> Result<(), NativeEngineError> {
+        if let Some(javascript) = self.javascript.as_ref() {
+            self.config.window_name = javascript.window_name();
+        }
         let popups = self
             .javascript
             .as_ref()
@@ -3437,6 +3460,7 @@ impl NativeEngine {
         next_revision: u64,
         mut mutation: NativeContentMutation,
     ) -> Result<NativeActionResult, NativeEngineError> {
+        self.config.window_name = mutation.window_name.clone();
         self.queue_popup_requests(std::mem::take(&mut mutation.popups))?;
         self.queue_post_message_requests(std::mem::take(&mut mutation.post_messages))?;
         self.publish_content_state(&mutation.storage_events, &mutation.indexed_db_changes)?;
@@ -3894,8 +3918,11 @@ impl NativeEngine {
         let storage_state = self.web_storage.clone();
         let cookie = self.loader.document_cookie(&prepared.resource.url)?;
         let mut javascript = if prepared.execute_inline_scripts {
-            Some(NativeJavaScriptRuntime::new_with_context_id(
+            Some(NativeJavaScriptRuntime::new_with_context_metadata(
                 &self.config.context_id,
+                &self.config.window_name,
+                self.config.opener_context_id.as_deref(),
+                &self.config.opener_window_name,
             )?)
         } else {
             None
@@ -3924,6 +3951,9 @@ impl NativeEngine {
                 .map(NativeJavaScriptRuntime::take_post_message_events)
                 .unwrap_or_default();
             self.queue_post_message_requests_from_origin(messages, &prepared.resource.origin)?;
+            if let Some(javascript) = javascript.as_ref() {
+                self.config.window_name = javascript.window_name();
+            }
             result.navigation
         } else {
             None
@@ -3988,8 +4018,11 @@ impl NativeEngine {
         let storage_state = self.web_storage.clone();
         let cookie = self.loader.document_cookie(&prepared.resource.url)?;
         let mut javascript = if execute_page_scripts {
-            Some(NativeJavaScriptRuntime::new_with_context_id(
+            Some(NativeJavaScriptRuntime::new_with_context_metadata(
                 &self.config.context_id,
+                &self.config.window_name,
+                self.config.opener_context_id.as_deref(),
+                &self.config.opener_window_name,
             )?)
         } else {
             None
@@ -4018,6 +4051,9 @@ impl NativeEngine {
                 .map(NativeJavaScriptRuntime::take_post_message_events)
                 .unwrap_or_default();
             self.queue_post_message_requests_from_origin(messages, &prepared.resource.origin)?;
+            if let Some(javascript) = javascript.as_ref() {
+                self.config.window_name = javascript.window_name();
+            }
             result.navigation
         } else {
             None

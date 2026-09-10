@@ -5417,19 +5417,61 @@ fn document_bootstrap(
   }};
   const URLNative = function(input, base) {{
     const parts = nativeUrlParts(nativeUrlResolve(input && input.__glassUrl === true ? input.href : input, base));
+    const state = {{
+      prefix: parts.authority ? parts.protocol + "//" + parts.authority : parts.protocol,
+      origin: parts.origin,
+      protocol: parts.protocol,
+      username: "",
+      password: "",
+      host: parts.host,
+      hostname: parts.hostname,
+      port: parts.port,
+      pathname: parts.pathname,
+      search: parts.search,
+      hash: parts.hash,
+    }};
+    const searchParams = new URLSearchParamsNative(parts.search);
+    const syncSearch = () => {{
+      const encoded = searchParams.toString();
+      state.search = encoded ? "?" + encoded : "";
+    }};
+    for (const method of ["append", "set", "delete", "sort"]) {{
+      const original = searchParams[method];
+      searchParams[method] = function(...args) {{
+        const result = original.apply(searchParams, args);
+        syncSearch();
+        return result;
+      }};
+    }}
     Object.defineProperty(this, "__glassUrl", {{ value: true }});
-    this.href = parts.href;
-    this.origin = parts.origin;
-    this.protocol = parts.protocol;
-    this.username = "";
-    this.password = "";
-    this.host = parts.host;
-    this.hostname = parts.hostname;
-    this.port = parts.port;
-    this.pathname = parts.pathname;
-    this.search = parts.search;
-    this.hash = parts.hash;
-    this.searchParams = new URLSearchParamsNative(parts.search);
+    const define = (name, getter) => Object.defineProperty(this, name, {{ enumerable: true, get: getter }});
+    define("href", () => state.prefix + state.pathname + state.search + state.hash);
+    define("origin", () => state.origin);
+    define("protocol", () => state.protocol);
+    define("username", () => state.username);
+    define("password", () => state.password);
+    define("host", () => state.host);
+    define("hostname", () => state.hostname);
+    define("port", () => state.port);
+    define("pathname", () => state.pathname);
+    Object.defineProperty(this, "search", {{
+      enumerable: true,
+      get: () => state.search,
+      set: value => {{
+        const source = String(value);
+        searchParams._entries = new URLSearchParamsNative(source)._entries;
+        syncSearch();
+      }},
+    }});
+    Object.defineProperty(this, "hash", {{
+      enumerable: true,
+      get: () => state.hash,
+      set: value => {{
+        const source = String(value);
+        state.hash = !source ? "" : source.startsWith("#") ? source : "#" + source;
+      }},
+    }});
+    define("searchParams", () => searchParams);
     Object.freeze(this);
   }};
   URLNative.prototype.toString = function() {{ return this.href; }};

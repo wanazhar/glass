@@ -2769,6 +2769,14 @@ Fetch URL inputs. URL setters, full percent-encoding/IDNA/IPv6/default-port
 parity, live search-parameter synchronization, non-HTTP scheme parity, and
 complete URL/Web IDL identity remain open.
 
+The completed bounded live-URL-search-parameter follow-up is
+[native-engine-browser-122](../tasks/native-engine-browser-122.md). URL
+`searchParams` owners now synchronize bounded `append()`, `set()`, `delete()`,
+and `sort()` mutations to `search`/`href`; bounded `search` and `hash`
+assignment updates the same URL owner, and Request/Fetch handoff observes the
+current href. Full URL setter/parser and encoding parity, default-port/
+IDNA/IPv6 behavior, and complete URL/Web IDL identity remain open.
+
 The completed bounded Response-constructor follow-up is
 [native-engine-browser-120](../tasks/native-engine-browser-120.md). Fetched and
 constructed responses now share `Response` identity; `new Response`,

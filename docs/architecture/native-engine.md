@@ -1183,6 +1183,13 @@ normalized snapshots. Lookup, duplicate combination, iteration, filtering, and
 with a typed immutability error. Raw header bytes, trailers, live mutation,
 descriptor parity, and complete Headers/Fetch/XHR Web IDL parity remain open.
 
+The completed native-engine-browser-122 batch makes bounded URL
+`searchParams` owners live with their URL query state. `append()`, `set()`,
+`delete()`, and `sort()` update `search`/`href`; bounded `search` and `hash`
+assignment updates the same URL owner, and Request/Fetch URL handoff observes
+the current href. Full URL setter/parser and encoding parity, default-port/
+IDNA/IPv6 behavior, and complete URL/Web IDL identity remain open.
+
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
 installable crate is not. Until the production gates pass, the native feature

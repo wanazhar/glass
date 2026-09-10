@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-099` locally. The versioned
+`native-engine-browser-125` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1126,6 +1126,15 @@ rebuild the same URL owner, refresh origin/href, retain path/query/fragment
 state, and preserve the live `searchParams` owner. Full URL encoding, IDNA,
 IPv6/default-port canonicalization, non-HTTP schemes, and complete URL/Web IDL
 parity remain open.
+
+The completed bounded live-location-navigation slice is
+[native-engine-browser-125](tasks/native-engine-browser-125.md). The native
+JavaScript realm now exposes a frozen live `location` projection with bounded
+`assign()`, `replace()`, `reload()`, `href`, component setters, and
+`toString()`; local and content-process script commands route through the
+existing Rust loader/commit owner, and `replace()` updates the current history
+entry without adding one. Page-load/lifecycle re-entrant navigation, nested
+contexts, full Location/Web IDL parity, and complete URL parsing remain open.
 
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and

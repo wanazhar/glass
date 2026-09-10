@@ -80,6 +80,7 @@ pub(crate) struct NativeNavigationRequest {
     pub(crate) url: String,
     pub(crate) body: Option<String>,
     pub(crate) body_content_type: Option<String>,
+    pub(crate) replace_history: bool,
 }
 
 impl NativeNavigationRequest {
@@ -89,6 +90,7 @@ impl NativeNavigationRequest {
             url: url.into(),
             body: None,
             body_content_type: None,
+            replace_history: false,
         }
     }
 
@@ -115,6 +117,7 @@ impl NativeNavigationRequest {
             url: url.into(),
             body: Some(body),
             body_content_type: Some(content_type),
+            replace_history: false,
         })
     }
 }

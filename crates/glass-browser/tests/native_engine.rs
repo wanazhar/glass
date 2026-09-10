@@ -1213,6 +1213,99 @@ async fn native_local_script_click_owns_fixture_navigation() {
 }
 
 #[tokio::test]
+async fn native_local_location_owns_navigation_and_history_replacement() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://location-start",
+            "<title>Start</title><p id='part'>Start</p>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://location-destination",
+            "<title>Destination</title><p>Arrived</p>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://location-replaced",
+            "<title>Replaced</title><p>Rewritten</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://location-start");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "[location.href, location.origin, location.pathname, location.toString(), typeof location.assign, typeof location.replace, Object.isFrozen(location)]",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([
+            "fixture://location-start",
+            "null",
+            "",
+            "fixture://location-start",
+            "function",
+            "function",
+            true
+        ])
+    );
+    assert_eq!(engine.history().len(), 1);
+
+    engine
+        .evaluate_async("location.hash = 'part'")
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        "fixture://location-start#part"
+    );
+    assert_eq!(engine.history().len(), 2);
+
+    engine
+        .evaluate_async("location.assign('fixture://location-destination')")
+        .await
+        .unwrap();
+    assert_eq!(engine.snapshot().unwrap().title, "Destination");
+    assert_eq!(engine.history().len(), 3);
+
+    engine
+        .evaluate_async("location.replace('fixture://location-replaced')")
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        "fixture://location-replaced"
+    );
+    assert_eq!(engine.snapshot().unwrap().title, "Replaced");
+    assert_eq!(engine.history().len(), 3);
+    assert_eq!(
+        engine
+            .history()
+            .entries()
+            .iter()
+            .map(|entry| entry.url.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "fixture://location-start",
+            "fixture://location-start#part",
+            "fixture://location-replaced",
+        ]
+    );
+
+    assert_eq!(
+        engine.go_back().unwrap().unwrap().url,
+        "fixture://location-start#part"
+    );
+    assert_eq!(
+        engine.go_forward().unwrap().unwrap().url,
+        "fixture://location-replaced"
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_script_click_owns_same_document_fragment() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -2119,6 +2212,71 @@ async fn native_content_process_evaluates_persistent_script_realm() {
         engine.evaluate_async("answer").await.unwrap(),
         serde_json::json!(1)
     );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_location_navigation_crosses_worker_boundary() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for (expected_path, body) in [
+            ("/start", "<title>Start</title><p>Initial</p>"),
+            ("/destination", "<title>Destination</title><p>Arrived</p>"),
+            ("/replaced", "<title>Replaced</title><p>Rewritten</p>"),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/start")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(engine.history().len(), 1);
+    assert_eq!(
+        engine
+            .evaluate_async("[location.href, location.origin, location.pathname]")
+            .await
+            .unwrap(),
+        serde_json::json!([
+            format!("http://{address}/start"),
+            format!("http://{address}"),
+            "/start"
+        ])
+    );
+
+    engine
+        .evaluate_async("location.assign('/destination')")
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        format!("http://{address}/destination")
+    );
+    assert_eq!(engine.snapshot().unwrap().title, "Destination");
+    assert_eq!(engine.history().len(), 2);
+
+    engine
+        .evaluate_async("location.replace('/replaced')")
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        format!("http://{address}/replaced")
+    );
+    assert_eq!(engine.snapshot().unwrap().title, "Replaced");
+    assert_eq!(engine.history().len(), 2);
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }

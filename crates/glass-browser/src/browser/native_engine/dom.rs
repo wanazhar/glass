@@ -1240,6 +1240,15 @@ impl NativeDocument {
                     }
                 }
                 NativeScriptCommand::Fetch { .. } => {}
+                NativeScriptCommand::Navigate { .. } => {
+                    if !allow_script_navigation {
+                        return Err(NativeEngineError::TargetNotActionable {
+                            reason:
+                                "script location navigation is not available in this event phase"
+                                    .into(),
+                        });
+                    }
+                }
                 NativeScriptCommand::StorageSet { .. }
                 | NativeScriptCommand::StorageRemove { .. }
                 | NativeScriptCommand::StorageClear { .. }

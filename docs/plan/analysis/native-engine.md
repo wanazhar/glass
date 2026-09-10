@@ -2792,6 +2792,16 @@ state, and preserve the live `searchParams` owner. Full URL encoding, IDNA,
 IPv6/default-port canonicalization, non-HTTP schemes, and complete URL/Web IDL
 parity remain open.
 
+The completed bounded live-location-navigation follow-up is
+[native-engine-browser-125](../tasks/native-engine-browser-125.md). The
+JavaScript realm now owns a frozen live `location` projection whose
+`assign()`, `replace()`, `reload()`, `href`, and component setters hand one
+validated navigation command to the Rust/content-process owner. Local and
+HTTP(S) full-document commits and same-document fragment commits share the
+existing loader, lifecycle, origin, and history paths; `replace()` updates the
+current entry. Page-load/lifecycle re-entrant navigation, nested contexts,
+complete Location/Web IDL descriptors, and full URL parsing remain open.
+
 The completed bounded Response-constructor follow-up is
 [native-engine-browser-120](../tasks/native-engine-browser-120.md). Fetched and
 constructed responses now share `Response` identity; `new Response`,

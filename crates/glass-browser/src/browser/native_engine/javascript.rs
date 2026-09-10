@@ -79,6 +79,11 @@ pub(crate) enum NativeScriptCommand {
         #[serde(default)]
         submitter_index: Option<u32>,
     },
+    Navigate {
+        href: String,
+        #[serde(default)]
+        replace: bool,
+    },
     Fetch {
         request_id: u32,
         href: String,
@@ -5354,7 +5359,7 @@ fn document_bootstrap(
       const slash = rest.indexOf("/");
       if (slash < 0) {{
         authority = rest;
-        pathname = "/";
+        pathname = protocol === "http:" || protocol === "https:" ? "/" : "";
       }} else {{
         authority = rest.slice(0, slash);
         pathname = rest.slice(slash) || "/";
@@ -6870,7 +6875,39 @@ fn document_bootstrap(
   globalThis.__glassHostCommands = commands;
   globalThis.__glassHostCommandBuffer = commands;
   globalThis.document = document;
-  globalThis.location = Object.freeze({{ href: host.url, origin: host.origin }});
+  const locationUrl = new URLNative(host.url);
+  const navigateLocation = (value, replaceHistory) => {{
+    const next = new URLNative(value, locationUrl.href);
+    const href = next.href;
+    pushCommand({{ kind: "navigate", href, replace: Boolean(replaceHistory) }});
+    locationUrl.href = href;
+  }};
+  const setLocationComponent = (name, value) => {{
+    const next = new URLNative(locationUrl.href);
+    next[name] = value;
+    navigateLocation(next.href, false);
+  }};
+  const location = {{
+    assign(value) {{ navigateLocation(value, false); }},
+    replace(value) {{ navigateLocation(value, true); }},
+    reload() {{ navigateLocation(locationUrl.href, false); }},
+    toString() {{ return locationUrl.href; }},
+  }};
+  for (const name of ["href", "protocol", "username", "password", "host", "hostname", "port", "pathname", "search", "hash"]) {{
+    Object.defineProperty(location, name, {{
+      enumerable: true,
+      get: () => locationUrl[name],
+      set: value => name === "href"
+        ? navigateLocation(value, false)
+        : setLocationComponent(name, value),
+    }});
+  }}
+  Object.defineProperty(location, "origin", {{
+    enumerable: true,
+    get: () => locationUrl.origin,
+  }});
+  Object.freeze(location);
+  globalThis.location = location;
   globalThis.innerWidth = {width};
   globalThis.innerHeight = {height};
   globalThis.navigator = globalThis.navigator || {{ userAgent: "GlassNative" }};

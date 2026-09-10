@@ -68,6 +68,8 @@ pub(crate) struct NativeContentNavigation {
     pub(crate) node_index: u32,
     pub(crate) href: String,
     pub(crate) submitter_node_index: Option<u32>,
+    pub(crate) location: bool,
+    pub(crate) replace_history: bool,
 }
 
 pub(crate) struct NativeContentMutation {
@@ -895,10 +897,38 @@ fn decode_mutation_payload(
                         })?,
                 ),
             };
+            let location = match value.get("location") {
+                None => false,
+                Some(value) => value.as_bool().ok_or_else(|| NativeEngineError::Worker {
+                    operation: operation.into(),
+                    reason: "content process returned an invalid location navigation flag".into(),
+                })?,
+            };
+            let replace_history = match value.get("replace_history") {
+                None => false,
+                Some(value) => value.as_bool().ok_or_else(|| NativeEngineError::Worker {
+                    operation: operation.into(),
+                    reason: "content process returned an invalid history replacement flag".into(),
+                })?,
+            };
+            if location && (node_index != 0 || submitter_node_index.is_some()) {
+                return Err(NativeEngineError::Worker {
+                    operation: operation.into(),
+                    reason: "location navigation carried a DOM target".into(),
+                });
+            }
+            if replace_history && !location {
+                return Err(NativeEngineError::Worker {
+                    operation: operation.into(),
+                    reason: "history replacement was returned without location navigation".into(),
+                });
+            }
             Ok(NativeContentNavigation {
                 node_index,
                 href: href.to_owned(),
                 submitter_node_index,
+                location,
+                replace_history,
             })
         })
         .transpose()?;
@@ -1671,6 +1701,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                         "node_index": navigation.node_index,
                                         "href": navigation.href,
                                         "submitter_node_index": navigation.submitter_node_index,
+                                        "location": navigation.location,
+                                        "replace_history": navigation.replace_history,
                                     })),
                                 })
                             }
@@ -1762,10 +1794,12 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 "kind": event_kind_text(event.kind),
                             })).collect::<Vec<_>>(),
                             "navigation": mutation.navigation.as_ref().map(|navigation| json!({
-                                "node_index": navigation.node_index,
-                                "href": navigation.href,
-                                "submitter_node_index": navigation.submitter_node_index,
-                            })),
+                            "node_index": navigation.node_index,
+                            "href": navigation.href,
+                            "submitter_node_index": navigation.submitter_node_index,
+                            "location": navigation.location,
+                            "replace_history": navigation.replace_history,
+                        })),
                         })
                     }
                     Err(error) => content_error_response(id, error),
@@ -2832,6 +2866,8 @@ fn mutate_click_with_event_preflight(
                             )?
                             .url,
                         submitter_node_index: Some(node_id.index()),
+                        location: false,
+                        replace_history: false,
                     });
                 }
             } else {
@@ -3330,6 +3366,8 @@ fn mutate_script_document(
                     node_index,
                     href,
                     submitter_node_index: None,
+                    location: false,
+                    replace_history: false,
                 }),
                 ScriptNavigationTarget::Form {
                     form_id,
@@ -3342,6 +3380,18 @@ fn mutate_script_document(
                         .form_submission_request_with_submitter(form_id, document_url, submitter)?
                         .url,
                     submitter_node_index: submitter.map(NativeNodeId::index),
+                    location: false,
+                    replace_history: false,
+                }),
+                ScriptNavigationTarget::Location {
+                    href,
+                    replace_history,
+                } => Ok(NativeContentNavigation {
+                    node_index: 0,
+                    href,
+                    submitter_node_index: None,
+                    location: true,
+                    replace_history,
                 }),
             })
             .transpose()?,
@@ -3618,6 +3668,10 @@ enum ScriptNavigationTarget {
         dispatch_submit: bool,
         submitter: Option<NativeNodeId>,
     },
+    Location {
+        href: String,
+        replace_history: bool,
+    },
 }
 
 fn script_navigation_target(
@@ -3686,6 +3740,13 @@ fn script_navigation_target(
                     form_id: node_id,
                     dispatch_submit: true,
                     submitter,
+                })
+            }
+            NativeScriptCommand::Navigate { href, replace } => {
+                validate_url_text("script location href", href)?;
+                Some(ScriptNavigationTarget::Location {
+                    href: href.to_owned(),
+                    replace_history: *replace,
                 })
             }
             _ => None,

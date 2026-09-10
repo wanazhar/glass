@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-146` locally. The versioned
+`native-engine-browser-148` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1366,6 +1366,18 @@ content-worker path. Existing frame owners retain the embedding policy across
 direct navigation, link activation, redirects, and history traversal. Frame
 event/load parity, shared frame scripting, full source-expression grammar,
 and complete browser topology remain issue #40 gates.
+
+The completed native-engine-browser-148 batch is
+[native-engine-browser-148](tasks/native-engine-browser-148.md). Native page
+realms now expose `window.open(url, target)` through a typed host effect. Local
+and HTTP(S) pages create initialized parked targets without CDP, reserved
+same-context names use the existing navigation owner, and non-reserved names
+reuse the same target on later calls. Popup intents are transferred through
+version-5 content-worker IPC, including page-load, direct-script, event,
+lifecycle, fetch-continuation, and nested-target paths; bounded popup cascades
+are materialized iteratively while the opener remains selected. Cross-context
+WindowProxy scripting, `postMessage`, popup permission policy, and geometry
+remain later issue #40 gates.
 
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and

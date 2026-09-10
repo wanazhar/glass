@@ -86,6 +86,10 @@ pub(crate) enum NativeScriptCommand {
         #[serde(default)]
         replace: bool,
     },
+    OpenWindow {
+        href: String,
+        target: String,
+    },
     Fetch {
         request_id: u32,
         href: String,
@@ -169,6 +173,18 @@ pub(crate) enum NativeScriptCommand {
 pub(crate) struct NativeScriptEvaluation {
     pub(crate) value: serde_json::Value,
     pub(crate) commands: Vec<NativeScriptCommand>,
+}
+
+/// A browser-context creation request emitted by `window.open`.
+///
+/// The JavaScript realm never receives a direct native target handle. The
+/// request crosses the engine boundary and is materialized by the target
+/// owner, which keeps popup creation and named-context reuse serialized with
+/// the rest of the browser topology.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub(crate) struct NativePopupRequest {
+    pub(crate) url: String,
+    pub(crate) target: String,
 }
 
 #[derive(Debug, Clone)]
@@ -2813,6 +2829,7 @@ pub(crate) struct NativeJavaScriptRuntime {
     cookie: Arc<Mutex<String>>,
     cookie_updates: Arc<Mutex<Vec<String>>>,
     dialog_events: Arc<Mutex<Vec<NativeDialog>>>,
+    popup_events: Arc<Mutex<Vec<NativePopupRequest>>>,
     storage_context_id: String,
     ready_state: String,
     clock_origin: Instant,
@@ -2861,6 +2878,7 @@ impl NativeJavaScriptRuntime {
             cookie: Arc::new(Mutex::new(String::new())),
             cookie_updates: Arc::new(Mutex::new(Vec::new())),
             dialog_events: Arc::new(Mutex::new(Vec::new())),
+            popup_events: Arc::new(Mutex::new(Vec::new())),
             storage_context_id: context_id.into(),
             ready_state: "complete".into(),
             clock_origin: Instant::now(),
@@ -2984,6 +3002,13 @@ impl NativeJavaScriptRuntime {
         self.dialog_events
             .lock()
             .map(|mut dialogs| std::mem::take(&mut *dialogs))
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn take_popup_events(&self) -> Vec<NativePopupRequest> {
+        self.popup_events
+            .lock()
+            .map(|mut popups| std::mem::take(&mut *popups))
             .unwrap_or_default()
     }
 
@@ -3233,6 +3258,36 @@ impl NativeJavaScriptRuntime {
         Ok(true)
     }
 
+    fn apply_popup_command(
+        &self,
+        command: &NativeScriptCommand,
+    ) -> Result<bool, NativeEngineError> {
+        let NativeScriptCommand::OpenWindow { href, target } = command else {
+            return Ok(false);
+        };
+        validate_url_text("window.open URL", href)?;
+        validate_url_text("window.open target", target)?;
+        let mut popups = self
+            .popup_events
+            .lock()
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "record native popup".into(),
+                reason: "native popup queue is unavailable".into(),
+            })?;
+        if popups.len() >= super::interaction::MAX_NATIVE_EFFECTS {
+            return Err(NativeEngineError::limit(
+                "native popup requests",
+                super::interaction::MAX_NATIVE_EFFECTS,
+                popups.len().saturating_add(1),
+            ));
+        }
+        popups.push(NativePopupRequest {
+            url: href.clone(),
+            target: target.clone(),
+        });
+        Ok(true)
+    }
+
     fn set_module_sources(&self, sources: BTreeMap<String, String>) {
         if let Ok(mut current) = self.module_sources.lock() {
             *current = sources;
@@ -3326,6 +3381,9 @@ impl NativeJavaScriptRuntime {
                     continue;
                 }
                 if self.apply_dialog_command(&command)? {
+                    continue;
+                }
+                if self.apply_popup_command(&command)? {
                     continue;
                 }
                 document_commands.push(command);
@@ -3488,6 +3546,9 @@ impl NativeJavaScriptRuntime {
                     continue;
                 }
                 if self.apply_dialog_command(&command)? {
+                    continue;
+                }
+                if self.apply_popup_command(&command)? {
                     continue;
                 }
                 document_commands.push(command);
@@ -7167,6 +7228,24 @@ fn document_bootstrap(
   }});
   Object.freeze(location);
   globalThis.location = location;
+  globalThis.open = function open(value, target) {{
+    const rawTarget = target === undefined || target === null ? "_blank" : String(target);
+    const normalizedTarget = rawTarget || "_blank";
+    const lowerTarget = normalizedTarget.toLowerCase();
+    const href = value === undefined || value === null || String(value) === ""
+      ? "about:blank"
+      : new URLNative(String(value), locationUrl.href).href;
+    if (["_self", "_parent", "_top", "_unfencedtop"].includes(lowerTarget)) {{
+      navigateLocation(href, false);
+      return globalThis;
+    }}
+    pushCommand({{ kind: "openWindow", href, target: normalizedTarget }});
+    return {{
+      name: normalizedTarget === "_blank" ? "" : normalizedTarget,
+      closed: false,
+      close() {{ this.closed = true; }},
+    }};
+  }};
   globalThis.innerWidth = {width};
   globalThis.innerHeight = {height};
   globalThis.navigator = globalThis.navigator || {{ userAgent: "GlassNative" }};

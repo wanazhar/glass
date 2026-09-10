@@ -6,7 +6,7 @@
 
 use super::native_engine::{
     NativeAction, NativeEngine, NativeEngineConfig, NativeEngineError, NativeHistoryDirection,
-    NativeInspectionSnapshot, NativePreflightAction, NativeTargetPreflight,
+    NativeInspectionSnapshot, NativePopupRequest, NativePreflightAction, NativeTargetPreflight,
 };
 use crate::browser::session::{
     FrameInfo, NavigationControlOutcome, PageTargetInfo, redact_diagnostic_text,
@@ -101,11 +101,13 @@ struct NativeParkedTarget {
     engine: NativeEngine,
     opener_id: Option<String>,
     frames: NativeFrameState,
+    name: Option<String>,
 }
 
 struct NativeTargetState {
     active_target_id: Option<String>,
     active_opener_id: Option<String>,
+    active_name: Option<String>,
     active_frames: NativeFrameState,
     parked: BTreeMap<String, NativeParkedTarget>,
     next_target_number: u64,
@@ -116,6 +118,7 @@ impl NativeTargetState {
         Self {
             active_target_id: Some(active_target_id.clone()),
             active_opener_id: None,
+            active_name: None,
             active_frames: NativeFrameState::new(&active_target_id),
             parked: BTreeMap::new(),
             next_target_number: 1,
@@ -375,12 +378,14 @@ impl NativeEngineBackend {
             engine: parked_engine,
             opener_id,
             frames: parked_frames,
+            name,
         } = parked;
         let mut active_engine = self.lock_engine_raw(BackendOperation::Contexts)?;
         let old_engine = std::mem::replace(&mut *active_engine, parked_engine);
         let old_frames = std::mem::replace(&mut targets.active_frames, parked_frames);
         let old_target_id = targets.active_target_id.replace(target_id.to_owned());
         let old_opener_id = std::mem::replace(&mut targets.active_opener_id, opener_id);
+        let old_name = std::mem::replace(&mut targets.active_name, name);
         if let Some(old_target_id) = old_target_id {
             targets.parked.insert(
                 old_target_id,
@@ -388,6 +393,7 @@ impl NativeEngineBackend {
                     engine: old_engine,
                     opener_id: old_opener_id,
                     frames: old_frames,
+                    name: old_name,
                 },
             );
         }
@@ -402,6 +408,19 @@ impl NativeEngineBackend {
     /// Create and initialize a new independent native page target. The new
     /// target is intentionally not selected, matching the public target API.
     pub async fn create_target(&self, url: &str) -> Result<PageTargetInfo, BrowserBackendError> {
+        self.create_target_named(url, None)
+            .await
+            .map(|(target, _)| target)
+    }
+
+    async fn create_target_named(
+        &self,
+        url: &str,
+        name: Option<String>,
+    ) -> Result<(PageTargetInfo, Vec<NativePopupRequest>), BrowserBackendError> {
+        if let Some(name) = name.as_deref() {
+            validate_native_popup_name(name)?;
+        }
         let base_config = self
             .engine
             .lock()
@@ -427,6 +446,7 @@ impl NativeEngineBackend {
             let _ = engine.close_async().await;
             return Err(native_error(error));
         }
+        let nested = engine.take_pending_popups();
         let target = match project_native_target(&engine, &target_id, opener_id.clone(), false) {
             Ok(target) => target,
             Err(error) => {
@@ -447,9 +467,10 @@ impl NativeEngineBackend {
                 engine,
                 opener_id,
                 frames: NativeFrameState::new(&target_id),
+                name,
             },
         );
-        Ok(target)
+        Ok((target, nested))
     }
 
     /// Click a native target and require the action to create exactly one
@@ -467,23 +488,23 @@ impl NativeEngineBackend {
             })
             .await
             .map_err(native_error)?;
-        let popup_urls = engine.take_pending_popup_urls();
+        let popup_requests = engine.take_pending_popups();
         drop(engine);
 
-        if popup_urls.len() != 1 {
+        if popup_requests.len() != 1 {
             return Err(BrowserBackendError::UnsupportedOperation {
                 operation: "clickExpectPopup".into(),
-                reason: if popup_urls.is_empty() {
+                reason: if popup_requests.is_empty() {
                     "click did not create a new native page target".into()
                 } else {
                     format!(
                         "click created {} native page targets; exactly one is required",
-                        popup_urls.len()
+                        popup_requests.len()
                     )
                 },
             });
         }
-        let mut created = self.materialize_pending_popups(popup_urls).await?;
+        let mut created = self.materialize_pending_popups(popup_requests).await?;
         let popup = created
             .pop()
             .expect("popup URL count was validated before materialization");
@@ -499,12 +520,33 @@ impl NativeEngineBackend {
 
     async fn materialize_pending_popups(
         &self,
-        popup_urls: Vec<String>,
+        popup_requests: Vec<NativePopupRequest>,
     ) -> Result<Vec<PageTargetInfo>, BrowserBackendError> {
-        let mut created = Vec::with_capacity(popup_urls.len());
-        for url in popup_urls {
-            match self.create_target(&url).await {
-                Ok(target) => created.push(target),
+        let mut pending = VecDeque::from(popup_requests);
+        let mut created = Vec::new();
+        let mut processed = 0usize;
+        while let Some(request) = pending.pop_front() {
+            processed = processed.saturating_add(1);
+            if processed > NATIVE_MAX_TARGETS.saturating_mul(8) {
+                return Err(BrowserBackendError::SelectionFailed {
+                    reason: "native popup creation exceeded the bounded target cascade".into(),
+                });
+            }
+            let name = native_popup_name(&request.target);
+            if let Some(name) = name.as_deref()
+                && let Some((target_id, active)) = self.target_named(name)?
+            {
+                let (_, nested) = self
+                    .navigate_named_target(&target_id, active, &request.url)
+                    .await?;
+                pending.extend(nested);
+                continue;
+            }
+            match self.create_target_named(&request.url, name).await {
+                Ok((target, nested)) => {
+                    created.push(target);
+                    pending.extend(nested);
+                }
                 Err(error) => {
                     for target in created {
                         let _ = self.close_target(&target.id).await;
@@ -514,6 +556,86 @@ impl NativeEngineBackend {
             }
         }
         Ok(created)
+    }
+
+    fn target_named(&self, name: &str) -> Result<Option<(String, bool)>, BrowserBackendError> {
+        let targets = self.lock_targets(BackendOperation::Contexts)?;
+        if targets.active_name.as_deref() == Some(name) {
+            return Ok(targets
+                .active_target_id
+                .as_ref()
+                .map(|target_id| (target_id.clone(), true)));
+        }
+        Ok(targets
+            .parked
+            .iter()
+            .find(|(_, target)| target.name.as_deref() == Some(name))
+            .map(|(target_id, _)| (target_id.clone(), false)))
+    }
+
+    async fn navigate_named_target(
+        &self,
+        target_id: &str,
+        active: bool,
+        url: &str,
+    ) -> Result<(PageTargetInfo, Vec<NativePopupRequest>), BrowserBackendError> {
+        if active {
+            let opener_id = self
+                .lock_targets(BackendOperation::Contexts)?
+                .active_opener_id
+                .clone();
+            let (target, nested) = {
+                let mut engine = self.lock_engine_raw(BackendOperation::Navigate)?;
+                engine.navigate_async(url).await.map_err(native_error)?;
+                let nested = engine.take_pending_popups();
+                let target = project_native_target(&engine, target_id, opener_id, true)?;
+                (target, nested)
+            };
+            let mut targets = self.lock_targets(BackendOperation::Contexts)?;
+            targets.active_frames = NativeFrameState::new(target_id);
+            Ok((target, nested))
+        } else {
+            let parked = {
+                let mut targets = self.lock_targets(BackendOperation::Navigate)?;
+                targets.parked.remove(target_id)
+            }
+            .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                reason: "named native popup target disappeared before navigation".into(),
+            })?;
+            let NativeParkedTarget {
+                mut engine,
+                opener_id,
+                name,
+                frames,
+            } = parked;
+            let result = engine.navigate_async(url).await;
+            let nested = engine.take_pending_popups();
+            let mut targets = self.lock_targets(BackendOperation::Contexts)?;
+            if let Err(error) = result {
+                targets.parked.insert(
+                    target_id.to_owned(),
+                    NativeParkedTarget {
+                        engine,
+                        opener_id,
+                        frames,
+                        name,
+                    },
+                );
+                return Err(native_error(error));
+            }
+            let frames = NativeFrameState::new(target_id);
+            let target = project_native_target(&engine, target_id, opener_id.clone(), false)?;
+            targets.parked.insert(
+                target_id.to_owned(),
+                NativeParkedTarget {
+                    engine,
+                    opener_id,
+                    frames,
+                    name,
+                },
+            );
+            Ok((target, nested))
+        }
     }
 
     /// Close one target and release its worker, storage lease, and document
@@ -529,6 +651,7 @@ impl NativeEngineBackend {
                 std::mem::replace(&mut targets.active_frames, NativeFrameState::empty());
             targets.active_target_id = None;
             targets.active_opener_id = None;
+            targets.active_name = None;
             return close_parked_frames(&mut frames).await;
         }
         let Some(mut parked) = targets.parked.remove(target_id) else {
@@ -559,6 +682,7 @@ impl NativeEngineBackend {
                 std::mem::replace(&mut targets.active_frames, NativeFrameState::empty());
             targets.active_target_id = None;
             targets.active_opener_id = None;
+            targets.active_name = None;
             (
                 active_error,
                 active_frames,
@@ -838,6 +962,9 @@ impl BrowserBackend for NativeEngineBackend {
             match (operation, request) {
                 (BackendOperation::Initialize, BackendRequest::Initialize) => {
                     engine.initialize_async().await.map_err(native_error)?;
+                    let popup_requests = engine.take_pending_popups();
+                    drop(engine);
+                    self.materialize_pending_popups(popup_requests).await?;
                     Ok(BackendResponse::Unit)
                 }
                 (BackendOperation::Navigate, BackendRequest::Navigate(request)) => {
@@ -845,6 +972,9 @@ impl BrowserBackend for NativeEngineBackend {
                         .navigate_async(request.url)
                         .await
                         .map_err(native_error)?;
+                    let popup_requests = engine.take_pending_popups();
+                    drop(engine);
+                    self.materialize_pending_popups(popup_requests).await?;
                     Ok(BackendResponse::Navigation(NavigationResult {
                         url: snapshot.url,
                         revision: snapshot.revision,
@@ -905,9 +1035,9 @@ impl BrowserBackend for NativeEngineBackend {
                         }
                     };
                     let outcome = engine.action_async(action).await.map_err(native_error)?;
-                    let popup_urls = engine.take_pending_popup_urls();
+                    let popup_requests = engine.take_pending_popups();
                     drop(engine);
-                    self.materialize_pending_popups(popup_urls).await?;
+                    self.materialize_pending_popups(popup_requests).await?;
                     Ok(BackendResponse::Action(ActionResult {
                         context_id: active_context_id.clone(),
                         revision: outcome.revision,
@@ -931,9 +1061,9 @@ impl BrowserBackend for NativeEngineBackend {
                         .evaluate_async(request.source)
                         .await
                         .map_err(native_error)?;
-                    let popup_urls = engine.take_pending_popup_urls();
+                    let popup_requests = engine.take_pending_popups();
                     drop(engine);
-                    self.materialize_pending_popups(popup_urls).await?;
+                    self.materialize_pending_popups(popup_requests).await?;
                     Ok(BackendResponse::Script(ScriptResult { value }))
                 }
                 (BackendOperation::Capture, BackendRequest::Capture(request)) => {
@@ -1016,6 +1146,44 @@ fn project_native_target(
         opener_id,
         active,
     })
+}
+
+fn native_popup_name(target: &str) -> Option<String> {
+    if matches!(
+        target.to_ascii_lowercase().as_str(),
+        "_blank" | "_self" | "_parent" | "_top" | "_unfencedtop"
+    ) {
+        None
+    } else if target.is_empty() {
+        None
+    } else {
+        Some(target.to_owned())
+    }
+}
+
+fn validate_native_popup_name(name: &str) -> Result<(), BrowserBackendError> {
+    if name.is_empty() {
+        return Err(BrowserBackendError::InvalidConfiguration {
+            field: "popup target name".into(),
+            reason: "must not be empty".into(),
+        });
+    }
+    if name.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES {
+        return Err(BrowserBackendError::InvalidConfiguration {
+            field: "popup target name".into(),
+            reason: format!(
+                "must be at most {} UTF-8 bytes",
+                crate::browser_backend::MAX_BACKEND_ID_BYTES
+            ),
+        });
+    }
+    if !name.is_char_boundary(name.len()) || name.chars().any(char::is_control) {
+        return Err(BrowserBackendError::InvalidConfiguration {
+            field: "popup target name".into(),
+            reason: "must be valid UTF-8 without control characters".into(),
+        });
+    }
+    Ok(())
 }
 
 fn project_native_frame(

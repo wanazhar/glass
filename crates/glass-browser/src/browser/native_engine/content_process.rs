@@ -15,9 +15,9 @@ use super::javascript::{
     MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_DIALOGS, MAX_NATIVE_INDEXED_DB_CHANGES,
     MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_SCRIPT_BYTES, MAX_NATIVE_XHR_TIMEOUT_MS,
     NativeCookieProfileEntry, NativeDialog, NativeIndexedDbChange, NativeIndexedDbState,
-    NativeJavaScriptRuntime, NativePageScript, NativeScriptCommand, NativeScriptEvaluation,
-    NativeStorageEvent, NativeWebStorageState, diff_indexed_db_changes, execute_page_scripts,
-    host_event_script, host_hash_change_event_script, host_key_event_script,
+    NativeJavaScriptRuntime, NativePageScript, NativePopupRequest, NativeScriptCommand,
+    NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState, diff_indexed_db_changes,
+    execute_page_scripts, host_event_script, host_hash_change_event_script, host_key_event_script,
     host_key_event_script_with_modifiers, host_submit_event_script,
     literal_dynamic_module_specifiers, load_indexed_db_profile, load_web_storage_profile,
     order_page_scripts, save_web_storage_profile, static_module_specifiers, storage_key,
@@ -45,7 +45,7 @@ use url::Url;
 
 const MAX_CONTENT_IPC_FRAME_BYTES: usize = 4 * 1024 * 1024;
 const MAX_CONTENT_DOCUMENT_WIRE_BYTES: usize = 2 * 1024 * 1024;
-const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 4;
+const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 5;
 const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTENT_PROCESS_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -62,6 +62,7 @@ pub(crate) struct NativeContentLoad {
     pub(crate) storage_events: Vec<NativeStorageEvent>,
     pub(crate) indexed_db_changes: Vec<NativeIndexedDbChange>,
     pub(crate) dialogs: Vec<NativeDialog>,
+    pub(crate) popups: Vec<NativePopupRequest>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -87,6 +88,7 @@ pub(crate) struct NativeContentMutation {
     pub(crate) storage_events: Vec<NativeStorageEvent>,
     pub(crate) indexed_db_changes: Vec<NativeIndexedDbChange>,
     pub(crate) dialogs: Vec<NativeDialog>,
+    pub(crate) popups: Vec<NativePopupRequest>,
 }
 
 pub(crate) struct NativeContentScriptResult {
@@ -95,6 +97,7 @@ pub(crate) struct NativeContentScriptResult {
     pub(crate) storage_events: Vec<NativeStorageEvent>,
     pub(crate) indexed_db_changes: Vec<NativeIndexedDbChange>,
     pub(crate) dialogs: Vec<NativeDialog>,
+    pub(crate) popups: Vec<NativePopupRequest>,
 }
 
 /// Process-backed lifecycle and bounded document-transfer channel for one
@@ -941,6 +944,7 @@ fn decode_loaded_response(
     let storage_events = decode_storage_events(response, "decode content process load")?;
     let indexed_db_changes = decode_indexed_db_changes(response, "decode content process load")?;
     let dialogs = decode_dialogs(response, "decode content process load")?;
+    let popups = decode_popup_requests(response, "decode content process load")?;
     let frame_sources = decode_frame_sources(response, "decode content process load")?;
     Ok(NativeContentLoad {
         url: url.into(),
@@ -951,6 +955,7 @@ fn decode_loaded_response(
         storage_events,
         indexed_db_changes,
         dialogs,
+        popups,
     })
 }
 
@@ -1104,6 +1109,7 @@ fn decode_mutation_payload(
     let storage_events = decode_storage_events(response, operation)?;
     let indexed_db_changes = decode_indexed_db_changes(response, operation)?;
     let dialogs = decode_dialogs(response, operation)?;
+    let popups = decode_popup_requests(response, operation)?;
     Ok(NativeContentMutation {
         document,
         events,
@@ -1115,7 +1121,44 @@ fn decode_mutation_payload(
         storage_events,
         indexed_db_changes,
         dialogs,
+        popups,
     })
+}
+
+fn decode_popup_requests(
+    response: &Value,
+    operation: &str,
+) -> Result<Vec<NativePopupRequest>, NativeEngineError> {
+    let Some(value) = response.get("popups") else {
+        return Ok(Vec::new());
+    };
+    let values = value.as_array().ok_or_else(|| NativeEngineError::Worker {
+        operation: operation.into(),
+        reason: "content process returned invalid popup requests".into(),
+    })?;
+    if values.len() > MAX_NATIVE_EFFECTS {
+        return Err(NativeEngineError::limit(
+            "content-process popup requests",
+            MAX_NATIVE_EFFECTS,
+            values.len(),
+        ));
+    }
+    let mut popups =
+        serde_json::from_value::<Vec<NativePopupRequest>>(value.clone()).map_err(|_| {
+            NativeEngineError::Worker {
+                operation: operation.into(),
+                reason: "content process returned malformed popup requests".into(),
+            }
+        })?;
+    for popup in &mut popups {
+        validate_url_text("content-process popup URL", &popup.url)?;
+        if popup.target.is_empty() {
+            popup.target = "_blank".into();
+        } else {
+            validate_url_text("content-process popup target", &popup.target)?;
+        }
+    }
+    Ok(popups)
 }
 
 fn decode_content_navigation(
@@ -1400,6 +1443,11 @@ fn decode_script_response(
         mutation,
         indexed_db_changes,
         dialogs: if has_mutation { Vec::new() } else { dialogs },
+        popups: if has_mutation {
+            Vec::new()
+        } else {
+            decode_popup_requests(&response, "decode content process script")?
+        },
     })
 }
 
@@ -2820,14 +2868,15 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 }
             }
             "close" if protocol_matches(&request) => {
-                let (storage_events, indexed_db_changes, _dialogs) = sync_content_runtime_state(
-                    javascript_runtime.as_ref(),
-                    &mut storage_state,
-                    &mut indexed_db_state,
-                    &mut resource_loader,
-                    document_url.as_deref(),
-                    document_origin.as_ref(),
-                )?;
+                let (storage_events, indexed_db_changes, _dialogs, _popups) =
+                    sync_content_runtime_state(
+                        javascript_runtime.as_ref(),
+                        &mut storage_state,
+                        &mut indexed_db_state,
+                        &mut resource_loader,
+                        document_url.as_deref(),
+                        document_origin.as_ref(),
+                    )?;
                 persist_content_profile(
                     storage_profile_path.as_deref(),
                     &storage_state,
@@ -2847,7 +2896,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 },
             ),
         };
-        let (storage_events, indexed_db_changes, dialogs) = sync_content_runtime_state(
+        let (storage_events, indexed_db_changes, dialogs, popups) = sync_content_runtime_state(
             javascript_runtime.as_ref(),
             &mut storage_state,
             &mut indexed_db_state,
@@ -2896,6 +2945,13 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     reason: "content process dialogs could not be encoded".into(),
                 })?,
             );
+            object.insert(
+                "popups".into(),
+                serde_json::to_value(popups).map_err(|_| NativeEngineError::Worker {
+                    operation: "encode content process popups".into(),
+                    reason: "content process popups could not be encoded".into(),
+                })?,
+            );
         }
         write_value_frame(&mut stdout, &response).await?;
     }
@@ -2913,11 +2969,12 @@ fn sync_content_runtime_state(
         Vec<NativeStorageEvent>,
         Vec<NativeIndexedDbChange>,
         Vec<NativeDialog>,
+        Vec<NativePopupRequest>,
     ),
     NativeEngineError,
 > {
     let Some(runtime) = runtime else {
-        return Ok((Vec::new(), Vec::new(), Vec::new()));
+        return Ok((Vec::new(), Vec::new(), Vec::new(), Vec::new()));
     };
     let before_indexed_db = indexed_db_state.clone();
     *storage_state = runtime.storage_state();
@@ -2940,6 +2997,7 @@ fn sync_content_runtime_state(
         runtime.take_storage_changes(),
         indexed_db_changes,
         runtime.take_dialog_events(),
+        runtime.take_popup_events(),
     ))
 }
 
@@ -3193,6 +3251,7 @@ async fn load_content_resource(
             storage_events: Vec::new(),
             indexed_db_changes: Vec::new(),
             dialogs: Vec::new(),
+            popups: Vec::new(),
         },
         document,
         viewport,
@@ -3504,6 +3563,7 @@ fn mutate_click_with_event_preflight(
         storage_events: Vec::new(),
         indexed_db_changes: Vec::new(),
         dialogs: Vec::new(),
+        popups: Vec::new(),
     };
     Ok((next, mutation))
 }
@@ -3610,6 +3670,7 @@ fn mutate_type_with_event_bridge(
         storage_events: Vec::new(),
         indexed_db_changes: Vec::new(),
         dialogs: Vec::new(),
+        popups: Vec::new(),
     };
     Ok((next, mutation))
 }
@@ -3665,6 +3726,7 @@ fn mutate_form_action_with_event_bridge(
         storage_events: Vec::new(),
         indexed_db_changes: Vec::new(),
         dialogs: Vec::new(),
+        popups: Vec::new(),
     };
     Ok((next, mutation))
 }
@@ -3765,6 +3827,7 @@ fn mutate_key_with_event_bridge(
         storage_events: Vec::new(),
         indexed_db_changes: Vec::new(),
         dialogs: Vec::new(),
+        popups: Vec::new(),
     };
     Ok((next, mutation))
 }
@@ -3825,6 +3888,7 @@ fn mutate_key_event_with_event_bridge(
             storage_events: Vec::new(),
             indexed_db_changes: Vec::new(),
             dialogs: Vec::new(),
+            popups: Vec::new(),
         },
     ))
 }
@@ -3935,6 +3999,7 @@ fn mutate_key_shortcut_with_event_bridge(
             storage_events: Vec::new(),
             indexed_db_changes: Vec::new(),
             dialogs: Vec::new(),
+            popups: Vec::new(),
         },
     ))
 }
@@ -4035,6 +4100,7 @@ fn mutate_before_unload(
             storage_events: Vec::new(),
             indexed_db_changes: Vec::new(),
             dialogs: Vec::new(),
+            popups: Vec::new(),
         },
     ))
 }
@@ -4058,6 +4124,7 @@ fn mutate_lifecycle_events(
                 storage_events: Vec::new(),
                 indexed_db_changes: Vec::new(),
                 dialogs: Vec::new(),
+                popups: Vec::new(),
             },
         ));
     }
@@ -4102,6 +4169,7 @@ fn mutate_lifecycle_events(
             storage_events: Vec::new(),
             indexed_db_changes: Vec::new(),
             dialogs: Vec::new(),
+            popups: Vec::new(),
         },
     ))
 }
@@ -4152,6 +4220,7 @@ fn mutate_hash_change(
             storage_events: Vec::new(),
             indexed_db_changes: Vec::new(),
             dialogs: Vec::new(),
+            popups: Vec::new(),
         },
     ))
 }
@@ -4273,6 +4342,7 @@ fn mutate_script_document(
         storage_events: Vec::new(),
         indexed_db_changes: Vec::new(),
         dialogs: Vec::new(),
+        popups: Vec::new(),
     };
     Ok((next, mutation))
 }

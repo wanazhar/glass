@@ -19,12 +19,12 @@ use super::interaction::{
 use super::javascript::{
     MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_DIALOGS, NativeCookieProfileEntry, NativeDialog,
     NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime, NativePageNavigation,
-    NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState, append_storage_changes,
-    apply_indexed_db_changes, diff_indexed_db_changes, execute_inline_scripts, host_event_script,
-    host_hash_change_event_script, host_submit_event_script, load_indexed_db_profile,
-    load_web_storage_profile, new_storage_writer_id, read_storage_event_journal,
-    register_storage_reader, save_web_storage_profile, storage_event_cursor, storage_key,
-    unregister_storage_reader,
+    NativePopupRequest, NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState,
+    append_storage_changes, apply_indexed_db_changes, diff_indexed_db_changes,
+    execute_inline_scripts, host_event_script, host_hash_change_event_script,
+    host_submit_event_script, load_indexed_db_profile, load_web_storage_profile,
+    new_storage_writer_id, read_storage_event_journal, register_storage_reader,
+    save_web_storage_profile, storage_event_cursor, storage_key, unregister_storage_reader,
 };
 use super::layout::{NativeLayoutSnapshot, NativePoint, NativeRect};
 use super::lifecycle::NativeLifecycleState;
@@ -68,11 +68,6 @@ struct NativePendingDownload {
     suggested_filename: String,
     target_id: String,
     frame_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct NativePendingPopup {
-    pub(crate) url: String,
 }
 
 impl NativeRequestLedger {
@@ -341,7 +336,7 @@ pub struct NativeEngine {
     pending_dialogs: VecDeque<PendingDialog>,
     request_ledger: NativeRequestLedger,
     pending_downloads: VecDeque<NativePendingDownload>,
-    pending_popups: VecDeque<NativePendingPopup>,
+    pending_popups: VecDeque<NativePopupRequest>,
     completed_download_ids: VecDeque<String>,
     completed_downloads: u64,
     next_download_id: u64,
@@ -877,8 +872,9 @@ impl NativeEngine {
                 }),
             };
             self.request_ledger.finish();
-            let content = content_result?;
+            let mut content = content_result?;
             self.publish_content_state(&content.storage_events, &content.indexed_db_changes)?;
+            self.queue_popup_requests(std::mem::take(&mut content.popups))?;
             let Some(page_navigation) = content.navigation.clone() else {
                 return Ok((content, history_commit, page_navigation_handoffs));
             };
@@ -1217,6 +1213,7 @@ impl NativeEngine {
                 storage_events,
                 indexed_db_changes,
                 dialogs,
+                popups,
             } = {
                 let process = self
                     .content_process
@@ -1244,6 +1241,7 @@ impl NativeEngine {
                 }
             } else {
                 self.publish_content_state(&storage_events, &indexed_db_changes)?;
+                self.queue_popup_requests(popups)?;
                 let dialog_url = self.url.clone();
                 self.install_dialogs(dialogs, &dialog_url)?;
             }
@@ -1275,6 +1273,7 @@ impl NativeEngine {
                 &self.origin,
                 self.config.viewport,
             )?;
+        self.drain_local_popups()?;
         let navigation = self.apply_local_script_commands(&evaluation.commands, true)?;
         self.drain_local_dialogs()?;
         self.persist_local_web_storage()?;
@@ -1576,6 +1575,13 @@ impl NativeEngine {
     }
 
     fn queue_popup(&mut self, url: String) -> Result<(), NativeEngineError> {
+        self.queue_popup_request(NativePopupRequest {
+            url,
+            target: "_blank".into(),
+        })
+    }
+
+    fn queue_popup_request(&mut self, popup: NativePopupRequest) -> Result<(), NativeEngineError> {
         if self.pending_popups.len() >= MAX_NATIVE_PENDING_POPUPS {
             return Err(NativeEngineError::limit(
                 "native pending popups",
@@ -1583,16 +1589,24 @@ impl NativeEngine {
                 self.pending_popups.len().saturating_add(1),
             ));
         }
-        validate_url_text("popup target URL", &url)?;
-        self.pending_popups.push_back(NativePendingPopup { url });
+        validate_url_text("popup target URL", &popup.url)?;
+        validate_url_text("popup target name", &popup.target)?;
+        self.pending_popups.push_back(popup);
         Ok(())
     }
 
-    pub(crate) fn take_pending_popup_urls(&mut self) -> Vec<String> {
-        self.pending_popups
-            .drain(..)
-            .map(|popup| popup.url)
-            .collect()
+    fn queue_popup_requests(
+        &mut self,
+        popups: Vec<NativePopupRequest>,
+    ) -> Result<(), NativeEngineError> {
+        for popup in popups {
+            self.queue_popup_request(popup)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn take_pending_popups(&mut self) -> Vec<NativePopupRequest> {
+        self.pending_popups.drain(..).collect()
     }
 
     /// Resolve one queued JavaScript dialog without creating a browser or
@@ -2699,6 +2713,15 @@ impl NativeEngine {
         self.install_dialogs(dialogs, &dialog_url)
     }
 
+    fn drain_local_popups(&mut self) -> Result<(), NativeEngineError> {
+        let popups = self
+            .javascript
+            .as_ref()
+            .map(NativeJavaScriptRuntime::take_popup_events)
+            .unwrap_or_default();
+        self.queue_popup_requests(popups)
+    }
+
     fn dispatch_local_events(
         &mut self,
         events: &[(NativeNodeId, NativeEventKind)],
@@ -2834,6 +2857,7 @@ impl NativeEngine {
                 &self.origin,
                 self.config.viewport,
             )?;
+        self.drain_local_popups()?;
         self.drain_local_dialogs()?;
         self.persist_local_script_state()?;
         let event = (
@@ -2878,6 +2902,7 @@ impl NativeEngine {
             &self.origin,
             self.config.viewport,
         )?;
+        self.drain_local_popups()?;
         self.drain_local_dialogs()?;
         self.persist_local_script_state()?;
         Ok(Some(evaluation))
@@ -2904,6 +2929,7 @@ impl NativeEngine {
             &self.origin,
             self.config.viewport,
         )?;
+        self.drain_local_popups()?;
         self.drain_local_dialogs()?;
         self.persist_local_script_state()?;
         Ok(Some(evaluation))
@@ -2936,6 +2962,7 @@ impl NativeEngine {
             &self.origin,
             self.config.viewport,
         )?;
+        self.drain_local_popups()?;
         self.drain_local_dialogs()?;
         self.persist_local_script_state()?;
         Ok(Some(evaluation))
@@ -3274,8 +3301,9 @@ impl NativeEngine {
     fn apply_content_process_mutation_at(
         &mut self,
         next_revision: u64,
-        mutation: NativeContentMutation,
+        mut mutation: NativeContentMutation,
     ) -> Result<NativeActionResult, NativeEngineError> {
+        self.queue_popup_requests(std::mem::take(&mut mutation.popups))?;
         self.publish_content_state(&mutation.storage_events, &mutation.indexed_db_changes)?;
         let dialogs = mutation.dialogs.clone();
         let generation = self.document.generation();
@@ -3741,6 +3769,11 @@ impl NativeEngine {
                 &cookie,
             )?;
             dialogs.extend(result.dialogs);
+            let popups = javascript
+                .as_ref()
+                .map(NativeJavaScriptRuntime::take_popup_events)
+                .unwrap_or_default();
+            self.queue_popup_requests(popups)?;
             result.navigation
         } else {
             None
@@ -3824,6 +3857,11 @@ impl NativeEngine {
                 &cookie,
             )?;
             dialogs.extend(result.dialogs);
+            let popups = javascript
+                .as_ref()
+                .map(NativeJavaScriptRuntime::take_popup_events)
+                .unwrap_or_default();
+            self.queue_popup_requests(popups)?;
             result.navigation
         } else {
             None

@@ -3035,6 +3035,18 @@ Frame event/load parity, CSP reporting and full source-expression grammar,
 shared frame scripting, postMessage, and complete browser topology remain
 open issue #40 gates.
 
+The completed native-engine-browser-148 slice adds script-created browsing
+contexts. The native JavaScript host resolves `window.open` URLs and emits
+typed intents; `_self`, `_parent`, `_top`, and `_unfencedTop` use current-page
+navigation, while `_blank` and non-reserved names are materialized by the
+parent-owned target registry. Version-5 content-worker IPC transfers popup
+effects from page load, direct scripts, event/lifecycle dispatch, fetch
+continuations, and nested target loads. Named targets are initialized once,
+reused on later calls, remain independently parked, and reset their frame
+registry when navigated; the opener remains selected. Cross-context
+WindowProxy scripting, `postMessage`, popup permissions/geometry, and full
+browser topology remain issue #40 gates.
+
 The completed native-engine-browser-133 batch extends the native target seam
 with a side-effect-free preflight result. The engine resolves the current
 semantic locator and derives viewport geometry and actionability under the

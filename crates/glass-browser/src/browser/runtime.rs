@@ -199,7 +199,7 @@ impl BrowserRuntimeSession {
     pub async fn native_list_frames(&self) -> BrowserResult<Vec<FrameInfo>> {
         let _operation = self.operation_lock.lock().await;
         match &self.backend {
-            BackendStartup::Native(backend) => Ok(backend.list_frames()?),
+            BackendStartup::Native(backend) => Ok(backend.list_frames().await?),
             _ => Err("native frame discovery is only available on the native runtime".into()),
         }
     }
@@ -239,7 +239,7 @@ impl BrowserRuntimeSession {
     pub async fn native_select_frame(&self, frame_id: &str) -> BrowserResult<FrameInfo> {
         let _operation = self.operation_lock.lock().await;
         match &self.backend {
-            BackendStartup::Native(backend) => Ok(backend.select_frame(frame_id)?),
+            BackendStartup::Native(backend) => Ok(backend.select_frame(frame_id).await?),
             _ => Err("native frame selection is only available on the native runtime".into()),
         }
     }
@@ -725,8 +725,10 @@ impl BrowserRuntimeSession {
     fn native_semantic_observation_unlocked(
         &self,
     ) -> BrowserResult<super::session::SemanticObservation> {
-        let native = match &self.backend {
-            BackendStartup::Native(backend) => backend.inspection_snapshot()?,
+        let (native, frame_id) = match &self.backend {
+            BackendStartup::Native(backend) => {
+                (backend.inspection_snapshot()?, backend.active_frame_id()?)
+            }
             _ => {
                 return Err(
                     "native semantic inspection is only available on the native runtime".into(),
@@ -735,7 +737,7 @@ impl BrowserRuntimeSession {
         };
         let route = super::session::SemanticRouteIdentity {
             target_id: native.context_id.clone(),
-            frame_id: format!("{}:main", native.context_id),
+            frame_id,
             url: native.snapshot.url.clone(),
         };
         let targets = native

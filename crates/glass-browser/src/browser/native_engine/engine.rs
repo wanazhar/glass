@@ -319,6 +319,7 @@ pub struct NativeInspectionSnapshot {
 /// Single-owner native browser kernel.
 pub struct NativeEngine {
     config: NativeEngineConfig,
+    frame_id: String,
     loader: NativeResourceLoader,
     runtime: NativeRuntimeShared,
     runtime_worker: Option<NativeRuntimeWorker>,
@@ -382,6 +383,7 @@ impl NativeEngine {
         )?;
         Ok(Self {
             url: config.initial_url.clone(),
+            frame_id: format!("{}:main", config.context_id),
             config,
             loader,
             runtime,
@@ -414,6 +416,33 @@ impl NativeEngine {
 
     pub fn config(&self) -> &NativeEngineConfig {
         &self.config
+    }
+
+    pub(crate) fn set_frame_id(&mut self, frame_id: String) {
+        self.frame_id = frame_id;
+    }
+
+    pub(crate) fn document_generation(&self) -> Result<u32, NativeEngineError> {
+        self.require_running("frame discovery")?;
+        Ok(self.document.generation())
+    }
+
+    pub(crate) fn embedded_frame_sources(&self) -> Result<Vec<(u32, String)>, NativeEngineError> {
+        self.require_running("frame discovery")?;
+        Ok(self
+            .document
+            .embedded_frame_sources()
+            .into_iter()
+            .map(|(node_id, source)| (node_id.index(), source))
+            .collect())
+    }
+
+    pub(crate) fn resolve_embedded_frame_url(
+        &self,
+        source: &str,
+    ) -> Result<String, NativeEngineError> {
+        self.require_running("frame discovery")?;
+        self.resolve_link_href(source)
     }
 
     pub const fn lifecycle(&self) -> NativeLifecycleState {
@@ -1438,7 +1467,7 @@ impl NativeEngine {
             url,
             suggested_filename,
             target_id: self.config.context_id.clone(),
-            frame_id: format!("{}:main", self.config.context_id),
+            frame_id: self.frame_id.clone(),
         });
         Ok(())
     }

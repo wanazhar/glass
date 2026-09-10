@@ -739,6 +739,32 @@ impl NativeDocument {
             .map(NativeNode::id)
     }
 
+    /// Return the embedded browsing-context sources in document order. The
+    /// frame owner resolves these references against the current document;
+    /// an omitted or empty `src` is the standard initial blank document.
+    pub(crate) fn embedded_frame_sources(&self) -> Vec<(NativeNodeId, String)> {
+        self.nodes
+            .iter()
+            .filter(|node| matches!(node.element_name(), Some("iframe" | "frame")))
+            .map(|node| {
+                if let Some(srcdoc) = node.attribute("srcdoc") {
+                    return (
+                        node.id(),
+                        format!("data:text/html,{}", encode_data_url_payload(srcdoc)),
+                    );
+                }
+                (
+                    node.id(),
+                    node.attribute("src")
+                        .map(str::trim)
+                        .filter(|source| !source.is_empty())
+                        .unwrap_or("about:blank")
+                        .to_owned(),
+                )
+            })
+            .collect()
+    }
+
     pub(crate) fn script_snapshot(&self, max_text_bytes: usize) -> NativeScriptDocumentSnapshot {
         let (title, _) = self.title(max_text_bytes);
         let (visible_text, _) = self.visible_text(max_text_bytes);
@@ -3978,6 +4004,14 @@ fn tokenize(source: &str, max_tokens: usize) -> Result<Vec<HtmlToken>, NativeEng
                 },
                 max_tokens,
             )?;
+            if matches!(name.as_str(), "iframe" | "frame") && !self_closing {
+                let text_start = end + 1;
+                if let Some(text_end) = find_raw_text_end(source, text_start, &name) {
+                    next_position = text_end;
+                } else {
+                    break;
+                }
+            }
             if let Some(decode_entities) = special_text_mode
                 && !self_closing
                 && !is_void_element(&name)
@@ -4143,6 +4177,21 @@ fn is_tag_name_start(byte: u8) -> bool {
 
 fn is_tag_name_char(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':')
+}
+
+fn encode_data_url_payload(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push('%');
+            encoded.push(HEX[(byte >> 4) as usize] as char);
+            encoded.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+    }
+    encoded
 }
 
 fn special_text_mode(name: &str) -> Option<bool> {

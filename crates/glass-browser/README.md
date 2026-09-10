@@ -448,6 +448,14 @@ MCP uses stdio. Keep stdout reserved for protocol frames. Clients must complete
 initialization and the initialized notification before tools. The negotiated
 agreement reports exact schema and capability status.
 
+Native target sessions also own a bounded nested `iframe`/`frame` tree,
+including `srcdoc`, with stable parent-linked frame IDs and initialized child
+engine owners. Explicit frame selection routes the normal Glass operations to
+the selected child while parked parent and sibling engines retain their
+state; frame and target shutdown drain every owner. CSP frame directives,
+frame lifecycle events, shared same-origin frame scripting, and popup creation
+remain separate production gates in issue #40.
+
 ## Safety and support
 
 - Keep the CDP port on a trusted local interface.

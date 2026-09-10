@@ -1416,8 +1416,21 @@ selection, parked-target retention, and close-all cleanup. Selection swaps
 complete engine ownership, so navigation, history, prompts, downloads,
 request accounting, and storage-reader leases remain attached to the target
 that owns them. Runtime, CLI, and MCP reach the same lifecycle owner without
-Chromium or CDP. Child browsing contexts, popup creation, and frame-scoped
-operations remain separate topology work.
+Chromium or CDP.
+
+The completed native-engine-browser-145 batch adds target-owned child-frame
+execution. Native `iframe`/`frame` owners are discovered in document order,
+including nested descendants and bounded `srcdoc` documents, and each
+published frame has a live native engine owner with stable parent linkage.
+Explicit frame selection swaps complete child state into the active owner, so
+the existing Glass navigation, evidence, script, action, storage, prompt,
+download, wait, capture, and semantic-inspection routes are frame-correct;
+parked parents and siblings retain their state. Frame and target shutdown
+drain all owners. Native internal frames report `out_of_process=false` while
+external documents retain the existing sandboxed content worker boundary.
+CSP frame-source enforcement, frame lifecycle event parity, shared
+same-origin frame scripting, postMessage, popup creation, and complete
+browser topology remain open gates.
 
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third

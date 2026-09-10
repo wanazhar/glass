@@ -4010,6 +4010,13 @@ fn document_bootstrap(
   const finishIndexedDbTransaction = (transaction) => {{
     if (transaction.__finished || transaction.__pending !== 0) return;
     transaction.__finished = true;
+    if (transaction.__aborted) {{
+      if (!transaction.__abortDispatched) {{
+        transaction.__abortDispatched = true;
+        if (typeof transaction.onabort === "function") transaction.onabort.call(transaction, {{ target: transaction }});
+      }}
+      return;
+    }}
     if (typeof transaction.oncomplete === "function") transaction.oncomplete.call(transaction, {{ target: transaction }});
   }};
   const maybeFinishIndexedDbTransaction = (transaction) => {{
@@ -4034,6 +4041,7 @@ fn document_bootstrap(
           error = caught instanceof Error ? caught : indexedDbError("UnknownError", String(caught));
           transaction.__aborted = true;
           transaction.error = error;
+          transaction.__rollback();
           if (typeof transaction.onerror === "function") transaction.onerror.call(transaction, {{ target: transaction }});
         }}
       }}
@@ -4044,12 +4052,20 @@ fn document_bootstrap(
     }});
     return request;
   }};
+  const cloneIndexedDbDatabaseState = (databaseState) => JSON.parse(JSON.stringify(databaseState));
+  const restoreIndexedDbDatabaseState = (databaseState, snapshot) => {{
+    for (const key of Object.keys(databaseState)) delete databaseState[key];
+    for (const [key, value] of Object.entries(snapshot)) databaseState[key] = value;
+  }};
   const makeIndexedDbTransaction = (database, databaseState, storeNames, mode, upgrade) => {{
+    const initialState = cloneIndexedDbDatabaseState(databaseState);
     const transaction = {{
       db: database,
       mode,
       error: null,
       __storeNames: storeNames,
+      __initialState: initialState,
+      __rolledBack: false,
       get objectStoreNames() {{ return storeNames.slice().sort(); }},
       oncomplete: null,
       onerror: null,
@@ -4059,11 +4075,19 @@ fn document_bootstrap(
       __aborted: false,
       __finished: false,
       __finishScheduled: false,
+      __abortDispatched: false,
+      __rollback() {{
+        if (this.__rolledBack) return;
+        restoreIndexedDbDatabaseState(databaseState, this.__initialState);
+        this.__rolledBack = true;
+      }},
       abort() {{
         if (this.__finished) throw indexedDbError("InvalidStateError", "native IndexedDB transaction is inactive");
+        if (this.__aborted) return;
         this.__aborted = true;
         this.error = indexedDbError("AbortError", "native IndexedDB transaction was aborted");
-        if (typeof this.onabort === "function") this.onabort.call(this, {{ target: this }});
+        this.__rollback();
+        maybeFinishIndexedDbTransaction(this);
       }},
       objectStore(name) {{
         const normalizedName = indexedDbName(name, "object store name");

@@ -5564,6 +5564,7 @@ fn document_bootstrap(
     this.responseText = "";
     this.responseURL = "";
     this.response = "";
+    this.responseType = "";
     this.withCredentials = false;
     this.onreadystatechange = null;
     this.onload = null;
@@ -5627,6 +5628,8 @@ fn document_bootstrap(
   }};
   XMLHttpRequestNative.prototype.send = function(body) {{
     if (this.readyState !== 1) throw new TypeError("native XMLHttpRequest is not open");
+    const responseType = String(this.responseType || "").toLowerCase();
+    if (!["", "text", "arraybuffer", "blob"].includes(responseType)) throw new TypeError("native XMLHttpRequest responseType is unsupported");
     const requestBody = body && (body.__glassFormData === true || body.__glassUrlSearchParams === true || body.__glassNativeBlob === true)
       ? body
       : body === undefined || body === null ? null : String(body);
@@ -5647,12 +5650,14 @@ fn document_bootstrap(
       this.responseURL = response.url;
       this._responseContentType = response.headers.get("content-type");
       this._responseHeaders = response.headers;
+      if (responseType === "arraybuffer") return response.arrayBuffer();
+      if (responseType === "blob") return response.blob();
       return response.text();
-    }}).then(text => {{
-      if (text === null || this._controller !== controller || this._aborted) return;
+    }}).then(value => {{
+      if (value === null || this._controller !== controller || this._aborted) return;
       this._controller = null;
-      this.responseText = text;
-      this.response = text;
+      this.responseText = typeof value === "string" ? value : "";
+      this.response = value;
       this.readyState = 4;
       this._notifyReadyState();
       if (typeof this.onload === "function") this.onload.call(this, {{ type: "load", target: this }});

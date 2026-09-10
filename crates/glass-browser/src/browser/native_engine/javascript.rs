@@ -46,6 +46,7 @@ pub(crate) const MAX_NATIVE_COOKIE_PROFILE_ENTRIES: usize = 128;
 pub(crate) const MAX_NATIVE_COOKIE_PROFILE_BYTES: usize = 4096;
 const MAX_NATIVE_INDEXED_DB_DATABASES: usize = 16;
 const MAX_NATIVE_INDEXED_DB_STORES: usize = 128;
+const MAX_NATIVE_INDEXED_DB_INDEXES: usize = 128;
 const MAX_NATIVE_INDEXED_DB_RECORDS: usize = 128;
 pub(crate) const MAX_NATIVE_INDEXED_DB_CHANGES: usize = 128;
 const MAX_NATIVE_INDEXED_DB_VALUE_BYTES: usize = 8 * 1024;
@@ -174,7 +175,18 @@ pub(crate) struct NativeIndexedDbObjectStore {
     auto_increment: bool,
     #[serde(default = "default_indexed_db_next_key")]
     next_key: u64,
+    #[serde(default)]
+    indexes: BTreeMap<String, NativeIndexedDbIndex>,
     records: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+pub(crate) struct NativeIndexedDbIndex {
+    key_path: String,
+    #[serde(default)]
+    unique: bool,
+    #[serde(default)]
+    multi_entry: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
@@ -198,6 +210,12 @@ pub(crate) enum NativeIndexedDbChange {
         key_path: Option<String>,
         auto_increment: bool,
         next_key: u64,
+    },
+    UpdateStoreIndexes {
+        storage_key: String,
+        database: String,
+        store: String,
+        indexes: BTreeMap<String, NativeIndexedDbIndex>,
     },
     PutRecord {
         storage_key: String,
@@ -310,6 +328,17 @@ fn validate_indexed_db_store(store: &NativeIndexedDbObjectStore) -> Result<(), N
             "must be greater than zero",
         ));
     }
+    if store.indexes.len() > MAX_NATIVE_INDEXED_DB_INDEXES {
+        return Err(NativeEngineError::limit(
+            "native IndexedDB indexes",
+            MAX_NATIVE_INDEXED_DB_INDEXES,
+            store.indexes.len(),
+        ));
+    }
+    for (name, index) in &store.indexes {
+        validate_indexed_db_name("native IndexedDB index name", name)?;
+        validate_indexed_db_index(index)?;
+    }
     if store.records.len() > MAX_NATIVE_INDEXED_DB_RECORDS {
         return Err(NativeEngineError::limit(
             "native IndexedDB records",
@@ -322,6 +351,16 @@ fn validate_indexed_db_store(store: &NativeIndexedDbObjectStore) -> Result<(), N
         validate_indexed_db_record_value(value)?;
     }
     Ok(())
+}
+
+fn validate_indexed_db_index(index: &NativeIndexedDbIndex) -> Result<(), NativeEngineError> {
+    if index.key_path.is_empty() {
+        return Err(NativeEngineError::invalid(
+            "native IndexedDB index key path",
+            "must not be empty",
+        ));
+    }
+    validate_indexed_db_key_path(Some(&index.key_path))
 }
 
 fn validate_indexed_db_record_key(key: &str) -> Result<(), NativeEngineError> {
@@ -463,6 +502,17 @@ pub(crate) fn diff_indexed_db_changes(
                             },
                         )?,
                         (Some(before_store), Some(after_store)) => {
+                            if before_store.indexes != after_store.indexes {
+                                push_indexed_db_change(
+                                    &mut changes,
+                                    NativeIndexedDbChange::UpdateStoreIndexes {
+                                        storage_key: storage_key.to_owned(),
+                                        database: name.clone(),
+                                        store: store_name.clone(),
+                                        indexes: after_store.indexes.clone(),
+                                    },
+                                )?;
+                            }
                             if (
                                 before_store.key_path.clone(),
                                 before_store.auto_increment,
@@ -624,6 +674,27 @@ fn validate_indexed_db_change(change: &NativeIndexedDbChange) -> Result<(), Nati
                 ));
             }
         }
+        NativeIndexedDbChange::UpdateStoreIndexes {
+            storage_key,
+            database,
+            store,
+            indexes,
+        } => {
+            validate_indexed_db_storage_key(storage_key)?;
+            validate_indexed_db_name("native IndexedDB database name", database)?;
+            validate_indexed_db_name("native IndexedDB object store name", store)?;
+            if indexes.len() > MAX_NATIVE_INDEXED_DB_INDEXES {
+                return Err(NativeEngineError::limit(
+                    "native IndexedDB indexes",
+                    MAX_NATIVE_INDEXED_DB_INDEXES,
+                    indexes.len(),
+                ));
+            }
+            for (name, index) in indexes {
+                validate_indexed_db_name("native IndexedDB index name", name)?;
+                validate_indexed_db_index(index)?;
+            }
+        }
         NativeIndexedDbChange::PutRecord {
             storage_key,
             database,
@@ -737,6 +808,21 @@ pub(crate) fn apply_indexed_db_changes(
                     object_store.key_path = key_path.clone();
                     object_store.auto_increment = *auto_increment;
                     object_store.next_key = *next_key;
+                }
+            }
+            NativeIndexedDbChange::UpdateStoreIndexes {
+                storage_key,
+                database,
+                store,
+                indexes,
+            } => {
+                if let Some(object_store) = state
+                    .origins
+                    .get_mut(storage_key)
+                    .and_then(|origin| origin.databases.get_mut(database))
+                    .and_then(|database| database.stores.get_mut(store))
+                {
+                    object_store.indexes = indexes.clone();
                 }
             }
             NativeIndexedDbChange::PutRecord {
@@ -3735,6 +3821,7 @@ fn document_bootstrap(
   if (!globalThis.__glassNativeIndexedDBInstalled) {{
   const indexedDbDatabaseLimit = {indexed_db_database_limit};
   const indexedDbStoreLimit = {indexed_db_store_limit};
+  const indexedDbIndexLimit = {indexed_db_index_limit};
   const indexedDbRecordLimit = {indexed_db_record_limit};
   const indexedDbValueLimit = {indexed_db_value_limit};
   const indexedDbSchedule = (callback) => Promise.resolve().then(callback);
@@ -3772,6 +3859,62 @@ fn document_bootstrap(
   const indexedDbKeyValue = (token) => token.startsWith("s:")
     ? token.slice(2)
     : Number(token.slice(2));
+  const indexedDbCompareTokens = (left, right) => {{
+    const leftNumber = left.startsWith("n:");
+    const rightNumber = right.startsWith("n:");
+    if (leftNumber !== rightNumber) return leftNumber ? -1 : 1;
+    const leftValue = indexedDbKeyValue(left);
+    const rightValue = indexedDbKeyValue(right);
+    return leftValue < rightValue ? -1 : (leftValue > rightValue ? 1 : 0);
+  }};
+  const indexedDbRangeIncludes = (range, token) => {{
+    if (!range) return true;
+    if (range.__lowerToken !== undefined) {{
+      const comparison = indexedDbCompareTokens(token, range.__lowerToken);
+      if (comparison < 0 || (comparison === 0 && range.lowerOpen)) return false;
+    }}
+    if (range.__upperToken !== undefined) {{
+      const comparison = indexedDbCompareTokens(token, range.__upperToken);
+      if (comparison > 0 || (comparison === 0 && range.upperOpen)) return false;
+    }}
+    return true;
+  }};
+  const makeIndexedDbKeyRange = (lower, upper, lowerOpen, upperOpen) => {{
+    if (lower !== undefined && upper !== undefined) {{
+      const comparison = indexedDbCompareTokens(lower, upper);
+      if (comparison > 0 || (comparison === 0 && (lowerOpen || upperOpen))) throw indexedDbError("DataError", "native IndexedDB key range bounds are invalid");
+    }}
+    const range = {{
+      lower: lower === undefined ? undefined : indexedDbKeyValue(lower),
+      upper: upper === undefined ? undefined : indexedDbKeyValue(upper),
+      lowerOpen: Boolean(lowerOpen),
+      upperOpen: Boolean(upperOpen),
+    }};
+    Object.defineProperties(range, {{
+      __glassNativeKeyRange: {{ value: true }},
+      __lowerToken: {{ value: lower }},
+      __upperToken: {{ value: upper }},
+    }});
+    range.includes = (value) => indexedDbRangeIncludes(range, indexedDbKeyToken(value, false));
+    return range;
+  }};
+  const indexedDbQueryRange = (query) => {{
+    if (query === undefined) return null;
+    if (query && query.__glassNativeKeyRange === true) return query;
+    const token = indexedDbKeyToken(query, false);
+    return makeIndexedDbKeyRange(token, token, false, false);
+  }};
+  const indexedDbQueryLimit = (count) => {{
+    if (count === undefined) return indexedDbRecordLimit;
+    const number = Number(count);
+    if (!Number.isInteger(number) || number < 0) throw indexedDbError("TypeError", "native IndexedDB count must be a non-negative integer");
+    return Math.min(indexedDbRecordLimit, number);
+  }};
+  const indexedDbDirection = (direction) => {{
+    const value = direction === undefined ? "next" : String(direction);
+    if (!["next", "nextunique", "prev", "prevunique"].includes(value)) throw indexedDbError("TypeError", "native IndexedDB cursor direction is unsupported");
+    return value;
+  }};
   const indexedDbReadKeyPath = (value, keyPath) => {{
     if (!keyPath) return undefined;
     let current = value;
@@ -3791,6 +3934,44 @@ fn document_bootstrap(
       current = current[part];
     }}
     current[parts[parts.length - 1]] = key;
+  }};
+  const indexedDbIndexKeys = (value, index) => {{
+    const extracted = indexedDbReadKeyPath(value, index.key_path);
+    if (extracted === undefined) return [];
+    const candidates = index.multi_entry && Array.isArray(extracted) ? extracted : [extracted];
+    const keys = [];
+    for (const candidate of candidates) {{
+      const token = indexedDbKeyToken(candidate, false);
+      if (!keys.includes(token)) keys.push(token);
+    }}
+    return keys;
+  }};
+  const indexedDbObjectEntries = (store) => Object.keys(store.records)
+    .map(primaryToken => ({{ indexToken: primaryToken, primaryToken, value: store.records[primaryToken] }}))
+    .sort((left, right) => indexedDbCompareTokens(left.primaryToken, right.primaryToken));
+  const indexedDbIndexEntries = (store, index) => {{
+    const entries = [];
+    for (const primaryToken of Object.keys(store.records)) {{
+      for (const indexToken of indexedDbIndexKeys(store.records[primaryToken], index)) {{
+        entries.push({{ indexToken, primaryToken, value: store.records[primaryToken] }});
+      }}
+    }}
+    return entries.sort((left, right) =>
+      indexedDbCompareTokens(left.indexToken, right.indexToken)
+      || indexedDbCompareTokens(left.primaryToken, right.primaryToken));
+  }};
+  const indexedDbOrderedEntries = (entries, range, direction) => {{
+    const ordered = entries.filter(entry => indexedDbRangeIncludes(range, entry.indexToken));
+    if (direction.startsWith("prev")) ordered.reverse();
+    if (direction.endsWith("unique")) {{
+      const seen = new Set();
+      return ordered.filter(entry => {{
+        if (seen.has(entry.indexToken)) return false;
+        seen.add(entry.indexToken);
+        return true;
+      }});
+    }}
+    return ordered;
   }};
   const makeIndexedDbRequest = () => ({{
     result: undefined,
@@ -3855,6 +4036,7 @@ fn document_bootstrap(
       db: database,
       mode,
       error: null,
+      __storeNames: storeNames,
       oncomplete: null,
       onerror: null,
       onabort: null,
@@ -3871,14 +4053,175 @@ fn document_bootstrap(
       }},
       objectStore(name) {{
         const normalizedName = indexedDbName(name, "object store name");
-        if (!storeNames.includes(normalizedName)) throw indexedDbError("NotFoundError", "object store is not in this transaction");
+        if (!storeNames.includes(normalizedName) || !databaseState.stores[normalizedName]) throw indexedDbError("NotFoundError", "object store is not in this transaction");
         const store = databaseState.stores[normalizedName];
-        if (!store) throw indexedDbError("NotFoundError", "object store does not exist");
         return makeIndexedDbObjectStore(this, store, normalizedName);
       }},
     }};
     indexedDbSchedule(() => indexedDbSchedule(() => maybeFinishIndexedDbTransaction(transaction)));
     return transaction;
+  }};
+  const makeIndexedDbCursor = (transaction, request, entries, indexCursor, keyOnly, direction, source, store, resolveCursorRecord, ensureIndexConstraints) => {{
+    let position = 0;
+    let pending = false;
+    let done = false;
+    const currentEntry = () => entries[position];
+    const currentKeyToken = () => {{
+      const entry = currentEntry();
+      return indexCursor ? entry.indexToken : entry.primaryToken;
+    }};
+    const queuePosition = (nextPosition) => {{
+      if (done || pending || transaction.__finished || transaction.__aborted) throw indexedDbError("InvalidStateError", "native IndexedDB cursor is inactive");
+      pending = true;
+      transaction.__pending += 1;
+      indexedDbSchedule(() => {{
+        pending = false;
+        position = nextPosition;
+        const entry = currentEntry();
+        if (!entry) {{
+          done = true;
+          request.result = null;
+        }} else {{
+          request.result = cursor;
+        }}
+        request.readyState = "done";
+        if (typeof request.onsuccess === "function") request.onsuccess.call(request, {{ target: request }});
+        transaction.__pending -= 1;
+        maybeFinishIndexedDbTransaction(transaction);
+      }});
+    }};
+    const seekToKey = (token, start) => {{
+      const forward = direction.startsWith("next");
+      let candidate = start;
+      while (candidate < entries.length) {{
+        const comparison = indexedDbCompareTokens(currentKeyTokenFor(entries[candidate]), token);
+        if ((forward && comparison >= 0) || (!forward && comparison <= 0)) break;
+        candidate += 1;
+      }}
+      return candidate;
+    }};
+    const seekToPair = (indexToken, primaryToken, start) => {{
+      const forward = direction.startsWith("next");
+      let candidate = start;
+      while (candidate < entries.length) {{
+        const entry = entries[candidate];
+        const indexComparison = indexedDbCompareTokens(entry.indexToken, indexToken);
+        const comparison = indexComparison || indexedDbCompareTokens(entry.primaryToken, primaryToken);
+        if ((forward && comparison >= 0) || (!forward && comparison <= 0)) break;
+        candidate += 1;
+      }}
+      return candidate;
+    }};
+    const cursor = {{
+      source,
+      get direction() {{ return direction; }},
+      get key() {{ const entry = currentEntry(); return entry ? indexedDbKeyValue(entry.indexToken) : undefined; }},
+      get primaryKey() {{ const entry = currentEntry(); return entry ? indexedDbKeyValue(entry.primaryToken) : undefined; }},
+      get request() {{ return request; }},
+      get value() {{
+        if (keyOnly) return undefined;
+        const entry = currentEntry();
+        return entry ? indexedDbClone(entry.value) : undefined;
+      }},
+      continue(key) {{
+        if (!currentEntry()) throw indexedDbError("InvalidStateError", "native IndexedDB cursor is exhausted");
+        let nextPosition = position + 1;
+        if (key !== undefined) {{
+          const token = indexedDbKeyToken(key, false);
+          const comparison = indexedDbCompareTokens(token, currentKeyToken());
+          if ((direction.startsWith("next") && comparison <= 0) || (direction.startsWith("prev") && comparison >= 0)) throw indexedDbError("DataError", "native IndexedDB cursor key must advance");
+          nextPosition = seekToKey(token, nextPosition);
+        }}
+        queuePosition(nextPosition);
+      }},
+      advance(count) {{
+        if (!Number.isInteger(Number(count)) || Number(count) < 1) throw indexedDbError("TypeError", "native IndexedDB cursor advance count must be positive");
+        queuePosition(position + Number(count));
+      }},
+      continuePrimaryKey(key, primaryKey) {{
+        if (!indexCursor) throw indexedDbError("InvalidAccessError", "native IndexedDB primary-key continuation requires an index cursor");
+        if (!currentEntry()) throw indexedDbError("InvalidStateError", "native IndexedDB cursor is exhausted");
+        const indexToken = indexedDbKeyToken(key, false);
+        const primaryToken = indexedDbKeyToken(primaryKey, false);
+        const comparison = indexedDbCompareTokens(indexToken, currentKeyToken()) || indexedDbCompareTokens(primaryToken, currentEntry().primaryToken);
+        if ((direction.startsWith("next") && comparison <= 0) || (direction.startsWith("prev") && comparison >= 0)) throw indexedDbError("DataError", "native IndexedDB cursor key must advance");
+        queuePosition(seekToPair(indexToken, primaryToken, position + 1));
+      }},
+      update(value) {{
+        if (keyOnly) throw indexedDbError("InvalidStateError", "native IndexedDB key cursor cannot update records");
+        if (!currentEntry()) throw indexedDbError("InvalidStateError", "native IndexedDB cursor is exhausted");
+        if (transaction.mode === "readonly") throw indexedDbError("ReadOnlyError", "native IndexedDB transaction is read-only");
+        const primaryToken = currentEntry().primaryToken;
+        return queueIndexedDbRequest(transaction, () => {{
+          const record = resolveCursorRecord(value, primaryToken);
+          ensureIndexConstraints(record.token, record.value);
+          store.records[record.token] = record.value;
+          currentEntry().value = record.value;
+          return record.key;
+        }});
+      }},
+      delete() {{
+        if (!currentEntry()) throw indexedDbError("InvalidStateError", "native IndexedDB cursor is exhausted");
+        if (transaction.mode === "readonly") throw indexedDbError("ReadOnlyError", "native IndexedDB transaction is read-only");
+        const primaryToken = currentEntry().primaryToken;
+        return queueIndexedDbRequest(transaction, () => {{ delete store.records[primaryToken]; return undefined; }});
+      }},
+    }};
+    const currentKeyTokenFor = (entry) => indexCursor ? entry.indexToken : entry.primaryToken;
+    return cursor;
+  }};
+  const makeIndexedDbIndex = (transaction, store, name, metadata, resolveCursorRecord, ensureIndexConstraints) => {{
+    const queryEntries = (query, direction) => indexedDbOrderedEntries(indexedDbIndexEntries(store, metadata), query, direction);
+    let index;
+    index = {{
+      name,
+      keyPath: metadata.key_path,
+      multiEntry: metadata.multi_entry,
+      unique: metadata.unique,
+      get(query) {{
+        const range = indexedDbQueryRange(query);
+        return queueIndexedDbRequest(transaction, () => {{
+          const entry = queryEntries(range, "next")[0];
+          return entry ? indexedDbClone(entry.value) : undefined;
+        }});
+      }},
+      getKey(query) {{
+        const range = indexedDbQueryRange(query);
+        return queueIndexedDbRequest(transaction, () => {{
+          const entry = queryEntries(range, "next")[0];
+          return entry ? indexedDbKeyValue(entry.primaryToken) : undefined;
+        }});
+      }},
+      getAll(query, count) {{
+        const range = indexedDbQueryRange(query);
+        const limit = indexedDbQueryLimit(count);
+        return queueIndexedDbRequest(transaction, () => queryEntries(range, "next").slice(0, limit).map(entry => indexedDbClone(entry.value)));
+      }},
+      getAllKeys(query, count) {{
+        const range = indexedDbQueryRange(query);
+        const limit = indexedDbQueryLimit(count);
+        return queueIndexedDbRequest(transaction, () => queryEntries(range, "next").slice(0, limit).map(entry => indexedDbKeyValue(entry.primaryToken)));
+      }},
+      count(query) {{
+        const range = indexedDbQueryRange(query);
+        return queueIndexedDbRequest(transaction, () => queryEntries(range, "next").length);
+      }},
+      openCursor(query, direction) {{
+        const range = indexedDbQueryRange(query);
+        const selectedDirection = indexedDbDirection(direction);
+        const entries = queryEntries(range, selectedDirection);
+        const request = queueIndexedDbRequest(transaction, () => entries.length === 0 ? null : makeIndexedDbCursor(transaction, request, entries, true, false, selectedDirection, index, store, resolveCursorRecord, ensureIndexConstraints));
+        return request;
+      }},
+      openKeyCursor(query, direction) {{
+        const range = indexedDbQueryRange(query);
+        const selectedDirection = indexedDbDirection(direction);
+        const entries = queryEntries(range, selectedDirection);
+        const request = queueIndexedDbRequest(transaction, () => entries.length === 0 ? null : makeIndexedDbCursor(transaction, request, entries, true, true, selectedDirection, index, store, resolveCursorRecord, ensureIndexConstraints));
+        return request;
+      }},
+    }};
+    return index;
   }};
   const makeIndexedDbObjectStore = (transaction, store, name) => {{
     const requireWritable = () => {{
@@ -3897,36 +4240,120 @@ fn document_bootstrap(
       const token = indexedDbKeyToken(resolved, false);
       return {{ token, value: cloned, key: indexedDbKeyValue(token) }};
     }};
-    const queryToken = (query) => query === undefined ? undefined : indexedDbKeyToken(query, false);
-    return {{
+    const resolveCursorRecord = (value, primaryToken) => {{
+      const cloned = indexedDbClone(value);
+      const token = store.key_path
+        ? indexedDbKeyToken(indexedDbReadKeyPath(cloned, store.key_path), false)
+        : primaryToken;
+      if (token !== primaryToken) throw indexedDbError("DataError", "native IndexedDB cursor update cannot change the primary key");
+      return {{ token, value: cloned, key: indexedDbKeyValue(token) }};
+    }};
+    const ensureIndexConstraints = (primaryToken, value) => {{
+      for (const index of Object.values(store.indexes)) {{
+        if (!index.unique) continue;
+        const candidateKeys = indexedDbIndexKeys(value, index);
+        for (const existingToken of Object.keys(store.records)) {{
+          if (existingToken === primaryToken) continue;
+          const existingKeys = indexedDbIndexKeys(store.records[existingToken], index);
+          if (candidateKeys.some(candidate => existingKeys.includes(candidate))) throw indexedDbError("ConstraintError", "native IndexedDB unique index constraint failed");
+        }}
+      }}
+    }};
+    let objectStore;
+    objectStore = {{
       name,
       keyPath: store.key_path,
       autoIncrement: store.auto_increment,
-      get(key) {{
-        const token = queryToken(key);
-        return queueIndexedDbRequest(transaction, () => token === undefined || store.records[token] === undefined
-          ? undefined
-          : indexedDbClone(store.records[token]));
+      get indexNames() {{ return Object.keys(store.indexes).sort(); }},
+      createIndex(indexName, keyPath, options) {{
+        if (!transaction.__upgrade || transaction.__finished) throw indexedDbError("InvalidStateError", "indexes can only be created during upgrade");
+        const normalizedName = indexedDbName(indexName, "index name");
+        if (store.indexes[normalizedName]) throw indexedDbError("ConstraintError", "index already exists");
+        if (Object.keys(store.indexes).length >= indexedDbIndexLimit) throw indexedDbError("QuotaExceededError", "native IndexedDB index limit exceeded");
+        if (Array.isArray(keyPath)) throw indexedDbError("TypeError", "native IndexedDB compound index key paths are unsupported");
+        const normalizedKeyPath = indexedDbName(keyPath, "index key path");
+        const metadata = {{
+          key_path: normalizedKeyPath,
+          unique: Boolean(options && options.unique),
+          multi_entry: Boolean(options && options.multiEntry),
+        }};
+        const seen = new Set();
+        for (const value of Object.values(store.records)) {{
+          for (const token of indexedDbIndexKeys(value, metadata)) {{
+            if (metadata.unique && seen.has(token)) throw indexedDbError("ConstraintError", "native IndexedDB unique index constraint failed");
+            seen.add(token);
+          }}
+        }}
+        store.indexes[normalizedName] = metadata;
+        return makeIndexedDbIndex(transaction, store, normalizedName, metadata, resolveCursorRecord, ensureIndexConstraints);
+      }},
+      deleteIndex(indexName) {{
+        if (!transaction.__upgrade || transaction.__finished) throw indexedDbError("InvalidStateError", "indexes can only be deleted during upgrade");
+        const normalizedName = indexedDbName(indexName, "index name");
+        if (!store.indexes[normalizedName]) throw indexedDbError("NotFoundError", "index does not exist");
+        delete store.indexes[normalizedName];
+      }},
+      get(query) {{
+        const range = indexedDbQueryRange(query);
+        return queueIndexedDbRequest(transaction, () => {{
+          const entry = indexedDbObjectEntries(store).find(candidate => indexedDbRangeIncludes(range, candidate.indexToken));
+          return entry ? indexedDbClone(entry.value) : undefined;
+        }});
+      }},
+      getKey(query) {{
+        const range = indexedDbQueryRange(query);
+        return queueIndexedDbRequest(transaction, () => {{
+          const entry = indexedDbObjectEntries(store).find(candidate => indexedDbRangeIncludes(range, candidate.indexToken));
+          return entry ? indexedDbKeyValue(entry.primaryToken) : undefined;
+        }});
       }},
       getAll(query, count) {{
-        const token = queryToken(query);
-        const limit = count === undefined ? indexedDbRecordLimit : Math.max(0, Math.min(indexedDbRecordLimit, Number(count)));
-        if (!Number.isInteger(limit) || limit < 0) throw indexedDbError("TypeError", "native IndexedDB count must be a non-negative integer");
-        return queueIndexedDbRequest(transaction, () => Object.keys(store.records)
-          .filter(candidate => token === undefined || candidate === token)
+        const range = indexedDbQueryRange(query);
+        const limit = indexedDbQueryLimit(count);
+        return queueIndexedDbRequest(transaction, () => indexedDbObjectEntries(store)
+          .filter(entry => indexedDbRangeIncludes(range, entry.indexToken))
           .slice(0, limit)
-          .map(candidate => indexedDbClone(store.records[candidate])));
+          .map(entry => indexedDbClone(entry.value)));
+      }},
+      getAllKeys(query, count) {{
+        const range = indexedDbQueryRange(query);
+        const limit = indexedDbQueryLimit(count);
+        return queueIndexedDbRequest(transaction, () => indexedDbObjectEntries(store)
+          .filter(entry => indexedDbRangeIncludes(range, entry.indexToken))
+          .slice(0, limit)
+          .map(entry => indexedDbKeyValue(entry.primaryToken)));
       }},
       count(query) {{
-        const token = queryToken(query);
-        return queueIndexedDbRequest(transaction, () => Object.keys(store.records)
-          .filter(candidate => token === undefined || candidate === token).length);
+        const range = indexedDbQueryRange(query);
+        return queueIndexedDbRequest(transaction, () => indexedDbObjectEntries(store)
+          .filter(entry => indexedDbRangeIncludes(range, entry.indexToken)).length);
+      }},
+      openCursor(query, direction) {{
+        const range = indexedDbQueryRange(query);
+        const selectedDirection = indexedDbDirection(direction);
+        const entries = indexedDbOrderedEntries(indexedDbObjectEntries(store), range, selectedDirection);
+        const request = queueIndexedDbRequest(transaction, () => entries.length === 0 ? null : makeIndexedDbCursor(transaction, request, entries, false, false, selectedDirection, () => objectStore, store, resolveCursorRecord, ensureIndexConstraints));
+        return request;
+      }},
+      openKeyCursor(query, direction) {{
+        const range = indexedDbQueryRange(query);
+        const selectedDirection = indexedDbDirection(direction);
+        const entries = indexedDbOrderedEntries(indexedDbObjectEntries(store), range, selectedDirection);
+        const request = queueIndexedDbRequest(transaction, () => entries.length === 0 ? null : makeIndexedDbCursor(transaction, request, entries, false, true, selectedDirection, () => objectStore, store, resolveCursorRecord, ensureIndexConstraints));
+        return request;
+      }},
+      index(indexName) {{
+        const normalizedName = indexedDbName(indexName, "index name");
+        const metadata = store.indexes[normalizedName];
+        if (!metadata) throw indexedDbError("NotFoundError", "index does not exist");
+        return makeIndexedDbIndex(transaction, store, normalizedName, metadata, resolveCursorRecord, ensureIndexConstraints);
       }},
       put(value, key) {{
         requireWritable();
         return queueIndexedDbRequest(transaction, () => {{
           const record = resolveRecord(value, key);
           if (store.records[record.token] === undefined && Object.keys(store.records).length >= indexedDbRecordLimit) throw indexedDbError("QuotaExceededError", "native IndexedDB record limit exceeded");
+          ensureIndexConstraints(record.token, record.value);
           store.records[record.token] = record.value;
           return record.key;
         }});
@@ -3937,20 +4364,25 @@ fn document_bootstrap(
           const record = resolveRecord(value, key);
           if (store.records[record.token] !== undefined) throw indexedDbError("ConstraintError", "native IndexedDB key already exists");
           if (Object.keys(store.records).length >= indexedDbRecordLimit) throw indexedDbError("QuotaExceededError", "native IndexedDB record limit exceeded");
+          ensureIndexConstraints(record.token, record.value);
           store.records[record.token] = record.value;
           return record.key;
         }});
       }},
-      delete(key) {{
+      delete(query) {{
         requireWritable();
-        const token = queryToken(key);
-        return queueIndexedDbRequest(transaction, () => {{ delete store.records[token]; return undefined; }});
+        const range = indexedDbQueryRange(query);
+        return queueIndexedDbRequest(transaction, () => {{
+          for (const entry of indexedDbObjectEntries(store)) if (indexedDbRangeIncludes(range, entry.indexToken)) delete store.records[entry.primaryToken];
+          return undefined;
+        }});
       }},
       clear() {{
         requireWritable();
         return queueIndexedDbRequest(transaction, () => {{ store.records = {{}}; return undefined; }});
       }},
     }};
+    return objectStore;
   }};
   const makeIndexedDbDatabase = (name, databaseState, upgradeTransaction) => {{
     let closed = false;
@@ -3958,7 +4390,7 @@ fn document_bootstrap(
       name,
       __upgradeTransaction: upgradeTransaction,
       get version() {{ return databaseState.version; }},
-      get objectStoreNames() {{ return Object.keys(databaseState.stores); }},
+      get objectStoreNames() {{ return Object.keys(databaseState.stores).sort(); }},
       createObjectStore(storeName, options) {{
         const activeUpgradeTransaction = database.__upgradeTransaction;
         if (!activeUpgradeTransaction || activeUpgradeTransaction.__finished) throw indexedDbError("InvalidStateError", "object stores can only be created during upgrade");
@@ -3974,8 +4406,10 @@ fn document_bootstrap(
           key_path: keyPath,
           auto_increment: autoIncrement,
           next_key: 1,
+          indexes: {{}},
           records: {{}},
         }};
+        if (!activeUpgradeTransaction.__storeNames.includes(normalizedName)) activeUpgradeTransaction.__storeNames.push(normalizedName);
         return makeIndexedDbObjectStore(activeUpgradeTransaction, databaseState.stores[normalizedName], normalizedName);
       }},
       deleteObjectStore(storeName) {{
@@ -3984,6 +4418,8 @@ fn document_bootstrap(
         const normalizedName = indexedDbName(storeName, "object store name");
         if (!databaseState.stores[normalizedName]) throw indexedDbError("NotFoundError", "object store does not exist");
         delete databaseState.stores[normalizedName];
+        const position = activeUpgradeTransaction.__storeNames.indexOf(normalizedName);
+        if (position >= 0) activeUpgradeTransaction.__storeNames.splice(position, 1);
       }},
       transaction(storeNames, mode) {{
         if (closed) throw indexedDbError("InvalidStateError", "native IndexedDB database is closed");
@@ -4052,8 +4488,15 @@ fn document_bootstrap(
       return Promise.resolve(Object.keys(indexedDbState().databases).map(name => ({{ name, version: indexedDbState().databases[name].version }})));
     }},
   }};
+  const nativeIDBKeyRange = {{
+    only(value) {{ const token = indexedDbKeyToken(value, false); return makeIndexedDbKeyRange(token, token, false, false); }},
+    lowerBound(value, open) {{ return makeIndexedDbKeyRange(indexedDbKeyToken(value, false), undefined, Boolean(open), false); }},
+    upperBound(value, open) {{ return makeIndexedDbKeyRange(undefined, indexedDbKeyToken(value, false), false, Boolean(open)); }},
+    bound(lower, upper, lowerOpen, upperOpen) {{ return makeIndexedDbKeyRange(indexedDbKeyToken(lower, false), indexedDbKeyToken(upper, false), Boolean(lowerOpen), Boolean(upperOpen)); }},
+  }};
   globalThis.indexedDB = nativeIndexedDB;
   globalThis.__glassNativeIndexedDB = nativeIndexedDB;
+  globalThis.IDBKeyRange = nativeIDBKeyRange;
   globalThis.__glassNativeIndexedDBInstalled = true;
   }} else if (globalThis.indexedDB !== globalThis.__glassNativeIndexedDB) {{
     globalThis.indexedDB = globalThis.__glassNativeIndexedDB;
@@ -5005,6 +5448,7 @@ fn document_bootstrap(
         storage_value_limit = crate::browser_backend::MAX_TEXT_BYTES,
         indexed_db_database_limit = MAX_NATIVE_INDEXED_DB_DATABASES,
         indexed_db_store_limit = MAX_NATIVE_INDEXED_DB_STORES,
+        indexed_db_index_limit = MAX_NATIVE_INDEXED_DB_INDEXES,
         indexed_db_record_limit = MAX_NATIVE_INDEXED_DB_RECORDS,
         indexed_db_value_limit = MAX_NATIVE_INDEXED_DB_VALUE_BYTES,
         run_timers = run_timers,

@@ -30872,6 +30872,79 @@ async fn native_xhr_abort_is_observable_and_ignores_late_callbacks() {
 }
 
 #[tokio::test]
+async fn native_xhr_timeout_is_bounded_and_observable() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/slow"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            if expected_path == "/slow" {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            let body = if expected_path == "/page" {
+                "<p>XHR timeout</p>"
+            } else {
+                "late-response"
+            };
+            let content_type = if expected_path == "/page" {
+                "text/html"
+            } else {
+                "text/plain"
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len(),
+            );
+            let _ = stream.write_all(response.as_bytes()).await;
+        }
+    });
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            r#"(() => {
+                const xhr = new XMLHttpRequest();
+                const events = [];
+                xhr.onreadystatechange = () => events.push(`state:${xhr.readyState}`);
+                xhr.onerror = () => events.push('error');
+                xhr.ontimeout = event => {
+                    events.push(`${event.type}:${xhr.readyState}`);
+                    globalThis.xhrTimeoutResult = [xhr.timeout, xhr.readyState, xhr.status, xhr.responseText, xhr.responseURL, events];
+                };
+                xhr.open('GET', '/slow');
+                xhr.timeout = 20;
+                xhr.send();
+            })()"#,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.xhrTimeoutResult")
+            .await
+            .unwrap(),
+        serde_json::json!([20, 4, 0, "", "", ["state:1", "state:4", "timeout:4"]])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { try { const xhr = new XMLHttpRequest(); xhr.timeout = 4001; return 'accepted'; } catch (error) { return [error.name, error.message]; } })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["RangeError", "native XMLHttpRequest timeout is outside the bounded range"])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_fetches_bounded_text_form_data() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

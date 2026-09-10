@@ -57,6 +57,7 @@ const MAX_NATIVE_FETCH_HEADERS: usize = 16;
 const MAX_NATIVE_FETCH_HEADER_NAME_BYTES: usize = 128;
 const MAX_NATIVE_FETCH_HEADER_VALUE_BYTES: usize = 64 * 1024;
 const MAX_NATIVE_FETCH_HEADER_BYTES: usize = 128 * 1024;
+pub(crate) const MAX_NATIVE_XHR_TIMEOUT_MS: u32 = 4_000;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -91,6 +92,8 @@ pub(crate) enum NativeScriptCommand {
         body_base64: Option<String>,
         #[serde(default)]
         content_type: Option<String>,
+        #[serde(default)]
+        timeout_ms: Option<u32>,
     },
     StorageSet {
         scope: String,
@@ -5353,6 +5356,11 @@ fn document_bootstrap(
     error.name = "AbortError";
     return error;
   }};
+  const nativeTimeoutError = () => {{
+    const error = new Error("The XMLHttpRequest operation timed out");
+    error.name = "TimeoutError";
+    return error;
+  }};
   const AbortSignalNative = function() {{
     this.aborted = false;
     this.reason = undefined;
@@ -5480,6 +5488,12 @@ fn document_bootstrap(
     nextFetchRequestId += 1;
     globalThis.__glassNextFetchRequestId = nextFetchRequestId;
     const credentials = settings.credentials !== "omit";
+    const timeoutSetting = settings.__glassTimeoutMs === undefined
+      ? null
+      : Number(settings.__glassTimeoutMs);
+    const timeoutMs = timeoutSetting === 0 ? null : timeoutSetting;
+    if (timeoutMs !== null && (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > {max_native_xhr_timeout_ms}))
+      throw new RangeError("native fetch timeout is outside the bounded XHR range");
     return new Promise((resolve, reject) => {{
       const pending = {{ resolve, reject, signal, abortListener: null }};
       const abort = () => {{
@@ -5492,7 +5506,7 @@ fn document_bootstrap(
       fetchRequests.set(requestId, pending);
       if (signal) signal.addEventListener("abort", abort);
       if (!fetchRequests.has(requestId)) return;
-      pushCommand({{ kind: "fetch", request_id: requestId, href: input, credentials, method, headers: requestHeaders, body, body_base64: bodyBase64, content_type: contentType }});
+      pushCommand({{ kind: "fetch", request_id: requestId, href: input, credentials, method, headers: requestHeaders, body, body_base64: bodyBase64, content_type: contentType, timeout_ms: timeoutMs }});
     }});
   }};
   const responseHeaders = (rawEntries, contentType) => {{
@@ -5570,6 +5584,7 @@ fn document_bootstrap(
     this.onload = null;
     this.onerror = null;
     this.onabort = null;
+    this.ontimeout = null;
     this._method = "GET";
     this._url = "";
     this._headers = {{}};
@@ -5577,10 +5592,20 @@ fn document_bootstrap(
     this._responseHeaders = responseHeaders([], null);
     this._controller = null;
     this._aborted = false;
+    this._timeout = 0;
   }};
   XMLHttpRequestNative.prototype._notifyReadyState = function() {{
     if (typeof this.onreadystatechange === "function") this.onreadystatechange.call(this);
   }};
+  Object.defineProperty(XMLHttpRequestNative.prototype, "timeout", {{
+    get() {{ return this._timeout; }},
+    set(value) {{
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric) || numeric < 0 || numeric > {max_native_xhr_timeout_ms})
+        throw new RangeError("native XMLHttpRequest timeout is outside the bounded range");
+      this._timeout = Math.trunc(numeric);
+    }},
+  }});
   XMLHttpRequestNative.prototype.open = function(method, url, async) {{
     if (async === false) throw new TypeError("native XMLHttpRequest requires async mode");
     const normalizedMethod = String(method).toUpperCase();
@@ -5642,6 +5667,7 @@ fn document_bootstrap(
       headers: this._headers,
       credentials: this.withCredentials ? "include" : "omit",
       signal: controller.signal,
+      __glassTimeoutMs: this._timeout,
     }});
     request.then(response => {{
       if (this._controller !== controller || this._aborted) return null;
@@ -5664,6 +5690,19 @@ fn document_bootstrap(
     }}).catch(error => {{
       if (this._controller !== controller || this._aborted) return;
       this._controller = null;
+      if (error && error.name === "TimeoutError") {{
+        this.status = 0;
+        this.statusText = "";
+        this.responseText = "";
+        this.responseURL = "";
+        this.response = "";
+        this._responseContentType = null;
+        this._responseHeaders = responseHeaders([], null);
+        this.readyState = 4;
+        this._notifyReadyState();
+        if (typeof this.ontimeout === "function") this.ontimeout.call(this, {{ type: "timeout", target: this }});
+        return;
+      }}
       this.readyState = 4;
       this._notifyReadyState();
       if (typeof this.onerror === "function") this.onerror.call(this, {{ type: "error", target: this, error }});
@@ -5678,7 +5717,9 @@ fn document_bootstrap(
     if (!pending) return;
     fetchRequests.delete(Number(requestId));
     clearFetchAbortListener(pending);
-    if (payload && payload.error) pending.reject(new Error(String(payload.error)));
+    if (payload && payload.error) {{
+      pending.reject(payload.timeout === true ? nativeTimeoutError() : new Error(String(payload.error)));
+    }}
     else pending.resolve(responseFromFetch(payload));
   }};
   globalThis.queueMicrotask = (callback) => {{
@@ -6280,6 +6321,7 @@ fn document_bootstrap(
         fetch_header_name_limit = MAX_NATIVE_FETCH_HEADER_NAME_BYTES,
         fetch_header_value_limit = MAX_NATIVE_FETCH_HEADER_VALUE_BYTES,
         fetch_header_bytes_limit = MAX_NATIVE_FETCH_HEADER_BYTES,
+        max_native_xhr_timeout_ms = MAX_NATIVE_XHR_TIMEOUT_MS,
         run_timers = run_timers,
         width = viewport.width,
         height = viewport.height,

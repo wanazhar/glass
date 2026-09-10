@@ -132,6 +132,7 @@ pub(crate) struct NativeFetchRequest<'a> {
     pub(crate) content_type: Option<String>,
     pub(crate) request_headers: BTreeMap<String, String>,
     pub(crate) credentials: bool,
+    pub(crate) timeout: Option<Duration>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -730,6 +731,7 @@ impl NativeResourceLoader {
             content_type,
             request_headers: BTreeMap::new(),
             credentials,
+            timeout: None,
         })
         .await
     }
@@ -746,6 +748,7 @@ impl NativeResourceLoader {
             content_type,
             request_headers,
             credentials,
+            timeout,
         } = request;
         validate_url_text("fetch owner URL", document_url)?;
         validate_url_text("fetch URL", href)?;
@@ -823,7 +826,11 @@ impl NativeResourceLoader {
 
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
-            .timeout(NATIVE_NETWORK_TIMEOUT)
+            .timeout(
+                timeout
+                    .unwrap_or(NATIVE_NETWORK_TIMEOUT)
+                    .min(NATIVE_NETWORK_TIMEOUT),
+            )
             .build()
             .map_err(|error| network_error("fetch client construction", error))?;
         let mut current_url = target_url;
@@ -2391,10 +2398,14 @@ fn append_original_fragment(final_url: &Url, original_url: &str) -> String {
     final_url.to_string()
 }
 
-fn network_error(operation: &str, _error: impl std::fmt::Display) -> NativeEngineError {
+fn network_error(operation: &str, error: reqwest::Error) -> NativeEngineError {
     NativeEngineError::Network {
         operation: operation.into(),
-        reason: "request failed without exposing response data".into(),
+        reason: if error.is_timeout() {
+            "request timed out".into()
+        } else {
+            "request failed without exposing response data".into()
+        },
     }
 }
 

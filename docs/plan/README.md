@@ -977,9 +977,16 @@ and exotic iterable parity remain open.
 The completed bounded XHR binary-response slice is
 [native-engine-browser-104](tasks/native-engine-browser-104.md). Async XHR
 now supports bounded `arraybuffer` and `blob` response types with byte-
-preserving `response` values while retaining text-mode behavior; upload
-progress, timeout, streaming, synchronous XHR, and complete XHR Web IDL parity
-remain open.
+preserving `response` values while retaining text-mode behavior.
+
+The completed bounded XHR-timeout slice is
+[native-engine-browser-105](tasks/native-engine-browser-105.md). Async XHR
+now carries a bounded non-zero timeout through the existing request bridge;
+zero disables the extra deadline, and a timed-out request reports `DONE`,
+status zero, cleared response state, and `ontimeout` with stale completion
+suppressed. Upload progress, transport cancellation beyond the bounded
+deadline, streaming, synchronous XHR, and complete XHR Web IDL parity remain
+open.
 
 Full cookie policy/Web IDL parity and the remaining browser-complete gates
 remain open.

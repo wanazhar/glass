@@ -1104,6 +1104,15 @@ inputs. URL setters, full percent-encoding/IDNA/IPv6/default-port parity, live
 search-parameter synchronization, non-HTTP scheme parity, and complete
 URL/Web IDL identity remain open.
 
+The completed bounded Response-constructor slice is
+[native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and
+constructed responses now share `Response` identity; `new Response`,
+`Response.json`, `Response.error`, and `Response.redirect` reuse the bounded
+body/header/clone projections, with null bodies exposing `body === null`.
+Stream input, body disturbance/`bodyUsed`, complete factory and redirect/error
+internals, trailers, shared tee/backpressure, and complete Response Web IDL
+identity remain open.
+
 Full cookie policy/Web IDL parity and the remaining browser-complete gates
 remain open.
 

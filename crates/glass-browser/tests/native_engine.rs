@@ -773,6 +773,76 @@ async fn native_local_request_headers_iterators_are_live_and_self_iterating() {
 }
 
 #[tokio::test]
+async fn native_local_response_objects_expose_bounded_constructors_and_identity() {
+    let config = NativeEngineConfig::default()
+        .with_fixture("fixture://response-objects", "<p>Responses</p>")
+        .unwrap()
+        .with_initial_url("fixture://response-objects");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            r#"(async () => {
+                const constructed = new Response(new Uint8Array([0, 255, 128, 65]), {
+                    status: 201,
+                    statusText: 'Created',
+                    headers: { 'Content-Type': 'application/octet-stream' },
+                });
+                const json = Response.json({ ready: true });
+                const empty = new Response();
+                const error = Response.error();
+                const redirect = Response.redirect('https://example.test/next', 307);
+                const clone = constructed.clone();
+                globalThis.responseObjects = [
+                    constructed instanceof Response,
+                    constructed.status,
+                    constructed.statusText,
+                    constructed.headers.get('content-type'),
+                    Array.from(await constructed.bytes()),
+                    await json.text(),
+                    json.headers.get('content-type'),
+                    empty.body === null,
+                    error.type,
+                    error.status,
+                    error.body === null,
+                    redirect.status,
+                    redirect.headers.get('location'),
+                    redirect.body === null,
+                    clone !== constructed,
+                    Array.from(await clone.bytes()),
+                ];
+            })()"#,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.responseObjects")
+            .await
+            .unwrap(),
+        serde_json::json!([
+            true,
+            201,
+            "Created",
+            "application/octet-stream",
+            [0, 255, 128, 65],
+            "{\"ready\":true}",
+            "application/json",
+            true,
+            "error",
+            0,
+            true,
+            307,
+            "https://example.test/next",
+            true,
+            true,
+            [0, 255, 128, 65],
+        ])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_script_applies_bounded_dom_commands_once() {
     let config = NativeEngineConfig::default()
         .with_fixture(

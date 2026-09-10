@@ -3818,6 +3818,14 @@ fn document_bootstrap(
   if (!indexedDbHostState.databases || typeof indexedDbHostState.databases !== "object") indexedDbHostState.databases = {{}};
   globalThis.__glassIndexedDbState = indexedDbHostState;
   const indexedDbState = () => globalThis.__glassIndexedDbState;
+  const indexedDbConnections = globalThis.__glassIndexedDbConnections instanceof Map
+    ? globalThis.__glassIndexedDbConnections
+    : new Map();
+  const indexedDbPendingOpens = globalThis.__glassIndexedDbPendingOpens instanceof Map
+    ? globalThis.__glassIndexedDbPendingOpens
+    : new Map();
+  globalThis.__glassIndexedDbConnections = indexedDbConnections;
+  globalThis.__glassIndexedDbPendingOpens = indexedDbPendingOpens;
   if (!globalThis.__glassNativeIndexedDBInstalled) {{
   const indexedDbDatabaseLimit = {indexed_db_database_limit};
   const indexedDbStoreLimit = {indexed_db_store_limit};
@@ -3978,6 +3986,7 @@ fn document_bootstrap(
     error: null,
     readyState: "pending",
     onupgradeneeded: null,
+    onblocked: null,
     onsuccess: null,
     onerror: null,
   }});
@@ -4037,6 +4046,7 @@ fn document_bootstrap(
       mode,
       error: null,
       __storeNames: storeNames,
+      get objectStoreNames() {{ return storeNames.slice().sort(); }},
       oncomplete: null,
       onerror: null,
       onabort: null,
@@ -4384,11 +4394,30 @@ fn document_bootstrap(
     }};
     return objectStore;
   }};
+  const removeIndexedDbConnection = (database) => {{
+    const connections = indexedDbConnections.get(database.name) || [];
+    const remaining = connections.filter(candidate => candidate !== database && !candidate.__closed);
+    if (remaining.length === 0) indexedDbConnections.delete(database.name);
+    else indexedDbConnections.set(database.name, remaining);
+    const pending = indexedDbPendingOpens.get(database.name);
+    if (pending && remaining.length === 0) {{
+      indexedDbPendingOpens.delete(database.name);
+      indexedDbSchedule(() => processIndexedDbOpen(pending.request, database.name, pending.requestedVersion));
+    }}
+  }};
+  const registerIndexedDbConnection = (database) => {{
+    const connections = indexedDbConnections.get(database.name) || [];
+    connections.push(database);
+    indexedDbConnections.set(database.name, connections);
+  }};
   const makeIndexedDbDatabase = (name, databaseState, upgradeTransaction) => {{
     let closed = false;
     const database = {{
       name,
       __upgradeTransaction: upgradeTransaction,
+      get __closed() {{ return closed; }},
+      onversionchange: null,
+      onclose: null,
       get version() {{ return databaseState.version; }},
       get objectStoreNames() {{ return Object.keys(databaseState.stores).sort(); }},
       createObjectStore(storeName, options) {{
@@ -4429,9 +4458,71 @@ fn document_bootstrap(
         for (const storeName of names) if (!databaseState.stores[storeName]) throw indexedDbError("NotFoundError", "object store does not exist");
         return makeIndexedDbTransaction(database, databaseState, names, selectedMode, false);
       }},
-      close() {{ closed = true; }},
+      close() {{
+        if (closed) return;
+        closed = true;
+        removeIndexedDbConnection(database);
+        if (typeof database.onclose === "function") database.onclose.call(database, {{ target: database }});
+      }},
     }};
     return database;
+  }};
+  const processIndexedDbOpen = (request, normalizedName, requestedVersion) => {{
+    const databaseState = indexedDbState().databases[normalizedName];
+    const oldVersion = databaseState ? Number(databaseState.version) : 0;
+    const nextVersion = requestedVersion === undefined ? (databaseState ? oldVersion : 1) : requestedVersion;
+    if (databaseState && nextVersion < oldVersion) {{
+      finishIndexedDbRequest(request, undefined, indexedDbError("VersionError", "native IndexedDB version is older than the database"), null);
+      return;
+    }}
+    const upgraded = nextVersion > oldVersion;
+    if (upgraded) {{
+      const connections = indexedDbConnections.get(normalizedName) || [];
+      for (const connection of connections) {{
+        if (connection.__closed || typeof connection.onversionchange !== "function") continue;
+        try {{ connection.onversionchange.call(connection, {{ target: connection, oldVersion, newVersion: nextVersion }}); }} catch (_error) {{}}
+      }}
+      const remaining = (indexedDbConnections.get(normalizedName) || []).filter(connection => !connection.__closed);
+      if (remaining.length > 0) {{
+        indexedDbConnections.set(normalizedName, remaining);
+        if (!request.__blocked) {{
+          request.__blocked = true;
+          indexedDbPendingOpens.set(normalizedName, {{ request, requestedVersion }});
+          indexedDbSchedule(() => {{
+            if (typeof request.onblocked === "function") request.onblocked.call(request, {{ target: request, oldVersion, newVersion: nextVersion }});
+          }});
+        }}
+        return;
+      }}
+      indexedDbConnections.delete(normalizedName);
+    }}
+    let nextDatabaseState = databaseState;
+    if (!nextDatabaseState) {{
+      if (Object.keys(indexedDbState().databases).length >= indexedDbDatabaseLimit) {{
+        finishIndexedDbRequest(request, undefined, indexedDbError("QuotaExceededError", "native IndexedDB database limit exceeded"), null);
+        return;
+      }}
+      nextDatabaseState = {{ version: nextVersion, stores: {{}} }};
+      indexedDbState().databases[normalizedName] = nextDatabaseState;
+    }} else if (upgraded) {{
+      nextDatabaseState.version = nextVersion;
+    }}
+    const database = makeIndexedDbDatabase(normalizedName, nextDatabaseState, null);
+    registerIndexedDbConnection(database);
+    if (upgraded) {{
+      const upgradeTransaction = makeIndexedDbTransaction(database, nextDatabaseState, Object.keys(nextDatabaseState.stores), "versionchange", true);
+      database.__upgradeTransaction = upgradeTransaction;
+      request.result = database;
+      request.transaction = upgradeTransaction;
+      try {{
+        if (typeof request.onupgradeneeded === "function") request.onupgradeneeded.call(request, {{ target: request, oldVersion, newVersion: nextVersion }});
+        finishIndexedDbRequest(request, database, null, null);
+      }} catch (error) {{
+        finishIndexedDbRequest(request, undefined, error instanceof Error ? error : indexedDbError("AbortError", String(error)), null);
+      }}
+    }} else {{
+      finishIndexedDbRequest(request, database, null, null);
+    }}
   }};
   const nativeIndexedDB = {{
     __glassNativeIndexedDB: true,
@@ -4440,42 +4531,7 @@ fn document_bootstrap(
       if (version !== undefined && (!Number.isSafeInteger(Number(version)) || Number(version) < 1)) throw indexedDbError("TypeError", "native IndexedDB version must be a positive integer");
       const requestedVersion = version === undefined ? undefined : Number(version);
       const request = makeIndexedDbRequest();
-      indexedDbSchedule(() => {{
-        let databaseState = indexedDbState().databases[normalizedName];
-        const oldVersion = databaseState ? Number(databaseState.version) : 0;
-        const nextVersion = requestedVersion === undefined ? (databaseState ? oldVersion : 1) : requestedVersion;
-        if (databaseState && nextVersion < oldVersion) {{
-          finishIndexedDbRequest(request, undefined, indexedDbError("VersionError", "native IndexedDB version is older than the database"), null);
-          return;
-        }}
-        let upgradeTransaction = null;
-        if (!databaseState) {{
-          if (Object.keys(indexedDbState().databases).length >= indexedDbDatabaseLimit) {{
-            finishIndexedDbRequest(request, undefined, indexedDbError("QuotaExceededError", "native IndexedDB database limit exceeded"), null);
-            return;
-          }}
-          databaseState = {{ version: nextVersion, stores: {{}} }};
-          indexedDbState().databases[normalizedName] = databaseState;
-        }} else if (nextVersion > oldVersion) {{
-          databaseState.version = nextVersion;
-        }}
-        const upgraded = nextVersion > oldVersion;
-        const database = makeIndexedDbDatabase(normalizedName, databaseState, null);
-        if (upgraded) {{
-          upgradeTransaction = makeIndexedDbTransaction(database, databaseState, Object.keys(databaseState.stores), "versionchange", true);
-          database.__upgradeTransaction = upgradeTransaction;
-          request.result = database;
-          request.transaction = upgradeTransaction;
-          try {{
-            if (typeof request.onupgradeneeded === "function") request.onupgradeneeded.call(request, {{ target: request, oldVersion, newVersion: nextVersion }});
-            finishIndexedDbRequest(request, database, null, null);
-          }} catch (error) {{
-            finishIndexedDbRequest(request, undefined, error instanceof Error ? error : indexedDbError("AbortError", String(error)), null);
-          }}
-        }} else {{
-          finishIndexedDbRequest(request, database, null, null);
-        }}
-      }});
+      indexedDbSchedule(() => processIndexedDbOpen(request, normalizedName, requestedVersion));
       return request;
     }},
     deleteDatabase(name) {{

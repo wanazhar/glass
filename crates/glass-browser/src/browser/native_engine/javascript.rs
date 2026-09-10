@@ -5032,9 +5032,55 @@ fn document_bootstrap(
     return this._entries.map(entry => encode(entry[0]) + "=" + encode(entry[1])).join("&");
   }};
   globalThis.URLSearchParams = URLSearchParamsNative;
+  const nativeAbortError = () => {{
+    const error = new Error("The operation was aborted");
+    error.name = "AbortError";
+    return error;
+  }};
+  const AbortSignalNative = function() {{
+    this.aborted = false;
+    this.reason = undefined;
+    this.onabort = null;
+    this._abortListeners = [];
+  }};
+  AbortSignalNative.prototype.addEventListener = function(type, listener) {{
+    if (type !== "abort" || typeof listener !== "function" || this.aborted) return;
+    if (!this._abortListeners.includes(listener)) this._abortListeners.push(listener);
+  }};
+  AbortSignalNative.prototype.removeEventListener = function(type, listener) {{
+    if (type !== "abort") return;
+    this._abortListeners = this._abortListeners.filter(candidate => candidate !== listener);
+  }};
+  AbortSignalNative.prototype.throwIfAborted = function() {{
+    if (this.aborted) throw this.reason;
+  }};
+  const dispatchAbort = (signal) => {{
+    const event = {{ type: "abort", target: signal }};
+    const listeners = signal._abortListeners.slice();
+    signal._abortListeners = [];
+    for (const listener of listeners) listener.call(signal, event);
+    if (typeof signal.onabort === "function") signal.onabort.call(signal, event);
+  }};
+  const AbortControllerNative = function() {{
+    this.signal = new AbortSignalNative();
+  }};
+  AbortControllerNative.prototype.abort = function(reason) {{
+    if (this.signal.aborted) return;
+    this.signal.aborted = true;
+    this.signal.reason = reason === undefined ? nativeAbortError() : reason;
+    dispatchAbort(this.signal);
+  }};
+  globalThis.AbortSignal = AbortSignalNative;
+  globalThis.AbortController = AbortControllerNative;
+  const clearFetchAbortListener = (pending) => {{
+    if (pending.signal && pending.abortListener) pending.signal.removeEventListener("abort", pending.abortListener);
+  }};
   const fetchNative = (input, options) => {{
     if (typeof input !== "string") throw new TypeError("native fetch requires a URL string");
     const settings = options && typeof options === "object" ? options : {{}};
+    const signal = settings.signal === undefined ? null : settings.signal;
+    if (signal !== null && (!signal || typeof signal !== "object" || typeof signal.aborted !== "boolean" || typeof signal.addEventListener !== "function")) throw new TypeError("native fetch signal is invalid");
+    if (signal && signal.aborted) return Promise.reject(signal.reason === undefined ? nativeAbortError() : signal.reason);
     const method = settings.method === undefined ? "GET" : String(settings.method).toUpperCase();
     const blobBody = settings.body && settings.body.__glassNativeBlob === true
       ? settings.body
@@ -5082,7 +5128,17 @@ fn document_bootstrap(
     globalThis.__glassNextFetchRequestId = nextFetchRequestId;
     const credentials = settings.credentials !== "omit";
     return new Promise((resolve, reject) => {{
-      fetchRequests.set(requestId, {{ resolve, reject }});
+      const pending = {{ resolve, reject, signal, abortListener: null }};
+      const abort = () => {{
+        if (fetchRequests.get(requestId) !== pending) return;
+        fetchRequests.delete(requestId);
+        clearFetchAbortListener(pending);
+        reject(signal.reason === undefined ? nativeAbortError() : signal.reason);
+      }};
+      pending.abortListener = abort;
+      fetchRequests.set(requestId, pending);
+      if (signal) signal.addEventListener("abort", abort);
+      if (!fetchRequests.has(requestId)) return;
       pushCommand({{ kind: "fetch", request_id: requestId, href: input, credentials, method, body, content_type: contentType }});
     }});
   }};
@@ -5179,6 +5235,7 @@ fn document_bootstrap(
     const pending = fetchRequests.get(Number(requestId));
     if (!pending) return;
     fetchRequests.delete(Number(requestId));
+    clearFetchAbortListener(pending);
     if (payload && payload.error) pending.reject(new Error(String(payload.error)));
     else pending.resolve(responseFromFetch(payload));
   }};

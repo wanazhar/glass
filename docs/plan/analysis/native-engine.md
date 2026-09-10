@@ -2556,6 +2556,14 @@ bridge, including normalized MIME propagation and worker HTTP coverage.
 Binary responses, upload progress, timeout/abort, streams, synchronous XHR,
 binary Blob construction, and full XHR/Blob parity remain open.
 
+The completed bounded fetch-abort follow-up is
+[native-engine-browser-092](../tasks/native-engine-browser-092.md). Native
+`AbortController`/`AbortSignal` state and event behavior now reject associated
+observable fetch promises, remove settled listeners, and ignore late host
+responses. This does not cancel the already-issued bounded network operation;
+socket cancellation, XHR abort, timeout/progress, `AbortSignal.timeout/any`,
+and full Web IDL parity remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

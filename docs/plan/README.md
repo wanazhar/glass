@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-091` locally. The versioned
+`native-engine-browser-092` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -877,6 +877,13 @@ XHR now forwards text-backed `Blob` and `File` bodies through the existing
 fetch bridge with payload and MIME preservation; the worker HTTP path is
 covered. Binary responses, upload progress, timeout/abort, streams, and full
 XHR/Blob parity remain open.
+
+The completed bounded fetch-abort slice is
+[native-engine-browser-092](tasks/native-engine-browser-092.md). Native
+`AbortController`/`AbortSignal` state, one abort event, reasons, and
+observable `fetch()` promise rejection now work through the worker path; late
+host responses are ignored. Socket-level cancellation, XHR `abort()`, timeout,
+progress, `AbortSignal.timeout/any`, and full Web IDL parity remain open.
 
 The completed bounded fetch Blob/File-body slice is
 [native-engine-browser-090](tasks/native-engine-browser-090.md). `fetch()` now

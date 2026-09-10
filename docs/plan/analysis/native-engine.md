@@ -2564,6 +2564,13 @@ responses. This does not cancel the already-issued bounded network operation;
 socket cancellation, XHR abort, timeout/progress, `AbortSignal.timeout/any`,
 and full Web IDL parity remain open.
 
+The completed bounded URLSearchParams follow-up is
+[native-engine-browser-093](../tasks/native-engine-browser-093.md).
+`URLSearchParams` now handles bounded query strings, pair/record/instance
+construction, stable sorting, size, callbacks, optional-value deletion, and
+snapshot iterators with corrected form-urlencoded escaping. Full live Web IDL
+iterator identity and exotic iterable inputs remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

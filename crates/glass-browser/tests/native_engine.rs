@@ -30631,6 +30631,11 @@ async fn native_content_process_fetches_bounded_url_search_params() {
                 params.append('name', 'Glass');
                 params.append('tag', 'old');
                 params.set('tag', 'engine');
+                const api = new URLSearchParams([['z', 'last'], ['a', 'first'], ['a', 'second']]);
+                api.sort();
+                const visited = [];
+                api.forEach((value, name) => visited.push(name + '=' + value));
+                globalThis.paramsApi = { size: api.size, entries: Array.from(api.entries()), keys: Array.from(api.keys()), values: Array.from(api.values()), visited, record: new URLSearchParams({ b: 'two', a: 'one' }).toString() };
                 fetch('/params', { method: 'POST', body: params })
                     .then(response => response.text())
                     .then(text => { globalThis.paramsResponse = text; });
@@ -30644,6 +30649,17 @@ async fn native_content_process_fetches_bounded_url_search_params() {
             .await
             .unwrap(),
         serde_json::json!("params-accepted")
+    );
+    assert_eq!(
+        engine.evaluate_async("globalThis.paramsApi").await.unwrap(),
+        serde_json::json!({
+            "size": 3,
+            "entries": [["a", "first"], ["a", "second"], ["z", "last"]],
+            "keys": ["a", "a", "z"],
+            "values": ["first", "second", "last"],
+            "visited": ["a=first", "a=second", "z=last"],
+            "record": "b=two&a=one",
+        })
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

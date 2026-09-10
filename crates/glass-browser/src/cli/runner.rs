@@ -540,6 +540,7 @@ fn validate_alternative_runtime_command(
         Commands::Preflight { .. } if native => Ok(()),
         Commands::InspectPage | Commands::FindTarget { .. } if native => Ok(()),
         Commands::Verify { .. } | Commands::Wait { .. } if native => Ok(()),
+        Commands::ActAndVerify { .. } if native => Ok(()),
         Commands::Dom | Commands::ClickAt { .. } | Commands::Scroll { .. } if native => Ok(()),
         Commands::Clear { .. }
         | Commands::Check { .. }
@@ -710,6 +711,34 @@ async fn run_alternative_runtime_command(
                 print_json_mode(
                     &session
                         .native_wait(condition, Duration::from_millis(*timeout_ms))
+                        .await?,
+                    response_mode,
+                )
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
+        }
+        Commands::ActAndVerify {
+            input,
+            predicate,
+            timeout_ms,
+        } if session.runtime().is_native() => {
+            #[cfg(feature = "native-engine")]
+            {
+                let request = SemanticIntentExecutionRequest::from_json(&serde_json::to_string(
+                    &read_json_input(Some(input))?,
+                )?)?;
+                let predicate = predicate
+                    .as_deref()
+                    .map(serde_json::from_str::<VerificationPredicate>)
+                    .transpose()?;
+                print_json_mode(
+                    &session
+                        .native_act_and_verify(
+                            &request,
+                            predicate,
+                            Duration::from_millis(*timeout_ms),
+                        )
                         .await?,
                     response_mode,
                 )
@@ -3596,6 +3625,13 @@ mod tests {
                 r#"{"textContains":"Save"}"#,
             ],
             vec!["glass", "--browser-runtime", "native", "wait", "text=Save"],
+            vec![
+                "glass",
+                "--browser-runtime",
+                "native",
+                "act-and-verify",
+                "intent.json",
+            ],
         ] {
             let cli = Cli::try_parse_from(arguments).unwrap();
             validate_alternative_runtime_command(

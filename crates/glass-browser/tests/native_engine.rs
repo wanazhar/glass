@@ -12,8 +12,8 @@ use glass_browser::browser::native_engine::{
     NativeWorkerFailureKind, Viewport,
 };
 use glass_browser::browser::session::{
-    IntentConfidence, IntentConstraints, SemanticIntentAction, SemanticIntentRequest,
-    SemanticResolutionPolicy, VerificationPredicate, WaitCondition,
+    IntentConfidence, IntentConstraints, SemanticIntentAction, SemanticIntentExecutionRequest,
+    SemanticIntentRequest, SemanticResolutionPolicy, VerificationPredicate, WaitCondition,
 };
 use glass_browser::browser_backend::{
     ActionRequest, BROWSER_BACKEND_SCHEMA_VERSION, BackendSelectionRequest,
@@ -320,6 +320,37 @@ async fn native_runtime_session_exposes_bounded_wait_and_verification() {
         .unwrap();
     assert_eq!(verified.status, "satisfied");
     assert!(verified.state.starts_with("all=["));
+
+    let acted = session
+        .native_act_and_verify(
+            &SemanticIntentExecutionRequest {
+                request: SemanticIntentRequest {
+                    schema_version: 1,
+                    intent: "save".into(),
+                    action: SemanticIntentAction::Click,
+                    scope: Default::default(),
+                    constraints: IntentConstraints {
+                        role: Some("button".into()),
+                        name: Some("Save".into()),
+                        ..Default::default()
+                    },
+                    resolution_policy: SemanticResolutionPolicy::RequireExact,
+                    expected_revision: None,
+                },
+                candidate_id: "candidate_1".into(),
+                value: None,
+            },
+            Some(VerificationPredicate::TextContains {
+                value: "Save".into(),
+            }),
+            Duration::from_millis(100),
+        )
+        .await
+        .unwrap();
+    assert_eq!(acted.status, "verified");
+    assert!(!acted.mutation_possible);
+    assert!(acted.execution.action.is_some());
+    assert!(acted.execution.execution_id.is_some());
 
     let timeout = session
         .native_wait(

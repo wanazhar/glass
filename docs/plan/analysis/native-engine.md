@@ -2899,6 +2899,16 @@ waits use the existing evaluate policy gate. The implementation intentionally
 does not claim request-ledger, popup/dialog/download, or action-specific
 postcondition parity; those are subsequent engine contracts.
 
+The completed native-engine-browser-136 batch carries candidate discovery into
+guarded mutation. The native runtime resolves a fresh intent result and
+dispatches its supported semantic action while holding the session operation
+lock, constructs the shared `SemanticIntentExecutionResult` and `ActionOutcome`
+with bounded before/after revision/route evidence, then releases the lock
+before running `native_verify`. Native CLI and MCP expose the same
+`ActAndVerifyResult` projection. This supplies the normal agent mutation loop
+without conflating a generic predicate with specialized request, popup,
+dialog, or download witnesses.
+
 The completed native-engine-browser-133 batch extends the native target seam
 with a side-effect-free preflight result. The engine resolves the current
 semantic locator and derives viewport geometry and actionability under the

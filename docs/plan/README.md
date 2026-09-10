@@ -1237,6 +1237,15 @@ through the runtime session, CLI, and MCP. Request lifecycle accounting,
 popup/dialog/download topology, action-specific `act-and-verify`, universal
 workflow parity, and CDP replacement remain issue #40 gates.
 
+The completed bounded native guarded-action batch is
+[native-engine-browser-136](tasks/native-engine-browser-136.md). Native
+`actAndVerify` now resolves and dispatches supported semantic intent actions
+under one session lock, emits the standard execution/action envelopes with
+revision evidence, and verifies the optional postcondition after dispatch
+through CLI and MCP. Specialized request, popup, dialog, and download
+witnesses, universal workflow parity, and CDP replacement remain issue #40
+gates.
+
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and
 constructed responses now share `Response` identity; `new Response`,

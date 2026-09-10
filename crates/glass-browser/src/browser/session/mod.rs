@@ -86,6 +86,8 @@ pub use emulation::{GeoLocation, NetworkConditions, PdfOptions};
 pub use fill::{FillFieldResult, FillFormOutcome};
 pub use har::{NetworkEntry, NetworkRecorder, NetworkRecording};
 pub use identity::{AgentIdentity, SignedHttpRequest};
+#[cfg(feature = "native-engine")]
+pub(crate) use intent::intent_resolution_id;
 pub use intent::{
     ExcludedIntentCandidate, FingerprintInvalidation, INTENT_RESOLUTION_SCHEMA_VERSION,
     IntentConfidence, IntentConstraintSuggestion, IntentConstraints, IntentEvidence,

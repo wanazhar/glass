@@ -1701,7 +1701,7 @@ impl super::BrowserSession {
     }
 }
 
-fn intent_resolution_id(
+pub(crate) fn intent_resolution_id(
     request: &SemanticIntentRequest,
     revision: u64,
     candidate_id: &str,

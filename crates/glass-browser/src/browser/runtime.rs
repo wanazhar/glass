@@ -19,15 +19,23 @@ use crate::browser_backend::{
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
-use super::session::{ActionContractError, BrowserResult};
 #[cfg(feature = "native-engine")]
 use super::session::{
-    ActionFailureKind, ActionFailurePhase, ActionKind, ActionVerificationError, FindTargetResult,
-    InspectPageResult, RecoveryStrategy, VerificationOutcome, VerificationPredicate, WaitCondition,
-    WaitOutcome, WaitTimeout,
+    ActAndVerifyResult, ActionFailureKind, ActionFailurePhase, ActionKind, ActionOutcome,
+    ActionStatus, ActionTarget, ActionVerificationError, ActionVerificationEvidence,
+    FindTargetResult, InspectPageResult, IntentPolicyDecision, RecoveryStrategy,
+    SemanticIntentAction, SemanticIntentExecutionRequest, SemanticIntentExecutionResult,
+    SemanticIntentExecutionStatus, SemanticIntentResult, SemanticResolution, VerificationOutcome,
+    VerificationPredicate, WaitCondition, WaitOutcome, WaitTimeout,
 };
+use super::session::{ActionContractError, BrowserResult};
 #[cfg(feature = "native-engine")]
-use std::time::Duration;
+use crate::protocol::{RetryClassification, RetryGuidance};
+#[cfg(feature = "native-engine")]
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
+};
 use tokio::sync::Mutex;
 
 #[cfg(feature = "native-engine")]
@@ -79,6 +87,8 @@ pub struct BrowserRuntimeSession {
     /// one semantic session. The backend remains the owner of the actual
     /// document revision and state transition.
     operation_lock: Mutex<()>,
+    #[cfg(feature = "native-engine")]
+    next_execution_id: AtomicU64,
 }
 
 impl BrowserRuntimeSession {
@@ -107,6 +117,8 @@ impl BrowserRuntimeSession {
             runtime,
             backend,
             operation_lock: Mutex::new(()),
+            #[cfg(feature = "native-engine")]
+            next_execution_id: AtomicU64::new(1),
         };
         BrowserBackendDispatcher::new(&session.backend)
             .initialize()
@@ -122,6 +134,7 @@ impl BrowserRuntimeSession {
             runtime: BrowserRuntime::Native,
             backend,
             operation_lock: Mutex::new(()),
+            next_execution_id: AtomicU64::new(1),
         };
         BrowserBackendDispatcher::new(&session.backend)
             .initialize()
@@ -307,11 +320,247 @@ impl BrowserRuntimeSession {
         })
     }
 
+    /// Execute one caller-selected native intent and optionally verify its
+    /// postcondition without creating a Chromium session.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_act_and_verify(
+        &self,
+        execution: &SemanticIntentExecutionRequest,
+        predicate: Option<VerificationPredicate>,
+        timeout: Duration,
+    ) -> BrowserResult<ActAndVerifyResult> {
+        validate_native_deadline(timeout)?;
+        execution.validate()?;
+
+        let execution_result = {
+            let _operation = self.operation_lock.lock().await;
+            let observation = self.native_semantic_observation_unlocked()?;
+            let resolution = super::session::resolve_intent(&execution.request, &observation);
+            let resolution_id = super::session::intent_resolution_id(
+                &execution.request,
+                resolution.revision.unwrap_or(observation.revision),
+                &execution.candidate_id,
+            )?;
+            let candidate = resolution
+                .candidates
+                .iter()
+                .find(|candidate| candidate.id == execution.candidate_id);
+            let eligible = candidate.is_some()
+                && match resolution.policy_decision {
+                    IntentPolicyDecision::Allowed => {
+                        resolution.selected_candidate.as_deref() == Some(&execution.candidate_id)
+                    }
+                    IntentPolicyDecision::ConfirmationRequired => !matches!(
+                        resolution.resolution,
+                        SemanticResolution::NotFound
+                            | SemanticResolution::StaleRevision
+                            | SemanticResolution::PolicyRejected
+                            | SemanticResolution::UnsupportedIntent
+                    ),
+                    IntentPolicyDecision::ReportOnly | IntentPolicyDecision::Rejected => false,
+                };
+
+            let Some(candidate) = candidate else {
+                return Ok(native_not_executed_result(
+                    resolution,
+                    resolution_id,
+                    execution.candidate_id.clone(),
+                    "selected candidate is not present in the fresh resolution",
+                ));
+            };
+            if !eligible {
+                let reason = resolution
+                    .reason
+                    .as_deref()
+                    .unwrap_or("resolution policy did not authorize this candidate")
+                    .to_string();
+                return Ok(native_not_executed_result(
+                    resolution,
+                    resolution_id,
+                    execution.candidate_id.clone(),
+                    &reason,
+                ));
+            }
+
+            let candidate_reference = candidate.reference.clone();
+            let candidate_name = candidate.name.clone();
+            let (action_kind, action) = match execution.request.action {
+                SemanticIntentAction::Click
+                | SemanticIntentAction::Submit
+                | SemanticIntentAction::Open
+                | SemanticIntentAction::Close
+                | SemanticIntentAction::Search
+                | SemanticIntentAction::Filter
+                | SemanticIntentAction::Sort
+                | SemanticIntentAction::Paginate
+                | SemanticIntentAction::Expand
+                | SemanticIntentAction::Collapse => (
+                    ActionKind::Click,
+                    SemanticAction::Click {
+                        target: candidate_reference.clone(),
+                    },
+                ),
+                SemanticIntentAction::Type => (
+                    ActionKind::Type,
+                    SemanticAction::Type {
+                        target: candidate_reference.clone(),
+                        text: execution
+                            .value
+                            .as_deref()
+                            .ok_or("type requires a value")?
+                            .to_string(),
+                    },
+                ),
+                SemanticIntentAction::Clear => (
+                    ActionKind::Clear,
+                    SemanticAction::Clear {
+                        target: candidate_reference.clone(),
+                    },
+                ),
+                SemanticIntentAction::Check => (
+                    ActionKind::Check,
+                    SemanticAction::Check {
+                        target: candidate_reference.clone(),
+                    },
+                ),
+                SemanticIntentAction::Uncheck => (
+                    ActionKind::Uncheck,
+                    SemanticAction::Uncheck {
+                        target: candidate_reference.clone(),
+                    },
+                ),
+                SemanticIntentAction::Select => (
+                    ActionKind::Select,
+                    SemanticAction::Select {
+                        target: candidate_reference.clone(),
+                        value: execution
+                            .value
+                            .as_deref()
+                            .ok_or("select requires a value")?
+                            .to_string(),
+                    },
+                ),
+                SemanticIntentAction::Toggle
+                | SemanticIntentAction::Download
+                | SemanticIntentAction::Upload
+                | SemanticIntentAction::Inspect
+                | SemanticIntentAction::Extract => {
+                    unreachable!("validated native intent action")
+                }
+            };
+
+            let action_result = self.action_unlocked(action).await?;
+            if !action_result.accepted {
+                return Ok(ActAndVerifyResult {
+                    status: "not_executed".into(),
+                    phase: "dispatch".into(),
+                    mutation_possible: false,
+                    execution: SemanticIntentExecutionResult {
+                        resolution_id,
+                        candidate_id: execution.candidate_id.clone(),
+                        status: SemanticIntentExecutionStatus::NotExecuted,
+                        resolution,
+                        action: None,
+                        execution_id: None,
+                        reason: Some("native action was not accepted".into()),
+                    },
+                    verification: None,
+                    retry: RetryGuidance {
+                        classification: RetryClassification::SafeAfterReobserve,
+                        recommended_operation: "find_target".into(),
+                    },
+                });
+            }
+
+            let after = self.native_semantic_observation_unlocked()?;
+            let current_revision = after.revision;
+            let action_outcome = ActionOutcome {
+                status: ActionStatus::Succeeded,
+                action: action_kind,
+                execution_id: self.next_native_execution_id(),
+                target: Some(ActionTarget {
+                    label: candidate_name,
+                    reference: Some(candidate_reference),
+                }),
+                revision: current_revision,
+                previous_revision: observation.revision,
+                current_revision,
+                target_id: after.route.target_id.clone(),
+                frame_id: after.route.frame_id.clone(),
+                verification: ActionVerificationEvidence {
+                    revision_delta: current_revision.saturating_sub(observation.revision),
+                    url_changed: observation.page.url != after.page.url,
+                    title_changed: observation.page.title != after.page.title,
+                    target_changed: observation.page.target_id != after.page.target_id,
+                    frame_changed: observation.page.frame_id != after.page.frame_id,
+                    ..ActionVerificationEvidence::default()
+                },
+                evidence: None,
+            };
+            let execution_id = action_outcome.execution_id.clone();
+            SemanticIntentExecutionResult {
+                resolution_id,
+                candidate_id: execution.candidate_id.clone(),
+                status: SemanticIntentExecutionStatus::Executed,
+                resolution,
+                action: Some(action_outcome),
+                execution_id: Some(execution_id),
+                reason: None,
+            }
+        };
+
+        let Some(predicate) = predicate else {
+            return Ok(ActAndVerifyResult {
+                status: "dispatched_unverified".into(),
+                phase: "post_dispatch".into(),
+                mutation_possible: true,
+                execution: execution_result,
+                verification: None,
+                retry: RetryGuidance {
+                    classification: RetryClassification::RequiresUserDecision,
+                    recommended_operation: "inspect_page".into(),
+                },
+            });
+        };
+
+        match self.native_verify(predicate, timeout).await {
+            Ok(verification) => Ok(ActAndVerifyResult {
+                status: "verified".into(),
+                phase: "verification".into(),
+                mutation_possible: false,
+                execution: execution_result,
+                verification: Some(verification),
+                retry: RetryGuidance {
+                    classification: RetryClassification::SafeImmediate,
+                    recommended_operation: "inspect_page".into(),
+                },
+            }),
+            Err(_error) => Ok(ActAndVerifyResult {
+                status: "indeterminate".into(),
+                phase: "verification".into(),
+                mutation_possible: true,
+                execution: execution_result,
+                verification: None,
+                retry: RetryGuidance {
+                    classification: RetryClassification::UnsafeUntilReconciled,
+                    recommended_operation: "recover_run".into(),
+                },
+            }),
+        }
+    }
+
     #[cfg(feature = "native-engine")]
     async fn native_semantic_observation(
         &self,
     ) -> BrowserResult<super::session::SemanticObservation> {
         let _operation = self.operation_lock.lock().await;
+        self.native_semantic_observation_unlocked()
+    }
+
+    #[cfg(feature = "native-engine")]
+    fn native_semantic_observation_unlocked(
+        &self,
+    ) -> BrowserResult<super::session::SemanticObservation> {
         let native = match &self.backend {
             BackendStartup::Native(backend) => backend.inspection_snapshot()?,
             _ => {
@@ -664,6 +913,14 @@ impl BrowserRuntimeSession {
         Ok(BrowserBackendDispatcher::new(&self.backend).close().await?)
     }
 
+    #[cfg(feature = "native-engine")]
+    fn next_native_execution_id(&self) -> String {
+        format!(
+            "act_native_{}",
+            self.next_execution_id.fetch_add(1, Ordering::Relaxed)
+        )
+    }
+
     async fn require_current_revision(&self, expected_revision: u64) -> BrowserResult<()> {
         let evidence = self.evidence(EvidenceLevel::Compact).await?;
         if evidence.revision == expected_revision {
@@ -692,6 +949,34 @@ fn validate_native_deadline(deadline: Duration) -> BrowserResult<()> {
         return Err("native wait deadline must be between 1 ms and 300000 ms".into());
     }
     Ok(())
+}
+
+#[cfg(feature = "native-engine")]
+fn native_not_executed_result(
+    resolution: SemanticIntentResult,
+    resolution_id: String,
+    candidate_id: String,
+    reason: &str,
+) -> ActAndVerifyResult {
+    ActAndVerifyResult {
+        status: "not_executed".into(),
+        phase: "preflight".into(),
+        mutation_possible: false,
+        execution: SemanticIntentExecutionResult {
+            resolution_id,
+            candidate_id,
+            status: SemanticIntentExecutionStatus::NotExecuted,
+            resolution,
+            action: None,
+            execution_id: None,
+            reason: Some(reason.into()),
+        },
+        verification: None,
+        retry: RetryGuidance {
+            classification: RetryClassification::SafeAfterReobserve,
+            recommended_operation: "find_target".into(),
+        },
+    }
 }
 
 #[cfg(feature = "native-engine")]

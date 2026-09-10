@@ -28361,11 +28361,13 @@ async fn native_content_process_fetches_cross_origin_post_after_cors_preflight()
         assert!(request.lines().any(|line| {
             line.split_once(':').is_some_and(|(name, value)| {
                 name.eq_ignore_ascii_case("access-control-request-headers")
-                    && value.trim().eq_ignore_ascii_case("content-type")
+                    && value
+                        .trim()
+                        .eq_ignore_ascii_case("content-type, x-glass-token")
             })
         }));
         let response = format!(
-            "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: {response_origin}\r\nAccess-Control-Allow-Methods: POST\r\nAccess-Control-Allow-Headers: content-type\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: {response_origin}\r\nAccess-Control-Allow-Methods: POST\r\nAccess-Control-Allow-Headers: content-type, x-glass-token\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
         );
         stream.write_all(response.as_bytes()).await.unwrap();
 
@@ -28376,6 +28378,11 @@ async fn native_content_process_fetches_cross_origin_post_after_cors_preflight()
         assert!(request.lines().any(|line| {
             line.split_once(':').is_some_and(|(name, value)| {
                 name.eq_ignore_ascii_case("origin") && value.trim() == expected_origin
+            })
+        }));
+        assert!(request.lines().any(|line| {
+            line.split_once(':').is_some_and(|(name, value)| {
+                name.eq_ignore_ascii_case("x-glass-token") && value.trim() == "alpha"
             })
         }));
         let body = request
@@ -28398,7 +28405,7 @@ async fn native_content_process_fetches_cross_origin_post_after_cors_preflight()
     engine.initialize_async().await.unwrap();
     engine
         .evaluate_async(&format!(
-            "fetch('http://{api_address}/submit', {{ method: 'POST', credentials: 'omit', body: '{{\"name\":\"glass\"}}', headers: {{ 'Content-Type': 'application/json' }} }}).then(response => response.json()).then(data => {{ globalThis.corsPostFetchValue = data.value; }});"
+            "fetch('http://{api_address}/submit', {{ method: 'POST', credentials: 'omit', body: '{{\"name\":\"glass\"}}', headers: {{ 'Content-Type': 'application/json', 'X-Glass-Token': 'alpha' }} }}).then(response => response.json()).then(data => {{ globalThis.corsPostFetchValue = data.value; }});"
         ))
         .await
         .unwrap();
@@ -28496,6 +28503,13 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
             let (mut stream, _) = listener.accept().await.unwrap();
             let request = read_http_request(&mut stream).await;
             assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            if expected_path == "/data" {
+                assert!(request.lines().any(|line| {
+                    line.split_once(':').is_some_and(|(name, value)| {
+                        name.eq_ignore_ascii_case("x-glass-token") && value.trim() == "alpha"
+                    })
+                }));
+            }
             let (content_type, body) = if expected_path == "/page" {
                 ("text/html", "<input id='result' value='pending'>")
             } else {
@@ -28516,7 +28530,7 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
     engine.initialize_async().await.unwrap();
     engine
         .evaluate_async(
-            "fetch('/data').then(response => { const headerEvents = []; response.headers.forEach((value, name) => headerEvents.push(name + '=' + value)); globalThis.fetchHeaders = [response.headers.get('CONTENT-TYPE'), response.headers.has('content-type'), Array.from(response.headers.entries()), Array.from(response.headers.keys()), Array.from(response.headers.values()), Array.from(response.headers), headerEvents]; return Promise.all([response.json(), response.text(), response.blob(), response.arrayBuffer(), response.bytes()]); }).then(async ([data, text, blob, buffer, bytes]) => { globalThis.fetchValue = data.value; globalThis.fetchBody = [text, blob instanceof Blob, buffer instanceof ArrayBuffer && Array.from(new Uint8Array(buffer)), Array.from(bytes), await blob.text()]; document.getElementById('result').value = data.value; const controller = new AbortController(); const events = []; controller.signal.addEventListener('abort', () => events.push('listener')); controller.signal.onabort = () => events.push('property'); const request = fetch('/data', { signal: controller.signal }); controller.abort(); controller.abort(); request.catch(error => { globalThis.abortValue = [error.name, controller.signal.aborted, controller.signal.reason.name, events]; }); });",
+            "fetch('/data', { headers: { 'X-Glass-Token': 'alpha' } }).then(response => { const headerEvents = []; response.headers.forEach((value, name) => headerEvents.push(name + '=' + value)); globalThis.fetchHeaders = [response.headers.get('CONTENT-TYPE'), response.headers.has('content-type'), Array.from(response.headers.entries()), Array.from(response.headers.keys()), Array.from(response.headers.values()), Array.from(response.headers), headerEvents]; return Promise.all([response.json(), response.text(), response.blob(), response.arrayBuffer(), response.bytes()]); }).then(async ([data, text, blob, buffer, bytes]) => { globalThis.fetchValue = data.value; globalThis.fetchBody = [text, blob instanceof Blob, buffer instanceof ArrayBuffer && Array.from(new Uint8Array(buffer)), Array.from(bytes), await blob.text()]; document.getElementById('result').value = data.value; const controller = new AbortController(); const events = []; controller.signal.addEventListener('abort', () => events.push('listener')); controller.signal.onabort = () => events.push('property'); const request = fetch('/data', { signal: controller.signal, headers: { 'X-Glass-Token': 'alpha' } }); controller.abort(); controller.abort(); request.catch(error => { globalThis.abortValue = [error.name, controller.signal.aborted, controller.signal.reason.name, events]; }); });",
         )
         .await
         .unwrap();
@@ -28564,6 +28578,19 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
             [["content-type", "application/json"]],
             ["content-type=application/json"],
         ])
+    );
+    engine
+        .evaluate_async(
+            "(() => { try { fetch('/data', { headers: { Cookie: 'secret' } }); } catch (error) { globalThis.forbiddenFetchHeader = [error.name, error.message]; } })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.forbiddenFetchHeader")
+            .await
+            .unwrap(),
+        serde_json::json!(["TypeError", "native fetch header is forbidden"])
     );
     assert_eq!(
         engine

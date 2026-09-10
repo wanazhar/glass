@@ -21,6 +21,10 @@ const NATIVE_NETWORK_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_NATIVE_CACHE_ENTRIES: usize = 32;
 const MAX_NATIVE_COOKIE_BYTES: usize = 4096;
 const MAX_NATIVE_FORM_BODY_BYTES: usize = crate::browser_backend::MAX_TEXT_BYTES;
+const MAX_NATIVE_FETCH_HEADERS: usize = 16;
+const MAX_NATIVE_FETCH_HEADER_NAME_BYTES: usize = 128;
+const MAX_NATIVE_FETCH_HEADER_VALUE_BYTES: usize = 64 * 1024;
+const MAX_NATIVE_FETCH_HEADER_BYTES: usize = 128 * 1024;
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,6 +103,16 @@ impl NativeNavigationRequest {
             body_content_type: Some(content_type),
         })
     }
+}
+
+pub(crate) struct NativeFetchRequest<'a> {
+    pub(crate) document_url: &'a str,
+    pub(crate) href: &'a str,
+    pub(crate) method: NativeNavigationMethod,
+    pub(crate) body: Option<String>,
+    pub(crate) content_type: Option<String>,
+    pub(crate) request_headers: BTreeMap<String, String>,
+    pub(crate) credentials: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -688,8 +702,40 @@ impl NativeResourceLoader {
         content_type: Option<String>,
         credentials: bool,
     ) -> Result<NativeFetchResponse, NativeEngineError> {
+        self.fetch_request_with_headers_async(NativeFetchRequest {
+            document_url,
+            href,
+            method,
+            body,
+            content_type,
+            request_headers: BTreeMap::new(),
+            credentials,
+        })
+        .await
+    }
+
+    pub(crate) async fn fetch_request_with_headers_async(
+        &mut self,
+        request: NativeFetchRequest<'_>,
+    ) -> Result<NativeFetchResponse, NativeEngineError> {
+        let NativeFetchRequest {
+            document_url,
+            href,
+            method,
+            body,
+            content_type,
+            request_headers,
+            credentials,
+        } = request;
         validate_url_text("fetch owner URL", document_url)?;
         validate_url_text("fetch URL", href)?;
+        let mut current_headers = validate_fetch_request_headers(&request_headers)?;
+        if current_headers.contains_key("content-type") {
+            return Err(NativeEngineError::invalid(
+                "fetch request headers",
+                "content-type must use the dedicated content type field",
+            ));
+        }
         match method {
             NativeNavigationMethod::Get if body.is_some() || content_type.is_some() => {
                 return Err(NativeEngineError::invalid(
@@ -770,18 +816,17 @@ impl NativeResourceLoader {
         let response = loop {
             let mut request_url = current_url.clone();
             request_url.set_fragment(None);
-            if current_method == NativeNavigationMethod::Post
+            let requested_headers =
+                cors_preflight_request_headers(current_content_type.as_deref(), &current_headers);
+            if !requested_headers.is_empty()
                 && cors_origin_header(&document_url, &current_url, NativeCorsMode::Cors).is_some()
-                && current_content_type
-                    .as_deref()
-                    .is_some_and(|content_type| !is_simple_fetch_content_type(content_type))
             {
                 self.verify_cors_preflight(
                     &client,
                     &document_url,
                     &request_url,
                     current_method,
-                    current_content_type.as_deref(),
+                    &requested_headers,
                     credentials,
                 )
                 .await?;
@@ -796,6 +841,9 @@ impl NativeResourceLoader {
             }
             if let Some(content_type) = current_content_type.as_deref() {
                 request = request.header(reqwest::header::CONTENT_TYPE, content_type);
+            }
+            for (name, value) in &current_headers {
+                request = request.header(name, value);
             }
             if let Some(origin) =
                 cors_origin_header(&document_url, &current_url, NativeCorsMode::Cors)
@@ -857,6 +905,9 @@ impl NativeResourceLoader {
                 });
             }
             request_referrer = normalize_referrer(Some(current_url.as_str()), &next_url)?;
+            if current_url.origin() != next_url.origin() {
+                current_headers.remove("authorization");
+            }
             if matches!(response.status().as_u16(), 301 | 302 | 303) {
                 current_method = NativeNavigationMethod::Get;
                 current_body = None;
@@ -924,7 +975,7 @@ impl NativeResourceLoader {
         document_url: &Url,
         target_url: &Url,
         method: NativeNavigationMethod,
-        content_type: Option<&str>,
+        requested_headers: &[String],
         credentials: bool,
     ) -> Result<(), NativeEngineError> {
         let Some(origin) = cors_origin_header(document_url, target_url, NativeCorsMode::Cors)
@@ -939,8 +990,11 @@ impl NativeResourceLoader {
             .request(reqwest::Method::OPTIONS, target_url.clone())
             .header("Origin", origin)
             .header("Access-Control-Request-Method", method);
-        if content_type.is_some() {
-            request = request.header("Access-Control-Request-Headers", "content-type");
+        if !requested_headers.is_empty() {
+            request = request.header(
+                "Access-Control-Request-Headers",
+                requested_headers.join(", "),
+            );
         }
         let response = request
             .send()
@@ -952,7 +1006,7 @@ impl NativeResourceLoader {
                 document_url,
                 target_url,
                 method,
-                content_type.is_some().then_some("content-type"),
+                requested_headers,
                 credentials,
             )
         {
@@ -1387,12 +1441,175 @@ fn is_simple_fetch_content_type(value: &str) -> bool {
     )
 }
 
+fn is_forbidden_fetch_request_header(name: &str) -> bool {
+    matches!(
+        name,
+        "accept-charset"
+            | "accept-encoding"
+            | "access-control-request-headers"
+            | "access-control-request-method"
+            | "connection"
+            | "content-length"
+            | "cookie"
+            | "cookie2"
+            | "date"
+            | "dnt"
+            | "expect"
+            | "host"
+            | "keep-alive"
+            | "origin"
+            | "referer"
+            | "te"
+            | "trailer"
+            | "transfer-encoding"
+            | "upgrade"
+            | "user-agent"
+            | "via"
+    ) || name.starts_with("proxy-")
+        || name.starts_with("sec-")
+}
+
+fn validate_fetch_request_headers(
+    headers: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>, NativeEngineError> {
+    if headers.len() > MAX_NATIVE_FETCH_HEADERS {
+        return Err(NativeEngineError::limit(
+            "fetch request headers",
+            MAX_NATIVE_FETCH_HEADERS,
+            headers.len(),
+        ));
+    }
+    let mut normalized: BTreeMap<String, String> = BTreeMap::new();
+    let mut total_bytes = 0usize;
+    for (name, value) in headers {
+        if name.len() > MAX_NATIVE_FETCH_HEADER_NAME_BYTES {
+            return Err(NativeEngineError::limit(
+                "fetch request header name",
+                MAX_NATIVE_FETCH_HEADER_NAME_BYTES,
+                name.len(),
+            ));
+        }
+        let normalized_name = name.to_ascii_lowercase();
+        if is_forbidden_fetch_request_header(&normalized_name) {
+            return Err(NativeEngineError::invalid(
+                "fetch request header",
+                "name is forbidden",
+            ));
+        }
+        if normalized_name == "content-type" {
+            return Err(NativeEngineError::invalid(
+                "fetch request header",
+                "content-type must use the dedicated content type field",
+            ));
+        }
+        reqwest::header::HeaderName::from_bytes(normalized_name.as_bytes()).map_err(|_| {
+            NativeEngineError::invalid("fetch request header name", "must be a valid token")
+        })?;
+        if value.len() > MAX_NATIVE_FETCH_HEADER_VALUE_BYTES {
+            return Err(NativeEngineError::limit(
+                "fetch request header value",
+                MAX_NATIVE_FETCH_HEADER_VALUE_BYTES,
+                value.len(),
+            ));
+        }
+        reqwest::header::HeaderValue::from_str(value).map_err(|_| {
+            NativeEngineError::invalid(
+                "fetch request header value",
+                "must not contain controls or invalid bytes",
+            )
+        })?;
+        total_bytes = total_bytes
+            .saturating_add(normalized_name.len())
+            .saturating_add(value.len());
+        if total_bytes > MAX_NATIVE_FETCH_HEADER_BYTES {
+            return Err(NativeEngineError::limit(
+                "fetch request headers",
+                MAX_NATIVE_FETCH_HEADER_BYTES,
+                total_bytes,
+            ));
+        }
+        normalized
+            .entry(normalized_name)
+            .and_modify(|existing| {
+                existing.push_str(", ");
+                existing.push_str(value);
+            })
+            .or_insert_with(|| value.clone());
+    }
+    Ok(normalized)
+}
+
+fn cors_safelisted_request_header(name: &str, value: &str) -> bool {
+    match name {
+        "accept" => {
+            value.len() <= 128
+                && !value.bytes().any(|byte| {
+                    matches!(
+                        byte,
+                        0x00..=0x08
+                            | 0x0a..=0x1f
+                            | 0x7f
+                            | b'"'
+                            | b'('
+                            | b')'
+                            | b':'
+                            | b'<'
+                            | b'>'
+                            | b'?'
+                            | b'@'
+                            | b'['
+                            | b'\\'
+                            | b']'
+                            | b'{'
+                            | b'}'
+                    )
+                })
+        }
+        "accept-language" | "content-language" => {
+            value.len() <= 128
+                && value.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric()
+                        || matches!(byte, b' ' | b'*' | b',' | b'-' | b'.' | b';' | b'=')
+                })
+        }
+        "range" => {
+            let Some(range) = value.strip_prefix("bytes=") else {
+                return false;
+            };
+            let Some((start, end)) = range.split_once('-') else {
+                return false;
+            };
+            !start.is_empty()
+                && start.bytes().all(|byte| byte.is_ascii_digit())
+                && (end.is_empty() || end.bytes().all(|byte| byte.is_ascii_digit()))
+        }
+        _ => false,
+    }
+}
+
+fn cors_preflight_request_headers(
+    content_type: Option<&str>,
+    request_headers: &BTreeMap<String, String>,
+) -> Vec<String> {
+    let mut requested = request_headers
+        .iter()
+        .filter(|(name, value)| !cors_safelisted_request_header(name, value))
+        .map(|(name, _)| name.clone())
+        .collect::<Vec<_>>();
+    if content_type.is_some_and(|value| !is_simple_fetch_content_type(value)) {
+        requested.push("content-type".into());
+    }
+    requested.sort_unstable();
+    requested.dedup();
+    requested
+}
+
 fn cors_preflight_response_allowed(
     headers: &HeaderMap,
     document_url: &Url,
     resource_url: &Url,
     method: &str,
-    requested_header: Option<&str>,
+    requested_headers: &[String],
     credentials: bool,
 ) -> bool {
     if !cors_response_allowed(headers, document_url, resource_url, credentials) {
@@ -1404,7 +1621,7 @@ fn cors_preflight_response_allowed(
         method,
         !credentials,
     );
-    let header_allowed = requested_header.is_none_or(|header| {
+    let headers_allowed = requested_headers.iter().all(|header| {
         header_contains_token(
             headers,
             "access-control-allow-headers",
@@ -1412,7 +1629,7 @@ fn cors_preflight_response_allowed(
             !credentials,
         )
     });
-    method_allowed && header_allowed
+    method_allowed && headers_allowed
 }
 
 fn header_contains_token(
@@ -2430,7 +2647,7 @@ mod tests {
             &document,
             &resource,
             "POST",
-            Some("content-type"),
+            &["content-type".into()],
             false,
         ));
         headers.remove(ACCESS_CONTROL_ALLOW_HEADERS);
@@ -2439,7 +2656,7 @@ mod tests {
             &document,
             &resource,
             "POST",
-            Some("content-type"),
+            &["content-type".into()],
             false,
         ));
         headers.insert(
@@ -2455,7 +2672,7 @@ mod tests {
             &document,
             &resource,
             "POST",
-            Some("content-type"),
+            &["content-type".into()],
             false,
         ));
     }

@@ -20,14 +20,15 @@ use super::javascript::{
 };
 use super::origin::NativeOrigin;
 use super::resource_loader::{
-    NativeFetchResponse, NativeNavigationMethod, NativeNavigationRequest, NativeResourceLoader,
+    NativeFetchRequest, NativeFetchResponse, NativeNavigationMethod, NativeNavigationRequest,
+    NativeResourceLoader,
 };
 #[cfg(windows)]
 use super::sandbox::NativeContentSandbox;
 use super::sandbox::prepare_worker_command;
 use base64::Engine as _;
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -3253,6 +3254,7 @@ fn fetch_commands(
         u32,
         String,
         NativeNavigationMethod,
+        BTreeMap<String, String>,
         Option<String>,
         Option<String>,
         bool,
@@ -3267,12 +3269,14 @@ fn fetch_commands(
                 href,
                 credentials,
                 method,
+                headers,
                 body,
                 content_type,
             } => Some((
                 *request_id,
                 href.clone(),
                 method,
+                headers.clone(),
                 body.clone(),
                 content_type.clone(),
                 *credentials,
@@ -3280,7 +3284,7 @@ fn fetch_commands(
             _ => None,
         })
         .map(
-            |(request_id, href, method, body, content_type, credentials)| {
+            |(request_id, href, method, headers, body, content_type, credentials)| {
                 let method = match method.as_str() {
                     "GET" => NativeNavigationMethod::Get,
                     "POST" => NativeNavigationMethod::Post,
@@ -3291,7 +3295,15 @@ fn fetch_commands(
                         ));
                     }
                 };
-                Ok((request_id, href, method, body, content_type, credentials))
+                Ok((
+                    request_id,
+                    href,
+                    method,
+                    headers,
+                    body,
+                    content_type,
+                    credentials,
+                ))
             },
         )
         .collect()
@@ -3328,7 +3340,9 @@ async fn resolve_script_fetches(
     )?;
     let mut pending = fetch_commands(&evaluation.commands)?;
     let mut resolved_count = 0usize;
-    while let Some((request_id, href, method, body, content_type, credentials)) = pending.pop() {
+    while let Some((request_id, href, method, headers, body, content_type, credentials)) =
+        pending.pop()
+    {
         resolved_count = resolved_count.saturating_add(1);
         if resolved_count > MAX_NATIVE_EFFECTS {
             return Err(NativeEngineError::limit(
@@ -3339,7 +3353,15 @@ async fn resolve_script_fetches(
         }
         let payload = fetch_response_payload(
             loader
-                .fetch_request_async(document_url, &href, method, body, content_type, credentials)
+                .fetch_request_with_headers_async(NativeFetchRequest {
+                    document_url,
+                    href: &href,
+                    method,
+                    body,
+                    content_type,
+                    request_headers: headers,
+                    credentials,
+                })
                 .await,
         );
         let resolved = runtime.resolve_fetch(

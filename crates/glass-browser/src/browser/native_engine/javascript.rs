@@ -53,6 +53,10 @@ const MAX_NATIVE_INDEXED_DB_VALUE_BYTES: usize = 8 * 1024;
 const MAX_NATIVE_INDEXED_DB_STATE_BYTES: usize = MAX_NATIVE_SCRIPT_RESULT_BYTES;
 const NATIVE_STORAGE_PROFILE_LOCK_TIMEOUT: Duration = Duration::from_millis(500);
 const NATIVE_STORAGE_PROFILE_LOCK_RETRY: Duration = Duration::from_millis(10);
+const MAX_NATIVE_FETCH_HEADERS: usize = 16;
+const MAX_NATIVE_FETCH_HEADER_NAME_BYTES: usize = 128;
+const MAX_NATIVE_FETCH_HEADER_VALUE_BYTES: usize = 64 * 1024;
+const MAX_NATIVE_FETCH_HEADER_BYTES: usize = 128 * 1024;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -79,6 +83,8 @@ pub(crate) enum NativeScriptCommand {
         href: String,
         credentials: bool,
         method: String,
+        #[serde(default)]
+        headers: BTreeMap<String, String>,
         #[serde(default)]
         body: Option<String>,
         #[serde(default)]
@@ -5155,15 +5161,42 @@ fn document_bootstrap(
     if (method !== "GET" && method !== "POST") {{
       return Promise.reject(new TypeError("native fetch supports only GET and POST requests"));
     }}
-    const headers = settings.headers && typeof settings.headers === "object"
-      ? settings.headers
-      : {{}};
-    let contentType = null;
-    for (const name of Object.keys(headers)) {{
-      if (String(name).toLowerCase() !== "content-type") {{
-        return Promise.reject(new TypeError("native fetch only supports the Content-Type header"));
+    const requestHeaderName = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+    const forbiddenRequestHeader = (name) => [
+      "accept-charset", "accept-encoding", "access-control-request-headers",
+      "access-control-request-method", "connection", "content-length",
+      "cookie", "cookie2", "date", "dnt", "expect", "host", "keep-alive",
+      "origin", "referer", "te", "trailer", "transfer-encoding", "upgrade",
+      "user-agent", "via",
+    ].includes(name) || name.startsWith("proxy-") || name.startsWith("sec-");
+    const normalizeRequestHeaders = (input) => {{
+      if (input === undefined || input === null) return {{}};
+      if (typeof input !== "object") throw new TypeError("native fetch headers must be an object");
+      const normalized = {{}};
+      let count = 0;
+      let totalBytes = 0;
+      for (const name of Object.keys(input)) {{
+        const normalizedName = String(name).toLowerCase();
+        if (!requestHeaderName.test(String(name)) || normalizedName.length > {fetch_header_name_limit}) throw new TypeError("native fetch header name is invalid");
+        if (forbiddenRequestHeader(normalizedName)) throw new TypeError("native fetch header is forbidden");
+        const value = String(input[name]);
+        if (value.length > {fetch_header_value_limit} || /[\u0000-\u001f\u007f]/.test(value)) throw new TypeError("native fetch header value is invalid");
+        if (Object.prototype.hasOwnProperty.call(normalized, normalizedName)) normalized[normalizedName] += ", " + value;
+        else {{
+          count += 1;
+          if (count > {fetch_header_count_limit}) throw new RangeError("native fetch header limit exceeded");
+          normalized[normalizedName] = value;
+        }}
+        totalBytes += normalizedName.length + value.length;
+        if (totalBytes > {fetch_header_bytes_limit}) throw new RangeError("native fetch headers exceed their limit");
       }}
-      contentType = String(headers[name]);
+      return normalized;
+    }};
+    const requestHeaders = normalizeRequestHeaders(settings.headers);
+    let contentType = null;
+    if (Object.prototype.hasOwnProperty.call(requestHeaders, "content-type")) {{
+      contentType = requestHeaders["content-type"];
+      delete requestHeaders["content-type"];
     }}
     const requestId = nextFetchRequestId;
     if (formData) {{
@@ -5196,7 +5229,7 @@ fn document_bootstrap(
       fetchRequests.set(requestId, pending);
       if (signal) signal.addEventListener("abort", abort);
       if (!fetchRequests.has(requestId)) return;
-      pushCommand({{ kind: "fetch", request_id: requestId, href: input, credentials, method, body, content_type: contentType }});
+      pushCommand({{ kind: "fetch", request_id: requestId, href: input, credentials, method, headers: requestHeaders, body, content_type: contentType }});
     }});
   }};
   const responseHeaders = (contentType) => {{
@@ -5945,6 +5978,10 @@ fn document_bootstrap(
         indexed_db_record_limit = MAX_NATIVE_INDEXED_DB_RECORDS,
         indexed_db_value_limit = MAX_NATIVE_INDEXED_DB_VALUE_BYTES,
         storage_quota = MAX_WEB_STORAGE_PROFILE_BYTES,
+        fetch_header_count_limit = MAX_NATIVE_FETCH_HEADERS,
+        fetch_header_name_limit = MAX_NATIVE_FETCH_HEADER_NAME_BYTES,
+        fetch_header_value_limit = MAX_NATIVE_FETCH_HEADER_VALUE_BYTES,
+        fetch_header_bytes_limit = MAX_NATIVE_FETCH_HEADER_BYTES,
         run_timers = run_timers,
         width = viewport.width,
         height = viewport.height,

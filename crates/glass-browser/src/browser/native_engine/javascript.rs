@@ -5822,7 +5822,14 @@ fn document_bootstrap(
       entries.push(entry);
     }}
     const iterator = values => values[Symbol.iterator]();
-    const headers = {{
+    const headers = Object.create(HeadersNative.prototype);
+    Object.defineProperty(headers, "__glassHeaders", {{ value: true }});
+    Object.defineProperty(headers, "_entries", {{ value: entries }});
+    const readOnly = () => {{ throw new TypeError("native response Headers are immutable"); }};
+    headers.append = readOnly;
+    headers.set = readOnly;
+    headers.delete = readOnly;
+    Object.assign(headers, {{
       get(name) {{
         const key = String(name).toLowerCase();
         const entry = entries.find(candidate => candidate[0] === key);
@@ -5837,7 +5844,7 @@ fn document_bootstrap(
         entries.slice().forEach(entry => callback.call(thisArg, entry[1], entry[0], headers));
       }},
       [Symbol.iterator]() {{ return this.entries(); }},
-    }};
+    }});
     return Object.freeze(headers);
   }};
   const readableStreamState = (stream) => {{

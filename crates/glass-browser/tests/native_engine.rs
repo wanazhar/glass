@@ -793,11 +793,15 @@ async fn native_local_response_objects_expose_bounded_constructors_and_identity(
                 const error = Response.error();
                 const redirect = Response.redirect('https://example.test/next', 307);
                 const clone = constructed.clone();
+                let headerMutation;
+                try { constructed.headers.set('x-test', 'blocked'); } catch (error) { headerMutation = [error.name, error.message]; }
                 globalThis.responseObjects = [
                     constructed instanceof Response,
+                    constructed.headers instanceof Headers,
                     constructed.status,
                     constructed.statusText,
                     constructed.headers.get('content-type'),
+                    headerMutation,
                     Array.from(await constructed.bytes()),
                     await json.text(),
                     json.headers.get('content-type'),
@@ -822,9 +826,11 @@ async fn native_local_response_objects_expose_bounded_constructors_and_identity(
             .unwrap(),
         serde_json::json!([
             true,
+            true,
             201,
             "Created",
             "application/octet-stream",
+            ["TypeError", "native response Headers are immutable"],
             [0, 255, 128, 65],
             "{\"ready\":true}",
             "application/json",

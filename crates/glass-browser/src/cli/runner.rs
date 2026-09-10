@@ -546,6 +546,14 @@ fn validate_alternative_runtime_command(
         {
             Ok(())
         }
+        Commands::ArchiveTargets { .. }
+        | Commands::SelectTarget { .. }
+        | Commands::Frames
+        | Commands::SelectFrame { .. }
+            if native =>
+        {
+            Ok(())
+        }
         Commands::Dom | Commands::ClickAt { .. } | Commands::Scroll { .. } if native => Ok(()),
         Commands::Clear { .. }
         | Commands::Check { .. }
@@ -997,7 +1005,67 @@ async fn run_alternative_runtime_command(
             &session.evidence(EvidenceLevel::Compact).await?,
             response_mode,
         ),
-        Commands::Targets => print_json_mode(&session.contexts().await?, response_mode),
+        Commands::Targets if session.runtime().is_native() => {
+            #[cfg(feature = "native-engine")]
+            {
+                print_json_mode(&session.native_list_targets().await?, response_mode)
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
+        }
+        Commands::ArchiveTargets { output } if session.runtime().is_native() => {
+            #[cfg(feature = "native-engine")]
+            {
+                let targets = session.native_list_targets().await?;
+                let target_count = targets.len();
+                let archive = target_archive(&targets)?;
+                let bytes = serde_json::to_vec_pretty(&archive)?;
+                if let Some(output) = output {
+                    let path = policy.require_output_path(output)?;
+                    if path.is_dir() {
+                        return Err("target archive output must name a file".into());
+                    }
+                    tokio::fs::write(&path, &bytes).await?;
+                    print_json_mode(
+                        &serde_json::json!({
+                            "schemaVersion": "glass.target-archive.v1",
+                            "targetCount": target_count,
+                            "output": path,
+                        }),
+                        response_mode,
+                    )?;
+                } else {
+                    print_json_mode(&archive, response_mode)?;
+                }
+                Ok(())
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
+        }
+        Commands::SelectTarget { id } if session.runtime().is_native() => {
+            #[cfg(feature = "native-engine")]
+            {
+                print_json_mode(&session.native_select_target(id).await?, response_mode)
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
+        }
+        Commands::Frames if session.runtime().is_native() => {
+            #[cfg(feature = "native-engine")]
+            {
+                print_json_mode(&session.native_list_frames().await?, response_mode)
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
+        }
+        Commands::SelectFrame { id } if session.runtime().is_native() => {
+            #[cfg(feature = "native-engine")]
+            {
+                print_json_mode(&session.native_select_frame(id).await?, response_mode)
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
+        }
         Commands::Evaluate { expression } => {
             policy.require(PolicyCapability::Evaluate)?;
             let result = session.script(expression).await?;

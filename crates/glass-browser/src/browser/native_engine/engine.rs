@@ -910,6 +910,26 @@ impl NativeEngine {
         self.traverse_history(NativeHistoryDirection::Forward, "go forward")
     }
 
+    /// Move to the previous history entry through the asynchronous native
+    /// navigation owner. Network entries are loaded by the sandboxed content
+    /// process; local entries use the deterministic loader.
+    pub async fn go_back_async(
+        &mut self,
+    ) -> Result<Option<NativeEngineSnapshot>, NativeEngineError> {
+        self.traverse_history_async(NativeHistoryDirection::Back, "go back")
+            .await
+    }
+
+    /// Move to the next history entry through the asynchronous native
+    /// navigation owner. A missing forward entry is an explicit boundary
+    /// no-op.
+    pub async fn go_forward_async(
+        &mut self,
+    ) -> Result<Option<NativeEngineSnapshot>, NativeEngineError> {
+        self.traverse_history_async(NativeHistoryDirection::Forward, "go forward")
+            .await
+    }
+
     pub fn snapshot(&self) -> Result<NativeEngineSnapshot, NativeEngineError> {
         self.require_running("evidence")?;
         Ok(self.snapshot_unchecked())
@@ -3140,6 +3160,11 @@ impl NativeEngine {
         worker: &NativeRuntimeWorker,
         history_commit: HistoryCommit,
     ) -> Result<Option<NativeNavigationRequest>, NativeEngineError> {
+        if let HistoryCommit::Activate(history_index) = &history_commit {
+            self.commit_history_navigation_async(prepared, *history_index, worker)
+                .await?;
+            return Ok(None);
+        }
         let execute_page_scripts = prepared.execute_inline_scripts;
         self.persist_local_web_storage()?;
         let storage_state = self.web_storage.clone();
@@ -3356,6 +3381,50 @@ impl NativeEngine {
         Ok(())
     }
 
+    async fn commit_history_navigation_async(
+        &mut self,
+        prepared: PreparedNavigation,
+        history_index: usize,
+        worker: &NativeRuntimeWorker,
+    ) -> Result<(), NativeEngineError> {
+        self.persist_local_web_storage()?;
+        if self.history.entry(history_index).is_none() {
+            return Err(NativeEngineError::Scheduler {
+                reason: "history target is no longer available".into(),
+            });
+        }
+        let saved_scroll = self
+            .history
+            .entry(history_index)
+            .map(|entry| entry.scroll_offset)
+            .ok_or_else(|| NativeEngineError::Scheduler {
+                reason: "history target is no longer available".into(),
+            })?;
+        let max_scroll = prepared
+            .document
+            .layout(self.config.viewport)?
+            .max_scroll_offset();
+        let scroll_offset = NativePoint {
+            x: saved_scroll.x.min(max_scroll.x),
+            y: saved_scroll.y.min(max_scroll.y),
+        };
+        self.run_commit_task_async(NativeTask::TraverseHistory, "history traversal", worker)
+            .await?;
+        let revision = prepared.document.revision();
+        self.document = prepared.document;
+        self.javascript = None;
+        self.url = prepared.resource.url;
+        self.origin = prepared.resource.origin;
+        self.scroll_offset = scroll_offset;
+        self.revision = revision;
+        self.history
+            .activate(history_index, revision)
+            .ok_or_else(|| NativeEngineError::Scheduler {
+                reason: "history target disappeared during traversal".into(),
+            })?;
+        Ok(())
+    }
+
     fn traverse_history(
         &mut self,
         direction: NativeHistoryDirection,
@@ -3384,6 +3453,78 @@ impl NativeEngine {
             self.commit_history_navigation(prepared, history_index)?;
         }
         Ok(Some(self.snapshot_unchecked()))
+    }
+
+    async fn traverse_history_async(
+        &mut self,
+        direction: NativeHistoryDirection,
+        operation: &str,
+    ) -> Result<Option<NativeEngineSnapshot>, NativeEngineError> {
+        self.require_running(operation)?;
+        let Some(history_index) = self.history.target_index(direction) else {
+            return Ok(None);
+        };
+        let target_url = self
+            .history
+            .entry(history_index)
+            .ok_or_else(|| NativeEngineError::Scheduler {
+                reason: "history target is no longer available".into(),
+            })?
+            .url
+            .clone();
+        if self.is_same_document_navigation(&target_url) {
+            if let Some(worker) = self.runtime_worker.clone() {
+                self.commit_same_document_navigation_async(
+                    target_url,
+                    HistoryCommit::Activate(history_index),
+                    &worker,
+                )
+                .await?;
+            } else {
+                self.commit_same_document_navigation(
+                    target_url,
+                    HistoryCommit::Activate(history_index),
+                )?;
+            }
+            return Ok(Some(self.snapshot_unchecked()));
+        }
+
+        let history_commit = HistoryCommit::Activate(history_index);
+        if is_network_url(&target_url) {
+            let referrer = referrer_for_navigation(&self.url, &target_url)?;
+            self.ensure_content_process().await?;
+            let (content, history_commit, page_navigation_handoffs) = self
+                .load_content_with_page_navigation(
+                    NativeNavigationRequest::get(target_url),
+                    referrer,
+                    history_commit,
+                    0,
+                )
+                .await?;
+            self.commit_content_process().await?;
+            if let Some(worker) = self.runtime_worker.clone() {
+                return Ok(Some(
+                    self.navigate_content_async(
+                        content,
+                        &worker,
+                        history_commit,
+                        page_navigation_handoffs,
+                    )
+                    .await?,
+                ));
+            }
+            return Ok(Some(self.navigate_content(content, history_commit)?));
+        }
+
+        self.content_process.take();
+        let resource = self.loader.load_async(&target_url).await?;
+        if let Some(worker) = self.runtime_worker.clone() {
+            return Ok(Some(
+                self.navigate_resource_async(resource, &worker, history_commit, 0)
+                    .await?,
+            ));
+        }
+        Ok(Some(self.navigate_resource(resource, history_commit)?))
     }
 
     fn is_same_document_navigation(&self, target_url: &str) -> bool {

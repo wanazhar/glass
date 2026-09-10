@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-138` locally. The versioned
+`native-engine-browser-139` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1264,6 +1264,16 @@ and MCP surfaces without CDP. The metadata-free semantic cookie write remains
 rejected; multi-target/frame ownership, request accounting,
 popup/dialog/download witnesses, universal workflow parity, and CDP
 replacement remain issue #40 gates.
+
+The completed native history/topology batch is
+[native-engine-browser-139](tasks/native-engine-browser-139.md). Native async
+back/forward traversal now uses the existing runtime worker and content
+process for local and HTTP(S) history entries. The native runtime, CLI, and
+MCP expose the standard bounded target/frame projections, with explicit
+`native-context` and `native-context:main` identities and fail-closed
+selection. Multi-target creation/closure, child-frame execution,
+popup/dialog/download witnesses, request accounting, universal workflow
+parity, and CDP replacement remain issue #40 gates.
 
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and

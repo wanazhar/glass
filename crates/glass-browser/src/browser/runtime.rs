@@ -23,10 +23,11 @@ use serde::{Deserialize, Serialize};
 use super::session::{
     ActAndVerifyResult, ActionFailureKind, ActionFailurePhase, ActionKind, ActionOutcome,
     ActionStatus, ActionTarget, ActionVerificationError, ActionVerificationEvidence, Cookie,
-    FindTargetResult, InspectPageResult, IntentPolicyDecision, RecoveryStrategy,
-    SemanticIntentAction, SemanticIntentExecutionRequest, SemanticIntentExecutionResult,
-    SemanticIntentExecutionStatus, SemanticIntentResult, SemanticResolution, VerificationOutcome,
-    VerificationPredicate, WaitCondition, WaitOutcome, WaitTimeout,
+    FindTargetResult, FrameInfo, InspectPageResult, IntentPolicyDecision, NavigationControlOutcome,
+    PageTargetInfo, RecoveryStrategy, SemanticIntentAction, SemanticIntentExecutionRequest,
+    SemanticIntentExecutionResult, SemanticIntentExecutionStatus, SemanticIntentResult,
+    SemanticResolution, VerificationOutcome, VerificationPredicate, WaitCondition, WaitOutcome,
+    WaitTimeout,
 };
 use super::session::{ActionContractError, BrowserResult};
 #[cfg(feature = "native-engine")]
@@ -181,6 +182,60 @@ impl BrowserRuntimeSession {
                 include_background: false,
             })
             .await?)
+    }
+
+    /// Return the native runtime's standard page-target projection.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_list_targets(&self) -> BrowserResult<Vec<PageTargetInfo>> {
+        let _operation = self.operation_lock.lock().await;
+        match &self.backend {
+            BackendStartup::Native(backend) => Ok(backend.list_targets()?),
+            _ => Err("native target discovery is only available on the native runtime".into()),
+        }
+    }
+
+    /// Return the native runtime's standard frame projection.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_list_frames(&self) -> BrowserResult<Vec<FrameInfo>> {
+        let _operation = self.operation_lock.lock().await;
+        match &self.backend {
+            BackendStartup::Native(backend) => Ok(backend.list_frames()?),
+            _ => Err("native frame discovery is only available on the native runtime".into()),
+        }
+    }
+
+    /// Select one explicitly listed native page target.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_select_target(&self, target_id: &str) -> BrowserResult<PageTargetInfo> {
+        let _operation = self.operation_lock.lock().await;
+        match &self.backend {
+            BackendStartup::Native(backend) => Ok(backend.select_target(target_id)?),
+            _ => Err("native target selection is only available on the native runtime".into()),
+        }
+    }
+
+    /// Select one explicitly listed native frame.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_select_frame(&self, frame_id: &str) -> BrowserResult<FrameInfo> {
+        let _operation = self.operation_lock.lock().await;
+        match &self.backend {
+            BackendStartup::Native(backend) => Ok(backend.select_frame(frame_id)?),
+            _ => Err("native frame selection is only available on the native runtime".into()),
+        }
+    }
+
+    /// Traverse native session history while preserving the revision-bound
+    /// navigation-control result used by the Chromium session.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_navigate_history(
+        &self,
+        direction: super::native_engine::NativeHistoryDirection,
+    ) -> BrowserResult<NavigationControlOutcome> {
+        let _operation = self.operation_lock.lock().await;
+        match &self.backend {
+            BackendStartup::Native(backend) => Ok(backend.navigate_history(direction).await?),
+            _ => Err("native history is only available on the native runtime".into()),
+        }
     }
 
     pub async fn evidence(&self, level: EvidenceLevel) -> BrowserResult<EvidenceResult> {

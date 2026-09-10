@@ -5199,6 +5199,7 @@ fn document_bootstrap(
       pushCommand({{ kind: "fetch", request_id: requestId, href: input, credentials, method, body, content_type: contentType }});
     }});
   }};
+  const responseBodyBlob = (payload) => new Blob([payload.body], {{ type: payload.contentType || "" }});
   const responseFromFetch = (payload) => Object.freeze({{
     ok: payload.status >= 200 && payload.status < 300,
     status: payload.status,
@@ -5210,6 +5211,9 @@ fn document_bootstrap(
     }}),
     text() {{ return Promise.resolve(payload.body); }},
     json() {{ return Promise.resolve(JSON.parse(payload.body)); }},
+    blob() {{ return Promise.resolve(responseBodyBlob(payload)); }},
+    arrayBuffer() {{ return responseBodyBlob(payload).arrayBuffer(); }},
+    bytes() {{ return responseBodyBlob(payload).bytes(); }},
   }});
   const XMLHttpRequestNative = function() {{
     this.readyState = 0;

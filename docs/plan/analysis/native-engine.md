@@ -2571,6 +2571,13 @@ construction, stable sorting, size, callbacks, optional-value deletion, and
 snapshot iterators with corrected form-urlencoded escaping. Full live Web IDL
 iterator identity and exotic iterable inputs remain open.
 
+The completed bounded fetch response-body follow-up is
+[native-engine-browser-094](../tasks/native-engine-browser-094.md). Fetch
+responses now provide fresh text-backed Blob, UTF-8 ArrayBuffer, and Uint8Array
+results through `blob()`, `arrayBuffer()`, and `bytes()` while preserving
+independent text/json reads. Streaming and byte-preserving non-UTF-8 response
+transport remain open.
+
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine

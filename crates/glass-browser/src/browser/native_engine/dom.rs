@@ -1,5 +1,5 @@
 use super::config::{NativeEngineLimits, validate_url_text, without_fragment};
-use super::css::NativeStylesheet;
+use super::css::{NativeStylesheet, collect_background_image_sources};
 use super::diagnostics::{NativeDiagnostic, NativeDiagnosticSink, NativeDiagnosticSource};
 use super::error::NativeEngineError;
 use super::image::{
@@ -140,6 +140,16 @@ pub(crate) struct NativeDocumentWire {
     pub(crate) script_nodes: Vec<NativeScriptNodeIdentity>,
     #[serde(default)]
     pub(crate) image_resources: Vec<NativeImageResourceWire>,
+    #[serde(default)]
+    pub(crate) background_image_sources: Vec<NativeBackgroundImageSourceWire>,
+    #[serde(default)]
+    pub(crate) background_image_resources: Vec<NativeImageResourceWire>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct NativeBackgroundImageSourceWire {
+    pub(crate) source_id: u32,
+    pub(crate) source: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -434,6 +444,8 @@ pub struct NativeDocument {
     diagnostics_truncated: bool,
     script_node_ids: BTreeMap<u32, NativeNodeId>,
     image_resources: BTreeMap<u32, NativeImageResource>,
+    background_image_sources: BTreeMap<u32, String>,
+    background_image_resources: BTreeMap<u32, NativeImageResource>,
 }
 
 impl NativeDocument {
@@ -489,6 +501,8 @@ impl NativeDocument {
             diagnostics_truncated: false,
             script_node_ids: BTreeMap::new(),
             image_resources: BTreeMap::new(),
+            background_image_sources: BTreeMap::new(),
+            background_image_resources: BTreeMap::new(),
         };
         let mut stack = vec![root];
         let mut document_type_seen = false;
@@ -633,10 +647,12 @@ impl NativeDocument {
         let mut diagnostics = NativeDiagnosticSink::default();
         document.stylesheet =
             NativeStylesheet::from_sources_with_diagnostics(style_sources, &mut diagnostics)?;
+        document.background_image_sources = document.stylesheet.background_image_sources().clone();
         for node in &document.nodes {
             let Some(inline_style) = node.attribute("style") else {
                 continue;
             };
+            collect_background_image_sources(inline_style, &mut document.background_image_sources);
             super::css::collect_declaration_diagnostics(
                 inline_style,
                 NativeDiagnosticSource::InlineStyle {
@@ -686,6 +702,32 @@ impl NativeDocument {
                     return None;
                 }
                 (node.element_name() == Some("img")).then_some((node.id().index(), source))
+            })
+            .collect()
+    }
+
+    pub(crate) fn background_image_source_for_node(&self, node_id: NativeNodeId) -> Option<&str> {
+        let source_id = self.computed_style_for_layout(node_id).background_image()?;
+        self.background_image_sources
+            .get(&source_id)
+            .map(String::as_str)
+    }
+
+    pub(crate) fn external_background_image_links(&self) -> Vec<(u32, String)> {
+        self.nodes
+            .iter()
+            .filter_map(|node| {
+                let node_id = node.id();
+                self.node(node_id)?;
+                let source = self.background_image_source_for_node(node_id)?;
+                if source.is_empty()
+                    || source
+                        .get(..5)
+                        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:"))
+                {
+                    return None;
+                }
+                Some((node_id.index(), source.to_owned()))
             })
             .collect()
     }
@@ -742,6 +784,81 @@ impl NativeDocument {
         self.image_resources
             .insert(node_index, NativeImageResource { source, image });
         Ok(())
+    }
+
+    pub(crate) fn background_image_resource_for_node(
+        &self,
+        node_id: NativeNodeId,
+    ) -> Option<&NativeImage> {
+        let resource = self.background_image_resources.get(&node_id.index())?;
+        (self.background_image_source_for_node(node_id) == Some(resource.source.as_str()))
+            .then_some(&resource.image)
+    }
+
+    pub(crate) fn set_background_image_resource(
+        &mut self,
+        node_index: u32,
+        source: String,
+        image: NativeImage,
+    ) -> Result<(), NativeEngineError> {
+        if source.is_empty()
+            || source.len() > MAX_ATTRIBUTE_BYTES
+            || source.bytes().any(|byte| byte.is_ascii_control())
+        {
+            return Err(NativeEngineError::invalid(
+                "background image source",
+                "must be a bounded printable URL",
+            ));
+        }
+        let expected_bytes = usize::try_from(image.width)
+            .ok()
+            .and_then(|width| width.checked_mul(usize::try_from(image.height).ok()?))
+            .and_then(|pixels| pixels.checked_mul(4))
+            .ok_or_else(|| NativeEngineError::limit("background image pixels", 0, usize::MAX))?;
+        if image.width == 0
+            || image.height == 0
+            || expected_bytes != image.pixels.len()
+            || expected_bytes > MAX_NATIVE_IMAGE_TRANSFER_BYTES
+            || expected_bytes / 4 > MAX_NATIVE_IMAGE_TRANSFER_PIXELS
+        {
+            return Err(NativeEngineError::limit(
+                "background image pixels",
+                MAX_NATIVE_IMAGE_TRANSFER_BYTES,
+                expected_bytes,
+            ));
+        }
+        let node_id = NativeNodeId::from_parts(self.generation, node_index);
+        if self.background_image_source_for_node(node_id) != Some(source.as_str()) {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "background image resource does not match its computed style".into(),
+            });
+        }
+        self.background_image_resources
+            .insert(node_index, NativeImageResource { source, image });
+        Ok(())
+    }
+
+    pub(crate) fn refresh_background_image_sources(&mut self) {
+        let mut sources = self.stylesheet.background_image_sources().clone();
+        let inline_sources = self
+            .nodes
+            .iter()
+            .filter_map(|node| node.attribute("style").map(str::to_owned))
+            .collect::<Vec<_>>();
+        for inline_style in inline_sources {
+            collect_background_image_sources(&inline_style, &mut sources);
+        }
+        self.background_image_sources = sources;
+        let retained = self
+            .background_image_resources
+            .iter()
+            .filter_map(|(node_index, resource)| {
+                let node_id = NativeNodeId::from_parts(self.generation, *node_index);
+                (self.background_image_source_for_node(node_id) == Some(resource.source.as_str()))
+                    .then(|| (*node_index, resource.clone()))
+            })
+            .collect();
+        self.background_image_resources = retained;
     }
 
     pub(crate) fn to_content_wire(&self) -> NativeDocumentWire {
@@ -812,6 +929,30 @@ impl NativeDocument {
                 })
             })
             .collect();
+        let background_image_sources = self
+            .background_image_sources
+            .iter()
+            .map(|(source_id, source)| NativeBackgroundImageSourceWire {
+                source_id: *source_id,
+                source: source.clone(),
+            })
+            .collect();
+        let background_image_resources = self
+            .background_image_resources
+            .iter()
+            .filter_map(|(node_index, resource)| {
+                let node_id = NativeNodeId::from_parts(self.generation, *node_index);
+                (self.background_image_source_for_node(node_id) == Some(resource.source.as_str()))
+                    .then(|| NativeImageResourceWire {
+                        node_index: *node_index,
+                        source: resource.source.clone(),
+                        width: resource.image.width,
+                        height: resource.image.height,
+                        pixels_base64: base64::engine::general_purpose::STANDARD
+                            .encode(&resource.image.pixels),
+                    })
+            })
+            .collect();
         NativeDocumentWire {
             nodes,
             computed_styles,
@@ -825,6 +966,8 @@ impl NativeDocument {
                 })
                 .collect(),
             image_resources,
+            background_image_sources,
+            background_image_resources,
         }
     }
 
@@ -851,6 +994,45 @@ impl NativeDocument {
             return Err(NativeEngineError::Parse {
                 offset: 0,
                 reason: "content process returned incomplete computed styles".into(),
+            });
+        }
+        if wire.background_image_sources.len() > limits.max_nodes {
+            return Err(NativeEngineError::limit(
+                "content-process background image sources",
+                limits.max_nodes,
+                wire.background_image_sources.len(),
+            ));
+        }
+        let mut background_image_sources = BTreeMap::new();
+        for source in &wire.background_image_sources {
+            if source.source_id == 0
+                || source.source.is_empty()
+                || source.source.len() > MAX_ATTRIBUTE_BYTES
+                || source.source.bytes().any(|byte| byte.is_ascii_control())
+            {
+                return Err(NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned an invalid background image source".into(),
+                });
+            }
+            if background_image_sources
+                .insert(source.source_id, source.source.clone())
+                .is_some()
+            {
+                return Err(NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned duplicate background image sources".into(),
+                });
+            }
+        }
+        if wire.computed_styles.iter().any(|style| {
+            style
+                .background_image()
+                .is_some_and(|source_id| !background_image_sources.contains_key(&source_id))
+        }) {
+            return Err(NativeEngineError::Parse {
+                offset: 0,
+                reason: "content process returned an unknown background image source".into(),
             });
         }
         let node_id = |index: u32| -> Result<NativeNodeId, NativeEngineError> {
@@ -1080,6 +1262,126 @@ impl NativeDocument {
                 });
             }
         }
+        if wire.background_image_resources.len() > limits.max_nodes {
+            return Err(NativeEngineError::limit(
+                "content-process background image resources",
+                limits.max_nodes,
+                wire.background_image_resources.len(),
+            ));
+        }
+        let mut background_image_resources = BTreeMap::new();
+        for resource in wire.background_image_resources {
+            if resource.source.is_empty()
+                || resource.source.len() > MAX_ATTRIBUTE_BYTES
+                || resource.source.bytes().any(|byte| byte.is_ascii_control())
+            {
+                return Err(NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned an invalid background image resource".into(),
+                });
+            }
+            if resource.pixels_base64.len() > max_encoded_pixels {
+                return Err(NativeEngineError::limit(
+                    "content-process background image pixels",
+                    max_encoded_pixels,
+                    resource.pixels_base64.len(),
+                ));
+            }
+            let node_index =
+                usize::try_from(resource.node_index).map_err(|_| NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned an invalid background image node index"
+                        .into(),
+                })?;
+            let node = nodes
+                .get(node_index)
+                .ok_or_else(|| NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned an out-of-range background image node index"
+                        .into(),
+                })?;
+            let style = wire
+                .computed_styles
+                .get(node_index)
+                .copied()
+                .ok_or_else(|| NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned an out-of-range background image style"
+                        .into(),
+                })?;
+            let source_id = style
+                .background_image()
+                .ok_or_else(|| NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned a background image for a node without one"
+                        .into(),
+                })?;
+            if background_image_sources.get(&source_id) != Some(&resource.source)
+                || !matches!(node.kind(), NativeNodeKind::Element { .. })
+            {
+                return Err(NativeEngineError::Parse {
+                    offset: 0,
+                    reason:
+                        "content process returned a background image resource for a different style"
+                            .into(),
+                });
+            }
+            let expected_bytes = usize::try_from(resource.width)
+                .ok()
+                .and_then(|width| width.checked_mul(usize::try_from(resource.height).ok()?))
+                .and_then(|pixels| pixels.checked_mul(4))
+                .ok_or_else(|| {
+                    NativeEngineError::limit(
+                        "content-process background image pixels",
+                        0,
+                        usize::MAX,
+                    )
+                })?;
+            if resource.width == 0
+                || resource.height == 0
+                || expected_bytes > MAX_NATIVE_IMAGE_TRANSFER_BYTES
+                || expected_bytes / 4 > MAX_NATIVE_IMAGE_TRANSFER_PIXELS
+            {
+                return Err(NativeEngineError::limit(
+                    "content-process background image pixels",
+                    MAX_NATIVE_IMAGE_TRANSFER_BYTES,
+                    expected_bytes,
+                ));
+            }
+            let pixels = base64::engine::general_purpose::STANDARD
+                .decode(resource.pixels_base64)
+                .map_err(|_| NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned invalid background image pixels".into(),
+                })?;
+            if pixels.len() != expected_bytes {
+                return Err(NativeEngineError::Parse {
+                    offset: 0,
+                    reason:
+                        "content process returned background image pixels with the wrong dimensions"
+                            .into(),
+                });
+            }
+            if background_image_resources
+                .insert(
+                    resource.node_index,
+                    NativeImageResource {
+                        source: resource.source,
+                        image: NativeImage {
+                            width: resource.width,
+                            height: resource.height,
+                            pixels,
+                        },
+                    },
+                )
+                .is_some()
+            {
+                return Err(NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned duplicate background image resources".into(),
+                });
+            }
+        }
         let root = NativeNodeId {
             generation,
             index: 0,
@@ -1142,6 +1444,8 @@ impl NativeDocument {
             diagnostics_truncated,
             script_node_ids,
             image_resources,
+            background_image_sources,
+            background_image_resources,
         };
         document.normalize_select_defaults();
         Ok(document)
@@ -1214,6 +1518,8 @@ impl NativeDocument {
             diagnostics_truncated: false,
             script_node_ids: BTreeMap::new(),
             image_resources: BTreeMap::new(),
+            background_image_sources: BTreeMap::new(),
+            background_image_resources: BTreeMap::new(),
         }
     }
 

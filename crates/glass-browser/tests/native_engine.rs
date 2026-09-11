@@ -32979,6 +32979,43 @@ fn native_inline_png_images_share_intrinsic_layout_paint_and_capture() {
     assert_eq!(reader.info().height, 8);
 }
 
+#[test]
+fn native_inline_png_background_images_share_css_paint_and_capture() {
+    let source = native_test_png_data_url();
+    let markup = format!(
+        "<div id='surface' style='width:8px;height:8px;background-image:url(\"{source}\")'></div>"
+    );
+    let document = NativeDocument::parse(&markup, &NativeEngineLimits::default()).unwrap();
+    let surface_id = document.resolve_target("id=surface").unwrap();
+    let viewport = Viewport {
+        width: 8,
+        height: 8,
+        device_scale_factor_milli: 1000,
+    };
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::Image {
+                node_id,
+                rect,
+                source_width: 2,
+                source_height: 2,
+                pixels,
+                clip: None,
+            } if *node_id == surface_id
+                && *rect == NativeRect { x: 0, y: 0, width: 8, height: 8 }
+                && pixels.len() == 16
+        )
+    }));
+    let painted = list.rasterize().unwrap();
+    assert_eq!(painted.pixel(1, 1), Some([255, 0, 0, 255]));
+    assert_eq!(painted.pixel(5, 1), Some([127, 255, 127, 255]));
+    assert_eq!(painted.pixel(1, 5), Some([0, 0, 255, 255]));
+    assert_eq!(painted.pixel(5, 5), Some([255, 255, 255, 255]));
+}
+
 #[tokio::test]
 async fn native_content_process_loads_external_png_through_document_wire() {
     let _guard = native_content_process_test_lock().lock().await;
@@ -33057,6 +33094,137 @@ async fn native_content_process_loads_external_png_through_document_wire() {
             .await
             .unwrap(),
         serde_json::json!(1)
+    );
+
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_loads_external_background_png_through_document_wire() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let png = native_test_png_bytes();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/image.png"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            if expected_path == "/image.png" {
+                let headers = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    png.len()
+                );
+                stream.write_all(headers.as_bytes()).await.unwrap();
+                stream.write_all(&png).await.unwrap();
+            } else {
+                let body = "<div id='surface' style=\"width:8px;height:8px;background-image:url('/image.png')\"></div>";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_viewport(Viewport {
+                width: 8,
+                height: 8,
+                device_scale_factor_milli: 1000,
+            })
+            .with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+
+    let list = engine.display_list().unwrap();
+    assert_eq!(
+        list.commands
+            .iter()
+            .filter(|command| matches!(command, NativeDisplayCommand::Image { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        list.rasterize().unwrap().pixel(1, 1),
+        Some([255, 0, 0, 255])
+    );
+
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_loads_background_png_after_style_mutation() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let png = native_test_png_bytes();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/image.png"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            if expected_path == "/image.png" {
+                let headers = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    png.len()
+                );
+                stream.write_all(headers.as_bytes()).await.unwrap();
+                stream.write_all(&png).await.unwrap();
+            } else {
+                let body = "<div id='surface' style='width:8px;height:8px'></div>";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_viewport(Viewport {
+                width: 8,
+                height: 8,
+                device_scale_factor_milli: 1000,
+            })
+            .with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { document.getElementById('surface').style.backgroundImage = \"url('/image.png')\"; return true; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .display_list()
+            .unwrap()
+            .commands
+            .iter()
+            .filter(|command| matches!(command, NativeDisplayCommand::Image { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        engine
+            .display_list()
+            .unwrap()
+            .rasterize()
+            .unwrap()
+            .pixel(1, 1),
+        Some([255, 0, 0, 255])
     );
 
     engine.close_async().await.unwrap();

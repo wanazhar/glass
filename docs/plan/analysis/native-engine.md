@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-217`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-218`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 205
 slice carries bounded quadratic/cubic SVG path geometry through shared path
 parsing, flattening, layout, display-list, raster, clipping, and capture
@@ -3547,6 +3547,15 @@ metadata keep the image error non-bubbling and non-cancelable. Image
 `complete`/intrinsic-state and broken-resource non-fatal behavior remain
 authoritative from slice 216. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-217.md`.
+
+The completed native-engine-browser-218 slice completes the first image event
+handler surface. `IMG.onload` and `IMG.onerror` are writable handler slots
+that replace/remove their target-local listener record and feed the existing
+typed host event bridge; initial and script-mutated external attempts retain
+the same terminal `load`/`error` semantics. Full event-handler attributes,
+other media-element handlers, and complete Web IDL descriptors remain later
+promotion work. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-218.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

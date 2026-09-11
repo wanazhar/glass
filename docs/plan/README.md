@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-217` locally. The versioned
+`native-engine-browser-218` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1910,6 +1910,14 @@ either the existing non-bubbling `load` event or a non-bubbling, non-cancelable
 failed image attempts remain non-fatal and retain the slice-216 lifecycle
 state. Exact evidence is recorded in
 [native-engine-browser-217](tasks/native-engine-browser-217.md).
+
+The completed native-engine-browser-218 slice adds image `onload` and
+`onerror` handler properties. Assigning a callable handler replaces the prior
+handler, assigning a non-callable value removes it, and the properties share
+the validated non-bubbling resource-event path with `addEventListener`.
+Initial and script-mutated external image witnesses cover replacement and
+terminal failure delivery. Exact evidence is recorded in
+[native-engine-browser-218](tasks/native-engine-browser-218.md).
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` now returns persistent `Attr`

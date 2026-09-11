@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-180`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-181`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
@@ -3373,6 +3373,18 @@ comments, raw-text/foreign-content rules, malformed-input recovery, and full
 Web IDL descriptor parity remain conformance work. Exact local evidence is in
 `docs/plan/tasks/native-engine-browser-179.md`; browser-complete promotion
 remains tracked issue-40 work.
+
+The completed native-engine-browser-181 slice closes the reflected-attribute
+and same-turn document-query gap found while exercising fragment-created
+nodes. Local and projected elements now expose `id` and `className` through
+attribute-backed accessors; property writes enqueue the existing native
+attribute command, and `setAttribute`/`removeAttribute` update the same view
+without setter recursion. Document lookup and collection methods traverse the
+live attached tree, making newly appended nodes visible before the script
+returns. The implementation is covered in local, HTTP(S) content-worker, and
+same-origin frame tests. Broader Web IDL reflection, collection liveness, and
+full browser parity remain issue-40 work. Exact local evidence is in
+[native-engine-browser-181](../tasks/native-engine-browser-181.md).
 
 The completed native-engine-browser-180 slice closes the detached-fragment
 observer gap. `MutationObserver.observe()` now accepts node type 11, and

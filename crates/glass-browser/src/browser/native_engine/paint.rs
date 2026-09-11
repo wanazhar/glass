@@ -7,7 +7,7 @@ use super::dom::{NativeDocument, NativeNode, NativeNodeId};
 use super::error::NativeEngineError;
 use super::layout::{
     MAX_NATIVE_SVG_POINTS, NativeLayoutPaintOrder, NativeLayoutSnapshot, NativePoint, NativeRect,
-    svg_line_points, svg_points,
+    NativeSvgSubpath, svg_line_points, svg_path_subpaths, svg_points,
 };
 
 /// Maximum number of immutable commands retained in one native display list.
@@ -97,6 +97,21 @@ pub enum NativeDisplayCommand {
         rect: NativeRect,
         points: Vec<NativePoint>,
         closed: bool,
+        width: u32,
+        color: NativeColor,
+        clip: Option<NativeRect>,
+    },
+    SvgPathFill {
+        node_id: NativeNodeId,
+        rect: NativeRect,
+        subpaths: Vec<NativeSvgSubpath>,
+        color: NativeColor,
+        clip: Option<NativeRect>,
+    },
+    SvgPathStroke {
+        node_id: NativeNodeId,
+        rect: NativeRect,
+        subpaths: Vec<NativeSvgSubpath>,
         width: u32,
         color: NativeColor,
         clip: Option<NativeRect>,
@@ -308,7 +323,7 @@ fn svg_paint_commands(
     };
     if !matches!(
         shape,
-        "rect" | "circle" | "ellipse" | "line" | "polyline" | "polygon"
+        "rect" | "circle" | "ellipse" | "line" | "polyline" | "polygon" | "path"
     ) || bounds.width == 0
         || bounds.height == 0
     {
@@ -319,6 +334,14 @@ fn svg_paint_commands(
         "polyline" | "polygon" => svg_points(node),
         _ => None,
     };
+    let subpaths = (shape == "path").then(|| svg_path_subpaths(node)).flatten();
+    if shape == "path"
+        && subpaths
+            .as_ref()
+            .is_none_or(|subpaths| subpaths.iter().all(|subpath| subpath.points.is_empty()))
+    {
+        return Vec::new();
+    }
     if matches!(shape, "line" | "polyline" | "polygon")
         && points
             .as_ref()
@@ -391,6 +414,16 @@ fn svg_paint_commands(
                     clip,
                 });
             }
+        } else if shape == "path" {
+            if let Some(subpaths) = subpaths.as_ref() {
+                commands.push(NativeDisplayCommand::SvgPathFill {
+                    node_id,
+                    rect: bounds,
+                    subpaths: subpaths.clone(),
+                    color,
+                    clip,
+                });
+            }
         }
     }
 
@@ -407,7 +440,18 @@ fn svg_paint_commands(
     if width == 0 {
         return commands;
     }
-    if matches!(shape, "line" | "polyline" | "polygon") {
+    if shape == "path" {
+        if let Some(subpaths) = subpaths {
+            commands.push(NativeDisplayCommand::SvgPathStroke {
+                node_id,
+                rect: bounds,
+                subpaths,
+                width,
+                color,
+                clip,
+            });
+        }
+    } else if matches!(shape, "line" | "polyline" | "polygon") {
         if let Some(points) = points {
             commands.push(NativeDisplayCommand::SvgPolyline {
                 node_id,

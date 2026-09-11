@@ -9310,6 +9310,8 @@ fn native_display_list_is_revisioned_deterministic_and_visibility_aware() {
         | NativeDisplayCommand::SvgStroke { node_id, .. }
         | NativeDisplayCommand::SvgPolygonFill { node_id, .. }
         | NativeDisplayCommand::SvgPolyline { node_id, .. }
+        | NativeDisplayCommand::SvgPathFill { node_id, .. }
+        | NativeDisplayCommand::SvgPathStroke { node_id, .. }
         | NativeDisplayCommand::BorderRect { node_id, .. }
         | NativeDisplayCommand::TextRun { node_id, .. } => *node_id == hidden,
         NativeDisplayCommand::BeginOpacityGroup { .. }
@@ -13893,6 +13895,14 @@ fn native_local_presentation_important_priority_reaches_hidden_and_opacity_owner
                 ..
             }
             | NativeDisplayCommand::SvgPolyline {
+                node_id: command_node,
+                ..
+            }
+            | NativeDisplayCommand::SvgPathFill {
+                node_id: command_node,
+                ..
+            }
+            | NativeDisplayCommand::SvgPathStroke {
                 node_id: command_node,
                 ..
             }
@@ -27830,6 +27840,8 @@ fn native_br_elements_create_bounded_hard_breaks_without_layout_nodes() {
         | NativeDisplayCommand::SvgStroke { node_id, .. }
         | NativeDisplayCommand::SvgPolygonFill { node_id, .. }
         | NativeDisplayCommand::SvgPolyline { node_id, .. }
+        | NativeDisplayCommand::SvgPathFill { node_id, .. }
+        | NativeDisplayCommand::SvgPathStroke { node_id, .. }
         | NativeDisplayCommand::BorderRect { node_id, .. }
         | NativeDisplayCommand::TextRun { node_id, .. } => {
             *node_id != leading
@@ -32306,6 +32318,70 @@ fn native_svg_lines_and_polygons_share_layout_paint_and_hit_test_geometry() {
     assert_eq!(surface.pixel(22, 4), Some([0, 0, 255, 255]));
     assert_eq!(layout.hit_test(6, 2).unwrap(), Some(line));
     assert_eq!(layout.hit_test(22, 4).unwrap(), Some(polygon));
+}
+
+#[test]
+fn native_svg_straight_paths_share_relative_geometry_and_fill_stroke_paint() {
+    let document = NativeDocument::parse(
+        "<div style='width:24px;height:16px'><svg width='20' height='12'><path id='path' d='M2 2 h8 v6 l-8 0 z' fill='blue' stroke='green' stroke-width='1'></path></svg></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let path = document.resolve_target("id=path").unwrap();
+    let viewport = Viewport {
+        width: 24,
+        height: 16,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+    assert_eq!(
+        layout.box_for(path).unwrap(),
+        NativeRect {
+            x: 2,
+            y: 2,
+            width: 9,
+            height: 7,
+        }
+    );
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::SvgPathFill {
+                node_id,
+                subpaths,
+                color,
+                ..
+            } if *node_id == path
+                && subpaths.len() == 1
+                && subpaths[0].closed
+                && subpaths[0].points.len() == 4
+                && *color == NativeColor { red: 0, green: 0, blue: 255, alpha: 255 }
+        )
+    }));
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::SvgPathStroke {
+                node_id,
+                subpaths,
+                width,
+                color,
+                ..
+            } if *node_id == path
+                && subpaths.len() == 1
+                && subpaths[0].closed
+                && *width == 1
+                && *color == NativeColor { red: 0, green: 128, blue: 0, alpha: 255 }
+        )
+    }));
+
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(5, 2), Some([0, 128, 0, 255]));
+    assert_eq!(surface.pixel(5, 4), Some([0, 0, 255, 255]));
+    assert_eq!(surface.pixel(5, 8), Some([0, 128, 0, 255]));
+    assert_eq!(layout.hit_test(5, 4).unwrap(), Some(path));
 }
 
 #[tokio::test]

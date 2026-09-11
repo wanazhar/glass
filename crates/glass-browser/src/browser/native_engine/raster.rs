@@ -3,7 +3,7 @@ use super::css::{
     NativeTextDecorationSkipSpaces, NativeTextDecorationStyle,
 };
 use super::error::NativeEngineError;
-use super::layout::{NativePoint, NativeRect, rounded_rect_contains};
+use super::layout::{NativePoint, NativeRect, NativeSvgSubpath, rounded_rect_contains};
 use super::paint::{
     MAX_NATIVE_DISPLAY_COMMANDS, NativeDisplayCommand, NativeDisplayList, NativeSvgStrokeShape,
     NativeTextLineBoundary,
@@ -212,6 +212,44 @@ impl NativeSurface {
                         *rect,
                         points,
                         *closed,
+                        *width,
+                        *color,
+                        clip,
+                        scroll_offset,
+                    );
+                }
+                NativeDisplayCommand::SvgPathFill {
+                    rect,
+                    subpaths,
+                    color,
+                    clip,
+                    ..
+                } => {
+                    let Some(clip) = Self::translate_clip(*clip, scroll_offset) else {
+                        continue;
+                    };
+                    Self::current_surface_mut(&mut surfaces)?.svg_path_fill(
+                        *rect,
+                        subpaths,
+                        *color,
+                        clip,
+                        scroll_offset,
+                    );
+                }
+                NativeDisplayCommand::SvgPathStroke {
+                    rect,
+                    subpaths,
+                    width,
+                    color,
+                    clip,
+                    ..
+                } => {
+                    let Some(clip) = Self::translate_clip(*clip, scroll_offset) else {
+                        continue;
+                    };
+                    Self::current_surface_mut(&mut surfaces)?.svg_path_stroke(
+                        *rect,
+                        subpaths,
                         *width,
                         *color,
                         clip,
@@ -585,6 +623,89 @@ impl NativeSurface {
                         <= radius_squared;
                 }
                 if paints {
+                    self.blend_pixel(x, y, color);
+                }
+            }
+        }
+    }
+
+    fn svg_path_fill(
+        &mut self,
+        rect: NativeRect,
+        subpaths: &[NativeSvgSubpath],
+        color: super::css::NativeColor,
+        clip: Option<NativeRect>,
+        scroll_offset: NativePoint,
+    ) {
+        if subpaths.is_empty() || rect.width == 0 || rect.height == 0 {
+            return;
+        }
+        let outer_left = i64::from(rect.x) - i64::from(scroll_offset.x);
+        let outer_top = i64::from(rect.y) - i64::from(scroll_offset.y);
+        let outer_right = i64::from(rect.right()) - i64::from(scroll_offset.x);
+        let outer_bottom = i64::from(rect.bottom()) - i64::from(scroll_offset.y);
+        let Some((left, top, right, bottom)) =
+            self.clipped_signed_bounds(outer_left, outer_top, outer_right, outer_bottom, clip)
+        else {
+            return;
+        };
+        for y in top..bottom {
+            for x in left..right {
+                let document_x = i64::from(x).saturating_add(i64::from(scroll_offset.x));
+                let document_y = i64::from(y).saturating_add(i64::from(scroll_offset.y));
+                if path_contains(subpaths, document_x as f64 + 0.5, document_y as f64 + 0.5) {
+                    self.blend_pixel(x, y, color);
+                }
+            }
+        }
+    }
+
+    fn svg_path_stroke(
+        &mut self,
+        rect: NativeRect,
+        subpaths: &[NativeSvgSubpath],
+        width: u32,
+        color: super::css::NativeColor,
+        clip: Option<NativeRect>,
+        scroll_offset: NativePoint,
+    ) {
+        if subpaths.is_empty() || width == 0 || rect.width == 0 || rect.height == 0 {
+            return;
+        }
+        let padding = i64::from(width.saturating_add(1) / 2);
+        let outer_left = i64::from(rect.x)
+            .saturating_sub(padding)
+            .saturating_sub(i64::from(scroll_offset.x));
+        let outer_top = i64::from(rect.y)
+            .saturating_sub(padding)
+            .saturating_sub(i64::from(scroll_offset.y));
+        let outer_right = i64::from(rect.right())
+            .saturating_add(padding)
+            .saturating_sub(i64::from(scroll_offset.x));
+        let outer_bottom = i64::from(rect.bottom())
+            .saturating_add(padding)
+            .saturating_sub(i64::from(scroll_offset.y));
+        let Some((left, top, right, bottom)) =
+            self.clipped_signed_bounds(outer_left, outer_top, outer_right, outer_bottom, clip)
+        else {
+            return;
+        };
+        let radius_squared = f64::from(width) * f64::from(width) / 4.0;
+        for y in top..bottom {
+            for x in left..right {
+                let document_x = i64::from(x).saturating_add(i64::from(scroll_offset.x));
+                let document_y = i64::from(y).saturating_add(i64::from(scroll_offset.y));
+                let pixel_x = document_x as f64 + 0.5;
+                let pixel_y = document_y as f64 + 0.5;
+                if subpaths.iter().any(|subpath| {
+                    subpath_stroke_contains(
+                        &subpath.points,
+                        subpath.closed,
+                        pixel_x,
+                        pixel_y,
+                        radius_squared,
+                    )
+                }) {
                     self.blend_pixel(x, y, color);
                 }
             }
@@ -1202,6 +1323,37 @@ fn polygon_contains(points: &[NativePoint], x: f64, y: f64) -> bool {
         previous = current;
     }
     inside
+}
+
+fn path_contains(subpaths: &[NativeSvgSubpath], x: f64, y: f64) -> bool {
+    let mut inside = false;
+    for subpath in subpaths {
+        if subpath.points.len() >= 3 && polygon_contains(&subpath.points, x, y) {
+            inside = !inside;
+        }
+    }
+    inside
+}
+
+fn subpath_stroke_contains(
+    points: &[NativePoint],
+    closed: bool,
+    x: f64,
+    y: f64,
+    radius_squared: f64,
+) -> bool {
+    if points.len() < 2 {
+        return false;
+    }
+    let mut paints = points
+        .windows(2)
+        .any(|segment| distance_to_segment_squared(x, y, segment[0], segment[1]) <= radius_squared);
+    if closed && !paints {
+        let first = points[0];
+        let last = points[points.len().saturating_sub(1)];
+        paints = distance_to_segment_squared(x, y, last, first) <= radius_squared;
+    }
+    paints
 }
 
 fn distance_to_segment_squared(x: f64, y: f64, start: NativePoint, end: NativePoint) -> f64 {

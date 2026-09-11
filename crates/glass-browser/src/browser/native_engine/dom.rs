@@ -2010,6 +2010,26 @@ impl NativeDocument {
                         .add_detached_node(NativeNodeKind::Text(value.clone()), self.max_nodes)?;
                     script_nodes.insert(*node_index, id);
                 }
+                NativeScriptCommand::CreateComment { node_index, value } => {
+                    if *node_index < SCRIPT_TEMP_NODE_BASE || script_nodes.contains_key(node_index)
+                    {
+                        return Err(NativeEngineError::TargetNotActionable {
+                            reason: "script-created node index is invalid".into(),
+                        });
+                    }
+                    if value.len() > MAX_LOCATOR_BYTES {
+                        return Err(NativeEngineError::limit(
+                            "script comment node",
+                            MAX_LOCATOR_BYTES,
+                            value.len(),
+                        ));
+                    }
+                    let id = self.add_detached_node(
+                        NativeNodeKind::Comment(value.clone()),
+                        self.max_nodes,
+                    )?;
+                    script_nodes.insert(*node_index, id);
+                }
                 NativeScriptCommand::AppendChild {
                     parent_index,
                     child_index,

@@ -3,7 +3,7 @@ use super::config::{
     validate_url_text, without_fragment,
 };
 use super::error::NativeEngineError;
-use super::image::{MAX_NATIVE_IMAGE_TRANSFER_BYTES, NativeImage, decode_png_bytes};
+use super::image::{MAX_NATIVE_IMAGE_TRANSFER_BYTES, NativeImage, decode_image_bytes};
 use super::javascript::{
     MAX_NATIVE_COOKIE_PROFILE_ENTRIES, NativeCookieChange, NativeCookieProfileEntry,
     load_cookie_profile,
@@ -1529,7 +1529,7 @@ impl NativeResourceLoader {
             request_url.set_fragment(None);
             let mut request = client.get(request_url).header(
                 reqwest::header::ACCEPT,
-                "image/png, image/*;q=0.8, */*;q=0.5",
+                "image/avif,image/webp,image/apng,image/svg+xml,image/jpeg,image/png,image/*;q=0.8, */*;q=0.5",
             );
             if let Some(referrer) = request_referrer.as_deref() {
                 request = request.header(reqwest::header::REFERER, referrer);
@@ -1581,14 +1581,14 @@ impl NativeResourceLoader {
             current_url = next_url;
             redirects += 1;
         };
-        if !response.status().is_success()
-            || !content_type_is(
-                response.headers().get(reqwest::header::CONTENT_TYPE),
-                "image/png",
-            )?
-        {
+        if !response.status().is_success() {
             return Ok(None);
         }
+        let Some(media_type) =
+            supported_image_media_type(response.headers().get(reqwest::header::CONTENT_TYPE))?
+        else {
+            return Ok(None);
+        };
         let content_length = response.content_length();
         if content_length.is_some_and(|length| length > MAX_NATIVE_IMAGE_TRANSFER_BYTES as u64) {
             return Ok(None);
@@ -1608,7 +1608,8 @@ impl NativeResourceLoader {
             }
             bytes.extend_from_slice(&chunk);
         }
-        let Some(image) = decode_png_bytes(&bytes, MAX_NATIVE_IMAGE_TRANSFER_BYTES) else {
+        let Some(image) = decode_image_bytes(&bytes, media_type, MAX_NATIVE_IMAGE_TRANSFER_BYTES)
+        else {
             return Ok(None);
         };
         let has_set_cookie = !pending_cookies.is_empty();
@@ -2250,6 +2251,26 @@ fn content_type_is(
         .unwrap_or_default()
         .trim()
         .eq_ignore_ascii_case(expected))
+}
+
+fn supported_image_media_type(
+    value: Option<&reqwest::header::HeaderValue>,
+) -> Result<Option<&'static str>, NativeEngineError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.to_str().map_err(|_| NativeEngineError::Network {
+        operation: "HTTP image content-type validation".into(),
+        reason: "HTTP image content type is not valid ASCII".into(),
+    })?;
+    let media_type = value.split(';').next().unwrap_or_default().trim();
+    Ok(if media_type.eq_ignore_ascii_case("image/png") {
+        Some("image/png")
+    } else if media_type.eq_ignore_ascii_case("image/jpeg") {
+        Some("image/jpeg")
+    } else {
+        None
+    })
 }
 
 fn script_content_type_allowed(

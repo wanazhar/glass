@@ -67,6 +67,7 @@ libc = "0.2"
 fs2 = "0.4"
 imagesize = { version = "0.15", default-features = false, features = ["jpeg", "png", "webp"] }
 sha2 = "0.10"
+zune-jpeg = { version = "0.5.16-rc2", default-features = false, features = ["std"] }
 sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 png = "0.17"
 zip = { version = "2", default-features = false, features = ["deflate"] }

@@ -1,6 +1,8 @@
 use base64::Engine as _;
 use png::ColorType;
 use std::io::Cursor;
+use zune_jpeg::JpegDecoder;
+use zune_jpeg::zune_core::{bytestream::ZCursor, colorspace::ColorSpace, options::DecoderOptions};
 
 /// Maximum decoded RGBA bytes retained for one native inline image.
 pub(crate) const MAX_NATIVE_IMAGE_BYTES: usize = 16 * 1024 * 1024;
@@ -34,7 +36,7 @@ pub(crate) fn decode_data_image(source: &str) -> Option<NativeImage> {
     let (metadata, payload) = source.get(5..)?.split_once(',')?;
     let mut metadata_parts = metadata.split(';');
     let media_type = metadata_parts.next().unwrap_or_default();
-    if !media_type.eq_ignore_ascii_case("image/png") {
+    if !matches_ignore_ascii_case(media_type, &["image/png", "image/jpeg"]) {
         return None;
     }
     let is_base64 = metadata_parts.any(|part| part.eq_ignore_ascii_case("base64"));
@@ -52,7 +54,7 @@ pub(crate) fn decode_data_image(source: &str) -> Option<NativeImage> {
     if bytes.len() > MAX_NATIVE_IMAGE_BYTES {
         return None;
     }
-    decode_png_bytes(&bytes, MAX_NATIVE_IMAGE_BYTES)
+    decode_image_bytes(&bytes, media_type, MAX_NATIVE_IMAGE_BYTES)
 }
 
 pub(crate) fn image_dimensions_from_source(source: &str) -> Option<(u32, u32)> {
@@ -110,6 +112,56 @@ pub(crate) fn decode_png_bytes(bytes: &[u8], max_decoded_bytes: usize) -> Option
     )
 }
 
+pub(crate) fn decode_image_bytes(
+    bytes: &[u8],
+    media_type: &str,
+    max_decoded_bytes: usize,
+) -> Option<NativeImage> {
+    if media_type.eq_ignore_ascii_case("image/png") {
+        return decode_png_bytes(bytes, max_decoded_bytes);
+    }
+    if media_type.eq_ignore_ascii_case("image/jpeg") {
+        return decode_jpeg_bytes(bytes, max_decoded_bytes);
+    }
+    None
+}
+
+fn decode_jpeg_bytes(bytes: &[u8], max_decoded_bytes: usize) -> Option<NativeImage> {
+    if bytes.is_empty() || max_decoded_bytes < 4 {
+        return None;
+    }
+    let max_pixels = (max_decoded_bytes / 4).min(MAX_NATIVE_IMAGE_BYTES / 4);
+    let max_dimension = max_pixels.max(1);
+    let options = DecoderOptions::new_safe()
+        .set_max_width(max_dimension)
+        .set_max_height(max_dimension)
+        .jpeg_set_max_scans(64)
+        .jpeg_set_out_colorspace(ColorSpace::RGBA);
+    let mut decoder = JpegDecoder::new_with_options(ZCursor::new(bytes), options);
+    decoder.decode_headers().ok()?;
+    let (width, height) = decoder.dimensions()?;
+    let pixel_count = usize::try_from(width).ok()?.checked_mul(height)?;
+    if width == 0 || height == 0 || pixel_count > max_pixels {
+        return None;
+    }
+    let decoded = decoder.decode().ok()?;
+    let expected_bytes = pixel_count.checked_mul(4)?;
+    if decoded.len() != expected_bytes || decoded.len() > max_decoded_bytes {
+        return None;
+    }
+    Some(NativeImage {
+        width: u32::try_from(width).ok()?,
+        height: u32::try_from(height).ok()?,
+        pixels: decoded,
+    })
+}
+
+fn matches_ignore_ascii_case(value: &str, candidates: &[&str]) -> bool {
+    candidates
+        .iter()
+        .any(|candidate| value.eq_ignore_ascii_case(candidate))
+}
+
 fn percent_decode_bytes(value: &str) -> Option<Vec<u8>> {
     if value.len() > MAX_NATIVE_IMAGE_BYTES.saturating_mul(3) {
         return None;
@@ -144,5 +196,19 @@ fn hex_value(value: u8) -> Option<u8> {
         b'a'..=b'f' => Some(value - b'a' + 10),
         b'A'..=b'F' => Some(value - b'A' + 10),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_jpeg_bytes;
+
+    #[test]
+    fn decode_progressive_jpeg_fixture() {
+        let bytes = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/remote-android-concept.jpg"
+        ));
+        assert!(decode_jpeg_bytes(bytes, 512 * 1024).is_some());
     }
 }

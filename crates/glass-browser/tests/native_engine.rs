@@ -112,6 +112,14 @@ fn native_test_png_data_url() -> String {
     )
 }
 
+fn native_test_jpeg_bytes() -> Vec<u8> {
+    include_bytes!("fixtures/remote-android-concept.jpg").to_vec()
+}
+
+fn native_test_small_jpeg_data_url() -> String {
+    "data:image/jpeg;base64,/9j/4AAQSkZJRgABAgAAAQABAAD//gAPTGF2YzYzLjEuMTAxAP/bAEMACAQEBAQEBQUFBQUFBgYGBgYGBgYGBgYGBgcHBwgICAcHBwYGBwcICAgICQkJCAgICAkJCgoKDAwLCw4ODhERFP/EAEwAAQEAAAAAAAAAAAAAAAAAAAAGAQEBAAAAAAAAAAAAAAAAAAAGBxABAAAAAAAAAAAAAAAAAAAAABEBAAAAAAAAAAAAAAAAAAAAAP/AABEIAAIAAgMBIgACEQADEQD/2gAMAwEAAhEDEQA/AIsATX9//9k=".to_owned()
+}
+
 #[tokio::test]
 async fn native_runtime_session_uses_explicit_local_constructor() {
     let session =
@@ -33052,6 +33060,55 @@ async fn native_image_element_exposes_complete_intrinsic_dimensions_and_current_
 }
 
 #[tokio::test]
+async fn native_jpeg_data_images_expose_intrinsic_dimensions_and_paint() {
+    let source = native_test_small_jpeg_data_url();
+    let config = NativeEngineConfig::default()
+        .with_initial_url("fixture://jpeg-image/page")
+        .with_fixture(
+            "fixture://jpeg-image/page",
+            format!("<img id='image' src='{source}' style='width:2px;height:2px'>"),
+        )
+        .unwrap();
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const image = document.getElementById('image'); return [image.complete, image.naturalWidth, image.naturalHeight, image.currentSrc]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, 2, 2, source])
+    );
+
+    let document = NativeDocument::parse(
+        &format!("<img id='image' src='{source}' style='width:2px;height:2px'>"),
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let image_id = document.resolve_target("id=image").unwrap();
+    let list = document.display_list(Viewport {
+        width: 2,
+        height: 2,
+        device_scale_factor_milli: 1000,
+    });
+    let list = list.unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::Image {
+                node_id,
+                source_width: 2,
+                source_height: 2,
+                pixels,
+                ..
+            } if *node_id == image_id && pixels.len() == 2 * 2 * 4
+        )
+    }));
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_images_expose_accessible_role_and_alt_name() {
     let source = native_test_png_data_url();
     let config = NativeEngineConfig::default()
@@ -33181,6 +33238,53 @@ async fn native_content_process_selects_picture_source_and_reloads_img_fallback(
         serde_json::json!([true, 2, format!("http://{address}/fallback-set.png")])
     );
 
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_loads_jpeg_picture_source() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let jpeg = native_test_jpeg_bytes();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/photo.jpg"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            if expected_path == "/photo.jpg" {
+                let headers = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    jpeg.len()
+                );
+                stream.write_all(headers.as_bytes()).await.unwrap();
+                stream.write_all(&jpeg).await.unwrap();
+            } else {
+                let body = "<picture><source type='image/jpeg' srcset='/photo.jpg 1x'><img id='image' src='/fallback.png' alt='photo'></picture>";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const image = document.getElementById('image'); return [image.complete, image.naturalWidth, image.naturalHeight, image.currentSrc]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, 240, 426, format!("http://{address}/photo.jpg")])
+    );
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }

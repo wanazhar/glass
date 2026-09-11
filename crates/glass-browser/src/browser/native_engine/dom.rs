@@ -27,6 +27,9 @@ use url::Url;
 const MAX_ATTRIBUTE_BYTES: usize = 1024;
 const MAX_LOCATOR_BYTES: usize = crate::browser_backend::MAX_TEXT_BYTES;
 const MAX_FORM_CONTROLS: usize = 128;
+pub(crate) const HTML_NAMESPACE_URI: &str = "http://www.w3.org/1999/xhtml";
+pub(crate) const SVG_NAMESPACE_URI: &str = "http://www.w3.org/2000/svg";
+pub(crate) const MATHML_NAMESPACE_URI: &str = "http://www.w3.org/1998/Math/MathML";
 // Script-created nodes use an index range that cannot collide with the
 // document arena or the reserved window event target. They are resolved to
 // real arena nodes while one command batch is committed.
@@ -69,6 +72,7 @@ impl NativeNodeId {
 /// the document owner and are not included in semantic projections.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct NativeElementState {
+    namespace_uri: Option<String>,
     value: Option<String>,
     checked: bool,
     focused: bool,
@@ -82,6 +86,7 @@ pub(crate) struct NativeElementState {
 impl NativeElementState {
     fn initial(name: &str, attributes: &BTreeMap<String, String>) -> Self {
         Self {
+            namespace_uri: Some(HTML_NAMESPACE_URI.to_owned()),
             value: (name == "input").then(|| attributes.get("value").cloned().unwrap_or_default()),
             checked: attributes.contains_key("checked"),
             focused: false,
@@ -152,6 +157,8 @@ pub(crate) enum NativeNodeKindWire {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct NativeElementStateWire {
+    #[serde(default)]
+    pub(crate) namespace_uri: Option<String>,
     pub(crate) value: Option<String>,
     pub(crate) checked: bool,
     pub(crate) focused: bool,
@@ -221,6 +228,14 @@ impl NativeNode {
             | NativeNodeKind::Comment(_)
             | NativeNodeKind::Text(_) => None,
         }
+    }
+
+    /// Return the element namespace URI, or `None` for non-elements and
+    /// namespace-less constructed elements.
+    pub fn namespace_uri(&self) -> Option<&str> {
+        matches!(self.kind, NativeNodeKind::Element { .. })
+            .then(|| self.state.namespace_uri.as_deref())
+            .flatten()
     }
 }
 
@@ -307,6 +322,8 @@ pub(crate) struct NativeScriptElementSnapshot {
     pub(crate) parent_index: Option<u32>,
     pub(crate) form_owner_index: Option<u32>,
     pub(crate) tag_name: String,
+    #[serde(default)]
+    pub(crate) namespace_uri: Option<String>,
     pub(crate) attributes: BTreeMap<String, String>,
     pub(crate) text: String,
     #[serde(default)]
@@ -568,6 +585,7 @@ impl NativeDocument {
                 }
             }
         }
+        document.assign_parsed_namespaces();
         let mut style_sources = document
             .nodes
             .iter()
@@ -655,6 +673,11 @@ impl NativeDocument {
                     NativeNodeKind::Text(value) => NativeNodeKindWire::Text(value.clone()),
                 },
                 state: NativeElementStateWire {
+                    namespace_uri: node
+                        .state
+                        .namespace_uri
+                        .clone()
+                        .or_else(|| Some(String::new())),
                     value: node.state.value.clone(),
                     checked: node.state.checked,
                     focused: node.state.focused,
@@ -787,12 +810,22 @@ impl NativeDocument {
                 }
                 NativeNodeKindWire::Text(value) => NativeNodeKind::Text(value.clone()),
             };
+            let namespace_uri = if matches!(&kind, NativeNodeKind::Element { .. }) {
+                match wire_node.state.namespace_uri.as_deref() {
+                    Some("") => None,
+                    Some(value) => Some(validate_namespace_uri(value)?),
+                    None => Some(HTML_NAMESPACE_URI.to_owned()),
+                }
+            } else {
+                None
+            };
             nodes.push(NativeNode {
                 id: NativeNodeId { generation, index },
                 parent,
                 children,
                 kind,
                 state: NativeElementState {
+                    namespace_uri,
                     value: wire_node.state.value.clone(),
                     checked: wire_node.state.checked,
                     focused: wire_node.state.focused,
@@ -874,6 +907,49 @@ impl NativeDocument {
         };
         document.normalize_select_defaults();
         Ok(document)
+    }
+
+    fn assign_parsed_namespaces(&mut self) {
+        let children = self
+            .raw_node(self.root)
+            .map(NativeNode::children)
+            .unwrap_or_default()
+            .to_vec();
+        for child in children {
+            self.assign_parsed_namespace_subtree(child, HTML_NAMESPACE_URI);
+        }
+    }
+
+    fn assign_parsed_namespace_subtree(&mut self, id: NativeNodeId, parent_namespace: &str) {
+        let Some(node) = self.raw_node(id) else {
+            return;
+        };
+        let Some(name) = node.element_name().map(str::to_owned) else {
+            return;
+        };
+        let children = node.children().to_vec();
+        let namespace = if parent_namespace == SVG_NAMESPACE_URI {
+            SVG_NAMESPACE_URI
+        } else if name == "svg" {
+            SVG_NAMESPACE_URI
+        } else if name == "math" {
+            MATHML_NAMESPACE_URI
+        } else if parent_namespace == MATHML_NAMESPACE_URI {
+            MATHML_NAMESPACE_URI
+        } else {
+            HTML_NAMESPACE_URI
+        };
+        let child_namespace = if namespace == SVG_NAMESPACE_URI && name == "foreignobject" {
+            HTML_NAMESPACE_URI
+        } else {
+            namespace
+        };
+        if let Some(node) = self.raw_node_mut(id) {
+            node.state.namespace_uri = Some(namespace.to_owned());
+        }
+        for child in children {
+            self.assign_parsed_namespace_subtree(child, child_namespace);
+        }
     }
 
     pub(crate) fn empty() -> Self {
@@ -1046,6 +1122,7 @@ impl NativeDocument {
                     parent_index: self.parent_element_index(node.id()),
                     form_owner_index: self.form_owner(node.id()).map(NativeNodeId::index),
                     tag_name,
+                    namespace_uri: node.state.namespace_uri.clone(),
                     attributes: node.attributes()?.clone(),
                     text,
                     inner_html: self.element_inner_html(node.id(), max_text_bytes),
@@ -1990,6 +2067,7 @@ impl NativeDocument {
                 NativeScriptCommand::CreateElement {
                     node_index,
                     tag_name,
+                    namespace_uri,
                 } => {
                     if *node_index < SCRIPT_TEMP_NODE_BASE || script_nodes.contains_key(node_index)
                     {
@@ -1998,6 +2076,11 @@ impl NativeDocument {
                         });
                     }
                     let name = validate_script_element_name(tag_name)?;
+                    let namespace_uri = match namespace_uri.as_deref() {
+                        None => Some(HTML_NAMESPACE_URI.to_owned()),
+                        Some("") => None,
+                        Some(value) => Some(validate_namespace_uri(value)?),
+                    };
                     let id = self.add_detached_node(
                         NativeNodeKind::Element {
                             name,
@@ -2005,6 +2088,9 @@ impl NativeDocument {
                         },
                         self.max_nodes,
                     )?;
+                    if let Some(node) = self.raw_node_mut(id) {
+                        node.state.namespace_uri = namespace_uri;
+                    }
                     script_nodes.insert(*node_index, id);
                 }
                 NativeScriptCommand::CreateTextNode { node_index, value } => {
@@ -5608,6 +5694,26 @@ fn validate_script_element_name(name: &str) -> Result<String, NativeEngineError>
     Ok(normalized)
 }
 
+fn validate_namespace_uri(value: &str) -> Result<String, NativeEngineError> {
+    if value.len() > MAX_ATTRIBUTE_BYTES {
+        return Err(NativeEngineError::limit(
+            "element namespace URI",
+            MAX_ATTRIBUTE_BYTES,
+            value.len(),
+        ));
+    }
+    if matches!(
+        value,
+        HTML_NAMESPACE_URI | SVG_NAMESPACE_URI | MATHML_NAMESPACE_URI
+    ) {
+        return Ok(value.to_owned());
+    }
+    Err(NativeEngineError::invalid(
+        "element namespace URI",
+        "is not a supported HTML, SVG, or MathML namespace",
+    ))
+}
+
 fn collapse_text(value: &str, max_bytes: usize) -> (String, bool) {
     let mut output = String::new();
     let mut truncated = false;
@@ -5880,10 +5986,12 @@ mod tests {
                 NativeScriptCommand::CreateElement {
                     node_index: first,
                     tag_name: "section".into(),
+                    namespace_uri: None,
                 },
                 NativeScriptCommand::CreateElement {
                     node_index: child,
                     tag_name: "strong".into(),
+                    namespace_uri: None,
                 },
                 NativeScriptCommand::CreateTextNode {
                     node_index: child_text,
@@ -5909,6 +6017,7 @@ mod tests {
                 NativeScriptCommand::CreateElement {
                     node_index: inserted,
                     tag_name: "em".into(),
+                    namespace_uri: None,
                 },
                 NativeScriptCommand::SetTextContent {
                     node_index: inserted,

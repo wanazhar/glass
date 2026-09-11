@@ -226,6 +226,8 @@ pub(crate) enum NativeScriptCommand {
     CreateElement {
         node_index: u32,
         tag_name: String,
+        #[serde(default)]
+        namespace_uri: Option<String>,
     },
     CreateTextNode {
         node_index: u32,
@@ -5205,6 +5207,9 @@ fn document_bootstrap(
   const storageEntryLimit = {storage_entry_limit};
   const storageKeyLimit = {storage_key_limit};
   const storageValueLimit = {storage_value_limit};
+  const HTML_NAMESPACE = "http://www.w3.org/1999/xhtml";
+  const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
+  const MATHML_NAMESPACE = "http://www.w3.org/1998/Math/MathML";
   const boundedStorageText = (value, limit, field) => {{
     const text = String(value);
     if (text.length > limit) throw new RangeError("native storage " + field + " exceeds its limit");
@@ -8506,7 +8511,10 @@ fn document_bootstrap(
         stack.pop();
       }}
       parent = stack[stack.length - 1];
-      const element = createElement(opening[1]);
+      const element = createElement(
+        opening[1],
+        namespaceForChildElement(parent, normalizedName),
+      );
       const selfClosing = /\/\s*$/.test(rawTag);
       const attributeSource = rawTag
         .slice(opening[0].length)
@@ -8886,6 +8894,32 @@ fn document_bootstrap(
       }},
     }});
   }};
+  const namespaceUriForEntry = (entry) => {{
+    if (!Object.prototype.hasOwnProperty.call(entry, "namespaceUri")) return HTML_NAMESPACE;
+    if (entry.namespaceUri === null || entry.namespaceUri === "") return null;
+    return String(entry.namespaceUri);
+  }};
+  const tagNameForEntry = (entry) => {{
+    const localName = String(entry.tagName || "").toLowerCase();
+    return namespaceUriForEntry(entry) === HTML_NAMESPACE ? localName.toUpperCase() : localName;
+  }};
+  const normalizeElementNamespace = (namespace) => {{
+    if (namespace === null || namespace === "" || namespace === undefined) return null;
+    const value = String(namespace);
+    if (![HTML_NAMESPACE, SVG_NAMESPACE, MATHML_NAMESPACE].includes(value)) {{
+      throw new DOMExceptionNative("The element namespace is unsupported", "NamespaceError");
+    }}
+    return value;
+  }};
+  const namespaceForChildElement = (parent, localName) => {{
+    const parentNamespace = parent && parent.namespaceURI;
+    if (localName === "svg") return SVG_NAMESPACE;
+    if (localName === "math") return MATHML_NAMESPACE;
+    if (parentNamespace === SVG_NAMESPACE && parent.localName === "foreignobject") return HTML_NAMESPACE;
+    if (parentNamespace === SVG_NAMESPACE) return SVG_NAMESPACE;
+    if (parentNamespace === MATHML_NAMESPACE) return MATHML_NAMESPACE;
+    return HTML_NAMESPACE;
+  }};
   const makeElement = (initialEntry) => {{
     let entry = initialEntry;
     let textContent = String(entry.text || "");
@@ -8928,10 +8962,11 @@ fn document_bootstrap(
       nodeIndex: entry.nodeIndex,
       parentIndex: entry.parentIndex,
       formOwnerIndex: entry.formOwnerIndex,
-      tagName: entry.tagName.toUpperCase(),
+      tagName: tagNameForEntry(entry),
       nodeType: 1,
-      nodeName: entry.tagName.toUpperCase(),
+      nodeName: tagNameForEntry(entry),
       localName: entry.tagName.toLowerCase(),
+      namespaceURI: namespaceUriForEntry(entry),
       id: entry.attributes.id || "",
       className: entry.attributes.class || "",
       value: entry.value === null
@@ -9453,8 +9488,8 @@ fn document_bootstrap(
         entry = nextEntry;
         element.nodeIndex = nextEntry.nodeIndex;
         element.parentIndex = nextEntry.parentIndex;
-        element.tagName = nextEntry.tagName.toUpperCase();
-        element.nodeName = nextEntry.tagName.toUpperCase();
+        element.tagName = tagNameForEntry(nextEntry);
+        element.nodeName = tagNameForEntry(nextEntry);
         element.localName = nextEntry.tagName.toLowerCase();
         textContent = String(nextEntry.text || "");
         innerHtml = String(nextEntry.innerHtml || "");
@@ -9477,15 +9512,17 @@ fn document_bootstrap(
     }});
     return element;
   }};
-  const makeDetachedElement = (tagName) => {{
+  const makeDetachedElement = (tagName, namespace = HTML_NAMESPACE) => {{
     const normalized = String(tagName).toLowerCase();
     if (!/^[A-Za-z][A-Za-z0-9:_-]*$/.test(normalized)) throw new TypeError("invalid element name");
+    const namespaceURI = normalizeElementNamespace(namespace);
     const nodeIndex = allocateTemporaryNodeIndex();
     const entry = {{
       nodeIndex,
       parentIndex: null,
       formOwnerIndex: null,
       tagName: normalized,
+      namespaceUri: namespaceURI,
       attributes: {{}},
       text: "",
       innerHtml: "",
@@ -9510,7 +9547,12 @@ fn document_bootstrap(
     installElementStyleAndDataset(element);
     mutationCreatedNodes.set(nodeIndex, element);
     scriptNodeObjects.set(nodeIndex, element);
-    pushCommand({{ kind: "createElement", node_index: nodeIndex, tag_name: normalized }});
+    pushCommand({{
+      kind: "createElement",
+      node_index: nodeIndex,
+      tag_name: normalized,
+      namespace_uri: namespaceURI === null ? "" : namespaceURI,
+    }});
     return element;
   }};
   const makeDetachedText = (value) => {{
@@ -11323,7 +11365,10 @@ fn document_bootstrap(
     dispatchEvent(event) {{
       return dispatchTarget(this, event);
     }},
-    createElement(tagName) {{ return makeDetachedElement(tagName); }},
+    createElement(tagName) {{ return makeDetachedElement(tagName, HTML_NAMESPACE); }},
+    createElementNS(namespace, qualifiedName) {{
+      return makeDetachedElement(qualifiedName, normalizeElementNamespace(namespace));
+    }},
     createAttribute(name) {{ return makeAttributeNode(name, "", () => document); }},
     createTextNode(value) {{ return makeDetachedText(value); }},
     createComment(value) {{ return makeDetachedComment(value); }},
@@ -12557,6 +12602,7 @@ fn document_bootstrap(
       const attributes = entry.attributes && typeof entry.attributes === "object" ? entry.attributes : {{}};
       let textContent = String(entry.text || "");
       let innerHtml = String(entry.innerHtml || "");
+      const namespaceURI = namespaceUriForEntry(entry);
       let value = entry.value == null ? "" : entry.value;
       let checked = Boolean(entry.checked);
       let selected = Boolean(entry.selected);
@@ -12566,10 +12612,11 @@ fn document_bootstrap(
       const projected = {{
         nodeIndex: entry.nodeIndex,
         parentIndex: entry.parentIndex == null ? null : entry.parentIndex,
-        tagName: String(entry.tagName || "").toUpperCase(),
+        tagName: tagNameForEntry(entry),
         nodeType: 1,
-        nodeName: String(entry.tagName || "").toUpperCase(),
+        nodeName: tagNameForEntry(entry),
         localName: String(entry.tagName || "").toLowerCase(),
+        namespaceURI,
         id: attributes.id || "",
         className: attributes.class || "",
         value,
@@ -13179,9 +13226,10 @@ fn document_bootstrap(
       installClassList(element);
       installElementStyleAndDataset(element);
     }}
-    const makeFrameDetachedElement = (tagName) => {{
+    const makeFrameDetachedElement = (tagName, namespace = HTML_NAMESPACE) => {{
       const normalized = String(tagName).toLowerCase();
       if (!/^[A-Za-z][A-Za-z0-9:_-]*$/.test(normalized)) throw new TypeError("invalid element name");
+      const namespaceURI = normalizeElementNamespace(namespace);
       let nodeIndex = allocateTemporaryNodeIndex();
       const attributes = {{}};
       let textContent = "";
@@ -13195,10 +13243,11 @@ fn document_bootstrap(
       const projected = {{
         nodeIndex,
         parentIndex: null,
-        tagName: normalized.toUpperCase(),
+        tagName: namespaceURI === HTML_NAMESPACE ? normalized.toUpperCase() : normalized,
         nodeType: 1,
-        nodeName: normalized.toUpperCase(),
+        nodeName: namespaceURI === HTML_NAMESPACE ? normalized.toUpperCase() : normalized,
         localName: normalized,
+        namespaceURI,
         id: "",
         className: "",
         value: "",
@@ -13379,6 +13428,9 @@ fn document_bootstrap(
           nodeIndex = Number(nextEntry.nodeIndex);
           projected.nodeIndex = nodeIndex;
           projected.parentIndex = nextEntry.parentIndex == null ? null : nextEntry.parentIndex;
+          projected.tagName = tagNameForEntry(nextEntry);
+          projected.nodeName = tagNameForEntry(nextEntry);
+          projected.localName = String(nextEntry.tagName || "").toLowerCase();
           for (const name of Object.keys(attributes)) delete attributes[name];
           const nextAttributes = nextEntry.attributes && typeof nextEntry.attributes === "object"
             ? nextEntry.attributes
@@ -13486,7 +13538,12 @@ fn document_bootstrap(
       frameMutationAttributes.set(frameMutationKey(currentBinding, nodeIndex), {{}});
       frameMutationChildren.set(frameMutationKey(currentBinding, nodeIndex), []);
       frameScriptNodeObjects.set(nodeIndex, projected);
-      queueFrameCommand(currentBinding, {{ kind: "createElement", node_index: nodeIndex, tag_name: normalized }});
+      queueFrameCommand(currentBinding, {{
+        kind: "createElement",
+        node_index: nodeIndex,
+        tag_name: normalized,
+        namespace_uri: namespaceURI === null ? "" : namespaceURI,
+      }});
       return projected;
     }};
     const makeFrameDetachedText = (value) => {{
@@ -13843,7 +13900,10 @@ fn document_bootstrap(
         const current = frameBindingForId(currentFrameId) || currentBinding;
         return currentFrameWindow(current, ownerFrameElement, parentWindow, topWindow);
       }},
-      createElement(tagName) {{ return makeFrameDetachedElement(tagName); }},
+      createElement(tagName) {{ return makeFrameDetachedElement(tagName, HTML_NAMESPACE); }},
+      createElementNS(namespace, qualifiedName) {{
+        return makeFrameDetachedElement(qualifiedName, normalizeElementNamespace(namespace));
+      }},
       createAttribute(name) {{
         return makeAttributeNode(name, "", () => frameDocumentCache.get(currentFrameId)?.document || frameDocument);
       }},
@@ -14081,10 +14141,11 @@ fn document_bootstrap(
     const projected = {{
       nodeIndex: entry.nodeIndex,
       parentIndex: entry.parentIndex == null ? null : entry.parentIndex,
-      tagName: String(entry.tagName || "").toUpperCase(),
+      tagName: tagNameForEntry(entry),
       nodeType: 1,
-      nodeName: String(entry.tagName || "").toUpperCase(),
+      nodeName: tagNameForEntry(entry),
       localName: String(entry.tagName || "").toLowerCase(),
+      namespaceURI: namespaceUriForEntry(entry),
       id: attributes.id || "",
       className: attributes.class || "",
       textContent: String(entry.text || ""),

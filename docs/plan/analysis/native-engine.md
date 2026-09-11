@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-212`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-213`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 205
 slice carries bounded quadratic/cubic SVG path geometry through shared path
 parsing, flattening, layout, display-list, raster, clipping, and capture
@@ -4601,8 +4601,10 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-198.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-197.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-196.md` is the preceding completed task;
-`docs/plan/tasks/native-engine-browser-212.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-213.md` is the latest completed browser
 task;
+`docs/plan/tasks/native-engine-browser-212.md` is the preceding completed
+browser task;
 `docs/plan/tasks/native-engine-browser-211.md` is the preceding completed
 browser task;
 `docs/plan/tasks/native-engine-browser-210.md` is the preceding completed

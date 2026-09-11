@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-212` slice; the bounded foundation below remains
+`native-engine-browser-213` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5322,6 +5322,18 @@ Decoded caching, recursive handler loads, responsive sources, CSS/SVG image
 resources, animation, and additional formats remain later issue #40 work.
 Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-212.md`.
+
+The completed native-engine-browser-213 slice adds bounded decoded PNG caching
+to the shared external-image loader. Cacheable successful responses are keyed
+by requested and final redirect URLs, while `no-store`, `no-cache`, stale
+zero-age, privacy-sensitive `Vary`, and `Set-Cookie` responses are excluded.
+Current document security policy is still evaluated before lookup, and the
+same cache serves initial and script-reactive image discovery. The cache is
+process-lifetime, bounded by the existing resource-entry limit, and does not
+persist pixels to profiles; freshness/revalidation, concurrent coalescing,
+responsive sources, CSS/SVG image resources, animation, and other formats
+remain active issue #40 work. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-213.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

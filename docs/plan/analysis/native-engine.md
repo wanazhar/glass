@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-164`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-165`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
@@ -3233,6 +3233,16 @@ top-level scripts. Parent-side identity and markup are immediate while the
 child snapshot remains the publication authority. Live child-node collections,
 cross-realm listener identity, complete frame lifecycle/load ordering, and
 complete browser parity remain issue #40 gates.
+
+The completed native-engine-browser-165 slice adds live owner-backed DOM tree
+identity to top-level and same-origin frame script realms. `childNodes` and
+`children` retain their collection objects while reflecting structural
+mutation; indexed lookup, `length`, iteration, `item()`, and HTML collection
+`namedItem()` are backed by the current parent. Element and text hosts expose
+first/last child, element/sibling traversal, `hasChildNodes()`, `contains()`,
+`replaceChild()`, and `isConnected`. Full parser text-node projection,
+cross-realm listener identity, complete frame lifecycle/load ordering, full
+Web IDL descriptors, and browser-wide parity remain open.
 
 The completed native-engine-browser-133 batch extends the native target seam
 with a side-effect-free preflight result. The engine resolves the current

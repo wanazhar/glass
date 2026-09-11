@@ -7857,7 +7857,18 @@ fn document_bootstrap(
     Object.defineProperty(element, "parentNode", {{
       enumerable: false,
       configurable: false,
-      get() {{ return element.parentElement; }},
+      get() {{
+        if (element.__glassParent) return element.__glassParent;
+        const owner = globalThis.document;
+        return owner && Array.isArray(owner.__glassChildren) && owner.__glassChildren.includes(element)
+          ? owner
+          : null;
+      }},
+    }});
+    Object.defineProperty(element, "ownerDocument", {{
+      enumerable: false,
+      configurable: false,
+      get() {{ return globalThis.document || null; }},
     }});
     for (const property of ["textContent", "innerText"]) {{
       Object.defineProperty(element, property, {{
@@ -8014,6 +8025,7 @@ fn document_bootstrap(
     }};
     const element = makeElement(entry);
     element.__glassCreated = true;
+    defineTreeAccessors(element);
     pushCommand({{ kind: "createElement", node_index: nodeIndex, tag_name: normalized }});
     return element;
   }};
@@ -8069,7 +8081,13 @@ fn document_bootstrap(
     Object.defineProperty(text, "parentNode", {{
       enumerable: false,
       configurable: false,
-      get() {{ return text.parentElement; }},
+      get() {{
+        if (text.__glassParent) return text.__glassParent;
+        const owner = globalThis.document;
+        return owner && Array.isArray(owner.__glassChildren) && owner.__glassChildren.includes(text)
+          ? owner
+          : null;
+      }},
     }});
     Object.defineProperty(text, "textContent", {{
       enumerable: true,
@@ -8084,6 +8102,7 @@ fn document_bootstrap(
         pushCommand({{ kind: "setTextContent", node_index: nodeIndex, value }});
       }},
     }});
+    defineTreeAccessors(text);
     pushCommand({{ kind: "createTextNode", node_index: nodeIndex, value: textContent }});
     return text;
   }};
@@ -8227,6 +8246,190 @@ fn document_bootstrap(
   }};
   const asNodeList = (values) => asNativeCollection(values, "NodeList");
   const asHtmlCollection = (values) => asNativeCollection(values, "HTMLCollection");
+  const collectionIndex = (property) => {{
+    if (typeof property !== "string" || !/^(0|[1-9][0-9]*)$/.test(property)) return null;
+    const index = Number(property);
+    return Number.isSafeInteger(index) ? index : null;
+  }};
+  const liveCollection = (owner, filter, constructorName) => {{
+    const target = [];
+    const current = () => Array.isArray(owner.__glassChildren)
+      ? owner.__glassChildren.filter((child) => child && filter(child))
+      : [];
+    const proxy = new Proxy(target, {{
+      get(_target, property, receiver) {{
+        const values = current();
+        const index = collectionIndex(property);
+        if (index !== null) return values[index];
+        if (property === "length") return values.length;
+        if (property === "item") return (requested) => {{
+          const numeric = Number(requested);
+          return Number.isSafeInteger(numeric) && numeric >= 0 ? current()[numeric] || null : null;
+        }};
+        if (property === "namedItem") return (name) => {{
+          const key = String(name);
+          return current().find((item) => item.id === key || item.name === key) || null;
+        }};
+        if (property === Symbol.iterator) return () => current()[Symbol.iterator]();
+        if (property === "values") return () => current()[Symbol.iterator]();
+        if (property === "keys") return () => current().keys();
+        if (property === "entries") return () => current().entries();
+        if (property === "forEach") return (callback, thisArg) => current().forEach(callback, thisArg);
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(receiver) : value;
+      }},
+      has(_target, property) {{
+        const index = collectionIndex(property);
+        if (index !== null) return index < current().length;
+        return property === "length" || property === "item" || property === "namedItem"
+          || Reflect.has(target, property);
+      }},
+      ownKeys(_target) {{
+        return current().map((_value, index) => String(index)).concat("length");
+      }},
+      getOwnPropertyDescriptor(_target, property) {{
+        const index = collectionIndex(property);
+        if (index !== null && index < current().length) {{
+          return {{ enumerable: true, configurable: true, value: current()[index], writable: false }};
+        }}
+        return Reflect.getOwnPropertyDescriptor(target, property);
+      }},
+    }});
+    return asNativeCollection(proxy, constructorName);
+  }};
+  const defineMissing = (target, name, descriptor) => {{
+    if (!Object.prototype.hasOwnProperty.call(target, name)) Object.defineProperty(target, name, descriptor);
+  }};
+  const defineTreeAccessors = (node) => {{
+    if (!node || typeof node !== "object") return node;
+    const children = () => Array.isArray(node.__glassChildren) ? node.__glassChildren : [];
+    const parent = () => node.__glassParent
+      || (node.parentNode && node.parentNode !== node && Array.isArray(node.parentNode.__glassChildren)
+        ? node.parentNode
+        : null);
+    defineMissing(node, "childNodes", {{
+      enumerable: false,
+      configurable: false,
+      get() {{ return liveCollection(node, () => true, "NodeList"); }},
+    }});
+    defineMissing(node, "children", {{
+      enumerable: false,
+      configurable: false,
+      get() {{ return liveCollection(node, (child) => child.nodeType === 1, "HTMLCollection"); }},
+    }});
+    defineMissing(node, "firstChild", {{
+      enumerable: false,
+      configurable: false,
+      get() {{ return children()[0] || null; }},
+    }});
+    defineMissing(node, "lastChild", {{
+      enumerable: false,
+      configurable: false,
+      get() {{ const values = children(); return values[values.length - 1] || null; }},
+    }});
+    defineMissing(node, "firstElementChild", {{
+      enumerable: false,
+      configurable: false,
+      get() {{ return children().find((child) => child.nodeType === 1) || null; }},
+    }});
+    defineMissing(node, "lastElementChild", {{
+      enumerable: false,
+      configurable: false,
+      get() {{ const values = children().filter((child) => child.nodeType === 1); return values[values.length - 1] || null; }},
+    }});
+    defineMissing(node, "nextSibling", {{
+      enumerable: false,
+      configurable: false,
+      get() {{
+        const owner = parent();
+        if (!owner) return null;
+        const values = Array.isArray(owner.__glassChildren) ? owner.__glassChildren : [];
+        const index = values.indexOf(node);
+        return index >= 0 ? values[index + 1] || null : null;
+      }},
+    }});
+    defineMissing(node, "previousSibling", {{
+      enumerable: false,
+      configurable: false,
+      get() {{
+        const owner = parent();
+        if (!owner) return null;
+        const values = Array.isArray(owner.__glassChildren) ? owner.__glassChildren : [];
+        const index = values.indexOf(node);
+        return index > 0 ? values[index - 1] : null;
+      }},
+    }});
+    defineMissing(node, "nextElementSibling", {{
+      enumerable: false,
+      configurable: false,
+      get() {{
+        let sibling = node.nextSibling;
+        while (sibling && sibling.nodeType !== 1) sibling = sibling.nextSibling;
+        return sibling || null;
+      }},
+    }});
+    defineMissing(node, "previousElementSibling", {{
+      enumerable: false,
+      configurable: false,
+      get() {{
+        let sibling = node.previousSibling;
+        while (sibling && sibling.nodeType !== 1) sibling = sibling.previousSibling;
+        return sibling || null;
+      }},
+    }});
+    defineMissing(node, "hasChildNodes", {{
+      enumerable: false,
+      configurable: false,
+      value() {{ return children().length > 0; }},
+    }});
+    defineMissing(node, "contains", {{
+      enumerable: false,
+      configurable: false,
+      value(candidate) {{
+        if (candidate === node) return true;
+        let current = candidate && candidate.__glassParent;
+        while (current) {{
+          if (current === node) return true;
+          if (current.__glassParent) {{
+            current = current.__glassParent;
+            continue;
+          }}
+          return current.ownerDocument === node;
+        }}
+        return Boolean(candidate && candidate.ownerDocument === node
+          && node.__glassChildren && node.__glassChildren.includes(candidate));
+      }},
+    }});
+    defineMissing(node, "replaceChild", {{
+      enumerable: false,
+      configurable: false,
+      value(next, oldChild) {{
+        if (!oldChild || oldChild.__glassParent !== node) throw new TypeError("old child is not contained by this node");
+        if (!next || typeof next.nodeIndex !== "number") throw new TypeError("replacement must be a native node");
+        if (next === oldChild) return oldChild;
+        node.insertBefore(next, oldChild);
+        oldChild.remove();
+        return oldChild;
+      }},
+    }});
+    defineMissing(node, "isConnected", {{
+      enumerable: false,
+      configurable: false,
+      get() {{
+        const owner = node.ownerDocument;
+        if (!owner) return false;
+        if (owner.__glassChildren && owner.__glassChildren.includes(node)) return true;
+        let current = node.__glassParent || null;
+        while (current) {{
+          if (owner.__glassChildren && owner.__glassChildren.includes(current)) return true;
+          current = current.__glassParent || null;
+        }}
+        return false;
+      }},
+    }});
+    return node;
+  }};
+  for (const element of elements) defineTreeAccessors(element);
   const matches = (element, selector) => {{
     const value = String(selector).trim();
     if (value.startsWith("#")) return element.id === value.slice(1);
@@ -8292,6 +8495,13 @@ fn document_bootstrap(
       return asHtmlCollection(elements.filter((element) => element.className.split(/\s+/).includes(value)));
     }}
   }};
+  Object.defineProperty(document, "__glassChildren", {{
+    enumerable: false,
+    configurable: false,
+    writable: true,
+    value: elements.filter((element) => element.parentIndex === null),
+  }});
+  defineTreeAccessors(document);
   globalThis.__glassDispatchHostEvents = (events) => events.map((descriptor) => {{
     const target = descriptor.node_index === 0
       ? document
@@ -9065,7 +9275,13 @@ fn document_bootstrap(
       Object.defineProperty(projected, "parentNode", {{
         enumerable: false,
         configurable: false,
-        get() {{ return projected.parentElement; }},
+        get() {{
+          if (projected.__glassParent) return projected.__glassParent;
+          const owner = projected.ownerDocument;
+          return owner && Array.isArray(owner.__glassChildren) && owner.__glassChildren.includes(projected)
+            ? owner
+            : null;
+        }},
       }});
       for (const property of ["textContent", "innerText"]) {{
         Object.defineProperty(projected, property, {{
@@ -9179,6 +9395,7 @@ fn document_bootstrap(
       parent.__glassChildren.push(element);
       element.__glassParent = parent;
     }}
+    for (const element of frameElements) defineTreeAccessors(element);
     const makeFrameDetachedElement = (tagName) => {{
       const normalized = String(tagName).toLowerCase();
       if (!/^[A-Za-z][A-Za-z0-9:_-]*$/.test(normalized)) throw new TypeError("invalid element name");
@@ -9360,6 +9577,7 @@ fn document_bootstrap(
       Object.defineProperty(projected, "selected", {{ enumerable: true, configurable: false, get() {{ return selected; }}, set(next) {{ selected = Boolean(next); queueFrameCommand(currentBinding, {{ kind: "setSelected", node_index: nodeIndex, selected }}); }} }});
       Object.defineProperty(projected, "ownerDocument", {{ enumerable: false, configurable: false, get() {{ return frameDocument; }} }});
       try {{ Object.setPrototypeOf(projected, elementPrototypeFor(projected.tagName)); }} catch (_error) {{}}
+      defineTreeAccessors(projected);
       queueFrameCommand(currentBinding, {{ kind: "createElement", node_index: nodeIndex, tag_name: normalized }});
       return projected;
     }};
@@ -9374,8 +9592,19 @@ fn document_bootstrap(
       Object.defineProperty(text, "__glassTextValue", {{ enumerable: false, configurable: false, get() {{ return textContent; }} }});
       Object.defineProperty(text, "__glassMarkup", {{ enumerable: false, configurable: false, get() {{ return escapeHtmlText(textContent); }} }});
       Object.defineProperty(text, "parentElement", {{ enumerable: false, configurable: false, get() {{ return text.__glassParent || null; }} }});
-      Object.defineProperty(text, "parentNode", {{ enumerable: false, configurable: false, get() {{ return text.parentElement; }} }});
+      Object.defineProperty(text, "parentNode", {{
+        enumerable: false,
+        configurable: false,
+        get() {{
+          if (text.__glassParent) return text.__glassParent;
+          const owner = text.ownerDocument;
+          return owner && Array.isArray(owner.__glassChildren) && owner.__glassChildren.includes(text)
+            ? owner
+            : null;
+        }},
+      }});
       Object.defineProperty(text, "textContent", {{ enumerable: true, configurable: false, get() {{ return textContent; }}, set(next) {{ textContent = String(next); if (text.__glassParent) text.__glassParent.__glassSyncContent(); queueFrameCommand(currentBinding, {{ kind: "setTextContent", node_index: nodeIndex, value: textContent }}); }} }});
+      Object.defineProperty(text, "ownerDocument", {{ enumerable: false, configurable: false, get() {{ return frameDocument; }} }});
       text.remove = () => {{
         if (text.parentIndex === null) return;
         const parent = text.__glassParent;
@@ -9386,6 +9615,7 @@ fn document_bootstrap(
         if (parent) parent.__glassSyncContent();
         queueFrameCommand(currentBinding, {{ kind: "removeNode", node_index: nodeIndex }});
       }};
+      defineTreeAccessors(text);
       queueFrameCommand(currentBinding, {{ kind: "createTextNode", node_index: nodeIndex, value: textContent }});
       return text;
     }};
@@ -9422,6 +9652,13 @@ fn document_bootstrap(
           && element.className.split(/\s+/).includes(value)));
       }},
     }};
+    Object.defineProperty(frameDocument, "__glassChildren", {{
+      enumerable: false,
+      configurable: false,
+      writable: true,
+      value: frameElements.filter((element) => element.parentIndex === null),
+    }});
+    defineTreeAccessors(frameDocument);
     try {{ Object.setPrototypeOf(frameDocument, DocumentNative.prototype); }} catch (_error) {{}}
     frameDocumentCache.set(currentFrameId, {{
       url: currentBinding.url,

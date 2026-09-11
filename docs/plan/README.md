@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-197` locally. The versioned
+`native-engine-browser-198` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1699,6 +1699,15 @@ same-origin-frame paths share the implementation. Namespace-aware storage,
 XML documents, complete Web IDL descriptors, and browser-wide conformance
 remain issue #40 work. Exact evidence is recorded in
 [native-engine-browser-197](tasks/native-engine-browser-197.md).
+
+The completed native-engine-browser-198 slice adds a bounded CSS Grid layout
+mode. `display: grid` now participates as a block-level container with typed
+fixed/`fr`/auto track lists, bounded `repeat()` parsing, row-major element
+placement, gaps, alignment, and shared layout/paint/hit-test geometry. The
+contract intentionally leaves explicit placement, named lines, `minmax()`,
+percentage and auto-repeat sizing, implicit tracks, full intrinsic sizing, and
+anonymous text grid items for later slices. Exact evidence is recorded in
+[native-engine-browser-198](tasks/native-engine-browser-198.md).
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` now returns persistent `Attr`

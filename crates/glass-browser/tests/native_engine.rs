@@ -305,6 +305,46 @@ async fn native_local_document_fragments_preserve_tree_ownership_and_helpers() {
             ],
         })
     );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const source = document.createElement('section'); source.setAttribute('id', 'moving-source'); const moved = document.createElement('b'); source.appendChild(moved); document.body.appendChild(source); const fragment = document.createDocumentFragment(); fragment.append(moved); const stable = document.createElement('i'); fragment.appendChild(stable); const records = []; const observer = new MutationObserver(entries => records.push(entries.map(record => ({ type: record.type, target: record.target === fragment, added: record.addedNodes.map(node => node.localName || node.nodeName), removed: record.removedNodes.map(node => node.localName || node.nodeName), previous: record.previousSibling && (record.previousSibling.localName || record.previousSibling.nodeName), next: record.nextSibling && (record.nextSibling.localName || record.nextSibling.nodeName) })))); observer.observe(fragment, { childList: true, subtree: true }); const inserted = document.createElement('em'); fragment.insertBefore(inserted, stable); stable.remove(); globalThis.fragmentMutationLog = records; return [moved.parentNode === fragment, source.childNodes.length, fragment.childNodes.length]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, 0, 2])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.fragmentMutationLog")
+            .await
+            .unwrap(),
+        serde_json::json!([[
+            {
+                "type": "childList",
+                "target": true,
+                "added": ["em"],
+                "removed": [],
+                "previous": "b",
+                "next": "i",
+            },
+            {
+                "type": "childList",
+                "target": true,
+                "added": [],
+                "removed": ["i"],
+                "previous": "em",
+                "next": null,
+            },
+        ]])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("document.getElementById('moving-source').childNodes.length")
+            .await
+            .unwrap(),
+        serde_json::json!(0)
+    );
     engine.close_async().await.unwrap();
 }
 
@@ -1013,6 +1053,41 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
             true,
             "<section data-source=\"frame\"><em>Projected &amp; ready</em> tail</section><hr>",
         ])
+    );
+    assert_eq!(
+        session
+            .script(
+                "(() => { const child = document.getElementById('child').contentDocument; const source = child.createElement('section'); const moved = child.createElement('b'); source.appendChild(moved); child.body.appendChild(source); const fragment = child.createDocumentFragment(); fragment.appendChild(moved); const stable = child.createElement('i'); fragment.appendChild(stable); const records = []; const observer = new MutationObserver(entries => records.push(entries.map(record => ({ type: record.type, target: record.target === fragment, added: record.addedNodes.map(node => node.localName || node.nodeName), removed: record.removedNodes.map(node => node.localName || node.nodeName), previous: record.previousSibling && (record.previousSibling.localName || record.previousSibling.nodeName), next: record.nextSibling && (record.nextSibling.localName || record.nextSibling.nodeName) })))); observer.observe(fragment, { childList: true, subtree: true }); const inserted = child.createElement('em'); fragment.insertBefore(inserted, stable); stable.remove(); globalThis.fragmentMutationLog = records; return [moved.parentNode === fragment, source.childNodes.length, fragment.childNodes.length]; })()",
+            )
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([true, 0, 2])
+    );
+    assert_eq!(
+        session
+            .script("globalThis.fragmentMutationLog")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([[
+            {
+                "type": "childList",
+                "target": true,
+                "added": ["em"],
+                "removed": [],
+                "previous": "b",
+                "next": "i",
+            },
+            {
+                "type": "childList",
+                "target": true,
+                "added": [],
+                "removed": ["i"],
+                "previous": "em",
+                "next": null,
+            },
+        ]])
     );
     let child_id = session
         .native_list_frames()
@@ -5833,6 +5908,46 @@ async fn native_content_process_document_fragments_cross_the_http_boundary() {
             true,
             "<aside></aside>before-<h1>Native</h1>-after<section data-source=\"http\"><em>Parsed &amp; ready</em> tail</section><hr>",
         ])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const source = document.createElement('section'); source.setAttribute('id', 'moving-source'); const moved = document.createElement('b'); source.appendChild(moved); document.body.appendChild(source); const fragment = document.createDocumentFragment(); fragment.appendChild(moved); const stable = document.createElement('i'); fragment.appendChild(stable); const records = []; const observer = new MutationObserver(entries => records.push(entries.map(record => ({ type: record.type, target: record.target === fragment, added: record.addedNodes.map(node => node.localName || node.nodeName), removed: record.removedNodes.map(node => node.localName || node.nodeName), previous: record.previousSibling && (record.previousSibling.localName || record.previousSibling.nodeName), next: record.nextSibling && (record.nextSibling.localName || record.nextSibling.nodeName) })))); observer.observe(fragment, { childList: true, subtree: true }); const inserted = document.createElement('em'); fragment.insertBefore(inserted, stable); stable.remove(); globalThis.fragmentMutationLog = records; return [moved.parentNode === fragment, source.childNodes.length, fragment.childNodes.length]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, 0, 2])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.fragmentMutationLog")
+            .await
+            .unwrap(),
+        serde_json::json!([[
+            {
+                "type": "childList",
+                "target": true,
+                "added": ["em"],
+                "removed": [],
+                "previous": "b",
+                "next": "i",
+            },
+            {
+                "type": "childList",
+                "target": true,
+                "added": [],
+                "removed": ["i"],
+                "previous": "em",
+                "next": null,
+            },
+        ]])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("document.getElementById('moving-source').childNodes.length")
+            .await
+            .unwrap(),
+        serde_json::json!(0)
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

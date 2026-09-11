@@ -283,20 +283,20 @@ async fn native_local_script_exposes_web_idl_identity_and_dom_collections() {
     assert_eq!(
         engine
             .evaluate_async(
-                "(() => { const host = document.createElement('article'); const child = document.createElement('span'); child.id = 'persistent'; host.appendChild(child); document.body.appendChild(host); globalThis.__persistentHost = host; globalThis.__persistentChild = child; return [child.isConnected, child.parentNode === host]; })()",
+                "(() => { const host = document.createElement('article'); const child = document.createElement('span'); child.id = 'persistent'; const text = document.createTextNode('persistent text'); host.append(child, text); document.body.appendChild(host); globalThis.__persistentHost = host; globalThis.__persistentChild = child; globalThis.__persistentText = text; return [child.isConnected, child.parentNode === host, text.parentNode === host]; })()",
             )
             .await
             .unwrap(),
-        serde_json::json!([true, true])
+        serde_json::json!([true, true, true])
     );
     assert_eq!(
         engine
             .evaluate_async(
-                "(() => { const host = globalThis.__persistentHost; const child = globalThis.__persistentChild; const current = document.getElementById('persistent'); const result = [current === child, host.contains(child), child.getRootNode() === document, child.parentElement === host]; host.remove(); return result; })()",
+                "(() => { const host = globalThis.__persistentHost; const child = globalThis.__persistentChild; const text = globalThis.__persistentText; const current = document.getElementById('persistent'); const currentText = host.lastChild; const result = [current === child, host.contains(child), child.getRootNode() === document, child.parentElement === host, currentText === text, host.contains(text), text.parentNode === host, text.getRootNode() === document, text.data]; text.data = 'updated'; host.remove(); return result; })()",
             )
             .await
             .unwrap(),
-        serde_json::json!([true, true, true, true])
+        serde_json::json!([true, true, true, true, true, true, true, true, "persistent text"])
     );
     assert_eq!(
         engine
@@ -602,20 +602,20 @@ async fn native_content_process_script_exposes_web_idl_identity() {
     assert_eq!(
         engine
             .evaluate_async(
-                "(() => { const host = document.createElement('article'); const child = document.createElement('span'); child.id = 'persistent-worker'; host.appendChild(child); document.body.appendChild(host); globalThis.__persistentWorkerHost = host; globalThis.__persistentWorkerChild = child; return [child.isConnected, child.parentNode === host]; })()",
+                "(() => { const host = document.createElement('article'); const child = document.createElement('span'); child.id = 'persistent-worker'; const text = document.createTextNode('persistent worker text'); host.append(child, text); document.body.appendChild(host); globalThis.__persistentWorkerHost = host; globalThis.__persistentWorkerChild = child; globalThis.__persistentWorkerText = text; return [child.isConnected, child.parentNode === host, text.parentNode === host]; })()",
             )
             .await
             .unwrap(),
-        serde_json::json!([true, true])
+        serde_json::json!([true, true, true])
     );
     assert_eq!(
         engine
             .evaluate_async(
-                "(() => { const host = globalThis.__persistentWorkerHost; const child = globalThis.__persistentWorkerChild; const current = document.getElementById('persistent-worker'); const result = [current === child, host.contains(child), child.getRootNode() === document, child.parentElement === host]; host.remove(); return result; })()",
+                "(() => { const host = globalThis.__persistentWorkerHost; const child = globalThis.__persistentWorkerChild; const text = globalThis.__persistentWorkerText; const current = document.getElementById('persistent-worker'); const currentText = host.lastChild; const result = [current === child, host.contains(child), child.getRootNode() === document, child.parentElement === host, currentText === text, host.contains(text), text.parentNode === host, text.getRootNode() === document, text.data]; text.data = 'updated'; host.remove(); return result; })()",
             )
             .await
             .unwrap(),
-        serde_json::json!([true, true, true, true])
+        serde_json::json!([true, true, true, true, true, true, true, true, "persistent worker text"])
     );
     let before_scroll = engine
         .evaluate_async(
@@ -1144,6 +1144,26 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
             .unwrap()
             .value,
         serde_json::json!([true, true, true, 1, 1, true])
+    );
+    assert_eq!(
+        session
+            .script(
+                "(() => { const child = document.getElementById('child').contentDocument; const host = child.createElement('article'); const item = child.createElement('span'); item.id = 'persistent-frame'; const text = child.createTextNode('persistent frame text'); host.append(item, text); child.body.appendChild(host); globalThis.__persistentFrameHost = host; globalThis.__persistentFrameItem = item; globalThis.__persistentFrameText = text; return [item.parentNode === host, text.parentNode === host, item.getRootNode() === child]; })()",
+            )
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([true, true, true])
+    );
+    assert_eq!(
+        session
+            .script(
+                "(() => { const child = document.getElementById('child').contentDocument; const host = globalThis.__persistentFrameHost; const item = globalThis.__persistentFrameItem; const text = globalThis.__persistentFrameText; const current = child.getElementById('persistent-frame'); const currentText = host.lastChild; const result = [current === item, host.contains(item), item.parentElement === host, item.getRootNode() === child, currentText === text, host.contains(text), text.parentNode === host, text.getRootNode() === child, text.data]; text.data = 'updated'; host.remove(); return result; })()",
+            )
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([true, true, true, true, true, true, true, true, "persistent frame text"])
     );
     assert_eq!(
         session

@@ -9212,7 +9212,7 @@ fn document_bootstrap(
   const makeDetachedText = (value) => {{
     let textContent = String(value);
     if (textContent.length > {storage_value_limit}) throw new RangeError("native text node exceeds its limit");
-    const nodeIndex = allocateTemporaryNodeIndex();
+    let nodeIndex = allocateTemporaryNodeIndex();
       const text = {{
       nodeIndex,
       parentIndex: null,
@@ -9255,6 +9255,16 @@ fn document_bootstrap(
       configurable: false,
       get() {{ return escapeHtmlText(textContent); }},
     }});
+    Object.defineProperty(text, "__glassRefresh", {{
+      enumerable: false,
+      configurable: false,
+      value(nextEntry) {{
+        nodeIndex = Number(nextEntry.nodeIndex);
+        text.nodeIndex = nodeIndex;
+        text.parentIndex = nextEntry.parentIndex == null ? null : nextEntry.parentIndex;
+        textContent = String(nextEntry.nodeValue || "");
+      }},
+    }});
     Object.defineProperty(text, "parentElement", {{
       enumerable: false,
       configurable: false,
@@ -9270,6 +9280,11 @@ fn document_bootstrap(
           ? owner
           : null;
       }},
+    }});
+    Object.defineProperty(text, "ownerDocument", {{
+      enumerable: false,
+      configurable: false,
+      get() {{ return globalThis.document || null; }},
     }});
     Object.defineProperty(text, "nodeValue", {{
       enumerable: true,
@@ -11891,9 +11906,39 @@ fn document_bootstrap(
     const snapshot = currentBinding.document && typeof currentBinding.document === "object"
       ? currentBinding.document
       : {{ title: "", visibleText: "", elements: [] }};
+    const frameScriptNodeObjectsByFrame = globalThis.__glassFrameScriptNodeObjectsByFrame instanceof Map
+      ? globalThis.__glassFrameScriptNodeObjectsByFrame
+      : new Map();
+    const frameScriptNodeGenerations = globalThis.__glassFrameScriptNodeGenerations instanceof Map
+      ? globalThis.__glassFrameScriptNodeGenerations
+      : new Map();
+    globalThis.__glassFrameScriptNodeObjectsByFrame = frameScriptNodeObjectsByFrame;
+    globalThis.__glassFrameScriptNodeGenerations = frameScriptNodeGenerations;
+    const frameGeneration = String(currentBinding.generation || "");
+    let frameScriptNodeObjects = frameScriptNodeObjectsByFrame.get(currentFrameId);
+    if (!(frameScriptNodeObjects instanceof Map)
+        || frameScriptNodeGenerations.get(currentFrameId) !== frameGeneration) {{
+      frameScriptNodeObjects = new Map();
+      frameScriptNodeObjectsByFrame.set(currentFrameId, frameScriptNodeObjects);
+      frameScriptNodeGenerations.set(currentFrameId, frameGeneration);
+    }}
+    const frameScriptNodeAliasesByIndex = new Map();
+    for (const identity of Array.isArray(snapshot.scriptNodes) ? snapshot.scriptNodes : []) {{
+      const temporaryIndex = Number(identity && identity.temporaryIndex);
+      const nodeIndex = Number(identity && identity.nodeIndex);
+      const object = frameScriptNodeObjects.get(temporaryIndex);
+      if (!object || !Number.isSafeInteger(nodeIndex) || nodeIndex < 0) continue;
+      object.nodeIndex = nodeIndex;
+      frameScriptNodeAliasesByIndex.set(nodeIndex, object);
+    }}
     let frameDocumentTitle = String(snapshot.title || "");
     let frameDocument;
     const frameElements = (Array.isArray(snapshot.elements) ? snapshot.elements : []).map((entry) => {{
+      const existing = frameScriptNodeAliasesByIndex.get(Number(entry.nodeIndex));
+      if (existing && typeof existing.__glassRefresh === "function") {{
+        existing.__glassRefresh(entry);
+        return existing;
+      }}
       const attributes = entry.attributes && typeof entry.attributes === "object" ? entry.attributes : {{}};
       let textContent = String(entry.text || "");
       let innerHtml = String(entry.innerHtml || "");
@@ -12336,6 +12381,11 @@ fn document_bootstrap(
     const frameTextNodes = frameNodeSnapshots
       .filter((entry) => entry && Number(entry.nodeType) === 3)
       .map((entry) => {{
+        const existing = frameScriptNodeAliasesByIndex.get(Number(entry.nodeIndex));
+        if (existing && typeof existing.__glassRefresh === "function") {{
+          existing.__glassRefresh(entry);
+          return existing;
+        }}
         let textContent = String(entry.nodeValue || "");
         const text = {{
           nodeIndex: entry.nodeIndex,
@@ -12468,7 +12518,7 @@ fn document_bootstrap(
     const makeFrameDetachedElement = (tagName) => {{
       const normalized = String(tagName).toLowerCase();
       if (!/^[A-Za-z][A-Za-z0-9:_-]*$/.test(normalized)) throw new TypeError("invalid element name");
-      const nodeIndex = allocateTemporaryNodeIndex();
+      let nodeIndex = allocateTemporaryNodeIndex();
       const attributes = {{}};
       let textContent = "";
       let innerHtml = "";
@@ -12502,6 +12552,15 @@ fn document_bootstrap(
         }},
         getAttributeNames() {{ return Object.keys(attributes); }},
         hasAttribute(name) {{ return this.getAttribute(name) !== null; }},
+        matches(selector) {{ return projectedFrameMatches(projected, selector); }},
+        closest(selector) {{
+          let current = projected;
+          while (current) {{
+            if (projectedFrameMatches(current, selector)) return current;
+            current = current.parentElement;
+          }}
+          return null;
+        }},
         addEventListener(type, callback, options) {{
           addListener(ownerFor(projected), type, callback, options);
         }},
@@ -12649,6 +12708,29 @@ fn document_bootstrap(
           if (projected.__glassParent && typeof projected.__glassParent.__glassSyncContent === "function") projected.__glassParent.__glassSyncContent(clearEmpty);
         }},
       }});
+      Object.defineProperty(projected, "__glassRefresh", {{
+        enumerable: false,
+        configurable: false,
+        value(nextEntry) {{
+          nodeIndex = Number(nextEntry.nodeIndex);
+          projected.nodeIndex = nodeIndex;
+          projected.parentIndex = nextEntry.parentIndex == null ? null : nextEntry.parentIndex;
+          for (const name of Object.keys(attributes)) delete attributes[name];
+          const nextAttributes = nextEntry.attributes && typeof nextEntry.attributes === "object"
+            ? nextEntry.attributes
+            : {{}};
+          for (const [name, nextValue] of Object.entries(nextAttributes)) attributes[name] = String(nextValue);
+          textContent = String(nextEntry.text || "");
+          innerHtml = String(nextEntry.innerHtml || "");
+          value = nextEntry.value == null ? "" : nextEntry.value;
+          checked = Boolean(nextEntry.checked);
+          selected = Boolean(nextEntry.selected);
+          disabled = Boolean(nextEntry.disabled);
+          hidden = Boolean(nextEntry.hidden);
+          multiple = Object.prototype.hasOwnProperty.call(attributes, "multiple");
+          projected.__glassAttached = true;
+        }},
+      }});
       Object.defineProperty(projected, "__glassTextValue", {{ enumerable: false, configurable: false, get() {{ return textContent; }} }});
       Object.defineProperty(projected, "__glassMarkup", {{
         enumerable: false,
@@ -12725,7 +12807,11 @@ fn document_bootstrap(
       Object.defineProperty(projected, "value", {{ enumerable: true, configurable: false, get() {{ return value; }}, set(next) {{ value = String(next); queueFrameCommand(currentBinding, {{ kind: "setValue", node_index: nodeIndex, value }}); }} }});
       Object.defineProperty(projected, "checked", {{ enumerable: true, configurable: false, get() {{ return checked; }}, set(next) {{ checked = Boolean(next); queueFrameCommand(currentBinding, {{ kind: "setChecked", node_index: nodeIndex, checked }}); }} }});
       Object.defineProperty(projected, "selected", {{ enumerable: true, configurable: false, get() {{ return selected; }}, set(next) {{ selected = Boolean(next); queueFrameCommand(currentBinding, {{ kind: "setSelected", node_index: nodeIndex, selected }}); }} }});
-      Object.defineProperty(projected, "ownerDocument", {{ enumerable: false, configurable: false, get() {{ return frameDocument; }} }});
+      Object.defineProperty(projected, "ownerDocument", {{
+        enumerable: false,
+        configurable: false,
+        get() {{ return frameDocumentCache.get(currentFrameId)?.document || frameDocument; }},
+      }});
       try {{ Object.setPrototypeOf(projected, elementPrototypeFor(projected.tagName)); }} catch (_error) {{}}
       defineTreeAccessors(projected);
       installClassList(projected);
@@ -12733,13 +12819,14 @@ fn document_bootstrap(
       frameMutationNodes.set(frameMutationKey(currentBinding, nodeIndex), projected);
       frameMutationAttributes.set(frameMutationKey(currentBinding, nodeIndex), {{}});
       frameMutationChildren.set(frameMutationKey(currentBinding, nodeIndex), []);
+      frameScriptNodeObjects.set(nodeIndex, projected);
       queueFrameCommand(currentBinding, {{ kind: "createElement", node_index: nodeIndex, tag_name: normalized }});
       return projected;
     }};
     const makeFrameDetachedText = (value) => {{
       let textContent = String(value);
       if (textContent.length > {storage_value_limit}) throw new RangeError("native text node exceeds its limit");
-      const nodeIndex = allocateTemporaryNodeIndex();
+      let nodeIndex = allocateTemporaryNodeIndex();
       const text = {{ nodeIndex, parentIndex: null, nodeType: 3, nodeName: "#text", nodeValue: textContent }};
       Object.defineProperty(text, "__glassParent", {{ enumerable: false, configurable: false, writable: true, value: null }});
       Object.defineProperty(text, "__glassCreated", {{ enumerable: false, configurable: false, writable: true, value: true }});
@@ -12765,7 +12852,22 @@ fn document_bootstrap(
       Object.defineProperty(text, "nodeValue", {{ enumerable: true, configurable: false, get() {{ return textContent; }}, set(next) {{ text.textContent = next; }} }});
       Object.defineProperty(text, "textContent", {{ enumerable: true, configurable: false, get() {{ return textContent; }}, set(next) {{ const value = String(next); if (value.length > {storage_value_limit}) throw new RangeError("native text node exceeds its limit"); textContent = value; if (text.__glassParent && typeof text.__glassParent.__glassSyncContent === "function") text.__glassParent.__glassSyncContent(); queueFrameCommand(currentBinding, {{ kind: "setTextContent", node_index: nodeIndex, value: textContent }}); }} }});
       Object.defineProperty(text, "data", {{ enumerable: true, configurable: false, get() {{ return textContent; }}, set(next) {{ text.textContent = next; }} }});
-      Object.defineProperty(text, "ownerDocument", {{ enumerable: false, configurable: false, get() {{ return frameDocument; }} }});
+      Object.defineProperty(text, "__glassRefresh", {{
+        enumerable: false,
+        configurable: false,
+        value(nextEntry) {{
+          nodeIndex = Number(nextEntry.nodeIndex);
+          text.nodeIndex = nodeIndex;
+          text.parentIndex = nextEntry.parentIndex == null ? null : nextEntry.parentIndex;
+          textContent = String(nextEntry.nodeValue || "");
+          text.__glassAttached = true;
+        }},
+      }});
+      Object.defineProperty(text, "ownerDocument", {{
+        enumerable: false,
+        configurable: false,
+        get() {{ return frameDocumentCache.get(currentFrameId)?.document || frameDocument; }},
+      }});
       text.remove = () => {{
         const parent = text.__glassParent || null;
         if (!parent && text.parentIndex === null) return;
@@ -12782,6 +12884,7 @@ fn document_bootstrap(
       frameMutationNodes.set(frameMutationKey(currentBinding, nodeIndex), text);
       frameMutationText.set(frameMutationKey(currentBinding, nodeIndex), textContent);
       frameMutationChildren.set(frameMutationKey(currentBinding, nodeIndex), []);
+      frameScriptNodeObjects.set(nodeIndex, text);
       queueFrameCommand(currentBinding, {{ kind: "createTextNode", node_index: nodeIndex, value: textContent }});
       try {{ Object.setPrototypeOf(text, TextNative.prototype); }} catch (_error) {{}}
       return text;

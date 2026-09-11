@@ -2,6 +2,9 @@
 
 Status: completed locally.
 
+The script-created comment follow-up identified in this historical checkpoint
+was closed by `native-engine-browser-193`.
+
 ## Objective
 
 Preserve parsed HTML comments and the document type as real native DOM nodes

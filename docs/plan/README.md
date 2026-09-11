@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-192` locally. The versioned
+`native-engine-browser-193` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1689,6 +1689,18 @@ Its contract and local evidence are recorded in
 [native-engine-browser-178](tasks/native-engine-browser-178.md); cross-document
 session history, bfcache, cross-origin history, and browser-wide parity remain
 issue #40 promotion gates.
+
+The completed native-engine-browser-193 slice closes the script-created comment
+gap. `document.createComment()` now returns a bounded `Comment` node that can
+be inserted, mutated, cloned, serialized, and retained across host projection
+refreshes in local, HTTP(S) content-worker, and same-origin frame realms.
+Detached `innerHTML` parsing also retains comments, while comment data remains
+outside visible text, layout, and paint. The typed command and frame-batch
+routes are covered by local, content-worker, same-origin-frame, and
+nested-frame witnesses. The contract and exact evidence are recorded in
+[native-engine-browser-193](tasks/native-engine-browser-193.md); document-type
+construction, full malformed-comment recovery, and broader Web IDL/conformance
+promotion remain issue #40 work.
 
 The completed native-engine-browser-192 slice preserves parsed HTML comments
 and basic document-type metadata as real native DOM nodes across local,

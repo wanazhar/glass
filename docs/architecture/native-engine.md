@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-192` slice; the bounded foundation below remains
+`native-engine-browser-193` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5157,6 +5157,17 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - explicit Rust native-session construction and feature-gated CLI dispatch for
   local and bounded HTTP(S) URL shapes, including rejection of remote browser
   endpoints and unsupported browser-only flags.
+
+The completed native-engine-browser-193 slice closes script-created comment
+construction across local, HTTP(S) content-worker, same-origin frame, and
+nested-frame realms. `document.createComment()` returns a bounded Comment node
+with CharacterData accessors, insertion/removal, mutation, clone, serialization,
+and persistent identity; detached `innerHTML` now materializes comments rather
+than dropping them. Comment data remains outside visible text, layout, and
+paint. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-193.md`; document-type construction, full
+malformed-comment recovery, and Web IDL/conformance promotion remain issue #40
+work.
 
 The completed native-engine-browser-192 slice preserves parsed HTML comments
 and basic document-type metadata as real native nodes across local, HTTP(S)

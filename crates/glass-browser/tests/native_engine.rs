@@ -33106,7 +33106,7 @@ async fn native_content_process_loads_image_after_script_source_mutation() {
     assert_eq!(
         engine
             .evaluate_async(
-                "(() => { document.getElementById('image').setAttribute('src', '/image.png'); return true; })()"
+                "(() => { document.getElementById('image').src = '/image.png'; return true; })()"
             )
             .await
             .unwrap(),

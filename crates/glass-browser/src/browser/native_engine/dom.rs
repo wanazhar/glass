@@ -2030,6 +2030,41 @@ impl NativeDocument {
                     )?;
                     script_nodes.insert(*node_index, id);
                 }
+                NativeScriptCommand::CreateDocumentType {
+                    node_index,
+                    name,
+                    public_id,
+                    system_id,
+                } => {
+                    if *node_index < SCRIPT_TEMP_NODE_BASE || script_nodes.contains_key(node_index)
+                    {
+                        return Err(NativeEngineError::TargetNotActionable {
+                            reason: "script-created node index is invalid".into(),
+                        });
+                    }
+                    let name = validate_script_element_name(name)?;
+                    for (label, value) in [
+                        ("public identifier", public_id),
+                        ("system identifier", system_id),
+                    ] {
+                        if value.len() > MAX_LOCATOR_BYTES {
+                            return Err(NativeEngineError::limit(
+                                format!("script document type {label}"),
+                                MAX_LOCATOR_BYTES,
+                                value.len(),
+                            ));
+                        }
+                    }
+                    let id = self.add_detached_node(
+                        NativeNodeKind::DocumentType {
+                            name,
+                            public_id: (!public_id.is_empty()).then(|| public_id.clone()),
+                            system_id: (!system_id.is_empty()).then(|| system_id.clone()),
+                        },
+                        self.max_nodes,
+                    )?;
+                    script_nodes.insert(*node_index, id);
+                }
                 NativeScriptCommand::AppendChild {
                     parent_index,
                     child_index,
@@ -2959,20 +2994,47 @@ impl NativeDocument {
         let parent_node = self
             .script_node(parent, script_nodes)
             .ok_or(NativeEngineError::DetachedTarget)?;
-        if !matches!(parent_node.kind(), NativeNodeKind::Element { .. }) {
+        let parent_is_document = matches!(parent_node.kind(), NativeNodeKind::Document);
+        if !parent_is_document && !matches!(parent_node.kind(), NativeNodeKind::Element { .. }) {
             return Err(NativeEngineError::TargetNotActionable {
-                reason: "appendChild parent must be an element".into(),
+                reason: "appendChild parent must be an element or document".into(),
             });
         }
         let child_node = self
             .script_node(child, script_nodes)
             .ok_or(NativeEngineError::DetachedTarget)?;
+        let child_is_document_type =
+            matches!(child_node.kind(), NativeNodeKind::DocumentType { .. });
         if !matches!(
             child_node.kind(),
             NativeNodeKind::Element { .. } | NativeNodeKind::Text(_) | NativeNodeKind::Comment(_)
-        ) {
+        ) && !(parent_is_document && child_is_document_type)
+        {
             return Err(NativeEngineError::TargetNotActionable {
                 reason: "appendChild cannot insert a document node".into(),
+            });
+        }
+        if child_is_document_type {
+            if !parent_is_document {
+                return Err(NativeEngineError::TargetNotActionable {
+                    reason: "document type must be a child of the document".into(),
+                });
+            }
+            if parent_node
+                .children()
+                .iter()
+                .filter_map(|id| self.script_node(*id, script_nodes))
+                .any(|node| {
+                    matches!(node.kind(), NativeNodeKind::DocumentType { .. }) && node.id() != child
+                })
+            {
+                return Err(NativeEngineError::TargetNotActionable {
+                    reason: "document cannot have more than one document type".into(),
+                });
+            }
+        } else if parent_is_document {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "document only accepts a document type in this native surface".into(),
             });
         }
         if child == self.root || parent == child {

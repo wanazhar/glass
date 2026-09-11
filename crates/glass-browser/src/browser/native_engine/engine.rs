@@ -5708,6 +5708,7 @@ fn frame_script_command_source(command: &NativeScriptCommand) -> Result<String, 
                 | NativeScriptCommand::CreateElement { .. }
                 | NativeScriptCommand::CreateTextNode { .. }
                 | NativeScriptCommand::CreateComment { .. }
+                | NativeScriptCommand::CreateDocumentType { .. }
                 | NativeScriptCommand::AppendChild { .. }
                 | NativeScriptCommand::InsertBefore { .. }
                 | NativeScriptCommand::SetCustomValidity { .. }
@@ -5759,6 +5760,7 @@ fn is_frame_script_batch_command(command: &NativeScriptCommand) -> bool {
             | NativeScriptCommand::CreateElement { .. }
             | NativeScriptCommand::CreateTextNode { .. }
             | NativeScriptCommand::CreateComment { .. }
+            | NativeScriptCommand::CreateDocumentType { .. }
             | NativeScriptCommand::AppendChild { .. }
             | NativeScriptCommand::InsertBefore { .. }
             | NativeScriptCommand::SetCustomValidity { .. }

@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-217` slice; the bounded foundation below remains
+`native-engine-browser-218` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5372,6 +5372,13 @@ same validated host-event path as `load`, as a non-bubbling and
 non-cancelable event. Existing successful image, background-image, lifecycle,
 and wire-validation behavior remains unchanged. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-217.md`.
+
+The completed native-engine-browser-218 slice adds the image event-handler
+properties `onload` and `onerror`. They are backed by the same target-local
+listener registry as `addEventListener`, with replacement and non-callable
+removal semantics, and receive the typed non-bubbling resource events emitted
+by initial and script-mutated external image loading. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-218.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

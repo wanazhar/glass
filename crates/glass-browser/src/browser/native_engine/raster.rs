@@ -178,6 +178,46 @@ impl NativeSurface {
                         scroll_offset,
                     );
                 }
+                NativeDisplayCommand::SvgPolygonFill {
+                    rect,
+                    points,
+                    color,
+                    clip,
+                    ..
+                } => {
+                    let Some(clip) = Self::translate_clip(*clip, scroll_offset) else {
+                        continue;
+                    };
+                    Self::current_surface_mut(&mut surfaces)?.svg_polygon_fill(
+                        *rect,
+                        points,
+                        *color,
+                        clip,
+                        scroll_offset,
+                    );
+                }
+                NativeDisplayCommand::SvgPolyline {
+                    rect,
+                    points,
+                    closed,
+                    width,
+                    color,
+                    clip,
+                    ..
+                } => {
+                    let Some(clip) = Self::translate_clip(*clip, scroll_offset) else {
+                        continue;
+                    };
+                    Self::current_surface_mut(&mut surfaces)?.svg_polyline(
+                        *rect,
+                        points,
+                        *closed,
+                        *width,
+                        *color,
+                        clip,
+                        scroll_offset,
+                    );
+                }
                 NativeDisplayCommand::BorderRect {
                     rect,
                     radius,
@@ -458,6 +498,92 @@ impl NativeSurface {
                             && !ellipse_contains(rect, pixel_x, pixel_y, f64::from(width))
                     }
                 };
+                if paints {
+                    self.blend_pixel(x, y, color);
+                }
+            }
+        }
+    }
+
+    fn svg_polygon_fill(
+        &mut self,
+        rect: NativeRect,
+        points: &[NativePoint],
+        color: super::css::NativeColor,
+        clip: Option<NativeRect>,
+        scroll_offset: NativePoint,
+    ) {
+        if points.len() < 3 || rect.width == 0 || rect.height == 0 {
+            return;
+        }
+        let outer_left = i64::from(rect.x) - i64::from(scroll_offset.x);
+        let outer_top = i64::from(rect.y) - i64::from(scroll_offset.y);
+        let outer_right = i64::from(rect.right()) - i64::from(scroll_offset.x);
+        let outer_bottom = i64::from(rect.bottom()) - i64::from(scroll_offset.y);
+        let Some((left, top, right, bottom)) =
+            self.clipped_signed_bounds(outer_left, outer_top, outer_right, outer_bottom, clip)
+        else {
+            return;
+        };
+        for y in top..bottom {
+            for x in left..right {
+                let document_x = i64::from(x).saturating_add(i64::from(scroll_offset.x));
+                let document_y = i64::from(y).saturating_add(i64::from(scroll_offset.y));
+                if polygon_contains(points, document_x as f64 + 0.5, document_y as f64 + 0.5) {
+                    self.blend_pixel(x, y, color);
+                }
+            }
+        }
+    }
+
+    fn svg_polyline(
+        &mut self,
+        rect: NativeRect,
+        points: &[NativePoint],
+        closed: bool,
+        width: u32,
+        color: super::css::NativeColor,
+        clip: Option<NativeRect>,
+        scroll_offset: NativePoint,
+    ) {
+        if points.len() < 2 || width == 0 || rect.width == 0 || rect.height == 0 {
+            return;
+        }
+        let padding = i64::from(width.saturating_add(1) / 2);
+        let outer_left = i64::from(rect.x)
+            .saturating_sub(padding)
+            .saturating_sub(i64::from(scroll_offset.x));
+        let outer_top = i64::from(rect.y)
+            .saturating_sub(padding)
+            .saturating_sub(i64::from(scroll_offset.y));
+        let outer_right = i64::from(rect.right())
+            .saturating_add(padding)
+            .saturating_sub(i64::from(scroll_offset.x));
+        let outer_bottom = i64::from(rect.bottom())
+            .saturating_add(padding)
+            .saturating_sub(i64::from(scroll_offset.y));
+        let Some((left, top, right, bottom)) =
+            self.clipped_signed_bounds(outer_left, outer_top, outer_right, outer_bottom, clip)
+        else {
+            return;
+        };
+        let radius_squared = f64::from(width) * f64::from(width) / 4.0;
+        for y in top..bottom {
+            for x in left..right {
+                let document_x = i64::from(x).saturating_add(i64::from(scroll_offset.x));
+                let document_y = i64::from(y).saturating_add(i64::from(scroll_offset.y));
+                let pixel_x = document_x as f64 + 0.5;
+                let pixel_y = document_y as f64 + 0.5;
+                let mut paints = points.windows(2).any(|segment| {
+                    distance_to_segment_squared(pixel_x, pixel_y, segment[0], segment[1])
+                        <= radius_squared
+                });
+                if closed && !paints {
+                    let first = points[0];
+                    let last = points[points.len().saturating_sub(1)];
+                    paints = distance_to_segment_squared(pixel_x, pixel_y, last, first)
+                        <= radius_squared;
+                }
                 if paints {
                     self.blend_pixel(x, y, color);
                 }
@@ -1056,6 +1182,44 @@ fn ellipse_contains(rect: NativeRect, x: f64, y: f64, inset: f64) -> bool {
     let normalized_x = (x - center_x) / radius_x;
     let normalized_y = (y - center_y) / radius_y;
     normalized_x.mul_add(normalized_x, normalized_y * normalized_y) <= 1.0
+}
+
+fn polygon_contains(points: &[NativePoint], x: f64, y: f64) -> bool {
+    let mut inside = false;
+    let mut previous = points[points.len().saturating_sub(1)];
+    for &current in points {
+        let current_x = f64::from(current.x);
+        let current_y = f64::from(current.y);
+        let previous_x = f64::from(previous.x);
+        let previous_y = f64::from(previous.y);
+        if (current_y > y) != (previous_y > y) {
+            let intersection = (previous_x - current_x)
+                .mul_add((y - current_y) / (previous_y - current_y), current_x);
+            if x < intersection {
+                inside = !inside;
+            }
+        }
+        previous = current;
+    }
+    inside
+}
+
+fn distance_to_segment_squared(x: f64, y: f64, start: NativePoint, end: NativePoint) -> f64 {
+    let start_x = f64::from(start.x);
+    let start_y = f64::from(start.y);
+    let delta_x = f64::from(end.x) - start_x;
+    let delta_y = f64::from(end.y) - start_y;
+    let length_squared = delta_x.mul_add(delta_x, delta_y * delta_y);
+    let projection = if length_squared == 0.0 {
+        0.0
+    } else {
+        ((x - start_x).mul_add(delta_x, (y - start_y) * delta_y) / length_squared).clamp(0.0, 1.0)
+    };
+    let nearest_x = projection.mul_add(delta_x, start_x);
+    let nearest_y = projection.mul_add(delta_y, start_y);
+    let distance_x = x - nearest_x;
+    let distance_y = y - nearest_y;
+    distance_x.mul_add(distance_x, distance_y * distance_y)
 }
 
 impl NativeDisplayList {

@@ -6,7 +6,7 @@ use super::css::{
     TextAlignLastValue, TextAlignValue, TextJustifyValue, TextOverflowValue, TextTransformValue,
     VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
 };
-use super::dom::{NativeDocument, NativeNodeId, NativeNodeKind};
+use super::dom::{NativeDocument, NativeNode, NativeNodeId, NativeNodeKind};
 use super::error::NativeEngineError;
 
 const DEFAULT_LINE_HEIGHT: u32 = 20;
@@ -16,6 +16,7 @@ const DEFAULT_BUTTON_WIDTH: u32 = 80;
 const DEFAULT_SVG_WIDTH: u32 = 300;
 const DEFAULT_SVG_HEIGHT: u32 = 150;
 const CHARACTER_WIDTH: u32 = 8;
+pub(crate) const MAX_NATIVE_SVG_POINTS: usize = 2048;
 
 /// An integer-pixel point in the native viewport coordinate space.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1980,6 +1981,26 @@ impl<'a> LayoutBuilder<'a> {
                     number("cy").saturating_sub(radius_y),
                     radius_x.saturating_mul(2),
                     radius_y.saturating_mul(2),
+                ))
+            }
+            "line" => {
+                let points = svg_line_points(node);
+                let (min_x, min_y, max_x, max_y) = svg_points_bounds(&points)?;
+                Some((
+                    min_x,
+                    min_y,
+                    max_x.saturating_sub(min_x).saturating_add(1),
+                    max_y.saturating_sub(min_y).saturating_add(1),
+                ))
+            }
+            "polyline" | "polygon" => {
+                let points = svg_points(node)?;
+                let (min_x, min_y, max_x, max_y) = svg_points_bounds(&points)?;
+                Some((
+                    min_x,
+                    min_y,
+                    max_x.saturating_sub(min_x).saturating_add(1),
+                    max_y.saturating_sub(min_y).saturating_add(1),
                 ))
             }
             _ => None,
@@ -4734,4 +4755,59 @@ impl<'a> LayoutBuilder<'a> {
             DisplayValue::Inline
         }
     }
+}
+
+pub(crate) fn svg_points(node: &NativeNode) -> Option<Vec<NativePoint>> {
+    let value = node.attribute("points")?;
+    let coordinates = value
+        .split(|character: char| character == ',' || character.is_ascii_whitespace())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    if coordinates.len() < 4
+        || !coordinates.len().is_multiple_of(2)
+        || coordinates.len() / 2 > MAX_NATIVE_SVG_POINTS
+    {
+        return None;
+    }
+    let mut points = Vec::with_capacity(coordinates.len() / 2);
+    for pair in coordinates.chunks_exact(2) {
+        points.push(NativePoint {
+            x: pair[0].parse().ok()?,
+            y: pair[1].parse().ok()?,
+        });
+    }
+    Some(points)
+}
+
+pub(crate) fn svg_line_points(node: &NativeNode) -> Vec<NativePoint> {
+    let number = |name: &str| {
+        node.attribute(name)
+            .and_then(|value| value.trim().parse::<u32>().ok())
+            .unwrap_or(0)
+    };
+    vec![
+        NativePoint {
+            x: number("x1"),
+            y: number("y1"),
+        },
+        NativePoint {
+            x: number("x2"),
+            y: number("y2"),
+        },
+    ]
+}
+
+fn svg_points_bounds(points: &[NativePoint]) -> Option<(u32, u32, u32, u32)> {
+    let first = points.first().copied()?;
+    let mut min_x = first.x;
+    let mut min_y = first.y;
+    let mut max_x = first.x;
+    let mut max_y = first.y;
+    for point in &points[1..] {
+        min_x = min_x.min(point.x);
+        min_y = min_y.min(point.y);
+        max_x = max_x.max(point.x);
+        max_y = max_y.max(point.y);
+    }
+    Some((min_x, min_y, max_x, max_y))
 }

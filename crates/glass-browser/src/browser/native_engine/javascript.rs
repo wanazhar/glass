@@ -8562,11 +8562,13 @@ fn document_bootstrap(
       set(next) {{ element.setAttribute("type", String(next)); }},
     }});
   }};
-  let nextTemporaryNodeIndex = 4294967294;
+  if (!Number.isSafeInteger(globalThis.__glassNextTemporaryNodeIndex)) {{
+    globalThis.__glassNextTemporaryNodeIndex = 4294967294;
+  }}
   const allocateTemporaryNodeIndex = () => {{
-    const value = nextTemporaryNodeIndex;
-    nextTemporaryNodeIndex -= 1;
+    const value = Number(globalThis.__glassNextTemporaryNodeIndex);
     if (value < 4294963200) throw new RangeError("native temporary node limit exceeded");
+    globalThis.__glassNextTemporaryNodeIndex = value - 1;
     return value;
   }};
   const makeElement = (initialEntry) => {{
@@ -8962,6 +8964,21 @@ fn document_bootstrap(
           ? element.__glassChildren.map(child => child.__glassMarkup).join("")
           : innerHtml;
         return opening + content + "</" + element.localName + ">";
+      }},
+    }});
+    Object.defineProperty(element, "outerHTML", {{
+      enumerable: true,
+      configurable: false,
+      get() {{ return element.__glassMarkup; }},
+      set(next) {{
+        const value = String(next);
+        if (value.length > storageValueLimit) throw new RangeError("native element outerHTML exceeds its limit");
+        const owner = element.__glassParent || null;
+        if (!owner || typeof owner.insertBefore !== "function") throw new TypeError("outerHTML requires an attached element");
+        const fragment = document.createDocumentFragment();
+        populateDetachedFragment(fragment, value, makeDetachedElement, makeDetachedText);
+        for (const child of fragment.__glassChildren.slice()) owner.insertBefore(child, element);
+        element.remove();
       }},
     }});
     Object.defineProperty(element, "parentElement", {{
@@ -9936,6 +9953,22 @@ fn document_bootstrap(
           current = current.__glassParent || null;
         }}
         return false;
+      }},
+    }});
+    defineMissing(node, "getRootNode", {{
+      enumerable: false,
+      configurable: false,
+      value(_options) {{
+        let current = node;
+        for (let depth = 0; depth <= {max_commands}; depth += 1) {{
+          if (!current.__glassParent) break;
+          current = current.__glassParent;
+        }}
+        const owner = node.ownerDocument || null;
+        return owner && Array.isArray(owner.__glassChildren)
+          && owner.__glassChildren.includes(current)
+          ? owner
+          : current;
       }},
     }});
     return node;
@@ -12024,6 +12057,21 @@ fn document_bootstrap(
           return opening + content + "</" + projected.localName + ">";
         }},
       }});
+      Object.defineProperty(projected, "outerHTML", {{
+        enumerable: true,
+        configurable: false,
+        get() {{ return projected.__glassMarkup; }},
+        set(next) {{
+          const value = String(next);
+          if (value.length > storageValueLimit) throw new RangeError("native frame element outerHTML exceeds its limit");
+          const owner = projected.__glassParent || null;
+          if (!owner || typeof owner.insertBefore !== "function") throw new TypeError("outerHTML requires an attached element");
+          const fragment = makeFrameDocumentFragment();
+          populateDetachedFragment(fragment, value, makeFrameDetachedElement, makeFrameDetachedText);
+          for (const child of fragment.__glassChildren.slice()) owner.insertBefore(child, projected);
+          projected.remove();
+        }},
+      }});
       Object.defineProperty(projected, "parentElement", {{
         enumerable: false,
         configurable: false,
@@ -12474,6 +12522,21 @@ fn document_bootstrap(
           if (["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"].includes(normalized)) return opening;
           const content = projected.__glassChildren.length > 0 ? projected.__glassChildren.map(child => child.__glassMarkup).join("") : innerHtml;
           return opening + content + "</" + normalized + ">";
+        }},
+      }});
+      Object.defineProperty(projected, "outerHTML", {{
+        enumerable: true,
+        configurable: false,
+        get() {{ return projected.__glassMarkup; }},
+        set(next) {{
+          const value = String(next);
+          if (value.length > storageValueLimit) throw new RangeError("native frame element outerHTML exceeds its limit");
+          const owner = projected.__glassParent || null;
+          if (!owner || typeof owner.insertBefore !== "function") throw new TypeError("outerHTML requires an attached element");
+          const fragment = makeFrameDocumentFragment();
+          populateDetachedFragment(fragment, value, makeFrameDetachedElement, makeFrameDetachedText);
+          for (const child of fragment.__glassChildren.slice()) owner.insertBefore(child, projected);
+          projected.remove();
         }},
       }});
       Object.defineProperty(projected, "parentElement", {{ enumerable: false, configurable: false, get() {{ return projected.__glassParent && projected.__glassParent.nodeType === 1 ? projected.__glassParent : null; }} }});

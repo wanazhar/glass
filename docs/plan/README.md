@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-208` locally. The versioned
+`native-engine-browser-209` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1808,10 +1808,22 @@ nonuniform `none` mappings convert SVG user space into the declared viewport;
 the resulting points and path subpaths continue through shared layout bounds,
 typed fill/stroke paint, clipping, scroll projection, alpha composition,
 capture, and hit testing. Malformed viewBox/viewport data fails closed. CSS
-sizing/percentages, SVG viewport clipping, nested viewport placement, dash
+sizing/percentages, nested viewport placement, dash
 arrays, explicit cap/join styles, gradients, markers, and external resources
 remain separate issue #40 promotion work. Exact evidence is recorded in
 [native-engine-browser-208](tasks/native-engine-browser-208.md).
+
+The completed native-engine-browser-209 slice adds SVG viewport clipping to
+the shared half-open clip owner. SVG ancestor viewport rectangles now compose
+with CSS overflow clips for projected bounds, software rasterization, scroll
+translation, capture, and hit testing; clipped shapes cannot leak pixels or
+win shape hit ownership outside their viewport. Layout retains document-space
+geometry, and containing HTML boxes remain eligible where the existing hit-test
+stack requires them. Rounded clip paths, nested SVG viewport placement,
+clip-path/mask semantics, dash arrays, explicit cap/join styles, gradients,
+markers, and external resources remain separate issue #40 promotion work.
+Exact evidence is recorded in
+[native-engine-browser-209](tasks/native-engine-browser-209.md).
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` now returns persistent `Attr`

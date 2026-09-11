@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-208`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-209`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 205
 slice carries bounded quadratic/cubic SVG path geometry through shared path
 parsing, flattening, layout, display-list, raster, clipping, and capture
@@ -3475,10 +3475,20 @@ the bounded align/`meet`/`slice`/`none` grammar, and composes the resulting
 scale/translation with SVG transforms before shared point/subpath conversion.
 Layout, typed fill/stroke paint, raster, clipping, scroll, capture, and
 hit-testing consume the same mapped geometry; malformed data fails closed.
-Viewport clipping, CSS sizing/percentages, nested viewport placement, dash/
-cap/join styling, gradients, markers, and external resources remain issue #40
-promotion work. Exact evidence is in
-`docs/plan/tasks/native-engine-browser-208.md`.
+CSS sizing/percentages, nested viewport placement, dash/cap/join styling,
+gradients, markers, and external resources remain issue #40 promotion work.
+Exact evidence is in `docs/plan/tasks/native-engine-browser-208.md`.
+
+The completed native-engine-browser-209 slice adds SVG viewport clipping to
+the existing clip owner. Laid-out SVG ancestor rectangles intersect with CSS
+overflow clips in document space, and the one combined half-open rectangle is
+consumed by viewport projection, display-list replay, scroll translation,
+capture, and hit testing. Clipped shapes cannot paint or win shape ownership
+outside the viewport, while containing HTML boxes retain the existing stack
+behavior. Rounded clip paths, nested viewport placement, clip-path/mask
+semantics, dash/cap/join styling, gradients, markers, and external resources
+remain issue #40 promotion work. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-209.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame
@@ -4556,8 +4566,10 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-198.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-197.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-196.md` is the preceding completed task;
-`docs/plan/tasks/native-engine-browser-208.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-209.md` is the latest completed browser
 task;
+`docs/plan/tasks/native-engine-browser-208.md` is the preceding completed
+browser task;
 `docs/plan/tasks/native-engine-browser-207.md` is the preceding completed
 browser task;
 `docs/plan/tasks/native-engine-browser-206.md` is the preceding completed

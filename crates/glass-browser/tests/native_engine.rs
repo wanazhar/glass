@@ -3336,6 +3336,63 @@ async fn native_content_process_script_exposes_same_document_history_api() {
 }
 
 #[tokio::test]
+async fn native_content_process_action_event_preserves_history_api() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/app"));
+        let body = "<button id='push'>Push</button><script>document.getElementById('push').addEventListener('click', () => history.pushState({ view: 'next' }, '', '?screen=next'));</script>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let initial_url = format!("http://{address}/app");
+    let pushed_url = format!("http://{address}/app?screen=next");
+    let mut engine =
+        NativeEngine::new(NativeEngineConfig::default().with_initial_url(initial_url.clone()))
+            .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .action_async(NativeAction::Click {
+            target: "id=push".into(),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(engine.snapshot().unwrap().url, pushed_url);
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({ length: history.length, state: history.state, url: location.href })"
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "length": 2,
+            "state": {"view": "next"},
+            "url": pushed_url,
+        })
+    );
+    engine.evaluate_async("history.back(); true").await.unwrap();
+    assert_eq!(engine.snapshot().unwrap().url, initial_url);
+    assert_eq!(
+        engine
+            .evaluate_async("({ state: history.state, url: location.href })")
+            .await
+            .unwrap(),
+        serde_json::json!({"state": null, "url": initial_url})
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_delayed_timer_waits_for_due_host_turn() {
     let config = NativeEngineConfig::default()
         .with_fixture(

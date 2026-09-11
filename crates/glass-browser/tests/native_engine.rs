@@ -2010,6 +2010,95 @@ async fn native_local_beforeunload_can_cancel_replacement_navigation() {
 }
 
 #[tokio::test]
+async fn native_local_outgoing_lifecycle_can_replace_navigation() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://lifecycle-reentry-start",
+            "<script>globalThis.lifecycle = []; addEventListener('beforeunload', () => { lifecycle.push('before'); location.replace('fixture://lifecycle-reentry-final'); }); addEventListener('pagehide', () => lifecycle.push('hide')); addEventListener('unload', () => lifecycle.push('unload'));</script><title>Start</title>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://lifecycle-reentry-final",
+            "<title>Final</title><p>Published</p>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://lifecycle-reentry-requested",
+            "<title>Requested</title><p>Should not win</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://lifecycle-reentry-start");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    let before_navigation = engine.revision();
+
+    engine
+        .navigate_async("fixture://lifecycle-reentry-requested")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        "fixture://lifecycle-reentry-final"
+    );
+    assert_eq!(engine.snapshot().unwrap().title, "Final");
+    assert_eq!(engine.history().len(), 1);
+    let lifecycle_effects = engine
+        .effects_since(before_navigation)
+        .unwrap()
+        .effects
+        .into_iter()
+        .map(|effect| effect.kind)
+        .filter(|kind| {
+            matches!(
+                kind,
+                NativeEventKind::BeforeUnload | NativeEventKind::PageHide | NativeEventKind::Unload
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lifecycle_effects,
+        vec![
+            NativeEventKind::BeforeUnload,
+            NativeEventKind::PageHide,
+            NativeEventKind::Unload
+        ]
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_local_hashchange_can_reenter_navigation() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://hash-reentry",
+            "<script>addEventListener('hashchange', () => { if (location.hash === '#two') location.assign('fixture://hash-reentry-final'); });</script><title>Start</title><p>Start</p>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://hash-reentry-final",
+            "<title>Final</title><p>Published</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://hash-reentry#one");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    engine
+        .navigate_async("fixture://hash-reentry#two")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        "fixture://hash-reentry-final"
+    );
+    assert_eq!(engine.snapshot().unwrap().title, "Final");
+    assert_eq!(engine.history().len(), 3);
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_history_traversal_orders_popstate_before_hashchange() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -4594,6 +4683,50 @@ async fn native_content_process_beforeunload_can_cancel_replacement_navigation()
 }
 
 #[tokio::test]
+async fn native_content_process_outgoing_lifecycle_can_replace_navigation() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for (expected_path, body) in [
+            (
+                "/start",
+                "<script>addEventListener('beforeunload', () => location.replace('/final')); addEventListener('pagehide', () => globalThis.pagehideSeen = true); addEventListener('unload', () => globalThis.unloadSeen = true);</script><title>Start</title>",
+            ),
+            ("/final", "<title>Final</title><p>Published</p>"),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/start")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .navigate_async(format!("http://{address}/requested"))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        format!("http://{address}/final")
+    );
+    assert_eq!(engine.snapshot().unwrap().title, "Final");
+    assert_eq!(engine.history().len(), 1);
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_delayed_timer_waits_for_due_host_turn() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -4742,6 +4875,50 @@ async fn native_content_process_fragment_navigation_dispatches_hashchange_in_pla
             .iter()
             .any(|effect| effect.kind == NativeEventKind::HashChange)
     );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_hashchange_can_reenter_navigation() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for (expected_path, body) in [
+            (
+                "/page",
+                "<script>addEventListener('hashchange', () => { if (location.hash === '#two') location.assign('/final'); });</script><title>Start</title><p>Start</p>",
+            ),
+            ("/final", "<title>Final</title><p>Published</p>"),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page#one")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .navigate_async(format!("http://{address}/page#two"))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        format!("http://{address}/final")
+    );
+    assert_eq!(engine.snapshot().unwrap().title, "Final");
+    assert_eq!(engine.history().len(), 3);
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }

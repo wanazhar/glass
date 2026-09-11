@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through
-`native-engine-browser-153` locally. The versioned
+`native-engine-browser-154` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1434,6 +1434,18 @@ closed-target tombstones are bounded and content-worker realms receive the
 same refresh through a validated synchronization message. Full live Web IDL
 identity, popup permission/geometry, frame lifecycle/shared scripting, and
 complete browser parity remain issue #40 gates.
+
+The completed native-engine-browser-154 batch is
+[native-engine-browser-154](tasks/native-engine-browser-154.md). Local and
+HTTP(S) lifecycle callbacks now return one validated navigation handoff from
+`beforeunload`, `pagehide`, `unload`, `popstate`, or `hashchange` to the same
+parent-owned loader/history/frame path. Cancellation remains distinct from a
+completed lifecycle with no handoff; the already-dispatched outgoing lifecycle
+is skipped exactly once for its own handoff, and bounded multiple/looping
+handoffs fail closed. Native lifecycle and same-document callback re-entry are
+now covered by 436 native integration tests. Popup permission/geometry, frame
+lifecycle/shared scripting, complete Web IDL/browser topology, and native
+default promotion remain issue #40 gates.
 
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and

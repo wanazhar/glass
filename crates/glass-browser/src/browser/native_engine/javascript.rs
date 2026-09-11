@@ -8422,6 +8422,60 @@ fn document_bootstrap(
       set(next) {{ element.setAttribute("class", String(next)); }},
     }});
   }};
+  const installBooleanAttributeProperty = (element, property, attribute, read) => {{
+    Object.defineProperty(element, property, {{
+      enumerable: true,
+      configurable: false,
+      get() {{ return read(); }},
+      set(next) {{
+        if (Boolean(next)) element.setAttribute(attribute, "");
+        else element.removeAttribute(attribute);
+      }},
+    }});
+  }};
+  const installStringAttributeProperty = (element, property, attribute) => {{
+    Object.defineProperty(element, property, {{
+      enumerable: true,
+      configurable: false,
+      get() {{
+        const value = element.getAttribute(attribute);
+        return value === null ? "" : value;
+      }},
+      set(next) {{ element.setAttribute(attribute, String(next)); }},
+    }});
+  }};
+  const installCommonAttributeProperties = (element, state = {{}}) => {{
+    installReflectedAttributeProperties(element);
+    for (const [property, attribute] of [
+      ["disabled", "disabled"], ["hidden", "hidden"], ["multiple", "multiple"],
+      ["required", "required"], ["readOnly", "readonly"], ["autofocus", "autofocus"],
+      ["open", "open"], ["controls", "controls"], ["loop", "loop"],
+      ["muted", "muted"], ["autoplay", "autoplay"], ["reversed", "reversed"],
+      ["formNoValidate", "formnovalidate"], ["noValidate", "novalidate"],
+    ]) {{
+      installBooleanAttributeProperty(element, property, attribute,
+        state[property] || (() => element.hasAttribute(attribute)));
+    }}
+    for (const [property, attribute] of [
+      ["name", "name"], ["title", "title"], ["lang", "lang"], ["dir", "dir"],
+      ["slot", "slot"], ["htmlFor", "for"], ["accept", "accept"], ["alt", "alt"],
+      ["placeholder", "placeholder"], ["pattern", "pattern"], ["min", "min"],
+      ["max", "max"], ["step", "step"], ["action", "action"], ["method", "method"],
+      ["target", "target"], ["rel", "rel"], ["download", "download"],
+    ]) installStringAttributeProperty(element, property, attribute);
+    Object.defineProperty(element, "type", {{
+      enumerable: true,
+      configurable: false,
+      get() {{
+        const value = element.getAttribute("type");
+        if (value !== null) return value.toLowerCase();
+        if (element.localName === "input") return "text";
+        if (element.localName === "button") return "submit";
+        return "";
+      }},
+      set(next) {{ element.setAttribute("type", String(next)); }},
+    }});
+  }};
   let nextTemporaryNodeIndex = 4294967294;
   const allocateTemporaryNodeIndex = () => {{
     const value = nextTemporaryNodeIndex;
@@ -8438,6 +8492,9 @@ fn document_bootstrap(
         ? (entry.attributes.value === undefined ? entry.text : entry.attributes.value)
         : "")
       : entry.value;
+    let disabled = Boolean(entry.disabled);
+    let hidden = Boolean(entry.hidden);
+    let multiple = Object.prototype.hasOwnProperty.call(entry.attributes, "multiple");
     let selectionStart = entry.selectionStart;
     let selectionEnd = entry.selectionEnd;
     let selectionDirection = entry.selectionDirection || "none";
@@ -8481,9 +8538,9 @@ fn document_bootstrap(
         : entry.value,
       checked: entry.checked,
       selected: entry.selected,
-      multiple: Object.prototype.hasOwnProperty.call(entry.attributes, "multiple"),
-      disabled: entry.disabled,
-      hidden: entry.hidden,
+      multiple,
+      disabled,
+      hidden,
       focused: entry.focused,
       selectionStart: entry.selectionStart,
       selectionEnd: entry.selectionEnd,
@@ -8613,16 +8670,18 @@ fn document_bootstrap(
         const key = String(name).toLowerCase();
         const stringValue = String(value);
         entry.attributes[key] = stringValue;
-        if (key === "disabled") this.disabled = true;
-        if (key === "hidden") this.hidden = true;
+        if (key === "disabled") disabled = true;
+        if (key === "hidden") hidden = true;
+        if (key === "multiple") multiple = true;
         element.__glassSyncContent();
         pushCommand({{ kind: "setAttribute", node_index: entry.nodeIndex, name: key, value: stringValue }});
       }},
       removeAttribute(name) {{
         const key = String(name).toLowerCase();
         delete entry.attributes[key];
-        if (key === "disabled") this.disabled = false;
-        if (key === "hidden") this.hidden = false;
+        if (key === "disabled") disabled = false;
+        if (key === "hidden") hidden = false;
+        if (key === "multiple") multiple = false;
         element.__glassSyncContent();
         pushCommand({{ kind: "removeAttribute", node_index: entry.nodeIndex, name: key }});
       }},
@@ -8847,7 +8906,11 @@ fn document_bootstrap(
       configurable: false,
       get() {{ return globalThis.document || null; }},
     }});
-    installReflectedAttributeProperties(element);
+    installCommonAttributeProperties(element, {{
+      disabled: () => disabled,
+      hidden: () => hidden,
+      multiple: () => multiple,
+    }});
     Object.defineProperty(element, "__glassAttributeSource", {{
       enumerable: false,
       configurable: false,
@@ -8960,10 +9023,10 @@ fn document_bootstrap(
         element.localName = nextEntry.tagName.toLowerCase();
         textContent = String(nextEntry.text || "");
         innerHtml = String(nextEntry.innerHtml || "");
-        element.disabled = nextEntry.disabled;
-        element.hidden = nextEntry.hidden;
+        disabled = Boolean(nextEntry.disabled);
+        hidden = Boolean(nextEntry.hidden);
         element.focused = nextEntry.focused;
-        element.multiple = Object.prototype.hasOwnProperty.call(nextEntry.attributes, "multiple");
+        multiple = Object.prototype.hasOwnProperty.call(nextEntry.attributes, "multiple");
         value = nextEntry.value === null
           ? (nextEntry.tagName.toLowerCase() === "option"
             ? (nextEntry.attributes.value === undefined ? nextEntry.text : nextEntry.attributes.value)
@@ -11420,6 +11483,9 @@ fn document_bootstrap(
       let value = entry.value == null ? "" : entry.value;
       let checked = Boolean(entry.checked);
       let selected = Boolean(entry.selected);
+      let disabled = Boolean(entry.disabled);
+      let hidden = Boolean(entry.hidden);
+      let multiple = Object.prototype.hasOwnProperty.call(attributes, "multiple");
       const projected = {{
         nodeIndex: entry.nodeIndex,
         parentIndex: entry.parentIndex == null ? null : entry.parentIndex,
@@ -11432,8 +11498,9 @@ fn document_bootstrap(
         value,
         checked,
         selected,
-        disabled: Boolean(entry.disabled),
-        hidden: Boolean(entry.hidden),
+        disabled,
+        hidden,
+        multiple,
         getBoundingClientRect() {{ return makeDomRect(geometryForNode(projected)); }},
         getClientRects() {{
           const geometry = geometryForNode(projected);
@@ -11511,16 +11578,18 @@ fn document_bootstrap(
           const key = String(name).toLowerCase();
           const stringValue = String(nextValue);
           attributes[key] = stringValue;
-          if (key === "disabled") this.disabled = true;
-          if (key === "hidden") this.hidden = true;
+          if (key === "disabled") disabled = true;
+          if (key === "hidden") hidden = true;
+          if (key === "multiple") multiple = true;
           projected.__glassSyncContent();
           queueFrameCommand(currentBinding, {{ kind: "setAttribute", node_index: entry.nodeIndex, name: key, value: stringValue }});
         }},
         removeAttribute(name) {{
           const key = String(name).toLowerCase();
           delete attributes[key];
-          if (key === "disabled") this.disabled = false;
-          if (key === "hidden") this.hidden = false;
+          if (key === "disabled") disabled = false;
+          if (key === "hidden") hidden = false;
+          if (key === "multiple") multiple = false;
           projected.__glassSyncContent();
           queueFrameCommand(currentBinding, {{ kind: "removeAttribute", node_index: entry.nodeIndex, name: key }});
         }},
@@ -11623,7 +11692,11 @@ fn document_bootstrap(
           return child;
         }},
       }};
-      installReflectedAttributeProperties(projected);
+      installCommonAttributeProperties(projected, {{
+        disabled: () => disabled,
+        hidden: () => hidden,
+        multiple: () => multiple,
+      }});
       Object.defineProperty(projected, "__glassChildren", {{
         enumerable: false,
         configurable: false,
@@ -11948,6 +12021,9 @@ fn document_bootstrap(
       let value = "";
       let checked = false;
       let selected = false;
+      let disabled = false;
+      let hidden = false;
+      let multiple = false;
       const projected = {{
         nodeIndex,
         parentIndex: null,
@@ -11960,8 +12036,9 @@ fn document_bootstrap(
         value: "",
         checked: false,
         selected: false,
-        disabled: false,
-        hidden: false,
+        disabled,
+        hidden,
+        multiple,
         getAttribute(name) {{
           const key = String(name).toLowerCase();
           for (const attribute of Object.keys(attributes)) {{
@@ -11984,16 +12061,18 @@ fn document_bootstrap(
           const key = String(name).toLowerCase();
           const stringValue = String(nextValue);
           attributes[key] = stringValue;
-          if (key === "disabled") projected.disabled = true;
-          if (key === "hidden") projected.hidden = true;
+          if (key === "disabled") disabled = true;
+          if (key === "hidden") hidden = true;
+          if (key === "multiple") multiple = true;
           projected.__glassSyncContent();
           queueFrameCommand(currentBinding, {{ kind: "setAttribute", node_index: nodeIndex, name: key, value: stringValue }});
         }},
         removeAttribute(name) {{
           const key = String(name).toLowerCase();
           delete attributes[key];
-          if (key === "disabled") projected.disabled = false;
-          if (key === "hidden") projected.hidden = false;
+          if (key === "disabled") disabled = false;
+          if (key === "hidden") hidden = false;
+          if (key === "multiple") multiple = false;
           projected.__glassSyncContent();
           queueFrameCommand(currentBinding, {{ kind: "removeAttribute", node_index: nodeIndex, name: key }});
         }},
@@ -12088,7 +12167,11 @@ fn document_bootstrap(
           return child;
         }},
       }};
-      installReflectedAttributeProperties(projected);
+      installCommonAttributeProperties(projected, {{
+        disabled: () => disabled,
+        hidden: () => hidden,
+        multiple: () => multiple,
+      }});
       Object.defineProperty(projected, "__glassChildren", {{ enumerable: false, configurable: false, writable: true, value: [] }});
       Object.defineProperty(projected, "__glassEventOwner", {{
         enumerable: false,

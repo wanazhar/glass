@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-207` slice; the bounded foundation below remains
+`native-engine-browser-208` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5258,10 +5258,23 @@ points and path subpaths feed the same typed fill/stroke display commands,
 software rasterizer, clipping, scroll projection, capture, and hit-test
 owners; identity transforms retain the pre-transform command forms. Malformed,
 non-finite, unknown, and over-limit output fails closed. CSS transforms,
-`viewBox`/`preserveAspectRatio`, dash arrays, explicit cap/join styles,
+dash arrays, explicit cap/join styles,
 gradients, markers, and external resources remain later issue #40 promotion
 work. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-207.md`.
+
+The completed native-engine-browser-208 slice adds bounded SVG `viewBox` and
+`preserveAspectRatio` mapping to the same affine transform owner. The default
+`xMidYMid meet`, nine bounded alignments, `meet`, `slice`, and nonuniform
+`none` modes convert user-space coordinates into the declared viewport before
+the shared integer geometry path. Rect/circle/ellipse/line/polyline/polygon
+points and path subpaths retain one layout, typed fill/stroke display-list,
+software-raster, clipping, scroll, capture, and hit-test interpretation.
+Malformed viewBox/viewport data fails closed. CSS sizing/percentages, viewport
+clipping, nested viewport placement, dash arrays, explicit cap/join styles,
+gradients, markers, and external resources remain later issue #40 promotion
+work. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-208.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

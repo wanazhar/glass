@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-207` locally. The versioned
+`native-engine-browser-208` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1796,10 +1796,22 @@ transformed rectangles, ellipses, lines, polygons, and paths use the same
 layout bounds, typed fill/stroke paint, clipping, scroll translation, alpha
 composition, capture, and hit-test owners. Malformed, non-finite, unknown, and
 over-limit transform output fails closed; identity transforms preserve the
-existing command forms. CSS transforms, viewBox mapping, dash arrays, explicit
+existing command forms. CSS transforms, dash arrays, explicit
 cap/join styles, gradients, markers, and external resources remain separate
 issue #40 promotion work. Exact evidence is recorded in
 [native-engine-browser-207](tasks/native-engine-browser-207.md).
+
+The completed native-engine-browser-208 slice adds bounded SVG `viewBox` and
+`preserveAspectRatio` mapping through the shared affine transform owner.
+Default `xMidYMid meet`, nine bounded alignments, `meet`, `slice`, and
+nonuniform `none` mappings convert SVG user space into the declared viewport;
+the resulting points and path subpaths continue through shared layout bounds,
+typed fill/stroke paint, clipping, scroll projection, alpha composition,
+capture, and hit testing. Malformed viewBox/viewport data fails closed. CSS
+sizing/percentages, SVG viewport clipping, nested viewport placement, dash
+arrays, explicit cap/join styles, gradients, markers, and external resources
+remain separate issue #40 promotion work. Exact evidence is recorded in
+[native-engine-browser-208](tasks/native-engine-browser-208.md).
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` now returns persistent `Attr`

@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-207`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-208`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 205
 slice carries bounded quadratic/cubic SVG path geometry through shared path
 parsing, flattening, layout, display-list, raster, clipping, and capture
@@ -3464,9 +3464,21 @@ descendant matrices, and transformed shape points/subpaths feed the existing
 layout, display-list, raster, clipping, scroll, capture, and hit-test owners.
 Malformed, unknown, non-finite, and over-limit transforms fail closed, while
 identity transforms preserve the established command forms. CSS transforms,
-`viewBox`/`preserveAspectRatio`, dash/cap/join styling, gradients, markers,
+dash/cap/join styling, gradients, markers,
 and external resources remain issue #40 promotion work. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-207.md`.
+
+The completed native-engine-browser-208 slice adds bounded SVG viewBox mapping
+through the shared affine transform path. It validates four finite viewBox
+values and positive viewport dimensions, applies default `xMidYMid meet` plus
+the bounded align/`meet`/`slice`/`none` grammar, and composes the resulting
+scale/translation with SVG transforms before shared point/subpath conversion.
+Layout, typed fill/stroke paint, raster, clipping, scroll, capture, and
+hit-testing consume the same mapped geometry; malformed data fails closed.
+Viewport clipping, CSS sizing/percentages, nested viewport placement, dash/
+cap/join styling, gradients, markers, and external resources remain issue #40
+promotion work. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-208.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame
@@ -4544,8 +4556,10 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-198.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-197.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-196.md` is the preceding completed task;
-`docs/plan/tasks/native-engine-browser-207.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-208.md` is the latest completed browser
 task;
+`docs/plan/tasks/native-engine-browser-207.md` is the preceding completed
+browser task;
 `docs/plan/tasks/native-engine-browser-206.md` is the preceding completed
 browser task;
 `docs/plan/tasks/native-engine-browser-205.md` is the preceding completed

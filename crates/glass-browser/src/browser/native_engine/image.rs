@@ -1,7 +1,9 @@
 use base64::Engine as _;
+use gif::{ColorOutput, DecodeOptions, MemoryLimit};
 use image_webp::WebPDecoder;
 use png::ColorType;
 use std::io::Cursor;
+use std::num::NonZeroU64;
 use zune_jpeg::JpegDecoder;
 use zune_jpeg::zune_core::{bytestream::ZCursor, colorspace::ColorSpace, options::DecoderOptions};
 
@@ -37,7 +39,10 @@ pub(crate) fn decode_data_image(source: &str) -> Option<NativeImage> {
     let (metadata, payload) = source.get(5..)?.split_once(',')?;
     let mut metadata_parts = metadata.split(';');
     let media_type = metadata_parts.next().unwrap_or_default();
-    if !matches_ignore_ascii_case(media_type, &["image/png", "image/jpeg", "image/webp"]) {
+    if !matches_ignore_ascii_case(
+        media_type,
+        &["image/png", "image/jpeg", "image/webp", "image/gif"],
+    ) {
         return None;
     }
     let is_base64 = metadata_parts.any(|part| part.eq_ignore_ascii_case("base64"));
@@ -127,6 +132,9 @@ pub(crate) fn decode_image_bytes(
     if media_type.eq_ignore_ascii_case("image/webp") {
         return decode_webp_bytes(bytes, max_decoded_bytes);
     }
+    if media_type.eq_ignore_ascii_case("image/gif") {
+        return decode_gif_bytes(bytes, max_decoded_bytes);
+    }
     None
 }
 
@@ -197,6 +205,48 @@ fn decode_webp_bytes(bytes: &[u8], max_decoded_bytes: usize) -> Option<NativeIma
             .flat_map(|pixel| [pixel[0], pixel[1], pixel[2], u8::MAX])
             .collect()
     };
+    (pixels.len() == pixel_count.checked_mul(4)? && pixels.len() <= max_decoded_bytes).then_some(
+        NativeImage {
+            width,
+            height,
+            pixels,
+        },
+    )
+}
+
+fn decode_gif_bytes(bytes: &[u8], max_decoded_bytes: usize) -> Option<NativeImage> {
+    if bytes.is_empty() || max_decoded_bytes < 4 {
+        return None;
+    }
+    let memory_limit = MemoryLimit::Bytes(NonZeroU64::new(u64::try_from(max_decoded_bytes).ok()?)?);
+    let mut options = DecodeOptions::new();
+    options.set_color_output(ColorOutput::RGBA);
+    options.set_memory_limit(memory_limit);
+    options.check_frame_consistency(true);
+    let mut decoder = options.read_info(Cursor::new(bytes)).ok()?;
+    let width = u32::from(decoder.width());
+    let height = u32::from(decoder.height());
+    let pixel_count = usize::try_from(width)
+        .ok()?
+        .checked_mul(usize::try_from(height).ok()?)?;
+    let max_pixels = (max_decoded_bytes / 4).min(MAX_NATIVE_IMAGE_BYTES / 4);
+    if width == 0 || height == 0 || pixel_count > max_pixels {
+        return None;
+    }
+    let Some(frame) = decoder.read_next_frame().ok()? else {
+        return None;
+    };
+    if u32::from(frame.width) != width
+        || u32::from(frame.height) != height
+        || frame.left != 0
+        || frame.top != 0
+    {
+        return None;
+    }
+    let pixels = frame.buffer.to_vec();
+    if decoder.read_next_frame().ok()?.is_some() {
+        return None;
+    }
     (pixels.len() == pixel_count.checked_mul(4)? && pixels.len() <= max_decoded_bytes).then_some(
         NativeImage {
             width,

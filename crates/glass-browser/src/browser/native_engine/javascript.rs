@@ -9237,6 +9237,12 @@ fn document_bootstrap(
           : null;
       }},
     }});
+    Object.defineProperty(text, "nodeValue", {{
+      enumerable: true,
+      configurable: false,
+      get() {{ return textContent; }},
+      set(next) {{ text.textContent = next; }},
+    }});
     Object.defineProperty(text, "textContent", {{
       enumerable: true,
       configurable: false,
@@ -9245,11 +9251,11 @@ fn document_bootstrap(
         const value = String(next);
         if (value.length > {storage_value_limit}) throw new RangeError("native text node exceeds its limit");
         textContent = value;
-        text.nodeValue = value;
         if (text.__glassParent && typeof text.__glassParent.__glassSyncContent === "function") text.__glassParent.__glassSyncContent();
         pushCommand({{ kind: "setTextContent", node_index: nodeIndex, value }});
       }},
     }});
+    try {{ Object.setPrototypeOf(text, TextNative.prototype); }} catch (_error) {{}}
     defineTreeAccessors(text);
     mutationCreatedNodes.set(nodeIndex, text);
     pushCommand({{ kind: "createTextNode", node_index: nodeIndex, value: textContent }});
@@ -9421,6 +9427,12 @@ fn document_bootstrap(
           : null;
       }},
     }});
+    Object.defineProperty(text, "nodeValue", {{
+      enumerable: true,
+      configurable: false,
+      get() {{ return textContent; }},
+      set(next) {{ text.textContent = next; }},
+    }});
     Object.defineProperty(text, "ownerDocument", {{ enumerable: false, configurable: false, get() {{ return globalThis.document || null; }} }});
     Object.defineProperty(text, "textContent", {{
       enumerable: true,
@@ -9430,7 +9442,6 @@ fn document_bootstrap(
         const value = String(next);
         if (value.length > {storage_value_limit}) throw new RangeError("native text node exceeds its limit");
         textContent = value;
-        text.nodeValue = value;
         if (text.__glassParent && typeof text.__glassParent.__glassSyncContent === "function") text.__glassParent.__glassSyncContent();
         pushCommand({{ kind: "setTextContent", node_index: text.nodeIndex, value }});
       }},
@@ -9447,7 +9458,6 @@ fn document_bootstrap(
       value(nextEntry) {{
         text.parentIndex = nextEntry.parentIndex == null ? null : nextEntry.parentIndex;
         textContent = String(nextEntry.nodeValue || "");
-        text.nodeValue = textContent;
       }},
     }});
     return text;
@@ -11288,6 +11298,8 @@ fn document_bootstrap(
   globalThis.__glassDOMExceptionConstructor = DOMExceptionNative;
   globalThis.DOMException = DOMExceptionNative;
   const NodeNative = ensureNativeConstructor("Node", null);
+  const CharacterDataNative = ensureNativeConstructor("CharacterData", NodeNative);
+  const TextNative = ensureNativeConstructor("Text", CharacterDataNative);
   const DocumentNative = ensureNativeConstructor("Document", NodeNative);
   const DocumentFragmentNative = ensureNativeConstructor("DocumentFragment", NodeNative);
   const ElementNative = ensureNativeConstructor("Element", NodeNative);
@@ -11296,6 +11308,89 @@ fn document_bootstrap(
   const LocationNative = ensureNativeConstructor("Location", null);
   const NodeListNative = ensureNativeConstructor("NodeList", null);
   const HtmlCollectionNative = ensureNativeConstructor("HTMLCollection", null);
+  const characterDataTarget = (target) => {{
+    if (!target || Number(target.nodeType) !== 3) throw new TypeError("CharacterData method called on a non-text node");
+    return target;
+  }};
+  const characterDataText = (target) => {{
+    const text = characterDataTarget(target);
+    return String(text.__glassTextValue ?? text.nodeValue ?? "");
+  }};
+  const characterDataOffset = (target, value) => {{
+    const numeric = Number(value);
+    const offset = Number.isNaN(numeric) ? 0 : Math.trunc(numeric);
+    if (!Number.isFinite(numeric) || numeric < 0 || offset > characterDataText(target).length) {{
+      throw new DOMExceptionNative("The character data offset is out of range", "IndexSizeError");
+    }}
+    return offset;
+  }};
+  const characterDataCount = (value) => {{
+    const numeric = Number(value);
+    if (Number.isNaN(numeric)) return 0;
+    if (numeric < 0 || Number.isNaN(Math.trunc(numeric))) {{
+      throw new DOMExceptionNative("The character data count is out of range", "IndexSizeError");
+    }}
+    return Number.isFinite(numeric) ? Math.max(0, Math.trunc(numeric)) : Number.MAX_SAFE_INTEGER;
+  }};
+  const defineCharacterDataProperty = (name, descriptor) => {{
+    if (!Object.prototype.hasOwnProperty.call(CharacterDataNative.prototype, name)) {{
+      Object.defineProperty(CharacterDataNative.prototype, name, descriptor);
+    }}
+  }};
+  defineCharacterDataProperty("data", {{
+    configurable: true,
+    enumerable: true,
+    get() {{ return characterDataText(this); }},
+    set(next) {{ characterDataTarget(this).textContent = String(next); }},
+  }});
+  defineCharacterDataProperty("length", {{
+    configurable: true,
+    enumerable: true,
+    get() {{ return characterDataText(this).length; }},
+  }});
+  defineCharacterDataProperty("substringData", {{
+    configurable: true,
+    value(offset, count) {{
+      const target = characterDataTarget(this);
+      const text = characterDataText(target);
+      const start = characterDataOffset(target, offset);
+      return text.slice(start, start + characterDataCount(count));
+    }},
+  }});
+  defineCharacterDataProperty("appendData", {{
+    configurable: true,
+    value(value) {{
+      const target = characterDataTarget(this);
+      target.textContent = characterDataText(target) + String(value);
+    }},
+  }});
+  defineCharacterDataProperty("insertData", {{
+    configurable: true,
+    value(offset, value) {{
+      const target = characterDataTarget(this);
+      const text = characterDataText(target);
+      const start = characterDataOffset(target, offset);
+      target.textContent = text.slice(0, start) + String(value) + text.slice(start);
+    }},
+  }});
+  defineCharacterDataProperty("deleteData", {{
+    configurable: true,
+    value(offset, count) {{
+      const target = characterDataTarget(this);
+      const text = characterDataText(target);
+      const start = characterDataOffset(target, offset);
+      target.textContent = text.slice(0, start) + text.slice(start + characterDataCount(count));
+    }},
+  }});
+  defineCharacterDataProperty("replaceData", {{
+    configurable: true,
+    value(offset, count, value) {{
+      const target = characterDataTarget(this);
+      const text = characterDataText(target);
+      const start = characterDataOffset(target, offset);
+      target.textContent = text.slice(0, start) + String(value) + text.slice(start + characterDataCount(count));
+    }},
+  }});
   for (const constructor of [NodeListNative, HtmlCollectionNative]) {{
     if (constructor.prototype && Object.getPrototypeOf(constructor.prototype) !== Array.prototype) {{
       try {{ Object.setPrototypeOf(constructor.prototype, Array.prototype); }} catch (_error) {{}}
@@ -12059,6 +12154,12 @@ fn document_bootstrap(
               : null;
           }},
         }});
+        Object.defineProperty(text, "nodeValue", {{
+          enumerable: true,
+          configurable: false,
+          get() {{ return textContent; }},
+          set(next) {{ text.textContent = next; }},
+        }});
         Object.defineProperty(text, "ownerDocument", {{ enumerable: false, configurable: false, get() {{ return frameDocument; }} }});
         Object.defineProperty(text, "textContent", {{
           enumerable: true,
@@ -12068,12 +12169,12 @@ fn document_bootstrap(
             const value = String(next);
             if (value.length > {storage_value_limit}) throw new RangeError("native text node exceeds its limit");
             textContent = value;
-            text.nodeValue = value;
             if (text.__glassParent && typeof text.__glassParent.__glassSyncContent === "function") text.__glassParent.__glassSyncContent();
             queueFrameCommand(currentBinding, {{ kind: "setTextContent", node_index: text.nodeIndex, value }});
           }},
         }});
         Object.defineProperty(text, "data", {{ enumerable: true, configurable: false, get() {{ return textContent; }}, set(next) {{ text.textContent = next; }} }});
+        try {{ Object.setPrototypeOf(text, TextNative.prototype); }} catch (_error) {{}}
         return text;
       }});
     const frameNodesByIndex = new Map([
@@ -12419,7 +12520,9 @@ fn document_bootstrap(
             : null;
         }},
       }});
-      Object.defineProperty(text, "textContent", {{ enumerable: true, configurable: false, get() {{ return textContent; }}, set(next) {{ textContent = String(next); if (text.__glassParent && typeof text.__glassParent.__glassSyncContent === "function") text.__glassParent.__glassSyncContent(); queueFrameCommand(currentBinding, {{ kind: "setTextContent", node_index: nodeIndex, value: textContent }}); }} }});
+      Object.defineProperty(text, "nodeValue", {{ enumerable: true, configurable: false, get() {{ return textContent; }}, set(next) {{ text.textContent = next; }} }});
+      Object.defineProperty(text, "textContent", {{ enumerable: true, configurable: false, get() {{ return textContent; }}, set(next) {{ const value = String(next); if (value.length > {storage_value_limit}) throw new RangeError("native text node exceeds its limit"); textContent = value; if (text.__glassParent && typeof text.__glassParent.__glassSyncContent === "function") text.__glassParent.__glassSyncContent(); queueFrameCommand(currentBinding, {{ kind: "setTextContent", node_index: nodeIndex, value: textContent }}); }} }});
+      Object.defineProperty(text, "data", {{ enumerable: true, configurable: false, get() {{ return textContent; }}, set(next) {{ text.textContent = next; }} }});
       Object.defineProperty(text, "ownerDocument", {{ enumerable: false, configurable: false, get() {{ return frameDocument; }} }});
       text.remove = () => {{
         const parent = text.__glassParent || null;
@@ -12438,6 +12541,7 @@ fn document_bootstrap(
       frameMutationText.set(frameMutationKey(currentBinding, nodeIndex), textContent);
       frameMutationChildren.set(frameMutationKey(currentBinding, nodeIndex), []);
       queueFrameCommand(currentBinding, {{ kind: "createTextNode", node_index: nodeIndex, value: textContent }});
+      try {{ Object.setPrototypeOf(text, TextNative.prototype); }} catch (_error) {{}}
       return text;
     }};
     const makeFrameDocumentFragment = () => {{
@@ -12969,6 +13073,9 @@ fn document_bootstrap(
         get() {{ return globalThis.document || null; }},
       }});
     }}
+  }}
+  for (const text of textNodes) {{
+    try {{ Object.setPrototypeOf(text, TextNative.prototype); }} catch (_error) {{}}
   }}
   try {{ Object.setPrototypeOf(globalThis, WindowNative.prototype); }} catch (_error) {{}}
   globalThis.self = globalThis;

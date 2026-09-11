@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-183`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-184`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
@@ -3373,6 +3373,17 @@ comments, raw-text/foreign-content rules, malformed-input recovery, and full
 Web IDL descriptor parity remain conformance work. Exact local evidence is in
 `docs/plan/tasks/native-engine-browser-179.md`; browser-complete promotion
 remains tracked issue-40 work.
+
+The completed native-engine-browser-184 slice closes the same-turn
+`textContent`/`innerText` child-materialization gap. Local and projected
+HTTP(S)/frame elements now replace their children with one temporary text node
+before the script returns, so `firstChild`, `childNodes`, parent links,
+serialization, and observer added-node payloads agree with the scalar value.
+The host suppresses preview create/attach commands and emits one
+authoritative `setTextContent` transaction; Rust remains the durable owner.
+Exact local evidence is in
+[native-engine-browser-184](../tasks/native-engine-browser-184.md), while
+full Web IDL, HTML, observer, and browser-complete promotion work remains.
 
 The completed native-engine-browser-183 slice closes the element `innerHTML`
 same-turn visibility gap. Element setters now use the bounded fragment parser

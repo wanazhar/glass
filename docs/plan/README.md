@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-216` locally. The versioned
+`native-engine-browser-217` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1902,6 +1902,14 @@ indefinitely pending. Changing or removing `src` clears intrinsic dimensions
 and re-enters the pending/empty state, while an image without a source is
 complete with zero dimensions. Exact evidence is recorded in
 [native-engine-browser-216](tasks/native-engine-browser-216.md).
+
+The completed native-engine-browser-217 slice adds terminal external-image
+`error` events. Initial and script-mutated external PNG attempts now produce
+either the existing non-bubbling `load` event or a non-bubbling, non-cancelable
+`error` event after the content-process policy/loader reaches a result;
+failed image attempts remain non-fatal and retain the slice-216 lifecycle
+state. Exact evidence is recorded in
+[native-engine-browser-217](tasks/native-engine-browser-217.md).
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` now returns persistent `Attr`

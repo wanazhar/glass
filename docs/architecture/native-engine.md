@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-216` slice; the bounded foundation below remains
+`native-engine-browser-217` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5363,6 +5363,15 @@ resources so successful and broken loads both reach a terminal state. `src`
 mutation/removal resets the per-element state and stale node/source entries are
 discarded before publication. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-216.md`.
+
+The completed native-engine-browser-217 slice extends that image owner with
+terminal error delivery. External image discovery and script mutation now
+retain a typed `Error` resource event when policy, transport, status, MIME, or
+PNG decoding rejects the attempt; the content realm dispatches it with the
+same validated host-event path as `load`, as a non-bubbling and
+non-cancelable event. Existing successful image, background-image, lifecycle,
+and wire-validation behavior remains unchanged. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-217.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

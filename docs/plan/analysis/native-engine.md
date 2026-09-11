@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-215`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-216`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 205
 slice carries bounded quadratic/cubic SVG path geometry through shared path
 parsing, flattening, layout, display-list, raster, clipping, and capture
@@ -3526,6 +3526,18 @@ handlers, responsive sources, additional CSS image layers beyond the single
 background-image URL, SVG image resources, animation, and other formats remain
 active issue #40 work. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-212.md`.
+
+The completed native-engine-browser-216 slice closes the first image Web IDL
+lifecycle gap on top of slices 210–215. Native script projections now expose
+`HTMLImageElement.complete`, `naturalWidth`, `naturalHeight`, and resolved
+`currentSrc`; local data-URL images derive dimensions from the bounded decoder,
+and content-worker external attempts transfer validated terminal state even
+when decoding or fetching fails. `src` writes/removal reset dimensions and
+pending state, and matching source/node validation prevents stale lifecycle
+records from surviving mutation. Responsive source selection, `srcset`/
+`sizes`, image error-event parity, SVG/animated/other formats, and complete
+browser compatibility remain separate promotion work. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-216.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

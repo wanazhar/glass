@@ -9,7 +9,7 @@ use super::paint::NativeDisplayList;
 use super::raster::NativeSurface;
 use super::resource_loader::NativeNavigationRequest;
 use super::{
-    config::{MAX_NATIVE_DOM_DEPTH, TextFragmentTerms, Viewport},
+    config::{MAX_NATIVE_DOM_DEPTH, MAX_NATIVE_NODES, TextFragmentTerms, Viewport},
     css::{
         AlignContentValue, AlignItemsValue, AlignSelfValue, DirectionValue, FlexBasisValue,
         FlexDirectionValue, FlexWrapValue, FontStyleValue, FontWeightValue, JustifyContentValue,
@@ -301,6 +301,7 @@ pub struct NativeDocument {
     generation: u32,
     revision: u64,
     root: NativeNodeId,
+    max_nodes: usize,
     nodes: Vec<NativeNode>,
     stylesheet: NativeStylesheet,
     computed_styles: Option<Vec<NativeComputedStyle>>,
@@ -346,6 +347,7 @@ impl NativeDocument {
             generation,
             revision: u64::from(generation),
             root,
+            max_nodes: limits.max_nodes,
             nodes: vec![NativeNode {
                 id: root,
                 parent: None,
@@ -481,6 +483,7 @@ impl NativeDocument {
         self.nodes
             .iter()
             .filter_map(|node| {
+                self.node(node.id())?;
                 (node.element_name() == Some("link")
                     && node.attribute("rel").is_some_and(|rel| {
                         rel.split_ascii_whitespace()
@@ -653,6 +656,7 @@ impl NativeDocument {
             generation,
             revision: u64::from(generation),
             root,
+            max_nodes: limits.max_nodes,
             nodes,
             stylesheet: NativeStylesheet::default(),
             computed_styles: Some(wire.computed_styles),
@@ -672,6 +676,7 @@ impl NativeDocument {
             generation: 1,
             revision: 0,
             root,
+            max_nodes: MAX_NATIVE_NODES,
             nodes: vec![NativeNode {
                 id: root,
                 parent: None,
@@ -709,9 +714,8 @@ impl NativeDocument {
     }
 
     pub fn node(&self, id: NativeNodeId) -> Option<&NativeNode> {
-        (id.generation == self.generation)
-            .then(|| self.nodes.get(id.index as usize))
-            .flatten()
+        let node = self.raw_node(id)?;
+        self.is_attached(id).then_some(node)
     }
 
     pub const fn node_count(&self) -> usize {
@@ -735,6 +739,7 @@ impl NativeDocument {
     pub(crate) fn element_node_ids(&self) -> impl Iterator<Item = NativeNodeId> + '_ {
         self.nodes
             .iter()
+            .filter(|node| self.is_attached(node.id()))
             .filter(|node| node.element_name().is_some())
             .map(NativeNode::id)
     }
@@ -745,6 +750,7 @@ impl NativeDocument {
     pub(crate) fn embedded_frame_sources(&self) -> Vec<(NativeNodeId, String)> {
         self.nodes
             .iter()
+            .filter(|node| self.is_attached(node.id()))
             .filter(|node| matches!(node.element_name(), Some("iframe" | "frame")))
             .map(|node| {
                 if let Some(srcdoc) = node.attribute("srcdoc") {
@@ -772,6 +778,7 @@ impl NativeDocument {
             .nodes
             .iter()
             .filter_map(|node| {
+                self.node(node.id())?;
                 let tag_name = node.element_name()?.to_owned();
                 let (text, _) = self
                     .element_text(node.id(), max_text_bytes)
@@ -819,6 +826,7 @@ impl NativeDocument {
     ) -> Vec<NativePageScriptSource> {
         self.nodes
             .iter()
+            .filter(|node| self.is_attached(node.id()))
             .filter(|node| node.element_name() == Some("script"))
             .filter_map(|node| {
                 let module = match node.attribute("type") {
@@ -1264,7 +1272,8 @@ impl NativeDocument {
         self.nodes
             .iter()
             .find(|node| {
-                node.state.focused
+                self.is_attached(node.id())
+                    && node.state.focused
                     && matches!(node.element_name(), Some("input" | "textarea"))
                     && self
                         .semantic_node(node.id())
@@ -1282,7 +1291,7 @@ impl NativeDocument {
     pub(crate) fn focused_node(&self) -> NativeNodeId {
         self.nodes
             .iter()
-            .find(|node| node.state.focused)
+            .find(|node| self.is_attached(node.id()) && node.state.focused)
             .map(NativeNode::id)
             .unwrap_or(self.root)
     }
@@ -1669,6 +1678,10 @@ impl NativeDocument {
                     let id = NativeNodeId::from_parts(self.generation, *node_index);
                     self.remove_script_attribute(id, name)?;
                 }
+                NativeScriptCommand::SetTextContent { node_index, value } => {
+                    let id = NativeNodeId::from_parts(self.generation, *node_index);
+                    self.apply_script_text_content(id, value)?;
+                }
                 NativeScriptCommand::SetCustomValidity {
                     node_index,
                     message,
@@ -1954,6 +1967,40 @@ impl NativeDocument {
         Ok(())
     }
 
+    fn apply_script_text_content(
+        &mut self,
+        id: NativeNodeId,
+        value: &str,
+    ) -> Result<(), NativeEngineError> {
+        if value.len() > MAX_LOCATOR_BYTES {
+            return Err(NativeEngineError::limit(
+                "script text content",
+                MAX_LOCATOR_BYTES,
+                value.len(),
+            ));
+        }
+        if self
+            .node(id)
+            .is_none_or(|node| !matches!(node.kind(), NativeNodeKind::Element { .. }))
+        {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "script text content requires an element".into(),
+            });
+        }
+        let children = self
+            .node(id)
+            .ok_or(NativeEngineError::DetachedTarget)?
+            .children
+            .to_vec();
+        for child in children {
+            self.detach_subtree(child)?;
+        }
+        if !value.is_empty() {
+            self.add_node(id, NativeNodeKind::Text(value.to_owned()), self.max_nodes)?;
+        }
+        Ok(())
+    }
+
     pub fn title(&self, max_bytes: usize) -> (String, bool) {
         let Some(title_id) = self.find_element(self.root, "title") else {
             return (String::new(), false);
@@ -2016,16 +2063,81 @@ impl NativeDocument {
         Ok(id)
     }
 
-    fn node_mut(&mut self, id: NativeNodeId) -> Option<&mut NativeNode> {
+    fn raw_node(&self, id: NativeNodeId) -> Option<&NativeNode> {
+        (id.generation == self.generation)
+            .then(|| self.nodes.get(id.index as usize))
+            .flatten()
+    }
+
+    fn raw_node_mut(&mut self, id: NativeNodeId) -> Option<&mut NativeNode> {
         (id.generation == self.generation)
             .then(|| self.nodes.get_mut(id.index as usize))
             .flatten()
+    }
+
+    fn is_attached(&self, id: NativeNodeId) -> bool {
+        if id.generation != self.generation {
+            return false;
+        }
+        let mut current = id;
+        for _ in 0..=self.nodes.len() {
+            if current == self.root {
+                return true;
+            }
+            let Some(parent) = self.raw_node(current).and_then(NativeNode::parent) else {
+                return false;
+            };
+            if parent == current {
+                return false;
+            }
+            current = parent;
+        }
+        false
+    }
+
+    fn node_mut(&mut self, id: NativeNodeId) -> Option<&mut NativeNode> {
+        self.is_attached(id)
+            .then(|| self.raw_node_mut(id))
+            .flatten()
+    }
+
+    fn detach_subtree(&mut self, id: NativeNodeId) -> Result<(), NativeEngineError> {
+        let parent = self
+            .node(id)
+            .and_then(NativeNode::parent)
+            .ok_or(NativeEngineError::DetachedTarget)?;
+        let Some(parent_node) = self.node_mut(parent) else {
+            return Err(NativeEngineError::DetachedTarget);
+        };
+        parent_node.children.retain(|child| *child != id);
+
+        let mut pending = vec![id];
+        let mut detached = Vec::new();
+        while let Some(current) = pending.pop() {
+            let children = self
+                .raw_node(current)
+                .ok_or(NativeEngineError::DetachedTarget)?
+                .children
+                .clone();
+            pending.extend(children);
+            detached.push(current);
+        }
+        for current in detached {
+            let node = self
+                .raw_node_mut(current)
+                .ok_or(NativeEngineError::DetachedTarget)?;
+            node.parent = None;
+            node.children.clear();
+            node.state.focused = false;
+        }
+        Ok(())
     }
 
     fn normalize_select_defaults(&mut self) {
         let select_ids = self
             .nodes
             .iter()
+            .filter(|node| self.is_attached(node.id()))
             .filter(|node| node.element_name() == Some("select"))
             .map(NativeNode::id)
             .collect::<Vec<_>>();
@@ -2074,6 +2186,7 @@ impl NativeDocument {
     fn select_option_ids(&self, select_id: NativeNodeId) -> Vec<NativeNodeId> {
         self.nodes
             .iter()
+            .filter(|node| self.is_attached(node.id()))
             .filter(|node| self.semantic_role(node.id()) == Some("option"))
             .filter(|node| self.is_descendant_of(node.id(), select_id))
             .map(NativeNode::id)
@@ -2107,6 +2220,7 @@ impl NativeDocument {
         let focused_ids = self
             .nodes
             .iter()
+            .filter(|node| self.is_attached(node.id()))
             .filter(|node| node.state.focused && node.id() != id)
             .map(NativeNode::id)
             .collect::<Vec<_>>();
@@ -2756,6 +2870,9 @@ impl NativeDocument {
         self.node(parent_id)
             .ok_or(NativeEngineError::DetachedTarget)?;
         for node in &self.nodes {
+            if !self.is_attached(node.id()) {
+                continue;
+            }
             if self.form_owner(node.id()) == Some(parent_id) {
                 let child_id = node.id();
                 controls.push(child_id);
@@ -2790,7 +2907,8 @@ impl NativeDocument {
         }
         if let Some(form_reference) = node.attribute("form") {
             return self.nodes.iter().find_map(|candidate| {
-                (candidate.element_name() == Some("form")
+                (self.is_attached(candidate.id())
+                    && candidate.element_name() == Some("form")
                     && candidate.attribute("id") == Some(form_reference))
                 .then_some(candidate.id())
             });
@@ -2804,7 +2922,8 @@ impl NativeDocument {
         };
         let name = radio.attribute("name");
         self.nodes.iter().any(|candidate| {
-            candidate.element_name() == Some("input")
+            self.is_attached(candidate.id())
+                && candidate.element_name() == Some("input")
                 && candidate
                     .attribute("type")
                     .is_some_and(|kind| kind.eq_ignore_ascii_case("radio"))
@@ -2961,7 +3080,10 @@ impl NativeDocument {
         }
         let mut target = None;
         for node in &self.nodes {
-            if node.element_name().is_none() || node.attribute("id") != Some(fragment) {
+            if !self.is_attached(node.id())
+                || node.element_name().is_none()
+                || node.attribute("id") != Some(fragment)
+            {
                 continue;
             }
             if target.is_some() {
@@ -2974,7 +3096,10 @@ impl NativeDocument {
         }
 
         for node in &self.nodes {
-            if node.element_name() != Some("a") || node.attribute("name") != Some(fragment) {
+            if !self.is_attached(node.id())
+                || node.element_name() != Some("a")
+                || node.attribute("name") != Some(fragment)
+            {
                 continue;
             }
             if target.is_some() {
@@ -3236,15 +3361,19 @@ impl NativeDocument {
 
     fn find_element_by_id(&self, value: &str) -> Option<NativeNodeId> {
         self.nodes.iter().find_map(|node| {
-            (node.element_name().is_some() && node.attribute("id") == Some(value))
-                .then_some(node.id())
+            (self.is_attached(node.id())
+                && node.element_name().is_some()
+                && node.attribute("id") == Some(value))
+            .then_some(node.id())
         })
     }
 
     fn find_label_for(&self, value: &str) -> Option<NativeNodeId> {
         self.nodes.iter().find_map(|node| {
-            (node.element_name() == Some("label") && node.attribute("for") == Some(value))
-                .then_some(node.id())
+            (self.is_attached(node.id())
+                && node.element_name() == Some("label")
+                && node.attribute("for") == Some(value))
+            .then_some(node.id())
         })
     }
 
@@ -4420,6 +4549,37 @@ mod tests {
         assert_eq!(document.title(1024), ("Example".into(), false));
         assert_eq!(document.visible_text(1024), ("Hello & Glass".into(), false));
         assert!(document.node_count() > 1);
+    }
+
+    #[test]
+    fn script_text_content_replaces_subtree_and_detaches_old_nodes() {
+        let limits = NativeEngineLimits::default();
+        let mut document = NativeDocument::parse(
+            "<body><p id='root'>before <span id='old'>child</span></p></body>",
+            &limits,
+        )
+        .unwrap();
+        let root = document.find_element_by_id("root").unwrap();
+        let old = document.find_element_by_id("old").unwrap();
+
+        document
+            .apply_script_commands(&[NativeScriptCommand::SetTextContent {
+                node_index: root.index(),
+                value: "after & literal".into(),
+            }])
+            .unwrap();
+
+        assert_eq!(
+            document.element_text(root, 1024),
+            Some(("after & literal".into(), false))
+        );
+        assert!(document.find_element_by_id("old").is_none());
+        assert!(document.node(old).is_none());
+        assert_eq!(
+            document.visible_text(1024),
+            ("after & literal".into(), false)
+        );
+        assert_eq!(document.script_snapshot(1024).elements.len(), 2);
     }
 
     #[test]

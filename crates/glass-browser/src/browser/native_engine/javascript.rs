@@ -194,6 +194,10 @@ pub(crate) enum NativeScriptCommand {
         node_index: u32,
         name: String,
     },
+    SetTextContent {
+        node_index: u32,
+        value: String,
+    },
     SetCustomValidity {
         node_index: u32,
         message: String,
@@ -7510,6 +7514,7 @@ fn document_bootstrap(
   }};
   const makeElement = (initialEntry) => {{
     let entry = initialEntry;
+    let textContent = String(entry.text || "");
     let value = entry.value === null
       ? (entry.tagName.toLowerCase() === "option"
         ? (entry.attributes.value === undefined ? entry.text : entry.attributes.value)
@@ -7551,8 +7556,6 @@ fn document_bootstrap(
       localName: entry.tagName.toLowerCase(),
       id: entry.attributes.id || "",
       className: entry.attributes.class || "",
-      textContent: entry.text,
-      innerText: entry.text,
       value: entry.value === null
         ? (entry.tagName.toLowerCase() === "option"
           ? (entry.attributes.value === undefined ? entry.text : entry.attributes.value)
@@ -7667,6 +7670,17 @@ fn document_bootstrap(
         pushCommand({{ kind: "removeAttribute", node_index: entry.nodeIndex, name: key }});
       }}
     }};
+    for (const property of ["textContent", "innerText"]) {{
+      Object.defineProperty(element, property, {{
+        enumerable: true,
+        configurable: false,
+        get() {{ return textContent; }},
+        set(next) {{
+          textContent = String(next);
+          pushCommand({{ kind: "setTextContent", node_index: entry.nodeIndex, value: textContent }});
+        }},
+      }});
+    }}
     value = element.value;
     Object.defineProperty(element, "value", {{
       enumerable: true,
@@ -7740,8 +7754,7 @@ fn document_bootstrap(
         element.localName = nextEntry.tagName.toLowerCase();
         element.id = nextEntry.attributes.id || "";
         element.className = nextEntry.attributes.class || "";
-        element.textContent = nextEntry.text;
-        element.innerText = nextEntry.text;
+        textContent = String(nextEntry.text || "");
         element.disabled = nextEntry.disabled;
         element.hidden = nextEntry.hidden;
         element.focused = nextEntry.focused;
@@ -7789,6 +7802,7 @@ fn document_bootstrap(
       case "setSelected": element.selected = Boolean(command.selected); break;
       case "setAttribute": element.setAttribute(command.name, command.value); break;
       case "removeAttribute": element.removeAttribute(command.name); break;
+      case "setTextContent": element.textContent = String(command.value); break;
       case "setCustomValidity": element.setCustomValidity(command.message); break;
       case "checkValidity": element.checkValidity(); break;
       case "reportValidity": element.reportValidity(); break;
@@ -8495,6 +8509,7 @@ fn document_bootstrap(
     let frameDocument;
     const frameElements = (Array.isArray(snapshot.elements) ? snapshot.elements : []).map((entry) => {{
       const attributes = entry.attributes && typeof entry.attributes === "object" ? entry.attributes : {{}};
+      let textContent = String(entry.text || "");
       let value = entry.value == null ? "" : entry.value;
       let checked = Boolean(entry.checked);
       let selected = Boolean(entry.selected);
@@ -8507,8 +8522,6 @@ fn document_bootstrap(
         localName: String(entry.tagName || "").toLowerCase(),
         id: attributes.id || "",
         className: attributes.class || "",
-        textContent: String(entry.text || ""),
-        innerText: String(entry.text || ""),
         value,
         checked,
         selected,
@@ -8553,6 +8566,17 @@ fn document_bootstrap(
           queueFrameCommand(currentBinding, {{ kind: "removeAttribute", node_index: entry.nodeIndex, name: key }});
         }},
       }};
+      for (const property of ["textContent", "innerText"]) {{
+        Object.defineProperty(projected, property, {{
+          enumerable: true,
+          configurable: false,
+          get() {{ return textContent; }},
+          set(next) {{
+            textContent = String(next);
+            queueFrameCommand(currentBinding, {{ kind: "setTextContent", node_index: entry.nodeIndex, value: textContent }});
+          }},
+        }});
+      }}
       Object.defineProperty(projected, "value", {{
         enumerable: true,
         configurable: false,

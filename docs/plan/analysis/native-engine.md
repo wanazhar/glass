@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-160`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-161`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
@@ -3190,6 +3190,15 @@ operations emitted from `contentDocument` are routed to the child frame's
 actual native document owner; the reverse selected-child-to-parent path is
 covered too. Source and target origins are revalidated by the backend, and
 content-worker transfer remains data-only. Structural DOM creation/removal,
+cross-realm event-listener identity, complete frame lifecycle/load ordering,
+and complete browser parity remain issue #40 gates.
+
+The completed native-engine-browser-161 slice makes bounded `textContent` and
+`innerText` setters commit to the native tree. A target's old child subtree is
+detached from selectors, semantic projections, layout, visible-text evidence,
+and embedded-frame discovery while unaffected arena identities remain stable;
+the same command crosses local, content-worker, and same-origin frame owners.
+Dynamic element creation, `innerHTML`, live child-node collections,
 cross-realm event-listener identity, complete frame lifecycle/load ordering,
 and complete browser parity remain issue #40 gates.
 

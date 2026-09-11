@@ -94,6 +94,7 @@ pub(crate) struct NativeContentMutation {
     pub(crate) events: Vec<NativeContentEvent>,
     pub(crate) navigation: Option<NativeContentNavigation>,
     pub(crate) allowed: bool,
+    pub(crate) history: Vec<NativeScriptCommand>,
     pub(crate) storage_events: Vec<NativeStorageEvent>,
     pub(crate) indexed_db_changes: Vec<NativeIndexedDbChange>,
     pub(crate) dialogs: Vec<NativeDialog>,
@@ -1487,6 +1488,7 @@ fn decode_mutation_payload(
     let window_closes = decode_window_close_requests(response, operation)?;
     let window_navigations = decode_window_navigation_requests(response, operation)?;
     let window_name = decode_window_name(response, operation)?;
+    let history = decode_mutation_history(response, operation)?;
     Ok(NativeContentMutation {
         document,
         events,
@@ -1495,6 +1497,7 @@ fn decode_mutation_payload(
             .get("allowed")
             .and_then(Value::as_bool)
             .unwrap_or(true),
+        history,
         storage_events,
         indexed_db_changes,
         dialogs,
@@ -1513,6 +1516,23 @@ fn decode_history_commands(
     let Some(value) = response.get("history") else {
         return Ok(Vec::new());
     };
+    decode_history_command_value(value, operation)
+}
+
+fn decode_mutation_history(
+    response: &Value,
+    operation: &str,
+) -> Result<Vec<NativeScriptCommand>, NativeEngineError> {
+    let Some(value) = response.get("mutation_history") else {
+        return Ok(Vec::new());
+    };
+    decode_history_command_value(value, operation)
+}
+
+fn decode_history_command_value(
+    value: &Value,
+    operation: &str,
+) -> Result<Vec<NativeScriptCommand>, NativeEngineError> {
     let values = value.as_array().ok_or_else(|| NativeEngineError::Worker {
         operation: operation.into(),
         reason: "content process returned invalid history commands".into(),
@@ -3001,6 +3021,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             write_value_frame(&mut stdout, &response).await?;
                             continue;
                         }
+                        let script_url = document_url.clone().unwrap_or(committed_url.clone());
                         let fetches = match fetch_commands(&commands) {
                             Ok(fetches) => fetches,
                             Err(error) => {
@@ -3017,7 +3038,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                         current,
                                         runtime,
                                         loader,
-                                        &committed_url,
+                                        &script_url,
                                         document_origin,
                                         viewport,
                                         NativeScriptEvaluation {
@@ -3036,7 +3057,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             mutate_script_document(
                                 current,
                                 runtime,
-                                &committed_url,
+                                &script_url,
                                 document_origin,
                                 viewport,
                                 &commands,
@@ -3044,6 +3065,32 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         };
                         match result {
                             Ok((next, mutation)) => {
+                                if !mutation.history.is_empty() {
+                                    let Some(base_url) = document_url.as_deref() else {
+                                        let response = content_error_response(
+                                            id,
+                                            NativeEngineError::Worker {
+                                                operation: "content process script history".into(),
+                                                reason: "history mutation lost its document URL"
+                                                    .into(),
+                                            },
+                                        );
+                                        write_value_frame(&mut stdout, &response).await?;
+                                        continue;
+                                    };
+                                    match resolve_content_history_document_url(
+                                        &mutation.history,
+                                        base_url,
+                                        document_origin,
+                                    ) {
+                                        Ok(url) => document_url = Some(url),
+                                        Err(error) => {
+                                            let response = content_error_response(id, error);
+                                            write_value_frame(&mut stdout, &response).await?;
+                                            continue;
+                                        }
+                                    }
+                                }
                                 document = Some(next);
                                 let frame_scripts = runtime.take_frame_script_events();
                                 json!({
@@ -3051,6 +3098,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                     "id": id,
                                     "value": value,
                                     "history": history,
+                                    "mutation_history": mutation.history,
                                     "frame_scripts": frame_scripts,
                                     "document_base64": base64::engine::general_purpose::STANDARD
                                         .encode(serde_json::to_vec(&mutation.document).unwrap_or_default()),
@@ -3096,7 +3144,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             "must be a uint32",
                         )
                     })?;
-                let Some(document_url) = document_url.as_deref() else {
+                let Some(mut committed_url) = document_url.clone() else {
                     let response = content_error_response(
                         id,
                         NativeEngineError::Worker {
@@ -3141,22 +3189,24 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 }
                 let runtime = javascript_runtime.as_ref().expect("runtime initialized");
                 runtime.set_indexed_db_state(
-                    indexed_db_state.origin(&storage_key(document_url, document_origin)),
+                    indexed_db_state.origin(&storage_key(&committed_url, document_origin)),
                 );
                 match mutate_click_with_event_preflight(
                     current,
                     runtime,
-                    document_url,
+                    &mut committed_url,
                     document_origin,
                     viewport,
                     node_index,
                 ) {
                     Ok((next, mutation)) => {
                         document = Some(next);
+                        document_url = Some(committed_url);
                         json!({
                             "kind": "mutated",
                             "id": id,
                             "allowed": mutation.allowed,
+                            "mutation_history": mutation.history,
                             "document_base64": base64::engine::general_purpose::STANDARD
                                 .encode(serde_json::to_vec(&mutation.document).unwrap_or_default()),
                             "events": mutation.events.iter().map(|event| json!({
@@ -3203,7 +3253,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 let text = action.get("text").and_then(Value::as_str).ok_or_else(|| {
                     NativeEngineError::invalid("content-process type text", "must be text")
                 })?;
-                let Some(document_url) = document_url.as_deref() else {
+                let Some(mut committed_url) = document_url.clone() else {
                     let response = content_error_response(
                         id,
                         NativeEngineError::Worker {
@@ -3248,12 +3298,12 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 }
                 let runtime = javascript_runtime.as_ref().expect("runtime initialized");
                 runtime.set_indexed_db_state(
-                    indexed_db_state.origin(&storage_key(document_url, document_origin)),
+                    indexed_db_state.origin(&storage_key(&committed_url, document_origin)),
                 );
                 match mutate_type_with_event_bridge(
                     current,
                     runtime,
-                    document_url,
+                    &mut committed_url,
                     document_origin,
                     viewport,
                     node_index,
@@ -3261,9 +3311,11 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 ) {
                     Ok((next, mutation)) => {
                         document = Some(next);
+                        document_url = Some(committed_url);
                         json!({
                             "kind": "mutated",
                             "id": id,
+                            "mutation_history": mutation.history,
                             "document_base64": base64::engine::general_purpose::STANDARD
                                 .encode(serde_json::to_vec(&mutation.document).unwrap_or_default()),
                             "events": mutation.events.iter().map(|event| json!({
@@ -3326,7 +3378,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         continue;
                     }
                 };
-                let Some(document_url) = document_url.as_deref() else {
+                let Some(mut committed_url) = document_url.clone() else {
                     let response = content_error_response(
                         id,
                         NativeEngineError::Worker {
@@ -3371,12 +3423,12 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 }
                 let runtime = javascript_runtime.as_ref().expect("runtime initialized");
                 runtime.set_indexed_db_state(
-                    indexed_db_state.origin(&storage_key(document_url, document_origin)),
+                    indexed_db_state.origin(&storage_key(&committed_url, document_origin)),
                 );
                 match mutate_form_action_with_event_bridge(
                     current,
                     runtime,
-                    document_url,
+                    &mut committed_url,
                     document_origin,
                     viewport,
                     node_index,
@@ -3384,9 +3436,11 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 ) {
                     Ok((next, mutation)) => {
                         document = Some(next);
+                        document_url = Some(committed_url);
                         json!({
                             "kind": "mutated",
                             "id": id,
+                            "mutation_history": mutation.history,
                             "document_base64": base64::engine::general_purpose::STANDARD
                                 .encode(serde_json::to_vec(&mutation.document).unwrap_or_default()),
                             "events": mutation.events.iter().map(|event| json!({
@@ -3438,7 +3492,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     write_value_frame(&mut stdout, &response).await?;
                     continue;
                 }
-                let Some(document_url) = document_url.as_deref() else {
+                let Some(mut committed_url) = document_url.clone() else {
                     let response = content_error_response(
                         id,
                         NativeEngineError::Worker {
@@ -3483,7 +3537,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 }
                 let runtime = javascript_runtime.as_ref().expect("runtime initialized");
                 runtime.set_indexed_db_state(
-                    indexed_db_state.origin(&storage_key(document_url, document_origin)),
+                    indexed_db_state.origin(&storage_key(&committed_url, document_origin)),
                 );
                 let modifiers = action.get("modifiers").and_then(Value::as_i64).unwrap_or(0);
                 if !(0..=15).contains(&modifiers) {
@@ -3507,7 +3561,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         mutate_key_event_with_event_bridge(
                             current,
                             runtime,
-                            document_url,
+                            &mut committed_url,
                             document_origin,
                             viewport,
                             node_index,
@@ -3519,7 +3573,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     ("mutate_key_shortcut", "shortcut") => mutate_key_shortcut_with_event_bridge(
                         current,
                         runtime,
-                        document_url,
+                        &mut committed_url,
                         document_origin,
                         viewport,
                         node_index,
@@ -3533,7 +3587,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     ("mutate_key_events", "") => mutate_key_with_event_bridge(
                         current,
                         runtime,
-                        document_url,
+                        &mut committed_url,
                         document_origin,
                         viewport,
                         node_index,
@@ -3547,9 +3601,11 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 match result {
                     Ok((next, mutation)) => {
                         document = Some(next);
+                        document_url = Some(committed_url);
                         json!({
                             "kind": "mutated",
                             "id": id,
+                            "mutation_history": mutation.history,
                             "document_base64": base64::engine::general_purpose::STANDARD
                                 .encode(serde_json::to_vec(&mutation.document).unwrap_or_default()),
                             "events": mutation.events.iter().map(|event| json!({
@@ -3573,7 +3629,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     write_value_frame(&mut stdout, &response).await?;
                     continue;
                 };
-                let Some(document_url) = document_url.as_deref() else {
+                let Some(mut committed_url) = document_url.clone() else {
                     let response = content_error_response(
                         id,
                         NativeEngineError::Worker {
@@ -3607,22 +3663,24 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     continue;
                 };
                 runtime.set_indexed_db_state(
-                    indexed_db_state.origin(&storage_key(document_url, document_origin)),
+                    indexed_db_state.origin(&storage_key(&committed_url, document_origin)),
                 );
                 match mutate_before_unload(
                     current,
                     runtime,
-                    document_url,
+                    &mut committed_url,
                     document_origin,
                     viewport,
                 ) {
                     Ok((next, mutation)) => {
                         let allowed = mutation.allowed;
                         document = Some(next);
+                        document_url = Some(committed_url);
                         json!({
                             "kind": "mutated",
                             "id": id,
                             "allowed": allowed,
+                            "mutation_history": mutation.history,
                             "document_base64": base64::engine::general_purpose::STANDARD
                                 .encode(serde_json::to_vec(&mutation.document).unwrap_or_default()),
                             "events": mutation.events.iter().map(|event| json!({
@@ -3685,7 +3743,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     }
                     events.push(event);
                 }
-                let Some(document_url) = document_url.as_deref() else {
+                let Some(mut committed_url) = document_url.clone() else {
                     let response = content_error_response(
                         id,
                         NativeEngineError::Worker {
@@ -3719,21 +3777,23 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     continue;
                 };
                 runtime.set_indexed_db_state(
-                    indexed_db_state.origin(&storage_key(document_url, document_origin)),
+                    indexed_db_state.origin(&storage_key(&committed_url, document_origin)),
                 );
                 match mutate_lifecycle_events(
                     current,
                     runtime,
-                    document_url,
+                    &mut committed_url,
                     document_origin,
                     viewport,
                     &events,
                 ) {
                     Ok((next, mutation)) => {
                         document = Some(next);
+                        document_url = Some(committed_url);
                         json!({
                             "kind": "mutated",
                             "id": id,
+                            "mutation_history": mutation.history,
                             "document_base64": base64::engine::general_purpose::STANDARD
                                 .encode(serde_json::to_vec(&mutation.document).unwrap_or_default()),
                             "events": mutation.events.iter().map(|event| json!({
@@ -3778,6 +3838,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     .ok_or_else(|| {
                         NativeEngineError::invalid("hashchange new URL", "must be text")
                     })?;
+                let mut committed_url = new_url.to_owned();
                 validate_url_text("hashchange old URL", old_url)?;
                 validate_url_text("hashchange new URL", new_url)?;
                 if without_fragment(old_url) != without_fragment(new_url) || old_url == new_url {
@@ -3815,16 +3876,17 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     current,
                     runtime,
                     old_url,
-                    new_url,
+                    &mut committed_url,
                     document_origin,
                     viewport,
                 ) {
                     Ok((next, mutation)) => {
                         document = Some(next);
-                        document_url = Some(new_url.to_owned());
+                        document_url = Some(committed_url);
                         json!({
                             "kind": "mutated",
                             "id": id,
+                            "mutation_history": mutation.history,
                             "document_base64": base64::engine::general_purpose::STANDARD
                                 .encode(serde_json::to_vec(&mutation.document).unwrap_or_default()),
                             "events": mutation.events.iter().map(|event| json!({
@@ -4534,13 +4596,14 @@ fn resolve_module_specifier(
 fn mutate_click_with_event_preflight(
     current: &NativeDocument,
     runtime: &NativeJavaScriptRuntime,
-    document_url: &str,
+    document_url: &mut String,
     document_origin: &NativeOrigin,
     viewport: Viewport,
     node_index: u32,
 ) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
     let node_id = NativeNodeId::from_parts(current.generation(), node_index);
     let mut next = current.clone();
+    let mut history = Vec::new();
     let mut events = next.apply_script_focus(node_id)?;
     let focus_metadata = events
         .iter()
@@ -4549,6 +4612,13 @@ fn mutate_click_with_event_preflight(
     if let Some(source) = host_event_script(&focus_metadata)? {
         let evaluation =
             runtime.evaluate(&source, &next, document_url, document_origin, viewport)?;
+        apply_content_event_history(
+            &evaluation.commands,
+            document_url,
+            document_origin,
+            runtime,
+            &mut history,
+        )?;
         events.extend(next.apply_script_commands(&evaluation.commands)?);
     }
 
@@ -4575,6 +4645,13 @@ fn mutate_click_with_event_preflight(
             operation: "content process click preflight".into(),
             reason: "native click event result was invalid".into(),
         })?;
+    apply_content_event_history(
+        &click_evaluation.commands,
+        document_url,
+        document_origin,
+        runtime,
+        &mut history,
+    )?;
     events.extend(next.apply_script_commands(&click_evaluation.commands)?);
     let mut navigation = None;
     if click_allowed {
@@ -4591,6 +4668,7 @@ fn mutate_click_with_event_preflight(
                     form_id,
                     Some(node_id),
                     &mut events,
+                    &mut history,
                 )? {
                     navigation = Some(NativeContentNavigation {
                         node_index: form_id.index(),
@@ -4615,6 +4693,7 @@ fn mutate_click_with_event_preflight(
                     viewport,
                     &invalid,
                     &mut events,
+                    &mut history,
                 )?;
             }
         }
@@ -4639,6 +4718,7 @@ fn mutate_click_with_event_preflight(
             .collect(),
         navigation,
         allowed: click_allowed,
+        history,
         storage_events: Vec::new(),
         indexed_db_changes: Vec::new(),
         dialogs: Vec::new(),
@@ -4654,12 +4734,13 @@ fn mutate_click_with_event_preflight(
 fn dispatch_submit_event(
     document: &mut NativeDocument,
     runtime: &NativeJavaScriptRuntime,
-    document_url: &str,
+    document_url: &mut String,
     document_origin: &NativeOrigin,
     viewport: Viewport,
     form_id: NativeNodeId,
     submitter: Option<NativeNodeId>,
     events: &mut Vec<(NativeNodeId, NativeEventKind)>,
+    history: &mut Vec<NativeScriptCommand>,
 ) -> Result<bool, NativeEngineError> {
     let source = host_submit_event_script(form_id.index(), submitter.map(NativeNodeId::index))?
         .ok_or_else(|| NativeEngineError::Worker {
@@ -4668,6 +4749,13 @@ fn dispatch_submit_event(
         })?;
     let evaluation =
         runtime.evaluate(&source, document, document_url, document_origin, viewport)?;
+    apply_content_event_history(
+        &evaluation.commands,
+        document_url,
+        document_origin,
+        runtime,
+        history,
+    )?;
     let allowed = evaluation
         .value
         .as_array()
@@ -4685,11 +4773,12 @@ fn dispatch_submit_event(
 fn dispatch_invalid_events(
     document: &mut NativeDocument,
     runtime: &NativeJavaScriptRuntime,
-    document_url: &str,
+    document_url: &mut String,
     document_origin: &NativeOrigin,
     viewport: Viewport,
     invalid: &[NativeNodeId],
     events: &mut Vec<(NativeNodeId, NativeEventKind)>,
+    history: &mut Vec<NativeScriptCommand>,
 ) -> Result<(), NativeEngineError> {
     let metadata = invalid
         .iter()
@@ -4700,6 +4789,13 @@ fn dispatch_invalid_events(
     };
     let evaluation =
         runtime.evaluate(&source, document, document_url, document_origin, viewport)?;
+    apply_content_event_history(
+        &evaluation.commands,
+        document_url,
+        document_origin,
+        runtime,
+        history,
+    )?;
     events.extend(
         invalid
             .iter()
@@ -4713,7 +4809,7 @@ fn dispatch_invalid_events(
 fn mutate_type_with_event_bridge(
     current: &NativeDocument,
     runtime: &NativeJavaScriptRuntime,
-    document_url: &str,
+    document_url: &mut String,
     document_origin: &NativeOrigin,
     viewport: Viewport,
     node_index: u32,
@@ -4721,6 +4817,7 @@ fn mutate_type_with_event_bridge(
 ) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
     let node_id = NativeNodeId::from_parts(current.generation(), node_index);
     let mut next = current.clone();
+    let mut history = Vec::new();
     let mut events = next.apply_type(node_id, text)?;
     let default_events = events.clone();
     for (event_node, event_kind) in default_events {
@@ -4730,6 +4827,13 @@ fn mutate_type_with_event_bridge(
         };
         let evaluation =
             runtime.evaluate(&source, &next, document_url, document_origin, viewport)?;
+        apply_content_event_history(
+            &evaluation.commands,
+            document_url,
+            document_origin,
+            runtime,
+            &mut history,
+        )?;
         events.extend(next.apply_script_commands(&evaluation.commands)?);
         if events.len() > MAX_NATIVE_EFFECTS {
             return Err(NativeEngineError::limit(
@@ -4750,6 +4854,7 @@ fn mutate_type_with_event_bridge(
             .collect(),
         navigation: None,
         allowed: true,
+        history,
         storage_events: Vec::new(),
         indexed_db_changes: Vec::new(),
         dialogs: Vec::new(),
@@ -4770,7 +4875,7 @@ enum NativeFormAction {
 fn mutate_form_action_with_event_bridge(
     current: &NativeDocument,
     runtime: &NativeJavaScriptRuntime,
-    document_url: &str,
+    document_url: &mut String,
     document_origin: &NativeOrigin,
     viewport: Viewport,
     node_index: u32,
@@ -4778,6 +4883,7 @@ fn mutate_form_action_with_event_bridge(
 ) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
     let node_id = NativeNodeId::from_parts(current.generation(), node_index);
     let mut next = current.clone();
+    let mut history = Vec::new();
     let mut events = match action {
         NativeFormAction::Clear => next.apply_clear(node_id)?,
         NativeFormAction::Select(value) => next.apply_select(node_id, &value)?,
@@ -4790,6 +4896,13 @@ fn mutate_form_action_with_event_bridge(
         };
         let evaluation =
             runtime.evaluate(&source, &next, document_url, document_origin, viewport)?;
+        apply_content_event_history(
+            &evaluation.commands,
+            document_url,
+            document_origin,
+            runtime,
+            &mut history,
+        )?;
         events.extend(next.apply_script_commands(&evaluation.commands)?);
         if events.len() > MAX_NATIVE_EFFECTS {
             return Err(NativeEngineError::limit(
@@ -4810,6 +4923,7 @@ fn mutate_form_action_with_event_bridge(
             .collect(),
         navigation: None,
         allowed: true,
+        history,
         storage_events: Vec::new(),
         indexed_db_changes: Vec::new(),
         dialogs: Vec::new(),
@@ -4825,7 +4939,7 @@ fn mutate_form_action_with_event_bridge(
 fn mutate_key_with_event_bridge(
     current: &NativeDocument,
     runtime: &NativeJavaScriptRuntime,
-    document_url: &str,
+    document_url: &mut String,
     document_origin: &NativeOrigin,
     viewport: Viewport,
     node_index: u32,
@@ -4839,6 +4953,7 @@ fn mutate_key_with_event_bridge(
         });
     }
     let mut next = current.clone();
+    let mut history = Vec::new();
     let mut events = vec![(node_id, NativeEventKind::KeyDown)];
     let keydown_source = host_key_event_script(node_index, NativeEventKind::KeyDown, key)?
         .ok_or_else(|| NativeEngineError::Worker {
@@ -4851,6 +4966,13 @@ fn mutate_key_with_event_bridge(
         document_url,
         document_origin,
         viewport,
+    )?;
+    apply_content_event_history(
+        &keydown.commands,
+        document_url,
+        document_origin,
+        runtime,
+        &mut history,
     )?;
     let keydown_allowed = keydown
         .value
@@ -4877,6 +4999,13 @@ fn mutate_key_with_event_bridge(
             };
             let evaluation =
                 runtime.evaluate(&source, &next, document_url, document_origin, viewport)?;
+            apply_content_event_history(
+                &evaluation.commands,
+                document_url,
+                document_origin,
+                runtime,
+                &mut history,
+            )?;
             events.extend(next.apply_script_commands(&evaluation.commands)?);
         }
     }
@@ -4895,6 +5024,13 @@ fn mutate_key_with_event_bridge(
         document_url,
         document_origin,
         viewport,
+    )?;
+    apply_content_event_history(
+        &keyup.commands,
+        document_url,
+        document_origin,
+        runtime,
+        &mut history,
     )?;
     events.extend(next.apply_script_commands(&keyup.commands)?);
     if events.len() > MAX_NATIVE_EFFECTS {
@@ -4915,6 +5051,7 @@ fn mutate_key_with_event_bridge(
             .collect(),
         navigation: None,
         allowed: true,
+        history,
         storage_events: Vec::new(),
         indexed_db_changes: Vec::new(),
         dialogs: Vec::new(),
@@ -4930,7 +5067,7 @@ fn mutate_key_with_event_bridge(
 fn mutate_key_event_with_event_bridge(
     current: &NativeDocument,
     runtime: &NativeJavaScriptRuntime,
-    document_url: &str,
+    document_url: &mut String,
     document_origin: &NativeOrigin,
     viewport: Viewport,
     node_index: u32,
@@ -4952,12 +5089,20 @@ fn mutate_key_event_with_event_bridge(
         });
     }
     let mut next = current.clone();
+    let mut history = Vec::new();
     let source = host_key_event_script_with_modifiers(node_index, kind, key, modifiers)?
         .ok_or_else(|| NativeEngineError::Worker {
             operation: "content process key event bridge".into(),
             reason: "native key event source was empty".into(),
         })?;
     let evaluation = runtime.evaluate(&source, &next, document_url, document_origin, viewport)?;
+    apply_content_event_history(
+        &evaluation.commands,
+        document_url,
+        document_origin,
+        runtime,
+        &mut history,
+    )?;
     let mut events = vec![(node_id, kind)];
     events.extend(next.apply_script_commands(&evaluation.commands)?);
     if events.len() > MAX_NATIVE_EFFECTS {
@@ -4980,6 +5125,7 @@ fn mutate_key_event_with_event_bridge(
                 .collect(),
             navigation: None,
             allowed: true,
+            history,
             storage_events: Vec::new(),
             indexed_db_changes: Vec::new(),
             dialogs: Vec::new(),
@@ -4995,7 +5141,7 @@ fn mutate_key_event_with_event_bridge(
 fn mutate_key_shortcut_with_event_bridge(
     current: &NativeDocument,
     runtime: &NativeJavaScriptRuntime,
-    document_url: &str,
+    document_url: &mut String,
     document_origin: &NativeOrigin,
     viewport: Viewport,
     node_index: u32,
@@ -5023,6 +5169,7 @@ fn mutate_key_shortcut_with_event_bridge(
         });
     }
     let mut next = current.clone();
+    let mut history = Vec::new();
     let keydown_source =
         host_key_event_script_with_modifiers(node_index, NativeEventKind::KeyDown, key, modifiers)?
             .ok_or_else(|| NativeEngineError::Worker {
@@ -5035,6 +5182,13 @@ fn mutate_key_shortcut_with_event_bridge(
         document_url,
         document_origin,
         viewport,
+    )?;
+    apply_content_event_history(
+        &keydown.commands,
+        document_url,
+        document_origin,
+        runtime,
+        &mut history,
     )?;
     let keydown_allowed = keydown
         .value
@@ -5057,6 +5211,13 @@ fn mutate_key_shortcut_with_event_bridge(
             };
             let evaluation =
                 runtime.evaluate(&source, &next, document_url, document_origin, viewport)?;
+            apply_content_event_history(
+                &evaluation.commands,
+                document_url,
+                document_origin,
+                runtime,
+                &mut history,
+            )?;
             events.extend(next.apply_script_commands(&evaluation.commands)?);
         }
     }
@@ -5072,6 +5233,13 @@ fn mutate_key_shortcut_with_event_bridge(
         document_url,
         document_origin,
         viewport,
+    )?;
+    apply_content_event_history(
+        &keyup.commands,
+        document_url,
+        document_origin,
+        runtime,
+        &mut history,
     )?;
     events.push((node_id, NativeEventKind::KeyUp));
     events.extend(next.apply_script_commands(&keyup.commands)?);
@@ -5095,6 +5263,7 @@ fn mutate_key_shortcut_with_event_bridge(
                 .collect(),
             navigation: None,
             allowed: true,
+            history,
             storage_events: Vec::new(),
             indexed_db_changes: Vec::new(),
             dialogs: Vec::new(),
@@ -5161,6 +5330,52 @@ fn extract_history_commands(commands: &[NativeScriptCommand]) -> Vec<NativeScrip
         })
         .cloned()
         .collect()
+}
+
+fn apply_content_event_history(
+    commands: &[NativeScriptCommand],
+    document_url: &mut String,
+    document_origin: &NativeOrigin,
+    runtime: &NativeJavaScriptRuntime,
+    history: &mut Vec<NativeScriptCommand>,
+) -> Result<(), NativeEngineError> {
+    let commands = extract_history_commands(commands);
+    if commands.is_empty() {
+        return Ok(());
+    }
+    let mut url = Some(document_url.clone());
+    apply_content_runtime_history(&commands, &mut url, document_origin, runtime)?;
+    *document_url = url.ok_or_else(|| NativeEngineError::Worker {
+        operation: "content process history".into(),
+        reason: "history did not preserve the committed document URL".into(),
+    })?;
+    history.extend(commands);
+    Ok(())
+}
+
+fn resolve_content_history_document_url(
+    commands: &[NativeScriptCommand],
+    base_url: &str,
+    document_origin: &NativeOrigin,
+) -> Result<String, NativeEngineError> {
+    let mut url = base_url.to_owned();
+    for command in commands {
+        match command {
+            NativeScriptCommand::HistoryPushState { href, state }
+            | NativeScriptCommand::HistoryReplaceState { href, state } => {
+                validate_content_history_state(state)?;
+                url = resolve_content_history_href(&url, document_origin, href)?;
+            }
+            NativeScriptCommand::HistoryGo { .. } => {}
+            _ => {
+                return Err(NativeEngineError::Worker {
+                    operation: "content process history".into(),
+                    reason: "non-history command reached history URL resolution".into(),
+                });
+            }
+        }
+    }
+    Ok(url)
 }
 
 fn apply_content_runtime_history(
@@ -5275,7 +5490,7 @@ fn validate_content_history_state(state: &Value) -> Result<(), NativeEngineError
 fn mutate_before_unload(
     current: &NativeDocument,
     runtime: &NativeJavaScriptRuntime,
-    document_url: &str,
+    document_url: &mut String,
     document_origin: &NativeOrigin,
     viewport: Viewport,
 ) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
@@ -5297,11 +5512,19 @@ fn mutate_before_unload(
             reason: "beforeunload event result was invalid".into(),
         })?;
     let mut next = current.clone();
+    let mut history = Vec::new();
     let mut events = vec![NativeContentEvent {
         node_index: u32::MAX,
         kind: NativeEventKind::BeforeUnload,
     }];
     let (commands, navigation) = split_location_navigation(evaluation.commands)?;
+    apply_content_event_history(
+        &commands,
+        document_url,
+        document_origin,
+        runtime,
+        &mut history,
+    )?;
     events.extend(
         next.apply_script_commands(&commands)?
             .into_iter()
@@ -5324,6 +5547,7 @@ fn mutate_before_unload(
             events,
             navigation,
             allowed,
+            history,
             storage_events: Vec::new(),
             indexed_db_changes: Vec::new(),
             dialogs: Vec::new(),
@@ -5339,7 +5563,7 @@ fn mutate_before_unload(
 fn mutate_lifecycle_events(
     current: &NativeDocument,
     runtime: &NativeJavaScriptRuntime,
-    document_url: &str,
+    document_url: &mut String,
     document_origin: &NativeOrigin,
     viewport: Viewport,
     kinds: &[NativeEventKind],
@@ -5352,6 +5576,7 @@ fn mutate_lifecycle_events(
                 events: Vec::new(),
                 navigation: None,
                 allowed: true,
+                history: Vec::new(),
                 storage_events: Vec::new(),
                 indexed_db_changes: Vec::new(),
                 dialogs: Vec::new(),
@@ -5373,7 +5598,15 @@ fn mutate_lifecycle_events(
     })?;
     let evaluation = runtime.evaluate(&source, current, document_url, document_origin, viewport)?;
     let mut next = current.clone();
+    let mut history = Vec::new();
     let (commands, navigation) = split_location_navigation(evaluation.commands)?;
+    apply_content_event_history(
+        &commands,
+        document_url,
+        document_origin,
+        runtime,
+        &mut history,
+    )?;
     let effects = next.apply_script_commands(&commands)?;
     let mut events = kinds
         .iter()
@@ -5401,6 +5634,7 @@ fn mutate_lifecycle_events(
             events,
             navigation,
             allowed: true,
+            history,
             storage_events: Vec::new(),
             indexed_db_changes: Vec::new(),
             dialogs: Vec::new(),
@@ -5417,7 +5651,7 @@ fn mutate_hash_change(
     current: &NativeDocument,
     runtime: &NativeJavaScriptRuntime,
     old_url: &str,
-    new_url: &str,
+    new_url: &mut String,
     document_origin: &NativeOrigin,
     viewport: Viewport,
 ) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
@@ -5429,7 +5663,9 @@ fn mutate_hash_change(
     })?;
     let evaluation = runtime.evaluate(&source, current, new_url, document_origin, viewport)?;
     let mut next = current.clone();
+    let mut history = Vec::new();
     let (commands, navigation) = split_location_navigation(evaluation.commands)?;
+    apply_content_event_history(&commands, new_url, document_origin, runtime, &mut history)?;
     let mut events = vec![NativeContentEvent {
         node_index: u32::MAX,
         kind: NativeEventKind::HashChange,
@@ -5456,6 +5692,7 @@ fn mutate_hash_change(
             events,
             navigation,
             allowed: true,
+            history,
             storage_events: Vec::new(),
             indexed_db_changes: Vec::new(),
             dialogs: Vec::new(),
@@ -5476,6 +5713,8 @@ fn mutate_script_document(
     viewport: Viewport,
     commands: &[NativeScriptCommand],
 ) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
+    let mut document_url = document_url.to_owned();
+    let mut history = Vec::new();
     let mut next = current.clone();
     let mut events = next.apply_script_commands_allowing_links(commands)?;
     let validation_ids = events
@@ -5492,10 +5731,17 @@ fn mutate_script_document(
         )?
     {
         let evaluation =
-            runtime.evaluate(&source, &next, document_url, document_origin, viewport)?;
+            runtime.evaluate(&source, &next, &document_url, document_origin, viewport)?;
+        apply_content_event_history(
+            &evaluation.commands,
+            &mut document_url,
+            document_origin,
+            runtime,
+            &mut history,
+        )?;
         events.extend(next.apply_script_commands(&evaluation.commands)?);
     }
-    let mut navigation = script_navigation_target(&next, document_url, commands)?;
+    let mut navigation = script_navigation_target(&next, &document_url, commands)?;
     if let Some(ScriptNavigationTarget::Form {
         form_id,
         dispatch_submit: true,
@@ -5508,12 +5754,13 @@ fn mutate_script_document(
             if !dispatch_submit_event(
                 &mut next,
                 runtime,
-                document_url,
+                &mut document_url,
                 document_origin,
                 viewport,
                 *form_id,
                 *submitter,
                 &mut events,
+                &mut history,
             )? {
                 navigation = None;
             }
@@ -5521,11 +5768,12 @@ fn mutate_script_document(
             dispatch_invalid_events(
                 &mut next,
                 runtime,
-                document_url,
+                &mut document_url,
                 document_origin,
                 viewport,
                 &invalid,
                 &mut events,
+                &mut history,
             )?;
             navigation = None;
         }
@@ -5563,7 +5811,7 @@ fn mutate_script_document(
                 } => Ok(NativeContentNavigation {
                     node_index,
                     href: next
-                        .form_submission_request_with_submitter(form_id, document_url, submitter)?
+                        .form_submission_request_with_submitter(form_id, &document_url, submitter)?
                         .url,
                     submitter_node_index: submitter.map(NativeNodeId::index),
                     location: false,
@@ -5582,6 +5830,7 @@ fn mutate_script_document(
             })
             .transpose()?,
         allowed: true,
+        history,
         storage_events: Vec::new(),
         indexed_db_changes: Vec::new(),
         dialogs: Vec::new(),
@@ -5764,14 +6013,19 @@ async fn resolve_script_fetches(
     viewport: Viewport,
     evaluation: NativeScriptEvaluation,
 ) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
+    let mut current_url = document_url.to_owned();
     let (mut next, mut mutation) = mutate_script_document(
         current,
         runtime,
-        document_url,
+        &current_url,
         document_origin,
         viewport,
         &evaluation.commands,
     )?;
+    if !mutation.history.is_empty() {
+        current_url =
+            resolve_content_history_document_url(&mutation.history, &current_url, document_origin)?;
+    }
     let mut pending = fetch_commands(&evaluation.commands)?;
     let mut resolved_count = 0usize;
     while let Some((
@@ -5798,7 +6052,7 @@ async fn resolve_script_fetches(
         let payload = fetch_response_payload(
             loader
                 .fetch_request_with_headers_async(NativeFetchRequest {
-                    document_url,
+                    document_url: &current_url,
                     href: &href,
                     method,
                     body,
@@ -5816,20 +6070,38 @@ async fn resolve_script_fetches(
             request_id,
             &payload,
             &next,
-            document_url,
+            &current_url,
             document_origin,
             viewport,
         )?;
+        let resolved_history = extract_history_commands(&resolved.commands);
+        if !resolved_history.is_empty() {
+            let mut url = Some(current_url.clone());
+            apply_content_runtime_history(&resolved_history, &mut url, document_origin, runtime)?;
+            current_url = url.ok_or_else(|| NativeEngineError::Worker {
+                operation: "content process fetch history".into(),
+                reason: "fetch callback history lost its document URL".into(),
+            })?;
+        }
         let (resolved_next, resolved_mutation) = mutate_script_document(
             &next,
             runtime,
-            document_url,
+            &current_url,
             document_origin,
             viewport,
             &resolved.commands,
         )?;
         next = resolved_next;
         mutation.events.extend(resolved_mutation.events);
+        mutation.history.extend(resolved_history);
+        if !resolved_mutation.history.is_empty() {
+            current_url = resolve_content_history_document_url(
+                &resolved_mutation.history,
+                &current_url,
+                document_origin,
+            )?;
+            mutation.history.extend(resolved_mutation.history);
+        }
         if mutation.navigation.is_none() {
             mutation.navigation = resolved_mutation.navigation;
         } else if resolved_mutation.navigation.is_some() {

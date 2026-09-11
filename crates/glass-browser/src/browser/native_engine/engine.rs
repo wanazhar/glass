@@ -1215,7 +1215,8 @@ impl NativeEngine {
             .transpose()?;
         let allowed = mutation.allowed;
         let next_revision = self.next_revision()?;
-        self.apply_content_process_mutation_at(next_revision, mutation)?;
+        self.apply_content_process_mutation_async_at(next_revision, mutation)
+            .await?;
         Ok((allowed, navigation.filter(|_| allowed)))
     }
 
@@ -1238,7 +1239,8 @@ impl NativeEngine {
             .map(|navigation| self.content_navigation_request(navigation))
             .transpose()?;
         let next_revision = self.next_revision()?;
-        self.apply_content_process_mutation_at(next_revision, mutation)?;
+        self.apply_content_process_mutation_async_at(next_revision, mutation)
+            .await?;
         Ok(navigation)
     }
 
@@ -1256,7 +1258,8 @@ impl NativeEngine {
             .await?;
         let navigation = mutation.navigation.clone();
         let next_revision = self.next_revision()?;
-        self.apply_content_process_mutation_at(next_revision, mutation)?;
+        self.apply_content_process_mutation_async_at(next_revision, mutation)
+            .await?;
         Ok(navigation)
     }
 
@@ -1280,7 +1283,8 @@ impl NativeEngine {
             .map(|navigation| self.content_navigation_request(navigation))
             .transpose()?;
         let next_revision = self.next_revision()?;
-        self.apply_content_process_mutation_at(next_revision, mutation)?;
+        self.apply_content_process_mutation_async_at(next_revision, mutation)
+            .await?;
         Ok(navigation)
     }
 
@@ -1387,7 +1391,7 @@ impl NativeEngine {
                 window_navigations,
                 frame_scripts,
                 window_name,
-                history,
+                mut history,
             } = {
                 let process = self
                     .content_process
@@ -1410,6 +1414,11 @@ impl NativeEngine {
             self.config.window_name = window_name;
             self.queue_frame_script_requests(frame_scripts)?;
             let mut history_traversal = None;
+            let mutation_history = mutation
+                .as_ref()
+                .map(|mutation| mutation.history.clone())
+                .unwrap_or_default();
+            history.extend(mutation_history);
             if let Some(mutation) = mutation {
                 let navigation = mutation.navigation.clone();
                 self.apply_content_process_mutation(mutation)?;
@@ -2479,8 +2488,24 @@ impl NativeEngine {
                 };
                 let navigation = mutation.navigation.clone();
                 let click_allowed = mutation.allowed;
+                if click_allowed
+                    && link_href.is_some()
+                    && mutation.history.iter().any(|command| {
+                        matches!(
+                            command,
+                            NativeScriptCommand::HistoryGo { delta } if *delta != 0
+                        )
+                    })
+                {
+                    return Err(NativeEngineError::TargetNotActionable {
+                        reason: "history traversal cannot share a content click with navigation"
+                            .into(),
+                    });
+                }
                 let next_revision = self.next_revision()?;
-                let outcome = self.apply_content_process_mutation_at(next_revision, mutation)?;
+                let outcome = self
+                    .apply_content_process_mutation_async_at(next_revision, mutation)
+                    .await?;
                 if let Some(navigation) = navigation {
                     self.navigate_script_navigation_async(navigation, 0).await?;
                     return Ok(NativeActionResult {
@@ -2531,7 +2556,8 @@ impl NativeEngine {
                         .await?
                 };
                 let next_revision = self.next_revision()?;
-                self.apply_content_process_mutation_at(next_revision, mutation)
+                self.apply_content_process_mutation_async_at(next_revision, mutation)
+                    .await
             }
             NativeAction::Clear { target } => {
                 let id = self.document.resolve_target(&target)?;
@@ -2554,7 +2580,8 @@ impl NativeEngine {
                         .await?
                 };
                 let next_revision = self.next_revision()?;
-                self.apply_content_process_mutation_at(next_revision, mutation)
+                self.apply_content_process_mutation_async_at(next_revision, mutation)
+                    .await
             }
             NativeAction::Select { target, value } => {
                 let id = self.document.resolve_target(&target)?;
@@ -2578,7 +2605,8 @@ impl NativeEngine {
                         .await?
                 };
                 let next_revision = self.next_revision()?;
-                self.apply_content_process_mutation_at(next_revision, mutation)
+                self.apply_content_process_mutation_async_at(next_revision, mutation)
+                    .await
             }
             NativeAction::KeyDown { key } => {
                 let node_index = self.document.focused_node().index();
@@ -2600,7 +2628,8 @@ impl NativeEngine {
                         .await?
                 };
                 let next_revision = self.next_revision()?;
-                self.apply_content_process_mutation_at(next_revision, mutation)
+                self.apply_content_process_mutation_async_at(next_revision, mutation)
+                    .await
             }
             NativeAction::KeyUp { key } => {
                 let node_index = self.document.focused_node().index();
@@ -2622,7 +2651,8 @@ impl NativeEngine {
                         .await?
                 };
                 let next_revision = self.next_revision()?;
-                self.apply_content_process_mutation_at(next_revision, mutation)
+                self.apply_content_process_mutation_async_at(next_revision, mutation)
+                    .await
             }
             NativeAction::Shortcut { shortcut } => {
                 let (modifiers, key) = parse_native_shortcut(&shortcut)?;
@@ -2650,7 +2680,8 @@ impl NativeEngine {
                         .await?
                 };
                 let next_revision = self.next_revision()?;
-                self.apply_content_process_mutation_at(next_revision, mutation)
+                self.apply_content_process_mutation_async_at(next_revision, mutation)
+                    .await
             }
             NativeAction::KeyPress { key } => {
                 validate_native_edit_key(&key)?;
@@ -2670,7 +2701,8 @@ impl NativeEngine {
                         .await?
                 };
                 let next_revision = self.next_revision()?;
-                self.apply_content_process_mutation_at(next_revision, mutation)
+                self.apply_content_process_mutation_async_at(next_revision, mutation)
+                    .await
             }
             NativeAction::Scroll { .. } => self.action(action),
         }
@@ -4086,6 +4118,36 @@ impl NativeEngine {
         let next_revision = self.next_revision()?;
         self.apply_content_process_mutation_at(next_revision, mutation)?;
         Ok(())
+    }
+
+    async fn apply_content_process_mutation_async_at(
+        &mut self,
+        next_revision: u64,
+        mut mutation: NativeContentMutation,
+    ) -> Result<NativeActionResult, NativeEngineError> {
+        let history = std::mem::take(&mut mutation.history);
+        if history.iter().any(|command| {
+            matches!(
+                command,
+                NativeScriptCommand::HistoryGo { delta } if *delta != 0
+            )
+        }) && mutation.navigation.is_some()
+        {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "history traversal cannot share a content event with navigation".into(),
+            });
+        }
+        let outcome = self.apply_content_process_mutation_at(next_revision, mutation)?;
+        let history_traversal = self.apply_content_history_commands(&history)?;
+        if !history.is_empty() {
+            self.sync_content_history_async().await?;
+        }
+        if let Some(delta) = history_traversal
+            && delta != 0
+        {
+            Box::pin(self.traverse_history_delta_async(delta)).await?;
+        }
+        Ok(outcome)
     }
 
     fn apply_content_history_commands(

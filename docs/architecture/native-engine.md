@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-178` slice; the bounded foundation below remains
+`native-engine-browser-179` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -1771,6 +1771,17 @@ surface until attachment, so direct fragment `MutationObserver` records and a
 fragment `innerHTML` setter are not yet claimed. Full Web IDL descriptor parity,
 complete observer semantics, and browser-wide parity remain issue #40
 promotion gates.
+
+The completed native-engine-browser-179 slice adds bounded `innerHTML`
+construction for detached fragments and live selector traversal over newly
+created trees. The shared host tokenizer creates nested element/text nodes,
+decodes common and numeric entities, applies quoted/unquoted/boolean
+attributes, and stops correctly at void elements; fragment and element
+`querySelector*`/collection methods now walk the current projected tree in the
+same script turn. The same behavior is available in local, content-worker, and
+same-origin frame realms, while comments, raw-text/foreign-content parsing,
+full malformed-HTML tree-builder rules, and complete Web IDL parity remain
+open issue #40 promotion work.
 
 The completed native-engine-browser-169 slice adds frame-qualified EventTarget
 behavior to same-origin projected elements, detached projected elements,

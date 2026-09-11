@@ -7890,6 +7890,19 @@ fn document_bootstrap(
     callbacks.splice(index, 1);
     if (callbacks.length === 0) listeners.delete(key);
   }};
+  const installEventHandlerProperty = (element, type) => {{
+    let handler = null;
+    Object.defineProperty(element, "on" + type, {{
+      enumerable: true,
+      configurable: false,
+      get() {{ return handler; }},
+      set(next) {{
+        if (handler) removeListener(ownerFor(element), type, handler, false);
+        handler = typeof next === "function" ? next : null;
+        if (handler) addListener(ownerFor(element), type, handler, false);
+      }},
+    }});
+  }};
   const createEvent = (type, options) => {{
     const settings = options && typeof options === "object" ? options : {{}};
     const event = {{
@@ -8680,6 +8693,8 @@ fn document_bootstrap(
           return value === null || value === "" ? "" : element.src;
         }},
       }});
+      installEventHandlerProperty(element, "load");
+      installEventHandlerProperty(element, "error");
     }}
     Object.defineProperty(element, "type", {{
       enumerable: true,

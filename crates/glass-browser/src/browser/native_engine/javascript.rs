@@ -8523,6 +8523,12 @@ fn document_bootstrap(
         pushCommand({{ kind: "removeAttribute", node_index: entry.nodeIndex, name: key }});
       }},
       appendChild(child) {{
+        if (child && child.__glassFragment === true) {{
+          const children = child.__glassChildren.slice();
+          for (const fragmentChild of children) element.appendChild(fragmentChild);
+          child.__glassChildren = [];
+          return child;
+        }}
         if (!child || typeof child.nodeIndex !== "number") throw new TypeError("child must be a native element");
         if (child === element) throw new TypeError("a node cannot contain itself");
         let ancestor = element;
@@ -8533,6 +8539,7 @@ fn document_bootstrap(
         const oldParent = child.__glassParent || null;
         if (oldParent && Array.isArray(oldParent.__glassChildren)) {{
           oldParent.__glassChildren = oldParent.__glassChildren.filter(candidate => candidate !== child);
+          if (typeof oldParent.__glassSyncContent === "function") oldParent.__glassSyncContent(true);
         }}
         element.__glassChildren = element.__glassChildren.filter(candidate => candidate !== child);
         element.__glassChildren.push(child);
@@ -8543,6 +8550,12 @@ fn document_bootstrap(
         return child;
       }},
       insertBefore(child, before) {{
+        if (child && child.__glassFragment === true) {{
+          const children = child.__glassChildren.slice();
+          for (const fragmentChild of children) element.insertBefore(fragmentChild, before);
+          child.__glassChildren = [];
+          return child;
+        }}
         if (before == null) return this.appendChild(child);
         if (!child || typeof child.nodeIndex !== "number"
             || typeof before.nodeIndex !== "number") {{
@@ -8558,6 +8571,7 @@ fn document_bootstrap(
         const oldParent = child.__glassParent || null;
         if (oldParent && Array.isArray(oldParent.__glassChildren)) {{
           oldParent.__glassChildren = oldParent.__glassChildren.filter(candidate => candidate !== child);
+          if (typeof oldParent.__glassSyncContent === "function") oldParent.__glassSyncContent(true);
         }}
         element.__glassChildren = element.__glassChildren.filter(candidate => candidate !== child);
         const index = element.__glassChildren.indexOf(before);
@@ -8574,15 +8588,16 @@ fn document_bootstrap(
         return child;
       }},
       remove() {{
-        if (element.parentIndex === null) return;
-        const parent = element.__glassParent;
+        const parent = element.__glassParent || null;
+        if (!parent && element.parentIndex === null) return;
+        const commitRemoval = !element.__glassCreated || element.parentIndex !== null;
         if (parent && Array.isArray(parent.__glassChildren)) {{
           parent.__glassChildren = parent.__glassChildren.filter(candidate => candidate !== element);
         }}
         element.__glassParent = null;
         element.parentIndex = null;
-        if (parent) parent.__glassSyncContent();
-        pushCommand({{ kind: "removeNode", node_index: entry.nodeIndex }});
+        if (parent && typeof parent.__glassSyncContent === "function") parent.__glassSyncContent(true);
+        if (commitRemoval) pushCommand({{ kind: "removeNode", node_index: entry.nodeIndex }});
       }},
       removeChild(child) {{
         if (!child || child.__glassParent !== element) {{
@@ -8590,6 +8605,58 @@ fn document_bootstrap(
         }}
         child.remove();
         return child;
+      }},
+      append(...items) {{
+        for (const item of items) element.appendChild(
+          item && (item.nodeType === 1 || item.nodeType === 3 || item.__glassFragment === true)
+            ? item
+            : makeDetachedText(String(item)),
+        );
+      }},
+      prepend(...items) {{
+        const before = element.__glassChildren[0] || null;
+        for (const item of items) element.insertBefore(
+          item && (item.nodeType === 1 || item.nodeType === 3 || item.__glassFragment === true)
+            ? item
+            : makeDetachedText(String(item)),
+          before,
+        );
+      }},
+      before(...items) {{
+        const parent = element.__glassParent;
+        if (!parent || typeof parent.insertBefore !== "function") return;
+        for (const item of items) parent.insertBefore(
+          item && (item.nodeType === 1 || item.nodeType === 3 || item.__glassFragment === true)
+            ? item
+            : makeDetachedText(String(item)),
+          element,
+        );
+      }},
+      after(...items) {{
+        const parent = element.__glassParent;
+        if (!parent || typeof parent.insertBefore !== "function") return;
+        const before = element.nextSibling;
+        for (const item of items) parent.insertBefore(
+          item && (item.nodeType === 1 || item.nodeType === 3 || item.__glassFragment === true)
+            ? item
+            : makeDetachedText(String(item)),
+          before,
+        );
+      }},
+      replaceWith(...items) {{
+        const parent = element.__glassParent;
+        if (!parent || typeof parent.insertBefore !== "function") return;
+        for (const item of items) parent.insertBefore(
+          item && (item.nodeType === 1 || item.nodeType === 3 || item.__glassFragment === true)
+            ? item
+            : makeDetachedText(String(item)),
+          element,
+        );
+        element.remove();
+      }},
+      replaceChildren(...items) {{
+        for (const child of element.__glassChildren.slice()) child.remove();
+        element.append(...items);
       }}
     }};
     Object.defineProperty(element, "__glassChildren", {{
@@ -8613,12 +8680,15 @@ fn document_bootstrap(
     Object.defineProperty(element, "__glassSyncContent", {{
       enumerable: false,
       configurable: false,
-      value() {{
+      value(clearEmpty = false) {{
         if (element.__glassChildren.length > 0) {{
           innerHtml = element.__glassChildren.map(child => child.__glassMarkup).join("");
           textContent = element.__glassChildren.map(child => child.__glassTextValue).join("");
+        }} else if (clearEmpty) {{
+          innerHtml = "";
+          textContent = "";
         }}
-        if (element.__glassParent) element.__glassParent.__glassSyncContent();
+        if (element.__glassParent) element.__glassParent.__glassSyncContent(clearEmpty);
       }},
     }});
     Object.defineProperty(element, "__glassTextValue", {{
@@ -8646,7 +8716,8 @@ fn document_bootstrap(
       enumerable: false,
       configurable: false,
       get() {{
-        if (element.__glassCreated) return element.__glassParent || null;
+        if (element.__glassParent) return element.__glassParent.nodeType === 1 ? element.__glassParent : null;
+        if (element.__glassCreated) return null;
         if (element.parentIndex === null) return null;
         const current = globalThis.__glassHostElements;
         if (!(current instanceof Map) || current.get(element.nodeIndex) !== element) return null;
@@ -8847,15 +8918,16 @@ fn document_bootstrap(
       nodeName: "#text",
       nodeValue: textContent,
       remove() {{
-        if (text.parentIndex === null) return;
-        const parent = text.__glassParent;
+        const parent = text.__glassParent || null;
+        if (!parent && text.parentIndex === null) return;
+        const commitRemoval = !text.__glassCreated || text.parentIndex !== null;
         if (parent && Array.isArray(parent.__glassChildren)) {{
           parent.__glassChildren = parent.__glassChildren.filter(candidate => candidate !== text);
         }}
         text.__glassParent = null;
         text.parentIndex = null;
-        if (parent) parent.__glassSyncContent();
-        pushCommand({{ kind: "removeNode", node_index: nodeIndex }});
+        if (parent && typeof parent.__glassSyncContent === "function") parent.__glassSyncContent(true);
+        if (commitRemoval) pushCommand({{ kind: "removeNode", node_index: nodeIndex }});
       }},
     }};
     Object.defineProperty(text, "__glassParent", {{
@@ -8914,6 +8986,101 @@ fn document_bootstrap(
     pushCommand({{ kind: "createTextNode", node_index: nodeIndex, value: textContent }});
     return text;
   }};
+  const makeDocumentFragment = () => {{
+    const fragment = {{
+      nodeType: 11,
+      nodeName: "#document-fragment",
+      __glassFragment: true,
+      __glassChildren: [],
+      __glassParent: null,
+      appendChild(child) {{
+        if (child === this) throw new TypeError("a node cannot contain itself");
+        if (child && child.__glassFragment === true) {{
+          const children = child.__glassChildren.slice();
+          for (const fragmentChild of children) this.appendChild(fragmentChild);
+          child.__glassChildren = [];
+          return child;
+        }}
+        if (!child || ![1, 3].includes(Number(child.nodeType)))
+          throw new TypeError("DocumentFragment children must be elements or text nodes");
+        const oldParent = child.__glassParent || null;
+        if (oldParent && Array.isArray(oldParent.__glassChildren)) {{
+          oldParent.__glassChildren = oldParent.__glassChildren.filter(candidate => candidate !== child);
+          if (typeof oldParent.__glassSyncContent === "function") oldParent.__glassSyncContent(true);
+        }}
+        this.__glassChildren = this.__glassChildren.filter(candidate => candidate !== child);
+        this.__glassChildren.push(child);
+        child.__glassParent = this;
+        child.parentIndex = null;
+        return child;
+      }},
+      insertBefore(child, before) {{
+        if (child === this) throw new TypeError("a node cannot contain itself");
+        if (before == null) return this.appendChild(child);
+        if (child && child.__glassFragment === true) {{
+          const children = child.__glassChildren.slice();
+          for (const fragmentChild of children) this.insertBefore(fragmentChild, before);
+          child.__glassChildren = [];
+          return child;
+        }}
+        if (!child || ![1, 3].includes(Number(child.nodeType)))
+          throw new TypeError("DocumentFragment children must be elements or text nodes");
+        if (before.__glassParent !== this) throw new TypeError("reference node is not a child");
+        const oldParent = child.__glassParent || null;
+        if (oldParent && Array.isArray(oldParent.__glassChildren)) {{
+          oldParent.__glassChildren = oldParent.__glassChildren.filter(candidate => candidate !== child);
+          if (typeof oldParent.__glassSyncContent === "function") oldParent.__glassSyncContent(true);
+        }}
+        this.__glassChildren = this.__glassChildren.filter(candidate => candidate !== child);
+        const index = this.__glassChildren.indexOf(before);
+        this.__glassChildren.splice(index < 0 ? this.__glassChildren.length : index, 0, child);
+        child.__glassParent = this;
+        child.parentIndex = null;
+        return child;
+      }},
+    }};
+    Object.defineProperty(fragment, "__glassTextValue", {{
+      enumerable: false,
+      configurable: false,
+      get() {{ return fragment.__glassChildren.map(child => child.__glassTextValue || "").join(""); }},
+    }});
+    Object.defineProperty(fragment, "__glassMarkup", {{
+      enumerable: false,
+      configurable: false,
+      get() {{ return fragment.__glassChildren.map(child => child.__glassMarkup || "").join(""); }},
+    }});
+    Object.defineProperty(fragment, "ownerDocument", {{
+      enumerable: false,
+      configurable: false,
+      get() {{ return globalThis.document || null; }},
+    }});
+    Object.defineProperty(fragment, "parentNode", {{
+      enumerable: false,
+      configurable: false,
+      get() {{ return null; }},
+    }});
+    Object.defineProperty(fragment, "parentElement", {{
+      enumerable: false,
+      configurable: false,
+      get() {{ return null; }},
+    }});
+    Object.defineProperty(fragment, "textContent", {{
+      enumerable: true,
+      configurable: false,
+      get() {{ return fragment.__glassTextValue; }},
+      set(next) {{
+        for (const child of fragment.__glassChildren.slice()) child.remove();
+        const value = String(next);
+        if (value) fragment.appendChild(fragment.ownerDocument.createTextNode(value));
+      }},
+    }});
+    defineTreeAccessors(fragment);
+    const constructor = globalThis.DocumentFragment;
+    if (typeof constructor === "function" && constructor.prototype) {{
+      try {{ Object.setPrototypeOf(fragment, constructor.prototype); }} catch (_error) {{}}
+    }}
+    return fragment;
+  }};
   const makeSnapshotText = (initialEntry) => {{
     let textContent = String(initialEntry.nodeValue || "");
     const text = {{
@@ -8923,15 +9090,16 @@ fn document_bootstrap(
       nodeName: "#text",
       nodeValue: textContent,
       remove() {{
-        if (text.parentIndex === null) return;
-        const parent = text.__glassParent;
+        const parent = text.__glassParent || null;
+        if (!parent && text.parentIndex === null) return;
+        const commitRemoval = !text.__glassCreated || text.parentIndex !== null;
         if (parent && Array.isArray(parent.__glassChildren)) {{
           parent.__glassChildren = parent.__glassChildren.filter(candidate => candidate !== text);
         }}
         text.__glassParent = null;
         text.parentIndex = null;
-        if (parent) parent.__glassSyncContent();
-        pushCommand({{ kind: "removeNode", node_index: text.nodeIndex }});
+        if (parent && typeof parent.__glassSyncContent === "function") parent.__glassSyncContent(true);
+        if (commitRemoval) pushCommand({{ kind: "removeNode", node_index: text.nodeIndex }});
       }},
     }};
     Object.defineProperty(text, "__glassParent", {{ enumerable: false, configurable: false, writable: true, value: null }});
@@ -9316,21 +9484,88 @@ fn document_bootstrap(
           return current.ownerDocument === node;
         }}
         return Boolean(candidate && candidate.ownerDocument === node
-          && node.__glassChildren && node.__glassChildren.includes(candidate));
+        && node.__glassChildren && node.__glassChildren.includes(candidate));
       }},
     }});
-    defineMissing(node, "replaceChild", {{
-      enumerable: false,
-      configurable: false,
-      value(next, oldChild) {{
-        if (!oldChild || oldChild.__glassParent !== node) throw new TypeError("old child is not contained by this node");
-        if (!next || typeof next.nodeIndex !== "number") throw new TypeError("replacement must be a native node");
-        if (next === oldChild) return oldChild;
-        node.insertBefore(next, oldChild);
-        oldChild.remove();
-        return oldChild;
-      }},
-    }});
+    if (node.nodeType === 1 || node.nodeType === 3 || node.nodeType === 11) {{
+      const insertionText = (value) => node.ownerDocument
+        && typeof node.ownerDocument.createTextNode === "function"
+        ? node.ownerDocument.createTextNode(String(value))
+        : makeDetachedText(String(value));
+      const insertionNode = (item) => item && [1, 3, 11].includes(Number(item.nodeType))
+        ? item
+        : insertionText(item);
+      if (node.nodeType === 1 || node.nodeType === 11) {{
+        defineMissing(node, "append", {{
+          enumerable: false,
+          configurable: false,
+          value(...items) {{
+            for (const item of items) node.appendChild(insertionNode(item));
+          }},
+        }});
+        defineMissing(node, "prepend", {{
+          enumerable: false,
+          configurable: false,
+          value(...items) {{
+            const before = node.__glassChildren[0] || null;
+            for (const item of items) node.insertBefore(insertionNode(item), before);
+          }},
+        }});
+      }}
+      defineMissing(node, "before", {{
+        enumerable: false,
+        configurable: false,
+        value(...items) {{
+          const owner = node.__glassParent;
+          if (!owner || typeof owner.insertBefore !== "function") return;
+          for (const item of items) owner.insertBefore(insertionNode(item), node);
+        }},
+      }});
+      defineMissing(node, "after", {{
+        enumerable: false,
+        configurable: false,
+        value(...items) {{
+          const owner = node.__glassParent;
+          if (!owner || typeof owner.insertBefore !== "function") return;
+          const before = node.nextSibling;
+          for (const item of items) owner.insertBefore(insertionNode(item), before);
+        }},
+      }});
+      defineMissing(node, "replaceWith", {{
+        enumerable: false,
+        configurable: false,
+        value(...items) {{
+          const owner = node.__glassParent;
+          if (!owner || typeof owner.insertBefore !== "function") return;
+          for (const item of items) owner.insertBefore(insertionNode(item), node);
+          if (typeof node.remove === "function") node.remove();
+        }},
+      }});
+      if (node.nodeType === 1 || node.nodeType === 11) {{
+        defineMissing(node, "replaceChildren", {{
+          enumerable: false,
+          configurable: false,
+          value(...items) {{
+            for (const child of node.__glassChildren.slice()) child.remove();
+            node.append(...items);
+          }},
+        }});
+      }}
+    }}
+    if (node.nodeType === 1 || node.nodeType === 11) {{
+      defineMissing(node, "replaceChild", {{
+        enumerable: false,
+        configurable: false,
+        value(next, oldChild) {{
+          if (!oldChild || oldChild.__glassParent !== node) throw new TypeError("old child is not contained by this node");
+          if (!next || ![1, 3, 11].includes(Number(next.nodeType))) throw new TypeError("replacement must be a native node");
+          if (next === oldChild) return oldChild;
+          node.insertBefore(next, oldChild);
+          oldChild.remove();
+          return oldChild;
+        }},
+      }});
+    }}
     defineMissing(node, "isConnected", {{
       enumerable: false,
       configurable: false,
@@ -9930,6 +10165,7 @@ fn document_bootstrap(
     }},
     createElement(tagName) {{ return makeDetachedElement(tagName); }},
     createTextNode(value) {{ return makeDetachedText(value); }},
+    createDocumentFragment() {{ return makeDocumentFragment(); }},
     getElementById(id) {{ return elements.find((element) => element.id === String(id)) || null; }},
     querySelector(selector) {{ return findAll(selector)[0] || null; }},
     querySelectorAll(selector) {{ return findAll(selector); }},
@@ -10699,6 +10935,7 @@ fn document_bootstrap(
   globalThis.DOMException = DOMExceptionNative;
   const NodeNative = ensureNativeConstructor("Node", null);
   const DocumentNative = ensureNativeConstructor("Document", NodeNative);
+  const DocumentFragmentNative = ensureNativeConstructor("DocumentFragment", NodeNative);
   const ElementNative = ensureNativeConstructor("Element", NodeNative);
   const HTMLElementNative = ensureNativeConstructor("HTMLElement", ElementNative);
   const WindowNative = ensureNativeConstructor("Window", null);
@@ -11097,6 +11334,12 @@ fn document_bootstrap(
           queueFrameCommand(currentBinding, {{ kind: "removeAttribute", node_index: entry.nodeIndex, name: key }});
         }},
         appendChild(child) {{
+          if (child && child.__glassFragment === true) {{
+            const children = child.__glassChildren.slice();
+            for (const fragmentChild of children) projected.appendChild(fragmentChild);
+            child.__glassChildren = [];
+            return child;
+          }}
           if (!child || typeof child.nodeIndex !== "number") throw new TypeError("child must be a native node");
           if (child === projected) throw new TypeError("a node cannot contain itself");
           let ancestor = projected;
@@ -11107,7 +11350,7 @@ fn document_bootstrap(
           const oldParent = child.__glassParent || null;
           if (oldParent && Array.isArray(oldParent.__glassChildren)) {{
             oldParent.__glassChildren = oldParent.__glassChildren.filter(candidate => candidate !== child);
-            oldParent.__glassSyncContent();
+            if (typeof oldParent.__glassSyncContent === "function") oldParent.__glassSyncContent(true);
           }}
           projected.__glassChildren = projected.__glassChildren.filter(candidate => candidate !== child);
           projected.__glassChildren.push(child);
@@ -11120,6 +11363,12 @@ fn document_bootstrap(
           return child;
         }},
         insertBefore(child, before) {{
+          if (child && child.__glassFragment === true) {{
+            const children = child.__glassChildren.slice();
+            for (const fragmentChild of children) projected.insertBefore(fragmentChild, before);
+            child.__glassChildren = [];
+            return child;
+          }}
           if (before == null) return this.appendChild(child);
           if (!child || typeof child.nodeIndex !== "number"
               || typeof before.nodeIndex !== "number") throw new TypeError("insertBefore requires native nodes");
@@ -11133,7 +11382,7 @@ fn document_bootstrap(
           const oldParent = child.__glassParent || null;
           if (oldParent && Array.isArray(oldParent.__glassChildren)) {{
             oldParent.__glassChildren = oldParent.__glassChildren.filter(candidate => candidate !== child);
-            oldParent.__glassSyncContent();
+            if (typeof oldParent.__glassSyncContent === "function") oldParent.__glassSyncContent(true);
           }}
           projected.__glassChildren = projected.__glassChildren.filter(candidate => candidate !== child);
           const index = projected.__glassChildren.indexOf(before);
@@ -11152,16 +11401,17 @@ fn document_bootstrap(
           return child;
         }},
         remove() {{
-          if (projected.parentIndex === null) return;
-          const parent = projected.__glassParent;
+          const parent = projected.__glassParent || null;
+          if (!parent && projected.parentIndex === null) return;
+          const commitRemoval = !projected.__glassCreated || projected.parentIndex !== null;
           if (parent && Array.isArray(parent.__glassChildren)) {{
             parent.__glassChildren = parent.__glassChildren.filter(candidate => candidate !== projected);
           }}
           projected.__glassParent = null;
           projected.parentIndex = null;
           detachFrameSubtree(projected);
-          if (parent) parent.__glassSyncContent();
-          queueFrameCommand(currentBinding, {{ kind: "removeNode", node_index: entry.nodeIndex }});
+          if (parent && typeof parent.__glassSyncContent === "function") parent.__glassSyncContent(true);
+          if (commitRemoval) queueFrameCommand(currentBinding, {{ kind: "removeNode", node_index: entry.nodeIndex }});
         }},
         removeChild(child) {{
           if (!child || child.__glassParent !== projected) {{
@@ -11219,12 +11469,15 @@ fn document_bootstrap(
       Object.defineProperty(projected, "__glassSyncContent", {{
         enumerable: false,
         configurable: false,
-        value() {{
+        value(clearEmpty = false) {{
           if (projected.__glassChildren.length > 0) {{
             innerHtml = projected.__glassChildren.map(child => child.__glassMarkup).join("");
             textContent = projected.__glassChildren.map(child => child.__glassTextValue).join("");
+          }} else if (clearEmpty) {{
+            innerHtml = "";
+            textContent = "";
           }}
-          if (projected.__glassParent) projected.__glassParent.__glassSyncContent();
+          if (projected.__glassParent) projected.__glassParent.__glassSyncContent(clearEmpty);
         }},
       }});
       Object.defineProperty(projected, "__glassTextValue", {{
@@ -11251,7 +11504,7 @@ fn document_bootstrap(
       Object.defineProperty(projected, "parentElement", {{
         enumerable: false,
         configurable: false,
-        get() {{ return projected.__glassParent || null; }},
+        get() {{ return projected.__glassParent && projected.__glassParent.nodeType === 1 ? projected.__glassParent : null; }},
       }});
       Object.defineProperty(projected, "parentNode", {{
         enumerable: false,
@@ -11367,14 +11620,15 @@ fn document_bootstrap(
           nodeName: "#text",
           nodeValue: textContent,
           remove() {{
-            if (text.parentIndex === null) return;
-            const parent = text.__glassParent;
+            const parent = text.__glassParent || null;
+            if (!parent && text.parentIndex === null) return;
+            const commitRemoval = !text.__glassCreated || text.parentIndex !== null;
             if (parent && Array.isArray(parent.__glassChildren)) parent.__glassChildren = parent.__glassChildren.filter(candidate => candidate !== text);
             text.__glassParent = null;
             text.parentIndex = null;
             text.__glassAttached = false;
-            if (parent) parent.__glassSyncContent();
-            queueFrameCommand(currentBinding, {{ kind: "removeNode", node_index: text.nodeIndex }});
+            if (parent && typeof parent.__glassSyncContent === "function") parent.__glassSyncContent(true);
+            if (commitRemoval) queueFrameCommand(currentBinding, {{ kind: "removeNode", node_index: text.nodeIndex }});
           }},
         }};
         Object.defineProperty(text, "__glassParent", {{ enumerable: false, configurable: false, writable: true, value: null }});
@@ -11544,6 +11798,12 @@ fn document_bootstrap(
           queueFrameCommand(currentBinding, {{ kind: "removeAttribute", node_index: nodeIndex, name: key }});
         }},
         appendChild(child) {{
+          if (child && child.__glassFragment === true) {{
+            const children = child.__glassChildren.slice();
+            for (const fragmentChild of children) projected.appendChild(fragmentChild);
+            child.__glassChildren = [];
+            return child;
+          }}
           if (!child || typeof child.nodeIndex !== "number") throw new TypeError("child must be a native node");
           if (child === projected) throw new TypeError("a node cannot contain itself");
           let ancestor = projected;
@@ -11554,7 +11814,7 @@ fn document_bootstrap(
           const oldParent = child.__glassParent || null;
           if (oldParent && Array.isArray(oldParent.__glassChildren)) {{
             oldParent.__glassChildren = oldParent.__glassChildren.filter(candidate => candidate !== child);
-            oldParent.__glassSyncContent();
+            if (typeof oldParent.__glassSyncContent === "function") oldParent.__glassSyncContent(true);
           }}
           projected.__glassChildren = projected.__glassChildren.filter(candidate => candidate !== child);
           projected.__glassChildren.push(child);
@@ -11567,6 +11827,13 @@ fn document_bootstrap(
           return child;
         }},
         insertBefore(child, before) {{
+          if (child === this) throw new TypeError("a node cannot contain itself");
+          if (child && child.__glassFragment === true) {{
+            const children = child.__glassChildren.slice();
+            for (const fragmentChild of children) projected.insertBefore(fragmentChild, before);
+            child.__glassChildren = [];
+            return child;
+          }}
           if (before == null) return this.appendChild(child);
           if (!child || typeof child.nodeIndex !== "number"
               || typeof before.nodeIndex !== "number") throw new TypeError("insertBefore requires native nodes");
@@ -11580,7 +11847,7 @@ fn document_bootstrap(
           const oldParent = child.__glassParent || null;
           if (oldParent && Array.isArray(oldParent.__glassChildren)) {{
             oldParent.__glassChildren = oldParent.__glassChildren.filter(candidate => candidate !== child);
-            oldParent.__glassSyncContent();
+            if (typeof oldParent.__glassSyncContent === "function") oldParent.__glassSyncContent(true);
           }}
           projected.__glassChildren = projected.__glassChildren.filter(candidate => candidate !== child);
           const index = projected.__glassChildren.indexOf(before);
@@ -11594,14 +11861,15 @@ fn document_bootstrap(
           return child;
         }},
         remove() {{
-          if (projected.parentIndex === null) return;
-          const parent = projected.__glassParent;
+          const parent = projected.__glassParent || null;
+          if (!parent && projected.parentIndex === null) return;
+          const commitRemoval = !projected.__glassCreated || projected.parentIndex !== null;
           if (parent && Array.isArray(parent.__glassChildren)) parent.__glassChildren = parent.__glassChildren.filter(candidate => candidate !== projected);
           projected.__glassParent = null;
           projected.parentIndex = null;
           detachFrameSubtree(projected);
-          if (parent) parent.__glassSyncContent();
-          queueFrameCommand(currentBinding, {{ kind: "removeNode", node_index: nodeIndex }});
+          if (parent && typeof parent.__glassSyncContent === "function") parent.__glassSyncContent(true);
+          if (commitRemoval) queueFrameCommand(currentBinding, {{ kind: "removeNode", node_index: nodeIndex }});
         }},
         removeChild(child) {{
           if (!child || child.__glassParent !== projected) throw new TypeError("child is not contained by this element");
@@ -11621,12 +11889,15 @@ fn document_bootstrap(
       Object.defineProperty(projected, "__glassSyncContent", {{
         enumerable: false,
         configurable: false,
-        value() {{
+        value(clearEmpty = false) {{
           if (projected.__glassChildren.length > 0) {{
             innerHtml = projected.__glassChildren.map(child => child.__glassMarkup).join("");
             textContent = projected.__glassChildren.map(child => child.__glassTextValue).join("");
+          }} else if (clearEmpty) {{
+            innerHtml = "";
+            textContent = "";
           }}
-          if (projected.__glassParent) projected.__glassParent.__glassSyncContent();
+          if (projected.__glassParent) projected.__glassParent.__glassSyncContent(clearEmpty);
         }},
       }});
       Object.defineProperty(projected, "__glassTextValue", {{ enumerable: false, configurable: false, get() {{ return textContent; }} }});
@@ -11641,7 +11912,7 @@ fn document_bootstrap(
           return opening + content + "</" + normalized + ">";
         }},
       }});
-      Object.defineProperty(projected, "parentElement", {{ enumerable: false, configurable: false, get() {{ return projected.__glassParent || null; }} }});
+      Object.defineProperty(projected, "parentElement", {{ enumerable: false, configurable: false, get() {{ return projected.__glassParent && projected.__glassParent.nodeType === 1 ? projected.__glassParent : null; }} }});
       Object.defineProperty(projected, "parentNode", {{ enumerable: false, configurable: false, get() {{ return projected.parentElement; }} }});
       for (const property of ["textContent", "innerText"]) {{
         Object.defineProperty(projected, property, {{
@@ -11695,7 +11966,11 @@ fn document_bootstrap(
       Object.defineProperty(text, "__glassAttached", {{ enumerable: false, configurable: false, writable: true, value: false }});
       Object.defineProperty(text, "__glassTextValue", {{ enumerable: false, configurable: false, get() {{ return textContent; }} }});
       Object.defineProperty(text, "__glassMarkup", {{ enumerable: false, configurable: false, get() {{ return escapeHtmlText(textContent); }} }});
-      Object.defineProperty(text, "parentElement", {{ enumerable: false, configurable: false, get() {{ return text.__glassParent || null; }} }});
+      Object.defineProperty(text, "parentElement", {{ enumerable: false, configurable: false, get() {{
+        let current = text.__glassParent || null;
+        while (current && current.nodeType !== 1) current = current.__glassParent || null;
+        return current || null;
+      }} }});
       Object.defineProperty(text, "parentNode", {{
         enumerable: false,
         configurable: false,
@@ -11710,14 +11985,15 @@ fn document_bootstrap(
       Object.defineProperty(text, "textContent", {{ enumerable: true, configurable: false, get() {{ return textContent; }}, set(next) {{ textContent = String(next); if (text.__glassParent) text.__glassParent.__glassSyncContent(); queueFrameCommand(currentBinding, {{ kind: "setTextContent", node_index: nodeIndex, value: textContent }}); }} }});
       Object.defineProperty(text, "ownerDocument", {{ enumerable: false, configurable: false, get() {{ return frameDocument; }} }});
       text.remove = () => {{
-        if (text.parentIndex === null) return;
-        const parent = text.__glassParent;
+        const parent = text.__glassParent || null;
+        if (!parent && text.parentIndex === null) return;
+        const commitRemoval = !text.__glassCreated || text.parentIndex !== null;
         if (parent && Array.isArray(parent.__glassChildren)) parent.__glassChildren = parent.__glassChildren.filter(candidate => candidate !== text);
         text.__glassParent = null;
         text.parentIndex = null;
         detachFrameSubtree(text);
-        if (parent) parent.__glassSyncContent();
-        queueFrameCommand(currentBinding, {{ kind: "removeNode", node_index: nodeIndex }});
+        if (parent && typeof parent.__glassSyncContent === "function") parent.__glassSyncContent(true);
+        if (commitRemoval) queueFrameCommand(currentBinding, {{ kind: "removeNode", node_index: nodeIndex }});
       }};
       defineTreeAccessors(text);
       frameMutationNodes.set(frameMutationKey(currentBinding, nodeIndex), text);
@@ -11725,6 +12001,103 @@ fn document_bootstrap(
       frameMutationChildren.set(frameMutationKey(currentBinding, nodeIndex), []);
       queueFrameCommand(currentBinding, {{ kind: "createTextNode", node_index: nodeIndex, value: textContent }});
       return text;
+    }};
+    const makeFrameDocumentFragment = () => {{
+      const fragment = {{
+        nodeType: 11,
+        nodeName: "#document-fragment",
+        __glassFragment: true,
+        __glassChildren: [],
+        __glassParent: null,
+        appendChild(child) {{
+          if (child === this) throw new TypeError("a node cannot contain itself");
+          if (child && child.__glassFragment === true) {{
+            const children = child.__glassChildren.slice();
+            for (const fragmentChild of children) this.appendChild(fragmentChild);
+            child.__glassChildren = [];
+            return child;
+          }}
+          if (!child || ![1, 3].includes(Number(child.nodeType)))
+            throw new TypeError("DocumentFragment children must be elements or text nodes");
+          const oldParent = child.__glassParent || null;
+          if (oldParent && Array.isArray(oldParent.__glassChildren)) {{
+            oldParent.__glassChildren = oldParent.__glassChildren.filter(candidate => candidate !== child);
+            if (typeof oldParent.__glassSyncContent === "function") oldParent.__glassSyncContent(true);
+          }}
+          this.__glassChildren = this.__glassChildren.filter(candidate => candidate !== child);
+          this.__glassChildren.push(child);
+          child.__glassParent = this;
+          child.parentIndex = null;
+          detachFrameSubtree(child);
+          return child;
+        }},
+        insertBefore(child, before) {{
+          if (child === this) throw new TypeError("a node cannot contain itself");
+          if (child && child.__glassFragment === true) {{
+            const children = child.__glassChildren.slice();
+            for (const fragmentChild of children) this.insertBefore(fragmentChild, before);
+            child.__glassChildren = [];
+            return child;
+          }}
+          if (before == null) return this.appendChild(child);
+          if (!child || ![1, 3].includes(Number(child.nodeType)))
+            throw new TypeError("DocumentFragment children must be elements or text nodes");
+          if (before.__glassParent !== this) throw new TypeError("reference node is not a child");
+          const oldParent = child.__glassParent || null;
+          if (oldParent && Array.isArray(oldParent.__glassChildren)) {{
+            oldParent.__glassChildren = oldParent.__glassChildren.filter(candidate => candidate !== child);
+            if (typeof oldParent.__glassSyncContent === "function") oldParent.__glassSyncContent(true);
+          }}
+          this.__glassChildren = this.__glassChildren.filter(candidate => candidate !== child);
+          const index = this.__glassChildren.indexOf(before);
+          this.__glassChildren.splice(index < 0 ? this.__glassChildren.length : index, 0, child);
+          child.__glassParent = this;
+          child.parentIndex = null;
+          detachFrameSubtree(child);
+          return child;
+        }},
+      }};
+      Object.defineProperty(fragment, "__glassTextValue", {{
+        enumerable: false,
+        configurable: false,
+        get() {{ return fragment.__glassChildren.map(child => child.__glassTextValue || "").join(""); }},
+      }});
+      Object.defineProperty(fragment, "__glassMarkup", {{
+        enumerable: false,
+        configurable: false,
+        get() {{ return fragment.__glassChildren.map(child => child.__glassMarkup || "").join(""); }},
+      }});
+      Object.defineProperty(fragment, "ownerDocument", {{
+        enumerable: false,
+        configurable: false,
+        get() {{ return frameDocument; }},
+      }});
+      Object.defineProperty(fragment, "parentNode", {{
+        enumerable: false,
+        configurable: false,
+        get() {{ return null; }},
+      }});
+      Object.defineProperty(fragment, "parentElement", {{
+        enumerable: false,
+        configurable: false,
+        get() {{ return null; }},
+      }});
+      Object.defineProperty(fragment, "textContent", {{
+        enumerable: true,
+        configurable: false,
+        get() {{ return fragment.__glassTextValue; }},
+        set(next) {{
+          for (const child of fragment.__glassChildren.slice()) child.remove();
+          const value = String(next);
+          if (value) fragment.appendChild(fragment.ownerDocument.createTextNode(value));
+        }},
+      }});
+      defineTreeAccessors(fragment);
+      const constructor = globalThis.DocumentFragment;
+      if (typeof constructor === "function" && constructor.prototype) {{
+        try {{ Object.setPrototypeOf(fragment, constructor.prototype); }} catch (_error) {{}}
+      }}
+      return fragment;
     }};
     const find = (selector) => frameElements.filter((element) => element.__glassAttached && projectedFrameMatches(element, selector));
     const findById = (id) => frameElements.find((element) => element.__glassAttached && element.id === String(id)) || null;
@@ -11749,6 +12122,7 @@ fn document_bootstrap(
       }},
       createElement(tagName) {{ return makeFrameDetachedElement(tagName); }},
       createTextNode(value) {{ return makeFrameDetachedText(value); }},
+      createDocumentFragment() {{ return makeFrameDocumentFragment(); }},
       getElementById: findById,
       querySelector(selector) {{ return find(selector)[0] || null; }},
       querySelectorAll(selector) {{ return asNodeList(find(selector)); }},

@@ -256,6 +256,33 @@ async fn native_local_script_exposes_web_idl_identity_and_dom_collections() {
 }
 
 #[tokio::test]
+async fn native_local_document_fragments_preserve_tree_ownership_and_helpers() {
+    let mut engine = NativeEngine::new(NativeEngineConfig::default().with_initial_url(
+        "data:text/html,%3Cbody%3E%3Cp%20id%3D%27anchor%27%3EA%3C%2Fp%3E%3C%2Fbody%3E",
+    ))
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+
+    let result = engine
+        .evaluate_async(
+            "(() => { const host = document.createElement('section'); host.id = 'host'; const fragment = document.createDocumentFragment(); const first = document.createElement('b'); first.textContent = 'one'; const second = document.createElement('i'); second.textContent = 'two'; fragment.append(first, '-', second); const staged = [fragment instanceof Node, fragment instanceof DocumentFragment, fragment.ownerDocument === document, fragment.parentNode === null, fragment.childNodes.length, fragment.textContent, first.parentNode === fragment, first.parentElement === null]; host.appendChild(fragment); document.body.insertBefore(host, document.getElementById('anchor')); const marker = document.createElement('em'); marker.textContent = 'marker'; first.before('pre'); first.after(marker); const replacement = document.createElement('u'); replacement.textContent = 'replacement'; second.replaceWith(replacement); host.prepend('start'); const intermediate = host.childNodes.map(child => child.nodeType === 1 ? child.tagName : '#text:' + child.nodeValue); const scratch = document.createDocumentFragment(); const disposable = document.createElement('aside'); scratch.append(disposable); disposable.remove(); const replacementFragment = document.createDocumentFragment(); const finalElement = document.createElement('u'); finalElement.textContent = 'new'; replacementFragment.append(finalElement, 'end'); host.replaceChildren(replacementFragment); return { staged, intermediate, intermediateText: 'startpreonemarker-replacement', intermediateMarkup: 'startpre<b>one</b><em>marker</em>-<u>replacement</u>', final: [fragment.childNodes.length, replacementFragment.childNodes.length, host.innerHTML, host.textContent, host.childNodes.length, host.firstChild.tagName, host.firstChild.parentNode === host, scratch.childNodes.length, disposable.parentNode === null] }; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        result,
+        serde_json::json!({
+            "staged": [true, true, true, true, 3, "one-two", true, true],
+            "intermediate": ["#text:start", "#text:pre", "B", "EM", "#text:-", "U"],
+            "intermediateText": "startpreonemarker-replacement",
+            "intermediateMarkup": "startpre<b>one</b><em>marker</em>-<u>replacement</u>",
+            "final": [0, 0, "<u>new</u>end", "newend", 2, "U", true, 0, true],
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_script_exposes_web_idl_identity() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -917,6 +944,28 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
             .unwrap()
             .value,
         serde_json::json!(["created in frame", "created in frame", "BODY"])
+    );
+    assert_eq!(
+        session
+            .script(
+                "(() => { const child = document.getElementById('child').contentDocument; const host = child.createElement('section'); host.setAttribute('id', 'fragment-frame'); const fragment = child.createDocumentFragment(); const text = child.createTextNode('native'); const strong = child.createElement('strong'); strong.textContent = 'frame'; fragment.append(text, strong); const scratch = child.createDocumentFragment(); const disposable = child.createElement('aside'); scratch.append(disposable); disposable.remove(); host.appendChild(fragment); child.body.appendChild(host); const after = child.createTextNode('-after'); strong.after(after); return [fragment instanceof DocumentFragment, fragment.ownerDocument === child, fragment.childNodes.length, scratch.childNodes.length, disposable.parentNode === null, host.innerHTML, host.textContent, host.childNodes.length, text.parentNode === host, strong.parentElement === host, after.parentNode === host]; })()",
+            )
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([
+            true,
+            true,
+            0,
+            0,
+            true,
+            "native<strong>frame</strong>-after",
+            "nativeframe-after",
+            3,
+            true,
+            true,
+            true,
+        ])
     );
     let child_id = session
         .native_list_frames()
@@ -5680,6 +5729,43 @@ async fn native_content_process_evaluates_persistent_script_realm() {
     assert_eq!(
         engine.evaluate_async("answer").await.unwrap(),
         serde_json::json!(1)
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_document_fragments_cross_the_http_boundary() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/fragment"));
+        let body = "<html><body><div id='mount'></div></body></html>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/fragment")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const mount = document.getElementById('mount'); const fragment = document.createDocumentFragment(); const heading = document.createElement('h1'); heading.textContent = 'Native'; fragment.append('before-', heading); const detached = document.createElement('aside'); fragment.prepend(detached); const staged = [fragment instanceof DocumentFragment, fragment.ownerDocument === document, fragment.childNodes.length, detached.parentNode === fragment, detached.parentElement === null]; mount.appendChild(fragment); const text = document.createTextNode('-after'); heading.after(text); return [staged, fragment.childNodes.length, mount.innerHTML, mount.textContent, heading.parentElement === mount, text.parentNode === heading.parentNode, mount.childNodes.length]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([[
+            true, true, 3, true, true
+        ], 0, "<aside></aside>before-<h1>Native</h1>-after", "before-Native-after", true, true, 4])
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

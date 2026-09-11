@@ -734,6 +734,16 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
     assert_eq!(
         session
             .script(
+                "(() => { const child = document.getElementById('child').contentDocument; const inside = child.querySelector('p#inside'); const old = inside.querySelector('span#old-child'); const classes = inside.classList; classes.add('from-parent'); return [inside.matches('p#inside.from-parent'), inside.closest('body') === child.body, old === child.getElementById('old-child'), inside.getElementsByTagName('span').length, classes.length, classes.contains('from-parent')]; })()",
+            )
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([true, true, true, 1, 1, true])
+    );
+    assert_eq!(
+        session
+            .script(
                 "(() => { const child = document.getElementById('child').contentDocument; const inside = child.getElementById('inside'); inside.setAttribute('data-message', 'parent-write'); inside.innerHTML = '<em id=\"new-child\">updated &amp; literal</em>'; child.getElementById('field').value = 'written-by-parent'; return [inside.getAttribute('data-message'), inside.innerHTML, inside.textContent, inside.innerText, child.getElementById('field').value]; })()",
             )
             .await
@@ -4855,6 +4865,15 @@ async fn native_content_process_evaluates_persistent_script_realm() {
             .await
             .unwrap(),
         serde_json::json!([3, "Native ", true, true, 3, " page", true, true, 3, 1, true])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const paragraph = document.querySelector('body > p#copy'); const old = document.querySelector('p#copy > span#old-copy'); const classes = paragraph.classList; classes.add('article', 'featured'); classes.toggle('selected', true); return [paragraph.matches('p#copy.article'), paragraph.closest('body') === document.body, paragraph.querySelector('span#old-copy') === old, paragraph.querySelectorAll('span, #old-copy').length, paragraph.getElementsByClassName('featured').length, classes.length, classes.contains('article'), classes.contains('selected'), paragraph.getAttribute('class')]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, true, true, 1, 0, 3, true, true, "article featured selected"])
     );
     assert_eq!(
         engine

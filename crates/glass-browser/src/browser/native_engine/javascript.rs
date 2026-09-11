@@ -4791,6 +4791,9 @@ fn document_bootstrap(
     const target = activeCommands();
     if (target.length >= {max_commands}) throw new RangeError("native host command limit exceeded");
     target.push(command);
+    if (typeof globalThis.__glassRecordMutationCommand === "function") {{
+      globalThis.__glassRecordMutationCommand(command);
+    }}
   }};
   const timers = globalThis.__glassTimers instanceof Map
     ? globalThis.__glassTimers
@@ -7597,6 +7600,300 @@ fn document_bootstrap(
     eventState.dispatching = false;
     return !event.defaultPrevented;
   }};
+  const mutationObservers = globalThis.__glassMutationObservers instanceof Set
+    ? globalThis.__glassMutationObservers
+    : new Set();
+  globalThis.__glassMutationObservers = mutationObservers;
+  const mutationCreatedNodes = globalThis.__glassCreatedNodes instanceof Map
+    ? globalThis.__glassCreatedNodes
+    : new Map();
+  mutationCreatedNodes.clear();
+  globalThis.__glassCreatedNodes = mutationCreatedNodes;
+  const mutationShadowAttributes = new Map();
+  for (const entry of Array.isArray(state.elements) ? state.elements : []) {{
+    mutationShadowAttributes.set(Number(entry.nodeIndex), {{ ...(entry.attributes || {{}}) }});
+  }}
+  const mutationShadowText = new Map();
+  const mutationShadowParents = new Map();
+  const mutationShadowChildren = new Map();
+  for (const entry of Array.isArray(state.nodes) ? state.nodes : []) {{
+    const index = Number(entry.nodeIndex);
+    if (Number(entry.nodeType) === 3) mutationShadowText.set(index, String(entry.nodeValue || ""));
+    if (entry.parentIndex !== null && entry.parentIndex !== undefined) {{
+      mutationShadowParents.set(index, Number(entry.parentIndex));
+    }}
+    mutationShadowChildren.set(index, Array.isArray(entry.children)
+      ? entry.children.map(Number)
+      : []);
+  }}
+  const mutationNode = (nodeIndex) => {{
+    const index = Number(nodeIndex);
+    if (index === 0 && globalThis.__glassHostDocument) return globalThis.__glassHostDocument;
+    const nodes = globalThis.__glassHostNodes;
+    if (nodes instanceof Map && nodes.has(index)) return nodes.get(index);
+    return mutationCreatedNodes.get(index) || null;
+  }};
+  const mutationParent = (node) => {{
+    if (!node) return null;
+    if (node.__glassParent) return node.__glassParent;
+    if (node.parentIndex !== null && node.parentIndex !== undefined) {{
+      return mutationNode(node.parentIndex);
+    }}
+    const owner = globalThis.__glassHostDocument;
+    return owner && Array.isArray(owner.__glassChildren) && owner.__glassChildren.includes(node)
+      ? owner
+      : null;
+  }};
+  const mutationMatchesTarget = (target, observed, subtree) => {{
+    if (target === observed) return true;
+    if (!subtree) return false;
+    let current = mutationParent(target);
+    for (let depth = 0; current && depth <= {max_commands}; depth += 1) {{
+      if (current === observed) return true;
+      current = mutationParent(current);
+    }}
+    return false;
+  }};
+  const mutationTextNode = (value) => {{
+    const text = String(value);
+    return {{
+      nodeType: 3,
+      nodeName: "#text",
+      nodeValue: text,
+      textContent: text,
+      data: text,
+      parentNode: null,
+      parentElement: null,
+    }};
+  }};
+  const mutationRecord = (record, options) => {{
+    const type = String(record.type);
+    return {{
+      type,
+      target: record.target,
+      addedNodes: type === "childList" ? [...(record.addedNodes || [])] : [],
+      removedNodes: type === "childList" ? [...(record.removedNodes || [])] : [],
+      previousSibling: record.previousSibling || null,
+      nextSibling: record.nextSibling || null,
+      attributeName: type === "attributes" ? String(record.attributeName || "") : null,
+      attributeNamespace: null,
+      oldValue: (type === "attributes" || type === "characterData") && options.oldValue
+        ? (record.oldValue === undefined ? null : record.oldValue)
+        : null,
+    }};
+  }};
+  let mutationDeliveryQueued = false;
+  const deliverMutationObservers = () => {{
+    mutationDeliveryQueued = false;
+    for (const observer of Array.from(mutationObservers)) {{
+      if (!observer.__glassRecords || observer.__glassRecords.length === 0) continue;
+      const records = observer.__glassRecords.splice(0, observer.__glassRecords.length);
+      observer.__glassCallback(records, observer);
+    }}
+  }};
+  const scheduleMutationDelivery = () => {{
+    if (mutationDeliveryQueued) return;
+    mutationDeliveryQueued = true;
+    Promise.resolve().then(deliverMutationObservers);
+  }};
+  const queueMutation = (record) => {{
+    if (!record || !record.target) return;
+    for (const observer of Array.from(mutationObservers)) {{
+      const registrations = observer.__glassRegistrations || [];
+      for (const registration of registrations) {{
+        const options = registration.options;
+        if (!mutationMatchesTarget(record.target, registration.target, options.subtree)) continue;
+        if (record.type === "attributes" && !options.attributes) continue;
+        if (record.type === "characterData" && !options.characterData) continue;
+        if (record.type === "childList" && !options.childList) continue;
+        if (record.type === "attributes" && options.attributeFilter
+            && !options.attributeFilter.includes(String(record.attributeName).toLowerCase())) continue;
+        observer.__glassRecords.push(mutationRecord(record, {{
+          oldValue: record.type === "attributes"
+            ? options.attributeOldValue
+            : options.characterDataOldValue,
+        }}));
+        if (observer.__glassRecords.length > {max_commands}) {{
+          observer.__glassRecords.splice(0, observer.__glassRecords.length - {max_commands});
+        }}
+        break;
+      }}
+    }}
+    scheduleMutationDelivery();
+  }};
+  const normalizeMutationOptions = (rawOptions) => {{
+    if (!rawOptions || typeof rawOptions !== "object") throw new TypeError("MutationObserver options must be an object");
+    const attributes = rawOptions.attributes === undefined
+      ? rawOptions.attributeOldValue !== undefined || rawOptions.attributeFilter !== undefined
+      : Boolean(rawOptions.attributes);
+    const characterData = rawOptions.characterData === undefined
+      ? rawOptions.characterDataOldValue !== undefined
+      : Boolean(rawOptions.characterData);
+    const childList = Boolean(rawOptions.childList);
+    if (!attributes && !characterData && !childList) throw new TypeError("MutationObserver requires an observation type");
+    if (rawOptions.attributeOldValue && !attributes) throw new TypeError("attributeOldValue requires attributes");
+    if (rawOptions.attributeFilter !== undefined && !attributes) throw new TypeError("attributeFilter requires attributes");
+    if (rawOptions.characterDataOldValue && !characterData) throw new TypeError("characterDataOldValue requires characterData");
+    let attributeFilter = null;
+    if (rawOptions.attributeFilter !== undefined) {{
+      if (!Array.isArray(rawOptions.attributeFilter)) throw new TypeError("attributeFilter must be an array");
+      attributeFilter = rawOptions.attributeFilter.map((name) => String(name).toLowerCase());
+    }}
+    return {{
+      attributes,
+      attributeOldValue: Boolean(rawOptions.attributeOldValue),
+      attributeFilter,
+      characterData,
+      characterDataOldValue: Boolean(rawOptions.characterDataOldValue),
+      childList,
+      subtree: Boolean(rawOptions.subtree),
+    }};
+  }};
+  const MutationObserverNative = globalThis.__glassMutationObserverConstructor
+    || function MutationObserver(callback) {{
+      if (!(this instanceof MutationObserverNative)) throw new TypeError("MutationObserver requires new");
+      if (typeof callback !== "function") throw new TypeError("MutationObserver callback must be callable");
+      Object.defineProperties(this, {{
+        __glassCallback: {{ value: callback, writable: true }},
+        __glassRegistrations: {{ value: [], writable: true }},
+        __glassRecords: {{ value: [], writable: true }},
+      }});
+    }};
+  MutationObserverNative.prototype.observe = function(target, rawOptions) {{
+    if (!target || ![1, 3, 9].includes(Number(target.nodeType))) throw new TypeError("MutationObserver target must be a node");
+    const options = normalizeMutationOptions(rawOptions);
+    const registrations = this.__glassRegistrations || [];
+    const existing = registrations.find((registration) => registration.target === target);
+    if (existing) existing.options = options;
+    else registrations.push({{ target, options }});
+    this.__glassRegistrations = registrations;
+    mutationObservers.add(this);
+  }};
+  MutationObserverNative.prototype.disconnect = function() {{
+    this.__glassRegistrations = [];
+    this.__glassRecords = [];
+    mutationObservers.delete(this);
+  }};
+  MutationObserverNative.prototype.takeRecords = function() {{
+    const records = this.__glassRecords || [];
+    this.__glassRecords = [];
+    return records;
+  }};
+  globalThis.__glassMutationObserverConstructor = MutationObserverNative;
+  globalThis.MutationObserver = MutationObserverNative;
+  const mutationIndexList = (indexes) => (Array.isArray(indexes) ? indexes : [])
+    .map((index) => mutationNode(index))
+    .filter(Boolean);
+  const recordCommandMutation = (command) => {{
+    if (!command || typeof command !== "object") return;
+    const kind = String(command.kind || "");
+    const nodeIndex = Number(command.node_index);
+    const target = mutationNode(nodeIndex);
+    if (kind === "setAttribute") {{
+      if (!target) return;
+      const attributes = mutationShadowAttributes.get(nodeIndex) || {{}};
+      const name = String(command.name).toLowerCase();
+      const oldValue = Object.prototype.hasOwnProperty.call(attributes, name) ? attributes[name] : null;
+      const value = String(command.value);
+      attributes[name] = value;
+      mutationShadowAttributes.set(nodeIndex, attributes);
+      if (oldValue !== value) queueMutation({{ type: "attributes", target, attributeName: name, oldValue }});
+      return;
+    }}
+    if (kind === "removeAttribute") {{
+      if (!target) return;
+      const attributes = mutationShadowAttributes.get(nodeIndex) || {{}};
+      const name = String(command.name).toLowerCase();
+      const oldValue = Object.prototype.hasOwnProperty.call(attributes, name) ? attributes[name] : null;
+      delete attributes[name];
+      mutationShadowAttributes.set(nodeIndex, attributes);
+      if (oldValue !== null) queueMutation({{ type: "attributes", target, attributeName: name, oldValue }});
+      return;
+    }}
+    if (kind === "setTextContent") {{
+      if (!target) return;
+      const value = String(command.value);
+      if (Number(target.nodeType) === 3) {{
+        const oldValue = mutationShadowText.has(nodeIndex)
+          ? mutationShadowText.get(nodeIndex)
+          : String(target.nodeValue || "");
+        mutationShadowText.set(nodeIndex, value);
+        if (oldValue !== value) queueMutation({{ type: "characterData", target, oldValue }});
+        return;
+      }}
+      const oldChildren = mutationShadowChildren.get(nodeIndex) || [];
+      const removedNodes = mutationIndexList(oldChildren);
+      mutationShadowChildren.set(nodeIndex, []);
+      for (const childIndex of oldChildren) mutationShadowParents.delete(Number(childIndex));
+      if (oldChildren.length > 0 || value.length > 0) {{
+        queueMutation({{ type: "childList", target, addedNodes: value.length > 0 ? [mutationTextNode(value)] : [], removedNodes }});
+      }}
+      return;
+    }}
+    if (kind === "setInnerHtml") {{
+      if (!target) return;
+      const oldChildren = mutationShadowChildren.get(nodeIndex) || [];
+      const removedNodes = mutationIndexList(oldChildren);
+      mutationShadowChildren.set(nodeIndex, []);
+      for (const childIndex of oldChildren) mutationShadowParents.delete(Number(childIndex));
+      if (oldChildren.length > 0 || String(command.value).length > 0) {{
+        queueMutation({{ type: "childList", target, addedNodes: [], removedNodes }});
+      }}
+      return;
+    }}
+    if (kind === "removeNode") {{
+      if (!target) return;
+      const parentIndex = mutationShadowParents.get(nodeIndex);
+      const parent = mutationNode(parentIndex);
+      if (parent) {{
+        const children = mutationShadowChildren.get(Number(parentIndex)) || [];
+        const position = children.indexOf(nodeIndex);
+        queueMutation({{
+          type: "childList",
+          target: parent,
+          removedNodes: [target],
+          previousSibling: position > 0 ? mutationNode(children[position - 1]) : null,
+          nextSibling: position >= 0 ? mutationNode(children[position + 1]) : null,
+        }});
+        mutationShadowChildren.set(Number(parentIndex), children.filter((index) => index !== nodeIndex));
+      }}
+      mutationShadowParents.delete(nodeIndex);
+      return;
+    }}
+    if (kind === "appendChild" || kind === "insertBefore") {{
+      const parentIndex = Number(command.parent_index);
+      const parent = mutationNode(parentIndex);
+      const childIndex = Number(command.child_index);
+      const child = mutationNode(childIndex);
+      if (!parent || !child) return;
+      const oldParentIndex = mutationShadowParents.get(childIndex);
+      if (oldParentIndex !== undefined) {{
+        const oldChildren = mutationShadowChildren.get(oldParentIndex) || [];
+        const oldPosition = oldChildren.indexOf(childIndex);
+        const oldParent = mutationNode(oldParentIndex);
+        if (oldParent) queueMutation({{
+          type: "childList",
+          target: oldParent,
+          removedNodes: [child],
+          previousSibling: oldPosition > 0 ? mutationNode(oldChildren[oldPosition - 1]) : null,
+          nextSibling: oldPosition >= 0 ? mutationNode(oldChildren[oldPosition + 1]) : null,
+        }});
+        mutationShadowChildren.set(oldParentIndex, oldChildren.filter((index) => index !== childIndex));
+      }}
+      const children = (mutationShadowChildren.get(parentIndex) || []).filter((index) => index !== childIndex);
+      const beforeIndex = kind === "insertBefore" && command.before_index != null
+        ? Number(command.before_index)
+        : null;
+      const insertion = beforeIndex === null ? children.length : Math.max(0, children.indexOf(beforeIndex));
+      const previousSibling = insertion > 0 ? mutationNode(children[insertion - 1]) : null;
+      const nextSibling = mutationNode(children[insertion]);
+      children.splice(insertion, 0, childIndex);
+      mutationShadowChildren.set(parentIndex, children);
+      mutationShadowParents.set(childIndex, parentIndex);
+      queueMutation({{ type: "childList", target: parent, addedNodes: [child], previousSibling, nextSibling }});
+    }}
+  }};
+  globalThis.__glassRecordMutationCommand = recordCommandMutation;
   const validityFlags = (entry) => {{
     const source = entry.validity || {{}};
     const customError = String(entry.customValidity || "").length > 0;
@@ -8150,6 +8447,7 @@ fn document_bootstrap(
     defineTreeAccessors(element);
     installClassList(element);
     installElementStyleAndDataset(element);
+    mutationCreatedNodes.set(nodeIndex, element);
     pushCommand({{ kind: "createElement", node_index: nodeIndex, tag_name: normalized }});
     return element;
   }};
@@ -8227,6 +8525,7 @@ fn document_bootstrap(
       }},
     }});
     defineTreeAccessors(text);
+    mutationCreatedNodes.set(nodeIndex, text);
     pushCommand({{ kind: "createTextNode", node_index: nodeIndex, value: textContent }});
     return text;
   }};
@@ -9265,6 +9564,7 @@ fn document_bootstrap(
     value: rootChildren,
   }});
   defineTreeAccessors(document);
+  globalThis.__glassHostDocument = document;
   globalThis.__glassDispatchHostEvents = (events) => events.map((descriptor) => {{
     const target = descriptor.node_index === 0
       ? document

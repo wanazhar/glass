@@ -3244,6 +3244,14 @@ first/last child, element/sibling traversal, `hasChildNodes()`, `contains()`,
 cross-realm listener identity, complete frame lifecycle/load ordering, full
 Web IDL descriptors, and browser-wide parity remain open.
 
+The completed native-engine-browser-166 slice adds attached text-node records
+to the script snapshot. Local, content-worker, and same-origin frame realms
+now reconstruct parsed text nodes in native child order and preserve their
+identity across evaluations, exposing `nodeValue`, `data`, `parentNode`,
+siblings, and live `childNodes`/`children` filtering. Text mutation continues
+through the typed Rust owner path; full Web IDL descriptors, observer delivery,
+complete frame lifecycle/load ordering, and browser-wide parity remain open.
+
 The completed native-engine-browser-133 batch extends the native target seam
 with a side-effect-free preflight result. The engine resolves the current
 semantic locator and derives viewport geometry and actionability under the

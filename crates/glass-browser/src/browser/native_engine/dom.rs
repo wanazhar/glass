@@ -228,6 +228,19 @@ pub(crate) struct NativeScriptDocumentSnapshot {
     pub(crate) title: String,
     pub(crate) visible_text: String,
     pub(crate) elements: Vec<NativeScriptElementSnapshot>,
+    #[serde(default)]
+    pub(crate) nodes: Vec<NativeScriptNodeSnapshot>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NativeScriptNodeSnapshot {
+    pub(crate) node_index: u32,
+    pub(crate) parent_index: Option<u32>,
+    pub(crate) node_type: u8,
+    pub(crate) node_name: String,
+    pub(crate) node_value: Option<String>,
+    pub(crate) children: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -784,6 +797,33 @@ impl NativeDocument {
     pub(crate) fn script_snapshot(&self, max_text_bytes: usize) -> NativeScriptDocumentSnapshot {
         let (title, _) = self.title(max_text_bytes);
         let (visible_text, _) = self.visible_text(max_text_bytes);
+        let nodes = self
+            .nodes
+            .iter()
+            .filter_map(|node| {
+                self.node(node.id())?;
+                let (node_type, node_name, node_value) = match node.kind() {
+                    NativeNodeKind::Document => (9, "#document".to_owned(), None),
+                    NativeNodeKind::Element { name, .. } => (1, name.to_ascii_uppercase(), None),
+                    NativeNodeKind::Text(value) => (3, "#text".to_owned(), Some(value.clone())),
+                };
+                let children = node
+                    .children()
+                    .iter()
+                    .copied()
+                    .filter(|child| self.node(*child).is_some())
+                    .map(NativeNodeId::index)
+                    .collect();
+                Some(NativeScriptNodeSnapshot {
+                    node_index: node.id().index(),
+                    parent_index: node.parent().map(NativeNodeId::index),
+                    node_type,
+                    node_name,
+                    node_value,
+                    children,
+                })
+            })
+            .collect();
         let elements = self
             .nodes
             .iter()
@@ -827,6 +867,7 @@ impl NativeDocument {
             title,
             visible_text,
             elements,
+            nodes,
         }
     }
 

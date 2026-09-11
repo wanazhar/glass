@@ -1652,8 +1652,8 @@ the child frame's native document owner. The child queues those typed commands
 through its normal Rust transaction, preserving origin validation, temporary
 node quotas, subtree ownership, and one revision; no object or arena pointer
 crosses the realm boundary. Live child-node collections, cross-realm listener
-  identity, complete frame lifecycle/load ordering, and browser-wide Web IDL
-  parity remain promotion gates.
+identity, complete frame lifecycle/load ordering, and browser-wide Web IDL
+parity remain promotion gates.
 
 The completed native-engine-browser-165 slice adds owner-backed live DOM tree
 identity to local and same-origin frame projections. `childNodes` and
@@ -1663,6 +1663,14 @@ changes. Element and text hosts expose first/last child, element and sibling
 traversal, `hasChildNodes()`, `contains()`, `replaceChild()`, and
 `isConnected`; document root lists participate in parent-node and containment
 queries. Parser text-node projection, full Web IDL descriptors, observer
+delivery, and browser-wide parity remain separate promotion work.
+
+The completed native-engine-browser-166 slice adds attached text-node records
+to the bounded script snapshot. Local, content-worker, and same-origin frame
+realms now reconstruct parsed text nodes in native child order and retain their
+identity across evaluations, exposing `nodeValue`, `data`, `parentNode`,
+siblings, and live collection filtering. Text mutation still routes through
+the existing typed Rust transaction; full Web IDL descriptors, observer
 delivery, and browser-wide parity remain separate promotion work.
 
 The engine remains inside the existing two-crate workspace. Internal modules,

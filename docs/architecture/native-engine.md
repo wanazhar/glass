@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-209` slice; the bounded foundation below remains
+`native-engine-browser-210` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5287,6 +5287,16 @@ clip-path/mask semantics, dash arrays, explicit cap/join styles, gradients,
 markers, and external resources remain later issue #40 promotion work. Exact
 evidence is recorded in
 `docs/plan/tasks/native-engine-browser-209.md`.
+
+The completed native-engine-browser-210 slice adds bounded inline PNG data-URL
+image replay to the shared native artifact path. Validated image elements now
+use intrinsic/aspect-ratio sizing and carry decoded RGBA pixels through typed
+display-list commands, nearest-neighbor software rasterization, source-over
+alpha, clipping, scrolling, hit testing, and PNG capture. External image
+resources, transfer/cache ownership, CSS image paints, SVG image resources,
+and animated formats remain active browser-completeness work. Exact evidence is
+recorded in
+`docs/plan/tasks/native-engine-browser-210.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

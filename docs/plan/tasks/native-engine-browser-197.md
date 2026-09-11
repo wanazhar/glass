@@ -26,8 +26,12 @@ identity, comparison, cloning, root, and collection APIs used by page code.
 - Added the attribute branch to bounded node cloning and equality comparison.
 - Extended the node-kind dispatch to include node type 2 while retaining the
   existing element-only mutation and selector operations.
-- Expanded the local integration witness for clone, equality, root, and
-  collection behavior; the frame and content-process regressions remain green.
+- Made the live `NamedNodeMap` surface lazily adopt its constructor prototype,
+  so parsed elements created before constructor bootstrap and elements created
+  afterward expose the same `instanceof NamedNodeMap` contract.
+- Expanded the local integration witness for clone, equality, root, parsed
+  collection, and collection behavior; the frame and content-process
+  regressions remain green.
 
 ## Tradeoffs and follow-up
 
@@ -46,5 +50,8 @@ work. No CDP or fallback path changed.
   (1 passed, 0 failed)
 - `cargo test --quiet -p glass-browser --features native-engine --test native_engine native_same_origin_frame_script_projection_matches_window_contract -- --nocapture`
   (1 passed, 0 failed)
+- `cargo test --quiet -p glass-browser --features native-engine --test native_engine recovered_malformed`
+  (2 passed, 0 failed; confirms the HTML-recovery contract exercised by the
+  shared integration target)
 
-Implementation checkpoint: `4feb1a7e`.
+Implementation checkpoint: `77eb3fee`.

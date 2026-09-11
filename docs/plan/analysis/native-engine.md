@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-158`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-159`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
@@ -3170,6 +3170,18 @@ identity, and complete cross-origin Window behavior, frame lifecycle/load
 ordering, and browser parity remain issue #40 gates. The content-worker wire
 is protocol 7 so older helpers fail negotiation instead of creating a realm
 with the wrong frame identity.
+
+The completed native-engine-browser-159 slice hardens the cross-origin Window
+boundary. Projected WindowProxy state is caller-relative and refreshes its
+origin status after target navigation; cross-origin document, history, storage,
+IndexedDB, and other bounded sensitive-property reads now raise a native
+`DOMException` named `SecurityError` with legacy code 18. Cross-origin
+`contentDocument` and `frameElement` remain undisclosed, including when the
+child is selected, while same-origin frame identity and safe location/name,
+close, message, and topology operations remain unchanged. This is a typed
+security projection, not complete Window Web IDL descriptor parity; live
+cross-realm identity, full frame lifecycle/load ordering, and browser-complete
+promotion remain open.
 
 The completed native-engine-browser-133 batch extends the native target seam
 with a side-effect-free preflight result. The engine resolves the current

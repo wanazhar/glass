@@ -7943,7 +7943,39 @@ fn document_bootstrap(
       target_context_id: targetContextId || null,
     }});
   }};
-  const makeWindowProxy = (handle, targetName, targetContextId, targetUrl) => {{
+  const currentDocumentOrigin = String(host.origin || "null");
+  const originForUrl = (value) => {{
+    try {{ return new URLNative(String(value)).origin; }} catch (_error) {{ return "null"; }}
+  }};
+  const sameOriginForUrl = (value) =>
+    currentDocumentOrigin !== "null" && originForUrl(value) === currentDocumentOrigin;
+  const crossOriginSecurityError = (property) => new DOMExceptionNative(
+    "Permission denied to access property '" + String(property) + "'",
+    "SecurityError",
+  );
+  const installCrossOriginGuards = (proxy, state) => {{
+    for (const property of [
+      "history", "localStorage", "sessionStorage", "indexedDB", "navigator",
+      "performance", "screen", "crypto",
+    ]) {{
+      if (Object.prototype.hasOwnProperty.call(proxy, property)) continue;
+      Object.defineProperty(proxy, property, {{
+        configurable: false,
+        enumerable: false,
+        get() {{
+          if (!state.sameOrigin) throw crossOriginSecurityError(property);
+          return undefined;
+        }},
+      }});
+    }}
+  }};
+  const makeWindowProxy = (
+    handle,
+    targetName,
+    targetContextId,
+    targetUrl,
+    sameOriginOverride = undefined,
+  ) => {{
     const cacheKey = String(targetContextId || "") + "\\u0000" + String(handle || "");
     const existing = windowProxyCache.get(cacheKey);
     if (existing) return existing;
@@ -7952,6 +7984,9 @@ fn document_bootstrap(
       targetName: String(targetName || ""),
       targetContextId: String(targetContextId || ""),
       targetLocationHref: String(targetUrl || "about:blank"),
+      sameOrigin: sameOriginOverride === undefined
+        ? sameOriginForUrl(targetUrl)
+        : Boolean(sameOriginOverride),
     }};
     windowProxyStates.set(cacheKey, state);
     const navigateTarget = (value, replaceHistory) => {{
@@ -8009,6 +8044,7 @@ fn document_bootstrap(
     if (typeof globalThis.Window === "function" && globalThis.Window.prototype) {{
       try {{ Object.setPrototypeOf(proxy, globalThis.Window.prototype); }} catch (_error) {{}}
     }}
+    installCrossOriginGuards(proxy, state);
     windowProxyCache.set(cacheKey, proxy);
     return proxy;
   }};
@@ -8027,6 +8063,7 @@ fn document_bootstrap(
         if (typeof update.href === "string" && update.href.length > 0)
           state.targetLocationHref = update.href;
         if (typeof update.name === "string") state.targetName = update.name;
+        state.sameOrigin = sameOriginForUrl(state.targetLocationHref);
         state.closed = Boolean(update.closed);
       }}
     }}
@@ -8153,6 +8190,54 @@ fn document_bootstrap(
     }}
     return constructor;
   }};
+  const DOMExceptionNative = globalThis.__glassDOMExceptionConstructor || (() => {{
+    const constructor = function DOMException(message = "", name = "Error") {{
+      if (!(this instanceof constructor)) throw new TypeError("DOMException requires new");
+      const normalizedName = String(name || "Error");
+      const normalizedMessage = String(message || "");
+      const codes = {{
+        IndexSizeError: 1,
+        DOMStringSizeError: 2,
+        HierarchyRequestError: 3,
+        WrongDocumentError: 4,
+        InvalidCharacterError: 5,
+        NoModificationAllowedError: 7,
+        NotFoundError: 8,
+        NotSupportedError: 9,
+        InvalidStateError: 11,
+        SyntaxError: 12,
+        InvalidModificationError: 13,
+        NamespaceError: 14,
+        InvalidAccessError: 15,
+        TypeMismatchError: 17,
+        SecurityError: 18,
+        NetworkError: 19,
+        AbortError: 20,
+        URLMismatchError: 21,
+        QuotaExceededError: 22,
+        TimeoutError: 23,
+        InvalidNodeTypeError: 24,
+        DataCloneError: 25,
+      }};
+      Object.defineProperties(this, {{
+        name: {{ configurable: false, enumerable: true, value: normalizedName }},
+        message: {{ configurable: false, enumerable: true, value: normalizedMessage }},
+        code: {{ configurable: false, enumerable: true, value: codes[normalizedName] || 0 }},
+      }});
+    }};
+    constructor.prototype = Object.create(Error.prototype);
+    Object.defineProperty(constructor.prototype, "constructor", {{
+      configurable: true,
+      value: constructor,
+    }});
+    Object.defineProperty(constructor.prototype, "toString", {{
+      configurable: true,
+      value() {{ return this.name + ": " + this.message; }},
+    }});
+    return constructor;
+  }})();
+  globalThis.__glassDOMExceptionConstructor = DOMExceptionNative;
+  globalThis.DOMException = DOMExceptionNative;
   const NodeNative = ensureNativeConstructor("Node", null);
   const DocumentNative = ensureNativeConstructor("Document", NodeNative);
   const ElementNative = ensureNativeConstructor("Element", NodeNative);
@@ -8370,12 +8455,19 @@ fn document_bootstrap(
   ) => {{
     const currentBinding = frameBindingForId(frameIdentifier(binding)) || binding;
     const currentFrameId = frameIdentifier(currentBinding);
-    const proxy = makeWindowProxy("", "", currentFrameId, String(currentBinding.url));
+    const proxy = makeWindowProxy(
+      "",
+      "",
+      currentFrameId,
+      String(currentBinding.url),
+      Boolean(currentBinding.sameOrigin),
+    );
     const cacheKey = currentFrameId + "\\u0000";
     const state = windowProxyStates.get(cacheKey);
     if (state) {{
       state.targetLocationHref = String(currentBinding.url);
       state.closed = false;
+      state.sameOrigin = Boolean(currentBinding.sameOrigin);
       if (frameElement !== null && frameElement !== undefined) state.frameElement = frameElement;
       state.parentWindow = parentWindow;
       state.topWindow = topWindow;
@@ -8396,7 +8488,9 @@ fn document_bootstrap(
       Object.defineProperty(proxy, "frameElement", {{
         enumerable: true,
         configurable: false,
-        get: () => state.frameElement || (globalThis.__glassHostElements instanceof Map
+        get: () => !state.sameOrigin
+          ? null
+          : state.frameElement || (globalThis.__glassHostElements instanceof Map
           ? globalThis.__glassHostElements.get(currentBinding.nodeIndex) || null
           : null),
       }});
@@ -8405,7 +8499,7 @@ fn document_bootstrap(
         configurable: false,
         get() {{
           const current = frameBindingForId(currentFrameId) || currentBinding;
-          if (!current.sameOrigin) throw new Error("cross-origin frame document access denied");
+          if (!state.sameOrigin || !current.sameOrigin) throw crossOriginSecurityError("document");
           return makeFrameDocument(
             current,
             state.frameElement || null,
@@ -8420,7 +8514,7 @@ fn document_bootstrap(
         configurable: false,
         get() {{
           const current = frameBindingForId(currentFrameId) || currentBinding;
-          return current.sameOrigin ? frameChildBindings(current).length : 0;
+          return state.sameOrigin && current.sameOrigin ? frameChildBindings(current).length : 0;
         }},
       }});
       for (let index = 0; index < {max_frame_window_indices}; index += 1) {{
@@ -8429,7 +8523,7 @@ fn document_bootstrap(
           configurable: false,
           get() {{
             const current = frameBindingForId(currentFrameId) || currentBinding;
-            if (!current.sameOrigin) return undefined;
+            if (!state.sameOrigin || !current.sameOrigin) return undefined;
             const child = frameChildBindings(current)[index];
             return child
               ? makeFrameWindow(child, null, proxy, state.topWindow || globalThis)
@@ -8484,12 +8578,19 @@ fn document_bootstrap(
   const makeRelationshipWindow = (descriptor, parentWindow = null, topWindow = null) => {{
     if (!descriptor || typeof descriptor !== "object" || !descriptor.contextId) return null;
     const contextId = String(descriptor.contextId);
-    const proxy = makeWindowProxy("", "", contextId, String(descriptor.url || "about:blank"));
+    const proxy = makeWindowProxy(
+      "",
+      "",
+      contextId,
+      String(descriptor.url || "about:blank"),
+      Boolean(descriptor.sameOrigin),
+    );
     const cacheKey = contextId + "\\u0000";
     const state = windowProxyStates.get(cacheKey);
     if (state) {{
       state.targetLocationHref = String(descriptor.url || "about:blank");
       state.closed = false;
+      state.sameOrigin = Boolean(descriptor.sameOrigin);
       state.relationshipDescriptor = descriptor;
       state.relationshipParent = parentWindow || proxy;
       state.relationshipTop = topWindow || proxy;
@@ -8517,7 +8618,7 @@ fn document_bootstrap(
         configurable: false,
         get() {{
           const current = state.relationshipDescriptor;
-          if (!current || !current.sameOrigin) throw new Error("cross-origin frame document access denied");
+          if (!state.sameOrigin || !current || !current.sameOrigin) throw crossOriginSecurityError("document");
           return makeFrameDocument(
             current,
             null,
@@ -8532,7 +8633,9 @@ fn document_bootstrap(
         configurable: false,
         get() {{
           const current = state.relationshipDescriptor;
-          return current && current.sameOrigin ? frameChildBindings(current).length : 0;
+          return state.sameOrigin && current && current.sameOrigin
+            ? frameChildBindings(current).length
+            : 0;
         }},
       }});
       for (let index = 0; index < {max_frame_window_indices}; index += 1) {{
@@ -8541,7 +8644,7 @@ fn document_bootstrap(
           configurable: false,
           get() {{
             const current = state.relationshipDescriptor;
-            if (!current || !current.sameOrigin) return undefined;
+            if (!state.sameOrigin || !current || !current.sameOrigin) return undefined;
             const child = frameChildBindings(current)[index];
             return child
               ? makeFrameWindow(child, null, proxy, state.relationshipTop || proxy)
@@ -8588,7 +8691,10 @@ fn document_bootstrap(
         ? relationshipTop
         : makeRelationshipWindow(frameContext.parent, relationshipTop, relationshipTop);
     }}
-    selectedFrameElement = snapshotElementFromEntry(frameContext.frameElement);
+    selectedFrameElement = frameContext.parent
+      && frameContext.parent.sameOrigin === true
+      ? snapshotElementFromEntry(frameContext.frameElement)
+      : null;
   }}
   const EventNative = globalThis.__glassEventConstructor || function Event(type, options) {{
     return globalThis.__glassCreateEvent(type, options);

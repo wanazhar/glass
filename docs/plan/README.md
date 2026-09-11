@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-210` locally. The versioned
+`native-engine-browser-211` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1833,6 +1833,19 @@ fetching, decoded-resource transfer/caching, CSS image paints, SVG image
 resources, and animated formats remain active issue #40 browser-completeness
 work. Exact evidence is recorded in
 [native-engine-browser-210](tasks/native-engine-browser-210.md).
+
+The completed native-engine-browser-211 slice adds bounded external PNG image
+resources. The content process now applies the existing HTTP(S), referrer,
+cookie, redirect, mixed-content, and CSP `img-src` policy before fetching
+static image sources; successful PNGs cross the typed document wire as
+validated intrinsic dimensions and RGBA pixels. The parent uses those pixels
+for intrinsic/aspect-ratio layout, typed paint, nearest-neighbor replay,
+source-over alpha, clipping, scrolling, hit testing, capture, and image load
+events; broken or denied images do not abort the page. Decoded-image caching,
+responsive sources, CSS image paints, SVG image resources, and animated or
+other image formats remain active issue #40 browser-completeness work. Exact
+evidence is recorded in
+[native-engine-browser-211](tasks/native-engine-browser-211.md).
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` now returns persistent `Attr`

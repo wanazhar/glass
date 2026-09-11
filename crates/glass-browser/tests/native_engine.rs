@@ -279,6 +279,32 @@ async fn native_local_document_fragments_preserve_tree_ownership_and_helpers() {
             "final": [0, 0, "<u>new</u>end", "newend", 2, "U", true, 0, true],
         })
     );
+    let parsed = engine
+        .evaluate_async(
+            "(() => { const fragment = document.createDocumentFragment(); fragment.innerHTML = \"<article data-kind='card'><strong>Hi &amp; there</strong> tail</article><br>\"; const article = fragment.firstElementChild; const strong = fragment.querySelector('strong'); const before = [fragment.innerHTML, fragment.childNodes.length, article.localName, strong.textContent, article.parentNode === fragment, article.parentElement === null]; const mount = document.createElement('main'); mount.appendChild(fragment); document.body.appendChild(mount); return { before, after: [fragment.innerHTML, mount.innerHTML, mount.querySelector('strong') === strong, article.parentNode === mount, article.getAttribute('data-kind')] }; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        parsed,
+        serde_json::json!({
+            "before": [
+                "<article data-kind=\"card\"><strong>Hi &amp; there</strong> tail</article><br>",
+                2,
+                "article",
+                "Hi & there",
+                true,
+                true,
+            ],
+            "after": [
+                "",
+                "<article data-kind=\"card\"><strong>Hi &amp; there</strong> tail</article><br>",
+                true,
+                true,
+                "card",
+            ],
+        })
+    );
     engine.close_async().await.unwrap();
 }
 
@@ -965,6 +991,27 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
             true,
             true,
             true,
+        ])
+    );
+    assert_eq!(
+        session
+            .script(
+                "(() => { const child = document.getElementById('child').contentDocument; const fragment = child.createDocumentFragment(); fragment.innerHTML = '<section data-source=\"frame\"><em>Projected &amp; ready</em> tail</section><hr>'; const section = fragment.firstElementChild; const em = fragment.querySelector('em'); const before = [fragment.innerHTML, fragment.childNodes.length, section.getAttribute('data-source'), em.textContent, section.parentNode === fragment]; const mount = child.createElement('main'); mount.appendChild(fragment); child.body.appendChild(mount); return [before, fragment.innerHTML, mount.querySelector('em') === em, mount.innerHTML]; })()",
+            )
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([
+            [
+                "<section data-source=\"frame\"><em>Projected &amp; ready</em> tail</section><hr>",
+                2,
+                "frame",
+                "Projected & ready",
+                true,
+            ],
+            "",
+            true,
+            "<section data-source=\"frame\"><em>Projected &amp; ready</em> tail</section><hr>",
         ])
     );
     let child_id = session
@@ -5766,6 +5813,26 @@ async fn native_content_process_document_fragments_cross_the_http_boundary() {
         serde_json::json!([[
             true, true, 3, true, true
         ], 0, "<aside></aside>before-<h1>Native</h1>-after", "before-Native-after", true, true, 4])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const fragment = document.createDocumentFragment(); fragment.innerHTML = '<section data-source=\"http\"><em>Parsed &amp; ready</em> tail</section><hr>'; const section = fragment.firstElementChild; const em = fragment.querySelector('em'); const before = [fragment.innerHTML, fragment.childNodes.length, section.getAttribute('data-source'), em.textContent, section.parentNode === fragment]; const mount = document.getElementById('mount'); mount.appendChild(fragment); return [before, fragment.innerHTML, mount.querySelector('em') === em, mount.innerHTML]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([
+            [
+                "<section data-source=\"http\"><em>Parsed &amp; ready</em> tail</section><hr>",
+                2,
+                "http",
+                "Parsed & ready",
+                true,
+            ],
+            "",
+            true,
+            "<aside></aside>before-<h1>Native</h1>-after<section data-source=\"http\"><em>Parsed &amp; ready</em> tail</section><hr>",
+        ])
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

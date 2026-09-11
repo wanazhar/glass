@@ -8106,9 +8106,88 @@ fn document_bootstrap(
     pushCommand({{ kind: "createTextNode", node_index: nodeIndex, value: textContent }});
     return text;
   }};
+  const makeSnapshotText = (initialEntry) => {{
+    let textContent = String(initialEntry.nodeValue || "");
+    const text = {{
+      nodeIndex: initialEntry.nodeIndex,
+      parentIndex: initialEntry.parentIndex == null ? null : initialEntry.parentIndex,
+      nodeType: 3,
+      nodeName: "#text",
+      nodeValue: textContent,
+      remove() {{
+        if (text.parentIndex === null) return;
+        const parent = text.__glassParent;
+        if (parent && Array.isArray(parent.__glassChildren)) {{
+          parent.__glassChildren = parent.__glassChildren.filter(candidate => candidate !== text);
+        }}
+        text.__glassParent = null;
+        text.parentIndex = null;
+        if (parent) parent.__glassSyncContent();
+        pushCommand({{ kind: "removeNode", node_index: text.nodeIndex }});
+      }},
+    }};
+    Object.defineProperty(text, "__glassParent", {{ enumerable: false, configurable: false, writable: true, value: null }});
+    Object.defineProperty(text, "__glassCreated", {{ enumerable: false, configurable: false, writable: true, value: false }});
+    Object.defineProperty(text, "__glassTextValue", {{ enumerable: false, configurable: false, get() {{ return textContent; }} }});
+    Object.defineProperty(text, "__glassMarkup", {{ enumerable: false, configurable: false, get() {{ return escapeHtmlText(textContent); }} }});
+    Object.defineProperty(text, "parentElement", {{
+      enumerable: false,
+      configurable: false,
+      get() {{
+        let current = text.__glassParent || null;
+        while (current && current.nodeType !== 1) current = current.__glassParent || null;
+        return current || null;
+      }},
+    }});
+    Object.defineProperty(text, "parentNode", {{
+      enumerable: false,
+      configurable: false,
+      get() {{
+        if (text.__glassParent) return text.__glassParent;
+        const owner = globalThis.document;
+        return owner && Array.isArray(owner.__glassChildren) && owner.__glassChildren.includes(text)
+          ? owner
+          : null;
+      }},
+    }});
+    Object.defineProperty(text, "ownerDocument", {{ enumerable: false, configurable: false, get() {{ return globalThis.document || null; }} }});
+    Object.defineProperty(text, "textContent", {{
+      enumerable: true,
+      configurable: false,
+      get() {{ return textContent; }},
+      set(next) {{
+        const value = String(next);
+        if (value.length > {storage_value_limit}) throw new RangeError("native text node exceeds its limit");
+        textContent = value;
+        text.nodeValue = value;
+        if (text.__glassParent) text.__glassParent.__glassSyncContent();
+        pushCommand({{ kind: "setTextContent", node_index: text.nodeIndex, value }});
+      }},
+    }});
+    Object.defineProperty(text, "data", {{
+      enumerable: true,
+      configurable: false,
+      get() {{ return textContent; }},
+      set(next) {{ text.textContent = next; }},
+    }});
+    Object.defineProperty(text, "__glassRefresh", {{
+      enumerable: false,
+      configurable: false,
+      value(nextEntry) {{
+        text.parentIndex = nextEntry.parentIndex == null ? null : nextEntry.parentIndex;
+        textContent = String(nextEntry.nodeValue || "");
+        text.nodeValue = textContent;
+      }},
+    }});
+    return text;
+  }};
   const previousElements = globalThis.__glassHostElements instanceof Map
     ? globalThis.__glassHostElements
     : new Map();
+  const previousNodes = globalThis.__glassHostNodes instanceof Map
+    ? globalThis.__glassHostNodes
+    : new Map();
+  const snapshotNodes = Array.isArray(state.nodes) ? state.nodes : [];
   const elements = state.elements.map((entry) => {{
     const existing = previousElements.get(entry.nodeIndex);
     if (existing && typeof existing.__glassRefresh === "function") {{
@@ -8118,21 +8197,53 @@ fn document_bootstrap(
     return makeElement(entry);
   }});
   const elementsByIndex = new Map(elements.map((element) => [element.nodeIndex, element]));
+  const textNodes = snapshotNodes
+    .filter((entry) => entry && Number(entry.nodeType) === 3)
+    .map((entry) => {{
+      const existing = previousNodes.get(entry.nodeIndex);
+      if (existing && typeof existing.__glassRefresh === "function") {{
+        existing.__glassRefresh(entry);
+        return existing;
+      }}
+      return makeSnapshotText(entry);
+    }});
+  const nodesByIndex = new Map([
+    ...elements.map((element) => [element.nodeIndex, element]),
+    ...textNodes.map((text) => [text.nodeIndex, text]),
+  ]);
   globalThis.__glassHostElements = elementsByIndex;
+  globalThis.__glassHostNodes = nodesByIndex;
   for (const element of elements) {{
     element.__glassChildren = [];
     element.__glassParent = null;
   }}
-  for (const element of elements) {{
-    if (element.parentIndex === null) continue;
-    const parent = elementsByIndex.get(element.parentIndex);
-    if (!parent) continue;
-    parent.__glassChildren.push(element);
-    element.__glassParent = parent;
+  for (const text of textNodes) {{
+    text.__glassChildren = [];
+    text.__glassParent = null;
+  }}
+  if (snapshotNodes.length > 0) {{
+    for (const snapshotNode of snapshotNodes) {{
+      const parent = nodesByIndex.get(snapshotNode.nodeIndex);
+      if (!parent || !Array.isArray(snapshotNode.children)) continue;
+      for (const childIndex of snapshotNode.children) {{
+        const child = nodesByIndex.get(childIndex);
+        if (!child) continue;
+        parent.__glassChildren.push(child);
+        child.__glassParent = parent;
+      }}
+    }}
+  }} else {{
+    for (const element of elements) {{
+      if (element.parentIndex === null) continue;
+      const parent = elementsByIndex.get(element.parentIndex);
+      if (!parent) continue;
+      parent.__glassChildren.push(element);
+      element.__glassParent = parent;
+    }}
   }}
   globalThis.__glassApplyNativeCommand = (command) => {{
     if (!command || typeof command !== "object") throw new TypeError("native frame command must be an object");
-    const current = globalThis.__glassHostElements;
+    const current = globalThis.__glassHostNodes;
     const nodeIndex = Number(command.node_index);
     const element = current instanceof Map ? current.get(nodeIndex) : null;
     if (!element) throw new Error("native frame command target is detached");
@@ -8430,6 +8541,7 @@ fn document_bootstrap(
     return node;
   }};
   for (const element of elements) defineTreeAccessors(element);
+  for (const text of textNodes) defineTreeAccessors(text);
   const matches = (element, selector) => {{
     const value = String(selector).trim();
     if (value.startsWith("#")) return element.id === value.slice(1);
@@ -8439,6 +8551,10 @@ fn document_bootstrap(
   const findAll = (selector) => asNodeList(elements.filter((element) => matches(element, selector)));
   const body = elements.find((element) => element.tagName === "BODY") || null;
   const documentElement = elements.find((element) => element.tagName === "HTML") || null;
+  const rootSnapshot = snapshotNodes.find((entry) => entry && Number(entry.nodeIndex) === 0);
+  const rootChildren = rootSnapshot && Array.isArray(rootSnapshot.children)
+    ? rootSnapshot.children.map((index) => nodesByIndex.get(index)).filter(Boolean)
+    : elements.filter((element) => element.parentIndex === null);
   let documentCookie = typeof host.cookie === "string" ? host.cookie : "";
   const previewCookieSet = (current, value) => {{
     const pair = String(value).split(";", 1)[0].trim();
@@ -8499,7 +8615,7 @@ fn document_bootstrap(
     enumerable: false,
     configurable: false,
     writable: true,
-    value: elements.filter((element) => element.parentIndex === null),
+    value: rootChildren,
   }});
   defineTreeAccessors(document);
   globalThis.__glassDispatchHostEvents = (events) => events.map((descriptor) => {{
@@ -9374,8 +9490,76 @@ fn document_bootstrap(
       }}
       return projected;
     }});
+    const frameNodeSnapshots = Array.isArray(snapshot.nodes) ? snapshot.nodes : [];
+    const frameTextNodes = frameNodeSnapshots
+      .filter((entry) => entry && Number(entry.nodeType) === 3)
+      .map((entry) => {{
+        let textContent = String(entry.nodeValue || "");
+        const text = {{
+          nodeIndex: entry.nodeIndex,
+          parentIndex: entry.parentIndex == null ? null : entry.parentIndex,
+          nodeType: 3,
+          nodeName: "#text",
+          nodeValue: textContent,
+          remove() {{
+            if (text.parentIndex === null) return;
+            const parent = text.__glassParent;
+            if (parent && Array.isArray(parent.__glassChildren)) parent.__glassChildren = parent.__glassChildren.filter(candidate => candidate !== text);
+            text.__glassParent = null;
+            text.parentIndex = null;
+            text.__glassAttached = false;
+            if (parent) parent.__glassSyncContent();
+            queueFrameCommand(currentBinding, {{ kind: "removeNode", node_index: text.nodeIndex }});
+          }},
+        }};
+        Object.defineProperty(text, "__glassParent", {{ enumerable: false, configurable: false, writable: true, value: null }});
+        Object.defineProperty(text, "__glassCreated", {{ enumerable: false, configurable: false, writable: true, value: false }});
+        Object.defineProperty(text, "__glassAttached", {{ enumerable: false, configurable: false, writable: true, value: true }});
+        Object.defineProperty(text, "__glassTextValue", {{ enumerable: false, configurable: false, get() {{ return textContent; }} }});
+        Object.defineProperty(text, "__glassMarkup", {{ enumerable: false, configurable: false, get() {{ return escapeHtmlText(textContent); }} }});
+        Object.defineProperty(text, "parentElement", {{
+          enumerable: false,
+          configurable: false,
+          get() {{
+            let current = text.__glassParent || null;
+            while (current && current.nodeType !== 1) current = current.__glassParent || null;
+            return current || null;
+          }},
+        }});
+        Object.defineProperty(text, "parentNode", {{
+          enumerable: false,
+          configurable: false,
+          get() {{
+            if (text.__glassParent) return text.__glassParent;
+            const owner = text.ownerDocument;
+            return owner && Array.isArray(owner.__glassChildren) && owner.__glassChildren.includes(text)
+              ? owner
+              : null;
+          }},
+        }});
+        Object.defineProperty(text, "ownerDocument", {{ enumerable: false, configurable: false, get() {{ return frameDocument; }} }});
+        Object.defineProperty(text, "textContent", {{
+          enumerable: true,
+          configurable: false,
+          get() {{ return textContent; }},
+          set(next) {{
+            const value = String(next);
+            if (value.length > {storage_value_limit}) throw new RangeError("native text node exceeds its limit");
+            textContent = value;
+            text.nodeValue = value;
+            if (text.__glassParent) text.__glassParent.__glassSyncContent();
+            queueFrameCommand(currentBinding, {{ kind: "setTextContent", node_index: text.nodeIndex, value }});
+          }},
+        }});
+        Object.defineProperty(text, "data", {{ enumerable: true, configurable: false, get() {{ return textContent; }}, set(next) {{ text.textContent = next; }} }});
+        return text;
+      }});
+    const frameNodesByIndex = new Map([
+      ...frameElements.map((element) => [element.nodeIndex, element]),
+      ...frameTextNodes.map((text) => [text.nodeIndex, text]),
+    ]);
     const registerFrameSubtree = (node) => {{
-      if (!frameElements.includes(node)) frameElements.push(node);
+      if (node.nodeType === 1 && !frameElements.includes(node)) frameElements.push(node);
       node.__glassAttached = true;
       for (const child of node.__glassChildren || []) registerFrameSubtree(child);
     }};
@@ -9383,19 +9567,33 @@ fn document_bootstrap(
       node.__glassAttached = false;
       for (const child of node.__glassChildren || []) detachFrameSubtree(child);
     }};
-    for (const element of frameElements) {{
-      element.__glassChildren = [];
-      element.__glassParent = null;
-      element.__glassAttached = true;
+    for (const node of [...frameElements, ...frameTextNodes]) {{
+      node.__glassChildren = [];
+      node.__glassParent = null;
+      node.__glassAttached = true;
     }}
-    for (const element of frameElements) {{
-      if (element.parentIndex === null) continue;
-      const parent = frameElements.find(candidate => candidate.nodeIndex === element.parentIndex);
-      if (!parent) continue;
-      parent.__glassChildren.push(element);
-      element.__glassParent = parent;
+    if (frameNodeSnapshots.length > 0) {{
+      for (const snapshotNode of frameNodeSnapshots) {{
+        const parent = frameNodesByIndex.get(snapshotNode.nodeIndex);
+        if (!parent || !Array.isArray(snapshotNode.children)) continue;
+        for (const childIndex of snapshotNode.children) {{
+          const child = frameNodesByIndex.get(childIndex);
+          if (!child) continue;
+          parent.__glassChildren.push(child);
+          child.__glassParent = parent;
+        }}
+      }}
+    }} else {{
+      for (const element of frameElements) {{
+        if (element.parentIndex === null) continue;
+        const parent = frameElements.find(candidate => candidate.nodeIndex === element.parentIndex);
+        if (!parent) continue;
+        parent.__glassChildren.push(element);
+        element.__glassParent = parent;
+      }}
     }}
     for (const element of frameElements) defineTreeAccessors(element);
+    for (const text of frameTextNodes) defineTreeAccessors(text);
     const makeFrameDetachedElement = (tagName) => {{
       const normalized = String(tagName).toLowerCase();
       if (!/^[A-Za-z][A-Za-z0-9:_-]*$/.test(normalized)) throw new TypeError("invalid element name");
@@ -9623,6 +9821,10 @@ fn document_bootstrap(
     const findById = (id) => frameElements.find((element) => element.__glassAttached && element.id === String(id)) || null;
     const body = frameElements.find((element) => element.tagName === "BODY") || null;
     const documentElement = frameElements.find((element) => element.tagName === "HTML") || null;
+    const frameRootSnapshot = frameNodeSnapshots.find((entry) => entry && Number(entry.nodeIndex) === 0);
+    const frameRootChildren = frameRootSnapshot && Array.isArray(frameRootSnapshot.children)
+      ? frameRootSnapshot.children.map((index) => frameNodesByIndex.get(index)).filter(Boolean)
+      : frameElements.filter((element) => element.parentIndex === null);
     frameDocument = {{
       nodeType: 9,
       nodeName: "#document",
@@ -9656,7 +9858,7 @@ fn document_bootstrap(
       enumerable: false,
       configurable: false,
       writable: true,
-      value: frameElements.filter((element) => element.parentIndex === null),
+      value: frameRootChildren,
     }});
     defineTreeAccessors(frameDocument);
     try {{ Object.setPrototypeOf(frameDocument, DocumentNative.prototype); }} catch (_error) {{}}

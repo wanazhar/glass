@@ -1568,6 +1568,14 @@ Full Web IDL descriptors, parser text-node identity, cross-realm listener
 identity, complete frame lifecycle/load ordering, and native browser-complete
 promotion remain issue #40 gates.
 
+The completed native-engine-browser-166 slice adds attached text-node
+snapshots. The script projection now preserves parsed text-node order and
+identity across evaluations, including `nodeValue`, `data`, `parentNode`,
+siblings, and live `childNodes`/`children` filtering in local, content-worker,
+and same-origin frame realms. Rust remains the source of truth for the
+attached tree and text mutation; full Web IDL descriptors, observer delivery,
+and native browser-complete promotion remain issue #40 gates.
+
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and
 constructed responses now share `Response` identity; `new Response`,

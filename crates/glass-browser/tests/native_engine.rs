@@ -713,7 +713,7 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
     assert_eq!(frames.len(), 2);
     let identity = session
         .script(
-            "(() => { const frame = document.getElementById('child'); const childWindow = frame.contentWindow; const childDocument = frame.contentDocument; return { window: childWindow instanceof Window, document: childDocument instanceof Document && childWindow.document === childDocument && childDocument.defaultView === childWindow, parent: childWindow.parent === window && childWindow.top === window, frameElement: childWindow.frameElement === frame, content: childDocument.body.textContent, query: childDocument.querySelector('#inside').textContent, collections: [childDocument.querySelectorAll('p') instanceof NodeList, childDocument.getElementsByTagName('p') instanceof HTMLCollection], frames: window.length === 1 && window.frames[0] === childWindow }; })()",
+            "(() => { const frame = document.getElementById('child'); const childWindow = frame.contentWindow; const childDocument = frame.contentDocument; const inside = childDocument.querySelector('#inside'); const first = inside.firstChild; return { window: childWindow instanceof Window, document: childDocument instanceof Document && childWindow.document === childDocument && childDocument.defaultView === childWindow, parent: childWindow.parent === window && childWindow.top === window, frameElement: childWindow.frameElement === frame, content: childDocument.body.textContent, query: inside.textContent, textNodes: [first.nodeType, first.nodeValue, first.parentNode === inside, first.nextSibling === childDocument.getElementById('old-child'), inside.childNodes.length, inside.children.length], collections: [childDocument.querySelectorAll('p') instanceof NodeList, childDocument.getElementsByTagName('p') instanceof HTMLCollection], frames: window.length === 1 && window.frames[0] === childWindow }; })()",
         )
         .await
         .unwrap();
@@ -726,6 +726,7 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
             "frameElement": true,
             "content": "same-origin child",
             "query": "same-origin child",
+            "textNodes": [3, "same-origin ", true, true, 2, 1],
             "collections": [true, true],
             "frames": true,
         })
@@ -4848,6 +4849,15 @@ async fn native_content_process_evaluates_persistent_script_realm() {
     );
     assert_eq!(
         engine
+            .evaluate_async(
+                "(() => { const paragraph = document.getElementById('copy'); const first = paragraph.firstChild; const old = document.getElementById('old-copy'); const last = paragraph.lastChild; return [first.nodeType, first.nodeValue, first.parentNode === paragraph, first.nextSibling === old, last.nodeType, last.nodeValue, paragraph.childNodes instanceof NodeList, paragraph.children instanceof HTMLCollection, paragraph.childNodes.length, paragraph.children.length, paragraph.children[0] === old]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([3, "Native ", true, true, 3, " page", true, true, 3, 1, true])
+    );
+    assert_eq!(
+        engine
             .evaluate_async("(() => { const paragraph = document.getElementById('copy'); paragraph.textContent = 'Updated & literal'; return [paragraph.textContent, paragraph.innerText]; })()")
             .await
             .unwrap(),
@@ -4872,11 +4882,11 @@ async fn native_content_process_evaluates_persistent_script_realm() {
     assert_eq!(
         engine
             .evaluate_async(
-                "[document.getElementById('copy').innerHTML, document.getElementById('copy').textContent, document.getElementById('old-copy'), document.getElementById('new-copy').textContent]"
+                "(() => { const copy = document.getElementById('copy'); const first = copy.firstChild; return [copy.innerHTML, copy.textContent, document.getElementById('old-copy'), document.getElementById('new-copy').textContent, first.nodeType, first.nodeValue, first.parentNode === copy, copy.childNodes.length, copy.children.length]; })()"
             )
             .await
             .unwrap(),
-        serde_json::json!(["<strong id=\"new-copy\">Updated &amp; literal</strong>", "Updated & literal", null, "Updated & literal"])
+        serde_json::json!(["<strong id=\"new-copy\">Updated &amp; literal</strong>", "Updated & literal", null, "Updated & literal", 1, null, true, 1, 1])
     );
     assert_eq!(
         engine

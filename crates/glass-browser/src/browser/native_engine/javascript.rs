@@ -7636,6 +7636,7 @@ fn document_bootstrap(
   const mutationParent = (node) => {{
     if (!node) return null;
     if (node.__glassParent) return node.__glassParent;
+    if (node.__glassMutationDocument) return node.__glassMutationDocument;
     if (node.parentIndex !== null && node.parentIndex !== undefined) {{
       return mutationNode(node.parentIndex);
     }}
@@ -10064,6 +10065,145 @@ fn document_bootstrap(
   const frameIdentifier = (binding) => String(
     binding && (binding.frameId || binding.contextId) || ""
   );
+  const frameMutationNodes = globalThis.__glassFrameMutationNodes instanceof Map
+    ? globalThis.__glassFrameMutationNodes
+    : new Map();
+  const frameMutationAttributes = globalThis.__glassFrameMutationAttributes instanceof Map
+    ? globalThis.__glassFrameMutationAttributes
+    : new Map();
+  const frameMutationText = globalThis.__glassFrameMutationText instanceof Map
+    ? globalThis.__glassFrameMutationText
+    : new Map();
+  const frameMutationParents = globalThis.__glassFrameMutationParents instanceof Map
+    ? globalThis.__glassFrameMutationParents
+    : new Map();
+  const frameMutationChildren = globalThis.__glassFrameMutationChildren instanceof Map
+    ? globalThis.__glassFrameMutationChildren
+    : new Map();
+  globalThis.__glassFrameMutationNodes = frameMutationNodes;
+  globalThis.__glassFrameMutationAttributes = frameMutationAttributes;
+  globalThis.__glassFrameMutationText = frameMutationText;
+  globalThis.__glassFrameMutationParents = frameMutationParents;
+  globalThis.__glassFrameMutationChildren = frameMutationChildren;
+  const frameMutationKey = (binding, nodeIndex) =>
+    frameIdentifier(binding) + "\\u0000" + String(nodeIndex);
+  const frameMutationNode = (binding, nodeIndex) =>
+    frameMutationNodes.get(frameMutationKey(binding, nodeIndex)) || null;
+  const recordFrameMutation = (binding, command) => {{
+    if (!binding || !command || typeof command !== "object") return;
+    const kind = String(command.kind || "");
+    const nodeIndex = Number(command.node_index);
+    const key = frameMutationKey(binding, nodeIndex);
+    const target = frameMutationNode(binding, nodeIndex);
+    if (kind === "setAttribute") {{
+      if (!target) return;
+      const attributes = frameMutationAttributes.get(key) || {{}};
+      const name = String(command.name).toLowerCase();
+      const oldValue = Object.prototype.hasOwnProperty.call(attributes, name) ? attributes[name] : null;
+      const value = String(command.value);
+      attributes[name] = value;
+      frameMutationAttributes.set(key, attributes);
+      if (oldValue !== value) queueMutation({{ type: "attributes", target, attributeName: name, oldValue }});
+      return;
+    }}
+    if (kind === "removeAttribute") {{
+      if (!target) return;
+      const attributes = frameMutationAttributes.get(key) || {{}};
+      const name = String(command.name).toLowerCase();
+      const oldValue = Object.prototype.hasOwnProperty.call(attributes, name) ? attributes[name] : null;
+      delete attributes[name];
+      frameMutationAttributes.set(key, attributes);
+      if (oldValue !== null) queueMutation({{ type: "attributes", target, attributeName: name, oldValue }});
+      return;
+    }}
+    if (kind === "setTextContent") {{
+      if (!target) return;
+      const value = String(command.value);
+      if (Number(target.nodeType) === 3) {{
+        const oldValue = frameMutationText.has(key)
+          ? frameMutationText.get(key)
+          : String(target.nodeValue || "");
+        frameMutationText.set(key, value);
+        if (oldValue !== value) queueMutation({{ type: "characterData", target, oldValue }});
+        return;
+      }}
+      const oldChildren = frameMutationChildren.get(key) || [];
+      const removedNodes = oldChildren.map((index) => frameMutationNode(binding, index)).filter(Boolean);
+      frameMutationChildren.set(key, []);
+      for (const childIndex of oldChildren) frameMutationParents.delete(frameMutationKey(binding, childIndex));
+      if (oldChildren.length > 0 || value.length > 0) {{
+        queueMutation({{ type: "childList", target, addedNodes: value.length > 0 ? [mutationTextNode(value)] : [], removedNodes }});
+      }}
+      return;
+    }}
+    if (kind === "setInnerHtml") {{
+      if (!target) return;
+      const oldChildren = frameMutationChildren.get(key) || [];
+      const removedNodes = oldChildren.map((index) => frameMutationNode(binding, index)).filter(Boolean);
+      frameMutationChildren.set(key, []);
+      for (const childIndex of oldChildren) frameMutationParents.delete(frameMutationKey(binding, childIndex));
+      if (oldChildren.length > 0 || String(command.value).length > 0) {{
+        queueMutation({{ type: "childList", target, addedNodes: [], removedNodes }});
+      }}
+      return;
+    }}
+    if (kind === "removeNode") {{
+      if (!target) return;
+      const parentKey = frameMutationParents.get(key);
+      const parent = frameMutationNode(binding, parentKey);
+      if (parent) {{
+        const childrenKey = frameMutationKey(binding, parentKey);
+        const children = frameMutationChildren.get(childrenKey) || [];
+        const position = children.indexOf(nodeIndex);
+        queueMutation({{
+          type: "childList",
+          target: parent,
+          removedNodes: [target],
+          previousSibling: position > 0 ? frameMutationNode(binding, children[position - 1]) : null,
+          nextSibling: position >= 0 ? frameMutationNode(binding, children[position + 1]) : null,
+        }});
+        frameMutationChildren.set(childrenKey, children.filter((index) => index !== nodeIndex));
+      }}
+      frameMutationParents.delete(key);
+      return;
+    }}
+    if (kind === "appendChild" || kind === "insertBefore") {{
+      const parentIndex = Number(command.parent_index);
+      const parent = frameMutationNode(binding, parentIndex);
+      const childIndex = Number(command.child_index);
+      const child = frameMutationNode(binding, childIndex);
+      if (!parent || !child) return;
+      const parentKey = frameMutationKey(binding, parentIndex);
+      const childKey = frameMutationKey(binding, childIndex);
+      const oldParentIndex = frameMutationParents.get(childKey);
+      if (oldParentIndex !== undefined) {{
+        const oldParentKey = frameMutationKey(binding, oldParentIndex);
+        const oldChildren = frameMutationChildren.get(oldParentKey) || [];
+        const oldPosition = oldChildren.indexOf(childIndex);
+        const oldParent = frameMutationNode(binding, oldParentIndex);
+        if (oldParent) queueMutation({{
+          type: "childList",
+          target: oldParent,
+          removedNodes: [child],
+          previousSibling: oldPosition > 0 ? frameMutationNode(binding, oldChildren[oldPosition - 1]) : null,
+          nextSibling: oldPosition >= 0 ? frameMutationNode(binding, oldChildren[oldPosition + 1]) : null,
+        }});
+        frameMutationChildren.set(oldParentKey, oldChildren.filter((index) => index !== childIndex));
+      }}
+      const children = (frameMutationChildren.get(parentKey) || []).filter((index) => index !== childIndex);
+      const beforeIndex = kind === "insertBefore" && command.before_index != null
+        ? Number(command.before_index)
+        : null;
+      const insertion = beforeIndex === null ? children.length : Math.max(0, children.indexOf(beforeIndex));
+      const previousSibling = insertion > 0 ? frameMutationNode(binding, children[insertion - 1]) : null;
+      const nextSibling = frameMutationNode(binding, children[insertion]);
+      children.splice(insertion, 0, childIndex);
+      frameMutationChildren.set(parentKey, children);
+      frameMutationParents.set(childKey, parentIndex);
+      queueMutation({{ type: "childList", target: parent, addedNodes: [child], previousSibling, nextSibling }});
+    }}
+  }};
+  globalThis.__glassRecordFrameMutation = recordFrameMutation;
   const frameBatchableCommand = (command) => command && [
     "setValue", "setSelection", "setChecked", "setSelected",
     "setAttribute", "removeAttribute", "setTextContent", "setInnerHtml",
@@ -10072,6 +10212,9 @@ fn document_bootstrap(
   ].includes(String(command.kind));
   const queueFrameCommand = (binding, command) => {{
     if (!binding || binding.sameOrigin !== true) throw crossOriginSecurityError("document");
+    if (typeof globalThis.__glassRecordFrameMutation === "function") {{
+      globalThis.__glassRecordFrameMutation(binding, command);
+    }}
     const frameId = frameIdentifier(binding);
     const sourceFrameId = String(host.frame_id || host.context_id || "");
     if (!frameId || !sourceFrameId || frameId === sourceFrameId) {{
@@ -10353,6 +10496,11 @@ fn document_bootstrap(
         writable: true,
         value: true,
       }});
+      Object.defineProperty(projected, "__glassAttributeSource", {{
+        enumerable: false,
+        configurable: false,
+        value: () => attributes,
+      }});
       Object.defineProperty(projected, "__glassSyncContent", {{
         enumerable: false,
         configurable: false,
@@ -10594,6 +10742,23 @@ fn document_bootstrap(
         element.__glassParent = parent;
       }}
     }}
+    for (const snapshotNode of frameNodeSnapshots) {{
+      const nodeIndex = Number(snapshotNode.nodeIndex);
+      const key = frameMutationKey(currentBinding, nodeIndex);
+      const node = frameNodesByIndex.get(nodeIndex);
+      if (node) frameMutationNodes.set(key, node);
+      if (snapshotNode.parentIndex !== null && snapshotNode.parentIndex !== undefined) {{
+        frameMutationParents.set(key, Number(snapshotNode.parentIndex));
+      }}
+      frameMutationChildren.set(key, Array.isArray(snapshotNode.children)
+        ? snapshotNode.children.map(Number)
+        : []);
+      if (Number(snapshotNode.nodeType) === 3) {{
+        frameMutationText.set(key, String(snapshotNode.nodeValue || ""));
+      }} else if (node && node.nodeType === 1) {{
+        frameMutationAttributes.set(key, {{ ...(frameElements.find((element) => element.nodeIndex === nodeIndex)?.__glassAttributeSource?.() || {{}}) }});
+      }}
+    }}
     for (const element of frameElements) defineTreeAccessors(element);
     for (const text of frameTextNodes) defineTreeAccessors(text);
     for (const element of frameElements) {{
@@ -10799,6 +10964,9 @@ fn document_bootstrap(
       defineTreeAccessors(projected);
       installClassList(projected);
       installElementStyleAndDataset(projected);
+      frameMutationNodes.set(frameMutationKey(currentBinding, nodeIndex), projected);
+      frameMutationAttributes.set(frameMutationKey(currentBinding, nodeIndex), {{}});
+      frameMutationChildren.set(frameMutationKey(currentBinding, nodeIndex), []);
       queueFrameCommand(currentBinding, {{ kind: "createElement", node_index: nodeIndex, tag_name: normalized }});
       return projected;
     }};
@@ -10837,6 +11005,9 @@ fn document_bootstrap(
         queueFrameCommand(currentBinding, {{ kind: "removeNode", node_index: nodeIndex }});
       }};
       defineTreeAccessors(text);
+      frameMutationNodes.set(frameMutationKey(currentBinding, nodeIndex), text);
+      frameMutationText.set(frameMutationKey(currentBinding, nodeIndex), textContent);
+      frameMutationChildren.set(frameMutationKey(currentBinding, nodeIndex), []);
       queueFrameCommand(currentBinding, {{ kind: "createTextNode", node_index: nodeIndex, value: textContent }});
       return text;
     }};
@@ -10887,11 +11058,28 @@ fn document_bootstrap(
       }},
     }};
     Object.defineProperty(frameDocument, "__glassChildren", {{
-      enumerable: false,
-      configurable: false,
-      writable: true,
-      value: frameRootChildren,
+        enumerable: false,
+        configurable: false,
+        writable: true,
+        value: frameRootChildren,
     }});
+    for (const child of frameRootChildren) {{
+      Object.defineProperty(child, "__glassMutationDocument", {{
+        enumerable: false,
+        configurable: true,
+        writable: true,
+        value: frameDocument,
+      }});
+    }}
+    const frameDocumentKey = frameMutationKey(currentBinding, 0);
+    frameMutationNodes.set(frameDocumentKey, frameDocument);
+    frameMutationChildren.set(
+      frameDocumentKey,
+      frameRootChildren.map((child) => Number(child.nodeIndex)),
+    );
+    for (const child of frameRootChildren) {{
+      frameMutationParents.set(frameMutationKey(currentBinding, child.nodeIndex), 0);
+    }}
     Object.defineProperty(frameDocument, "__glassEventOwner", {{
       enumerable: false,
       configurable: false,

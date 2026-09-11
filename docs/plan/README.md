@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-211` locally. The versioned
+`native-engine-browser-212` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1846,6 +1846,17 @@ responsive sources, CSS image paints, SVG image resources, and animated or
 other image formats remain active issue #40 browser-completeness work. Exact
 evidence is recorded in
 [native-engine-browser-211](tasks/native-engine-browser-211.md).
+
+The completed native-engine-browser-212 slice makes external PNG resources
+reactive to page-script DOM mutations. After each content-worker script batch,
+the native owner retains matching image resources, fetches new or changed
+external sources under the same HTTP(S), CSP, mixed-content, referrer, cookie,
+and redirect policy, transfers successful RGBA resources in the typed
+snapshot, and dispatches the image `load` event before publication. Broken
+images remain non-fatal. Decoded HTTP caching, recursive handler loads,
+responsive sources, CSS/SVG image resources, animation, and other formats
+remain active issue #40 browser-completeness work. Exact evidence is recorded
+in [native-engine-browser-212](tasks/native-engine-browser-212.md).
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` now returns persistent `Attr`

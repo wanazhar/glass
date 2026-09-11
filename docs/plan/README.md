@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-213` locally. The versioned
+`native-engine-browser-214` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1869,6 +1869,16 @@ Freshness/revalidation, concurrent request coalescing, responsive sources,
 CSS/SVG image resources, animation, and other formats remain active issue #40
 browser-completeness work. Exact evidence is recorded in
 [native-engine-browser-213](tasks/native-engine-browser-213.md).
+
+The completed native-engine-browser-214 slice adds URL-reflected element
+properties across local, content-worker, and same-origin frame projections.
+Anchors/areas/bases/links expose resolved `href`, image/script/frame/media
+elements expose resolved `src`, and forms expose resolved `action`; assignment
+still updates the author attribute through the typed native command bridge.
+Relative URL reads use the active document or frame URL, and image `src`
+assignment therefore enters the existing native image hydration path. Exact
+evidence is recorded in
+[native-engine-browser-214](tasks/native-engine-browser-214.md).
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` now returns persistent `Attr`

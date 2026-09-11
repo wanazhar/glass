@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-170` locally. The versioned
+`native-engine-browser-171` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1613,6 +1613,14 @@ frame-local event path. Parent-issued focus/blur/click preflight is not
 replayed, and ancestor or cross-origin targets remain isolated. Full event
 ordering across every lifecycle/input path, observer APIs, Web IDL parity, and
 native browser-complete promotion remain issue #40 gates.
+
+The completed native-engine-browser-171 slice propagates typed runtime effects
+from child-frame navigation and `postMessage` through validated same-origin
+parent and ancestor projections. Lifecycle and hash-change targets now carry
+explicit window metadata, parent-handler effects continue through the bounded
+ancestor cascade, and nested frame scripts/browser queues remain observable.
+Initial document load observer delivery, stale-generation rejection, complete
+Web IDL parity, and native browser-complete promotion remain issue #40 gates.
 
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and

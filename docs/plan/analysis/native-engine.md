@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-194`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-195`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
@@ -3383,6 +3383,17 @@ survives the next projection refresh. Exact evidence is in
 [native-engine-browser-194](../tasks/native-engine-browser-194.md). Broader
 DOMImplementation, document tree-builder, and Web IDL/conformance work remain
 issue #40 promotion gates.
+
+The completed native-engine-browser-195 slice advances bounded HTML recovery
+in both Rust document parsing and JavaScript detached-fragment parsing.
+Unterminated comments, bogus declarations, and EOF-terminated tags now
+recover without synthetic partial elements; duplicate HTML attributes keep the
+first value; duplicate or late doctypes are ignored; and common paragraph,
+list, option, ruby, and table implied-end-tag cases close deterministically.
+Exact evidence is in
+[native-engine-browser-195](../tasks/native-engine-browser-195.md). Full
+WHATWG tree construction, foreign-content handling, table foster parenting,
+and Web IDL/conformance remain issue #40 promotion gates.
 
 The completed native-engine-browser-193 slice closes the script-created comment
 gap in local, HTTP(S) content-worker, same-origin frame, and nested-frame

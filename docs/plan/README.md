@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-194` locally. The versioned
+`native-engine-browser-195` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1690,6 +1690,18 @@ Its contract and local evidence are recorded in
 session history, bfcache, cross-origin history, and browser-wide parity remain
 issue #40 promotion gates.
 
+The completed native-engine-browser-195 slice advances the HTML tree builder's
+recovery behavior. Unterminated comments, bogus declarations, and
+EOF-terminated tags now recover to bounded Comment/Text nodes; duplicate HTML
+attributes keep their first value; late or duplicate doctypes are ignored; and
+common paragraph, list, option, ruby, and table implied-end-tag cases close in
+the native owner. Detached `innerHTML` parsing mirrors the same recovery and
+auto-close rules, with local persistent-realm coverage. The contract and exact
+evidence are recorded in
+[native-engine-browser-195](tasks/native-engine-browser-195.md); full WHATWG
+tree construction, foreign content, and Web IDL/conformance promotion remain
+issue #40 work.
+
 The completed native-engine-browser-194 slice closes document-type construction
 after parsed doctype projection. `document.implementation.createDocumentType()`
 now creates bounded `DocumentType` nodes that can be cloned and inserted at the
@@ -1698,7 +1710,9 @@ content-worker, same-origin frame, and nested-frame paths preserve metadata and
 identity across refresh. The contract and exact evidence are recorded in
 [native-engine-browser-194](tasks/native-engine-browser-194.md); broader
 DOMImplementation factories, complete document tree-builder constraints, and
-Web IDL/conformance promotion remain issue #40 work.
+Web IDL/conformance promotion remain issue #40 work. The malformed-markup
+recovery subset listed here was subsequently closed by
+[native-engine-browser-195](tasks/native-engine-browser-195.md).
 
 The completed native-engine-browser-193 slice closes the script-created comment
 gap. `document.createComment()` now returns a bounded `Comment` node that can
@@ -1710,7 +1724,9 @@ routes are covered by local, content-worker, same-origin-frame, and
 nested-frame witnesses. The contract and exact evidence are recorded in
 [native-engine-browser-193](tasks/native-engine-browser-193.md); document-type
 construction, full malformed-comment recovery, and broader Web IDL/conformance
-promotion remain issue #40 work.
+promotion remain issue #40 work. The bounded malformed-comment recovery subset
+was subsequently closed by
+[native-engine-browser-195](tasks/native-engine-browser-195.md).
 
 The completed native-engine-browser-192 slice preserves parsed HTML comments
 and basic document-type metadata as real native DOM nodes across local,

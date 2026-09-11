@@ -18,15 +18,16 @@ use super::interaction::{
 };
 use super::javascript::{
     MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_DIALOGS, NativeCookieProfileEntry, NativeDialog,
-    NativeFrameScriptBinding, NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime,
-    NativePageNavigation, NativePopupRequest, NativePostMessageRequest, NativeScriptEvaluation,
-    NativeStorageEvent, NativeWebStorageState, NativeWindowCloseRequest,
-    NativeWindowNavigationRequest, NativeWindowProxyUpdate, append_storage_changes,
-    apply_indexed_db_changes, diff_indexed_db_changes, execute_inline_scripts, host_event_script,
-    host_hash_change_event_script, host_message_event_script, host_submit_event_script,
-    load_indexed_db_profile, load_web_storage_profile, new_storage_writer_id,
-    read_storage_event_journal, register_storage_reader, save_web_storage_profile,
-    storage_event_cursor, storage_key, unregister_storage_reader,
+    NativeFrameScriptBinding, NativeFrameScriptContext, NativeIndexedDbChange,
+    NativeIndexedDbState, NativeJavaScriptRuntime, NativePageNavigation, NativePopupRequest,
+    NativePostMessageRequest, NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState,
+    NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
+    append_storage_changes, apply_indexed_db_changes, diff_indexed_db_changes,
+    execute_inline_scripts, host_event_script, host_hash_change_event_script,
+    host_message_event_script, host_submit_event_script, load_indexed_db_profile,
+    load_web_storage_profile, new_storage_writer_id, read_storage_event_journal,
+    register_storage_reader, save_web_storage_profile, storage_event_cursor, storage_key,
+    unregister_storage_reader,
 };
 use super::layout::{NativeLayoutSnapshot, NativePoint, NativeRect};
 use super::lifecycle::NativeLifecycleState;
@@ -352,6 +353,7 @@ pub struct NativeEngine {
     origin: NativeOrigin,
     document_frame_sources: Option<Vec<String>>,
     frame_script_bindings: Vec<NativeFrameScriptBinding>,
+    frame_script_context: Option<NativeFrameScriptContext>,
     embedding_document_url: Option<String>,
     embedding_frame_sources: Option<Vec<String>>,
     revision: u64,
@@ -425,6 +427,7 @@ impl NativeEngine {
             origin: NativeOrigin::Opaque,
             document_frame_sources: None,
             frame_script_bindings: Vec::new(),
+            frame_script_context: None,
             embedding_document_url: None,
             embedding_frame_sources: None,
             revision: 0,
@@ -441,12 +444,22 @@ impl NativeEngine {
 
     pub(crate) fn set_frame_id(&mut self, frame_id: String) {
         self.frame_id = frame_id;
+        if let Some(javascript) = self.javascript.as_ref() {
+            javascript.set_frame_id(self.frame_id.clone());
+        }
     }
 
     pub(crate) fn set_frame_script_bindings(&mut self, bindings: Vec<NativeFrameScriptBinding>) {
         self.frame_script_bindings = bindings.clone();
         if let Some(javascript) = self.javascript.as_ref() {
             javascript.set_frame_script_bindings(bindings);
+        }
+    }
+
+    pub(crate) fn set_frame_script_context(&mut self, context: Option<NativeFrameScriptContext>) {
+        self.frame_script_context = context.clone();
+        if let Some(javascript) = self.javascript.as_ref() {
+            javascript.set_frame_script_context(context);
         }
     }
 
@@ -603,10 +616,12 @@ impl NativeEngine {
                 .start(
                     self.config.storage_path.as_deref(),
                     &self.config.context_id,
+                    &self.frame_id,
                     &self.config.window_name,
                     self.config.opener_context_id.as_deref(),
                     &self.config.opener_window_name,
                     &self.config.opener_url,
+                    self.frame_script_context.as_ref(),
                 )
                 .await?;
         }
@@ -928,10 +943,12 @@ impl NativeEngine {
                 .start(
                     self.config.storage_path.as_deref(),
                     &self.config.context_id,
+                    &self.frame_id,
                     &self.config.window_name,
                     self.config.opener_context_id.as_deref(),
                     &self.config.opener_window_name,
                     &self.config.opener_url,
+                    self.frame_script_context.as_ref(),
                 )
                 .await?;
             self.content_process = Some(process);
@@ -1344,6 +1361,9 @@ impl NativeEngine {
             self.deliver_pending_external_storage_events().await?;
             if let Some(process) = self.content_process.as_mut() {
                 process
+                    .sync_frame_script_context(self.frame_script_context.as_ref())
+                    .await?;
+                process
                     .sync_frame_script_bindings(&self.frame_script_bindings)
                     .await?;
             }
@@ -1409,6 +1429,8 @@ impl NativeEngine {
                     .origin(&storage_key(&self.url, &self.origin)),
             );
             javascript.set_frame_script_bindings(self.frame_script_bindings.clone());
+            javascript.set_frame_script_context(self.frame_script_context.clone());
+            javascript.set_frame_id(self.frame_id.clone());
             self.javascript = Some(javascript);
         }
         self.deliver_pending_external_storage_events().await?;
@@ -1776,7 +1798,7 @@ impl NativeEngine {
             validate_url_text("popup window handle", handle)?;
         }
         if popup.source_context_id.is_empty() {
-            popup.source_context_id = self.config.context_id.clone();
+            popup.source_context_id = self.frame_id.clone();
         } else {
             super::config::validate_context_id(&popup.source_context_id)?;
         }
@@ -1830,7 +1852,7 @@ impl NativeEngine {
             ));
         }
         if message.source_context_id.is_empty() {
-            message.source_context_id = self.config.context_id.clone();
+            message.source_context_id = self.frame_id.clone();
         } else {
             super::config::validate_context_id(&message.source_context_id)?;
         }
@@ -1883,7 +1905,7 @@ impl NativeEngine {
             super::config::validate_context_id(target_context_id)?;
         }
         if request.source_context_id.is_empty() {
-            request.source_context_id = self.config.context_id.clone();
+            request.source_context_id = self.frame_id.clone();
         } else {
             super::config::validate_context_id(&request.source_context_id)?;
         }
@@ -1926,7 +1948,7 @@ impl NativeEngine {
             super::config::validate_context_id(target_context_id)?;
         }
         if request.source_context_id.is_empty() {
-            request.source_context_id = self.config.context_id.clone();
+            request.source_context_id = self.frame_id.clone();
         } else {
             super::config::validate_context_id(&request.source_context_id)?;
         }
@@ -4262,6 +4284,11 @@ impl NativeEngine {
         } else {
             None
         };
+        if let Some(javascript) = javascript.as_ref() {
+            javascript.set_frame_script_bindings(self.frame_script_bindings.clone());
+            javascript.set_frame_script_context(self.frame_script_context.clone());
+            javascript.set_frame_id(self.frame_id.clone());
+        }
         let mut dialogs = std::mem::take(&mut prepared.dialogs);
         let page_navigation = if prepared.execute_inline_scripts {
             let result = execute_inline_scripts(
@@ -4373,6 +4400,11 @@ impl NativeEngine {
         } else {
             None
         };
+        if let Some(javascript) = javascript.as_ref() {
+            javascript.set_frame_script_bindings(self.frame_script_bindings.clone());
+            javascript.set_frame_script_context(self.frame_script_context.clone());
+            javascript.set_frame_id(self.frame_id.clone());
+        }
         let mut dialogs = std::mem::take(&mut prepared.dialogs);
         let page_navigation = if execute_page_scripts {
             let result = execute_inline_scripts(

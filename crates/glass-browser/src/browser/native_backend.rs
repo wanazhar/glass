@@ -6,8 +6,9 @@
 
 use super::native_engine::{
     MAX_NATIVE_EFFECTS, NativeAction, NativeEngine, NativeEngineConfig, NativeEngineError,
-    NativeFrameScriptBinding, NativeHistoryDirection, NativeInspectionSnapshot, NativeOrigin,
-    NativePopupRequest, NativePostMessageRequest, NativePreflightAction, NativeTargetPreflight,
+    NativeFrameScriptBinding, NativeFrameScriptContext, NativeFrameScriptWindow,
+    NativeHistoryDirection, NativeInspectionSnapshot, NativeOrigin, NativePopupRequest,
+    NativePostMessageRequest, NativePreflightAction, NativeTargetPreflight,
     NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
 };
 use crate::browser::session::{
@@ -386,22 +387,78 @@ impl NativeEngineBackend {
         reconcile_native_frames(&mut targets.active_frames, &engine).await?;
         let active_frame_id = targets.active_frames.active_frame_id.clone();
         let parent_snapshot = engine.snapshot().map_err(native_error)?;
-        let mut bindings = targets
+        native_frame_script_children(
+            &targets.active_frames,
+            &engine,
+            &active_frame_id,
+            &parent_snapshot.origin,
+        )
+    }
+
+    async fn frame_script_context(
+        &self,
+    ) -> Result<Option<NativeFrameScriptContext>, BrowserBackendError> {
+        let mut targets = self.lock_targets(BackendOperation::Script)?;
+        let Some(target_id) = targets.active_target_id.clone() else {
+            return Ok(None);
+        };
+        let engine = self.lock_engine_raw(BackendOperation::Script)?;
+        reconcile_native_frames(&mut targets.active_frames, &engine).await?;
+        let Some(parent_id) = targets.active_frames.active_parent_id.clone() else {
+            return Ok(None);
+        };
+        let current_snapshot = engine.snapshot().map_err(native_error)?;
+        let parent_engine = native_frame_engine(&targets.active_frames, &engine, &parent_id)
+            .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                reason: "native frame parent disappeared during script context projection".into(),
+            })?;
+        let parent_snapshot = parent_engine.snapshot().map_err(native_error)?;
+        let parent_same_origin = current_snapshot.origin != NativeOrigin::Opaque
+            && current_snapshot.origin == parent_snapshot.origin;
+        let parent_window = native_frame_script_window(
+            &targets.active_frames,
+            &engine,
+            &parent_id,
+            parent_engine,
+            parent_same_origin,
+        )?;
+        let top_id = native_main_frame_id(&target_id);
+        let top_engine =
+            native_frame_engine(&targets.active_frames, &engine, &top_id).ok_or_else(|| {
+                BrowserBackendError::SelectionFailed {
+                    reason: "native top frame disappeared during script context projection".into(),
+                }
+            })?;
+        let top_snapshot = top_engine.snapshot().map_err(native_error)?;
+        let top_same_origin = current_snapshot.origin != NativeOrigin::Opaque
+            && current_snapshot.origin == top_snapshot.origin;
+        let top_window = native_frame_script_window(
+            &targets.active_frames,
+            &engine,
+            &top_id,
+            top_engine,
+            top_same_origin,
+        )?;
+        let frame_element = targets
             .active_frames
-            .parked
-            .iter()
-            .filter(|(_, frame)| frame.parent_id.as_deref() == Some(active_frame_id.as_str()))
-            .map(|(frame_id, frame)| {
-                native_frame_script_binding(
-                    &targets.active_frames.parked,
-                    frame_id,
-                    frame,
-                    &parent_snapshot.origin,
-                )
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        bindings.sort_by_key(|binding| binding.node_index);
-        Ok(bindings)
+            .active_owner_node_index
+            .and_then(|node_index| {
+                parent_engine
+                    .script_document_snapshot()
+                    .ok()
+                    .and_then(|document| {
+                        document
+                            .elements
+                            .into_iter()
+                            .find(|element| element.node_index == node_index)
+                    })
+            });
+        Ok(Some(NativeFrameScriptContext {
+            current_frame_id: targets.active_frames.active_frame_id.clone(),
+            parent: Some(parent_window),
+            top: Some(top_window),
+            frame_element,
+        }))
     }
 
     fn frame_route(&self, frame_id: &str) -> Result<Option<NativeFrameRoute>, BrowserBackendError> {
@@ -1545,7 +1602,8 @@ impl NativeEngineBackend {
             &mut targets.active_frames.active_owner_node_index,
             owner_node_index,
         );
-        targets.active_frames.discovered_generation = None;
+        targets.active_frames.discovered_generation =
+            Some(active_engine.document_generation().map_err(native_error)?);
         targets.active_frames.parked.insert(
             old_frame_id,
             NativeParkedFrame {
@@ -1772,6 +1830,11 @@ impl BrowserBackend for NativeEngineBackend {
             } else {
                 None
             };
+            let frame_script_context = if matches!(operation, BackendOperation::Script) {
+                Some(self.frame_script_context().await?)
+            } else {
+                None
+            };
             let mut engine = self.lock_engine(operation)?;
             if let Some(proxy_updates) = proxy_updates.as_deref() {
                 engine
@@ -1781,6 +1844,9 @@ impl BrowserBackend for NativeEngineBackend {
             }
             if let Some(bindings) = frame_script_bindings {
                 engine.set_frame_script_bindings(bindings);
+            }
+            if let Some(context) = frame_script_context {
+                engine.set_frame_script_context(context);
             }
             let active_context_id = engine.config().context_id.clone();
             match (operation, request) {
@@ -2191,38 +2257,109 @@ fn project_native_frame(
 }
 
 fn native_frame_script_binding(
-    frames: &BTreeMap<String, NativeParkedFrame>,
+    frames: &NativeFrameState,
+    active_engine: &NativeEngine,
     frame_id: &str,
     frame: &NativeParkedFrame,
     parent_origin: &NativeOrigin,
 ) -> Result<NativeFrameScriptBinding, BrowserBackendError> {
-    let child_snapshot = frame.engine.snapshot().map_err(native_error)?;
+    native_frame_script_binding_from_engine(
+        frames,
+        active_engine,
+        frame_id,
+        &frame.engine,
+        frame.owner_node_index,
+        parent_origin,
+    )
+}
+
+fn native_frame_script_binding_from_engine(
+    frames: &NativeFrameState,
+    active_engine: &NativeEngine,
+    frame_id: &str,
+    frame_engine: &NativeEngine,
+    owner_node_index: Option<u32>,
+    parent_origin: &NativeOrigin,
+) -> Result<NativeFrameScriptBinding, BrowserBackendError> {
+    let child_snapshot = frame_engine.snapshot().map_err(native_error)?;
     let same_origin =
         *parent_origin != NativeOrigin::Opaque && *parent_origin == child_snapshot.origin;
-    let mut children = frames
-        .iter()
-        .filter(|(_, child)| child.parent_id.as_deref() == Some(frame_id))
-        .map(|(child_id, child)| {
-            native_frame_script_binding(frames, child_id, child, &child_snapshot.origin)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    children.sort_by_key(|binding| binding.node_index);
+    let children =
+        native_frame_script_children(frames, active_engine, frame_id, &child_snapshot.origin)?;
     Ok(NativeFrameScriptBinding {
-        node_index: frame
-            .owner_node_index
-            .ok_or_else(|| BrowserBackendError::SelectionFailed {
-                reason: "native frame owner node disappeared during script projection".into(),
-            })?,
+        node_index: owner_node_index.ok_or_else(|| BrowserBackendError::SelectionFailed {
+            reason: "native frame owner node disappeared during script projection".into(),
+        })?,
         frame_id: frame_id.to_owned(),
         url: child_snapshot.url,
         origin: child_snapshot.origin.serialized(),
         revision: child_snapshot.revision,
         same_origin,
-        document: frame
-            .engine
+        document: frame_engine
             .script_document_snapshot()
             .map_err(native_error)?,
         children,
+    })
+}
+
+fn native_frame_script_children(
+    frames: &NativeFrameState,
+    active_engine: &NativeEngine,
+    parent_id: &str,
+    parent_origin: &NativeOrigin,
+) -> Result<Vec<NativeFrameScriptBinding>, BrowserBackendError> {
+    let mut children = frames
+        .parked
+        .iter()
+        .filter(|(_, frame)| frame.parent_id.as_deref() == Some(parent_id))
+        .map(|(frame_id, frame)| {
+            native_frame_script_binding(frames, active_engine, frame_id, frame, parent_origin)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if frames.active_parent_id.as_deref() == Some(parent_id)
+        && !frames.parked.contains_key(&frames.active_frame_id)
+    {
+        children.push(native_frame_script_binding_from_engine(
+            frames,
+            active_engine,
+            &frames.active_frame_id,
+            active_engine,
+            frames.active_owner_node_index,
+            parent_origin,
+        )?);
+    }
+    children.sort_by_key(|binding| binding.node_index);
+    Ok(children)
+}
+
+fn native_frame_engine<'a>(
+    frames: &'a NativeFrameState,
+    active_engine: &'a NativeEngine,
+    frame_id: &str,
+) -> Option<&'a NativeEngine> {
+    if frames.active_frame_id == frame_id {
+        Some(active_engine)
+    } else {
+        frames.parked.get(frame_id).map(|frame| &frame.engine)
+    }
+}
+
+fn native_frame_script_window(
+    frames: &NativeFrameState,
+    active_engine: &NativeEngine,
+    frame_id: &str,
+    engine: &NativeEngine,
+    same_origin: bool,
+) -> Result<NativeFrameScriptWindow, BrowserBackendError> {
+    let snapshot = engine.snapshot().map_err(native_error)?;
+    Ok(NativeFrameScriptWindow {
+        context_id: frame_id.to_owned(),
+        url: snapshot.url,
+        origin: snapshot.origin.serialized(),
+        revision: snapshot.revision,
+        same_origin,
+        document: engine.script_document_snapshot().map_err(native_error)?,
+        children: native_frame_script_children(frames, active_engine, frame_id, &snapshot.origin)?,
     })
 }
 

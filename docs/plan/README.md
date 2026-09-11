@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-157` locally. The versioned
+`native-engine-browser-158` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1480,9 +1480,20 @@ nested `contentWindow`/`contentDocument` relationships, including nested
 `frameElement` identity. Nested `postMessage()` and WindowProxy navigation use
 the existing parked-descendant routes, and document/window caches refresh when
 child revisions or descendant topology change. The transfer remains bounded
-and snapshot-based; selected-child realm parent metadata, complete
-cross-origin Window behavior, live cross-realm identity, full frame lifecycle,
-and complete browser parity remain issue #40 gates.
+and snapshot-based; complete cross-origin Window behavior, live cross-realm
+identity, full frame lifecycle, and complete browser parity remain issue #40
+gates.
+
+The completed native-engine-browser-158 slice is
+[native-engine-browser-158](tasks/native-engine-browser-158.md). Selected child
+realms now receive their actual frame ID plus bounded parent/top Window and
+document descriptors through both local and content-worker paths. Parent
+descriptors include the active selected child, so `window.parent.document`,
+`defaultView`, `parent.frames[n]`, `frameElement`, and nested WindowProxy
+identity resolve back to the selected global; frame-scoped effects continue to
+use frame IDs while storage remains target-owned. Cross-origin Window Web IDL,
+full frame lifecycle/load ordering, live cross-realm identity, and complete
+browser parity remain issue #40 gates.
 
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and

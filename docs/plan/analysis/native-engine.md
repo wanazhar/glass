@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-169`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-170`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
@@ -3269,6 +3269,16 @@ and deletion reuse the existing typed attribute command path. Full CSS value and
 CSSOM descriptor parity, computed-style mutation semantics, cross-realm
 listener delivery, complete frame lifecycle/load ordering, and browser-wide
 parity remain open.
+
+The completed native-engine-browser-170 slice adds cross-process event
+observation for same-origin frame activity. Child `NativeEffect` metadata now
+crosses the backend boundary for frame commands and selected-frame
+navigation/actions/scripts; parent bindings are refreshed, child node indexes
+resolve to the parent projection, and events follow the frame-local
+capture/target/bubble path through the projected document and window. Parent
+focus/blur/click preflight is not replayed, while ancestor and cross-origin
+targets remain isolated. Full event ordering, observer APIs, Web IDL identity,
+complete lifecycle/input coverage, and browser-wide parity remain open.
 
 The completed native-engine-browser-169 slice adds frame-qualified EventTarget
 behavior to same-origin projected elements, detached projected elements,

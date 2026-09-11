@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-169` slice; the bounded foundation below remains
+`native-engine-browser-170` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -1683,6 +1683,16 @@ enumeration, writes, and deletion reuse the existing attribute command owner,
 so layout still consumes Rust-owned committed style state. Full CSSOM/value
 validation, computed-style descriptor parity, complete cross-process event
 delivery, and browser-wide parity remain separate promotion work.
+
+The completed native-engine-browser-170 slice adds cross-process event
+observation for same-origin frame activity. Bounded child effect metadata is
+delivered to the parent projection across active and parked frame owners;
+parent bindings are refreshed before target resolution, and capture/target/
+bubble delivery terminates at the projected child document and window. Parent
+issued focus/blur/click preflight is not replayed, ancestor and cross-origin
+targets remain isolated, and selected-frame navigation/action/script effects
+are covered by the same route. Full event ordering, observer APIs, Web IDL
+identity, and browser-wide parity remain issue #40 gates.
 
 The completed native-engine-browser-169 slice adds frame-qualified EventTarget
 behavior to same-origin projected elements, detached projected elements,

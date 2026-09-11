@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-185` slice; the bounded foundation below remains
+`native-engine-browser-186` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5157,6 +5157,14 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - explicit Rust native-session construction and feature-gated CLI dispatch for
   local and bounded HTTP(S) URL shapes, including rejection of remote browser
   endpoints and unsupported browser-only flags.
+
+The completed native-engine-browser-186 slice exposes the shared character-data
+surface across local, HTTP(S) content-worker, and same-origin frame realms.
+Text nodes now receive the `Text` → `CharacterData` → `Node` prototype chain,
+keep `nodeValue`, `data`, and `textContent` synchronized, and implement the
+bounded CharacterData mutation methods through the existing native command and
+observer path. Full Web IDL descriptors, comprehensive parser semantics, and
+the remaining issue #40 promotion gates remain open.
 
 The completed native-engine-browser-185 slice hardens the shared bounded
 fragment parser with quote-aware tag-end scanning, declaration/comment

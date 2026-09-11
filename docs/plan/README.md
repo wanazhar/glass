@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-193` locally. The versioned
+`native-engine-browser-194` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1689,6 +1689,16 @@ Its contract and local evidence are recorded in
 [native-engine-browser-178](tasks/native-engine-browser-178.md); cross-document
 session history, bfcache, cross-origin history, and browser-wide parity remain
 issue #40 promotion gates.
+
+The completed native-engine-browser-194 slice closes document-type construction
+after parsed doctype projection. `document.implementation.createDocumentType()`
+now creates bounded `DocumentType` nodes that can be cloned and inserted at the
+document root with duplicate and hierarchy validation; local, HTTP(S)
+content-worker, same-origin frame, and nested-frame paths preserve metadata and
+identity across refresh. The contract and exact evidence are recorded in
+[native-engine-browser-194](tasks/native-engine-browser-194.md); broader
+DOMImplementation factories, complete document tree-builder constraints, and
+Web IDL/conformance promotion remain issue #40 work.
 
 The completed native-engine-browser-193 slice closes the script-created comment
 gap. `document.createComment()` now returns a bounded `Comment` node that can

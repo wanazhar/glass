@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-193` slice; the bounded foundation below remains
+`native-engine-browser-194` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5157,6 +5157,15 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - explicit Rust native-session construction and feature-gated CLI dispatch for
   local and bounded HTTP(S) URL shapes, including rejection of remote browser
   endpoints and unsupported browser-only flags.
+
+The completed native-engine-browser-194 slice closes document-type construction
+after parsed projection. `document.implementation.createDocumentType()` now
+creates bounded `DocumentType` nodes with metadata, cloning, document-root
+insertion, duplicate/hierarchy validation, frame batching, and persistent
+identity refresh across local, HTTP(S) content-worker, same-origin frame, and
+nested-frame realms. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-194.md`; broader DOMImplementation,
+tree-builder, and Web IDL/conformance promotion remain issue #40 work.
 
 The completed native-engine-browser-193 slice closes script-created comment
 construction across local, HTTP(S) content-worker, same-origin frame, and

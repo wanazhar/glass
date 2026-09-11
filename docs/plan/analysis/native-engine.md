@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-193`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-194`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
@@ -3373,6 +3373,16 @@ raw-text/foreign-content rules, malformed-input recovery, and full Web IDL
 descriptor parity remain conformance work. Exact local evidence is in
 `docs/plan/tasks/native-engine-browser-179.md`; browser-complete promotion
 remains tracked issue-40 work.
+
+The completed native-engine-browser-194 slice closes the document-type
+construction gap in local, HTTP(S) content-worker, same-origin frame, and
+nested-frame realms. `document.implementation.createDocumentType()` now emits
+typed bounded nodes, document-root insertion validates duplicate/hierarchy
+rules in Rust, clones remain equivalent and detached, and committed identity
+survives the next projection refresh. Exact evidence is in
+[native-engine-browser-194](../tasks/native-engine-browser-194.md). Broader
+DOMImplementation, document tree-builder, and Web IDL/conformance work remain
+issue #40 promotion gates.
 
 The completed native-engine-browser-193 slice closes the script-created comment
 gap in local, HTTP(S) content-worker, same-origin frame, and nested-frame

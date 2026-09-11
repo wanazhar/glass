@@ -1,6 +1,8 @@
 # Native engine browser-complete expansion analysis
 
-Status: Active implementation analysis for issue #40. Phase 0/1 and the first
+Status: Active implementation analysis for issue #40. The current browser
+expansion checkpoint is `native-engine-browser-154`, with local and HTTP(S)
+lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
 committed locally, including the bounded 010 display-list seed and the bounded
@@ -3105,6 +3107,16 @@ pointer, at the cost of snapshot timing: refresh occurs before the next
 observable operation rather than through asynchronous mutation of every realm.
 Full Window Web IDL, cross-origin property access, popup policy/geometry, frame
 lifecycle/shared scripting, and complete browser parity remain issue #40 work.
+
+The completed native-engine-browser-154 slice makes lifecycle navigation
+re-entry parent-owned. Local and content-process `beforeunload`, `pagehide`,
+`unload`, `popstate`, and `hashchange` callbacks now return one validated
+location handoff through the same loader/history/frame owner; cancellation is
+kept distinct from a completed lifecycle with no handoff. The already-dispatched
+outgoing lifecycle is skipped once for its own handoff, newly committed pages
+receive their normal lifecycle, and bounded multiple/looping handoffs fail
+closed. Popup policy/geometry, shared frame scripting, full Window Web IDL, and
+complete browser parity remain issue #40 work.
 
 The completed native-engine-browser-133 batch extends the native target seam
 with a side-effect-free preflight result. The engine resolves the current

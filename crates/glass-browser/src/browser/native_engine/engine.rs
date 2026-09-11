@@ -357,6 +357,7 @@ pub struct NativeEngine {
     scroll_offset: NativePoint,
     effects: VecDeque<NativeEffect>,
     pending_lifecycle_effects: Vec<(NativeNodeId, NativeEventKind)>,
+    skip_next_navigation_lifecycle: bool,
 }
 
 impl Drop for NativeEngine {
@@ -428,6 +429,7 @@ impl NativeEngine {
             scroll_offset: NativePoint { x: 0, y: 0 },
             effects: VecDeque::new(),
             pending_lifecycle_effects: Vec::new(),
+            skip_next_navigation_lifecycle: false,
         })
     }
 
@@ -717,7 +719,11 @@ impl NativeEngine {
         let url = url.into();
         let resource = self.loader.load(&url)?;
         if self.is_same_document_navigation(&resource.url) {
-            self.commit_same_document_navigation(resource.url, HistoryCommit::Push)?;
+            if let Some(navigation) =
+                self.commit_same_document_navigation(resource.url, HistoryCommit::Push)?
+            {
+                self.navigate_page_script_sync(navigation, 1)?;
+            }
         } else if !self.allows_frame_navigation(&resource.url)? {
             return Ok(self.snapshot_unchecked());
         } else {
@@ -752,8 +758,20 @@ impl NativeEngine {
         navigation: NativeNavigationRequest,
         page_navigation_handoffs: usize,
     ) -> Result<NativeEngineSnapshot, NativeEngineError> {
+        self.navigate_request_async_with_lifecycle(navigation, page_navigation_handoffs, true)
+            .await
+    }
+
+    async fn navigate_request_async_with_lifecycle(
+        &mut self,
+        navigation: NativeNavigationRequest,
+        page_navigation_handoffs: usize,
+        dispatch_lifecycle: bool,
+    ) -> Result<NativeEngineSnapshot, NativeEngineError> {
         self.require_running("navigate")?;
-        self.pending_lifecycle_effects.clear();
+        if dispatch_lifecycle {
+            self.pending_lifecycle_effects.clear();
+        }
         self.sync_external_storage_events()?;
         self.deliver_pending_external_storage_events().await?;
         let url = navigation.url.as_str();
@@ -766,16 +784,44 @@ impl NativeEngine {
         if !same_document && !self.allows_frame_navigation(url)? {
             return Ok(self.snapshot_unchecked());
         }
-        if !same_document && !self.dispatch_navigation_lifecycle_async().await? {
-            return Ok(self.snapshot_unchecked());
+        if !same_document && dispatch_lifecycle {
+            let (allowed, lifecycle_navigation) =
+                self.dispatch_navigation_lifecycle_async().await?;
+            if !allowed {
+                return Ok(self.snapshot_unchecked());
+            }
+            if let Some(lifecycle_navigation) = lifecycle_navigation {
+                if page_navigation_handoffs >= MAX_NATIVE_PAGE_NAVIGATION_HANDOFFS {
+                    return Err(NativeEngineError::limit(
+                        "page navigation handoffs",
+                        MAX_NATIVE_PAGE_NAVIGATION_HANDOFFS,
+                        page_navigation_handoffs.saturating_add(1),
+                    ));
+                }
+                return Box::pin(self.navigate_request_async_with_lifecycle(
+                    lifecycle_navigation,
+                    page_navigation_handoffs + 1,
+                    false,
+                ))
+                .await;
+            }
         }
         if same_document && navigation.method == NativeNavigationMethod::Get {
             validate_url_text("navigation URL", url)?;
             if let Some(worker) = self.runtime_worker.clone() {
-                self.commit_same_document_navigation_async(navigation.url, history_commit, &worker)
-                    .await?;
+                self.commit_same_document_navigation_async(
+                    navigation.url,
+                    history_commit,
+                    &worker,
+                    page_navigation_handoffs,
+                )
+                .await?;
             } else {
-                self.commit_same_document_navigation(navigation.url, history_commit)?;
+                if let Some(navigation) =
+                    self.commit_same_document_navigation(navigation.url, history_commit)?
+                {
+                    self.navigate_page_script_sync(navigation, page_navigation_handoffs + 1)?;
+                }
             }
             return Ok(self.snapshot_unchecked());
         }
@@ -835,7 +881,11 @@ impl NativeEngine {
         history_commit: HistoryCommit,
     ) -> Result<NativeEngineSnapshot, NativeEngineError> {
         if self.is_same_document_navigation(&resource.url) {
-            self.commit_same_document_navigation(resource.url, history_commit)?;
+            if let Some(navigation) =
+                self.commit_same_document_navigation(resource.url, history_commit)?
+            {
+                self.navigate_page_script_sync(navigation, 1)?;
+            }
         } else {
             let prepared = self.prepare_navigation_resource(resource)?;
             if let Some(page_navigation) = self.commit_navigation(prepared, history_commit)? {
@@ -962,8 +1012,13 @@ impl NativeEngine {
             self.content_process.take();
         }
         if self.is_same_document_navigation(&resource.url) {
-            self.commit_same_document_navigation_async(resource.url, history_commit, worker)
-                .await?;
+            self.commit_same_document_navigation_async(
+                resource.url,
+                history_commit,
+                worker,
+                page_navigation_handoffs,
+            )
+            .await?;
         } else {
             let prepared = self.prepare_navigation_resource(resource)?;
             if let Some(page_navigation) = self
@@ -992,7 +1047,11 @@ impl NativeEngine {
         history_commit: HistoryCommit,
     ) -> Result<NativeEngineSnapshot, NativeEngineError> {
         if self.is_same_document_navigation(&content.url) {
-            self.commit_same_document_navigation(content.url, history_commit)?;
+            if let Some(navigation) =
+                self.commit_same_document_navigation(content.url, history_commit)?
+            {
+                self.navigate_page_script_sync(navigation, 1)?;
+            }
         } else if !self.allows_frame_navigation(&content.url)? {
             return Ok(self.snapshot_unchecked());
         } else {
@@ -1014,8 +1073,13 @@ impl NativeEngine {
             return Ok(self.snapshot_unchecked());
         }
         if same_document {
-            self.commit_same_document_navigation_async(content.url, history_commit, worker)
-                .await?;
+            self.commit_same_document_navigation_async(
+                content.url,
+                history_commit,
+                worker,
+                page_navigation_handoffs,
+            )
+            .await?;
         } else {
             let prepared = self.prepare_navigation_content(content)?;
             let _ = self
@@ -1040,89 +1104,100 @@ impl NativeEngine {
         Ok(self.snapshot_unchecked())
     }
 
-    async fn dispatch_navigation_lifecycle_async(&mut self) -> Result<bool, NativeEngineError> {
+    async fn dispatch_navigation_lifecycle_async(
+        &mut self,
+    ) -> Result<(bool, Option<NativeNavigationRequest>), NativeEngineError> {
+        let mut navigation = None;
         let allowed = if self
             .content_process
             .as_ref()
             .is_some_and(NativeContentProcess::is_healthy)
         {
-            self.dispatch_content_before_unload_async().await?
+            let (allowed, next_navigation) = self.dispatch_content_before_unload_async().await?;
+            navigation = next_navigation;
+            allowed
         } else if self.javascript.is_some() {
-            self.dispatch_local_before_unload()?
+            let (allowed, next_navigation) = self.dispatch_local_before_unload()?;
+            navigation = next_navigation;
+            allowed
         } else {
             true
         };
         if !allowed {
-            return Ok(false);
+            return Ok((false, None));
         }
         let events = [NativeEventKind::PageHide, NativeEventKind::Unload];
-        let mutation = if self
+        if self
             .content_process
             .as_ref()
             .is_some_and(NativeContentProcess::is_healthy)
         {
-            match self.content_process.as_mut() {
-                Some(process) => Some(process.dispatch_lifecycle_events(&events).await?),
-                None => None,
+            if let Some(next_navigation) = self.dispatch_content_events_async(&events).await? {
+                if navigation.is_some() {
+                    return Err(NativeEngineError::TargetNotActionable {
+                        reason: "multiple outgoing lifecycle navigations are not supported".into(),
+                    });
+                }
+                navigation = Some(next_navigation);
             }
-        } else {
-            None
-        };
-        if let Some(mutation) = mutation {
-            if mutation.navigation.is_some() {
+        } else if self.javascript.is_some()
+            && let Some(next_navigation) = self.dispatch_local_navigation_lifecycle()?
+        {
+            if navigation.is_some() {
                 return Err(NativeEngineError::TargetNotActionable {
-                    reason: "content event navigation has no active navigation owner".into(),
+                    reason: "multiple outgoing lifecycle navigations are not supported".into(),
                 });
             }
-            let next_revision = self.next_revision()?;
-            self.apply_content_process_mutation_at(next_revision, mutation)?;
-            return Ok(true);
-        }
-        if self.javascript.is_some() {
-            self.dispatch_local_navigation_lifecycle()?;
+            navigation = Some(next_navigation);
         }
         self.persist_local_web_storage()?;
-        Ok(true)
+        Ok((true, navigation))
     }
 
-    async fn dispatch_content_before_unload_async(&mut self) -> Result<bool, NativeEngineError> {
-        let Some(process) = self.content_process.as_mut() else {
-            return Ok(true);
+    async fn dispatch_content_before_unload_async(
+        &mut self,
+    ) -> Result<(bool, Option<NativeNavigationRequest>), NativeEngineError> {
+        let mutation = {
+            let Some(process) = self.content_process.as_mut() else {
+                return Ok((true, None));
+            };
+            if !process.is_healthy() {
+                return Ok((true, None));
+            }
+            process.dispatch_before_unload().await?
         };
-        if !process.is_healthy() {
-            return Ok(true);
-        }
-        let mutation = process.dispatch_before_unload().await?;
-        if mutation.navigation.is_some() {
-            return Err(NativeEngineError::TargetNotActionable {
-                reason: "beforeunload navigation has no active navigation owner".into(),
-            });
-        }
+        let navigation = mutation
+            .navigation
+            .clone()
+            .map(|navigation| self.content_navigation_request(navigation))
+            .transpose()?;
         let allowed = mutation.allowed;
         let next_revision = self.next_revision()?;
         self.apply_content_process_mutation_at(next_revision, mutation)?;
-        Ok(allowed)
+        Ok((allowed, navigation.filter(|_| allowed)))
     }
 
     async fn dispatch_content_events_async(
         &mut self,
         events: &[NativeEventKind],
-    ) -> Result<(), NativeEngineError> {
-        let Some(process) = self.content_process.as_mut() else {
-            return Ok(());
+    ) -> Result<Option<NativeNavigationRequest>, NativeEngineError> {
+        let mutation = {
+            let Some(process) = self.content_process.as_mut() else {
+                return Ok(None);
+            };
+            if !process.is_healthy() {
+                return Ok(None);
+            }
+            process.dispatch_lifecycle_events(events).await?
         };
-        if !process.is_healthy() {
-            return Ok(());
-        }
-        let mutation = process.dispatch_lifecycle_events(events).await?;
-        if mutation.navigation.is_some() {
-            return Err(NativeEngineError::TargetNotActionable {
-                reason: "content event navigation has no active navigation owner".into(),
-            });
-        }
+        let navigation = mutation
+            .navigation
+            .clone()
+            .map(|navigation| self.content_navigation_request(navigation))
+            .transpose()?;
         let next_revision = self.next_revision()?;
         self.apply_content_process_mutation_at(next_revision, mutation)?;
-        Ok(())
+        Ok(navigation)
     }
 
     async fn dispatch_content_page_show_async(
@@ -1147,22 +1222,24 @@ impl NativeEngine {
         &mut self,
         old_url: &str,
         new_url: &str,
-    ) -> Result<(), NativeEngineError> {
-        let Some(process) = self.content_process.as_mut() else {
-            return Ok(());
+    ) -> Result<Option<NativeNavigationRequest>, NativeEngineError> {
+        let mutation = {
+            let Some(process) = self.content_process.as_mut() else {
+                return Ok(None);
+            };
+            if !process.is_healthy() {
+                return Ok(None);
+            }
+            process.dispatch_hash_change(old_url, new_url).await?
         };
-        if !process.is_healthy() {
-            return Ok(());
-        }
-        let mutation = process.dispatch_hash_change(old_url, new_url).await?;
-        if mutation.navigation.is_some() {
-            return Err(NativeEngineError::TargetNotActionable {
-                reason: "hashchange navigation has no active navigation owner".into(),
-            });
-        }
+        let navigation = mutation
+            .navigation
+            .clone()
+            .map(|navigation| self.content_navigation_request(navigation))
+            .transpose()?;
         let next_revision = self.next_revision()?;
         self.apply_content_process_mutation_at(next_revision, mutation)?;
-        Ok(())
+        Ok(navigation)
     }
 
     /// Move to the previous bounded local history entry.
@@ -2667,6 +2744,28 @@ impl NativeEngine {
         Ok(navigation)
     }
 
+    fn script_location_navigation_request(
+        &self,
+        commands: &[super::javascript::NativeScriptCommand],
+    ) -> Result<Option<NativeNavigationRequest>, NativeEngineError> {
+        let mut navigation = None;
+        for command in commands {
+            let super::javascript::NativeScriptCommand::Navigate { href, replace } = command else {
+                continue;
+            };
+            validate_url_text("script location href", href)?;
+            if navigation.is_some() {
+                return Err(NativeEngineError::TargetNotActionable {
+                    reason: "one lifecycle event cannot activate multiple navigations".into(),
+                });
+            }
+            let mut request = NativeNavigationRequest::get(self.resolve_link_href(href)?);
+            request.replace_history = *replace;
+            navigation = Some(request);
+        }
+        Ok(navigation)
+    }
+
     async fn navigate_script_navigation_async(
         &mut self,
         navigation: NativeContentNavigation,
@@ -2725,10 +2824,19 @@ impl NativeEngine {
                 HistoryCommit::Push
             };
             if let Some(worker) = self.runtime_worker.clone() {
-                self.commit_same_document_navigation_async(target_url, history_commit, &worker)
-                    .await?;
+                self.commit_same_document_navigation_async(
+                    target_url,
+                    history_commit,
+                    &worker,
+                    page_navigation_handoffs,
+                )
+                .await?;
             } else {
-                self.commit_same_document_navigation(target_url, history_commit)?;
+                if let Some(navigation) =
+                    self.commit_same_document_navigation(target_url, history_commit)?
+                {
+                    self.navigate_page_script_sync(navigation, page_navigation_handoffs + 1)?;
+                }
             }
             return Ok(());
         }
@@ -3004,7 +3112,9 @@ impl NativeEngine {
             .map(|_| ())
     }
 
-    fn dispatch_local_navigation_lifecycle(&mut self) -> Result<(), NativeEngineError> {
+    fn dispatch_local_navigation_lifecycle(
+        &mut self,
+    ) -> Result<Option<NativeNavigationRequest>, NativeEngineError> {
         let window = NativeNodeId::from_parts(self.document.generation(), u32::MAX);
         let lifecycle_events = [
             (window, NativeEventKind::PageHide),
@@ -3012,24 +3122,15 @@ impl NativeEngine {
         ];
         let document = self.document.clone();
         let Some(evaluation) = self.evaluate_local_events(&document, &lifecycle_events)? else {
-            return Ok(());
+            return Ok(None);
         };
-        if evaluation.commands.iter().any(|command| {
-            matches!(
-                command,
-                super::javascript::NativeScriptCommand::Navigate { .. }
-            )
-        }) {
-            return Err(NativeEngineError::TargetNotActionable {
-                reason: "local lifecycle navigation has no active navigation owner".into(),
-            });
-        }
         let mut document = self.document.clone();
         let mut effects = document.apply_script_commands_allowing_links(&evaluation.commands)?;
+        let navigation = self.script_location_navigation_request(&evaluation.commands)?;
         effects.extend(lifecycle_events);
         if evaluation.commands.is_empty() {
             self.pending_lifecycle_effects.extend(effects);
-            return Ok(());
+            return Ok(navigation);
         }
         let next_revision = self.next_revision()?;
         document.set_revision(next_revision);
@@ -3037,16 +3138,18 @@ impl NativeEngine {
         self.revision = next_revision;
         self.history.update_current_scroll(self.scroll_offset);
         self.record_effects(effects);
-        Ok(())
+        Ok(navigation)
     }
 
-    fn dispatch_local_before_unload(&mut self) -> Result<bool, NativeEngineError> {
+    fn dispatch_local_before_unload(
+        &mut self,
+    ) -> Result<(bool, Option<NativeNavigationRequest>), NativeEngineError> {
         let window = NativeNodeId::from_parts(self.document.generation(), u32::MAX);
         let document = self.document.clone();
         let Some(evaluation) =
             self.evaluate_local_events(&document, &[(window, NativeEventKind::BeforeUnload)])?
         else {
-            return Ok(true);
+            return Ok((true, None));
         };
         let allowed = evaluation
             .value
@@ -3058,11 +3161,12 @@ impl NativeEngine {
                 reason: "beforeunload event result was invalid".into(),
             })?;
         let mut document = self.document.clone();
-        let mut effects = document.apply_script_commands(&evaluation.commands)?;
+        let mut effects = document.apply_script_commands_allowing_links(&evaluation.commands)?;
+        let navigation = self.script_location_navigation_request(&evaluation.commands)?;
         effects.push((window, NativeEventKind::BeforeUnload));
         if evaluation.commands.is_empty() {
             self.record_effects(effects);
-            return Ok(allowed);
+            return Ok((allowed, navigation.filter(|_| allowed)));
         }
         let next_revision = self.next_revision()?;
         document.set_revision(next_revision);
@@ -3070,7 +3174,7 @@ impl NativeEngine {
         self.revision = next_revision;
         self.history.update_current_scroll(self.scroll_offset);
         self.record_effects(effects);
-        Ok(allowed)
+        Ok((allowed, navigation.filter(|_| allowed)))
     }
 
     fn dispatch_local_page_show(
@@ -3091,24 +3195,42 @@ impl NativeEngine {
         Ok(navigation)
     }
 
-    fn dispatch_local_pop_state(&mut self) -> Result<(), NativeEngineError> {
+    fn dispatch_local_pop_state(
+        &mut self,
+    ) -> Result<Option<NativeNavigationRequest>, NativeEngineError> {
         if self.javascript.is_none() {
-            return Ok(());
+            return Ok(None);
         }
         let window = NativeNodeId::from_parts(self.document.generation(), u32::MAX);
         let event = (window, NativeEventKind::PopState);
-        self.dispatch_local_events(&[event])?;
-        self.record_effects(vec![event]);
-        Ok(())
+        let document = self.document.clone();
+        let Some(evaluation) = self.evaluate_local_events(&document, &[event])? else {
+            return Ok(None);
+        };
+        let mut document = self.document.clone();
+        let mut effects = document.apply_script_commands_allowing_links(&evaluation.commands)?;
+        let navigation = self.script_location_navigation_request(&evaluation.commands)?;
+        effects.push(event);
+        if evaluation.commands.is_empty() {
+            self.record_effects(effects);
+            return Ok(navigation);
+        }
+        let next_revision = self.next_revision()?;
+        document.set_revision(next_revision);
+        self.document = document;
+        self.revision = next_revision;
+        self.history.update_current_scroll(self.scroll_offset);
+        self.record_effects(effects);
+        Ok(navigation)
     }
 
     fn dispatch_local_hash_change(
         &mut self,
         old_url: &str,
         new_url: &str,
-    ) -> Result<(), NativeEngineError> {
+    ) -> Result<Option<NativeNavigationRequest>, NativeEngineError> {
         if self.javascript.is_none() {
-            return Ok(());
+            return Ok(None);
         }
         let source = host_hash_change_event_script(old_url, new_url)?.ok_or_else(|| {
             NativeEngineError::Worker {
@@ -3134,12 +3256,13 @@ impl NativeEngine {
             NativeNodeId::from_parts(self.document.generation(), u32::MAX),
             NativeEventKind::HashChange,
         );
+        let navigation = self.script_location_navigation_request(&evaluation.commands)?;
         if evaluation.commands.is_empty() {
             self.record_effects(vec![event]);
-            return Ok(());
+            return Ok(navigation);
         }
         let mut document = self.document.clone();
-        let mut effects = document.apply_script_commands(&evaluation.commands)?;
+        let mut effects = document.apply_script_commands_allowing_links(&evaluation.commands)?;
         effects.push(event);
         let next_revision = self.next_revision()?;
         document.set_revision(next_revision);
@@ -3147,7 +3270,7 @@ impl NativeEngine {
         self.revision = next_revision;
         self.history.update_current_scroll(self.scroll_offset);
         self.record_effects(effects);
-        Ok(())
+        Ok(navigation)
     }
 
     fn evaluate_local_events(
@@ -3858,6 +3981,23 @@ impl NativeEngine {
         resolve_fixture_relative_url(base_url, href)
     }
 
+    fn content_navigation_request(
+        &self,
+        navigation: NativeContentNavigation,
+    ) -> Result<NativeNavigationRequest, NativeEngineError> {
+        if !navigation.location {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "content lifecycle navigation must target the current browsing context"
+                    .into(),
+            });
+        }
+        let mut request = NativeNavigationRequest::get(
+            self.resolve_page_navigation_href(&self.url, &navigation.href)?,
+        );
+        request.replace_history = navigation.replace_history;
+        Ok(request)
+    }
+
     fn page_navigation_request(
         &self,
         navigation: NativePageNavigation,
@@ -3896,7 +4036,14 @@ impl NativeEngine {
             };
             let resource = self.loader.load(&navigation.url)?;
             if self.is_same_document_navigation(&resource.url) {
-                self.commit_same_document_navigation(resource.url, history_commit)?;
+                let _ = std::mem::take(&mut self.skip_next_navigation_lifecycle);
+                if let Some(next_navigation) =
+                    self.commit_same_document_navigation(resource.url, history_commit)?
+                {
+                    navigation = next_navigation;
+                    page_navigation_handoffs = page_navigation_handoffs.saturating_add(1);
+                    continue;
+                }
                 return Ok(());
             }
             let prepared = self.prepare_navigation_resource(resource)?;
@@ -4044,11 +4191,22 @@ impl NativeEngine {
         mut prepared: PreparedNavigation,
         history_commit: HistoryCommit,
     ) -> Result<Option<NativeNavigationRequest>, NativeEngineError> {
-        if self.javascript.is_some() {
-            if !self.dispatch_local_before_unload()? {
+        let skip_lifecycle = std::mem::take(&mut self.skip_next_navigation_lifecycle);
+        if !skip_lifecycle && self.javascript.is_some() {
+            let (allowed, before_navigation) = self.dispatch_local_before_unload()?;
+            if !allowed {
                 return Ok(None);
             }
-            self.dispatch_local_navigation_lifecycle()?;
+            let lifecycle_navigation = self.dispatch_local_navigation_lifecycle()?;
+            if before_navigation.is_some() && lifecycle_navigation.is_some() {
+                return Err(NativeEngineError::TargetNotActionable {
+                    reason: "multiple outgoing lifecycle navigations are not supported".into(),
+                });
+            }
+            if let Some(navigation) = before_navigation.or(lifecycle_navigation) {
+                self.skip_next_navigation_lifecycle = true;
+                return Ok(Some(navigation));
+            }
         }
         self.persist_local_web_storage()?;
         let storage_state = self.web_storage.clone();
@@ -4268,7 +4426,7 @@ impl NativeEngine {
         &mut self,
         url: String,
         history_commit: HistoryCommit,
-    ) -> Result<(), NativeEngineError> {
+    ) -> Result<Option<NativeNavigationRequest>, NativeEngineError> {
         let old_url = self.url.clone();
         let scroll_offset = match &history_commit {
             HistoryCommit::Push | HistoryCommit::Replace => self.fragment_scroll_offset(&url)?,
@@ -4301,12 +4459,23 @@ impl NativeEngine {
                 })?;
             }
         }
-        if traversing_history {
-            self.dispatch_local_pop_state()?;
+        let mut navigation = if traversing_history {
+            self.dispatch_local_pop_state()?
+        } else {
+            None
+        };
+        if let Some(next_navigation) =
+            self.dispatch_local_hash_change(&old_url, &self.url.clone())?
+        {
+            if navigation.is_some() {
+                return Err(NativeEngineError::TargetNotActionable {
+                    reason: "multiple same-document lifecycle navigations are not supported".into(),
+                });
+            }
+            navigation = Some(next_navigation);
         }
-        self.dispatch_local_hash_change(&old_url, &self.url.clone())?;
         self.persist_local_web_storage()?;
-        Ok(())
+        Ok(navigation)
     }
 
     async fn commit_same_document_navigation_async(
@@ -4314,6 +4483,7 @@ impl NativeEngine {
         url: String,
         history_commit: HistoryCommit,
         worker: &NativeRuntimeWorker,
+        page_navigation_handoffs: usize,
     ) -> Result<(), NativeEngineError> {
         let old_url = self.url.clone();
         let scroll_offset = match &history_commit {
@@ -4349,22 +4519,52 @@ impl NativeEngine {
                 })?;
             }
         }
-        if traversing_history {
+        let mut navigation = if traversing_history {
             self.dispatch_content_events_async(&[NativeEventKind::PopState])
-                .await?;
-        }
+                .await?
+        } else {
+            None
+        };
         let new_url = self.url.clone();
-        if self
+        let hash_navigation = if self
             .content_process
             .as_ref()
             .is_some_and(NativeContentProcess::is_healthy)
         {
             self.dispatch_content_hash_change_async(&old_url, &new_url)
-                .await?;
+                .await?
         } else {
-            self.dispatch_local_hash_change(&old_url, &new_url)?;
+            self.dispatch_local_hash_change(&old_url, &new_url)?
+        };
+        if let Some(next_navigation) = hash_navigation {
+            if navigation.is_some() {
+                return Err(NativeEngineError::TargetNotActionable {
+                    reason: "multiple same-document lifecycle navigations are not supported".into(),
+                });
+            }
+            navigation = Some(next_navigation);
         }
         self.persist_local_web_storage()?;
+        if let Some(navigation) = navigation {
+            if page_navigation_handoffs >= MAX_NATIVE_PAGE_NAVIGATION_HANDOFFS {
+                return Err(NativeEngineError::limit(
+                    "page navigation handoffs",
+                    MAX_NATIVE_PAGE_NAVIGATION_HANDOFFS,
+                    page_navigation_handoffs.saturating_add(1),
+                ));
+            }
+            Box::pin(self.navigate_script_navigation_async(
+                NativeContentNavigation {
+                    node_index: 0,
+                    href: navigation.url,
+                    submitter_node_index: None,
+                    location: true,
+                    replace_history: navigation.replace_history,
+                },
+                page_navigation_handoffs + 1,
+            ))
+            .await?;
+        }
         Ok(())
     }
 
@@ -4483,10 +4683,12 @@ impl NativeEngine {
             .clone();
         let resource = self.loader.load(&target_url)?;
         if self.is_same_document_navigation(&resource.url) {
-            self.commit_same_document_navigation(
+            if let Some(navigation) = self.commit_same_document_navigation(
                 resource.url,
                 HistoryCommit::Activate(history_index),
-            )?;
+            )? {
+                self.navigate_page_script_sync(navigation, 1)?;
+            }
         } else if !self.allows_frame_navigation(&resource.url)? {
             return Ok(Some(self.snapshot_unchecked()));
         } else {
@@ -4519,13 +4721,16 @@ impl NativeEngine {
                     target_url,
                     HistoryCommit::Activate(history_index),
                     &worker,
+                    0,
                 )
                 .await?;
             } else {
-                self.commit_same_document_navigation(
+                if let Some(navigation) = self.commit_same_document_navigation(
                     target_url,
                     HistoryCommit::Activate(history_index),
-                )?;
+                )? {
+                    self.navigate_page_script_sync(navigation, 1)?;
+                }
             }
             return Ok(Some(self.snapshot_unchecked()));
         }

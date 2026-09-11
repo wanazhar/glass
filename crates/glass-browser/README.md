@@ -482,7 +482,10 @@ local and HTTP(S) pages, and child opener projections carry the opener URL.
 Already-held WindowProxy objects receive bounded refreshes before the next
 observable operation, so location, name, and `closed` state track later target
 changes across local and content-worker pages; stale closed handles cannot
-fall through to a different named target.
+fall through to a different named target. Lifecycle callbacks can also return a
+single bounded location handoff: local and HTTP(S) `beforeunload`, `pagehide`,
+`unload`, `popstate`, and `hashchange` re-entry uses the same parent-owned
+navigation/history path, preserves cancellation, and rejects ambiguous loops.
 
 ## Safety and support
 

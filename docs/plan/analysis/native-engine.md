@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-195`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-196`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
@@ -3384,6 +3384,17 @@ survives the next projection refresh. Exact evidence is in
 DOMImplementation, document tree-builder, and Web IDL/conformance work remain
 issue #40 promotion gates.
 
+The completed native-engine-browser-196 slice closes the bounded attribute-node
+Web IDL surface in local, HTTP(S) content-worker, and same-origin frame
+realms. `document.createAttribute()` creates persistent `Attr` objects;
+attribute-node attach, replacement, mutation, removal, and ownership are
+synchronized with the native element store; and `element.attributes` exposes
+a live indexed/iterable `NamedNodeMap`. Non-null namespaces fail explicitly
+until namespace-aware storage is implemented. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-196.md`; complete Web IDL descriptors,
+XML documents, namespace support, and browser-wide conformance remain issue
+#40 promotion gates.
+
 The completed native-engine-browser-195 slice advances bounded HTML recovery
 in both Rust document parsing and JavaScript detached-fragment parsing.
 Unterminated comments, bogus declarations, and EOF-terminated tags now
@@ -4449,7 +4460,9 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-198.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-197.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-196.md` is the preceding completed task;
-`docs/plan/tasks/native-engine-195.md` is the preceding completed task;
+`docs/plan/tasks/native-engine-browser-196.md` is the latest completed browser
+task;
+`docs/plan/tasks/native-engine-browser-195.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-194.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-193.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-192.md` is the preceding completed task;

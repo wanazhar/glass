@@ -9971,6 +9971,126 @@ fn document_bootstrap(
           : current;
       }},
     }});
+    defineMissing(node, "cloneNode", {{
+      enumerable: false,
+      configurable: false,
+      value(deep = false) {{
+        const owner = node.ownerDocument || null;
+        if (!owner) throw new DOMExceptionNative("The node has no owner document", "InvalidStateError");
+        const copyChildren = (clone) => {{
+          if (!Boolean(deep)) return;
+          for (const child of children()) {{
+            if (child && typeof child.cloneNode === "function") clone.appendChild(child.cloneNode(true));
+          }}
+        }};
+        if (node.nodeType === 3) return owner.createTextNode(String(node.nodeValue || ""));
+        if (node.nodeType === 1) {{
+          const clone = owner.createElement(node.localName);
+          for (const name of node.getAttributeNames()) {{
+            const value = node.getAttribute(name);
+            if (value !== null) clone.setAttribute(name, value);
+          }}
+          copyChildren(clone);
+          return clone;
+        }}
+        if (node.nodeType === 11) {{
+          const clone = owner.createDocumentFragment();
+          copyChildren(clone);
+          return clone;
+        }}
+        throw new DOMExceptionNative("This native node type cannot be cloned", "NotSupportedError");
+      }},
+    }});
+    defineMissing(node, "isSameNode", {{
+      enumerable: false,
+      configurable: false,
+      value(other) {{ return node === other; }},
+    }});
+    const equalNodes = (left, right, depth = 0) => {{
+      if (left === right) return true;
+      if (!right || Number(left.nodeType) !== Number(right.nodeType) || depth > {max_commands}) return false;
+      if (Number(left.nodeType) === 3) return String(left.nodeValue || "") === String(right.nodeValue || "");
+      if (Number(left.nodeType) === 1) {{
+        if (String(left.localName) !== String(right.localName)) return false;
+        const leftNames = left.getAttributeNames();
+        const rightNames = right.getAttributeNames();
+        if (leftNames.length !== rightNames.length) return false;
+        for (const name of leftNames) {{
+          if (left.getAttribute(name) !== right.getAttribute(name)) return false;
+        }}
+      }} else if (![9, 11].includes(Number(left.nodeType))) {{
+        return false;
+      }}
+      const leftChildren = Array.isArray(left.__glassChildren) ? left.__glassChildren : [];
+      const rightChildren = Array.isArray(right.__glassChildren) ? right.__glassChildren : [];
+      return leftChildren.length === rightChildren.length
+        && leftChildren.every((child, index) => equalNodes(child, rightChildren[index], depth + 1));
+    }};
+    defineMissing(node, "isEqualNode", {{
+      enumerable: false,
+      configurable: false,
+      value(other) {{ return equalNodes(node, other); }},
+    }});
+    defineMissing(node, "compareDocumentPosition", {{
+      enumerable: false,
+      configurable: false,
+      value(other) {{
+        if (!other || typeof other !== "object") return 1 | 32;
+        if (node === other) return 0;
+        const rootOf = (candidate) => candidate && typeof candidate.getRootNode === "function"
+          ? candidate.getRootNode()
+          : candidate;
+        if (rootOf(node) !== rootOf(other)) return 1 | 32;
+        const containsNode = (ancestor, candidate) => {{
+          let current = candidate;
+          for (let depth = 0; current && depth <= {max_commands}; depth += 1) {{
+            current = current.parentNode || null;
+            if (current === ancestor) return true;
+          }}
+          return false;
+        }};
+        if (containsNode(node, other)) return 4 | 16;
+        if (containsNode(other, node)) return 2 | 8;
+        const ordered = [];
+        const visit = (candidate) => {{
+          if (!candidate || ordered.includes(candidate)) return;
+          ordered.push(candidate);
+          for (const child of Array.isArray(candidate.__glassChildren) ? candidate.__glassChildren : []) visit(child);
+        }};
+        visit(rootOf(node));
+        const left = ordered.indexOf(node);
+        const right = ordered.indexOf(other);
+        if (left < 0 || right < 0) return 1 | 32;
+        return right > left ? 4 : 2;
+      }},
+    }});
+    defineMissing(node, "normalize", {{
+      enumerable: false,
+      configurable: false,
+      value() {{
+        if (![1, 9, 11].includes(Number(node.nodeType))) return;
+        const normalizeChildren = (owner) => {{
+          let previousText = null;
+          for (const child of (Array.isArray(owner.__glassChildren) ? owner.__glassChildren : []).slice()) {{
+            if (Number(child.nodeType) === 3) {{
+              const value = String(child.nodeValue || "");
+              if (!value) {{
+                child.remove();
+              }} else if (previousText) {{
+                previousText.data = String(previousText.data || "") + value;
+                child.remove();
+              }} else {{
+                previousText = child;
+              }}
+            }} else {{
+              if (typeof child.normalize === "function") child.normalize();
+              previousText = null;
+            }}
+          }}
+        }};
+        normalizeChildren(node);
+      }},
+    }});
     return node;
   }};
   for (const element of elements) defineTreeAccessors(element);

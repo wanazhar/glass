@@ -5158,17 +5158,17 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
   local and bounded HTTP(S) URL shapes, including rejection of remote browser
   endpoints and unsupported browser-only flags.
 
-The completed native-engine-browser-191 slice preserves script-created node
-identity across separate evaluations in local and HTTP(S) content-worker
-realms. The typed document wire and persistent script snapshot now carry
-generation-scoped temporary-node identities, while the JavaScript host keeps
-the original wrappers and rebinds them to the projected native arena nodes.
-Queries and later mutations therefore retain `===` identity and native
-ownership after a host refresh, and a failed typed transaction does not publish
-an updated mapping. Exact evidence is recorded in
-`docs/plan/tasks/native-engine-browser-191.md`; frame-specific witnesses,
-ordinary detached-node persistence, complete HTML tree-builder, and Web IDL
-conformance remain issue #40 promotion work.
+The completed native-engine-browser-191 slice preserves script-created element
+and text-node identity across separate evaluations in local, HTTP(S)
+content-worker, and same-origin frame realms. The typed document wire and
+persistent script snapshot now carry generation-scoped temporary-node
+identities, while each JavaScript realm keeps the original wrappers and
+rebinds them to the projected native arena nodes. Queries and later mutations
+therefore retain `===` identity and native ownership after a host refresh, and
+a failed typed transaction does not publish an updated mapping. Exact evidence
+is recorded in `docs/plan/tasks/native-engine-browser-191.md`; ordinary
+detached-node persistence, complete HTML tree-builder, and Web IDL conformance
+remain issue #40 promotion work.
 
 The completed native-engine-browser-190 slice adds generic DOM node identity
 and normalization primitives across local, HTTP(S) content-worker, and

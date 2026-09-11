@@ -3375,16 +3375,17 @@ Web IDL descriptor parity remain conformance work. Exact local evidence is in
 remains tracked issue-40 work.
 
 The completed native-engine-browser-191 slice closes the cross-evaluation
-script-node identity gap in local and HTTP(S) content-worker realms. The native
-document wire and script snapshot now transfer generation-scoped temporary
-identity mappings, and the persistent JavaScript host reuses the original
-element/text wrappers when their committed native nodes reappear. This keeps
-queries and mutations on a script-created node attached to the same native
-arena owner across evaluations while preserving transaction failure atomicity.
-Its contract and evidence are recorded in
+script-node identity gap in local, HTTP(S) content-worker, and same-origin frame
+realms. The native document wire and script snapshot now transfer
+generation-scoped temporary identity mappings, and each persistent JavaScript
+realm reuses the original element/text wrappers when their committed native
+nodes reappear. This keeps queries and mutations on a script-created node
+attached to the same native arena owner across evaluations while preserving
+transaction failure atomicity. Its contract and evidence are recorded in
 [native-engine-browser-191](../tasks/native-engine-browser-191.md); frame
-witnesses, ordinary detached-node persistence, complete HTML tree-builder,
-and Web IDL conformance remain issue #40 promotion work.
+identity is covered by the same-origin witness, while ordinary detached-node
+persistence, complete HTML tree-builder, and Web IDL conformance remain issue
+#40 promotion work.
 
 The completed native-engine-browser-190 slice extends the structural DOM
 identity surface. Local, HTTP(S) content-worker, and same-origin frame nodes

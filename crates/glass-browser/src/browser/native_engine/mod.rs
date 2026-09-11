@@ -14,6 +14,7 @@ mod dom;
 mod engine;
 mod error;
 mod history;
+mod image;
 mod interaction;
 mod javascript;
 mod layout;

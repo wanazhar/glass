@@ -1,5 +1,6 @@
 #![cfg(feature = "native-engine")]
 
+use base64::Engine as _;
 use fs2::FileExt;
 use glass_browser::browser::native_backend::NATIVE_ENGINE_BACKEND_ID;
 use glass_browser::browser::native_engine::{
@@ -86,6 +87,25 @@ fn find_element_with_attribute(
         pending.extend(node.children().iter().copied());
     }
     panic!("missing {element_name} element with {attribute_name}={attribute_value:?}");
+}
+
+fn native_test_png_data_url() -> String {
+    let mut encoded = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut encoded, 2, 2);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().unwrap();
+        writer
+            .write_image_data(&[
+                255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 255, 255, 255, 255, 0,
+            ])
+            .unwrap();
+    }
+    format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(encoded)
+    )
 }
 
 #[tokio::test]
@@ -9313,6 +9333,7 @@ fn native_display_list_is_revisioned_deterministic_and_visibility_aware() {
         | NativeDisplayCommand::SvgPathFill { node_id, .. }
         | NativeDisplayCommand::SvgPathStroke { node_id, .. }
         | NativeDisplayCommand::BorderRect { node_id, .. }
+        | NativeDisplayCommand::Image { node_id, .. }
         | NativeDisplayCommand::TextRun { node_id, .. } => *node_id == hidden,
         NativeDisplayCommand::BeginOpacityGroup { .. }
         | NativeDisplayCommand::Clear { .. }
@@ -13903,6 +13924,10 @@ fn native_local_presentation_important_priority_reaches_hidden_and_opacity_owner
                 ..
             }
             | NativeDisplayCommand::SvgPathStroke {
+                node_id: command_node,
+                ..
+            }
+            | NativeDisplayCommand::Image {
                 node_id: command_node,
                 ..
             }
@@ -27843,6 +27868,7 @@ fn native_br_elements_create_bounded_hard_breaks_without_layout_nodes() {
         | NativeDisplayCommand::SvgPathFill { node_id, .. }
         | NativeDisplayCommand::SvgPathStroke { node_id, .. }
         | NativeDisplayCommand::BorderRect { node_id, .. }
+        | NativeDisplayCommand::Image { node_id, .. }
         | NativeDisplayCommand::TextRun { node_id, .. } => {
             *node_id != leading
                 && *node_id != middle_a
@@ -32892,6 +32918,61 @@ fn native_svg_viewport_clips_layout_paint_and_hit_testing() {
     assert_eq!(surface.pixel(10, 5), Some([255, 255, 255, 255]));
     assert_eq!(layout.hit_test(5, 5).unwrap(), Some(shape));
     assert_ne!(layout.hit_test(10, 5).unwrap(), Some(shape));
+}
+
+#[test]
+fn native_inline_png_images_share_intrinsic_layout_paint_and_capture() {
+    let source = native_test_png_data_url();
+    let markup = format!("<div style='width:16px'><img id='image' src='{source}' width='8'></div>");
+    let document = NativeDocument::parse(&markup, &NativeEngineLimits::default()).unwrap();
+    let image = document.resolve_target("id=image").unwrap();
+    let viewport = Viewport {
+        width: 16,
+        height: 8,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+    assert_eq!(
+        layout.box_for(image).unwrap(),
+        NativeRect {
+            x: 0,
+            y: 0,
+            width: 8,
+            height: 8,
+        }
+    );
+
+    let list = document.display_list(viewport).unwrap();
+    let command = list
+        .commands
+        .iter()
+        .find(|command| matches!(command, NativeDisplayCommand::Image { node_id, .. } if *node_id == image))
+        .unwrap();
+    assert!(matches!(
+        command,
+        NativeDisplayCommand::Image {
+            rect,
+            source_width: 2,
+            source_height: 2,
+            pixels,
+            clip: None,
+            ..
+        } if *rect == NativeRect { x: 0, y: 0, width: 8, height: 8 } && pixels.len() == 16
+    ));
+
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(1, 1), Some([255, 0, 0, 255]));
+    assert_eq!(surface.pixel(5, 1), Some([127, 255, 127, 255]));
+    assert_eq!(surface.pixel(1, 5), Some([0, 0, 255, 255]));
+    assert_eq!(surface.pixel(5, 5), Some([255, 255, 255, 255]));
+    assert_eq!(layout.hit_test(1, 1).unwrap(), Some(image));
+    assert_eq!(layout.hit_test(5, 5).unwrap(), Some(image));
+
+    let png = surface.to_png().unwrap();
+    let decoder = png::Decoder::new(Cursor::new(png));
+    let reader = decoder.read_info().unwrap();
+    assert_eq!(reader.info().width, 16);
+    assert_eq!(reader.info().height, 8);
 }
 
 #[tokio::test]

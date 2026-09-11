@@ -158,6 +158,30 @@ impl NativeSurface {
                         scroll_offset,
                     );
                 }
+                NativeDisplayCommand::Image {
+                    rect,
+                    source_width,
+                    source_height,
+                    pixels,
+                    clip,
+                    ..
+                } => {
+                    let Some(viewport_rect) = Self::translate_rect(*rect, scroll_offset) else {
+                        continue;
+                    };
+                    let Some(clip) = Self::translate_clip(*clip, scroll_offset) else {
+                        continue;
+                    };
+                    Self::current_surface_mut(&mut surfaces)?.draw_image(
+                        viewport_rect,
+                        *rect,
+                        *source_width,
+                        *source_height,
+                        pixels,
+                        clip,
+                        scroll_offset,
+                    )?;
+                }
                 NativeDisplayCommand::SvgStroke {
                     shape,
                     rect,
@@ -480,6 +504,90 @@ impl NativeSurface {
                 }
             }
         }
+    }
+
+    fn draw_image(
+        &mut self,
+        viewport_rect: NativeRect,
+        document_rect: NativeRect,
+        source_width: u32,
+        source_height: u32,
+        pixels: &[u8],
+        clip: Option<NativeRect>,
+        scroll_offset: NativePoint,
+    ) -> Result<(), NativeEngineError> {
+        if source_width == 0
+            || source_height == 0
+            || document_rect.width == 0
+            || document_rect.height == 0
+        {
+            return Ok(());
+        }
+        let expected_len = usize::try_from(source_width)
+            .ok()
+            .and_then(|width| {
+                usize::try_from(source_height)
+                    .ok()
+                    .and_then(|height| width.checked_mul(height))
+            })
+            .and_then(|pixels| pixels.checked_mul(4))
+            .ok_or_else(|| {
+                NativeEngineError::invalid(
+                    "native image",
+                    "RGBA pixel payload dimensions exceed host bounds",
+                )
+            })?;
+        if pixels.len() != expected_len {
+            return Err(NativeEngineError::invalid(
+                "native image",
+                "RGBA pixel payload does not match dimensions",
+            ));
+        }
+        let Some((left, top, right, bottom)) = self.clipped_bounds(viewport_rect, clip) else {
+            return Ok(());
+        };
+        for y in top..bottom {
+            let document_y = i64::from(y).saturating_add(i64::from(scroll_offset.y));
+            let Some(local_y) = document_y
+                .checked_sub(i64::from(document_rect.y))
+                .and_then(|value| u64::try_from(value).ok())
+            else {
+                continue;
+            };
+            if local_y >= u64::from(document_rect.height) {
+                continue;
+            }
+            let source_y = (local_y * u64::from(source_height) / u64::from(document_rect.height))
+                .min(u64::from(source_height.saturating_sub(1)))
+                as usize;
+            for x in left..right {
+                let document_x = i64::from(x).saturating_add(i64::from(scroll_offset.x));
+                let Some(local_x) = document_x
+                    .checked_sub(i64::from(document_rect.x))
+                    .and_then(|value| u64::try_from(value).ok())
+                else {
+                    continue;
+                };
+                if local_x >= u64::from(document_rect.width) {
+                    continue;
+                }
+                let source_x = (local_x * u64::from(source_width) / u64::from(document_rect.width))
+                    .min(u64::from(source_width.saturating_sub(1)))
+                    as usize;
+                let index = (source_y * usize::try_from(source_width).unwrap_or(0) + source_x) * 4;
+                self.blend_pixel(
+                    x,
+                    y,
+                    super::css::NativeColor {
+                        red: pixels[index],
+                        green: pixels[index + 1],
+                        blue: pixels[index + 2],
+                        alpha: pixels[index + 3],
+                    },
+                );
+            }
+        }
+        Ok(())
     }
 
     fn svg_stroke(

@@ -1,10 +1,13 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-202`, with local and HTTP(S)
-lifecycle navigation re-entry covered by the native owner. The completed 202
-slice carries bounded SVG stroke paint through the existing rect/circle/ellipse
-layout, display-list, raster, clipping, and capture owners. The preceding 201
+expansion checkpoint is `native-engine-browser-203`, with local and HTTP(S)
+lifecycle navigation re-entry covered by the native owner. The completed 203
+slice carries bounded SVG line/polyline/polygon geometry through shared point
+parsing, layout, display-list, raster, clipping, and capture owners. The
+preceding 202 slice carries bounded SVG stroke paint through the existing
+rect/circle/ellipse layout, display-list, raster, clipping, and capture owners.
+The preceding 201
 slice carries bounded XLink, XML, and XMLNS attribute identity through local,
 detached, content-worker, and same-origin frame DOM surfaces, including live
 `Attr`/`NamedNodeMap` lookup, mutation, cloning, and typed namespace validation.
@@ -3409,6 +3412,16 @@ transforms, viewBox mapping, gradients, markers, and external resources remain
 issue #40 promotion work. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-202.md`.
 
+The completed native-engine-browser-203 slice adds bounded SVG `line`,
+`polyline`, and `polygon` geometry. Shared point parsing feeds layout bounds,
+typed polygon-fill and polyline-stroke commands, even-odd polygon fill,
+segment-distance stroke coverage, clipping, scroll translation, alpha
+composition, and hit-test ownership. Malformed or over-limit point lists remain
+fail-closed. SVG paths, explicit cap/join styles, dash arrays, transforms,
+viewBox mapping, gradients, markers, and external resources remain issue #40
+promotion work. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-203.md`.
+
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame
 realms. `document.createAttribute()` creates persistent `Attr` objects;
@@ -4485,9 +4498,9 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-198.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-197.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-196.md` is the preceding completed task;
-`docs/plan/tasks/native-engine-browser-202.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-203.md` is the latest completed browser
 task;
-`docs/plan/tasks/native-engine-browser-201.md` is the preceding completed
+`docs/plan/tasks/native-engine-browser-202.md` is the preceding completed
 browser task;
 `docs/plan/tasks/native-engine-browser-197.md` is the preceding completed
 browser task;

@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-202` slice; the bounded foundation below remains
+`native-engine-browser-203` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -24,6 +24,7 @@ bounded-text-overflow/bounded-vertical-align/bounded-flex-row/
 bounded-grid-track-layout/
 bounded-inline-svg-shape-paint/
 bounded-inline-svg-stroke-paint/
+bounded-svg-line-polygon-paint/
 bounded-dom-namespace-identity/
 bounded-namespace-qualified-attributes/
 bounded-flex-row-gap/bounded-flex-row-justification/bounded-flex-item-order/
@@ -5204,6 +5205,16 @@ numeric/`px` widths, `stroke="none"`, and `currentColor` resolution. SVG paths,
 line caps/joins, transforms, viewBox mapping, gradients, markers, and external
 resources remain later issue #40 promotion work. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-202.md`.
+
+The completed native-engine-browser-203 slice adds bounded SVG `line`,
+`polyline`, and `polygon` geometry. Shared point parsing feeds layout bounds,
+typed `SvgPolygonFill` and `SvgPolyline` commands, even-odd polygon fill,
+segment-distance stroke coverage, clipping, scroll translation, alpha
+composition, and hit-test ownership. Malformed or over-limit point lists fail
+closed. SVG paths, explicit cap/join styles, dash arrays, transforms, viewBox
+mapping, gradients, markers, and external resources remain later issue #40
+promotion work. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-203.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

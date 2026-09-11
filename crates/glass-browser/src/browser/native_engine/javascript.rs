@@ -8658,9 +8658,13 @@ fn document_bootstrap(
         element.tagName === "IMG" ? state.imageReset : null);
     if (element.tagName === "FORM")
       installUrlAttributeProperty(element, "action", "action", baseUrl);
-    if (element.tagName === "IMG") {{
+    if (["IMG", "SOURCE"].includes(element.tagName)) {{
       installStringAttributeProperty(element, "srcset", "srcset");
       installStringAttributeProperty(element, "sizes", "sizes");
+    }}
+    if (element.tagName === "SOURCE")
+      installStringAttributeProperty(element, "media", "media");
+    if (element.tagName === "IMG") {{
       const imageState = () => ({{
         complete: typeof state.imageComplete === "function"
           ? Boolean(state.imageComplete())

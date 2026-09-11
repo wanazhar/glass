@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-213` slice; the bounded foundation below remains
+`native-engine-browser-214` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5334,6 +5334,14 @@ persist pixels to profiles; freshness/revalidation, concurrent coalescing,
 responsive sources, CSS/SVG image resources, animation, and other formats
 remain active issue #40 work. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-213.md`.
+
+The completed native-engine-browser-214 slice adds shared URL-reflected DOM
+properties. Anchors, areas, bases, and links resolve `href`; image, script,
+frame, embed, source, track, audio, and video elements resolve `src`; and forms
+resolve `action` against the active document or same-origin frame URL. Setters
+stringify and persist the author attribute through the existing typed command
+bridge, so image `src` writes use the native resource path. Exact evidence is
+in `docs/plan/tasks/native-engine-browser-214.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

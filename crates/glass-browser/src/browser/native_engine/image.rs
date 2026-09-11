@@ -6,12 +6,24 @@ use std::io::Cursor;
 pub(crate) const MAX_NATIVE_IMAGE_BYTES: usize = 16 * 1024 * 1024;
 /// Maximum decoded pixels retained for one native inline image.
 pub(crate) const MAX_NATIVE_IMAGE_PIXELS: usize = MAX_NATIVE_IMAGE_BYTES / 4;
+/// Maximum decoded RGBA bytes transferred from the content process for one
+/// external image resource.
+pub(crate) const MAX_NATIVE_IMAGE_TRANSFER_BYTES: usize = 512 * 1024;
+/// Maximum decoded pixels transferred from the content process for one
+/// external image resource.
+pub(crate) const MAX_NATIVE_IMAGE_TRANSFER_PIXELS: usize = MAX_NATIVE_IMAGE_TRANSFER_BYTES / 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeImage {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) pixels: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeImageResource {
+    pub(crate) source: String,
+    pub(crate) image: NativeImage,
 }
 
 pub(crate) fn decode_data_image(source: &str) -> Option<NativeImage> {
@@ -40,14 +52,17 @@ pub(crate) fn decode_data_image(source: &str) -> Option<NativeImage> {
     if bytes.len() > MAX_NATIVE_IMAGE_BYTES {
         return None;
     }
-    decode_png(&bytes)
+    decode_png_bytes(&bytes, MAX_NATIVE_IMAGE_BYTES)
 }
 
 pub(crate) fn image_dimensions_from_source(source: &str) -> Option<(u32, u32)> {
     decode_data_image(source).map(|image| (image.width, image.height))
 }
 
-fn decode_png(bytes: &[u8]) -> Option<NativeImage> {
+pub(crate) fn decode_png_bytes(bytes: &[u8], max_decoded_bytes: usize) -> Option<NativeImage> {
+    if bytes.is_empty() || max_decoded_bytes < 4 {
+        return None;
+    }
     let mut decoder = png::Decoder::new(Cursor::new(bytes));
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info().ok()?;
@@ -56,11 +71,12 @@ fn decode_png(bytes: &[u8]) -> Option<NativeImage> {
     let pixel_count = usize::try_from(width)
         .ok()?
         .checked_mul(usize::try_from(height).ok()?)?;
-    if width == 0 || height == 0 || pixel_count > MAX_NATIVE_IMAGE_PIXELS {
+    let max_pixels = (max_decoded_bytes / 4).min(MAX_NATIVE_IMAGE_PIXELS);
+    if width == 0 || height == 0 || pixel_count > max_pixels {
         return None;
     }
     let output_size = reader.output_buffer_size();
-    if output_size > MAX_NATIVE_IMAGE_BYTES {
+    if output_size > max_decoded_bytes {
         return None;
     }
     let mut decoded = vec![0; output_size];
@@ -85,11 +101,13 @@ fn decode_png(bytes: &[u8]) -> Option<NativeImage> {
             .collect(),
         ColorType::Indexed => return None,
     };
-    (pixels.len() == pixel_count.checked_mul(4)?).then_some(NativeImage {
-        width,
-        height,
-        pixels,
-    })
+    (pixels.len() == pixel_count.checked_mul(4)? && pixels.len() <= max_decoded_bytes).then_some(
+        NativeImage {
+            width,
+            height,
+            pixels,
+        },
+    )
 }
 
 fn percent_decode_bytes(value: &str) -> Option<Vec<u8>> {

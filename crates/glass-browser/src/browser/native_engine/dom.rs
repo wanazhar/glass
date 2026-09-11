@@ -2,6 +2,10 @@ use super::config::{NativeEngineLimits, validate_url_text, without_fragment};
 use super::css::NativeStylesheet;
 use super::diagnostics::{NativeDiagnostic, NativeDiagnosticSink, NativeDiagnosticSource};
 use super::error::NativeEngineError;
+use super::image::{
+    MAX_NATIVE_IMAGE_TRANSFER_BYTES, MAX_NATIVE_IMAGE_TRANSFER_PIXELS, NativeImage,
+    NativeImageResource,
+};
 use super::interaction::{NativeEventKind, validate_native_edit_key, validate_native_key};
 use super::javascript::NativeScriptCommand;
 use super::layout::{NativeLayoutSnapshot, NativePoint};
@@ -20,6 +24,7 @@ use super::{
         TextOverflowValue, TextTransformValue, VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
     },
 };
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use url::Url;
@@ -133,6 +138,17 @@ pub(crate) struct NativeDocumentWire {
     pub(crate) computed_styles: Vec<NativeComputedStyle>,
     #[serde(default)]
     pub(crate) script_nodes: Vec<NativeScriptNodeIdentity>,
+    #[serde(default)]
+    pub(crate) image_resources: Vec<NativeImageResourceWire>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct NativeImageResourceWire {
+    pub(crate) node_index: u32,
+    pub(crate) source: String,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) pixels_base64: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -417,6 +433,7 @@ pub struct NativeDocument {
     diagnostics: Vec<NativeDiagnostic>,
     diagnostics_truncated: bool,
     script_node_ids: BTreeMap<u32, NativeNodeId>,
+    image_resources: BTreeMap<u32, NativeImageResource>,
 }
 
 impl NativeDocument {
@@ -471,6 +488,7 @@ impl NativeDocument {
             diagnostics: Vec::new(),
             diagnostics_truncated: false,
             script_node_ids: BTreeMap::new(),
+            image_resources: BTreeMap::new(),
         };
         let mut stack = vec![root];
         let mut document_type_seen = false;
@@ -654,6 +672,78 @@ impl NativeDocument {
             .collect()
     }
 
+    pub(crate) fn external_image_links(&self) -> Vec<(u32, String)> {
+        self.nodes
+            .iter()
+            .filter_map(|node| {
+                self.node(node.id())?;
+                let source = node.attribute("src")?.to_owned();
+                if source.is_empty()
+                    || source
+                        .get(..5)
+                        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:"))
+                {
+                    return None;
+                }
+                (node.element_name() == Some("img")).then_some((node.id().index(), source))
+            })
+            .collect()
+    }
+
+    pub(crate) fn image_resource_for_node(&self, node_id: NativeNodeId) -> Option<&NativeImage> {
+        let resource = self.image_resources.get(&node_id.index())?;
+        let node = self.node(node_id)?;
+        (node.element_name() == Some("img")
+            && node.attribute("src") == Some(resource.source.as_str()))
+        .then_some(&resource.image)
+    }
+
+    pub(crate) fn set_image_resource(
+        &mut self,
+        node_index: u32,
+        source: String,
+        image: NativeImage,
+    ) -> Result<(), NativeEngineError> {
+        if source.is_empty()
+            || source.len() > MAX_ATTRIBUTE_BYTES
+            || source.bytes().any(|byte| byte.is_ascii_control())
+        {
+            return Err(NativeEngineError::invalid(
+                "external image source",
+                "must be a bounded printable URL attribute",
+            ));
+        }
+        let expected_bytes = usize::try_from(image.width)
+            .ok()
+            .and_then(|width| width.checked_mul(usize::try_from(image.height).ok()?))
+            .and_then(|pixels| pixels.checked_mul(4))
+            .ok_or_else(|| NativeEngineError::limit("external image pixels", 0, usize::MAX))?;
+        if image.width == 0
+            || image.height == 0
+            || expected_bytes != image.pixels.len()
+            || expected_bytes > MAX_NATIVE_IMAGE_TRANSFER_BYTES
+            || expected_bytes / 4 > MAX_NATIVE_IMAGE_TRANSFER_PIXELS
+        {
+            return Err(NativeEngineError::limit(
+                "external image pixels",
+                MAX_NATIVE_IMAGE_TRANSFER_BYTES,
+                expected_bytes,
+            ));
+        }
+        let node_id = NativeNodeId::from_parts(self.generation, node_index);
+        let node = self
+            .node(node_id)
+            .ok_or(NativeEngineError::DetachedTarget)?;
+        if node.element_name() != Some("img") || node.attribute("src") != Some(source.as_str()) {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "external image resource does not match its image element".into(),
+            });
+        }
+        self.image_resources
+            .insert(node_index, NativeImageResource { source, image });
+        Ok(())
+    }
+
     pub(crate) fn to_content_wire(&self) -> NativeDocumentWire {
         let computed_styles = (0..self.nodes.len())
             .map(|index| {
@@ -705,6 +795,23 @@ impl NativeDocument {
                 },
             })
             .collect();
+        let image_resources = self
+            .image_resources
+            .iter()
+            .filter_map(|(node_index, resource)| {
+                let node = self.node(NativeNodeId::from_parts(self.generation, *node_index))?;
+                (node.element_name() == Some("img")
+                    && node.attribute("src") == Some(resource.source.as_str()))
+                .then(|| NativeImageResourceWire {
+                    node_index: *node_index,
+                    source: resource.source.clone(),
+                    width: resource.image.width,
+                    height: resource.image.height,
+                    pixels_base64: base64::engine::general_purpose::STANDARD
+                        .encode(&resource.image.pixels),
+                })
+            })
+            .collect();
         NativeDocumentWire {
             nodes,
             computed_styles,
@@ -717,6 +824,7 @@ impl NativeDocument {
                     node_index: id.index,
                 })
                 .collect(),
+            image_resources,
         }
     }
 
@@ -872,6 +980,106 @@ impl NativeDocument {
                 reason: "content process returned an invalid document root".into(),
             });
         }
+        if wire.image_resources.len() > limits.max_nodes {
+            return Err(NativeEngineError::limit(
+                "content-process image resources",
+                limits.max_nodes,
+                wire.image_resources.len(),
+            ));
+        }
+        let max_encoded_pixels = (MAX_NATIVE_IMAGE_TRANSFER_BYTES
+            .saturating_add(2)
+            .saturating_div(3))
+        .saturating_mul(4);
+        let mut image_resources = BTreeMap::new();
+        for resource in wire.image_resources {
+            if resource.source.is_empty()
+                || resource.source.len() > MAX_ATTRIBUTE_BYTES
+                || resource.source.bytes().any(|byte| byte.is_ascii_control())
+            {
+                return Err(NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned an invalid image source".into(),
+                });
+            }
+            if resource.pixels_base64.len() > max_encoded_pixels {
+                return Err(NativeEngineError::limit(
+                    "content-process image pixels",
+                    max_encoded_pixels,
+                    resource.pixels_base64.len(),
+                ));
+            }
+            let node_index =
+                usize::try_from(resource.node_index).map_err(|_| NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned an invalid image node index".into(),
+                })?;
+            let node = nodes
+                .get(node_index)
+                .ok_or_else(|| NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned an out-of-range image node index".into(),
+                })?;
+            if node.element_name() != Some("img")
+                || node.attribute("src") != Some(resource.source.as_str())
+            {
+                return Err(NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned an image resource for a different node"
+                        .into(),
+                });
+            }
+            let expected_bytes = usize::try_from(resource.width)
+                .ok()
+                .and_then(|width| width.checked_mul(usize::try_from(resource.height).ok()?))
+                .and_then(|pixels| pixels.checked_mul(4))
+                .ok_or_else(|| {
+                    NativeEngineError::limit("content-process image pixels", 0, usize::MAX)
+                })?;
+            if resource.width == 0
+                || resource.height == 0
+                || expected_bytes > MAX_NATIVE_IMAGE_TRANSFER_BYTES
+                || expected_bytes / 4 > MAX_NATIVE_IMAGE_TRANSFER_PIXELS
+            {
+                return Err(NativeEngineError::limit(
+                    "content-process image pixels",
+                    MAX_NATIVE_IMAGE_TRANSFER_BYTES,
+                    expected_bytes,
+                ));
+            }
+            let pixels = base64::engine::general_purpose::STANDARD
+                .decode(resource.pixels_base64)
+                .map_err(|_| NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned invalid image pixels".into(),
+                })?;
+            if pixels.len() != expected_bytes {
+                return Err(NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned image pixels with the wrong dimensions"
+                        .into(),
+                });
+            }
+            if image_resources
+                .insert(
+                    resource.node_index,
+                    NativeImageResource {
+                        source: resource.source,
+                        image: NativeImage {
+                            width: resource.width,
+                            height: resource.height,
+                            pixels,
+                        },
+                    },
+                )
+                .is_some()
+            {
+                return Err(NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned duplicate image resources".into(),
+                });
+            }
+        }
         let root = NativeNodeId {
             generation,
             index: 0,
@@ -933,6 +1141,7 @@ impl NativeDocument {
             diagnostics,
             diagnostics_truncated,
             script_node_ids,
+            image_resources,
         };
         document.normalize_select_defaults();
         Ok(document)
@@ -1004,6 +1213,7 @@ impl NativeDocument {
             diagnostics: Vec::new(),
             diagnostics_truncated: false,
             script_node_ids: BTreeMap::new(),
+            image_resources: BTreeMap::new(),
         }
     }
 

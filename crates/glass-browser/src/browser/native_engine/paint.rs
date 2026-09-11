@@ -331,7 +331,10 @@ fn image_paint_command(
     if node.element_name() != Some("img") || bounds.width == 0 || bounds.height == 0 {
         return None;
     }
-    let image = decode_data_image(node.attribute("src")?)?;
+    let image = document
+        .image_resource_for_node(node_id)
+        .cloned()
+        .or_else(|| decode_data_image(node.attribute("src")?))?;
     Some(NativeDisplayCommand::Image {
         node_id,
         rect: bounds,

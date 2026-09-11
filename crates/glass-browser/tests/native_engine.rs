@@ -89,7 +89,7 @@ fn find_element_with_attribute(
     panic!("missing {element_name} element with {attribute_name}={attribute_value:?}");
 }
 
-fn native_test_png_data_url() -> String {
+fn native_test_png_bytes() -> Vec<u8> {
     let mut encoded = Vec::new();
     {
         let mut encoder = png::Encoder::new(&mut encoded, 2, 2);
@@ -102,9 +102,13 @@ fn native_test_png_data_url() -> String {
             ])
             .unwrap();
     }
+    encoded
+}
+
+fn native_test_png_data_url() -> String {
     format!(
         "data:image/png;base64,{}",
-        base64::engine::general_purpose::STANDARD.encode(encoded)
+        base64::engine::general_purpose::STANDARD.encode(native_test_png_bytes())
     )
 }
 
@@ -32973,6 +32977,144 @@ fn native_inline_png_images_share_intrinsic_layout_paint_and_capture() {
     let reader = decoder.read_info().unwrap();
     assert_eq!(reader.info().width, 16);
     assert_eq!(reader.info().height, 8);
+}
+
+#[tokio::test]
+async fn native_content_process_loads_external_png_through_document_wire() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let png = native_test_png_bytes();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/image.png"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            if expected_path == "/image.png" {
+                assert!(request.lines().any(|line| {
+                    line.split_once(':').is_some_and(|(name, value)| {
+                        name.eq_ignore_ascii_case("referer")
+                            && value.trim() == format!("http://{address}/page")
+                    })
+                }));
+                let headers = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    png.len()
+                );
+                stream.write_all(headers.as_bytes()).await.unwrap();
+                stream.write_all(&png).await.unwrap();
+            } else {
+                let body = format!(
+                    "<title>External image</title><div style='width:16px'><img id='image' src='/image.png' width='8'></div><script>globalThis.imageLoaded = 0; document.getElementById('image').addEventListener('load', () => {{ globalThis.imageLoaded = 1; }});</script>"
+                );
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_viewport(Viewport {
+                width: 16,
+                height: 8,
+                device_scale_factor_milli: 1000,
+            })
+            .with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+
+    let list = engine.display_list().unwrap();
+    let (image_id, image_rect) = list
+        .commands
+        .iter()
+        .find_map(|command| match command {
+            NativeDisplayCommand::Image { node_id, rect, .. } => Some((*node_id, *rect)),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        engine.layout().unwrap().box_for(image_id),
+        Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 8,
+            height: 8,
+        })
+    );
+    assert_eq!(image_rect.width, 8);
+    assert_eq!(
+        list.rasterize().unwrap().pixel(1, 1),
+        Some([255, 0, 0, 255])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.imageLoaded")
+            .await
+            .unwrap(),
+        serde_json::json!(1)
+    );
+
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_blocks_csp_disallowed_image_before_request() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let target_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let target_address = target_listener.local_addr().unwrap();
+    let (target_request, target_request_rx) = tokio::sync::oneshot::channel();
+    let target_server = tokio::spawn(async move {
+        if tokio::time::timeout(Duration::from_secs(1), target_listener.accept())
+            .await
+            .is_ok()
+        {
+            let _ = target_request.send(());
+        }
+    });
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let _ = read_http_request(&mut stream).await;
+        let body = format!("<img id='blocked' src='http://{target_address}/image.png' width='8'>");
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: default-src 'none'; img-src 'none'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(250), target_request_rx)
+            .await
+            .is_err(),
+        "CSP-disallowed image was requested"
+    );
+    assert!(
+        !engine
+            .display_list()
+            .unwrap()
+            .commands
+            .iter()
+            .any(|command| matches!(command, NativeDisplayCommand::Image { .. }))
+    );
+
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+    target_server.abort();
+    let _ = target_server.await;
 }
 
 #[tokio::test]

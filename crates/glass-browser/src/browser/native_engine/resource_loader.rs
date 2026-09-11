@@ -3,6 +3,7 @@ use super::config::{
     validate_url_text, without_fragment,
 };
 use super::error::NativeEngineError;
+use super::image::{MAX_NATIVE_IMAGE_TRANSFER_BYTES, NativeImage, decode_png_bytes};
 use super::javascript::{
     MAX_NATIVE_COOKIE_PROFILE_ENTRIES, NativeCookieChange, NativeCookieProfileEntry,
     load_cookie_profile,
@@ -1474,6 +1475,140 @@ impl NativeResourceLoader {
                 .extend(self.network.store_cookie(&cookie_url, &cookie));
         }
         Ok(Some(body))
+    }
+
+    pub(crate) async fn load_image_async(
+        &mut self,
+        document_url: &str,
+        src: &str,
+    ) -> Result<Option<NativeImage>, NativeEngineError> {
+        validate_url_text("document URL", document_url)?;
+        validate_url_text("image URL", src)?;
+        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "image owner URL is not valid HTTP(S) syntax".into(),
+            }
+        })?;
+        if !is_network_url(document_url.as_str()) {
+            return Ok(None);
+        }
+        reject_credentials(&document_url)?;
+        let Some(target_url) = resolve_subresource_url(&document_url, src)? else {
+            return Ok(None);
+        };
+        if !mixed_content_allowed(&document_url, &target_url) {
+            return Ok(None);
+        }
+        let policy = self
+            .network
+            .document_policies
+            .get(&cache_key(&document_url))
+            .cloned()
+            .unwrap_or_default();
+        if !policy.allows(NativeSubresourceKind::Image, &document_url, &target_url) {
+            return Ok(None);
+        }
+
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(NATIVE_NETWORK_TIMEOUT)
+            .build()
+            .map_err(|error| network_error("image client construction", error))?;
+        let mut current_url = target_url;
+        let mut request_referrer = normalize_referrer(Some(document_url.as_str()), &current_url)?;
+        let mut redirects = 0;
+        let mut pending_cookies = Vec::new();
+        let response = loop {
+            let mut request_url = current_url.clone();
+            request_url.set_fragment(None);
+            let mut request = client.get(request_url).header(
+                reqwest::header::ACCEPT,
+                "image/png, image/*;q=0.8, */*;q=0.5",
+            );
+            if let Some(referrer) = request_referrer.as_deref() {
+                request = request.header(reqwest::header::REFERER, referrer);
+            }
+            if let Some(cookie) = self.network.cookie_header(&current_url) {
+                request = request.header(reqwest::header::COOKIE, cookie);
+            }
+            let response = request
+                .send()
+                .await
+                .map_err(|error| network_error("image subresource request", error))?;
+            for value in response
+                .headers()
+                .get_all(reqwest::header::SET_COOKIE)
+                .iter()
+            {
+                if let Ok(cookie) = value.to_str() {
+                    pending_cookies.push((current_url.clone(), cookie.to_owned()));
+                }
+            }
+            if !is_http_redirect(response.status()) {
+                break response;
+            }
+            if redirects >= MAX_NATIVE_NETWORK_REDIRECTS {
+                return Ok(None);
+            }
+            let Some(location) = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .filter(|value| !value.is_empty())
+            else {
+                return Ok(None);
+            };
+            let next_url = current_url
+                .join(location)
+                .map_err(|_| NativeEngineError::Network {
+                    operation: "image redirect".into(),
+                    reason: "image subresource redirect location is not valid URL syntax".into(),
+                })?;
+            reject_credentials(&next_url)?;
+            if !is_network_url(without_fragment(next_url.as_str()))
+                || !mixed_content_allowed(&document_url, &next_url)
+                || !policy.allows(NativeSubresourceKind::Image, &document_url, &next_url)
+            {
+                return Ok(None);
+            }
+            request_referrer = normalize_referrer(Some(current_url.as_str()), &next_url)?;
+            current_url = next_url;
+            redirects += 1;
+        };
+        if !response.status().is_success()
+            || !content_type_is(
+                response.headers().get(reqwest::header::CONTENT_TYPE),
+                "image/png",
+            )?
+        {
+            return Ok(None);
+        }
+        let content_length = response.content_length();
+        if content_length.is_some_and(|length| length > MAX_NATIVE_IMAGE_TRANSFER_BYTES as u64) {
+            return Ok(None);
+        }
+        let mut stream = response.bytes_stream();
+        let mut bytes = Vec::with_capacity(
+            content_length
+                .unwrap_or_default()
+                .min(MAX_NATIVE_IMAGE_TRANSFER_BYTES as u64) as usize,
+        );
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|error| network_error("image subresource body", error))?;
+            let next_len = bytes.len().saturating_add(chunk.len());
+            if next_len > MAX_NATIVE_IMAGE_TRANSFER_BYTES {
+                return Ok(None);
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let Some(image) = decode_png_bytes(&bytes, MAX_NATIVE_IMAGE_TRANSFER_BYTES) else {
+            return Ok(None);
+        };
+        for (cookie_url, cookie) in pending_cookies {
+            self.cookie_changes
+                .extend(self.network.store_cookie(&cookie_url, &cookie));
+        }
+        Ok(Some(image))
     }
 
     pub(crate) async fn load_script_async(

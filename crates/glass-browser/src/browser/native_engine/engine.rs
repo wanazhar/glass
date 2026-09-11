@@ -5702,6 +5702,7 @@ fn frame_script_command_source(command: &NativeScriptCommand) -> Result<String, 
                 | NativeScriptCommand::SetAttribute { .. }
                 | NativeScriptCommand::RemoveAttribute { .. }
                 | NativeScriptCommand::SetTextContent { .. }
+                | NativeScriptCommand::SetDocumentTitle { .. }
                 | NativeScriptCommand::SetInnerHtml { .. }
                 | NativeScriptCommand::RemoveNode { .. }
                 | NativeScriptCommand::CreateElement { .. }
@@ -5751,6 +5752,7 @@ fn is_frame_script_batch_command(command: &NativeScriptCommand) -> bool {
             | NativeScriptCommand::SetAttribute { .. }
             | NativeScriptCommand::RemoveAttribute { .. }
             | NativeScriptCommand::SetTextContent { .. }
+            | NativeScriptCommand::SetDocumentTitle { .. }
             | NativeScriptCommand::SetInnerHtml { .. }
             | NativeScriptCommand::RemoveNode { .. }
             | NativeScriptCommand::CreateElement { .. }

@@ -8007,7 +8007,7 @@ fn document_bootstrap(
   const mutationShadowChildren = new Map();
   for (const entry of Array.isArray(state.nodes) ? state.nodes : []) {{
     const index = Number(entry.nodeIndex);
-    if (Number(entry.nodeType) === 3) mutationShadowText.set(index, String(entry.nodeValue || ""));
+    if ([3, 8].includes(Number(entry.nodeType))) mutationShadowText.set(index, String(entry.nodeValue || ""));
     if (entry.parentIndex !== null && entry.parentIndex !== undefined) {{
       mutationShadowParents.set(index, Number(entry.parentIndex));
     }}
@@ -8163,7 +8163,7 @@ fn document_bootstrap(
       }});
     }};
   MutationObserverNative.prototype.observe = function(target, rawOptions) {{
-    if (!target || ![1, 3, 9, 11].includes(Number(target.nodeType))) throw new TypeError("MutationObserver target must be a node");
+    if (!target || ![1, 3, 8, 9, 11].includes(Number(target.nodeType))) throw new TypeError("MutationObserver target must be a node");
     const options = normalizeMutationOptions(rawOptions);
     const registrations = this.__glassRegistrations || [];
     const existing = registrations.find((registration) => registration.target === target);
@@ -8216,7 +8216,7 @@ fn document_bootstrap(
     if (kind === "setTextContent") {{
       if (!target) return;
       const value = String(command.value);
-      if (Number(target.nodeType) === 3) {{
+      if ([3, 8].includes(Number(target.nodeType))) {{
         const oldValue = mutationShadowText.has(nodeIndex)
           ? mutationShadowText.get(nodeIndex)
           : String(target.nodeValue || "");
@@ -9432,12 +9432,13 @@ fn document_bootstrap(
     return fragment;
   }};
   const makeSnapshotText = (initialEntry) => {{
+    const isComment = Number(initialEntry.nodeType) === 8;
     let textContent = String(initialEntry.nodeValue || "");
     const text = {{
       nodeIndex: initialEntry.nodeIndex,
       parentIndex: initialEntry.parentIndex == null ? null : initialEntry.parentIndex,
-      nodeType: 3,
-      nodeName: "#text",
+      nodeType: isComment ? 8 : 3,
+      nodeName: isComment ? "#comment" : "#text",
       nodeValue: textContent,
       remove() {{
         const parent = text.__glassParent || null;
@@ -9455,8 +9456,8 @@ fn document_bootstrap(
     }};
     Object.defineProperty(text, "__glassParent", {{ enumerable: false, configurable: false, writable: true, value: null }});
     Object.defineProperty(text, "__glassCreated", {{ enumerable: false, configurable: false, writable: true, value: false }});
-    Object.defineProperty(text, "__glassTextValue", {{ enumerable: false, configurable: false, get() {{ return textContent; }} }});
-    Object.defineProperty(text, "__glassMarkup", {{ enumerable: false, configurable: false, get() {{ return escapeHtmlText(textContent); }} }});
+    Object.defineProperty(text, "__glassTextValue", {{ enumerable: false, configurable: false, get() {{ return isComment ? "" : textContent; }} }});
+    Object.defineProperty(text, "__glassMarkup", {{ enumerable: false, configurable: false, get() {{ return isComment ? "<!--" + textContent + "-->" : escapeHtmlText(textContent); }} }});
     Object.defineProperty(text, "parentElement", {{
       enumerable: false,
       configurable: false,
@@ -9540,9 +9541,85 @@ fn document_bootstrap(
       }}
       return makeSnapshotText(entry);
     }});
+  const commentNodes = snapshotNodes
+    .filter((entry) => entry && Number(entry.nodeType) === 8)
+    .map((entry) => {{
+      const existing = previousNodes.get(entry.nodeIndex);
+      const scriptAlias = scriptNodeAliasesByIndex.get(entry.nodeIndex);
+      const reusable = scriptAlias || existing;
+      if (reusable && typeof reusable.__glassRefresh === "function") {{
+        reusable.__glassRefresh(entry);
+        return reusable;
+      }}
+      return makeSnapshotText(entry);
+    }});
+  const documentTypeNodes = snapshotNodes
+    .filter((entry) => entry && Number(entry.nodeType) === 10)
+    .map((entry) => {{
+      const existing = previousNodes.get(entry.nodeIndex);
+      const documentType = existing || {{
+        nodeIndex: entry.nodeIndex,
+        parentIndex: entry.parentIndex == null ? null : entry.parentIndex,
+        nodeType: 10,
+        nodeName: String(entry.nodeName || ""),
+        nodeValue: null,
+        name: String(entry.nodeName || ""),
+        publicId: entry.publicId == null ? "" : String(entry.publicId),
+        systemId: entry.systemId == null ? "" : String(entry.systemId),
+        __glassChildren: [],
+        __glassParent: null,
+        textContent: null,
+        remove() {{
+          const parent = documentType.__glassParent || null;
+          if (!parent && documentType.parentIndex == null) return;
+          if (parent && Array.isArray(parent.__glassChildren)) parent.__glassChildren = parent.__glassChildren.filter(candidate => candidate !== documentType);
+          documentType.__glassParent = null;
+          documentType.parentIndex = null;
+          pushCommand({{ kind: "removeNode", node_index: documentType.nodeIndex }});
+        }},
+      }};
+      documentType.parentIndex = entry.parentIndex == null ? null : entry.parentIndex;
+      documentType.name = String(entry.nodeName || "");
+      documentType.nodeName = documentType.name;
+      documentType.publicId = entry.publicId == null ? "" : String(entry.publicId);
+      documentType.systemId = entry.systemId == null ? "" : String(entry.systemId);
+      if (!Object.prototype.hasOwnProperty.call(documentType, "ownerDocument")) {{
+        Object.defineProperty(documentType, "ownerDocument", {{
+          enumerable: false,
+          configurable: false,
+          get() {{ return globalThis.document || null; }},
+        }});
+      }}
+      if (!Object.prototype.hasOwnProperty.call(documentType, "parentNode")) {{
+        Object.defineProperty(documentType, "parentNode", {{
+          enumerable: false,
+          configurable: false,
+          get() {{
+            if (documentType.__glassParent) return documentType.__glassParent;
+            const owner = globalThis.document;
+            return owner && Array.isArray(owner.__glassChildren) && owner.__glassChildren.includes(documentType)
+              ? owner
+              : null;
+          }},
+        }});
+      }}
+      if (!Object.prototype.hasOwnProperty.call(documentType, "parentElement")) {{
+        Object.defineProperty(documentType, "parentElement", {{
+          enumerable: false,
+          configurable: false,
+          get() {{
+            const parent = documentType.__glassParent || null;
+            return parent && parent.nodeType === 1 ? parent : null;
+          }},
+        }});
+      }}
+      return documentType;
+    }});
   const nodesByIndex = new Map([
     ...elements.map((element) => [element.nodeIndex, element]),
     ...textNodes.map((text) => [text.nodeIndex, text]),
+    ...commentNodes.map((comment) => [comment.nodeIndex, comment]),
+    ...documentTypeNodes.map((documentType) => [documentType.nodeIndex, documentType]),
   ]);
   globalThis.__glassHostElements = elementsByIndex;
   globalThis.__glassHostNodes = nodesByIndex;
@@ -9553,6 +9630,14 @@ fn document_bootstrap(
   for (const text of textNodes) {{
     text.__glassChildren = [];
     text.__glassParent = null;
+  }}
+  for (const comment of commentNodes) {{
+    comment.__glassChildren = [];
+    comment.__glassParent = null;
+  }}
+  for (const documentType of documentTypeNodes) {{
+    documentType.__glassChildren = [];
+    documentType.__glassParent = null;
   }}
   if (snapshotNodes.length > 0) {{
     for (const snapshotNode of snapshotNodes) {{
@@ -9857,7 +9942,7 @@ fn document_bootstrap(
         && node.__glassChildren && node.__glassChildren.includes(candidate));
       }},
     }});
-    if (node.nodeType === 1 || node.nodeType === 3 || node.nodeType === 11) {{
+    if ([1, 3, 8, 10, 11].includes(Number(node.nodeType))) {{
       if (node.nodeType === 1 || node.nodeType === 11) {{
         defineMissing(node, "querySelector", {{
           enumerable: false,
@@ -9898,7 +9983,7 @@ fn document_bootstrap(
         && typeof node.ownerDocument.createTextNode === "function"
         ? node.ownerDocument.createTextNode(String(value))
         : makeDetachedText(String(value));
-      const insertionNode = (item) => item && [1, 3, 11].includes(Number(item.nodeType))
+      const insertionNode = (item) => item && [1, 3, 8, 10, 11].includes(Number(item.nodeType))
         ? item
         : insertionText(item);
       if (node.nodeType === 1 || node.nodeType === 11) {{
@@ -10041,7 +10126,7 @@ fn document_bootstrap(
     const equalNodes = (left, right, depth = 0) => {{
       if (left === right) return true;
       if (!right || Number(left.nodeType) !== Number(right.nodeType) || depth > {max_commands}) return false;
-      if (Number(left.nodeType) === 3) return String(left.nodeValue || "") === String(right.nodeValue || "");
+      if ([3, 8].includes(Number(left.nodeType))) return String(left.nodeValue || "") === String(right.nodeValue || "");
       if (Number(left.nodeType) === 1) {{
         if (String(left.localName) !== String(right.localName)) return false;
         const leftNames = left.getAttributeNames();
@@ -10050,6 +10135,10 @@ fn document_bootstrap(
         for (const name of leftNames) {{
           if (left.getAttribute(name) !== right.getAttribute(name)) return false;
         }}
+      }} else if (Number(left.nodeType) === 10) {{
+        return String(left.name || left.nodeName || "") === String(right.name || right.nodeName || "")
+          && String(left.publicId || "") === String(right.publicId || "")
+          && String(left.systemId || "") === String(right.systemId || "");
       }} else if (![9, 11].includes(Number(left.nodeType))) {{
         return false;
       }}
@@ -10127,6 +10216,14 @@ fn document_bootstrap(
   }};
   for (const element of elements) defineTreeAccessors(element);
   for (const text of textNodes) defineTreeAccessors(text);
+  for (const comment of commentNodes) {{
+    defineTreeAccessors(comment);
+    try {{ Object.setPrototypeOf(comment, CommentNative.prototype); }} catch (_error) {{}}
+  }}
+  for (const documentType of documentTypeNodes) {{
+    defineTreeAccessors(documentType);
+    try {{ Object.setPrototypeOf(documentType, DocumentTypeNative.prototype); }} catch (_error) {{}}
+  }}
   const splitSelectorList = (selector) => {{
     const value = String(selector).trim();
     if (!value) throw new SyntaxError("selector cannot be empty");
@@ -10727,6 +10824,7 @@ fn document_bootstrap(
     get defaultView() {{ return globalThis; }},
     get activeElement() {{ return liveDocumentElements().find((element) => element.focused) || null; }},
     get head() {{ return liveDocumentElements().find((element) => element.tagName === "HEAD") || null; }},
+    get doctype() {{ return documentTypeNodes.find((node) => document.__glassChildren.includes(node)) || null; }},
     get forms() {{ return liveCollection(document, (element) => element.tagName === "FORM", "HTMLCollection", true); }},
     get links() {{ return liveCollection(document, (element) => ["A", "AREA"].includes(element.tagName) && element.getAttribute("href") !== null, "HTMLCollection", true); }},
     get scripts() {{ return liveCollection(document, (element) => element.tagName === "SCRIPT", "HTMLCollection", true); }},
@@ -11526,6 +11624,8 @@ fn document_bootstrap(
   const NodeNative = ensureNativeConstructor("Node", null);
   const CharacterDataNative = ensureNativeConstructor("CharacterData", NodeNative);
   const TextNative = ensureNativeConstructor("Text", CharacterDataNative);
+  const CommentNative = ensureNativeConstructor("Comment", CharacterDataNative);
+  const DocumentTypeNative = ensureNativeConstructor("DocumentType", NodeNative);
   const DocumentNative = ensureNativeConstructor("Document", NodeNative);
   const DocumentFragmentNative = ensureNativeConstructor("DocumentFragment", NodeNative);
   const ElementNative = ensureNativeConstructor("Element", NodeNative);
@@ -11535,7 +11635,7 @@ fn document_bootstrap(
   const NodeListNative = ensureNativeConstructor("NodeList", null);
   const HtmlCollectionNative = ensureNativeConstructor("HTMLCollection", null);
   const characterDataTarget = (target) => {{
-    if (!target || Number(target.nodeType) !== 3) throw new TypeError("CharacterData method called on a non-text node");
+    if (!target || ![3, 8].includes(Number(target.nodeType))) throw new TypeError("CharacterData method called on a non-character-data node");
     return target;
   }};
   const characterDataText = (target) => {{
@@ -11722,7 +11822,7 @@ fn document_bootstrap(
     if (kind === "setTextContent") {{
       if (!target) return;
       const value = String(command.value);
-      if (Number(target.nodeType) === 3) {{
+      if ([3, 8].includes(Number(target.nodeType))) {{
         const oldValue = frameMutationText.has(key)
           ? frameMutationText.get(key)
           : String(target.nodeValue || "");
@@ -12379,19 +12479,20 @@ fn document_bootstrap(
     }});
     const frameNodeSnapshots = Array.isArray(snapshot.nodes) ? snapshot.nodes : [];
     const frameTextNodes = frameNodeSnapshots
-      .filter((entry) => entry && Number(entry.nodeType) === 3)
+      .filter((entry) => entry && [3, 8].includes(Number(entry.nodeType)))
       .map((entry) => {{
         const existing = frameScriptNodeAliasesByIndex.get(Number(entry.nodeIndex));
         if (existing && typeof existing.__glassRefresh === "function") {{
           existing.__glassRefresh(entry);
           return existing;
         }}
+        const isComment = Number(entry.nodeType) === 8;
         let textContent = String(entry.nodeValue || "");
         const text = {{
           nodeIndex: entry.nodeIndex,
           parentIndex: entry.parentIndex == null ? null : entry.parentIndex,
-          nodeType: 3,
-          nodeName: "#text",
+          nodeType: isComment ? 8 : 3,
+          nodeName: isComment ? "#comment" : "#text",
           nodeValue: textContent,
           remove() {{
             const parent = text.__glassParent || null;
@@ -12409,8 +12510,8 @@ fn document_bootstrap(
         Object.defineProperty(text, "__glassParent", {{ enumerable: false, configurable: false, writable: true, value: null }});
         Object.defineProperty(text, "__glassCreated", {{ enumerable: false, configurable: false, writable: true, value: false }});
         Object.defineProperty(text, "__glassAttached", {{ enumerable: false, configurable: false, writable: true, value: true }});
-        Object.defineProperty(text, "__glassTextValue", {{ enumerable: false, configurable: false, get() {{ return textContent; }} }});
-        Object.defineProperty(text, "__glassMarkup", {{ enumerable: false, configurable: false, get() {{ return escapeHtmlText(textContent); }} }});
+    Object.defineProperty(text, "__glassTextValue", {{ enumerable: false, configurable: false, get() {{ return isComment ? "" : textContent; }} }});
+        Object.defineProperty(text, "__glassMarkup", {{ enumerable: false, configurable: false, get() {{ return isComment ? "<!--" + textContent + "-->" : escapeHtmlText(textContent); }} }});
         Object.defineProperty(text, "parentElement", {{
           enumerable: false,
           configurable: false,
@@ -12451,12 +12552,46 @@ fn document_bootstrap(
           }},
         }});
         Object.defineProperty(text, "data", {{ enumerable: true, configurable: false, get() {{ return textContent; }}, set(next) {{ text.textContent = next; }} }});
-        try {{ Object.setPrototypeOf(text, TextNative.prototype); }} catch (_error) {{}}
+        try {{ Object.setPrototypeOf(text, isComment ? CommentNative.prototype : TextNative.prototype); }} catch (_error) {{}}
         return text;
+      }});
+    const frameDocumentTypeNodes = frameNodeSnapshots
+      .filter((entry) => entry && Number(entry.nodeType) === 10)
+      .map((entry) => {{
+        const documentType = {{
+          nodeIndex: entry.nodeIndex,
+          parentIndex: entry.parentIndex == null ? null : entry.parentIndex,
+          nodeType: 10,
+          nodeName: String(entry.nodeName || ""),
+          nodeValue: null,
+          name: String(entry.nodeName || ""),
+          publicId: entry.publicId == null ? "" : String(entry.publicId),
+          systemId: entry.systemId == null ? "" : String(entry.systemId),
+          __glassChildren: [],
+          __glassParent: null,
+          textContent: null,
+          remove() {{
+            const parent = documentType.__glassParent || null;
+            if (!parent && documentType.parentIndex == null) return;
+            if (parent && Array.isArray(parent.__glassChildren)) parent.__glassChildren = parent.__glassChildren.filter(candidate => candidate !== documentType);
+            documentType.__glassParent = null;
+            documentType.parentIndex = null;
+            queueFrameCommand(currentBinding, {{ kind: "removeNode", node_index: documentType.nodeIndex }});
+          }},
+        }};
+        Object.defineProperty(documentType, "ownerDocument", {{ enumerable: false, configurable: false, get() {{ return frameDocument; }} }});
+        Object.defineProperty(documentType, "parentNode", {{ enumerable: false, configurable: false, get() {{ return documentType.__glassParent || null; }} }});
+        Object.defineProperty(documentType, "parentElement", {{ enumerable: false, configurable: false, get() {{
+          const parent = documentType.__glassParent || null;
+          return parent && parent.nodeType === 1 ? parent : null;
+        }} }});
+        try {{ Object.setPrototypeOf(documentType, DocumentTypeNative.prototype); }} catch (_error) {{}}
+        return documentType;
       }});
     const frameNodesByIndex = new Map([
       ...frameElements.map((element) => [element.nodeIndex, element]),
       ...frameTextNodes.map((text) => [text.nodeIndex, text]),
+      ...frameDocumentTypeNodes.map((documentType) => [documentType.nodeIndex, documentType]),
     ]);
     const registerFrameSubtree = (node) => {{
       if (node.nodeType === 1 && !frameElements.includes(node)) frameElements.push(node);
@@ -12467,7 +12602,7 @@ fn document_bootstrap(
       node.__glassAttached = false;
       for (const child of node.__glassChildren || []) detachFrameSubtree(child);
     }};
-    for (const node of [...frameElements, ...frameTextNodes]) {{
+    for (const node of [...frameElements, ...frameTextNodes, ...frameDocumentTypeNodes]) {{
       node.__glassChildren = [];
       node.__glassParent = null;
       node.__glassAttached = true;
@@ -12503,7 +12638,7 @@ fn document_bootstrap(
       frameMutationChildren.set(key, Array.isArray(snapshotNode.children)
         ? snapshotNode.children.map(Number)
         : []);
-      if (Number(snapshotNode.nodeType) === 3) {{
+      if ([3, 8].includes(Number(snapshotNode.nodeType))) {{
         frameMutationText.set(key, String(snapshotNode.nodeValue || ""));
       }} else if (node && node.nodeType === 1) {{
         frameMutationAttributes.set(key, {{ ...(frameElements.find((element) => element.nodeIndex === nodeIndex)?.__glassAttributeSource?.() || {{}}) }});
@@ -12511,6 +12646,7 @@ fn document_bootstrap(
     }}
     for (const element of frameElements) defineTreeAccessors(element);
     for (const text of frameTextNodes) defineTreeAccessors(text);
+    for (const documentType of frameDocumentTypeNodes) defineTreeAccessors(documentType);
     for (const element of frameElements) {{
       installClassList(element);
       installElementStyleAndDataset(element);
@@ -13055,6 +13191,7 @@ fn document_bootstrap(
       body,
       documentElement,
       get head() {{ return frameElements.find((element) => element.__glassAttached && element.tagName === "HEAD") || head; }},
+      get doctype() {{ return frameDocumentTypeNodes.find((node) => frameRootChildren.includes(node)) || null; }},
       get forms() {{ return liveCollection(frameDocument, (element) => element.tagName === "FORM", "HTMLCollection", true); }},
       get links() {{ return liveCollection(frameDocument, (element) => ["A", "AREA"].includes(element.tagName) && element.getAttribute("href") !== null, "HTMLCollection", true); }},
       get scripts() {{ return liveCollection(frameDocument, (element) => element.tagName === "SCRIPT", "HTMLCollection", true); }},
@@ -13456,6 +13593,12 @@ fn document_bootstrap(
   }}
   for (const text of textNodes) {{
     try {{ Object.setPrototypeOf(text, TextNative.prototype); }} catch (_error) {{}}
+  }}
+  for (const comment of commentNodes) {{
+    try {{ Object.setPrototypeOf(comment, CommentNative.prototype); }} catch (_error) {{}}
+  }}
+  for (const documentType of documentTypeNodes) {{
+    try {{ Object.setPrototypeOf(documentType, DocumentTypeNative.prototype); }} catch (_error) {{}}
   }}
   try {{ Object.setPrototypeOf(globalThis, WindowNative.prototype); }} catch (_error) {{}}
   globalThis.self = globalThis;

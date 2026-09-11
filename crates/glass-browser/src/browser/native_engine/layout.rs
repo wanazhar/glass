@@ -1519,6 +1519,7 @@ impl<'a> LayoutBuilder<'a> {
                     let value = value.clone();
                     self.place_text(parent, flow, &value);
                 }
+                NativeNodeKind::DocumentType { .. } | NativeNodeKind::Comment(_) => {}
                 NativeNodeKind::Document => {
                     self.process_children(child, flow, depth);
                 }
@@ -1885,6 +1886,7 @@ impl<'a> LayoutBuilder<'a> {
             };
             match child_node.kind() {
                 NativeNodeKind::Text(value) => value.chars().all(char::is_whitespace),
+                NativeNodeKind::DocumentType { .. } | NativeNodeKind::Comment(_) => true,
                 NativeNodeKind::Element { .. } => {
                     if self.is_non_rendered(*child) || self.document.is_hidden_for_layout(*child) {
                         return true;
@@ -1916,6 +1918,7 @@ impl<'a> LayoutBuilder<'a> {
                 };
                 match child_node.kind() {
                     NativeNodeKind::Text(value) => value.chars().all(char::is_whitespace),
+                    NativeNodeKind::DocumentType { .. } | NativeNodeKind::Comment(_) => true,
                     NativeNodeKind::Document => false,
                     NativeNodeKind::Element { .. } => {
                         if self.is_non_rendered(*child)
@@ -2199,6 +2202,7 @@ impl<'a> LayoutBuilder<'a> {
             };
             match node.kind() {
                 NativeNodeKind::Text(_) => {}
+                NativeNodeKind::DocumentType { .. } | NativeNodeKind::Comment(_) => {}
                 NativeNodeKind::Document => {
                     return self.layout_children(parent, x, y, available_width, depth);
                 }
@@ -2902,6 +2906,7 @@ impl<'a> LayoutBuilder<'a> {
             };
             match node.kind() {
                 NativeNodeKind::Text(_) => {}
+                NativeNodeKind::DocumentType { .. } | NativeNodeKind::Comment(_) => {}
                 NativeNodeKind::Document => {
                     return self.layout_children(parent, x, y, available_width, depth);
                 }
@@ -3155,6 +3160,7 @@ impl<'a> LayoutBuilder<'a> {
             };
             match node.kind() {
                 NativeNodeKind::Text(_) => {}
+                NativeNodeKind::DocumentType { .. } | NativeNodeKind::Comment(_) => {}
                 NativeNodeKind::Document => {
                     return self.layout_children(parent, x, y, available_width, depth);
                 }

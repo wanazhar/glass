@@ -441,6 +441,7 @@ impl NativeDocument {
             script_node_ids: BTreeMap::new(),
         };
         let mut stack = vec![root];
+        let mut document_type_seen = false;
 
         for token in tokens {
             match token {
@@ -541,15 +542,29 @@ impl NativeDocument {
                     public_id,
                     system_id,
                 } => {
-                    document.add_node(
-                        root,
-                        NativeNodeKind::DocumentType {
-                            name,
-                            public_id,
-                            system_id,
-                        },
-                        limits.max_nodes,
-                    )?;
+                    // A document has at most one doctype, and HTML ignores a
+                    // doctype token once the document element has started.
+                    // Keeping that rule in the Rust owner prevents malformed
+                    // input from creating ambiguous document.doctype state.
+                    let document_element_started = document.node(root).is_some_and(|node| {
+                        node.children().iter().any(|child| {
+                            document.node(*child).is_some_and(|candidate| {
+                                matches!(candidate.kind(), NativeNodeKind::Element { .. })
+                            })
+                        })
+                    });
+                    if !document_type_seen && !document_element_started {
+                        document.add_node(
+                            root,
+                            NativeNodeKind::DocumentType {
+                                name,
+                                public_id,
+                                system_id,
+                            },
+                            limits.max_nodes,
+                        )?;
+                        document_type_seen = true;
+                    }
                 }
             }
         }
@@ -5068,18 +5083,15 @@ fn tokenize(source: &str, max_tokens: usize) -> Result<Vec<HtmlToken>, NativeEng
             continue;
         }
         if source[position..].starts_with("<!--") {
-            let Some(relative_end) = source[position + 4..].find("-->") else {
-                return Err(NativeEngineError::Parse {
-                    offset: position,
-                    reason: "unterminated HTML comment".into(),
-                });
-            };
+            let relative_end = source[position + 4..].find("-->");
+            let comment_end =
+                relative_end.unwrap_or_else(|| source.len().saturating_sub(position + 4));
             push_token(
                 &mut tokens,
-                HtmlToken::Comment(source[position + 4..position + 4 + relative_end].to_owned()),
+                HtmlToken::Comment(source[position + 4..position + 4 + comment_end].to_owned()),
                 max_tokens,
             )?;
-            position += 4 + relative_end + 3;
+            position = relative_end.map_or(source.len(), |end| position + 4 + end + 3);
             continue;
         }
         let doctype_prefix = position.saturating_add(9);
@@ -5092,12 +5104,7 @@ fn tokenize(source: &str, max_tokens: usize) -> Result<Vec<HtmlToken>, NativeEng
                 .get(doctype_prefix)
                 .is_none_or(|byte| byte.is_ascii_whitespace() || *byte == b'>')
         {
-            let Some(end) = find_tag_end(source, doctype_prefix) else {
-                return Err(NativeEngineError::Parse {
-                    offset: position,
-                    reason: "unterminated document declaration".into(),
-                });
-            };
+            let end = find_tag_end(source, doctype_prefix).unwrap_or(source.len());
             if let Some((name, public_id, system_id)) = parse_doctype(&source[doctype_prefix..end])
             {
                 push_token(
@@ -5110,17 +5117,26 @@ fn tokenize(source: &str, max_tokens: usize) -> Result<Vec<HtmlToken>, NativeEng
                     max_tokens,
                 )?;
             }
-            position = end + 1;
+            position = if end < source.len() {
+                end + 1
+            } else {
+                source.len()
+            };
             continue;
         }
         if source[position..].starts_with("<!") || source[position..].starts_with("<?") {
-            let Some(end) = find_tag_end(source, position + 2) else {
-                return Err(NativeEngineError::Parse {
-                    offset: position,
-                    reason: "unterminated document declaration".into(),
-                });
-            };
-            position = end + 1;
+            // HTML treats unknown declarations and processing-instruction
+            // syntax as bogus comments. Recover to EOF when the declaration
+            // is incomplete instead of discarding the remainder or failing a
+            // whole navigation.
+            let end = find_tag_end(source, position + 2);
+            let comment_end = end.unwrap_or(source.len());
+            push_token(
+                &mut tokens,
+                HtmlToken::Comment(source[position + 2..comment_end].to_owned()),
+                max_tokens,
+            )?;
+            position = end.map_or(source.len(), |value| value + 1);
             continue;
         }
         let is_end_tag = source[position..].starts_with("</");
@@ -5131,10 +5147,15 @@ fn tokenize(source: &str, max_tokens: usize) -> Result<Vec<HtmlToken>, NativeEng
             continue;
         }
         let Some(end) = find_tag_end(source, name_position) else {
-            return Err(NativeEngineError::Parse {
-                offset: position,
-                reason: "unterminated HTML tag".into(),
-            });
+            // EOF in a tag is a parse error, but it is still recoverable HTML
+            // input. Preserve the source as text so a malformed response does
+            // not turn into a synthetic partial element.
+            push_token(
+                &mut tokens,
+                HtmlToken::Text(source[position..].to_owned()),
+                max_tokens,
+            )?;
+            break;
         };
         let mut next_position = end + 1;
         if is_end_tag {
@@ -5303,7 +5324,11 @@ fn parse_start_tag(
                 attribute_name.len().max(value.len()),
             ));
         }
-        attributes.insert(attribute_name, decode_entities(&value));
+        // The HTML tokenizer keeps the first attribute with a given
+        // ASCII-case-insensitive name and ignores later duplicates.
+        attributes
+            .entry(attribute_name)
+            .or_insert_with(|| decode_entities(&value));
     }
     Ok((name, attributes, self_closing))
 }
@@ -5444,11 +5469,49 @@ fn should_auto_close(current: &str, next: &str) -> bool {
         || (current == "p"
             && matches!(
                 next,
-                "p" | "div" | "section" | "article" | "h1" | "h2" | "h3"
+                "address"
+                    | "article"
+                    | "aside"
+                    | "blockquote"
+                    | "details"
+                    | "div"
+                    | "dl"
+                    | "fieldset"
+                    | "figcaption"
+                    | "figure"
+                    | "footer"
+                    | "form"
+                    | "h1"
+                    | "h2"
+                    | "h3"
+                    | "h4"
+                    | "h5"
+                    | "h6"
+                    | "header"
+                    | "hgroup"
+                    | "hr"
+                    | "main"
+                    | "menu"
+                    | "nav"
+                    | "ol"
+                    | "p"
+                    | "pre"
+                    | "section"
+                    | "table"
+                    | "ul"
             ))
         || (matches!(current, "dt" | "dd") && matches!(next, "dt" | "dd"))
-        || (matches!(current, "tr") && next == "tr")
-        || (matches!(current, "td" | "th") && matches!(next, "td" | "th"))
+        || (current == "rt" && next == "rt")
+        || (current == "rp" && next == "rp")
+        || (current == "option" && matches!(next, "option" | "optgroup"))
+        || (current == "optgroup" && next == "optgroup")
+        || (current == "tr" && matches!(next, "tr" | "tbody" | "thead" | "tfoot"))
+        || (matches!(current, "td" | "th")
+            && matches!(next, "td" | "th" | "tr" | "tbody" | "thead" | "tfoot"))
+        || (current == "thead" && matches!(next, "tbody" | "tfoot"))
+        || (current == "tbody" && matches!(next, "tbody" | "tfoot"))
+        || (current == "tfoot" && next == "tbody")
+        || (current == "colgroup" && matches!(next, "colgroup" | "tbody" | "thead" | "tfoot"))
 }
 
 fn decode_entities(value: &str) -> String {
@@ -5930,6 +5993,81 @@ mod tests {
     }
 
     #[test]
+    fn malformed_markup_recovers_without_partial_elements() {
+        let document = NativeDocument::parse(
+            "<!--unterminated<!unknown declaration<div title='unfinished>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+
+        assert!(document.semantic_nodes().is_empty());
+        let root_children = document.node(document.root()).unwrap().children();
+        assert_eq!(root_children.len(), 1);
+        assert!(matches!(
+            document.node(root_children[0]).map(NativeNode::kind),
+            Some(NativeNodeKind::Comment(value)) if value == "unterminated<!unknown declaration<div title='unfinished>"
+        ));
+    }
+
+    #[test]
+    fn duplicate_html_attributes_keep_the_first_value_and_late_doctype_is_ignored() {
+        let document = NativeDocument::parse(
+            "<!doctype html><button ID='first' id='second'>Action</button><!doctype svg>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+
+        let root_children = document.node(document.root()).unwrap().children();
+        assert_eq!(
+            root_children
+                .iter()
+                .filter(|id| matches!(
+                    document.node(**id).map(NativeNode::kind),
+                    Some(NativeNodeKind::DocumentType { .. })
+                ))
+                .count(),
+            1
+        );
+        let button = document
+            .node(document.resolve_target("role=button[name=Action]").unwrap())
+            .unwrap();
+        assert_eq!(button.attribute("id"), Some("first"));
+    }
+
+    #[test]
+    fn implied_end_tags_close_common_list_option_table_and_paragraph_items() {
+        let document = NativeDocument::parse(
+            "<ul><li>one<li>two</ul><select><option>one<option>two</select><p>first<div>second</div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let list_items = document
+            .nodes
+            .iter()
+            .filter(|node| node.element_name() == Some("li"))
+            .collect::<Vec<_>>();
+        assert_eq!(list_items.len(), 2);
+        assert!(list_items.iter().all(|node| node.parent().is_some()));
+        let options = document
+            .nodes
+            .iter()
+            .filter(|node| node.element_name() == Some("option"))
+            .collect::<Vec<_>>();
+        assert_eq!(options.len(), 2);
+        assert!(options.iter().all(|node| node.parent().is_some()));
+        let paragraphs = document
+            .nodes
+            .iter()
+            .filter(|node| node.element_name() == Some("p"))
+            .collect::<Vec<_>>();
+        assert_eq!(paragraphs.len(), 1);
+        assert_eq!(
+            document.visible_text(1024).0,
+            "one two one two first second"
+        );
+    }
+
+    #[test]
     fn document_generations_reject_old_node_ids() {
         let limits = NativeEngineLimits::default();
         let first = NativeDocument::parse_with_generation("<p>first</p>", &limits, 1).unwrap();
@@ -6034,10 +6172,11 @@ mod tests {
     }
 
     #[test]
-    fn malformed_quoted_attribute_fails_without_partial_document() {
+    fn malformed_quoted_attribute_recovers_as_text_without_partial_document() {
         let limits = NativeEngineLimits::default();
-        let error = NativeDocument::parse("<button title='unfinished>", &limits).unwrap_err();
-        assert!(matches!(error, NativeEngineError::Parse { .. }));
+        let document = NativeDocument::parse("<button title='unfinished>", &limits).unwrap();
+        assert!(document.semantic_nodes().is_empty());
+        assert_eq!(document.visible_text(1024).0, "<button title='unfinished>");
     }
 
     #[test]

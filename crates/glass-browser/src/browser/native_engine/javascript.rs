@@ -8395,6 +8395,25 @@ fn document_bootstrap(
     const voidElements = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
     const rawTextElements = new Set(["script", "style"]);
     const rcdataElements = new Set(["textarea", "title"]);
+    const shouldAutoClose = (current, next) =>
+      (current === "li" && next === "li")
+      || (current === "p" && [
+        "address", "article", "aside", "blockquote", "details", "div", "dl",
+        "fieldset", "figcaption", "figure", "footer", "form", "h1", "h2",
+        "h3", "h4", "h5", "h6", "header", "hgroup", "hr", "main", "menu",
+        "nav", "ol", "p", "pre", "section", "table", "ul",
+      ].includes(next))
+      || ((current === "dt" || current === "dd") && (next === "dt" || next === "dd"))
+      || (current === "rt" && next === "rt")
+      || (current === "rp" && next === "rp")
+      || (current === "option" && ["option", "optgroup"].includes(next))
+      || (current === "optgroup" && next === "optgroup")
+      || (current === "tr" && ["tr", "tbody", "thead", "tfoot"].includes(next))
+      || (["td", "th"].includes(current) && ["td", "th", "tr", "tbody", "thead", "tfoot"].includes(next))
+      || (current === "thead" && ["tbody", "tfoot"].includes(next))
+      || (current === "tbody" && ["tbody", "tfoot"].includes(next))
+      || (current === "tfoot" && next === "tbody")
+      || (current === "colgroup" && ["colgroup", "tbody", "thead", "tfoot"].includes(next));
     const findTagEnd = (from) => {{
       let quote = null;
       for (let index = from; index < source.length; index += 1) {{
@@ -8426,7 +8445,7 @@ fn document_bootstrap(
     }};
     let cursor = 0;
     while (cursor < source.length) {{
-      const parent = stack[stack.length - 1];
+      let parent = stack[stack.length - 1];
       if (source.startsWith("<!--", cursor)) {{
         const end = source.indexOf("-->", cursor + 4);
         const commentEnd = end < 0 ? source.length : end;
@@ -8443,6 +8462,8 @@ fn document_bootstrap(
       }}
       if (source.startsWith("<!", cursor) || source.startsWith("<?", cursor)) {{
         const end = findTagEnd(cursor + 2);
+        const declaration = source.slice(cursor + 2, end < 0 ? source.length : end);
+        if (!/^doctype(?:\s|$)/i.test(declaration)) parent.appendChild(createComment(declaration));
         cursor = end < 0 ? source.length : end + 1;
         continue;
       }}
@@ -8479,6 +8500,12 @@ fn document_bootstrap(
         cursor = end + 1;
         continue;
       }}
+      const normalizedName = opening[1].toLowerCase();
+      while (stack.length > 1
+          && shouldAutoClose(stack[stack.length - 1].localName, normalizedName)) {{
+        stack.pop();
+      }}
+      parent = stack[stack.length - 1];
       const element = createElement(opening[1]);
       const selfClosing = /\/\s*$/.test(rawTag);
       const attributeSource = rawTag
@@ -8494,7 +8521,7 @@ fn document_bootstrap(
             : attribute[4] !== undefined
               ? attribute[4]
               : "";
-        element.setAttribute(attribute[1], decodeHtmlEntities(value));
+        if (!element.hasAttribute(attribute[1])) element.setAttribute(attribute[1], decodeHtmlEntities(value));
       }}
       parent.appendChild(element);
       cursor = end + 1;

@@ -475,6 +475,15 @@ async fn native_local_document_fragments_preserve_tree_ownership_and_helpers() {
     assert_eq!(
         engine
             .evaluate_async(
+                "(() => { const recovered = document.createDocumentFragment(); recovered.innerHTML = '<!doctype html><!unknown><button ID=\"first\" id=\"second\">Action'; const button = recovered.querySelector('button'); const broken = document.createDocumentFragment(); broken.innerHTML = '<!--unterminated'; const lists = document.createDocumentFragment(); lists.innerHTML = '<ul><li>one<li id=\"second-item\">two</ul><select><option>one<option>two</select><p>first<div>second</div>'; const ul = lists.querySelector('ul'); const select = lists.querySelector('select'); return [recovered.childNodes.length, recovered.firstChild.nodeType, recovered.firstChild.nodeValue, button.id, broken.childNodes.length, broken.firstChild.nodeType, ul.children.length, ul.children[0].textContent, ul.children[1].id, select.children.length, select.children[0].parentNode === select, select.children[1].parentNode === select, lists.querySelector('p').textContent]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([2, 8, "unknown", "first", 1, 8, 2, "one", "second-item", 2, true, true, "first"])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
                 "(() => { const source = document.createElement('section'); source.setAttribute('id', 'moving-source'); const moved = document.createElement('b'); source.appendChild(moved); document.body.appendChild(source); const fragment = document.createDocumentFragment(); fragment.append(moved); const stable = document.createElement('i'); fragment.appendChild(stable); const records = []; const observer = new MutationObserver(entries => records.push(entries.map(record => ({ type: record.type, target: record.target === fragment, added: record.addedNodes.map(node => node.localName || node.nodeName), removed: record.removedNodes.map(node => node.localName || node.nodeName), previous: record.previousSibling && (record.previousSibling.localName || record.previousSibling.nodeName), next: record.nextSibling && (record.nextSibling.localName || record.nextSibling.nodeName) })))); observer.observe(fragment, { childList: true, subtree: true }); const inserted = document.createElement('em'); fragment.insertBefore(inserted, stable); stable.remove(); globalThis.fragmentMutationLog = records; return [moved.parentNode === fragment, source.childNodes.length, fragment.childNodes.length]; })()",
             )
             .await

@@ -50,8 +50,8 @@ enum NativeFormEncoding {
     TextPlain,
 }
 
-const SUPPORTED_ROLES: [&str; 8] = [
-    "button", "link", "textbox", "checkbox", "radio", "combobox", "option", "heading",
+const SUPPORTED_ROLES: [&str; 9] = [
+    "button", "link", "textbox", "checkbox", "radio", "combobox", "option", "heading", "img",
 ];
 
 /// Generational identity for one node in a native document arena.
@@ -4976,6 +4976,7 @@ impl NativeDocument {
             "select" => Some("combobox"),
             "option" => Some("option"),
             "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => Some("heading"),
+            "img" => Some("img"),
             "input" => match node
                 .attribute("type")
                 .unwrap_or("text")
@@ -5015,6 +5016,11 @@ impl NativeDocument {
             if !collapsed.0.is_empty() {
                 return collapsed;
             }
+        }
+        if role == "img"
+            && let Some(value) = node.attribute("alt")
+        {
+            return collapse_text(value, MAX_LOCATOR_BYTES);
         }
         if let Some(value) = node.attribute("id")
             && let Some(label) = self.find_label_for(value)

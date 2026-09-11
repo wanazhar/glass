@@ -192,6 +192,7 @@ impl fmt::Debug for NativeResourceLoader {
             .field("fixture_count", &self.fixtures.len())
             .field("max_document_bytes", &self.max_document_bytes)
             .field("cached_document_count", &self.network.cache.len())
+            .field("cached_image_count", &self.network.image_cache.len())
             .field("cookie_count", &self.network.cookies.len())
             .field(
                 "document_policy_count",
@@ -205,6 +206,7 @@ impl fmt::Debug for NativeResourceLoader {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct NativeNetworkState {
     cache: BTreeMap<String, NativeResource>,
+    image_cache: BTreeMap<String, NativeImage>,
     cookies: Vec<NativeCookie>,
     document_policies: BTreeMap<String, NativeCspPolicy>,
     preflight_cache: BTreeMap<String, Instant>,
@@ -1508,6 +1510,10 @@ impl NativeResourceLoader {
         if !policy.allows(NativeSubresourceKind::Image, &document_url, &target_url) {
             return Ok(None);
         }
+        let requested_cache_key = cache_key(&target_url);
+        if let Some(image) = self.network.image_cache.get(&requested_cache_key) {
+            return Ok(Some(image.clone()));
+        }
 
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -1587,6 +1593,7 @@ impl NativeResourceLoader {
         if content_length.is_some_and(|length| length > MAX_NATIVE_IMAGE_TRANSFER_BYTES as u64) {
             return Ok(None);
         }
+        let cacheable = cacheable_response(response.headers());
         let mut stream = response.bytes_stream();
         let mut bytes = Vec::with_capacity(
             content_length
@@ -1604,6 +1611,13 @@ impl NativeResourceLoader {
         let Some(image) = decode_png_bytes(&bytes, MAX_NATIVE_IMAGE_TRANSFER_BYTES) else {
             return Ok(None);
         };
+        let has_set_cookie = !pending_cookies.is_empty();
+        if cacheable && !has_set_cookie {
+            self.network
+                .store_image_cache(requested_cache_key, image.clone());
+            self.network
+                .store_image_cache(cache_key(&current_url), image.clone());
+        }
         for (cookie_url, cookie) in pending_cookies {
             self.cookie_changes
                 .extend(self.network.store_cookie(&cookie_url, &cookie));
@@ -2643,6 +2657,17 @@ impl NativeNetworkState {
             }
         }
         self.cache.insert(key, resource);
+    }
+
+    fn store_image_cache(&mut self, key: String, image: NativeImage) {
+        if !self.image_cache.contains_key(&key)
+            && self.image_cache.len() >= MAX_NATIVE_CACHE_ENTRIES
+        {
+            if let Some(oldest) = self.image_cache.keys().next().cloned() {
+                self.image_cache.remove(&oldest);
+            }
+        }
+        self.image_cache.insert(key, image);
     }
 
     fn store_document_policy(&mut self, key: String, policy: NativeCspPolicy) {

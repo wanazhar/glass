@@ -2729,7 +2729,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         mut parsed,
                         loaded_viewport,
                         script_sources,
-                        resource_load_nodes,
+                        resource_events,
                     )) => {
                         let mut script_runtime =
                             match NativeJavaScriptRuntime::new_with_context_metadata(
@@ -2768,7 +2768,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             &storage_state,
                             &indexed_db_state,
                             &document_cookie,
-                            &resource_load_nodes,
+                            &resource_events,
                         );
                         let prepared = match page_scripts {
                             Ok(page_scripts) if page_scripts.navigation.is_some() => {
@@ -4190,7 +4190,7 @@ async fn load_content_resource(
         NativeDocument,
         Viewport,
         Vec<NativePageScript>,
-        Vec<u32>,
+        Vec<(u32, NativeEventKind)>,
     ),
     NativeEngineError,
 > {
@@ -4348,7 +4348,7 @@ async fn load_content_resource(
     let frame_sources = loader.frame_sources_for_document(&resource.url)?;
     let discovery = NativeDocument::parse(&resource.body, &limits)?;
     let mut external_stylesheets = Vec::new();
-    let mut resource_load_nodes = Vec::new();
+    let mut resource_events = Vec::new();
     for href in discovery
         .external_stylesheet_links()
         .into_iter()
@@ -4369,17 +4369,21 @@ async fn load_content_resource(
                 ));
             }
             external_stylesheets.push(stylesheet);
-            resource_load_nodes.push(node_index);
+            resource_events.push((node_index, NativeEventKind::Load));
         }
     }
     let mut document =
         NativeDocument::parse_with_stylesheets(&resource.body, &limits, &external_stylesheets, 1)?;
-    resource_load_nodes.extend(load_external_images(&mut document, loader, &resource.url).await?);
+    resource_events.extend(load_external_images(&mut document, loader, &resource.url).await?);
     let (script_sources, mut script_resource_nodes) =
         load_page_script_sources(&document, loader, &resource.url).await?;
-    resource_load_nodes.append(&mut script_resource_nodes);
-    resource_load_nodes.sort_unstable();
-    resource_load_nodes.dedup();
+    resource_events.extend(
+        script_resource_nodes
+            .drain(..)
+            .map(|node_index| (node_index, NativeEventKind::Load)),
+    );
+    resource_events.sort_unstable_by_key(|(node_index, _)| *node_index);
+    resource_events.dedup();
     let wire = document.to_content_wire();
     Ok((
         NativeContentLoad {
@@ -4387,7 +4391,13 @@ async fn load_content_resource(
             origin: resource.origin,
             document: wire,
             frame_sources,
-            events: Vec::new(),
+            events: resource_events
+                .iter()
+                .map(|(node_index, kind)| NativeContentEvent {
+                    node_index: *node_index,
+                    kind: *kind,
+                })
+                .collect(),
             navigation: None,
             storage_events: Vec::new(),
             indexed_db_changes: Vec::new(),
@@ -4401,7 +4411,7 @@ async fn load_content_resource(
         document,
         viewport,
         script_sources,
-        resource_load_nodes,
+        resource_events,
     ))
 }
 
@@ -4409,8 +4419,8 @@ async fn load_external_images(
     document: &mut NativeDocument,
     loader: &mut NativeResourceLoader,
     document_url: &str,
-) -> Result<Vec<u32>, NativeEngineError> {
-    let mut loaded_nodes = Vec::new();
+) -> Result<Vec<(u32, NativeEventKind)>, NativeEngineError> {
+    let mut image_events = Vec::new();
     for (node_index, source) in document
         .external_image_links()
         .into_iter()
@@ -4421,13 +4431,14 @@ async fn load_external_images(
             continue;
         }
         document.mark_image_load(node_index, source.clone())?;
-        match loader.load_image_async(document_url, &source).await {
+        let event_kind = match loader.load_image_async(document_url, &source).await {
             Ok(Some(image)) => {
                 document.set_image_resource(node_index, source, image)?;
-                loaded_nodes.push(node_index);
+                NativeEventKind::Load
             }
-            Ok(None) | Err(_) => {}
-        }
+            Ok(None) | Err(_) => NativeEventKind::Error,
+        };
+        image_events.push((node_index, event_kind));
     }
     for (node_index, source) in document
         .external_background_image_links()
@@ -4448,7 +4459,7 @@ async fn load_external_images(
             Ok(None) | Err(_) => {}
         }
     }
-    Ok(loaded_nodes)
+    Ok(image_events)
 }
 
 async fn load_page_script_sources(
@@ -5794,13 +5805,13 @@ async fn mutate_script_document(
         )?;
         events.extend(next.apply_script_commands(&evaluation.commands)?);
     }
-    let loaded_image_nodes = if let Some(loader) = loader {
+    let image_events = if let Some(loader) = loader {
         load_external_images(&mut next, loader, &document_url).await?
     } else {
         Vec::new()
     };
-    for node_index in loaded_image_nodes {
-        let Some(source) = host_event_script(&[(node_index, NativeEventKind::Load)])? else {
+    for (node_index, event_kind) in image_events {
+        let Some(source) = host_event_script(&[(node_index, event_kind)])? else {
             continue;
         };
         let evaluation =
@@ -5815,7 +5826,7 @@ async fn mutate_script_document(
         events.extend(next.apply_script_commands(&evaluation.commands)?);
         events.push((
             NativeNodeId::from_parts(next.generation(), node_index),
-            NativeEventKind::Load,
+            event_kind,
         ));
     }
     next.refresh_image_loads();
@@ -6317,6 +6328,7 @@ fn event_kind_text(kind: NativeEventKind) -> &'static str {
         NativeEventKind::ReadyStateChange => "readystatechange",
         NativeEventKind::DomContentLoaded => "DOMContentLoaded",
         NativeEventKind::Load => "load",
+        NativeEventKind::Error => "error",
         NativeEventKind::PageHide => "pagehide",
         NativeEventKind::Unload => "unload",
         NativeEventKind::PageShow => "pageshow",
@@ -6341,6 +6353,7 @@ fn parse_event_kind(value: &str) -> Option<NativeEventKind> {
         "readystatechange" => Some(NativeEventKind::ReadyStateChange),
         "DOMContentLoaded" => Some(NativeEventKind::DomContentLoaded),
         "load" => Some(NativeEventKind::Load),
+        "error" => Some(NativeEventKind::Error),
         "pagehide" => Some(NativeEventKind::PageHide),
         "unload" => Some(NativeEventKind::Unload),
         "pageshow" => Some(NativeEventKind::PageShow),

@@ -28,6 +28,7 @@ pub enum NativeEventKind {
     ReadyStateChange,
     DomContentLoaded,
     Load,
+    Error,
     PageHide,
     Unload,
     PageShow,

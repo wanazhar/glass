@@ -109,6 +109,15 @@ pub enum NativeNodeKind {
 pub(crate) struct NativeDocumentWire {
     pub(crate) nodes: Vec<NativeNodeWire>,
     pub(crate) computed_styles: Vec<NativeComputedStyle>,
+    #[serde(default)]
+    pub(crate) script_nodes: Vec<NativeScriptNodeIdentity>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NativeScriptNodeIdentity {
+    pub(crate) temporary_index: u32,
+    pub(crate) node_index: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -236,6 +245,8 @@ pub(crate) struct NativeScriptDocumentSnapshot {
     pub(crate) scroll_x: u32,
     #[serde(default)]
     pub(crate) scroll_y: u32,
+    #[serde(default)]
+    pub(crate) script_nodes: Vec<NativeScriptNodeIdentity>,
 }
 
 /// Layout-backed geometry transferred to one JavaScript document realm.
@@ -351,6 +362,7 @@ pub struct NativeDocument {
     computed_styles: Option<Vec<NativeComputedStyle>>,
     diagnostics: Vec<NativeDiagnostic>,
     diagnostics_truncated: bool,
+    script_node_ids: BTreeMap<u32, NativeNodeId>,
 }
 
 impl NativeDocument {
@@ -404,6 +416,7 @@ impl NativeDocument {
             computed_styles: None,
             diagnostics: Vec::new(),
             diagnostics_truncated: false,
+            script_node_ids: BTreeMap::new(),
         };
         let mut stack = vec![root];
 
@@ -581,6 +594,15 @@ impl NativeDocument {
         NativeDocumentWire {
             nodes,
             computed_styles,
+            script_nodes: self
+                .script_node_ids
+                .iter()
+                .filter(|(_, id)| id.generation == self.generation)
+                .map(|(temporary_index, id)| NativeScriptNodeIdentity {
+                    temporary_index: *temporary_index,
+                    node_index: id.index,
+                })
+                .collect(),
         }
     }
 
@@ -697,6 +719,36 @@ impl NativeDocument {
             );
         }
         let (diagnostics, diagnostics_truncated) = diagnostics.finish();
+        let mut script_node_ids = BTreeMap::new();
+        for identity in wire.script_nodes {
+            if identity.temporary_index < SCRIPT_TEMP_NODE_BASE {
+                return Err(NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned an invalid script node identity".into(),
+                });
+            }
+            let index =
+                usize::try_from(identity.node_index).map_err(|_| NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned an invalid script node identity".into(),
+                })?;
+            if index >= nodes.len()
+                || script_node_ids
+                    .insert(
+                        identity.temporary_index,
+                        NativeNodeId {
+                            generation,
+                            index: identity.node_index,
+                        },
+                    )
+                    .is_some()
+            {
+                return Err(NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned duplicate script node identity".into(),
+                });
+            }
+        }
         let mut document = Self {
             generation,
             revision: u64::from(generation),
@@ -708,6 +760,7 @@ impl NativeDocument {
             computed_styles: Some(wire.computed_styles),
             diagnostics,
             diagnostics_truncated,
+            script_node_ids,
         };
         document.normalize_select_defaults();
         Ok(document)
@@ -735,6 +788,7 @@ impl NativeDocument {
             computed_styles: None,
             diagnostics: Vec::new(),
             diagnostics_truncated: false,
+            script_node_ids: BTreeMap::new(),
         }
     }
 
@@ -895,6 +949,15 @@ impl NativeDocument {
             geometry: Vec::new(),
             scroll_x: 0,
             scroll_y: 0,
+            script_nodes: self
+                .script_node_ids
+                .iter()
+                .filter(|(_, id)| id.generation == self.generation)
+                .map(|(temporary_index, id)| NativeScriptNodeIdentity {
+                    temporary_index: *temporary_index,
+                    node_index: id.index,
+                })
+                .collect(),
         }
     }
 
@@ -1655,7 +1718,7 @@ impl NativeDocument {
         allow_script_navigation: bool,
     ) -> Result<Vec<(NativeNodeId, NativeEventKind)>, NativeEngineError> {
         let mut events = Vec::new();
-        let mut script_nodes = BTreeMap::new();
+        let mut script_nodes = self.script_node_ids.clone();
         for command in commands {
             match command {
                 NativeScriptCommand::Focus { node_index } => {
@@ -1877,6 +1940,10 @@ impl NativeDocument {
                 ));
             }
         }
+        self.script_node_ids = script_nodes
+            .into_iter()
+            .filter(|(node_index, _)| *node_index >= SCRIPT_TEMP_NODE_BASE)
+            .collect();
         Ok(events)
     }
 

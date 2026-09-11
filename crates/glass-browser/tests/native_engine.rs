@@ -283,6 +283,24 @@ async fn native_local_script_exposes_web_idl_identity_and_dom_collections() {
     assert_eq!(
         engine
             .evaluate_async(
+                "(() => { const host = document.createElement('article'); const child = document.createElement('span'); child.id = 'persistent'; host.appendChild(child); document.body.appendChild(host); globalThis.__persistentHost = host; globalThis.__persistentChild = child; return [child.isConnected, child.parentNode === host]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, true])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const host = globalThis.__persistentHost; const child = globalThis.__persistentChild; const current = document.getElementById('persistent'); const result = [current === child, host.contains(child), child.getRootNode() === document, child.parentElement === host]; host.remove(); return result; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, true, true, true])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
                 "(() => { const input = document.getElementById('name'); const detached = document.createElement('aside'); return [input.getRootNode() === document, input.isConnected, detached.getRootNode() === detached, detached.isConnected, input.outerHTML]; })()",
             )
             .await
@@ -580,6 +598,24 @@ async fn native_content_process_script_exposes_web_idl_identity() {
             .await
             .unwrap(),
         serde_json::json!([true, true, "TEXTAREA", "updated", true, null])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const host = document.createElement('article'); const child = document.createElement('span'); child.id = 'persistent-worker'; host.appendChild(child); document.body.appendChild(host); globalThis.__persistentWorkerHost = host; globalThis.__persistentWorkerChild = child; return [child.isConnected, child.parentNode === host]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, true])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const host = globalThis.__persistentWorkerHost; const child = globalThis.__persistentWorkerChild; const current = document.getElementById('persistent-worker'); const result = [current === child, host.contains(child), child.getRootNode() === document, child.parentElement === host]; host.remove(); return result; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, true, true, true])
     );
     let before_scroll = engine
         .evaluate_async(

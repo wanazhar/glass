@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-191`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-192`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
@@ -3369,10 +3369,22 @@ tree accessor layer supplies fragment selector and collection methods, and
 element/frame queries now include newly attached nodes immediately. This keeps
 detached construction in the JavaScript host and reuses the existing typed
 create/attribute/attach commands, but it is not a full HTML tree builder:
-comments, raw-text/foreign-content rules, malformed-input recovery, and full
-Web IDL descriptor parity remain conformance work. Exact local evidence is in
+raw-text/foreign-content rules, malformed-input recovery, and full Web IDL
+descriptor parity remain conformance work. Exact local evidence is in
 `docs/plan/tasks/native-engine-browser-179.md`; browser-complete promotion
 remains tracked issue-40 work.
+
+The completed native-engine-browser-192 slice closes the parsed comment and
+doctype projection gap across local, HTTP(S) content-worker, same-origin frame,
+and nested-frame realms. The native arena, typed document wire, and persistent
+script snapshot now carry comment and document-type nodes; comments participate
+in the supported CharacterData mutation path but remain outside visible text,
+layout, and paint; and doctypes expose their bounded metadata and parentage via
+`document.doctype`. Exact evidence is in
+[native-engine-browser-192](../tasks/native-engine-browser-192.md). Full
+malformed-HTML recovery, raw-text/foreign-content parsing, script-created
+comment/doctype construction, and Web IDL conformance remain issue #40
+promotion work.
 
 The completed native-engine-browser-191 slice closes the cross-evaluation
 script-node identity gap in local, HTTP(S) content-worker, and same-origin frame

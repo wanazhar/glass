@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-191` locally. The versioned
+`native-engine-browser-192` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1690,6 +1690,19 @@ Its contract and local evidence are recorded in
 session history, bfcache, cross-origin history, and browser-wide parity remain
 issue #40 promotion gates.
 
+The completed native-engine-browser-192 slice preserves parsed HTML comments
+and basic document-type metadata as real native DOM nodes across local,
+HTTP(S) content-worker, same-origin frame, and nested-frame projections.
+Comments expose the supported CharacterData mutation path while remaining out
+of visible text, layout, and paint; doctypes expose `document.doctype`, type,
+name, and parentage. The typed wire and persistent script snapshot carry the
+new node kinds, and document serialization preserves the supported comment and
+doctype forms. The bounded contract and exact evidence are recorded in
+[native-engine-browser-192](tasks/native-engine-browser-192.md); complete
+malformed-HTML recovery, raw-text/foreign-content parsing, script-created
+comment/doctype construction, and Web IDL conformance remain issue #40
+promotion work.
+
 The completed native-engine-browser-191 slice preserves script-created element
 and text-node identity across separate evaluations in local, HTTP(S)
 content-worker, and same-origin frame realms. The typed native snapshot now
@@ -1811,8 +1824,8 @@ construct nested elements/text, decode common and numeric entities, preserve
 attributes and void elements, and expose selector/collection traversal before
 attachment; local, HTTP(S) content-worker, and same-origin frame realms share
 the behavior. Newly attached nodes are also visible through element query
-methods during the same script turn. The parser remains a bounded element/text
-tree builder rather than a claim of full HTML parsing, comment/raw-text/
+methods during the same script turn. The parser remains a bounded tree builder
+rather than a claim of full HTML parsing; malformed-input, raw-text/
 foreign-content rules and complete Web IDL descriptors remain open. Its
 contract and local evidence are recorded in
 [native-engine-browser-179](tasks/native-engine-browser-179.md); cross-document

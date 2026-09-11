@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-177` locally. The versioned
+`native-engine-browser-178` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1676,6 +1676,19 @@ ambiguous traversal plus competing navigation fails closed. Cross-document
 session history, bfcache, cross-origin history, complete Web IDL descriptors,
 and browser-wide parity remain issue #40 gates. Its contract and local evidence
 are recorded in [native-engine-browser-177](tasks/native-engine-browser-177.md).
+
+The completed native-engine-browser-178 slice adds document-fragment construction
+and child-mutation ergonomics to local, HTTP(S) content-worker, and same-origin
+frame realms. `createDocumentFragment()`, fragment identity and ownership,
+fragment flattening, sibling insertion, replacement, and child replacement now
+share the host-owned tree/cache/removal rules used by elements and text nodes;
+empty-fragment synchronization also clears stale projected content. The slice
+intentionally does not claim fragment `innerHTML` setters, direct
+`MutationObserver` records for fragment staging, or complete Web IDL descriptors.
+Its contract and local evidence are recorded in
+[native-engine-browser-178](tasks/native-engine-browser-178.md); cross-document
+session history, bfcache, cross-origin history, and browser-wide parity remain
+issue #40 promotion gates.
 
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and

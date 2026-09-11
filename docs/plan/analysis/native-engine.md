@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-177`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-178`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
@@ -3345,6 +3345,21 @@ is rejected. Cross-document session history, bfcache, cross-origin history,
 complete Web IDL descriptors, and browser-complete promotion remain tracked
 issue-40 work; exact local evidence is in
 `docs/plan/tasks/native-engine-browser-177.md`.
+
+The completed native-engine-browser-178 slice adds document-fragment
+construction and child mutation to all currently projected native realms.
+Local documents, HTTP(S) content workers, and same-origin frames now expose
+`createDocumentFragment()` with node identity, owner-document and detached-tree
+semantics, nested-fragment flattening, append/prepend, before/after,
+replaceWith, replaceChildren, and insertBefore behavior. Rust keeps ownership
+and attachment authoritative while JavaScript stages detached fragments; the
+existing content/cache synchronization path now handles fragment parents and
+clears empty snapshots after the last child is moved or removed. This keeps the
+implementation bounded and avoids inventing a second Rust staging tree, but it
+leaves fragment `innerHTML` setters, direct fragment-staging observer records,
+and complete Web IDL descriptor parity for later conformance work. Exact local
+evidence is in `docs/plan/tasks/native-engine-browser-178.md`; browser-complete
+promotion remains tracked issue-40 work.
 
 The completed native-engine-browser-169 slice adds frame-qualified EventTarget
 behavior to same-origin projected elements, detached projected elements,

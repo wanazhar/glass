@@ -4857,7 +4857,11 @@ impl<'a> LayoutBuilder<'a> {
             .attribute("height")
             .and_then(|value| value.trim().parse::<u32>().ok())
             .filter(|value| *value > 0);
-        let intrinsic = node.attribute("src").and_then(image_dimensions_from_source);
+        let intrinsic = self
+            .document
+            .image_resource_for_node(id)
+            .map(|image| (image.width, image.height))
+            .or_else(|| node.attribute("src").and_then(image_dimensions_from_source));
         match (declared_width, declared_height, intrinsic) {
             (Some(width), Some(height), _) => Some((width, height)),
             (Some(width), None, Some((intrinsic_width, intrinsic_height)))

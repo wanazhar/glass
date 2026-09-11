@@ -55,6 +55,7 @@ const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTENT_PROCESS_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_CONTENT_STYLESHEETS: usize = 16;
 const MAX_CONTENT_STYLESHEET_BYTES: usize = 512 * 1024;
+const MAX_CONTENT_IMAGES: usize = 64;
 const MAX_CONTENT_FRAME_SOURCES: usize = 64;
 
 pub(crate) struct NativeContentLoad {
@@ -4369,8 +4370,21 @@ async fn load_content_resource(
             resource_load_nodes.push(node_index);
         }
     }
-    let document =
+    let mut document =
         NativeDocument::parse_with_stylesheets(&resource.body, &limits, &external_stylesheets, 1)?;
+    for (node_index, source) in discovery
+        .external_image_links()
+        .into_iter()
+        .take(MAX_CONTENT_IMAGES)
+    {
+        match loader.load_image_async(&resource.url, &source).await {
+            Ok(Some(image)) => {
+                document.set_image_resource(node_index, source, image)?;
+                resource_load_nodes.push(node_index);
+            }
+            Ok(None) | Err(_) => {}
+        }
+    }
     let (script_sources, mut script_resource_nodes) =
         load_page_script_sources(&document, loader, &resource.url).await?;
     resource_load_nodes.append(&mut script_resource_nodes);

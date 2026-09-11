@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-167`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-168`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
@@ -3260,6 +3260,15 @@ reads and validated add/remove/toggle/replace mutation through typed attribute
 commands. Full CSS selector grammar, complete Web IDL descriptors,
 cross-realm listener identity, complete frame lifecycle/load ordering, and
 browser-wide parity remain open.
+
+The completed native-engine-browser-168 slice adds live bounded `style` and
+`dataset` surfaces to local and same-origin frame element projections.
+Declaration-level CSSOM reads and writes, priority/removal, camelCase/dashed
+property access, `cssText`, dataset camelCase mapping, enumeration, assignment,
+and deletion reuse the existing typed attribute command path. Full CSS value and
+CSSOM descriptor parity, computed-style mutation semantics, cross-realm
+listener identity, complete frame lifecycle/load ordering, and browser-wide
+parity remain open.
 
 The completed native-engine-browser-133 batch extends the native target seam
 with a side-effect-free preflight result. The engine resolves the current

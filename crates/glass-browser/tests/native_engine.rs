@@ -744,6 +744,25 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
     assert_eq!(
         session
             .script(
+                "(() => { const child = document.getElementById('child').contentDocument; const inside = child.getElementById('inside'); const style = inside.style; style.backgroundColor = 'blue'; style.setProperty('margin-top', '4px', 'important'); const dataset = inside.dataset; dataset.fromParent = 'yes'; const names = Object.keys(dataset).sort(); delete dataset.fromParent; return [style.backgroundColor, style.getPropertyPriority('margin-top'), style.cssText, dataset.message, dataset.fromParent, names, inside.style === style, inside.getAttribute('style')]; })()",
+            )
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([
+            "blue",
+            "important",
+            "background-color: blue; margin-top: 4px !important;",
+            "none",
+            null,
+            ["fromParent", "message"],
+            true,
+            "background-color: blue; margin-top: 4px !important;",
+        ])
+    );
+    assert_eq!(
+        session
+            .script(
                 "(() => { const child = document.getElementById('child').contentDocument; const inside = child.getElementById('inside'); inside.setAttribute('data-message', 'parent-write'); inside.innerHTML = '<em id=\"new-child\">updated &amp; literal</em>'; child.getElementById('field').value = 'written-by-parent'; return [inside.getAttribute('data-message'), inside.innerHTML, inside.textContent, inside.innerText, child.getElementById('field').value]; })()",
             )
             .await
@@ -4874,6 +4893,30 @@ async fn native_content_process_evaluates_persistent_script_realm() {
             .await
             .unwrap(),
         serde_json::json!([true, true, true, 1, 0, 3, true, true, "article featured selected"])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const paragraph = document.getElementById('copy'); const style = paragraph.style; style.setProperty('color', 'red'); style.width = '120px'; style.setProperty('display', 'block', 'IMPORTANT'); const removed = style.removeProperty('color'); const dataset = paragraph.dataset; dataset.articleId = 42; dataset.enabled = true; const names = Object.keys(dataset).sort(); delete dataset.enabled; const detached = document.createElement('aside'); detached.dataset.kind = 'detached'; detached.style.display = 'block'; return [removed, style.width, style.getPropertyPriority('display'), style.item(0), style.length, style.cssText, dataset.articleId, dataset.enabled, names, paragraph.getAttribute('data-article-id'), paragraph.hasAttribute('data-enabled'), paragraph.style === style, detached.dataset.kind, detached.style.display]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([
+            "red",
+            "120px",
+            "important",
+            "width",
+            2,
+            "width: 120px; display: block !important;",
+            "42",
+            null,
+            ["articleId", "enabled"],
+            "42",
+            false,
+            true,
+            "detached",
+            "block",
+        ])
     );
     assert_eq!(
         engine

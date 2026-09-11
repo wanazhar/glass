@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-167` slice; the bounded foundation below remains
+`native-engine-browser-168` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -103,7 +103,8 @@ bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
 bounded-legacy-name-fragment-targets/bounded-text-fragment-targets/
 bounded-text-fragment-affixes/bounded-root-horizontal-scroll/
 bounded-prompt-lifecycle/bounded-request-lifecycle/bounded-external-link-activation/
-bounded-anchor-download-ownership/bounded-native-target-lifecycle,
+bounded-anchor-download-ownership/bounded-native-target-lifecycle/
+bounded-style-declaration-surface/bounded-dataset-surface,
 including bounded style
 inheritance, paint clipping, solid/dashed/dotted border painting, rounded
 fill/border masks, inline-box line placement, fixed pixel line-height floors,
@@ -1673,6 +1674,15 @@ structural pseudo-class selectors. `classList` retains its owner and routes
 validated token mutations through the existing typed attribute command. The
 full CSS selector grammar, complete Web IDL descriptors, cross-realm listener
 identity, and browser-wide parity remain separate promotion work.
+
+The completed native-engine-browser-168 slice adds live bounded `style` and
+`dataset` projections to local and same-origin frame elements. Declaration
+reads, indexed names, camelCase/dashed property access, `cssText`,
+`setProperty()`/`removeProperty()`, priorities, dataset camelCase mapping,
+enumeration, writes, and deletion reuse the existing attribute command owner,
+so layout still consumes Rust-owned committed style state. Full CSSOM/value
+validation, computed-style descriptor parity, cross-realm listener identity,
+and browser-wide parity remain separate promotion work.
 
 The completed native-engine-browser-166 slice adds attached text-node records
 to the bounded script snapshot. Local, content-worker, and same-origin frame

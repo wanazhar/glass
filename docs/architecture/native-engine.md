@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-214` slice; the bounded foundation below remains
+`native-engine-browser-215` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -120,7 +120,6 @@ and content-box geometry,
 bounded base64 data-URL loading, plus feature-gated
 runtime/CLI integration; not a stable browser compatibility or security
 boundary.
-
 This document is the repository contract for the Glass-owned native browser
 engine described by [issue #40](https://github.com/wanazhar/glass/issues/40).
 The current implementation is an experimental backend inside `glass-browser`;
@@ -5293,7 +5292,7 @@ image replay to the shared native artifact path. Validated image elements now
 use intrinsic/aspect-ratio sizing and carry decoded RGBA pixels through typed
 display-list commands, nearest-neighbor software rasterization, source-over
 alpha, clipping, scrolling, hit testing, and PNG capture. External image
-resources, transfer/cache ownership, CSS image paints, SVG image resources,
+resources, transfer/cache ownership, one CSS background-image URL layer, SVG image resources,
 and animated formats remain active browser-completeness work. Exact evidence is
 recorded in
 `docs/plan/tasks/native-engine-browser-210.md`.
@@ -5307,7 +5306,8 @@ dimensions through the typed document wire. Parent layout, display-list,
 software raster, clipping, scrolling, hit testing, capture, and successful
 image load events consume the same resource owner; denied, malformed, or
 failed images are non-fatal broken-image results. Decoded caching, responsive
-sources, CSS/SVG image resources, animation, and additional formats remain
+sources, additional CSS image layers beyond the single background-image URL,
+SVG image resources, animation, and additional formats remain
 later issue #40 work. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-211.md`.
 
@@ -5318,8 +5318,9 @@ is unchanged, fetches new or changed HTTP(S) sources through the existing
 security policy, and publishes successful decoded RGBA pixels with the
 mutation snapshot. Image `load` handlers run in the persistent page realm
 before the snapshot is returned; broken resources do not abort the document.
-Decoded caching, recursive handler loads, responsive sources, CSS/SVG image
-resources, animation, and additional formats remain later issue #40 work.
+Decoded caching, recursive handler loads, responsive sources, additional CSS
+image layers beyond the single background-image URL, SVG image resources,
+animation, and additional formats remain later issue #40 work.
 Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-212.md`.
 
@@ -5331,7 +5332,8 @@ Current document security policy is still evaluated before lookup, and the
 same cache serves initial and script-reactive image discovery. The cache is
 process-lifetime, bounded by the existing resource-entry limit, and does not
 persist pixels to profiles; freshness/revalidation, concurrent coalescing,
-responsive sources, CSS/SVG image resources, animation, and other formats
+responsive sources, additional CSS image layers beyond the single
+background-image URL, SVG image resources, animation, and other formats
 remain active issue #40 work. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-213.md`.
 
@@ -5342,6 +5344,15 @@ resolve `action` against the active document or same-origin frame URL. Setters
 stringify and persist the author attribute through the existing typed command
 bridge, so image `src` writes use the native resource path. Exact evidence is
 in `docs/plan/tasks/native-engine-browser-214.md`.
+
+The completed native-engine-browser-215 slice adds one native CSS
+`background-image` URL layer. Inline PNG data URLs and external PNG resources
+share bounded source identity, HTTP/CSP/mixed-content/referrer/cookie policy,
+decoded caching, typed document-wire validation, software paint, clipping,
+scrolling, capture, and script-driven style mutation. CSS repeat/position/size,
+multiple layers, gradients, masks, filters, responsive selection, SVG image
+resources, animation, and additional formats remain separate issue #40 work.
+Exact evidence is in `docs/plan/tasks/native-engine-browser-215.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

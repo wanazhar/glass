@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-187` slice; the bounded foundation below remains
+`native-engine-browser-188` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5157,6 +5157,18 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - explicit Rust native-session construction and feature-gated CLI dispatch for
   local and bounded HTTP(S) URL shapes, including rejection of remote browser
   endpoints and unsupported browser-only flags.
+
+The completed native-engine-browser-188 slice makes document titles live across
+local, HTTP(S) content-worker, and same-origin frame realms. The document
+projection resolves `document.title` from the current title node, sends title
+writes through the existing bounded text-mutation path, materializes a missing
+head/title pair when possible, and sends a typed `setDocumentTitle` command to
+the Rust owner when no HTML root can host the node. The Rust path validates the
+title bound and creates the durable title node without adding a second DOM
+model. Exact local evidence is recorded in
+`docs/plan/tasks/native-engine-browser-188.md`; full Web IDL descriptors,
+complete HTML tree-builder semantics, and the remaining issue #40 promotion
+gates remain open.
 
 The completed native-engine-browser-187 slice exposes live document-facing DOM
 surfaces across local, HTTP(S) content-worker, and same-origin frame realms.

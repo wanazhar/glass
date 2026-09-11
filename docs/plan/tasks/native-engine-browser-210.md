@@ -60,4 +60,4 @@ implementation work.
 Remote CI, push, release, registry publication, and browser-complete
 certification remain unclaimed for this local-only checkpoint.
 
-Implementation checkpoint: `f99b1fa7`.
+Implementation checkpoint: `ac9645f9`.

@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-202` locally. The versioned
+`native-engine-browser-203` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1747,6 +1747,16 @@ fill-less shapes, scroll translation, clipping, and alpha composition. Paths,
 line caps/joins, transforms, viewBox mapping, gradients, markers, and external
 SVG resources remain separate issue #40 promotion work. Exact evidence is
 recorded in [native-engine-browser-202](tasks/native-engine-browser-202.md).
+
+The completed native-engine-browser-203 slice adds bounded SVG `line`,
+`polyline`, and `polygon` geometry. Shared point parsing now feeds layout
+bounds, typed polygon-fill and polyline-stroke display commands, deterministic
+software rasterization, clipping, scroll translation, alpha composition, and
+hit-test ownership. Malformed or over-limit point lists fail closed. Paths,
+explicit cap/join styles, dash arrays, transforms, viewBox mapping, gradients,
+markers, and external SVG resources remain separate issue #40 promotion work.
+Exact evidence is recorded in
+[native-engine-browser-203](tasks/native-engine-browser-203.md).
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` now returns persistent `Attr`

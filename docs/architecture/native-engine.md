@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-195` slice; the bounded foundation below remains
+`native-engine-browser-197` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5168,6 +5168,16 @@ nested-frame realms. Exact evidence is recorded in
 tree-builder, and Web IDL/conformance promotion remain issue #40 work. The
 bounded malformed-input recovery subset is recorded in the later
 `native-engine-browser-195` checkpoint.
+
+The completed native-engine-browser-197 slice completes bounded `Attr`
+participation in the shared `Node` contract. Constructed attributes now expose
+detached node accessors, clone/equality behavior, empty child collections, and
+root/connectivity semantics while retaining `ownerElement` as their sole
+ownership link. Local, content-worker, and same-origin frame realms use the
+same host implementation. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-197.md`. Namespace-aware storage, XML
+documents, complete Web IDL descriptor parity, and browser-wide conformance
+remain issue #40 work.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

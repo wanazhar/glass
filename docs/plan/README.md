@@ -1690,14 +1690,14 @@ Its contract and local evidence are recorded in
 session history, bfcache, cross-origin history, and browser-wide parity remain
 issue #40 promotion gates.
 
-The completed native-engine-browser-191 slice preserves script-created node
-identity across separate evaluations in local and HTTP(S) content-worker
-realms. The typed native snapshot now carries generation-scoped temporary-node
-identities, and the persistent JavaScript realm reuses the original wrappers
-when the committed native nodes are projected again. Queries and mutations in
-the next evaluation therefore retain object identity and native ownership;
-transaction failure does not publish a partial mapping. The contract and
-evidence are recorded in
+The completed native-engine-browser-191 slice preserves script-created element
+and text-node identity across separate evaluations in local, HTTP(S)
+content-worker, and same-origin frame realms. The typed native snapshot now
+carries generation-scoped temporary-node identities, and the persistent
+JavaScript realms reuse the original wrappers when committed native nodes are
+projected again. Queries and mutations in the next evaluation therefore retain
+object identity and native ownership; transaction failure does not publish a
+partial mapping. The contract and evidence are recorded in
 [native-engine-browser-191](tasks/native-engine-browser-191.md).
 
 The completed native-engine-browser-190 slice extends structural DOM behavior

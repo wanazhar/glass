@@ -23,8 +23,8 @@ unresolvable temporary index after the host projects a new native snapshot.
 - An attached element created in one evaluation is the same object returned by
   a document query in the next evaluation, and its existing wrapper can still
   perform a typed native mutation.
-- The local and HTTP(S) content-worker realms share the same bounded behavior
-  without sharing Rust pointers or untyped process state.
+- Local, HTTP(S) content-worker, and same-origin frame realms share the same
+  bounded behavior without sharing Rust pointers or untyped process state.
 
 ## Implementation
 
@@ -37,9 +37,10 @@ unresolvable temporary index after the host projects a new native snapshot.
 - Added a persistent JavaScript wrapper map. During projection, wrappers are
   rebound to the current native arena index and reused for matching element or
   text snapshot entries.
-- Added local and content-worker witnesses that create an attached subtree,
-  evaluate again, verify `===`, root, parent, and containment identity, and
-  remove the old wrapper through the native command path.
+- Added local, content-worker, same-origin frame, and nested-frame regression
+  witnesses that create an attached subtree, evaluate again, verify `===`,
+  root, parent, and containment identity, and remove the old wrapper through
+  the native command path.
 
 ## Tradeoffs and follow-up
 
@@ -48,10 +49,9 @@ limits and is reset with a new document generation. Detached script-created
 nodes remain addressable by the native transaction while their arena storage
 exists, but detached nodes are not projected as ordinary document snapshot
 entries; garbage collection and a full detached-tree object model are later
-work. Same-origin frame-specific persistence witnesses, document/comment/
-doctype node kinds, complete HTML tree-builder behavior, full Web IDL
-descriptor parity, and browser-complete promotion gates remain open in issue
-#40.
+work. Document, comment, and doctype node kinds, complete HTML tree-builder
+behavior, full Web IDL descriptor parity, and browser-complete promotion gates
+remain open in issue #40.
 
 ## Verification
 
@@ -60,4 +60,8 @@ descriptor parity, and browser-complete promotion gates remain open in issue
 - `cargo check --quiet -p glass-browser --features native-engine --test native_engine`
 - `cargo test --quiet -p glass-browser --features native-engine --test native_engine script_exposes_web_idl_identity`
   (2 passed, 0 failed; local and content-worker witnesses)
-- implementation checkpoint: `82fb2029`
+- `cargo test --quiet -p glass-browser --features native-engine --test native_engine native_same_origin_frame_script_projection_matches_window_contract`
+  (1 passed, 0 failed; same-origin frame element/text identity witness)
+- `cargo test --quiet -p glass-browser --features native-engine --test native_engine native_nested_frame_script_projection_preserves_window_chain`
+  (1 passed, 0 failed; nested-frame regression)
+- implementation checkpoints: `82fb2029`, `58db3800`

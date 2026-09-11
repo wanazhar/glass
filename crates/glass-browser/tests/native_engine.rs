@@ -279,6 +279,27 @@ async fn native_local_document_fragments_preserve_tree_ownership_and_helpers() {
             "final": [0, 0, "<u>new</u>end", "newend", 2, "U", true, 0, true],
         })
     );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const host = document.querySelector('section'); host.id = 'property-id'; host.className = 'alpha beta'; const assigned = [host.id, host.className, host.getAttribute('id'), host.getAttribute('class'), document.getElementById('property-id') === host, document.querySelector('.beta') === host]; host.setAttribute('id', 'attribute-id'); host.removeAttribute('class'); return { assigned, method: [host.id, host.className, host.getAttribute('id'), host.getAttribute('class'), host.hasAttribute('class'), document.getElementById('attribute-id') === host] }; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "assigned": ["property-id", "alpha beta", "property-id", "alpha beta", true, true],
+            "method": ["attribute-id", "", "attribute-id", null, false, true],
+        })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const host = document.getElementById('attribute-id'); return [host.id, host.className, host.getAttribute('id'), host.getAttribute('class'), document.querySelector('#attribute-id') === host]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["attribute-id", "", "attribute-id", null, true])
+    );
     let parsed = engine
         .evaluate_async(
             "(() => { const fragment = document.createDocumentFragment(); fragment.innerHTML = \"<article data-kind='card'><strong>Hi &amp; there</strong> tail</article><br>\"; const article = fragment.firstElementChild; const strong = fragment.querySelector('strong'); const before = [fragment.innerHTML, fragment.childNodes.length, article.localName, strong.textContent, article.parentNode === fragment, article.parentElement === null]; const mount = document.createElement('main'); mount.appendChild(fragment); document.body.appendChild(mount); return { before, after: [fragment.innerHTML, mount.innerHTML, mount.querySelector('strong') === strong, article.parentNode === mount, article.getAttribute('data-kind')] }; })()",
@@ -1088,6 +1109,29 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
                 "next": null,
             },
         ]])
+    );
+    assert_eq!(
+        session
+            .script(
+                "(() => { const child = document.getElementById('child').contentDocument; const reflected = child.createElement('label'); reflected.id = 'frame-property-id'; reflected.className = 'frame alpha'; child.body.appendChild(reflected); const assigned = [reflected.id, reflected.className, reflected.getAttribute('id'), reflected.getAttribute('class'), child.getElementById('frame-property-id') === reflected, child.querySelector('.alpha') === reflected]; reflected.setAttribute('id', 'frame-attribute-id'); reflected.removeAttribute('class'); return { assigned, method: [reflected.id, reflected.className, reflected.getAttribute('id'), reflected.getAttribute('class'), reflected.hasAttribute('class'), child.getElementById('frame-attribute-id') === reflected] }; })()",
+            )
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!({
+            "assigned": ["frame-property-id", "frame alpha", "frame-property-id", "frame alpha", true, true],
+            "method": ["frame-attribute-id", "", "frame-attribute-id", null, false, true],
+        })
+    );
+    assert_eq!(
+        session
+            .script(
+                "(() => { const child = document.getElementById('child').contentDocument; const reflected = child.getElementById('frame-attribute-id'); return [reflected.id, reflected.className, reflected.getAttribute('id'), reflected.getAttribute('class'), child.querySelector('#frame-attribute-id') === reflected]; })()",
+            )
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!(["frame-attribute-id", "", "frame-attribute-id", null, true])
     );
     let child_id = session
         .native_list_frames()
@@ -5948,6 +5992,27 @@ async fn native_content_process_document_fragments_cross_the_http_boundary() {
             .await
             .unwrap(),
         serde_json::json!(0)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const reflected = document.createElement('label'); reflected.id = 'http-property-id'; reflected.className = 'http alpha'; document.body.appendChild(reflected); const assigned = [reflected.id, reflected.className, reflected.getAttribute('id'), reflected.getAttribute('class'), document.getElementById('http-property-id') === reflected, document.querySelector('.alpha') === reflected]; reflected.setAttribute('id', 'http-attribute-id'); reflected.removeAttribute('class'); return { assigned, method: [reflected.id, reflected.className, reflected.getAttribute('id'), reflected.getAttribute('class'), reflected.hasAttribute('class'), document.getElementById('http-attribute-id') === reflected] }; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "assigned": ["http-property-id", "http alpha", "http-property-id", "http alpha", true, true],
+            "method": ["http-attribute-id", "", "http-attribute-id", null, false, true],
+        })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const reflected = document.getElementById('http-attribute-id'); return [reflected.id, reflected.className, reflected.getAttribute('id'), reflected.getAttribute('class'), document.querySelector('#http-attribute-id') === reflected]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["http-attribute-id", "", "http-attribute-id", null, true])
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

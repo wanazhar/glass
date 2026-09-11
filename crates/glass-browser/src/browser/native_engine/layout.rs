@@ -447,6 +447,39 @@ fn overflow_clip_for(
         }
         current = document.node(current_id).and_then(|node| node.parent());
     }
+    match (clip, svg_viewport_clip_for(document, boxes, node_id)) {
+        (Some(first), Some(second)) => Some(intersect_rect(first, second)),
+        (first, second) => first.or(second),
+    }
+}
+
+fn svg_viewport_clip_for(
+    document: &NativeDocument,
+    boxes: &[NativeLayoutBox],
+    node_id: NativeNodeId,
+) -> Option<NativeRect> {
+    let mut current = document.node(node_id).and_then(|node| node.parent());
+    let mut clip = None;
+    for _ in 0..=MAX_NATIVE_DOM_DEPTH {
+        let Some(current_id) = current else {
+            break;
+        };
+        if document
+            .node(current_id)
+            .and_then(|node| node.element_name())
+            == Some("svg")
+            && let Some(rect) = boxes
+                .iter()
+                .find(|layout_box| layout_box.node_id == current_id)
+                .map(|layout_box| layout_box.rect)
+        {
+            clip = Some(match clip {
+                Some(existing) => intersect_rect(existing, rect),
+                None => rect,
+            });
+        }
+        current = document.node(current_id).and_then(|node| node.parent());
+    }
     clip
 }
 

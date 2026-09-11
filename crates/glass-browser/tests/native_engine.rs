@@ -32844,6 +32844,56 @@ fn native_svg_viewbox_preserve_aspect_ratio_maps_shared_geometry() {
     );
 }
 
+#[test]
+fn native_svg_viewport_clips_layout_paint_and_hit_testing() {
+    let document = NativeDocument::parse(
+        "<div style='width:24px;height:16px'><svg width='10' height='10' viewBox='0 0 10 10'><rect id='shape' x='0' y='0' width='20' height='10' fill='blue'></rect></svg></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let shape = document.resolve_target("id=shape").unwrap();
+    let viewport = Viewport {
+        width: 24,
+        height: 16,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+    assert_eq!(
+        layout.box_for(shape).unwrap(),
+        NativeRect {
+            x: 0,
+            y: 0,
+            width: 20,
+            height: 10,
+        }
+    );
+    assert_eq!(
+        layout.viewport_rect_for(shape),
+        Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 10,
+        })
+    );
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, clip: Some(clip), .. }
+                if *node_id == shape
+                    && *rect == NativeRect { x: 0, y: 0, width: 20, height: 10 }
+                    && *clip == NativeRect { x: 0, y: 0, width: 10, height: 10 }
+        )
+    }));
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(5, 5), Some([0, 0, 255, 255]));
+    assert_eq!(surface.pixel(10, 5), Some([255, 255, 255, 255]));
+    assert_eq!(layout.hit_test(5, 5).unwrap(), Some(shape));
+    assert_ne!(layout.hit_test(10, 5).unwrap(), Some(shape));
+}
+
 #[tokio::test]
 async fn native_local_namespace_dom_preserves_svg_mathml_and_foreign_content() {
     let mut engine = NativeEngine::new(NativeEngineConfig::default().with_initial_url(

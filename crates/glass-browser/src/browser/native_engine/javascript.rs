@@ -204,10 +204,14 @@ pub(crate) enum NativeScriptCommand {
         node_index: u32,
         name: String,
         value: String,
+        #[serde(default)]
+        namespace_uri: Option<String>,
     },
     RemoveAttribute {
         node_index: u32,
         name: String,
+        #[serde(default)]
+        namespace_uri: Option<String>,
     },
     SetTextContent {
         node_index: u32,
@@ -5210,6 +5214,9 @@ fn document_bootstrap(
   const HTML_NAMESPACE = "http://www.w3.org/1999/xhtml";
   const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
   const MATHML_NAMESPACE = "http://www.w3.org/1998/Math/MathML";
+  const XML_NAMESPACE = "http://www.w3.org/XML/1998/namespace";
+  const XMLNS_NAMESPACE = "http://www.w3.org/2000/xmlns/";
+  const XLINK_NAMESPACE = "http://www.w3.org/1999/xlink";
   const boundedStorageText = (value, limit, field) => {{
     const text = String(value);
     if (text.length > limit) throw new RangeError("native storage " + field + " exceeds its limit");
@@ -8529,7 +8536,11 @@ fn document_bootstrap(
             : attribute[4] !== undefined
               ? attribute[4]
               : "";
-        if (!element.hasAttribute(attribute[1])) element.setAttribute(attribute[1], decodeHtmlEntities(value));
+        if (!element.hasAttribute(attribute[1])) {{
+          const attributeNamespace = parsedAttributeNamespace(attribute[1], element.namespaceURI);
+          if (attributeNamespace === null) element.setAttribute(attribute[1], decodeHtmlEntities(value));
+          else element.setAttributeNS(attributeNamespace, attribute[1], decodeHtmlEntities(value));
+        }}
       }}
       parent.appendChild(element);
       cursor = end + 1;
@@ -8631,7 +8642,8 @@ fn document_bootstrap(
     globalThis.__glassNextTemporaryNodeIndex = value - 1;
     return value;
   }};
-  const attributeNodeKey = (name) => String(name).toLowerCase();
+  const attributeNodeKey = (namespace, name) =>
+    String(namespace || "") + "\u0000" + String(name).toLowerCase();
   const normalizeAttributeNodeName = (name) => {{
     const value = String(name);
     if (!/^[A-Za-z_:][A-Za-z0-9:._-]*$/.test(value)) {{
@@ -8641,8 +8653,10 @@ fn document_bootstrap(
     }}
     return value.toLowerCase();
   }};
-  const makeAttributeNode = (name, initialValue = "", ownerDocumentResolver = () => null) => {{
+  const makeAttributeNode = (name, initialValue = "", ownerDocumentResolver = () => null, namespace = null) => {{
     const normalized = normalizeAttributeNodeName(name);
+    const namespaceURI = normalizeAttributeNamespace(namespace);
+    const separator = normalized.indexOf(":");
     let attributeValue = String(initialValue);
     if (attributeValue.length > {storage_value_limit}) throw new RangeError("native attribute value exceeds its limit");
     let ownerElement = null;
@@ -8652,9 +8666,9 @@ fn document_bootstrap(
       nodeType: 2,
       nodeName: normalized,
       name: normalized,
-      localName: normalized,
-      prefix: null,
-      namespaceURI: null,
+      localName: separator < 0 ? normalized : normalized.slice(separator + 1),
+      prefix: separator < 0 ? null : normalized.slice(0, separator),
+      namespaceURI,
       specified: true,
       __glassAttribute: true,
       __glassChildren: [],
@@ -8687,7 +8701,10 @@ fn document_bootstrap(
         set(next) {{
           const value = String(next);
           if (value.length > {storage_value_limit}) throw new RangeError("native attribute value exceeds its limit");
-          if (ownerElement) ownerElement.setAttribute(normalized, value);
+          if (ownerElement) {{
+            if (namespaceURI === null) ownerElement.setAttribute(normalized, value);
+            else ownerElement.setAttributeNS(namespaceURI, normalized, value);
+          }}
           else attributeValue = value;
         }},
       }},
@@ -8749,7 +8766,10 @@ fn document_bootstrap(
       : null;
     const syncAttributeNodes = () => {{
       for (const [key, attribute] of attributeNodes) {{
-        const value = element.getAttribute(key);
+        const namespaceURI = attribute.namespaceURI || null;
+        const value = namespaceURI === null
+          ? element.getAttribute(attribute.name)
+          : element.getAttributeNS(namespaceURI, attribute.localName);
         if (value === null) {{
           attribute.__glassSetOwner(null);
           attributeNodes.delete(key);
@@ -8767,29 +8787,36 @@ fn document_bootstrap(
     if (originalSetAttribute) {{
       element.setAttribute = (name, value) => {{
         originalSetAttribute(name, value);
-        const key = attributeNodeKey(name);
+        const key = attributeNodeKey(null, name);
         const attribute = attributeNodes.get(key);
         if (attribute) {{
-          attribute.__glassRefreshValue(element.getAttribute(key));
+          attribute.__glassRefreshValue(element.getAttribute(attribute.name));
           attribute.__glassSetOwner(element);
         }}
+        syncAttributeNodes();
       }};
     }}
     if (originalRemoveAttribute) {{
       element.removeAttribute = (name) => {{
         originalRemoveAttribute(name);
-        const key = attributeNodeKey(name);
+        const key = attributeNodeKey(null, name);
         const attribute = attributeNodes.get(key);
         if (attribute) {{
           attribute.__glassSetOwner(null);
           attributeNodes.delete(key);
         }}
+        syncAttributeNodes();
       }};
     }}
     const getAttributeNode = (name) => {{
       const key = normalizeAttributeNodeName(name);
       if (element.getAttribute(key) === null) return null;
-      const existing = attributeNodes.get(key);
+      const namespaceURI = typeof element.__glassAttributeNamespace === "function"
+        ? element.__glassAttributeNamespace(key)
+        : null;
+      if (namespaceURI !== null) return getAttributeNodeNS(namespaceURI, attributeLocalName(key));
+      const nodeKey = attributeNodeKey(null, key);
+      const existing = attributeNodes.get(nodeKey);
       if (existing) {{
         existing.__glassRefreshValue(element.getAttribute(key));
         existing.__glassSetOwner(element);
@@ -8797,7 +8824,7 @@ fn document_bootstrap(
       }}
       const attribute = makeAttributeNode(key, element.getAttribute(key), ownerDocumentResolver);
       attribute.__glassSetOwner(element);
-      attributeNodes.set(key, attribute);
+      attributeNodes.set(nodeKey, attribute);
       return attribute;
     }};
     const setAttributeNode = (attribute) => {{
@@ -8806,30 +8833,60 @@ fn document_bootstrap(
       if (attribute.ownerDocument !== ownerDocument) throw attributeNodeException("The attribute belongs to another document", "WrongDocumentError");
       if (attribute.ownerElement && attribute.ownerElement !== element) throw attributeNodeException("The attribute is already in use", "InUseAttributeError");
       const key = normalizeAttributeNodeName(attribute.name);
-      const old = getAttributeNode(key);
+      const namespaceURI = attribute.namespaceURI || null;
+      const old = namespaceURI === null
+        ? getAttributeNode(key)
+        : getAttributeNodeNS(namespaceURI, attribute.localName);
       if (old === attribute) return old;
       if (old) {{
         old.__glassSetOwner(null);
-        attributeNodes.delete(key);
+        attributeNodes.delete(attributeNodeKey(old.namespaceURI, old.name));
       }}
-      if (!element.setAttribute) throw new TypeError("setAttributeNode requires an Element");
-      element.setAttribute(key, attribute.value);
-      attributeNodes.set(key, attribute);
+      if (namespaceURI === null) element.setAttribute(key, attribute.value);
+      else element.setAttributeNS(namespaceURI, key, attribute.value);
+      attributeNodes.set(attributeNodeKey(namespaceURI, key), attribute);
       attribute.__glassSetOwner(element);
       return old;
     }};
     const removeAttributeNode = (attribute) => {{
       if (!attribute || attribute.__glassAttribute !== true) throw new TypeError("removeAttributeNode requires an Attr");
       if (attribute.ownerElement !== element) throw attributeNodeException("The attribute was not found", "NotFoundError");
-      element.removeAttribute(attribute.name);
+      const namespaceURI = attribute.namespaceURI || null;
+      if (namespaceURI === null) element.removeAttribute(attribute.name);
+      else element.removeAttributeNS(namespaceURI, attribute.localName);
+      return attribute;
+    }};
+    const getAttributeNodeNS = (namespace, name) => {{
+      const namespaceURI = normalizeAttributeNamespace(namespace);
+      const localName = attributeLocalName(name);
+      const candidate = element.getAttributeNames().find((attributeName) =>
+        attributeLocalName(attributeName) === localName
+          && (typeof element.__glassAttributeNamespace === "function"
+            ? element.__glassAttributeNamespace(attributeName)
+            : null) === namespaceURI);
+      if (candidate === undefined) return null;
+      if (namespaceURI === null) return getAttributeNode(candidate);
+      const nodeKey = attributeNodeKey(namespaceURI, candidate);
+      const existing = attributeNodes.get(nodeKey);
+      const value = element.getAttributeNS(namespaceURI, localName);
+      if (existing) {{
+        existing.__glassRefreshValue(value);
+        existing.__glassSetOwner(element);
+        return existing;
+      }}
+      const attribute = makeAttributeNode(candidate, value, ownerDocumentResolver, namespaceURI);
+      attribute.__glassSetOwner(element);
+      attributeNodes.set(nodeKey, attribute);
       return attribute;
     }};
     element.getAttributeNode = getAttributeNode;
-    element.getAttributeNodeNS = (namespace, name) =>
-      namespace === null || namespace === "" ? getAttributeNode(name) : null;
+    element.getAttributeNodeNS = getAttributeNodeNS;
     element.setAttributeNode = setAttributeNode;
     element.setAttributeNodeNS = (namespace, attribute) => {{
-      if (namespace !== null && namespace !== "") throw attributeNodeException("The attribute namespace is unsupported", "NamespaceError");
+      const namespaceURI = normalizeAttributeNamespace(namespace);
+      if ((attribute && (attribute.namespaceURI || null)) !== namespaceURI) {{
+        throw attributeNodeException("The attribute namespace does not match", "NamespaceError");
+      }}
       return setAttributeNode(attribute);
     }};
     element.removeAttributeNode = removeAttributeNode;
@@ -8841,23 +8898,18 @@ fn document_bootstrap(
         return name === undefined ? null : getAttributeNode(name);
       }},
       getNamedItem(name) {{ return getAttributeNode(name); }},
-      getNamedItemNS(namespace, name) {{
-        return namespace === null || namespace === "" ? getAttributeNode(name) : null;
-      }},
+      getNamedItemNS(namespace, name) {{ return getAttributeNodeNS(namespace, name); }},
       setNamedItem(attribute) {{ return setAttributeNode(attribute); }},
-      setNamedItemNS(namespace, attribute) {{
-        return namespace === null || namespace === "" ? setAttributeNode(attribute) : (() => {{
-          throw attributeNodeException("The attribute namespace is unsupported", "NamespaceError");
-        }})();
-      }},
+      setNamedItemNS(namespace, attribute) {{ return element.setAttributeNodeNS(namespace, attribute); }},
       removeNamedItem(name) {{
         const attribute = getAttributeNode(name);
         if (!attribute) throw attributeNodeException("The attribute was not found", "NotFoundError");
         return removeAttributeNode(attribute);
       }},
       removeNamedItemNS(namespace, name) {{
-        if (namespace !== null && namespace !== "") throw attributeNodeException("The attribute namespace is unsupported", "NamespaceError");
-        return this.removeNamedItem(name);
+        const attribute = getAttributeNodeNS(namespace, name);
+        if (!attribute) throw attributeNodeException("The attribute was not found", "NotFoundError");
+        return removeAttributeNode(attribute);
       }},
     }};
     Object.defineProperty(namedNodeMap, Symbol.iterator, {{
@@ -8911,6 +8963,61 @@ fn document_bootstrap(
     }}
     return value;
   }};
+  const normalizeAttributeNamespace = (namespace) => {{
+    if (namespace === null || namespace === "" || namespace === undefined) return null;
+    const value = String(namespace);
+    if (![HTML_NAMESPACE, SVG_NAMESPACE, MATHML_NAMESPACE, XML_NAMESPACE, XMLNS_NAMESPACE, XLINK_NAMESPACE].includes(value)) {{
+      throw new DOMExceptionNative("The attribute namespace is unsupported", "NamespaceError");
+    }}
+    return value;
+  }};
+  const normalizedAttributeName = (name) => normalizeAttributeNodeName(name);
+  const attributeLocalName = (name) => {{
+    const normalized = normalizedAttributeName(name);
+    const separator = normalized.indexOf(":");
+    return separator < 0 ? normalized : normalized.slice(separator + 1);
+  }};
+  const qualifiedAttributeName = (name, namespace) => {{
+    const normalized = normalizedAttributeName(name);
+    const separator = normalized.indexOf(":");
+    const prefix = separator < 0 ? null : normalized.slice(0, separator);
+    if (separator >= 0 && (separator === 0 || separator === normalized.length - 1
+        || normalized.indexOf(":", separator + 1) >= 0)) {{
+      throw new DOMExceptionNative("The qualified attribute name is invalid", "NamespaceError");
+    }}
+    if (prefix === "xml" && namespace !== XML_NAMESPACE) {{
+      throw new DOMExceptionNative("The xml prefix requires the XML namespace", "NamespaceError");
+    }}
+    if ((prefix === "xmlns" || normalized === "xmlns") && namespace !== XMLNS_NAMESPACE) {{
+      throw new DOMExceptionNative("The xmlns prefix requires the XMLNS namespace", "NamespaceError");
+    }}
+    if (namespace === XML_NAMESPACE && prefix !== "xml") {{
+      throw new DOMExceptionNative("The XML namespace requires the xml prefix", "NamespaceError");
+    }}
+    if (namespace === XMLNS_NAMESPACE && prefix !== "xmlns" && normalized !== "xmlns") {{
+      throw new DOMExceptionNative("The XMLNS namespace requires the xmlns prefix", "NamespaceError");
+    }}
+    if (namespace === XLINK_NAMESPACE && prefix !== "xlink") {{
+      throw new DOMExceptionNative("The XLink namespace requires the xlink prefix", "NamespaceError");
+    }}
+    return normalized;
+  }};
+  const attributeNamespaceForEntry = (entry, name) => {{
+    const key = normalizedAttributeName(name);
+    const namespaces = entry && entry.attributeNamespaces && typeof entry.attributeNamespaces === "object"
+      ? entry.attributeNamespaces
+      : {{}};
+    const value = namespaces[key];
+    return value === undefined || value === "" ? null : String(value);
+  }};
+  const parsedAttributeNamespace = (name, elementNamespace) => {{
+    if (elementNamespace !== SVG_NAMESPACE && elementNamespace !== MATHML_NAMESPACE) return null;
+    const lower = String(name).toLowerCase();
+    if (lower === "xmlns" || lower.startsWith("xmlns:")) return XMLNS_NAMESPACE;
+    if (lower.startsWith("xml:")) return XML_NAMESPACE;
+    if (lower.startsWith("xlink:")) return XLINK_NAMESPACE;
+    return null;
+  }};
   const namespaceForChildElement = (parent, localName) => {{
     const parentNamespace = parent && parent.namespaceURI;
     if (localName === "svg") return SVG_NAMESPACE;
@@ -8932,6 +9039,52 @@ fn document_bootstrap(
     let disabled = Boolean(entry.disabled);
     let hidden = Boolean(entry.hidden);
     let multiple = Object.prototype.hasOwnProperty.call(entry.attributes, "multiple");
+    if (!entry.attributeNamespaces || typeof entry.attributeNamespaces !== "object") entry.attributeNamespaces = {{}};
+    const setNamespacedAttribute = (namespace, name, nextValue) => {{
+      const namespaceURI = normalizeAttributeNamespace(namespace);
+      const qualified = qualifiedAttributeName(name, namespaceURI);
+      const value = String(nextValue);
+      if (value.length > {storage_value_limit}) throw new RangeError("native attribute value exceeds its limit");
+      entry.attributes[qualified] = value;
+      if (namespaceURI === null) delete entry.attributeNamespaces[qualified];
+      else entry.attributeNamespaces[qualified] = namespaceURI;
+      element.__glassSyncContent();
+      if (typeof element.__glassSyncAttributeNodes === "function") element.__glassSyncAttributeNodes();
+      pushCommand({{
+        kind: "setAttribute",
+        node_index: entry.nodeIndex,
+        name: qualified,
+        value,
+        namespace_uri: namespaceURI === null ? "" : namespaceURI,
+      }});
+    }};
+    const namespacedAttributeValue = (namespace, name) => {{
+      const namespaceURI = normalizeAttributeNamespace(namespace);
+      const localName = attributeLocalName(name);
+      for (const key of Object.keys(entry.attributes)) {{
+        if (attributeLocalName(key) === localName
+            && attributeNamespaceForEntry(entry, key) === namespaceURI) return entry.attributes[key];
+      }}
+      return null;
+    }};
+    const removeNamespacedAttribute = (namespace, name) => {{
+      const namespaceURI = normalizeAttributeNamespace(namespace);
+      const localName = attributeLocalName(name);
+      const key = Object.keys(entry.attributes).find((candidate) =>
+        attributeLocalName(candidate) === localName
+          && attributeNamespaceForEntry(entry, candidate) === namespaceURI);
+      if (key === undefined) return;
+      delete entry.attributes[key];
+      delete entry.attributeNamespaces[key];
+      element.__glassSyncContent();
+      if (typeof element.__glassSyncAttributeNodes === "function") element.__glassSyncAttributeNodes();
+      pushCommand({{
+        kind: "removeAttribute",
+        node_index: entry.nodeIndex,
+        name: key,
+        namespace_uri: namespaceURI === null ? "" : namespaceURI,
+      }});
+    }};
     let selectionStart = entry.selectionStart;
     let selectionEnd = entry.selectionEnd;
     let selectionDirection = entry.selectionDirection || "none";
@@ -9007,6 +9160,9 @@ fn document_bootstrap(
           if (attr.toLowerCase() === key) return entry.attributes[attr];
         }}
         return null;
+      }},
+      getAttributeNS(namespace, name) {{
+        return namespacedAttributeValue(namespace, name);
       }},
       getAttributeNames() {{ return Object.keys(entry.attributes); }},
       hasAttribute(name) {{ return this.getAttribute(name) !== null; }},
@@ -9108,20 +9264,28 @@ fn document_bootstrap(
         const key = String(name).toLowerCase();
         const stringValue = String(value);
         entry.attributes[key] = stringValue;
+        delete entry.attributeNamespaces[key];
         if (key === "disabled") disabled = true;
         if (key === "hidden") hidden = true;
         if (key === "multiple") multiple = true;
         element.__glassSyncContent();
-        pushCommand({{ kind: "setAttribute", node_index: entry.nodeIndex, name: key, value: stringValue }});
+        pushCommand({{ kind: "setAttribute", node_index: entry.nodeIndex, name: key, value: stringValue, namespace_uri: "" }});
+      }},
+      setAttributeNS(namespace, qualifiedName, value) {{
+        setNamespacedAttribute(namespace, qualifiedName, value);
       }},
       removeAttribute(name) {{
         const key = String(name).toLowerCase();
         delete entry.attributes[key];
+        delete entry.attributeNamespaces[key];
         if (key === "disabled") disabled = false;
         if (key === "hidden") hidden = false;
         if (key === "multiple") multiple = false;
         element.__glassSyncContent();
-        pushCommand({{ kind: "removeAttribute", node_index: entry.nodeIndex, name: key }});
+        pushCommand({{ kind: "removeAttribute", node_index: entry.nodeIndex, name: key, namespace_uri: "" }});
+      }},
+      removeAttributeNS(namespace, name) {{
+        removeNamespacedAttribute(namespace, name);
       }},
       appendChild(child) {{
         if (child && child.__glassFragment === true) {{
@@ -9370,6 +9534,11 @@ fn document_bootstrap(
       configurable: false,
       value: () => entry.attributes,
     }});
+    Object.defineProperty(element, "__glassAttributeNamespace", {{
+      enumerable: false,
+      configurable: false,
+      value: (name) => attributeNamespaceForEntry(entry, name),
+    }});
     for (const property of ["textContent", "innerText"]) {{
       Object.defineProperty(element, property, {{
         enumerable: true,
@@ -9486,6 +9655,7 @@ fn document_bootstrap(
       configurable: false,
       value(nextEntry) {{
         entry = nextEntry;
+        if (!entry.attributeNamespaces || typeof entry.attributeNamespaces !== "object") entry.attributeNamespaces = {{}};
         element.nodeIndex = nextEntry.nodeIndex;
         element.parentIndex = nextEntry.parentIndex;
         element.tagName = tagNameForEntry(nextEntry);
@@ -9524,6 +9694,7 @@ fn document_bootstrap(
       tagName: normalized,
       namespaceUri: namespaceURI,
       attributes: {{}},
+      attributeNamespaces: {{}},
       text: "",
       innerHtml: "",
       value: null,
@@ -10182,8 +10353,14 @@ fn document_bootstrap(
       case "setSelection": element.setSelectionRange(command.start, command.end, command.direction); break;
       case "setChecked": element.checked = Boolean(command.checked); break;
       case "setSelected": element.selected = Boolean(command.selected); break;
-      case "setAttribute": element.setAttribute(command.name, command.value); break;
-      case "removeAttribute": element.removeAttribute(command.name); break;
+      case "setAttribute":
+        if (command.namespace_uri) {{ element.setAttributeNS(command.namespace_uri, command.name, command.value); }}
+        else element.setAttribute(command.name, command.value);
+        break;
+      case "removeAttribute":
+        if (command.namespace_uri) {{ element.removeAttributeNS(command.namespace_uri, command.name); }}
+        else element.removeAttribute(command.name);
+        break;
       case "setTextContent": element.textContent = String(command.value); break;
       case "setInnerHtml": element.innerHTML = String(command.value); break;
       case "removeNode": element.remove(); break;
@@ -10612,16 +10789,21 @@ fn document_bootstrap(
         if (node.nodeType === 3) return owner.createTextNode(String(node.nodeValue || ""));
         if (node.nodeType === 8) return owner.createComment(String(node.nodeValue || ""));
         if (node.nodeType === 2) {{
-          const clone = owner.createAttribute(node.name);
+          const clone = owner.createAttributeNS(node.namespaceURI || null, node.name);
           clone.value = String(node.value || "");
           return clone;
         }}
         if (node.nodeType === 10) return owner.implementation.createDocumentType(node.name, node.publicId, node.systemId);
         if (node.nodeType === 1) {{
-          const clone = owner.createElement(node.localName);
+          const clone = owner.createElementNS(node.namespaceURI || null, node.localName);
           for (const name of node.getAttributeNames()) {{
             const value = node.getAttribute(name);
-            if (value !== null) clone.setAttribute(name, value);
+            if (value === null) continue;
+            const namespaceURI = typeof node.__glassAttributeNamespace === "function"
+              ? node.__glassAttributeNamespace(name)
+              : null;
+            if (namespaceURI === null) clone.setAttribute(name, value);
+            else clone.setAttributeNS(namespaceURI, name, value);
           }}
           copyChildren(clone);
           return clone;
@@ -10644,14 +10826,24 @@ fn document_bootstrap(
       if (!right || Number(left.nodeType) !== Number(right.nodeType) || depth > {max_commands}) return false;
       if ([3, 8].includes(Number(left.nodeType))) return String(left.nodeValue || "") === String(right.nodeValue || "");
       if (Number(left.nodeType) === 2) return String(left.name || "") === String(right.name || "")
-        && String(left.value || "") === String(right.value || "");
+        && String(left.value || "") === String(right.value || "")
+        && String(left.namespaceURI || "") === String(right.namespaceURI || "")
+        && String(left.localName || "") === String(right.localName || "");
       if (Number(left.nodeType) === 1) {{
-        if (String(left.localName) !== String(right.localName)) return false;
+        if (String(left.localName) !== String(right.localName)
+            || String(left.namespaceURI || "") !== String(right.namespaceURI || "")) return false;
         const leftNames = left.getAttributeNames();
         const rightNames = right.getAttributeNames();
         if (leftNames.length !== rightNames.length) return false;
         for (const name of leftNames) {{
           if (left.getAttribute(name) !== right.getAttribute(name)) return false;
+          const leftNamespace = typeof left.__glassAttributeNamespace === "function"
+            ? left.__glassAttributeNamespace(name)
+            : null;
+          const rightNamespace = typeof right.__glassAttributeNamespace === "function"
+            ? right.__glassAttributeNamespace(name)
+            : null;
+          if (leftNamespace !== rightNamespace) return false;
         }}
       }} else if (Number(left.nodeType) === 10) {{
         return String(left.name || left.nodeName || "") === String(right.name || right.nodeName || "")
@@ -11370,6 +11562,10 @@ fn document_bootstrap(
       return makeDetachedElement(qualifiedName, normalizeElementNamespace(namespace));
     }},
     createAttribute(name) {{ return makeAttributeNode(name, "", () => document); }},
+    createAttributeNS(namespace, qualifiedName) {{
+      const namespaceURI = normalizeAttributeNamespace(namespace);
+      return makeAttributeNode(qualifiedName, "", () => document, namespaceURI);
+    }},
     createTextNode(value) {{ return makeDetachedText(value); }},
     createComment(value) {{ return makeDetachedComment(value); }},
     appendChild(child) {{
@@ -12600,6 +12796,12 @@ fn document_bootstrap(
         return existing;
       }}
       const attributes = entry.attributes && typeof entry.attributes === "object" ? entry.attributes : {{}};
+      const attributeNamespaces = {{}};
+      for (const [name, namespace] of Object.entries(
+        entry.attributeNamespaces && typeof entry.attributeNamespaces === "object"
+          ? entry.attributeNamespaces
+          : {{}},
+      )) attributeNamespaces[name] = String(namespace);
       let textContent = String(entry.text || "");
       let innerHtml = String(entry.innerHtml || "");
       const namespaceURI = namespaceUriForEntry(entry);
@@ -12609,6 +12811,53 @@ fn document_bootstrap(
       let disabled = Boolean(entry.disabled);
       let hidden = Boolean(entry.hidden);
       let multiple = Object.prototype.hasOwnProperty.call(attributes, "multiple");
+      const frameAttributeNamespace = (name) => {{
+        const value = attributeNamespaces[String(name)];
+        return value === undefined || value === "" ? null : String(value);
+      }};
+      const setFrameNamespacedAttribute = (namespace, name, nextValue) => {{
+        const namespaceURI = normalizeAttributeNamespace(namespace);
+        const qualified = qualifiedAttributeName(name, namespaceURI);
+      const stringValue = String(nextValue);
+      if (stringValue.length > storageValueLimit) throw new RangeError("native frame attribute value exceeds its limit");
+      attributes[qualified] = stringValue;
+      if (namespaceURI === null) delete attributeNamespaces[qualified];
+      else attributeNamespaces[qualified] = namespaceURI;
+      projected.__glassSyncContent();
+      if (typeof projected.__glassSyncAttributeNodes === "function") projected.__glassSyncAttributeNodes();
+      queueFrameCommand(currentBinding, {{
+          kind: "setAttribute",
+          node_index: entry.nodeIndex,
+          name: qualified,
+          value: stringValue,
+          namespace_uri: namespaceURI === null ? "" : namespaceURI,
+        }});
+      }};
+      const frameNamespacedAttributeValue = (namespace, name) => {{
+        const namespaceURI = normalizeAttributeNamespace(namespace);
+        const localName = attributeLocalName(name);
+        for (const key of Object.keys(attributes)) {{
+          if (attributeLocalName(key) === localName && frameAttributeNamespace(key) === namespaceURI) return attributes[key];
+        }}
+        return null;
+      }};
+      const removeFrameNamespacedAttribute = (namespace, name) => {{
+        const namespaceURI = normalizeAttributeNamespace(namespace);
+        const localName = attributeLocalName(name);
+        const key = Object.keys(attributes).find((candidate) =>
+          attributeLocalName(candidate) === localName && frameAttributeNamespace(candidate) === namespaceURI);
+        if (key === undefined) return;
+        delete attributes[key];
+        delete attributeNamespaces[key];
+        projected.__glassSyncContent();
+        if (typeof projected.__glassSyncAttributeNodes === "function") projected.__glassSyncAttributeNodes();
+        queueFrameCommand(currentBinding, {{
+          kind: "removeAttribute",
+          node_index: entry.nodeIndex,
+          name: key,
+          namespace_uri: namespaceURI === null ? "" : namespaceURI,
+        }});
+      }};
       const projected = {{
         nodeIndex: entry.nodeIndex,
         parentIndex: entry.parentIndex == null ? null : entry.parentIndex,
@@ -12645,6 +12894,7 @@ fn document_bootstrap(
           }}
           return null;
         }},
+        getAttributeNS(namespace, name) {{ return frameNamespacedAttributeValue(namespace, name); }},
         getAttributeNames() {{ return Object.keys(attributes); }},
         hasAttribute(name) {{ return this.getAttribute(name) !== null; }},
         matches(selector) {{ return matchesSelector(projected, selector); }},
@@ -12702,20 +12952,28 @@ fn document_bootstrap(
           const key = String(name).toLowerCase();
           const stringValue = String(nextValue);
           attributes[key] = stringValue;
+          delete attributeNamespaces[key];
           if (key === "disabled") disabled = true;
           if (key === "hidden") hidden = true;
           if (key === "multiple") multiple = true;
           projected.__glassSyncContent();
-          queueFrameCommand(currentBinding, {{ kind: "setAttribute", node_index: entry.nodeIndex, name: key, value: stringValue }});
+          queueFrameCommand(currentBinding, {{ kind: "setAttribute", node_index: entry.nodeIndex, name: key, value: stringValue, namespace_uri: "" }});
+        }},
+        setAttributeNS(namespace, qualifiedName, nextValue) {{
+          setFrameNamespacedAttribute(namespace, qualifiedName, nextValue);
         }},
         removeAttribute(name) {{
           const key = String(name).toLowerCase();
           delete attributes[key];
+          delete attributeNamespaces[key];
           if (key === "disabled") disabled = false;
           if (key === "hidden") hidden = false;
           if (key === "multiple") multiple = false;
           projected.__glassSyncContent();
-          queueFrameCommand(currentBinding, {{ kind: "removeAttribute", node_index: entry.nodeIndex, name: key }});
+          queueFrameCommand(currentBinding, {{ kind: "removeAttribute", node_index: entry.nodeIndex, name: key, namespace_uri: "" }});
+        }},
+        removeAttributeNS(namespace, name) {{
+          removeFrameNamespacedAttribute(namespace, name);
         }},
         appendChild(child) {{
           if (child && child.__glassFragment === true) {{
@@ -12854,6 +13112,11 @@ fn document_bootstrap(
         enumerable: false,
         configurable: false,
         value: () => attributes,
+      }});
+      Object.defineProperty(projected, "__glassAttributeNamespace", {{
+        enumerable: false,
+        configurable: false,
+        value: (name) => frameAttributeNamespace(name),
       }});
       Object.defineProperty(projected, "__glassGeometrySource", {{
         enumerable: false,
@@ -13232,6 +13495,7 @@ fn document_bootstrap(
       const namespaceURI = normalizeElementNamespace(namespace);
       let nodeIndex = allocateTemporaryNodeIndex();
       const attributes = {{}};
+      const attributeNamespaces = {{}};
       let textContent = "";
       let innerHtml = "";
       let value = "";
@@ -13240,6 +13504,53 @@ fn document_bootstrap(
       let disabled = false;
       let hidden = false;
       let multiple = false;
+      const frameAttributeNamespace = (name) => {{
+        const value = attributeNamespaces[String(name)];
+        return value === undefined || value === "" ? null : String(value);
+      }};
+      const setFrameNamespacedAttribute = (namespace, name, nextValue) => {{
+        const namespaceURI = normalizeAttributeNamespace(namespace);
+        const qualified = qualifiedAttributeName(name, namespaceURI);
+        const stringValue = String(nextValue);
+        if (stringValue.length > storageValueLimit) throw new RangeError("native frame attribute value exceeds its limit");
+        attributes[qualified] = stringValue;
+        if (namespaceURI === null) delete attributeNamespaces[qualified];
+        else attributeNamespaces[qualified] = namespaceURI;
+        projected.__glassSyncContent();
+        if (typeof projected.__glassSyncAttributeNodes === "function") projected.__glassSyncAttributeNodes();
+        queueFrameCommand(currentBinding, {{
+          kind: "setAttribute",
+          node_index: nodeIndex,
+          name: qualified,
+          value: stringValue,
+          namespace_uri: namespaceURI === null ? "" : namespaceURI,
+        }});
+      }};
+      const frameNamespacedAttributeValue = (namespace, name) => {{
+        const namespaceURI = normalizeAttributeNamespace(namespace);
+        const localName = attributeLocalName(name);
+        for (const key of Object.keys(attributes)) {{
+          if (attributeLocalName(key) === localName && frameAttributeNamespace(key) === namespaceURI) return attributes[key];
+        }}
+        return null;
+      }};
+      const removeFrameNamespacedAttribute = (namespace, name) => {{
+        const namespaceURI = normalizeAttributeNamespace(namespace);
+        const localName = attributeLocalName(name);
+        const key = Object.keys(attributes).find((candidate) =>
+          attributeLocalName(candidate) === localName && frameAttributeNamespace(candidate) === namespaceURI);
+        if (key === undefined) return;
+        delete attributes[key];
+        delete attributeNamespaces[key];
+        projected.__glassSyncContent();
+        if (typeof projected.__glassSyncAttributeNodes === "function") projected.__glassSyncAttributeNodes();
+        queueFrameCommand(currentBinding, {{
+          kind: "removeAttribute",
+          node_index: nodeIndex,
+          name: key,
+          namespace_uri: namespaceURI === null ? "" : namespaceURI,
+        }});
+      }};
       const projected = {{
         nodeIndex,
         parentIndex: null,
@@ -13263,6 +13574,7 @@ fn document_bootstrap(
           }}
           return null;
         }},
+        getAttributeNS(namespace, name) {{ return frameNamespacedAttributeValue(namespace, name); }},
         getAttributeNames() {{ return Object.keys(attributes); }},
         hasAttribute(name) {{ return this.getAttribute(name) !== null; }},
         matches(selector) {{ return projectedFrameMatches(projected, selector); }},
@@ -13287,20 +13599,28 @@ fn document_bootstrap(
           const key = String(name).toLowerCase();
           const stringValue = String(nextValue);
           attributes[key] = stringValue;
+          delete attributeNamespaces[key];
           if (key === "disabled") disabled = true;
           if (key === "hidden") hidden = true;
           if (key === "multiple") multiple = true;
           projected.__glassSyncContent();
-          queueFrameCommand(currentBinding, {{ kind: "setAttribute", node_index: nodeIndex, name: key, value: stringValue }});
+          queueFrameCommand(currentBinding, {{ kind: "setAttribute", node_index: nodeIndex, name: key, value: stringValue, namespace_uri: "" }});
+        }},
+        setAttributeNS(namespace, qualifiedName, nextValue) {{
+          setFrameNamespacedAttribute(namespace, qualifiedName, nextValue);
         }},
         removeAttribute(name) {{
           const key = String(name).toLowerCase();
           delete attributes[key];
+          delete attributeNamespaces[key];
           if (key === "disabled") disabled = false;
           if (key === "hidden") hidden = false;
           if (key === "multiple") multiple = false;
           projected.__glassSyncContent();
-          queueFrameCommand(currentBinding, {{ kind: "removeAttribute", node_index: nodeIndex, name: key }});
+          queueFrameCommand(currentBinding, {{ kind: "removeAttribute", node_index: nodeIndex, name: key, namespace_uri: "" }});
+        }},
+        removeAttributeNS(namespace, name) {{
+          removeFrameNamespacedAttribute(namespace, name);
         }},
         appendChild(child) {{
           if (child && child.__glassFragment === true) {{
@@ -13436,6 +13756,11 @@ fn document_bootstrap(
             ? nextEntry.attributes
             : {{}};
           for (const [name, nextValue] of Object.entries(nextAttributes)) attributes[name] = String(nextValue);
+          for (const name of Object.keys(attributeNamespaces)) delete attributeNamespaces[name];
+          const nextAttributeNamespaces = nextEntry.attributeNamespaces && typeof nextEntry.attributeNamespaces === "object"
+            ? nextEntry.attributeNamespaces
+            : {{}};
+          for (const [name, namespace] of Object.entries(nextAttributeNamespaces)) attributeNamespaces[name] = String(namespace);
           textContent = String(nextEntry.text || "");
           innerHtml = String(nextEntry.innerHtml || "");
           value = nextEntry.value == null ? "" : nextEntry.value;
@@ -13528,6 +13853,16 @@ fn document_bootstrap(
         enumerable: false,
         configurable: false,
         get() {{ return frameDocumentCache.get(currentFrameId)?.document || frameDocument; }},
+      }});
+      Object.defineProperty(projected, "__glassAttributeSource", {{
+        enumerable: false,
+        configurable: false,
+        value: () => attributes,
+      }});
+      Object.defineProperty(projected, "__glassAttributeNamespace", {{
+        enumerable: false,
+        configurable: false,
+        value: (name) => frameAttributeNamespace(name),
       }});
       installAttributeNodeSurface(projected, () => frameDocumentCache.get(currentFrameId)?.document || frameDocument);
       try {{ Object.setPrototypeOf(projected, elementPrototypeFor(projected.tagName)); }} catch (_error) {{}}
@@ -13906,6 +14241,10 @@ fn document_bootstrap(
       }},
       createAttribute(name) {{
         return makeAttributeNode(name, "", () => frameDocumentCache.get(currentFrameId)?.document || frameDocument);
+      }},
+      createAttributeNS(namespace, qualifiedName) {{
+        const namespaceURI = normalizeAttributeNamespace(namespace);
+        return makeAttributeNode(qualifiedName, "", () => frameDocumentCache.get(currentFrameId)?.document || frameDocument, namespaceURI);
       }},
       createTextNode(value) {{ return makeFrameDetachedText(value); }},
       createComment(value) {{ return makeFrameDetachedComment(value); }},

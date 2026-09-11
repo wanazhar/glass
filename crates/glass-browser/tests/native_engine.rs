@@ -1269,6 +1269,24 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
             true,
         ])
     );
+    let frame_namespaced_attributes = session
+        .script(
+            "(() => { const xlink = 'http://www.w3.org/1999/xlink'; const child = document.getElementById('child').contentDocument; const svg = child.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttributeNS(xlink, 'xlink:href', '#frame'); const attr = child.createAttributeNS(xlink, 'xlink:title'); attr.value = 'frame-title'; svg.attributes.setNamedItemNS(xlink, attr); child.body.appendChild(svg); const href = svg.getAttributeNodeNS(xlink, 'href'); const clone = svg.cloneNode(false); const cloneHref = clone.getAttributeNodeNS(xlink, 'href'); const attrOwner = attr.ownerElement === svg; const removed = svg.attributes.removeNamedItemNS(xlink, 'title'); return [svg.getAttributeNS(xlink, 'href'), href && [href.namespaceURI, href.localName, href.value], attrOwner, clone.namespaceURI, cloneHref && cloneHref.value, removed === attr, attr.ownerElement === null]; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        frame_namespaced_attributes.value,
+        serde_json::json!([
+            "#frame",
+            ["http://www.w3.org/1999/xlink", "href", "#frame",],
+            true,
+            "http://www.w3.org/2000/svg",
+            "#frame",
+            true,
+            true,
+        ])
+    );
     let frame_attributes = session
         .script(
             "(() => { const child = document.getElementById('child').contentDocument; const host = child.createElement('section'); const attr = child.createAttribute('data-frame'); attr.value = 'one'; const old = host.setAttributeNode(attr); const collection = host.attributes; const before = collection[0] === attr; attr.value = 'two'; const replacement = child.createAttribute('data-frame'); replacement.value = 'three'; const replaced = collection.setNamedItem(replacement); const removed = collection.removeNamedItem('data-frame'); return [old, collection instanceof NamedNodeMap, before, attr.value, replaced === attr, attr.ownerElement === null, removed === replacement, replacement.ownerElement === null, host.getAttribute('data-frame') === null, (() => { try { host.setAttributeNode(child.createAttribute('bad name')); return null; } catch (error) { return error.name; } })()]; })()",
@@ -32125,6 +32143,120 @@ async fn native_local_namespace_dom_preserves_svg_mathml_and_foreign_content() {
                 "http://www.w3.org/2000/svg",
             ],
             "invalidName": "NamespaceError",
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_namespaced_attributes_preserve_attr_identity_and_commands() {
+    let mut engine = NativeEngine::new(NativeEngineConfig::default().with_initial_url(
+        "data:text/html,%3Cbody%3E%3Csvg%20id%3D%27icon%27%20xmlns%3Axlink%3D%27http%3A%2F%2Fwww.w3.org%2F1999%2Fxlink%27%20xlink%3Ahref%3D%27%23old%27%20xml%3Alang%3D%27en%27%3E%3C%2Fsvg%3E%3C%2Fbody%3E",
+    ))
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+
+    let result = engine
+        .evaluate_async(
+            r#"(() => {
+                const xlink = 'http://www.w3.org/1999/xlink';
+                const xml = 'http://www.w3.org/XML/1998/namespace';
+                const icon = document.getElementById('icon');
+                const initial = icon.getAttributeNodeNS(xlink, 'href');
+                const ordinaryLookup = icon.getAttributeNode('xlink:href');
+                const xmlAttribute = icon.attributes.getNamedItemNS(xml, 'lang');
+                const parsed = [
+                    icon.getAttributeNS(xlink, 'href'),
+                    initial && [initial.name, initial.localName, initial.prefix, initial.namespaceURI, initial.value],
+                    ordinaryLookup && ordinaryLookup.namespaceURI,
+                    xmlAttribute && [xmlAttribute.name, xmlAttribute.namespaceURI, xmlAttribute.value],
+                ];
+                icon.setAttributeNS(xlink, 'xlink:href', '#new');
+                const updated = icon.getAttributeNodeNS(xlink, 'href');
+                updated.value = '#setter';
+                const afterSetter = icon.getAttributeNS(xlink, 'href');
+                const created = document.createAttributeNS(xlink, 'xlink:title');
+                created.value = 'title';
+                const replaced = icon.setAttributeNodeNS(xlink, created);
+                const createdOwner = created.ownerElement === icon;
+                const clone = icon.cloneNode(false);
+                const clonedHref = clone.getAttributeNodeNS(xlink, 'href');
+                const clonedTitle = clone.attributes.getNamedItemNS(xlink, 'title');
+                const parsedContainer = document.createElement('div');
+                parsedContainer.innerHTML = "<svg xmlns:xlink='http://www.w3.org/1999/xlink' xlink:href='#inner'></svg>";
+                const parsedDetached = parsedContainer.firstElementChild;
+                let invalid = '';
+                try { icon.setAttributeNS(xlink, 'href', 'wrong namespace prefix'); } catch (error) { invalid = error.name; }
+                const map = icon.attributes;
+                const mapState = [
+                    map.getNamedItemNS(xlink, 'href') === updated,
+                    map.getNamedItemNS(xlink, 'title') === created,
+                    map.getNamedItemNS(xml, 'lang') === xmlAttribute,
+                    map.length,
+                ];
+                const removed = map.removeNamedItemNS(xlink, 'title');
+                icon.removeAttributeNS(xlink, 'href');
+                return {
+                    parsed,
+                    afterSetter,
+                    updated: [updated.namespaceURI, updated.localName, updated.prefix, updated.value],
+                    created: [created.namespaceURI, created.localName, created.prefix, createdOwner],
+                    replaced: replaced === null,
+                    clone: [clone.namespaceURI, clonedHref && clonedHref.namespaceURI, clonedHref && clonedHref.value, clonedTitle && clonedTitle.value],
+                    detached: [parsedDetached.namespaceURI, parsedDetached.getAttributeNS(xlink, 'href'), parsedDetached.getAttributeNode('xlink:href').namespaceURI],
+                    mapState,
+                    removed: [removed === created, created.ownerElement === null],
+                    final: [icon.getAttributeNS(xlink, 'href'), icon.getAttributeNS(xlink, 'title'), icon.attributes.length],
+                    invalid,
+                };
+            })()"#,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        result,
+        serde_json::json!({
+            "parsed": [
+                "#old",
+                [
+                    "xlink:href",
+                    "href",
+                    "xlink",
+                    "http://www.w3.org/1999/xlink",
+                    "#old",
+                ],
+                "http://www.w3.org/1999/xlink",
+                ["xml:lang", "http://www.w3.org/XML/1998/namespace", "en"],
+            ],
+            "afterSetter": "#setter",
+            "updated": [
+                "http://www.w3.org/1999/xlink",
+                "href",
+                "xlink",
+                "#setter",
+            ],
+            "created": [
+                "http://www.w3.org/1999/xlink",
+                "title",
+                "xlink",
+                true,
+            ],
+            "replaced": true,
+            "clone": [
+                "http://www.w3.org/2000/svg",
+                "http://www.w3.org/1999/xlink",
+                "#setter",
+                "title",
+            ],
+            "detached": [
+                "http://www.w3.org/2000/svg",
+                "#inner",
+                "http://www.w3.org/1999/xlink",
+            ],
+            "mapState": [true, true, true, 5],
+            "removed": [true, true],
+            "final": [null, null, 3],
+            "invalid": "NamespaceError",
         })
     );
     engine.close_async().await.unwrap();

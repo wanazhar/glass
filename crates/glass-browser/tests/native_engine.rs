@@ -295,6 +295,22 @@ async fn native_content_process_script_exposes_web_idl_identity() {
             "event": true,
         })
     );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const input = document.getElementById('name'); const records = []; const observer = new MutationObserver(entries => records.push(entries.map(entry => [entry.type, entry.target.id, entry.oldValue]))); observer.observe(input, { attributes: true, attributeOldValue: true }); input.setAttribute('data-ready', 'yes'); globalThis.contentMutationRecords = records; return true; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.contentMutationRecords")
+            .await
+            .unwrap(),
+        serde_json::json!([[["attributes", "name", serde_json::Value::Null]]])
+    );
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }

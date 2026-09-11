@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-190`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-191`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
@@ -3373,6 +3373,18 @@ comments, raw-text/foreign-content rules, malformed-input recovery, and full
 Web IDL descriptor parity remain conformance work. Exact local evidence is in
 `docs/plan/tasks/native-engine-browser-179.md`; browser-complete promotion
 remains tracked issue-40 work.
+
+The completed native-engine-browser-191 slice closes the cross-evaluation
+script-node identity gap in local and HTTP(S) content-worker realms. The native
+document wire and script snapshot now transfer generation-scoped temporary
+identity mappings, and the persistent JavaScript host reuses the original
+element/text wrappers when their committed native nodes reappear. This keeps
+queries and mutations on a script-created node attached to the same native
+arena owner across evaluations while preserving transaction failure atomicity.
+Its contract and evidence are recorded in
+[native-engine-browser-191](../tasks/native-engine-browser-191.md); frame
+witnesses, ordinary detached-node persistence, complete HTML tree-builder,
+and Web IDL conformance remain issue #40 promotion work.
 
 The completed native-engine-browser-190 slice extends the structural DOM
 identity surface. Local, HTTP(S) content-worker, and same-origin frame nodes

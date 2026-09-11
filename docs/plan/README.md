@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-190` locally. The versioned
+`native-engine-browser-191` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1689,6 +1689,16 @@ Its contract and local evidence are recorded in
 [native-engine-browser-178](tasks/native-engine-browser-178.md); cross-document
 session history, bfcache, cross-origin history, and browser-wide parity remain
 issue #40 promotion gates.
+
+The completed native-engine-browser-191 slice preserves script-created node
+identity across separate evaluations in local and HTTP(S) content-worker
+realms. The typed native snapshot now carries generation-scoped temporary-node
+identities, and the persistent JavaScript realm reuses the original wrappers
+when the committed native nodes are projected again. Queries and mutations in
+the next evaluation therefore retain object identity and native ownership;
+transaction failure does not publish a partial mapping. The contract and
+evidence are recorded in
+[native-engine-browser-191](tasks/native-engine-browser-191.md).
 
 The completed native-engine-browser-190 slice extends structural DOM behavior
 across local, HTTP(S) content-worker, and same-origin frame realms. Native

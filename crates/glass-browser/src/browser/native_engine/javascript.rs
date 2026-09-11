@@ -7450,6 +7450,7 @@ fn document_bootstrap(
     return event;
   }};
   const ownerFor = (target) => {{
+    if (target && typeof target.__glassEventOwner === "string") return target.__glassEventOwner;
     if (target === globalThis) return "window";
     if (target === document) return "document";
     return "node:" + target.nodeIndex;
@@ -7475,15 +7476,27 @@ fn document_bootstrap(
     eventState.dispatching = true;
     event.target = target;
     const path = [target];
-    if (target !== globalThis && target !== document && typeof target.nodeIndex === "number") {{
-      let parent = target.parentElement;
+    const ownerDocument = target && target.nodeType === 9
+      ? target
+      : target && target.ownerDocument
+        ? target.ownerDocument
+        : null;
+    const ownerWindow = ownerDocument && ownerDocument.defaultView
+      ? ownerDocument.defaultView
+      : globalThis;
+    if (target !== ownerWindow && target !== ownerDocument && typeof target.nodeIndex === "number") {{
+      let parent = target.parentNode || null;
       while (parent) {{
         path.push(parent);
-        parent = parent.parentElement;
+        if (parent === ownerDocument) break;
+        if (typeof parent.parentNode === "undefined") break;
+        parent = parent.parentNode;
       }}
-      path.push(document, globalThis);
-    }} else if (target === document) {{
-      path.push(globalThis);
+      if (path[path.length - 1] === ownerDocument && ownerWindow !== ownerDocument) {{
+        path.push(ownerWindow);
+      }}
+    }} else if (target === ownerDocument && ownerWindow !== ownerDocument) {{
+      path.push(ownerWindow);
     }}
     for (let index = path.length - 1; index > 0; index -= 1) {{
       invokeListeners(path[index], event, true, 1);
@@ -9381,10 +9394,20 @@ fn document_bootstrap(
       try {{ Object.setPrototypeOf(targetLocation, globalThis.Location.prototype); }} catch (_error) {{}}
     }}
     Object.freeze(targetLocation);
+    const eventOwner = "window:" + cacheKey;
     const proxy = {{
       get name() {{ return state.targetName; }},
       get closed() {{ return state.closed; }},
       get location() {{ return targetLocation; }},
+      addEventListener(type, callback, options) {{
+        addListener(eventOwner, type, callback, options);
+      }},
+      removeEventListener(type, callback, options) {{
+        removeListener(eventOwner, type, callback, options);
+      }},
+      dispatchEvent(event) {{
+        return dispatchTarget(this, event);
+      }},
       close() {{
         if (state.closed) return;
         state.closed = true;
@@ -9401,6 +9424,11 @@ fn document_bootstrap(
         return {{ name: this.name, closed: this.closed }};
       }},
     }};
+    Object.defineProperty(proxy, "__glassEventOwner", {{
+      enumerable: false,
+      configurable: false,
+      value: eventOwner,
+    }});
     if (typeof globalThis.Window === "function" && globalThis.Window.prototype) {{
       try {{ Object.setPrototypeOf(proxy, globalThis.Window.prototype); }} catch (_error) {{}}
     }}
@@ -9799,14 +9827,27 @@ fn document_bootstrap(
         }},
         focus() {{
           if (this.disabled || this.hidden) return;
+          dispatchTarget(this, createEvent("focus"));
           queueFrameCommand(currentBinding, {{ kind: "focus", node_index: entry.nodeIndex }});
         }},
         blur() {{
+          dispatchTarget(this, createEvent("blur"));
           queueFrameCommand(currentBinding, {{ kind: "blur", node_index: entry.nodeIndex }});
         }},
         click() {{
           if (this.disabled || this.hidden) return;
+          const event = createEvent("click", {{ bubbles: true, cancelable: true }});
+          if (!dispatchTarget(this, event)) return;
           queueFrameCommand(currentBinding, {{ kind: "click", node_index: entry.nodeIndex }});
+        }},
+        addEventListener(type, callback, options) {{
+          addListener(ownerFor(projected), type, callback, options);
+        }},
+        removeEventListener(type, callback, options) {{
+          removeListener(ownerFor(projected), type, callback, options);
+        }},
+        dispatchEvent(event) {{
+          return dispatchTarget(this, event);
         }},
         setAttribute(name, nextValue) {{
           const key = String(name).toLowerCase();
@@ -9909,6 +9950,11 @@ fn document_bootstrap(
         configurable: false,
         writable: true,
         value: [],
+      }});
+      Object.defineProperty(projected, "__glassEventOwner", {{
+        enumerable: false,
+        configurable: false,
+        value: "frame:" + currentFrameId + ":node:" + entry.nodeIndex,
       }});
       Object.defineProperty(projected, "__glassParent", {{
         enumerable: false,
@@ -10208,6 +10254,15 @@ fn document_bootstrap(
         }},
         getAttributeNames() {{ return Object.keys(attributes); }},
         hasAttribute(name) {{ return this.getAttribute(name) !== null; }},
+        addEventListener(type, callback, options) {{
+          addListener(ownerFor(projected), type, callback, options);
+        }},
+        removeEventListener(type, callback, options) {{
+          removeListener(ownerFor(projected), type, callback, options);
+        }},
+        dispatchEvent(event) {{
+          return dispatchTarget(this, event);
+        }},
         setAttribute(name, nextValue) {{
           const key = String(name).toLowerCase();
           const stringValue = String(nextValue);
@@ -10296,6 +10351,11 @@ fn document_bootstrap(
         }},
       }};
       Object.defineProperty(projected, "__glassChildren", {{ enumerable: false, configurable: false, writable: true, value: [] }});
+      Object.defineProperty(projected, "__glassEventOwner", {{
+        enumerable: false,
+        configurable: false,
+        value: "frame:" + currentFrameId + ":node:" + nodeIndex,
+      }});
       Object.defineProperty(projected, "__glassParent", {{ enumerable: false, configurable: false, writable: true, value: null }});
       Object.defineProperty(projected, "__glassCreated", {{ enumerable: false, configurable: false, writable: true, value: true }});
       Object.defineProperty(projected, "__glassAttached", {{ enumerable: false, configurable: false, writable: true, value: false }});
@@ -10437,12 +10497,26 @@ fn document_bootstrap(
         return asHtmlCollection(frameElements.filter((element) => element.__glassAttached
           && element.className.split(/\s+/).includes(value)));
       }},
+      addEventListener(type, callback, options) {{
+        addListener(ownerFor(frameDocument), type, callback, options);
+      }},
+      removeEventListener(type, callback, options) {{
+        removeListener(ownerFor(frameDocument), type, callback, options);
+      }},
+      dispatchEvent(event) {{
+        return dispatchTarget(this, event);
+      }},
     }};
     Object.defineProperty(frameDocument, "__glassChildren", {{
       enumerable: false,
       configurable: false,
       writable: true,
       value: frameRootChildren,
+    }});
+    Object.defineProperty(frameDocument, "__glassEventOwner", {{
+      enumerable: false,
+      configurable: false,
+      value: "frame:" + currentFrameId + ":document",
     }});
     defineTreeAccessors(frameDocument);
     try {{ Object.setPrototypeOf(frameDocument, DocumentNative.prototype); }} catch (_error) {{}}

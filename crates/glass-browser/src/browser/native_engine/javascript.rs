@@ -4141,6 +4141,13 @@ impl NativeJavaScriptRuntime {
                 operation: "queue native resize observers".into(),
                 reason: "native resize observers could not be scheduled".into(),
             })?;
+            ctx.eval::<(), _>(
+                "if (typeof globalThis.__glassQueueIntersectionObserverChanges === 'function') globalThis.__glassQueueIntersectionObserverChanges();",
+            )
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "queue native intersection observers".into(),
+                reason: "native intersection observers could not be scheduled".into(),
+            })?;
             for _ in 0..MAX_NATIVE_MODULE_IMPORTS {
                 if !ctx.execute_pending_job() {
                     break;
@@ -4350,6 +4357,13 @@ impl NativeJavaScriptRuntime {
             .map_err(|_| NativeEngineError::Worker {
                 operation: "queue native resize observers".into(),
                 reason: "native resize observers could not be scheduled".into(),
+            })?;
+            ctx.eval::<(), _>(
+                "if (typeof globalThis.__glassQueueIntersectionObserverChanges === 'function') globalThis.__glassQueueIntersectionObserverChanges();",
+            )
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "queue native intersection observers".into(),
+                reason: "native intersection observers could not be scheduled".into(),
             })?;
             for _ in 0..MAX_NATIVE_MODULE_IMPORTS {
                 if !ctx.execute_pending_job() {
@@ -4930,6 +4944,122 @@ fn document_bootstrap(
       scheduleResizeObserverDelivery();
     }}
   }};
+  const intersectionObservers = globalThis.__glassIntersectionObservers instanceof Set
+    ? globalThis.__glassIntersectionObservers
+    : new Set();
+  globalThis.__glassIntersectionObservers = intersectionObservers;
+  let intersectionDeliveryQueued = false;
+  const intersectionViewport = () => ({{
+    x: 0,
+    y: 0,
+    width: Math.max(0, Number({width}) || 0),
+    height: Math.max(0, Number({height}) || 0),
+  }});
+  const intersectionRect = (geometry) => {{
+    const value = geometry || zeroGeometry();
+    return {{
+      x: Number(value.x) || 0,
+      y: Number(value.y) || 0,
+      width: Math.max(0, Number(value.width) || 0),
+      height: Math.max(0, Number(value.height) || 0),
+    }};
+  }};
+  const intersectionWith = (left, right) => {{
+    const x = Math.max(left.x, right.x);
+    const y = Math.max(left.y, right.y);
+    const rightEdge = Math.min(left.x + left.width, right.x + right.width);
+    const bottomEdge = Math.min(left.y + left.height, right.y + right.height);
+    return {{
+      x,
+      y,
+      width: Math.max(0, rightEdge - x),
+      height: Math.max(0, bottomEdge - y),
+    }};
+  }};
+  const intersectionWithMargin = (rect, margin) => ({{
+    x: rect.x - margin[3],
+    y: rect.y - margin[0],
+    width: Math.max(0, rect.width + margin[1] + margin[3]),
+    height: Math.max(0, rect.height + margin[0] + margin[2]),
+  }});
+  const intersectionArea = (rect) => rect.width * rect.height;
+  const intersectionState = (registration) => {{
+    const viewport = intersectionViewport();
+    const targetRect = intersectionRect(geometryForNode(registration.target));
+    let rootRect = registration.root && Number(registration.root.nodeType) === 1
+      ? intersectionRect(geometryForNode(registration.root))
+      : viewport;
+    rootRect = intersectionWithMargin(rootRect, registration.rootMargin);
+    const rootIntersection = registration.root && Number(registration.root.nodeType) === 1
+      ? intersectionWith(rootRect, viewport)
+      : rootRect;
+    const visible = intersectionWith(targetRect, rootIntersection);
+    const targetArea = intersectionArea(targetRect);
+    const visibleArea = intersectionArea(visible);
+    const isIntersecting = visible.width > 0 && visible.height > 0;
+    return {{
+      rootBounds: rootIntersection,
+      boundingClientRect: targetRect,
+      intersectionRect: visible,
+      isIntersecting,
+      intersectionRatio: targetArea > 0 ? visibleArea / targetArea : (isIntersecting ? 1 : 0),
+    }};
+  }};
+  const intersectionThresholdCrossed = (previous, next, thresholds) => {{
+    if (!previous) return true;
+    if (previous.isIntersecting !== next.isIntersecting) return true;
+    return thresholds.some((threshold) =>
+      (previous.intersectionRatio < threshold) !== (next.intersectionRatio < threshold)
+    );
+  }};
+  const intersectionEntry = (target, observation) => new IntersectionObserverEntryNative(
+    Number(host.now_ms) || 0,
+    {{
+      target,
+      rootBounds: makeDomRect(observation.rootBounds),
+      boundingClientRect: makeDomRect(observation.boundingClientRect),
+      intersectionRect: makeDomRect(observation.intersectionRect),
+      isIntersecting: observation.isIntersecting,
+      intersectionRatio: observation.intersectionRatio,
+      isVisible: observation.isIntersecting,
+    }},
+  );
+  const deliverIntersectionObservers = () => {{
+    intersectionDeliveryQueued = false;
+    for (const observer of Array.from(intersectionObservers)) {{
+      if (!observer.__glassRecords || observer.__glassRecords.length === 0) continue;
+      const records = observer.__glassRecords.splice(0, observer.__glassRecords.length);
+      observer.__glassCallback(records, observer);
+    }}
+  }};
+  const scheduleIntersectionObserverDelivery = () => {{
+    if (intersectionDeliveryQueued) return;
+    intersectionDeliveryQueued = true;
+    Promise.resolve().then(deliverIntersectionObservers);
+  }};
+  const queueIntersectionObserverChanges = () => {{
+    for (const observer of Array.from(intersectionObservers)) {{
+      for (const registration of observer.__glassRegistrations || []) {{
+        const observation = intersectionState(registration);
+        if (!intersectionThresholdCrossed(
+          registration.last,
+          observation,
+          registration.thresholds,
+        )) continue;
+        registration.last = {{
+          isIntersecting: observation.isIntersecting,
+          intersectionRatio: observation.intersectionRatio,
+        }};
+        observer.__glassRecords.push(intersectionEntry(registration.target, observation));
+        if (observer.__glassRecords.length > {max_commands}) {{
+          observer.__glassRecords.splice(0, observer.__glassRecords.length - {max_commands});
+        }}
+      }}
+    }}
+    if (Array.from(intersectionObservers).some((observer) => observer.__glassRecords.length > 0)) {{
+      scheduleIntersectionObserverDelivery();
+    }}
+  }};
   const commands = [];
   const activeCommands = () => Array.isArray(globalThis.__glassHostCommandBuffer)
     ? globalThis.__glassHostCommandBuffer
@@ -4948,6 +5078,12 @@ fn document_bootstrap(
   const runningTimers = globalThis.__glassRunningTimers instanceof Map
     ? globalThis.__glassRunningTimers
     : new Map();
+  const animationFrames = globalThis.__glassAnimationFrames instanceof Map
+    ? globalThis.__glassAnimationFrames
+    : new Map();
+  let nextAnimationFrameId = Number.isSafeInteger(globalThis.__glassNextAnimationFrameId)
+    ? globalThis.__glassNextAnimationFrameId
+    : 1;
   let nextTimerId = Number.isSafeInteger(globalThis.__glassNextTimerId)
     ? globalThis.__glassNextTimerId
     : 1;
@@ -4979,6 +5115,21 @@ fn document_bootstrap(
     const timer = timers.get(timerId) || runningTimers.get(timerId);
     if (timer) timer.cancelled = true;
     timers.delete(timerId);
+  }};
+  const requestAnimationFrameNative = (callback) => {{
+    if (typeof callback !== "function") throw new TypeError("animation frame callback must be callable");
+    if (animationFrames.size >= {max_timers}) throw new RangeError("native animation frame limit exceeded");
+    const id = nextAnimationFrameId;
+    nextAnimationFrameId += 1;
+    globalThis.__glassNextAnimationFrameId = nextAnimationFrameId;
+    animationFrames.set(id, {{
+      callback,
+      dueAt: host.now_ms + 16,
+    }});
+    return id;
+  }};
+  const cancelAnimationFrameNative = (id) => {{
+    animationFrames.delete(Number(id));
   }};
   const storageEntryLimit = {storage_entry_limit};
   const storageKeyLimit = {storage_key_limit};
@@ -6005,10 +6156,14 @@ fn document_bootstrap(
   globalThis.__glassTimers = timers;
   globalThis.__glassRunningTimers = runningTimers;
   globalThis.__glassNextTimerId = nextTimerId;
+  globalThis.__glassAnimationFrames = animationFrames;
+  globalThis.__glassNextAnimationFrameId = nextAnimationFrameId;
   globalThis.setTimeout = setTimeoutNative;
   globalThis.setInterval = setIntervalNative;
   globalThis.clearTimeout = clearTimer;
   globalThis.clearInterval = clearTimer;
+  globalThis.requestAnimationFrame = requestAnimationFrameNative;
+  globalThis.cancelAnimationFrame = cancelAnimationFrameNative;
   const fetchRequests = globalThis.__glassFetchRequests instanceof Map
     ? globalThis.__glassFetchRequests
     : new Map();
@@ -7596,6 +7751,18 @@ fn document_bootstrap(
           timers.set(id, timer);
         }}
       }}
+    }}
+    const frames = Array.from(animationFrames.entries())
+      .filter(([, frame]) => Number(frame.dueAt === undefined ? 0 : frame.dueAt) <= now)
+      .sort((left, right) => {{
+        const due = Number(left[1].dueAt === undefined ? 0 : left[1].dueAt)
+          - Number(right[1].dueAt === undefined ? 0 : right[1].dueAt);
+        return due || left[0] - right[0];
+      }});
+    for (const [id, frame] of frames) {{
+      if (!animationFrames.has(id)) continue;
+      animationFrames.delete(id);
+      frame.callback.call(globalThis, now);
     }}
   }};
   const listeners = globalThis.__glassHostListeners instanceof Map
@@ -10082,6 +10249,13 @@ fn document_bootstrap(
   }};
   globalThis.innerWidth = {width};
   globalThis.innerHeight = {height};
+  const performanceNative = globalThis.__glassPerformance instanceof Object
+    ? globalThis.__glassPerformance
+    : {{}};
+  performanceNative.now = () => Number(host.now_ms) || 0;
+  performanceNative.timeOrigin = Date.now() - (Number(host.now_ms) || 0);
+  globalThis.__glassPerformance = performanceNative;
+  globalThis.performance = performanceNative;
   globalThis.scrollX = Number(state.scrollX || 0);
   globalThis.scrollY = Number(state.scrollY || 0);
   globalThis.pageXOffset = globalThis.scrollX;
@@ -10237,6 +10411,118 @@ fn document_bootstrap(
   }}
   globalThis.__glassResizeObserverConstructor = ResizeObserverNative;
   globalThis.ResizeObserver = ResizeObserverNative;
+  const normalizeIntersectionThresholds = (value) => {{
+    const values = Array.isArray(value) ? value.slice() : [value === undefined ? 0 : value];
+    if (values.length === 0 || values.length > 16) throw new RangeError("IntersectionObserver threshold limit exceeded");
+    const normalized = values.map((entry) => Number(entry));
+    if (normalized.some((entry) => !Number.isFinite(entry) || entry < 0 || entry > 1)) {{
+      throw new RangeError("IntersectionObserver threshold must be between 0 and 1");
+    }}
+    return Array.from(new Set(normalized)).sort((left, right) => left - right);
+  }};
+  const normalizeIntersectionRootMargin = (value) => {{
+    const raw = String(value === undefined ? "0px" : value).trim();
+    const tokens = raw ? raw.split(/\s+/) : ["0px"];
+    if (tokens.length < 1 || tokens.length > 4) throw new TypeError("IntersectionObserver rootMargin is invalid");
+    const values = tokens.map((token) => {{
+      if (!/^-?(?:\d+\.?\d*|\.\d+)px$/.test(token)) throw new TypeError("IntersectionObserver rootMargin only supports px lengths");
+      const number = Number(token.slice(0, -2));
+      if (!Number.isFinite(number)) throw new TypeError("IntersectionObserver rootMargin is invalid");
+      return number;
+    }});
+    const expanded = values.length === 1
+      ? [values[0], values[0], values[0], values[0]]
+      : values.length === 2
+        ? [values[0], values[1], values[0], values[1]]
+        : values.length === 3
+          ? [values[0], values[1], values[2], values[1]]
+          : values;
+    return {{
+      values: expanded,
+      text: expanded.map((entry) => String(entry) + "px").join(" "),
+    }};
+  }};
+  const IntersectionObserverEntryNative = globalThis.__glassIntersectionObserverEntryConstructor || function IntersectionObserverEntry(time, init) {{
+    if (!(this instanceof IntersectionObserverEntryNative)) throw new TypeError("IntersectionObserverEntry requires new");
+    Object.defineProperties(this, {{
+      time: {{ configurable: true, enumerable: true, value: Number(time) || 0 }},
+      target: {{ configurable: true, enumerable: true, value: init.target || null }},
+      rootBounds: {{ configurable: true, enumerable: true, value: init.rootBounds || null }},
+      boundingClientRect: {{ configurable: true, enumerable: true, value: init.boundingClientRect || makeDomRect(null) }},
+      intersectionRect: {{ configurable: true, enumerable: true, value: init.intersectionRect || makeDomRect(null) }},
+      isIntersecting: {{ configurable: true, enumerable: true, value: Boolean(init.isIntersecting) }},
+      intersectionRatio: {{ configurable: true, enumerable: true, value: Number(init.intersectionRatio) || 0 }},
+      isVisible: {{ configurable: true, enumerable: true, value: Boolean(init.isVisible) }},
+    }});
+  }};
+  globalThis.__glassIntersectionObserverEntryConstructor = IntersectionObserverEntryNative;
+  globalThis.IntersectionObserverEntry = IntersectionObserverEntryNative;
+  const IntersectionObserverNative = globalThis.__glassIntersectionObserverConstructor || function IntersectionObserver(callback, options = {{}}) {{
+    if (!(this instanceof IntersectionObserverNative)) throw new TypeError("IntersectionObserver requires new");
+    if (typeof callback !== "function") throw new TypeError("IntersectionObserver callback must be callable");
+    if (!options || typeof options !== "object") throw new TypeError("IntersectionObserver options must be an object");
+    const root = options.root === undefined ? null : options.root;
+    if (root !== null && ![1, 9].includes(Number(root && root.nodeType))) throw new TypeError("IntersectionObserver root must be an Element or Document");
+    const margin = normalizeIntersectionRootMargin(options.rootMargin);
+    const thresholds = normalizeIntersectionThresholds(options.threshold);
+    Object.defineProperties(this, {{
+      __glassCallback: {{ configurable: false, enumerable: false, value: callback }},
+      __glassRegistrations: {{ configurable: false, enumerable: false, writable: true, value: [] }},
+      __glassRecords: {{ configurable: false, enumerable: false, writable: true, value: [] }},
+      root: {{ configurable: false, enumerable: true, value: root }},
+      rootMargin: {{ configurable: false, enumerable: true, value: margin.text }},
+      thresholds: {{ configurable: false, enumerable: true, value: Object.freeze(thresholds.slice()) }},
+    }});
+    intersectionObservers.add(this);
+  }};
+  if (!IntersectionObserverNative.prototype.observe) {{
+    Object.defineProperties(IntersectionObserverNative.prototype, {{
+      observe: {{
+        configurable: true,
+        value(target) {{
+          if (!target || Number(target.nodeType) !== 1) throw new TypeError("IntersectionObserver target must be an Element");
+          const registrations = this.__glassRegistrations;
+          const existing = registrations.find((registration) => registration.target === target);
+          if (existing) {{
+            existing.last = null;
+            return;
+          }}
+          registrations.push({{
+            target,
+            root: this.root,
+            rootMargin: normalizeIntersectionRootMargin(this.rootMargin).values,
+            thresholds: this.thresholds.slice(),
+            last: null,
+          }});
+        }},
+      }},
+      unobserve: {{
+        configurable: true,
+        value(target) {{
+          this.__glassRegistrations = this.__glassRegistrations.filter(
+            (registration) => registration.target !== target,
+          );
+        }},
+      }},
+      disconnect: {{
+        configurable: true,
+        value() {{
+          this.__glassRegistrations = [];
+          this.__glassRecords = [];
+        }},
+      }},
+      takeRecords: {{
+        configurable: true,
+        value() {{
+          const records = this.__glassRecords.slice();
+          this.__glassRecords = [];
+          return records;
+        }},
+      }},
+    }});
+  }}
+  globalThis.__glassIntersectionObserverConstructor = IntersectionObserverNative;
+  globalThis.IntersectionObserver = IntersectionObserverNative;
   const DOMExceptionNative = globalThis.__glassDOMExceptionConstructor || (() => {{
     const constructor = function DOMException(message = "", name = "Error") {{
       if (!(this instanceof constructor)) throw new TypeError("DOMException requires new");
@@ -11762,6 +12048,7 @@ fn document_bootstrap(
     log() {{}}, info() {{}}, warn() {{}}, error() {{}}
   }};
   globalThis.__glassQueueResizeObserverChanges = queueResizeObserverChanges;
+  globalThis.__glassQueueIntersectionObserverChanges = queueIntersectionObserverChanges;
   if (Array.isArray(host.storage_events) && host.storage_events.length > 0) {{
     globalThis.__glassDispatchStorageEvents(host.storage_events);
   }}

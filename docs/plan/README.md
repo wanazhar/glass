@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-173` locally. The versioned
+`native-engine-browser-174` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1638,6 +1638,15 @@ subtree filtering, and one existing Promise-job checkpoint delivers a callback
 batch. `disconnect()` and `takeRecords()` are supported. Cross-realm observer
 projection, layout/resource observers, complete resource scheduling, Web IDL,
 and browser-wide parity remain issue #40 gates.
+
+The completed native-engine-browser-174 slice carries that observer contract
+through same-origin `contentDocument` projections. Frame-qualified shadow state
+prevents parent/child node-index aliasing; projected attribute,
+character-data, child-list, reparenting, removal, and text/HTML replacement
+commands produce records before `FrameScriptBatch` handoff, including detached
+projected targets. Independent child-task effects, layout/resource observers,
+complete resource scheduling, Web IDL, and browser-wide parity remain issue #40
+gates.
 
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and

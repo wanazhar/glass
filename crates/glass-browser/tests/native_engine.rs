@@ -598,6 +598,44 @@ async fn native_local_script_creates_and_persists_comment_nodes() {
 }
 
 #[tokio::test]
+async fn native_local_script_creates_and_persists_document_types() {
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_fixture(
+                "fixture://created-doctype",
+                "<html><body>doctype</body></html>",
+            )
+            .unwrap()
+            .with_initial_url("fixture://created-doctype"),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const type = document.implementation.createDocumentType('html', 'public-id', 'system-id'); const clone = type.cloneNode(); document.insertBefore(type, document.documentElement); globalThis.__createdDocumentType = type; return { type: [document.implementation !== null, type instanceof Node, type instanceof DocumentType, type.nodeType, type.nodeName, type.name, type.nodeValue, type.textContent, type.publicId, type.systemId, type.parentNode === document, type.parentElement === null, document.doctype === type, type.__glassMarkup], clone: [clone !== type, clone instanceof DocumentType, clone.isEqualNode(type), clone.parentNode === null] }; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "type": [true, true, true, 10, "html", "html", null, null, "public-id", "system-id", true, true, true, "<!DOCTYPE html PUBLIC \"public-id\" \"system-id\">"] ,
+            "clone": [true, true, true, true],
+        })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const current = document.doctype; return [current === globalThis.__createdDocumentType, current.name, current.publicId, current.systemId, current.parentNode === document, document.documentElement.previousSibling === current]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, "html", "public-id", "system-id", true, true])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_script_exposes_web_idl_identity() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -627,7 +665,7 @@ async fn native_content_process_script_exposes_web_idl_identity() {
     engine.initialize_async().await.unwrap();
     let identity = engine
         .evaluate_async(
-            "(() => { const input = document.getElementById('name'); const text = document.createTextNode('worker'); const rootComment = document.childNodes[1]; const bodyComment = document.body.firstChild; return { window: window instanceof Window, document: document instanceof Document, input: [input instanceof Node, input instanceof Element, input instanceof HTMLElement, input instanceof HTMLInputElement, input.nodeType === 1, input.nodeName === 'INPUT', input.localName === 'input', input.ownerDocument === document], nodes: document.querySelectorAll('input') instanceof NodeList, tags: document.getElementsByTagName('input') instanceof HTMLCollection, location: location instanceof Location, event: new Event('load') instanceof Event, text: [text instanceof Node, text instanceof CharacterData, text instanceof Text, text.data, text.nodeValue, text.length], domNodes: [document.doctype instanceof DocumentType, document.doctype.name, rootComment instanceof Comment, rootComment.data, bodyComment instanceof Comment, bodyComment.parentNode === document.body, document.body.textContent], surfaces: [document.head === null, document.forms instanceof HTMLCollection, document.forms.length === 0, document.scripts instanceof HTMLCollection, document.scrollingElement === document.documentElement] }; })()",
+            "(() => { const input = document.getElementById('name'); const text = document.createTextNode('worker'); const rootComment = Array.from(document.childNodes).find(node => node instanceof Comment && node.data === 'worker-root'); const bodyComment = document.body.firstChild; const parsedDoctype = document.doctype; parsedDoctype.remove(); const createdDoctype = document.implementation.createDocumentType('worker-created'); document.appendChild(createdDoctype); globalThis.__persistentWorkerDoctype = createdDoctype; return { window: window instanceof Window, document: document instanceof Document, input: [input instanceof Node, input instanceof Element, input instanceof HTMLElement, input instanceof HTMLInputElement, input.nodeType === 1, input.nodeName === 'INPUT', input.localName === 'input', input.ownerDocument === document], nodes: document.querySelectorAll('input') instanceof NodeList, tags: document.getElementsByTagName('input') instanceof HTMLCollection, location: location instanceof Location, event: new Event('load') instanceof Event, text: [text instanceof Node, text instanceof CharacterData, text instanceof Text, text.data, text.nodeValue, text.length], domNodes: [document.doctype instanceof DocumentType, document.doctype.name, document.doctype === createdDoctype, createdDoctype.parentNode === document, rootComment instanceof Comment, rootComment.data, bodyComment instanceof Comment, bodyComment.parentNode === document.body, document.body.textContent], surfaces: [document.head === null, document.forms instanceof HTMLCollection, document.forms.length === 0, document.scripts instanceof HTMLCollection, document.scrollingElement === document.documentElement] }; })()",
         )
         .await
         .unwrap();
@@ -642,9 +680,18 @@ async fn native_content_process_script_exposes_web_idl_identity() {
             "location": true,
             "event": true,
             "text": [true, true, true, "worker", "worker", 6],
-            "domNodes": [true, "html", true, "worker-root", true, true, ""],
+            "domNodes": [true, "worker-created", true, true, true, "worker-root", true, true, ""],
             "surfaces": [true, true, true, true, true],
         })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "[globalThis.__persistentWorkerDoctype === document.doctype, document.doctype.name, document.doctype.parentNode === document]",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, "worker-created", true])
     );
     assert_eq!(
         engine
@@ -1161,7 +1208,7 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
     assert_eq!(frames.len(), 2);
     let identity = session
         .script(
-            "(() => { const frame = document.getElementById('child'); const childWindow = frame.contentWindow; const childDocument = frame.contentDocument; const inside = childDocument.querySelector('#inside'); const first = inside.firstChild; const bodyComment = childDocument.body.firstChild; const createdComment = childDocument.createComment('frame-created'); childDocument.body.appendChild(createdComment); return { window: childWindow instanceof Window, document: childDocument instanceof Document && childWindow.document === childDocument && childDocument.defaultView === childWindow, parent: childWindow.parent === window && childWindow.top === window, frameElement: childWindow.frameElement === frame, content: childDocument.body.textContent, query: inside.textContent, textNodes: [first.nodeType, first.nodeValue, first instanceof Node, first instanceof CharacterData, first instanceof Text, first.data, first.length, first.parentNode === inside, first.nextSibling === childDocument.getElementById('old-child'), inside.childNodes.length, inside.children.length], domNodes: [childDocument.doctype instanceof DocumentType, childDocument.doctype.name, bodyComment instanceof Comment, bodyComment.data, bodyComment.parentNode === childDocument.body, createdComment instanceof Comment, createdComment.data, createdComment.parentNode === childDocument.body, childDocument.body.lastChild === createdComment], collections: [childDocument.querySelectorAll('p') instanceof NodeList, childDocument.getElementsByTagName('p') instanceof HTMLCollection], surfaces: [childDocument.head === childDocument.querySelector('head'), childDocument.scripts instanceof HTMLCollection, childDocument.scripts.length, childDocument.scrollingElement === childDocument.documentElement], frames: window.length === 1 && window.frames[0] === childWindow }; })()",
+            "(() => { const frame = document.getElementById('child'); const childWindow = frame.contentWindow; const childDocument = frame.contentDocument; const inside = childDocument.querySelector('#inside'); const first = inside.firstChild; const bodyComment = childDocument.body.firstChild; const parsedDoctype = childDocument.doctype; parsedDoctype.remove(); const createdDoctype = childDocument.implementation.createDocumentType('frame-created'); childDocument.appendChild(createdDoctype); const createdComment = childDocument.createComment('frame-created-comment'); childDocument.body.appendChild(createdComment); globalThis.__createdFrameDoctype = createdDoctype; return { window: childWindow instanceof Window, document: childDocument instanceof Document && childWindow.document === childDocument && childDocument.defaultView === childWindow, parent: childWindow.parent === window && childWindow.top === window, frameElement: childWindow.frameElement === frame, content: childDocument.body.textContent, query: inside.textContent, textNodes: [first.nodeType, first.nodeValue, first instanceof Node, first instanceof CharacterData, first instanceof Text, first.data, first.length, first.parentNode === inside, first.nextSibling === childDocument.getElementById('old-child'), inside.childNodes.length, inside.children.length], domNodes: [childDocument.doctype instanceof DocumentType, childDocument.doctype.name, childDocument.doctype === createdDoctype, createdDoctype.parentNode === childDocument, bodyComment instanceof Comment, bodyComment.data, bodyComment.parentNode === childDocument.body, createdComment instanceof Comment, createdComment.data, createdComment.parentNode === childDocument.body, childDocument.body.lastChild === createdComment], collections: [childDocument.querySelectorAll('p') instanceof NodeList, childDocument.getElementsByTagName('p') instanceof HTMLCollection], surfaces: [childDocument.head === childDocument.querySelector('head'), childDocument.scripts instanceof HTMLCollection, childDocument.scripts.length, childDocument.scrollingElement === childDocument.documentElement], frames: window.length === 1 && window.frames[0] === childWindow }; })()",
         )
         .await
         .unwrap();
@@ -1175,7 +1222,7 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
             "content": "same-origin child",
             "query": "same-origin child",
             "textNodes": [3, "same-origin ", true, true, true, "same-origin ", 12, true, true, 2, 1],
-            "domNodes": [true, "html", true, "frame-body", true, true, "frame-created", true, true],
+            "domNodes": [true, "frame-created", true, true, true, "frame-body", true, true, "frame-created-comment", true, true],
             "collections": [true, true],
             "surfaces": [true, true, 1, true],
             "frames": true,

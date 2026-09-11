@@ -235,6 +235,12 @@ pub(crate) enum NativeScriptCommand {
         node_index: u32,
         value: String,
     },
+    CreateDocumentType {
+        node_index: u32,
+        name: String,
+        public_id: String,
+        system_id: String,
+    },
     AppendChild {
         parent_index: u32,
         child_index: u32,
@@ -9405,6 +9411,66 @@ fn document_bootstrap(
     pushCommand({{ kind: "createComment", node_index: nodeIndex, value: textContent }});
     return comment;
   }};
+  const makeDetachedDocumentType = (name, publicId = "", systemId = "") => {{
+    let normalizedName = String(name);
+    if (!/^[A-Za-z][A-Za-z0-9:_-]*$/.test(normalizedName)) throw new TypeError("invalid document type name");
+    let publicIdentifier = String(publicId);
+    let systemIdentifier = String(systemId);
+    if (publicIdentifier.length > {storage_value_limit} || systemIdentifier.length > {storage_value_limit}) throw new RangeError("native document type identifier exceeds its limit");
+    const nodeIndex = allocateTemporaryNodeIndex();
+    const documentType = {{
+      nodeIndex,
+      parentIndex: null,
+      nodeType: 10,
+      nodeName: normalizedName,
+      nodeValue: null,
+      name: normalizedName,
+      publicId: publicIdentifier,
+      systemId: systemIdentifier,
+      textContent: null,
+      __glassChildren: [],
+      __glassParent: null,
+      remove() {{
+        const parent = documentType.__glassParent || null;
+        if (!parent && documentType.parentIndex === null) return;
+        const commitRemoval = !documentType.__glassCreated || documentType.parentIndex !== null;
+        if (parent && Array.isArray(parent.__glassChildren)) parent.__glassChildren = parent.__glassChildren.filter(candidate => candidate !== documentType);
+        documentType.__glassParent = null;
+        documentType.parentIndex = null;
+        if (parent && typeof parent.__glassSyncContent === "function") parent.__glassSyncContent(true);
+        if (commitRemoval) pushCommand({{ kind: "removeNode", node_index: nodeIndex }});
+      }},
+    }};
+    Object.defineProperty(documentType, "__glassCreated", {{ enumerable: false, configurable: false, writable: true, value: true }});
+    Object.defineProperty(documentType, "__glassMarkup", {{ enumerable: false, configurable: false, get() {{
+      const publicPart = publicIdentifier ? " PUBLIC \"" + publicIdentifier + "\"" : "";
+      const systemPart = systemIdentifier ? (publicPart ? " \"" + systemIdentifier + "\"" : " SYSTEM \"" + systemIdentifier + "\"") : "";
+      return "<!DOCTYPE " + normalizedName + publicPart + systemPart + ">";
+    }} }});
+    Object.defineProperty(documentType, "__glassRefresh", {{ enumerable: false, configurable: false, value(nextEntry) {{
+      documentType.parentIndex = nextEntry.parentIndex == null ? null : nextEntry.parentIndex;
+      normalizedName = String(nextEntry.nodeName || normalizedName);
+      documentType.name = normalizedName;
+      documentType.nodeName = documentType.name;
+      publicIdentifier = nextEntry.publicId == null ? "" : String(nextEntry.publicId);
+      systemIdentifier = nextEntry.systemId == null ? "" : String(nextEntry.systemId);
+      documentType.publicId = publicIdentifier;
+      documentType.systemId = systemIdentifier;
+    }} }});
+    Object.defineProperty(documentType, "parentNode", {{ enumerable: false, configurable: false, get() {{
+      if (documentType.__glassParent) return documentType.__glassParent;
+      const owner = globalThis.document;
+      return owner && Array.isArray(owner.__glassChildren) && owner.__glassChildren.includes(documentType) ? owner : null;
+    }} }});
+    Object.defineProperty(documentType, "parentElement", {{ enumerable: false, configurable: false, get() {{ return null; }} }});
+    Object.defineProperty(documentType, "ownerDocument", {{ enumerable: false, configurable: false, get() {{ return globalThis.document || null; }} }});
+    try {{ Object.setPrototypeOf(documentType, DocumentTypeNative.prototype); }} catch (_error) {{}}
+    defineTreeAccessors(documentType);
+    mutationCreatedNodes.set(nodeIndex, documentType);
+    scriptNodeObjects.set(nodeIndex, documentType);
+    pushCommand({{ kind: "createDocumentType", node_index: nodeIndex, name: normalizedName, public_id: publicIdentifier, system_id: systemIdentifier }});
+    return documentType;
+  }};
   const makeDocumentFragment = () => {{
     const fragment = {{
       nodeType: 11,
@@ -9650,7 +9716,7 @@ fn document_bootstrap(
   const documentTypeNodes = snapshotNodes
     .filter((entry) => entry && Number(entry.nodeType) === 10)
     .map((entry) => {{
-      const existing = previousNodes.get(entry.nodeIndex);
+      const existing = scriptNodeAliasesByIndex.get(entry.nodeIndex) || previousNodes.get(entry.nodeIndex);
       const documentType = existing || {{
         nodeIndex: entry.nodeIndex,
         parentIndex: entry.parentIndex == null ? null : entry.parentIndex,
@@ -9666,12 +9732,27 @@ fn document_bootstrap(
         remove() {{
           const parent = documentType.__glassParent || null;
           if (!parent && documentType.parentIndex == null) return;
-          if (parent && Array.isArray(parent.__glassChildren)) parent.__glassChildren = parent.__glassChildren.filter(candidate => candidate !== documentType);
+          const owner = parent || (documentType.parentIndex === 0 ? globalThis.document : null);
+          if (owner && Array.isArray(owner.__glassChildren)) owner.__glassChildren = owner.__glassChildren.filter(candidate => candidate !== documentType);
           documentType.__glassParent = null;
           documentType.parentIndex = null;
           pushCommand({{ kind: "removeNode", node_index: documentType.nodeIndex }});
         }},
       }};
+      if (!Object.prototype.hasOwnProperty.call(documentType, "__glassRefresh")) {{
+        Object.defineProperty(documentType, "__glassRefresh", {{
+          enumerable: false,
+          configurable: false,
+          value(nextEntry) {{
+            documentType.parentIndex = nextEntry.parentIndex == null ? null : nextEntry.parentIndex;
+            documentType.name = String(nextEntry.nodeName || documentType.name || "");
+            documentType.nodeName = documentType.name;
+            documentType.publicId = nextEntry.publicId == null ? "" : String(nextEntry.publicId);
+            documentType.systemId = nextEntry.systemId == null ? "" : String(nextEntry.systemId);
+          }},
+        }});
+      }}
+      if (existing && typeof documentType.__glassRefresh === "function") documentType.__glassRefresh(entry);
       documentType.parentIndex = entry.parentIndex == null ? null : entry.parentIndex;
       documentType.name = String(entry.nodeName || "");
       documentType.nodeName = documentType.name;
@@ -10196,6 +10277,7 @@ fn document_bootstrap(
         }};
         if (node.nodeType === 3) return owner.createTextNode(String(node.nodeValue || ""));
         if (node.nodeType === 8) return owner.createComment(String(node.nodeValue || ""));
+        if (node.nodeType === 10) return owner.implementation.createDocumentType(node.name, node.publicId, node.systemId);
         if (node.nodeType === 1) {{
           const clone = owner.createElement(node.localName);
           for (const name of node.getAttributeNames()) {{
@@ -10919,7 +11001,7 @@ fn document_bootstrap(
     get defaultView() {{ return globalThis; }},
     get activeElement() {{ return liveDocumentElements().find((element) => element.focused) || null; }},
     get head() {{ return liveDocumentElements().find((element) => element.tagName === "HEAD") || null; }},
-    get doctype() {{ return documentTypeNodes.find((node) => document.__glassChildren.includes(node)) || null; }},
+    get doctype() {{ return document.__glassChildren.find((node) => Number(node.nodeType) === 10) || null; }},
     get forms() {{ return liveCollection(document, (element) => element.tagName === "FORM", "HTMLCollection", true); }},
     get links() {{ return liveCollection(document, (element) => ["A", "AREA"].includes(element.tagName) && element.getAttribute("href") !== null, "HTMLCollection", true); }},
     get scripts() {{ return liveCollection(document, (element) => element.tagName === "SCRIPT", "HTMLCollection", true); }},
@@ -10945,7 +11027,40 @@ fn document_bootstrap(
     createElement(tagName) {{ return makeDetachedElement(tagName); }},
     createTextNode(value) {{ return makeDetachedText(value); }},
     createComment(value) {{ return makeDetachedComment(value); }},
+    appendChild(child) {{
+      if (!child || Number(child.nodeType) !== 10) throw new TypeError("Document children must be a document type");
+      if (document.__glassChildren.includes(child)) return child;
+      if (child.__glassParent && child.__glassParent !== document) throw new DOMExceptionNative("The document type has another parent", "HierarchyRequestError");
+      const existing = document.__glassChildren.find((candidate) => Number(candidate.nodeType) === 10);
+      if (existing && existing !== child) throw new DOMExceptionNative("The document already has a document type", "HierarchyRequestError");
+      document.__glassChildren = document.__glassChildren.filter((candidate) => candidate !== child);
+      document.__glassChildren.push(child);
+      child.__glassParent = document;
+      child.parentIndex = 0;
+      pushCommand({{ kind: "appendChild", parent_index: 0, child_index: child.nodeIndex }});
+      return child;
+    }},
+    insertBefore(child, before) {{
+      if (before == null) return document.appendChild(child);
+      if (!before || !document.__glassChildren.includes(before)) throw new TypeError("reference node is not a document child");
+      if (!child || Number(child.nodeType) !== 10) throw new TypeError("Document children must be a document type");
+      if (child === before) return child;
+      const existing = document.__glassChildren.find((candidate) => Number(candidate.nodeType) === 10);
+      if (existing && existing !== child) throw new DOMExceptionNative("The document already has a document type", "HierarchyRequestError");
+      document.__glassChildren = document.__glassChildren.filter((candidate) => candidate !== child);
+      const index = document.__glassChildren.indexOf(before);
+      document.__glassChildren.splice(index < 0 ? document.__glassChildren.length : index, 0, child);
+      child.__glassParent = document;
+      child.parentIndex = 0;
+      pushCommand({{ kind: "insertBefore", parent_index: 0, child_index: child.nodeIndex, before_index: before.nodeIndex }});
+      return child;
+    }},
     createDocumentFragment() {{ return makeDocumentFragment(); }},
+    implementation: {{
+      createDocumentType(name, publicId = "", systemId = "") {{
+        return makeDetachedDocumentType(name, publicId, systemId);
+      }},
+    }},
     getElementById(id) {{ return liveDocumentElements().find((element) => element.id === String(id)) || null; }},
     querySelector(selector) {{ return findAll(selector)[0] || null; }},
     querySelectorAll(selector) {{ return findAll(selector); }},
@@ -12016,7 +12131,7 @@ fn document_bootstrap(
   const frameBatchableCommand = (command) => command && [
     "setValue", "setSelection", "setChecked", "setSelected",
     "setAttribute", "removeAttribute", "setTextContent", "setInnerHtml",
-    "removeNode", "createElement", "createTextNode", "createComment", "appendChild",
+    "removeNode", "createElement", "createTextNode", "createComment", "createDocumentType", "appendChild",
     "insertBefore", "setCustomValidity",
   ].includes(String(command.kind));
   const queueFrameCommand = (binding, command) => {{
@@ -12654,7 +12769,8 @@ fn document_bootstrap(
     const frameDocumentTypeNodes = frameNodeSnapshots
       .filter((entry) => entry && Number(entry.nodeType) === 10)
       .map((entry) => {{
-        const documentType = {{
+        const existing = frameScriptNodeAliasesByIndex.get(Number(entry.nodeIndex));
+        const documentType = existing || {{
           nodeIndex: entry.nodeIndex,
           parentIndex: entry.parentIndex == null ? null : entry.parentIndex,
           nodeType: 10,
@@ -12669,15 +12785,26 @@ fn document_bootstrap(
           remove() {{
             const parent = documentType.__glassParent || null;
             if (!parent && documentType.parentIndex == null) return;
-            if (parent && Array.isArray(parent.__glassChildren)) parent.__glassChildren = parent.__glassChildren.filter(candidate => candidate !== documentType);
+            const owner = parent || (documentType.parentIndex === 0 ? frameDocument : null);
+            if (owner && Array.isArray(owner.__glassChildren)) owner.__glassChildren = owner.__glassChildren.filter(candidate => candidate !== documentType);
             documentType.__glassParent = null;
             documentType.parentIndex = null;
             queueFrameCommand(currentBinding, {{ kind: "removeNode", node_index: documentType.nodeIndex }});
           }},
         }};
-        Object.defineProperty(documentType, "ownerDocument", {{ enumerable: false, configurable: false, get() {{ return frameDocument; }} }});
-        Object.defineProperty(documentType, "parentNode", {{ enumerable: false, configurable: false, get() {{ return documentType.__glassParent || null; }} }});
-        Object.defineProperty(documentType, "parentElement", {{ enumerable: false, configurable: false, get() {{
+        if (!Object.prototype.hasOwnProperty.call(documentType, "__glassRefresh")) {{
+          Object.defineProperty(documentType, "__glassRefresh", {{ enumerable: false, configurable: false, value(nextEntry) {{
+            documentType.parentIndex = nextEntry.parentIndex == null ? null : nextEntry.parentIndex;
+            documentType.name = String(nextEntry.nodeName || documentType.name || "");
+            documentType.nodeName = documentType.name;
+            documentType.publicId = nextEntry.publicId == null ? "" : String(nextEntry.publicId);
+            documentType.systemId = nextEntry.systemId == null ? "" : String(nextEntry.systemId);
+          }} }});
+        }}
+        if (existing && typeof documentType.__glassRefresh === "function") documentType.__glassRefresh(entry);
+        if (!Object.prototype.hasOwnProperty.call(documentType, "ownerDocument")) Object.defineProperty(documentType, "ownerDocument", {{ enumerable: false, configurable: false, get() {{ return frameDocument; }} }});
+        if (!Object.prototype.hasOwnProperty.call(documentType, "parentNode")) Object.defineProperty(documentType, "parentNode", {{ enumerable: false, configurable: false, get() {{ return documentType.__glassParent || null; }} }});
+        if (!Object.prototype.hasOwnProperty.call(documentType, "parentElement")) Object.defineProperty(documentType, "parentElement", {{ enumerable: false, configurable: false, get() {{
           const parent = documentType.__glassParent || null;
           return parent && parent.nodeType === 1 ? parent : null;
         }} }});
@@ -13174,6 +13301,65 @@ fn document_bootstrap(
       try {{ Object.setPrototypeOf(comment, CommentNative.prototype); }} catch (_error) {{}}
       return comment;
     }};
+    const makeFrameDetachedDocumentType = (name, publicId = "", systemId = "") => {{
+      let normalizedName = String(name);
+      if (!/^[A-Za-z][A-Za-z0-9:_-]*$/.test(normalizedName)) throw new TypeError("invalid document type name");
+      let publicIdentifier = String(publicId);
+      let systemIdentifier = String(systemId);
+      if (publicIdentifier.length > {storage_value_limit} || systemIdentifier.length > {storage_value_limit}) throw new RangeError("native frame document type identifier exceeds its limit");
+      let nodeIndex = allocateTemporaryNodeIndex();
+      const documentType = {{
+        nodeIndex,
+        parentIndex: null,
+        nodeType: 10,
+        nodeName: normalizedName,
+        nodeValue: null,
+        name: normalizedName,
+        publicId: publicIdentifier,
+        systemId: systemIdentifier,
+        textContent: null,
+        __glassChildren: [],
+        __glassParent: null,
+        remove() {{
+          const parent = documentType.__glassParent || null;
+          if (!parent && documentType.parentIndex === null) return;
+          const commitRemoval = !documentType.__glassCreated || documentType.parentIndex !== null;
+          if (parent && Array.isArray(parent.__glassChildren)) parent.__glassChildren = parent.__glassChildren.filter(candidate => candidate !== documentType);
+          documentType.__glassParent = null;
+          documentType.parentIndex = null;
+          if (commitRemoval) queueFrameCommand(currentBinding, {{ kind: "removeNode", node_index: nodeIndex }});
+        }},
+      }};
+      Object.defineProperty(documentType, "__glassCreated", {{ enumerable: false, configurable: false, writable: true, value: true }});
+      Object.defineProperty(documentType, "__glassAttached", {{ enumerable: false, configurable: false, writable: true, value: false }});
+      Object.defineProperty(documentType, "__glassMarkup", {{ enumerable: false, configurable: false, get() {{
+        const publicPart = publicIdentifier ? " PUBLIC \"" + publicIdentifier + "\"" : "";
+        const systemPart = systemIdentifier ? (publicPart ? " \"" + systemIdentifier + "\"" : " SYSTEM \"" + systemIdentifier + "\"") : "";
+        return "<!DOCTYPE " + normalizedName + publicPart + systemPart + ">";
+      }} }});
+      Object.defineProperty(documentType, "__glassRefresh", {{ enumerable: false, configurable: false, value(nextEntry) {{
+        nodeIndex = Number(nextEntry.nodeIndex);
+        documentType.nodeIndex = nodeIndex;
+        documentType.parentIndex = nextEntry.parentIndex == null ? null : nextEntry.parentIndex;
+        normalizedName = String(nextEntry.nodeName || normalizedName);
+        publicIdentifier = nextEntry.publicId == null ? "" : String(nextEntry.publicId);
+        systemIdentifier = nextEntry.systemId == null ? "" : String(nextEntry.systemId);
+        documentType.name = normalizedName;
+        documentType.nodeName = normalizedName;
+        documentType.publicId = publicIdentifier;
+        documentType.systemId = systemIdentifier;
+      }} }});
+      Object.defineProperty(documentType, "parentNode", {{ enumerable: false, configurable: false, get() {{ return documentType.__glassParent || null; }} }});
+      Object.defineProperty(documentType, "parentElement", {{ enumerable: false, configurable: false, get() {{ return null; }} }});
+      Object.defineProperty(documentType, "ownerDocument", {{ enumerable: false, configurable: false, get() {{ return frameDocumentCache.get(currentFrameId)?.document || frameDocument; }} }});
+      defineTreeAccessors(documentType);
+      frameMutationNodes.set(frameMutationKey(currentBinding, nodeIndex), documentType);
+      frameMutationChildren.set(frameMutationKey(currentBinding, nodeIndex), []);
+      frameScriptNodeObjects.set(nodeIndex, documentType);
+      queueFrameCommand(currentBinding, {{ kind: "createDocumentType", node_index: nodeIndex, name: normalizedName, public_id: publicIdentifier, system_id: systemIdentifier }});
+      try {{ Object.setPrototypeOf(documentType, DocumentTypeNative.prototype); }} catch (_error) {{}}
+      return documentType;
+    }};
     const makeFrameDocumentFragment = () => {{
       const fragment = {{
         nodeType: 11,
@@ -13340,7 +13526,7 @@ fn document_bootstrap(
       body,
       documentElement,
       get head() {{ return frameElements.find((element) => element.__glassAttached && element.tagName === "HEAD") || head; }},
-      get doctype() {{ return frameDocumentTypeNodes.find((node) => frameRootChildren.includes(node)) || null; }},
+      get doctype() {{ return frameDocument.__glassChildren.find((node) => Number(node.nodeType) === 10) || null; }},
       get forms() {{ return liveCollection(frameDocument, (element) => element.tagName === "FORM", "HTMLCollection", true); }},
       get links() {{ return liveCollection(frameDocument, (element) => ["A", "AREA"].includes(element.tagName) && element.getAttribute("href") !== null, "HTMLCollection", true); }},
       get scripts() {{ return liveCollection(frameDocument, (element) => element.tagName === "SCRIPT", "HTMLCollection", true); }},
@@ -13353,6 +13539,41 @@ fn document_bootstrap(
       createElement(tagName) {{ return makeFrameDetachedElement(tagName); }},
       createTextNode(value) {{ return makeFrameDetachedText(value); }},
       createComment(value) {{ return makeFrameDetachedComment(value); }},
+      appendChild(child) {{
+        if (!child || Number(child.nodeType) !== 10) throw new TypeError("Document children must be a document type");
+        if (frameDocument.__glassChildren.includes(child)) return child;
+        if (child.__glassParent && child.__glassParent !== frameDocument) throw new DOMExceptionNative("The document type has another parent", "HierarchyRequestError");
+        const existing = frameDocument.__glassChildren.find((candidate) => Number(candidate.nodeType) === 10);
+        if (existing && existing !== child) throw new DOMExceptionNative("The document already has a document type", "HierarchyRequestError");
+        frameDocument.__glassChildren = frameDocument.__glassChildren.filter((candidate) => candidate !== child);
+        frameDocument.__glassChildren.push(child);
+        child.__glassParent = frameDocument;
+        child.parentIndex = 0;
+        child.__glassAttached = true;
+        queueFrameCommand(currentBinding, {{ kind: "appendChild", parent_index: 0, child_index: child.nodeIndex }});
+        return child;
+      }},
+      insertBefore(child, before) {{
+        if (before == null) return frameDocument.appendChild(child);
+        if (!before || !frameDocument.__glassChildren.includes(before)) throw new TypeError("reference node is not a document child");
+        if (!child || Number(child.nodeType) !== 10) throw new TypeError("Document children must be a document type");
+        if (child === before) return child;
+        const existing = frameDocument.__glassChildren.find((candidate) => Number(candidate.nodeType) === 10);
+        if (existing && existing !== child) throw new DOMExceptionNative("The document already has a document type", "HierarchyRequestError");
+        frameDocument.__glassChildren = frameDocument.__glassChildren.filter((candidate) => candidate !== child);
+        const index = frameDocument.__glassChildren.indexOf(before);
+        frameDocument.__glassChildren.splice(index < 0 ? frameDocument.__glassChildren.length : index, 0, child);
+        child.__glassParent = frameDocument;
+        child.parentIndex = 0;
+        child.__glassAttached = true;
+        queueFrameCommand(currentBinding, {{ kind: "insertBefore", parent_index: 0, child_index: child.nodeIndex, before_index: before.nodeIndex }});
+        return child;
+      }},
+      implementation: {{
+        createDocumentType(name, publicId = "", systemId = "") {{
+          return makeFrameDetachedDocumentType(name, publicId, systemId);
+        }},
+      }},
       createDocumentFragment() {{ return makeFrameDocumentFragment(); }},
       getElementById: findById,
       querySelector(selector) {{ return find(selector)[0] || null; }},

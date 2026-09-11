@@ -229,6 +229,22 @@ async fn native_local_script_exposes_web_idl_identity_and_dom_collections() {
     assert_eq!(
         engine
             .evaluate_async(
+                "(() => { const host = document.createElement('div'); host.setAttribute('data-existing', 'yes'); const attr = document.createAttribute('DATA-OWNED'); attr.value = 'one'; const identity = [attr instanceof Node, attr instanceof Attr, attr.nodeType, attr.nodeName, attr.name, attr.localName, attr.value, attr.nodeValue, attr.textContent, attr.ownerElement === null, attr.ownerDocument === document, attr.parentNode === null]; const first = host.setAttributeNode(attr); const attributes = host.attributes; const attached = [first === null, attributes instanceof NamedNodeMap, attributes.length, attributes[0].name, attributes[1] === attr, attributes.getNamedItem('data-owned') === attr, attr.ownerElement === host, host.getAttribute('data-owned') === 'one']; attr.nodeValue = 'two'; const changed = [attr.value, attr.textContent, host.getAttribute('data-owned')]; const replacement = document.createAttribute('data-owned'); replacement.value = 'three'; const old = host.setAttributeNode(replacement); const replaced = [old === attr, attr.ownerElement === null, replacement.ownerElement === host, attributes.getNamedItemNS(null, 'data-owned') === replacement, attributes.item(1) === replacement]; const mapped = document.createAttribute('data-mapped'); mapped.value = 'map'; const mapOld = attributes.setNamedItem(mapped); const mapState = [mapOld === null, attributes.length, attributes[2] === mapped, attributes.getNamedItem('data-mapped') === mapped, attributes.removeNamedItem('data-mapped') === mapped, mapped.ownerElement === null]; const removed = host.removeAttributeNode(replacement); const errors = [removed === replacement, replacement.ownerElement === null, host.getAttribute('data-owned') === null, (() => { try { document.createAttribute('bad name'); return null; } catch (error) { return error.name; } })(), (() => { try { host.removeAttributeNode(replacement); return null; } catch (error) { return error.name; } })()]; return { identity, attached, changed, replaced, mapState, errors }; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "identity": [true, true, 2, "data-owned", "data-owned", "data-owned", "one", "one", "one", true, true, true],
+            "attached": [true, true, 2, "data-existing", true, true, true, true],
+            "changed": ["two", "two", "two"],
+            "replaced": [true, true, true, true, true],
+            "mapState": [true, 3, true, true, true, true],
+            "errors": [true, true, true, "InvalidCharacterError", "NotFoundError"],
+        })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
                 "(() => { const text = document.createTextNode('abc'); const before = [text.data, text.length, text.substringData(1, 2)]; text.nodeValue = 'abcd'; text.insertData(1, 'X'); text.deleteData(2, 1); text.replaceData(1, 1, 'Y'); return [before, text.data, text.nodeValue, text.textContent, text.length, text.substringData(1, 2)]; })()",
             )
             .await
@@ -1236,6 +1252,27 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
             "surfaces": [true, true, 1, true],
             "frames": true,
         })
+    );
+    let frame_attributes = session
+        .script(
+            "(() => { const child = document.getElementById('child').contentDocument; const host = child.createElement('section'); const attr = child.createAttribute('data-frame'); attr.value = 'one'; const old = host.setAttributeNode(attr); const collection = host.attributes; const before = collection[0] === attr; attr.value = 'two'; const replacement = child.createAttribute('data-frame'); replacement.value = 'three'; const replaced = collection.setNamedItem(replacement); const removed = collection.removeNamedItem('data-frame'); return [old, collection instanceof NamedNodeMap, before, attr.value, replaced === attr, attr.ownerElement === null, removed === replacement, replacement.ownerElement === null, host.getAttribute('data-frame') === null, (() => { try { host.setAttributeNode(child.createAttribute('bad name')); return null; } catch (error) { return error.name; } })()]; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        frame_attributes.value,
+        serde_json::json!([
+            null,
+            true,
+            true,
+            "two",
+            true,
+            true,
+            true,
+            true,
+            true,
+            "InvalidCharacterError"
+        ])
     );
     assert_eq!(
         session

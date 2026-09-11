@@ -8623,6 +8623,263 @@ fn document_bootstrap(
     globalThis.__glassNextTemporaryNodeIndex = value - 1;
     return value;
   }};
+  const attributeNodeKey = (name) => String(name).toLowerCase();
+  const normalizeAttributeNodeName = (name) => {{
+    const value = String(name);
+    if (!/^[A-Za-z_:][A-Za-z0-9:._-]*$/.test(value)) {{
+      const constructor = globalThis.DOMException;
+      if (typeof constructor === "function") throw new constructor("The attribute name is invalid", "InvalidCharacterError");
+      throw new TypeError("The attribute name is invalid");
+    }}
+    return value.toLowerCase();
+  }};
+  const makeAttributeNode = (name, initialValue = "", ownerDocumentResolver = () => null) => {{
+    const normalized = normalizeAttributeNodeName(name);
+    let attributeValue = String(initialValue);
+    if (attributeValue.length > {storage_value_limit}) throw new RangeError("native attribute value exceeds its limit");
+    let ownerElement = null;
+    const attribute = {{
+      nodeIndex: allocateTemporaryNodeIndex(),
+      parentIndex: null,
+      nodeType: 2,
+      nodeName: normalized,
+      name: normalized,
+      localName: normalized,
+      prefix: null,
+      namespaceURI: null,
+      specified: true,
+      __glassAttribute: true,
+      __glassChildren: [],
+    }};
+    Object.defineProperty(attribute, "ownerElement", {{
+      enumerable: true,
+      configurable: false,
+      get() {{ return ownerElement; }},
+    }});
+    Object.defineProperty(attribute, "ownerDocument", {{
+      enumerable: false,
+      configurable: false,
+      get() {{ return ownerDocumentResolver() || null; }},
+    }});
+    Object.defineProperty(attribute, "parentNode", {{
+      enumerable: false,
+      configurable: false,
+      get() {{ return null; }},
+    }});
+    Object.defineProperty(attribute, "parentElement", {{
+      enumerable: false,
+      configurable: false,
+      get() {{ return null; }},
+    }});
+    Object.defineProperties(attribute, {{
+      value: {{
+        enumerable: true,
+        configurable: false,
+        get() {{ return attributeValue; }},
+        set(next) {{
+          const value = String(next);
+          if (value.length > {storage_value_limit}) throw new RangeError("native attribute value exceeds its limit");
+          if (ownerElement) ownerElement.setAttribute(normalized, value);
+          else attributeValue = value;
+        }},
+      }},
+      nodeValue: {{
+        enumerable: true,
+        configurable: false,
+        get() {{ return attributeValue; }},
+        set(next) {{ attribute.value = next; }},
+      }},
+      textContent: {{
+        enumerable: true,
+        configurable: false,
+        get() {{ return attributeValue; }},
+        set(next) {{ attribute.value = next; }},
+      }},
+    }});
+    Object.defineProperty(attribute, "__glassSetOwner", {{
+      enumerable: false,
+      configurable: false,
+      value(nextOwner) {{ ownerElement = nextOwner || null; }},
+    }});
+    Object.defineProperty(attribute, "__glassRefreshValue", {{
+      enumerable: false,
+      configurable: false,
+      value(nextValue) {{
+        const value = String(nextValue);
+        attributeValue = value.length > {storage_value_limit}
+          ? value.slice(0, {storage_value_limit})
+          : value;
+      }},
+    }});
+    const constructor = globalThis.Attr;
+    if (typeof constructor === "function" && constructor.prototype) {{
+      try {{ Object.setPrototypeOf(attribute, constructor.prototype); }} catch (_error) {{}}
+    }}
+    return attribute;
+  }};
+  const attributeNodeException = (message, name) => {{
+    const constructor = globalThis.DOMException;
+    if (typeof constructor === "function") return new constructor(message, name);
+    const error = new Error(message);
+    error.name = name;
+    return error;
+  }};
+  const installAttributeNodeSurface = (element, ownerDocumentResolver) => {{
+    if (Object.prototype.hasOwnProperty.call(element, "__glassAttributeNodes")) return;
+    const attributeNodes = new Map();
+    Object.defineProperty(element, "__glassAttributeNodes", {{
+      enumerable: false,
+      configurable: false,
+      value: attributeNodes,
+    }});
+    const originalSetAttribute = typeof element.setAttribute === "function"
+      ? element.setAttribute.bind(element)
+      : null;
+    const originalRemoveAttribute = typeof element.removeAttribute === "function"
+      ? element.removeAttribute.bind(element)
+      : null;
+    const syncAttributeNodes = () => {{
+      for (const [key, attribute] of attributeNodes) {{
+        const value = element.getAttribute(key);
+        if (value === null) {{
+          attribute.__glassSetOwner(null);
+          attributeNodes.delete(key);
+        }} else {{
+          attribute.__glassRefreshValue(value);
+          attribute.__glassSetOwner(element);
+        }}
+      }}
+    }};
+    Object.defineProperty(element, "__glassSyncAttributeNodes", {{
+      enumerable: false,
+      configurable: false,
+      value: syncAttributeNodes,
+    }});
+    if (originalSetAttribute) {{
+      element.setAttribute = (name, value) => {{
+        originalSetAttribute(name, value);
+        const key = attributeNodeKey(name);
+        const attribute = attributeNodes.get(key);
+        if (attribute) {{
+          attribute.__glassRefreshValue(element.getAttribute(key));
+          attribute.__glassSetOwner(element);
+        }}
+      }};
+    }}
+    if (originalRemoveAttribute) {{
+      element.removeAttribute = (name) => {{
+        originalRemoveAttribute(name);
+        const key = attributeNodeKey(name);
+        const attribute = attributeNodes.get(key);
+        if (attribute) {{
+          attribute.__glassSetOwner(null);
+          attributeNodes.delete(key);
+        }}
+      }};
+    }}
+    const getAttributeNode = (name) => {{
+      const key = normalizeAttributeNodeName(name);
+      if (element.getAttribute(key) === null) return null;
+      const existing = attributeNodes.get(key);
+      if (existing) {{
+        existing.__glassRefreshValue(element.getAttribute(key));
+        existing.__glassSetOwner(element);
+        return existing;
+      }}
+      const attribute = makeAttributeNode(key, element.getAttribute(key), ownerDocumentResolver);
+      attribute.__glassSetOwner(element);
+      attributeNodes.set(key, attribute);
+      return attribute;
+    }};
+    const setAttributeNode = (attribute) => {{
+      if (!attribute || attribute.__glassAttribute !== true) throw new TypeError("setAttributeNode requires an Attr");
+      const ownerDocument = ownerDocumentResolver() || null;
+      if (attribute.ownerDocument !== ownerDocument) throw attributeNodeException("The attribute belongs to another document", "WrongDocumentError");
+      if (attribute.ownerElement && attribute.ownerElement !== element) throw attributeNodeException("The attribute is already in use", "InUseAttributeError");
+      const key = normalizeAttributeNodeName(attribute.name);
+      const old = getAttributeNode(key);
+      if (old === attribute) return old;
+      if (old) {{
+        old.__glassSetOwner(null);
+        attributeNodes.delete(key);
+      }}
+      if (!element.setAttribute) throw new TypeError("setAttributeNode requires an Element");
+      element.setAttribute(key, attribute.value);
+      attributeNodes.set(key, attribute);
+      attribute.__glassSetOwner(element);
+      return old;
+    }};
+    const removeAttributeNode = (attribute) => {{
+      if (!attribute || attribute.__glassAttribute !== true) throw new TypeError("removeAttributeNode requires an Attr");
+      if (attribute.ownerElement !== element) throw attributeNodeException("The attribute was not found", "NotFoundError");
+      element.removeAttribute(attribute.name);
+      return attribute;
+    }};
+    element.getAttributeNode = getAttributeNode;
+    element.getAttributeNodeNS = (namespace, name) =>
+      namespace === null || namespace === "" ? getAttributeNode(name) : null;
+    element.setAttributeNode = setAttributeNode;
+    element.setAttributeNodeNS = (namespace, attribute) => {{
+      if (namespace !== null && namespace !== "") throw attributeNodeException("The attribute namespace is unsupported", "NamespaceError");
+      return setAttributeNode(attribute);
+    }};
+    element.removeAttributeNode = removeAttributeNode;
+    const namedNodeMap = {{
+      get length() {{ return element.getAttributeNames().length; }},
+      item(index) {{
+        const names = element.getAttributeNames();
+        const name = names[Number(index)];
+        return name === undefined ? null : getAttributeNode(name);
+      }},
+      getNamedItem(name) {{ return getAttributeNode(name); }},
+      getNamedItemNS(namespace, name) {{
+        return namespace === null || namespace === "" ? getAttributeNode(name) : null;
+      }},
+      setNamedItem(attribute) {{ return setAttributeNode(attribute); }},
+      setNamedItemNS(namespace, attribute) {{
+        return namespace === null || namespace === "" ? setAttributeNode(attribute) : (() => {{
+          throw attributeNodeException("The attribute namespace is unsupported", "NamespaceError");
+        }})();
+      }},
+      removeNamedItem(name) {{
+        const attribute = getAttributeNode(name);
+        if (!attribute) throw attributeNodeException("The attribute was not found", "NotFoundError");
+        return removeAttributeNode(attribute);
+      }},
+      removeNamedItemNS(namespace, name) {{
+        if (namespace !== null && namespace !== "") throw attributeNodeException("The attribute namespace is unsupported", "NamespaceError");
+        return this.removeNamedItem(name);
+      }},
+    }};
+    Object.defineProperty(namedNodeMap, Symbol.iterator, {{
+      configurable: false,
+      value() {{
+        return Array.from({{ length: namedNodeMap.length }}, (_value, index) => namedNodeMap.item(index))[Symbol.iterator]();
+      }},
+    }});
+    const namedNodeMapView = new Proxy(namedNodeMap, {{
+      get(target, property, receiver) {{
+        if (typeof property === "string" && /^\d+$/.test(property)) return target.item(Number(property));
+        return Reflect.get(target, property, receiver);
+      }},
+      has(target, property) {{
+        if (typeof property === "string" && /^\d+$/.test(property)) return Number(property) < target.length;
+        return Reflect.has(target, property);
+      }},
+    }});
+    const namedNodeMapConstructor = globalThis.NamedNodeMap;
+    if (typeof namedNodeMapConstructor === "function" && namedNodeMapConstructor.prototype) {{
+      try {{ Object.setPrototypeOf(namedNodeMap, namedNodeMapConstructor.prototype); }} catch (_error) {{}}
+    }}
+    Object.defineProperty(element, "attributes", {{
+      enumerable: true,
+      configurable: false,
+      get() {{
+        syncAttributeNodes();
+        return namedNodeMapView;
+      }},
+    }});
+  }};
   const makeElement = (initialEntry) => {{
     let entry = initialEntry;
     let textContent = String(entry.text || "");
@@ -9061,6 +9318,7 @@ fn document_bootstrap(
       configurable: false,
       get() {{ return globalThis.document || null; }},
     }});
+    installAttributeNodeSurface(element, () => globalThis.document || null);
     installCommonAttributeProperties(element, {{
       disabled: () => disabled,
       hidden: () => hidden,
@@ -9208,6 +9466,7 @@ fn document_bootstrap(
         selectionDirection = nextEntry.selectionDirection || "none";
         checked = nextEntry.checked;
         selected = nextEntry.selected;
+        if (typeof element.__glassSyncAttributeNodes === "function") element.__glassSyncAttributeNodes();
       }}
     }});
     return element;
@@ -11052,6 +11311,7 @@ fn document_bootstrap(
       return dispatchTarget(this, event);
     }},
     createElement(tagName) {{ return makeDetachedElement(tagName); }},
+    createAttribute(name) {{ return makeAttributeNode(name, "", () => document); }},
     createTextNode(value) {{ return makeDetachedText(value); }},
     createComment(value) {{ return makeDetachedComment(value); }},
     appendChild(child) {{
@@ -11863,6 +12123,7 @@ fn document_bootstrap(
   const CharacterDataNative = ensureNativeConstructor("CharacterData", NodeNative);
   const TextNative = ensureNativeConstructor("Text", CharacterDataNative);
   const CommentNative = ensureNativeConstructor("Comment", CharacterDataNative);
+  const AttrNative = ensureNativeConstructor("Attr", NodeNative);
   const DocumentTypeNative = ensureNativeConstructor("DocumentType", NodeNative);
   const DocumentNative = ensureNativeConstructor("Document", NodeNative);
   const DocumentFragmentNative = ensureNativeConstructor("DocumentFragment", NodeNative);
@@ -11872,6 +12133,9 @@ fn document_bootstrap(
   const LocationNative = ensureNativeConstructor("Location", null);
   const NodeListNative = ensureNativeConstructor("NodeList", null);
   const HtmlCollectionNative = ensureNativeConstructor("HTMLCollection", null);
+  const NamedNodeMapNative = ensureNativeConstructor("NamedNodeMap", null);
+  globalThis.Attr = AttrNative;
+  globalThis.NamedNodeMap = NamedNodeMapNative;
   const characterDataTarget = (target) => {{
     if (!target || ![3, 8].includes(Number(target.nodeType))) throw new TypeError("CharacterData method called on a non-character-data node");
     return target;
@@ -12692,6 +12956,7 @@ fn document_bootstrap(
         configurable: false,
         get() {{ return frameDocument; }},
       }});
+      installAttributeNodeSurface(projected, () => frameDocument);
       const childBinding = frameChildBindingForNode(currentBinding, entry.nodeIndex);
       if (["IFRAME", "FRAME"].includes(projected.tagName)) {{
         Object.defineProperty(projected, "contentWindow", {{
@@ -13115,6 +13380,7 @@ fn document_bootstrap(
           hidden = Boolean(nextEntry.hidden);
           multiple = Object.prototype.hasOwnProperty.call(attributes, "multiple");
           projected.__glassAttached = true;
+          if (typeof projected.__glassSyncAttributeNodes === "function") projected.__glassSyncAttributeNodes();
         }},
       }});
       Object.defineProperty(projected, "__glassTextValue", {{ enumerable: false, configurable: false, get() {{ return textContent; }} }});
@@ -13198,6 +13464,7 @@ fn document_bootstrap(
         configurable: false,
         get() {{ return frameDocumentCache.get(currentFrameId)?.document || frameDocument; }},
       }});
+      installAttributeNodeSurface(projected, () => frameDocumentCache.get(currentFrameId)?.document || frameDocument);
       try {{ Object.setPrototypeOf(projected, elementPrototypeFor(projected.tagName)); }} catch (_error) {{}}
       defineTreeAccessors(projected);
       installClassList(projected);
@@ -13564,6 +13831,9 @@ fn document_bootstrap(
         return currentFrameWindow(current, ownerFrameElement, parentWindow, topWindow);
       }},
       createElement(tagName) {{ return makeFrameDetachedElement(tagName); }},
+      createAttribute(name) {{
+        return makeAttributeNode(name, "", () => frameDocumentCache.get(currentFrameId)?.document || frameDocument);
+      }},
       createTextNode(value) {{ return makeFrameDetachedText(value); }},
       createComment(value) {{ return makeFrameDetachedComment(value); }},
       appendChild(child) {{

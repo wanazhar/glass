@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-163`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-164`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
@@ -3224,6 +3224,15 @@ surface, but projected frame realms still need their own detached factory and
 cross-realm node routing. Live child-node collections, listener identity,
 complete frame lifecycle/load ordering, and complete browser parity remain
 issue #40 gates.
+
+The completed native-engine-browser-164 slice completes projected same-origin
+frame construction. Detached child-frame elements and text nodes now queue
+through a bounded `FrameScriptBatch`; the child realm feeds the batch into the
+same Rust temporary-index, cycle, reparenting, and ordering transaction used by
+top-level scripts. Parent-side identity and markup are immediate while the
+child snapshot remains the publication authority. Live child-node collections,
+cross-realm listener identity, complete frame lifecycle/load ordering, and
+complete browser parity remain issue #40 gates.
 
 The completed native-engine-browser-133 batch extends the native target seam
 with a side-effect-free preflight result. The engine resolves the current

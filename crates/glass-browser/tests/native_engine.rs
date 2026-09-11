@@ -750,6 +750,26 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
             .value,
         serde_json::json!(["parent-write", "<em id=\"new-child\">updated &amp; literal</em>", "updated & literal", "updated & literal", null, "updated & literal", "written-by-parent"])
     );
+    assert_eq!(
+        session
+            .script(
+                "(() => { const child = document.getElementById('child').contentDocument; const host = child.createElement('section'); host.setAttribute('id', 'created-in-frame'); const text = child.createTextNode('created'); text.textContent = 'created in frame'; host.appendChild(text); child.body.appendChild(host); return [host.tagName, host.parentElement === child.body, text.parentNode === host, host.textContent, host.innerHTML]; })()",
+            )
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!(["SECTION", true, true, "created in frame", "created in frame"])
+    );
+    assert_eq!(
+        session
+            .script(
+                "(() => { const host = document.getElementById('child').contentDocument.getElementById('created-in-frame'); return [host.innerHTML, host.textContent, host.parentElement.tagName]; })()",
+            )
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!(["created in frame", "created in frame", "BODY"])
+    );
     let child_id = session
         .native_list_frames()
         .await

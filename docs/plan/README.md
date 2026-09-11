@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-163` locally. The versioned
+`native-engine-browser-164` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1544,6 +1544,16 @@ validated position through `appendChild()`/`insertBefore()`. Same-evaluation
 parent identity and bounded markup are coherent, and the next evaluation
 refreshes the committed snapshot. Same-origin frame construction, live
 child-node collections, cross-realm listener identity, full frame
+lifecycle/load ordering, and native browser-complete promotion remain issue
+#40 gates.
+
+The completed native-engine-browser-164 slice is
+[native-engine-browser-164](tasks/native-engine-browser-164.md). Projected
+same-origin frame documents now expose detached element/text factories and
+group consecutive structural commands into one typed child-owner transaction.
+Parent identity and markup remain coherent during the evaluation, and a fresh
+frame snapshot exposes the committed nodes. Live child-node collections,
+cross-origin restrictions, cross-realm listener identity, full frame
 lifecycle/load ordering, and native browser-complete promotion remain issue
 #40 gates.
 

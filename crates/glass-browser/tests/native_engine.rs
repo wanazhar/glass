@@ -736,6 +736,90 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
 }
 
 #[tokio::test]
+async fn native_nested_frame_script_projection_preserves_window_chain() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..4 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap();
+            let body = match path {
+                "/parent" => "<html><body><iframe id='child' src='/child'></iframe></body></html>",
+                "/child" => {
+                    "<html><body><iframe id='grand' src='/grand'></iframe><p id='child-label'>child</p></body></html>"
+                }
+                "/grand" => {
+                    "<html><head><script>addEventListener('message', event => document.getElementById('grand-label').setAttribute('data-message', event.data.ok ? 'received' : 'bad'));</script></head><body><p id='grand-label' data-message='none'>grand</p></body></html>"
+                }
+                "/grand-next" => "<html><body><p id='next'>next grandchild</p></body></html>",
+                other => panic!("unexpected nested frame request path: {other}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/parent")),
+    )
+    .await
+    .unwrap();
+    assert_eq!(session.native_list_frames().await.unwrap().len(), 3);
+    let identity = session
+        .script(
+            "(() => { const child = document.getElementById('child'); const childWindow = child.contentWindow; const childDocument = child.contentDocument; const grand = childDocument.getElementById('grand'); const grandWindow = grand.contentWindow; const grandDocument = grand.contentDocument; return { childWindow: childWindow instanceof Window, childFrames: childWindow.frames === childWindow && childWindow.length === 1 && childWindow.frames[0] === grandWindow, chain: grandWindow.parent === childWindow && grandWindow.top === window, document: grandWindow.document === grandDocument && grandDocument.defaultView === grandWindow, frameElement: grandWindow.frameElement === grand, content: grandDocument.body.textContent }; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        identity.value,
+        serde_json::json!({
+            "childWindow": true,
+            "childFrames": true,
+            "chain": true,
+            "document": true,
+            "frameElement": true,
+            "content": "grand",
+        })
+    );
+    session
+        .script(
+            "(() => { const grand = document.getElementById('child').contentDocument.getElementById('grand'); globalThis.__grandWindow = grand.contentWindow; grand.contentWindow.postMessage({ ok: true }, grand.contentWindow.location.origin); return true; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("document.getElementById('child').contentDocument.getElementById('grand').contentDocument.getElementById('grand-label').getAttribute('data-message')")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("received")
+    );
+    session
+        .script(
+            "document.getElementById('child').contentDocument.getElementById('grand').contentWindow.location.replace('/grand-next'); true",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("(() => { const grand = document.getElementById('child').contentDocument.getElementById('grand'); return [globalThis.__grandWindow === grand.contentWindow, grand.contentWindow.location.pathname, grand.contentDocument.body.textContent]; })()")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([true, "/grand-next", "next grandchild"])
+    );
+    session.close().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_runtime_opener_links_create_routable_popup_targets() {
     let config = NativeEngineConfig::default()
         .with_fixture(

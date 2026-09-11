@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-156` locally. The versioned
+`native-engine-browser-157` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1471,6 +1471,18 @@ stale embedding source, and descendant owners are drained before future
 topology discovery. Complete cross-realm identity, nested child-window
 projection in every event path, popup permission/geometry, full frame
 lifecycle, and complete browser parity remain issue #40 gates.
+
+The completed native-engine-browser-157 slice is
+[native-engine-browser-157](tasks/native-engine-browser-157.md). The recursive
+parent-owned binding tree now lets an embedding page traverse same-origin
+nested `contentWindow`/`contentDocument` relationships, including nested
+`window.frames`, `length`, numeric child windows, `parent`, `top`, and
+`frameElement` identity. Nested `postMessage()` and WindowProxy navigation use
+the existing parked-descendant routes, and document/window caches refresh when
+child revisions or descendant topology change. The transfer remains bounded
+and snapshot-based; selected-child realm parent metadata, complete
+cross-origin Window behavior, live cross-realm identity, full frame lifecycle,
+and complete browser parity remain issue #40 gates.
 
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and

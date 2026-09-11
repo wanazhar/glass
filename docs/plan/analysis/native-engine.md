@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-156`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-157`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
@@ -3143,6 +3143,19 @@ origin validation, and child navigation replaces its projection without
 reconciling from a stale embedding source. Snapshot transfer still leaves
 complete cross-realm identity, nested child-window projection in every event
 path, popup policy/geometry, full frame lifecycle, and browser parity open.
+
+The completed native-engine-browser-157 slice makes the frame binding recursive.
+The parent packages each direct child with its bounded document snapshot and
+descendant bindings; same-origin embedding scripts can therefore traverse a
+nested `contentWindow`/`contentDocument` chain and observe `frames`, `length`,
+numeric children, `parent`, `top`, `frameElement`, and `document` identity.
+Nested `postMessage()` and WindowProxy navigation continue through the parent
+resolver for parked descendants. Window/document caches use descendant
+revision and topology keys so nested navigation and message mutation refresh
+the projection without replaying a stale source. This remains a snapshot
+embedding view rather than live multi-realm DOM identity; selected-child realm
+parent metadata, full cross-origin Window behavior, complete frame lifecycle,
+and browser parity remain open.
 
 The completed native-engine-browser-133 batch extends the native target seam
 with a side-effect-free preflight result. The engine resolves the current

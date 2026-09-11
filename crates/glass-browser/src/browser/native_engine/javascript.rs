@@ -35,6 +35,8 @@ pub(crate) const MAX_NATIVE_SCRIPT_RESULT_BYTES: usize = crate::browser_backend:
 /// bridge. The payload is JSON-backed today, but the limit is kept separate
 /// so future transferable values cannot silently enlarge IPC frames.
 pub(crate) const MAX_NATIVE_POST_MESSAGE_BYTES: usize = 256 * 1024;
+/// Maximum frame-window index surface exposed by one script realm.
+pub(crate) const MAX_NATIVE_FRAME_SCRIPT_BINDINGS: usize = 64;
 /// Maximum inline page scripts executed while committing one document.
 pub(crate) const MAX_NATIVE_INLINE_SCRIPTS: usize = 32;
 pub(crate) const MAX_NATIVE_MODULE_IMPORTS: usize = 128;
@@ -287,6 +289,8 @@ pub(crate) struct NativeFrameScriptBinding {
     pub(crate) revision: u64,
     pub(crate) same_origin: bool,
     pub(crate) document: NativeScriptDocumentSnapshot,
+    #[serde(default)]
+    pub(crate) children: Vec<NativeFrameScriptBinding>,
 }
 
 #[derive(Debug, Clone)]
@@ -7635,7 +7639,9 @@ fn document_bootstrap(
         configurable: false,
         get() {{
           const binding = frameBindingForNode(element.nodeIndex);
-          return binding && binding.sameOrigin ? makeFrameDocument(binding) : null;
+          return binding && binding.sameOrigin
+            ? makeFrameDocument(binding, element, globalThis, globalThis)
+            : null;
         }},
       }});
     }}
@@ -8133,12 +8139,37 @@ fn document_bootstrap(
       : [];
     return bindings.find((binding) => binding && binding.nodeIndex === nodeIndex) || null;
   }};
+  const frameChildBindingForNode = (binding, nodeIndex) => {{
+    const children = binding && Array.isArray(binding.children) ? binding.children : [];
+    return children.find((child) => child && child.nodeIndex === nodeIndex) || null;
+  }};
   const frameBindingForId = (frameId) => {{
+    const visit = (bindings) => {{
+      for (const binding of bindings) {{
+        if (binding && binding.frameId === frameId) return binding;
+        const nested = binding && Array.isArray(binding.children) ? visit(binding.children) : null;
+        if (nested) return nested;
+      }}
+      return null;
+    }};
     const bindings = Array.isArray(globalThis.__glassFrameBindings)
       ? globalThis.__glassFrameBindings
       : [];
-    return bindings.find((binding) => binding && binding.frameId === frameId) || null;
+    return visit(bindings);
   }};
+  const frameTopologyKey = (binding) => JSON.stringify([
+    String(binding && binding.frameId || ""),
+    String(binding && binding.url || ""),
+    Number(binding && binding.revision || 0),
+    Boolean(binding && binding.sameOrigin),
+    Array.isArray(binding && binding.children)
+      ? binding.children.map((child) => frameTopologyKey(child))
+      : [],
+  ]);
+  const frameChildBindings = (binding) =>
+    binding && Array.isArray(binding.children) ? binding.children : [];
+  const currentFrameWindow = (binding, ownerFrameElement, parentWindow, topWindow) =>
+    makeFrameWindow(binding, ownerFrameElement, parentWindow, topWindow);
   const frameDocumentCache = globalThis.__glassFrameDocumentCache instanceof Map
     ? globalThis.__glassFrameDocumentCache
     : new Map();
@@ -8153,11 +8184,19 @@ fn document_bootstrap(
     if (value.startsWith(".")) return element.className.split(/\s+/).includes(value.slice(1));
     return element.tagName.toLowerCase() === value.toLowerCase();
   }};
-  const makeFrameDocument = (binding) => {{
-    const cached = frameDocumentCache.get(binding.frameId);
-    if (cached && cached.url === binding.url && cached.revision === binding.revision) return cached.document;
-    const snapshot = binding.document && typeof binding.document === "object"
-      ? binding.document
+  const makeFrameDocument = (
+    binding,
+    ownerFrameElement = null,
+    parentWindow = globalThis,
+    topWindow = globalThis,
+  ) => {{
+    const currentBinding = frameBindingForId(binding.frameId) || binding;
+    const topologyKey = frameTopologyKey(currentBinding);
+    const cached = frameDocumentCache.get(currentBinding.frameId);
+    if (cached && cached.url === currentBinding.url && cached.revision === currentBinding.revision
+        && cached.topologyKey === topologyKey) return cached.document;
+    const snapshot = currentBinding.document && typeof currentBinding.document === "object"
+      ? currentBinding.document
       : {{ title: "", visibleText: "", elements: [] }};
     let frameDocument;
     const frameElements = (Array.isArray(snapshot.elements) ? snapshot.elements : []).map((entry) => {{
@@ -8192,6 +8231,27 @@ fn document_bootstrap(
         configurable: false,
         get() {{ return frameDocument; }},
       }});
+      const childBinding = frameChildBindingForNode(currentBinding, entry.nodeIndex);
+      if (["IFRAME", "FRAME"].includes(projected.tagName)) {{
+        Object.defineProperty(projected, "contentWindow", {{
+          enumerable: false,
+          configurable: false,
+          get() {{
+            return childBinding
+              ? currentFrameWindow(childBinding, projected, currentFrameWindow(currentBinding, ownerFrameElement, parentWindow, topWindow), topWindow)
+              : null;
+          }},
+        }});
+        Object.defineProperty(projected, "contentDocument", {{
+          enumerable: false,
+          configurable: false,
+          get() {{
+            if (!childBinding || !childBinding.sameOrigin) return null;
+            const currentWindow = currentFrameWindow(currentBinding, ownerFrameElement, parentWindow, topWindow);
+            return makeFrameDocument(childBinding, projected, currentWindow, topWindow);
+          }},
+        }});
+      }}
       return projected;
     }});
     const find = (selector) => frameElements.filter((element) => projectedFrameMatches(element, selector));
@@ -8201,15 +8261,15 @@ fn document_bootstrap(
     frameDocument = {{
       nodeType: 9,
       nodeName: "#document",
-      URL: String(binding.url),
-      documentURI: String(binding.url),
+      URL: String(currentBinding.url),
+      documentURI: String(currentBinding.url),
       title: String(snapshot.title || ""),
       textContent: String(snapshot.visibleText || ""),
       body,
       documentElement,
       get defaultView() {{
-        const current = frameBindingForId(binding.frameId) || binding;
-        return makeFrameWindow(current, null);
+        const current = frameBindingForId(currentBinding.frameId) || currentBinding;
+        return currentFrameWindow(current, ownerFrameElement, parentWindow, topWindow);
       }},
       getElementById: findById,
       querySelector(selector) {{ return find(selector)[0] || null; }},
@@ -8224,14 +8284,20 @@ fn document_bootstrap(
       }},
     }};
     try {{ Object.setPrototypeOf(frameDocument, DocumentNative.prototype); }} catch (_error) {{}}
-    frameDocumentCache.set(binding.frameId, {{
-      url: binding.url,
-      revision: binding.revision,
+    frameDocumentCache.set(currentBinding.frameId, {{
+      url: currentBinding.url,
+      revision: currentBinding.revision,
+      topologyKey,
       document: frameDocument,
     }});
     return frameDocument;
   }};
-  const makeFrameWindow = (binding, frameElement) => {{
+  const makeFrameWindow = (
+    binding,
+    frameElement,
+    parentWindow = globalThis,
+    topWindow = globalThis,
+  ) => {{
     const currentBinding = frameBindingForId(binding.frameId) || binding;
     const proxy = makeWindowProxy("", "", String(currentBinding.frameId), String(currentBinding.url));
     const cacheKey = String(currentBinding.frameId) + "\\u0000";
@@ -8239,16 +8305,27 @@ fn document_bootstrap(
     if (state) {{
       state.targetLocationHref = String(currentBinding.url);
       state.closed = false;
+      if (frameElement !== null && frameElement !== undefined) state.frameElement = frameElement;
+      state.parentWindow = parentWindow;
+      state.topWindow = topWindow;
     }}
     if (!frameWindowCache.has(currentBinding.frameId)) {{
       Object.defineProperty(proxy, "window", {{ enumerable: true, configurable: false, get: () => proxy }});
       Object.defineProperty(proxy, "self", {{ enumerable: true, configurable: false, get: () => proxy }});
-      Object.defineProperty(proxy, "parent", {{ enumerable: true, configurable: false, get: () => globalThis }});
-      Object.defineProperty(proxy, "top", {{ enumerable: true, configurable: false, get: () => globalThis }});
+      Object.defineProperty(proxy, "parent", {{
+        enumerable: true,
+        configurable: false,
+        get: () => state.parentWindow || globalThis,
+      }});
+      Object.defineProperty(proxy, "top", {{
+        enumerable: true,
+        configurable: false,
+        get: () => state.topWindow || globalThis,
+      }});
       Object.defineProperty(proxy, "frameElement", {{
         enumerable: true,
         configurable: false,
-        get: () => frameElement || (globalThis.__glassHostElements instanceof Map
+        get: () => state.frameElement || (globalThis.__glassHostElements instanceof Map
           ? globalThis.__glassHostElements.get(currentBinding.nodeIndex) || null
           : null),
       }});
@@ -8258,10 +8335,37 @@ fn document_bootstrap(
         get() {{
           const current = frameBindingForId(currentBinding.frameId) || currentBinding;
           if (!current.sameOrigin) throw new Error("cross-origin frame document access denied");
-          return makeFrameDocument(current);
+          return makeFrameDocument(
+            current,
+            state.frameElement || null,
+            state.parentWindow || globalThis,
+            state.topWindow || globalThis,
+          );
         }},
       }});
-      Object.defineProperty(proxy, "length", {{ enumerable: true, configurable: false, value: 0 }});
+      Object.defineProperty(proxy, "frames", {{ enumerable: true, configurable: false, get: () => proxy }});
+      Object.defineProperty(proxy, "length", {{
+        enumerable: true,
+        configurable: false,
+        get() {{
+          const current = frameBindingForId(currentBinding.frameId) || currentBinding;
+          return current.sameOrigin ? frameChildBindings(current).length : 0;
+        }},
+      }});
+      for (let index = 0; index < {max_frame_window_indices}; index += 1) {{
+        Object.defineProperty(proxy, String(index), {{
+          enumerable: false,
+          configurable: false,
+          get() {{
+            const current = frameBindingForId(currentBinding.frameId) || currentBinding;
+            if (!current.sameOrigin) return undefined;
+            const child = frameChildBindings(current)[index];
+            return child
+              ? makeFrameWindow(child, null, proxy, state.topWindow || globalThis)
+              : undefined;
+          }},
+        }});
+      }}
       frameWindowCache.set(currentBinding.frameId, proxy);
     }}
     return frameWindowCache.get(currentBinding.frameId);
@@ -8380,6 +8484,7 @@ fn document_bootstrap(
         max_native_xhr_timeout_ms = MAX_NATIVE_XHR_TIMEOUT_MS,
         dialog_text_limit = MAX_NATIVE_DIALOG_TEXT_BYTES,
         post_message_bytes_limit = MAX_NATIVE_POST_MESSAGE_BYTES,
+        max_frame_window_indices = MAX_NATIVE_FRAME_SCRIPT_BINDINGS,
         window_name_bytes_limit = MAX_NATIVE_WINDOW_NAME_BYTES,
         run_timers = run_timers,
         width = viewport.width,

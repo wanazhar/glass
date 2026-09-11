@@ -2677,7 +2677,7 @@ pub(crate) fn execute_page_scripts(
     storage_state: &NativeWebStorageState,
     indexed_db_state: &NativeIndexedDbState,
     cookie: &str,
-    resource_load_nodes: &[u32],
+    resource_events: &[(u32, NativeEventKind)],
 ) -> Result<NativePageScriptResult, NativeEngineError> {
     if runtime.is_none() {
         *runtime = Some(NativeJavaScriptRuntime::new_with_context_id(context_id)?);
@@ -2748,8 +2748,8 @@ pub(crate) fn execute_page_scripts(
         };
         apply_page_script_evaluation(document, evaluation, &mut pending_fetches, &mut navigation)?;
     }
-    for node_index in resource_load_nodes {
-        let Some(event_source) = host_event_script(&[(*node_index, NativeEventKind::Load)])? else {
+    for (node_index, event_kind) in resource_events {
+        let Some(event_source) = host_event_script(&[(*node_index, *event_kind)])? else {
             continue;
         };
         let evaluation = runtime
@@ -2763,7 +2763,7 @@ pub(crate) fn execute_page_scripts(
                 viewport,
             )?;
         apply_page_script_evaluation(document, evaluation, &mut pending_fetches, &mut navigation)?;
-        events.push((*node_index, NativeEventKind::Load));
+        events.push((*node_index, *event_kind));
     }
     runtime
         .as_mut()
@@ -2916,6 +2916,7 @@ pub(crate) fn frame_event_script(
                 NativeEventKind::ReadyStateChange => ("readystatechange", false, false),
                 NativeEventKind::DomContentLoaded => ("DOMContentLoaded", false, false),
                 NativeEventKind::Load => ("load", false, false),
+                NativeEventKind::Error => ("error", false, false),
                 NativeEventKind::PageHide => ("pagehide", false, false),
                 NativeEventKind::Unload => ("unload", false, false),
                 NativeEventKind::PageShow => ("pageshow", false, false),
@@ -3050,6 +3051,7 @@ fn host_event_script_with_submitters(
                 NativeEventKind::ReadyStateChange => ("readystatechange", false, false),
                 NativeEventKind::DomContentLoaded => ("DOMContentLoaded", false, false),
                 NativeEventKind::Load => ("load", false, false),
+                NativeEventKind::Error => ("error", false, false),
                 NativeEventKind::PageHide => ("pagehide", false, false),
                 NativeEventKind::Unload => ("unload", false, false),
                 NativeEventKind::PageShow => ("pageshow", false, false),

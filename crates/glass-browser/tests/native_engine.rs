@@ -33052,6 +33052,35 @@ async fn native_image_element_exposes_complete_intrinsic_dimensions_and_current_
 }
 
 #[tokio::test]
+async fn native_images_expose_accessible_role_and_alt_name() {
+    let source = native_test_png_data_url();
+    let config = NativeEngineConfig::default()
+        .with_initial_url("fixture://image-semantics/page")
+        .with_fixture(
+            "fixture://image-semantics/page",
+            format!(
+                "<img id='logo' alt='Glass logo' src='{source}'><img id='decorative' alt='' src='{source}'>"
+            ),
+        )
+        .unwrap();
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    let nodes = engine.semantic_nodes().unwrap();
+    let logo = nodes
+        .iter()
+        .find(|node| node.role == "img" && node.name == "Glass logo");
+    assert_eq!(logo.map(|node| node.role.as_str()), Some("img"));
+    assert_eq!(logo.map(|node| node.name.as_str()), Some("Glass logo"));
+    let decorative = nodes
+        .iter()
+        .find(|node| node.role == "img" && node.name.is_empty());
+    assert_eq!(decorative.map(|node| node.role.as_str()), Some("img"));
+    assert_eq!(decorative.map(|node| node.name.as_str()), Some(""));
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_loads_external_png_through_document_wire() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

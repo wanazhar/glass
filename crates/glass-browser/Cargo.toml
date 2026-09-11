@@ -66,6 +66,7 @@ getrandom = "0.3"
 libc = "0.2"
 fs2 = "0.4"
 imagesize = { version = "0.15", default-features = false, features = ["jpeg", "png", "webp"] }
+image-webp = "0.2.4"
 sha2 = "0.10"
 zune-jpeg = { version = "0.5.16-rc2", default-features = false, features = ["std"] }
 sysinfo = { version = "0.39", default-features = false, features = ["system"] }

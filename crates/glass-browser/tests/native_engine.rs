@@ -120,6 +120,23 @@ fn native_test_small_jpeg_data_url() -> String {
     "data:image/jpeg;base64,/9j/4AAQSkZJRgABAgAAAQABAAD//gAPTGF2YzYzLjEuMTAxAP/bAEMACAQEBAQEBQUFBQUFBgYGBgYGBgYGBgYGBgcHBwgICAcHBwYGBwcICAgICQkJCAgICAkJCgoKDAwLCw4ODhERFP/EAEwAAQEAAAAAAAAAAAAAAAAAAAAGAQEBAAAAAAAAAAAAAAAAAAAGBxABAAAAAAAAAAAAAAAAAAAAABEBAAAAAAAAAAAAAAAAAAAAAP/AABEIAAIAAgMBIgACEQADEQD/2gAMAwEAAhEDEQA/AIsATX9//9k=".to_owned()
 }
 
+fn native_test_webp_bytes() -> Vec<u8> {
+    vec![
+        0x52, 0x49, 0x46, 0x46, 0x3c, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38,
+        0x20, 0x30, 0x00, 0x00, 0x00, 0xd0, 0x01, 0x00, 0x9d, 0x01, 0x2a, 0x02, 0x00, 0x02, 0x00,
+        0x02, 0x00, 0x34, 0x25, 0xa0, 0x02, 0x74, 0xba, 0x01, 0xf8, 0x00, 0x03, 0xb0, 0x00, 0xfe,
+        0xf0, 0xc4, 0x0b, 0xff, 0x20, 0xb9, 0x61, 0x75, 0xc8, 0xd7, 0xff, 0x20, 0x3f, 0xe4, 0x07,
+        0xfc, 0x80, 0xff, 0xf8, 0xf2, 0x00, 0x00, 0x00,
+    ]
+}
+
+fn native_test_small_webp_data_url() -> String {
+    format!(
+        "data:image/webp;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(native_test_webp_bytes())
+    )
+}
+
 #[tokio::test]
 async fn native_runtime_session_uses_explicit_local_constructor() {
     let session =
@@ -33109,6 +33126,56 @@ async fn native_jpeg_data_images_expose_intrinsic_dimensions_and_paint() {
 }
 
 #[tokio::test]
+async fn native_webp_data_images_expose_intrinsic_dimensions_and_paint() {
+    let source = native_test_small_webp_data_url();
+    let config = NativeEngineConfig::default()
+        .with_initial_url("fixture://webp-image/page")
+        .with_fixture(
+            "fixture://webp-image/page",
+            format!("<img id='image' src='{source}' style='width:2px;height:2px'>"),
+        )
+        .unwrap();
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const image = document.getElementById('image'); return [image.complete, image.naturalWidth, image.naturalHeight, image.currentSrc]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, 2, 2, source])
+    );
+
+    let document = NativeDocument::parse(
+        &format!("<img id='image' src='{source}' style='width:2px;height:2px'>"),
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let image_id = document.resolve_target("id=image").unwrap();
+    let list = document
+        .display_list(Viewport {
+            width: 2,
+            height: 2,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::Image {
+                node_id,
+                source_width: 2,
+                source_height: 2,
+                pixels,
+                ..
+            } if *node_id == image_id && pixels.len() == 2 * 2 * 4
+        )
+    }));
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_images_expose_accessible_role_and_alt_name() {
     let source = native_test_png_data_url();
     let config = NativeEngineConfig::default()
@@ -33284,6 +33351,53 @@ async fn native_content_process_loads_jpeg_picture_source() {
             .await
             .unwrap(),
         serde_json::json!([true, 240, 426, format!("http://{address}/photo.jpg")])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_loads_webp_picture_source() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let webp = native_test_webp_bytes();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/photo.webp"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            if expected_path == "/photo.webp" {
+                let headers = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: image/webp\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    webp.len()
+                );
+                stream.write_all(headers.as_bytes()).await.unwrap();
+                stream.write_all(&webp).await.unwrap();
+            } else {
+                let body = "<picture><source type='image/webp' srcset='/photo.webp 1x'><img id='image' src='/fallback.png' alt='photo'></picture>";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const image = document.getElementById('image'); return [image.complete, image.naturalWidth, image.naturalHeight, image.currentSrc]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, 2, 2, format!("http://{address}/photo.webp")])
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

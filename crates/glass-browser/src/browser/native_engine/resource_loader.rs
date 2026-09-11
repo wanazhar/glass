@@ -2268,6 +2268,8 @@ fn supported_image_media_type(
         Some("image/png")
     } else if media_type.eq_ignore_ascii_case("image/jpeg") {
         Some("image/jpeg")
+    } else if media_type.eq_ignore_ascii_case("image/webp") {
+        Some("image/webp")
     } else {
         None
     })

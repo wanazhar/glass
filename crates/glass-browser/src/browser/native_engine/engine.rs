@@ -1798,7 +1798,7 @@ impl NativeEngine {
             validate_url_text("popup window handle", handle)?;
         }
         if popup.source_context_id.is_empty() {
-            popup.source_context_id = self.frame_id.clone();
+            popup.source_context_id = self.config.context_id.clone();
         } else {
             super::config::validate_context_id(&popup.source_context_id)?;
         }
@@ -1852,7 +1852,7 @@ impl NativeEngine {
             ));
         }
         if message.source_context_id.is_empty() {
-            message.source_context_id = self.frame_id.clone();
+            message.source_context_id = self.config.context_id.clone();
         } else {
             super::config::validate_context_id(&message.source_context_id)?;
         }
@@ -1905,7 +1905,7 @@ impl NativeEngine {
             super::config::validate_context_id(target_context_id)?;
         }
         if request.source_context_id.is_empty() {
-            request.source_context_id = self.frame_id.clone();
+            request.source_context_id = self.config.context_id.clone();
         } else {
             super::config::validate_context_id(&request.source_context_id)?;
         }
@@ -1948,7 +1948,7 @@ impl NativeEngine {
             super::config::validate_context_id(target_context_id)?;
         }
         if request.source_context_id.is_empty() {
-            request.source_context_id = self.frame_id.clone();
+            request.source_context_id = self.config.context_id.clone();
         } else {
             super::config::validate_context_id(&request.source_context_id)?;
         }

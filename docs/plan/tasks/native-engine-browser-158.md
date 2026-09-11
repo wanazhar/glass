@@ -33,8 +33,9 @@ metadata was not transferred with the real frame identity.
   content worker validates the current frame identity before installing it;
 - the content-worker wire advances to protocol 7 so a mismatched helper cannot
   silently construct a realm with the wrong frame identity;
-- frame IDs used by popup, message, close, and navigation effects remain
-  frame-scoped while storage ownership continues to use the target context ID.
+- frame-target routes accept frame IDs, while popup and target-owner message,
+  close, and navigation effects retain the target context ID; storage
+  ownership remains target-owned as well.
 
 ## Deliberate boundary and tradeoffs
 

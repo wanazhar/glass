@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-174` locally. The versioned
+`native-engine-browser-175` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1647,6 +1647,16 @@ commands produce records before `FrameScriptBatch` handoff, including detached
 projected targets. Independent child-task effects, layout/resource observers,
 complete resource scheduling, Web IDL, and browser-wide parity remain issue #40
 gates.
+
+The completed native-engine-browser-175 slice connects page-script geometry to
+the Rust-owned layout snapshot. Local, process-backed, and projected
+same-origin frame elements expose DOMRect, client/offset/scroll dimensions, and
+bounded `ResizeObserver` records at the existing Promise-job checkpoint;
+position-only root scrolling does not create resize records. Content-worker
+scroll synchronization keeps process-backed `getBoundingClientRect()` values
+aligned with the visible viewport. Layout/resource observer breadth, complete
+resource scheduling, fractional geometry, Web IDL descriptor parity, and
+browser-wide parity remain issue #40 gates.
 
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and

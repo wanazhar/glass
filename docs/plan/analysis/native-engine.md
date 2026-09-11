@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-174`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-175`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
@@ -3314,6 +3314,16 @@ validated `FrameScriptBatch` handoff. Detached projected targets remain
 observable without leaking native pointers; independent child-task effects,
 layout/resource observers, complete scheduling, Window/Web IDL parity, and
 browser-complete promotion remain issue #40 gates.
+
+The completed native-engine-browser-175 slice adds the first layout-backed
+script geometry contract. `NativeLayoutSnapshot` border/content boxes are
+serialized into local and process-backed script snapshots; DOMRect,
+`getClientRects()`, element dimensions, and bounded `ResizeObserver` entries
+reuse that source of truth. Resize delivery runs at the existing Promise-job
+checkpoint, ignores position-only root scrolling, and follows content-worker
+scroll synchronization. Fractional CSS geometry, broader layout/resource
+observer semantics, complete resource scheduling, Web IDL descriptor parity,
+and browser-complete promotion remain tracked issue-40 work.
 
 The completed native-engine-browser-169 slice adds frame-qualified EventTarget
 behavior to same-origin projected elements, detached projected elements,

@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-175` slice; the bounded foundation below remains
+`native-engine-browser-176` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -1738,6 +1738,16 @@ offsets are synchronized before script/input evaluation, and position-only
 scrolling does not trigger resize records. Resource/layout observer breadth,
 fractional geometry, complete scheduling, Web IDL descriptor parity, and
 browser-wide parity remain issue-40 promotion gates.
+
+The completed native-engine-browser-176 slice extends the same host-owned
+checkpoint with persistent `requestAnimationFrame`/`cancelAnimationFrame`,
+navigation-scoped `performance.now()`, and bounded `IntersectionObserver`
+entries. Threshold crossings are computed from the current viewport/root
+intersection over the Rust layout snapshot and delivered as Promise jobs;
+content-worker and projected same-origin realms retain the existing typed
+geometry/scroll ownership. Independent vsync, fractional/composited layout,
+resource observers, complete scheduling, Web IDL descriptor parity, and
+browser-wide parity remain open promotion gates.
 
 The completed native-engine-browser-169 slice adds frame-qualified EventTarget
 behavior to same-origin projected elements, detached projected elements,

@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-175`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-176`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
@@ -3324,6 +3324,16 @@ checkpoint, ignores position-only root scrolling, and follows content-worker
 scroll synchronization. Fractional CSS geometry, broader layout/resource
 observer semantics, complete resource scheduling, Web IDL descriptor parity,
 and browser-complete promotion remain tracked issue-40 work.
+
+The completed native-engine-browser-176 slice adds the next layout-observer
+and scheduling surface. Persistent bounded animation-frame callbacks use the
+realm monotonic clock, `performance.now()` exposes that clock, and
+`IntersectionObserver` computes initial/threshold-crossing entries from the
+current Rust geometry and scroll snapshot. Local and process-backed realms
+share the delivery checkpoint and limits; independent rendering/vsync,
+fractional/composited geometry, resource observers, complete scheduling, Web
+IDL descriptor parity, and browser-complete promotion remain tracked issue-40
+work.
 
 The completed native-engine-browser-169 slice adds frame-qualified EventTarget
 behavior to same-origin projected elements, detached projected elements,

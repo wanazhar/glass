@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-211`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-212`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 205
 slice carries bounded quadratic/cubic SVG path geometry through shared path
 parsing, flattening, layout, display-list, raster, clipping, and capture
@@ -3513,6 +3513,18 @@ responsive sources, CSS/SVG image resources, animation, and additional image
 formats remain active issue #40 work. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-211.md`.
 
+The completed native-engine-browser-212 slice makes external PNG image state
+reactive to content-worker script mutations. A shared asynchronous hydration
+pass walks current external image sources after each script command batch,
+retains matching node/source resources, applies the existing HTTP(S), CSP,
+mixed-content, referrer, cookie, and redirect policy to new or changed
+sources, and transfers successful RGBA pixels through the typed mutation
+snapshot. The persistent realm receives image `load` events before commit;
+failed images are non-fatal. Decoded caching, recursive loads caused by
+handlers, responsive sources, CSS/SVG image resources, animation, and other
+formats remain active issue #40 work. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-212.md`.
+
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame
 realms. `document.createAttribute()` creates persistent `Attr` objects;
@@ -4589,8 +4601,10 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-198.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-197.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-196.md` is the preceding completed task;
-`docs/plan/tasks/native-engine-browser-211.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-212.md` is the latest completed browser
 task;
+`docs/plan/tasks/native-engine-browser-211.md` is the preceding completed
+browser task;
 `docs/plan/tasks/native-engine-browser-210.md` is the preceding completed
 browser task;
 `docs/plan/tasks/native-engine-browser-209.md` is the preceding completed

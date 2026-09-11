@@ -33017,6 +33017,41 @@ fn native_inline_png_background_images_share_css_paint_and_capture() {
 }
 
 #[tokio::test]
+async fn native_image_element_exposes_complete_intrinsic_dimensions_and_current_src() {
+    let source = native_test_png_data_url();
+    let config = NativeEngineConfig::default()
+        .with_initial_url("fixture://image-properties/page")
+        .with_fixture(
+            "fixture://image-properties/page",
+            format!(
+                "<img id='image' src='{source}'><img id='empty'><script>globalThis.imageProperties = () => {{ const image = document.getElementById('image'); const empty = document.getElementById('empty'); return [image.complete, image.naturalWidth, image.naturalHeight, image.currentSrc, empty.complete, empty.naturalWidth, empty.naturalHeight, empty.currentSrc]; }};</script>"
+            ),
+        )
+        .unwrap();
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.imageProperties()")
+            .await
+            .unwrap(),
+        serde_json::json!([true, 2, 2, source, true, 0, 0, ""])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const image = document.getElementById('image'); image.src = ''; return [image.complete, image.naturalWidth, image.naturalHeight, image.currentSrc]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, 0, 0, ""])
+    );
+
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_loads_external_png_through_document_wire() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -33094,6 +33129,15 @@ async fn native_content_process_loads_external_png_through_document_wire() {
             .await
             .unwrap(),
         serde_json::json!(1)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const image = document.getElementById('image'); return [image.complete, image.naturalWidth, image.naturalHeight, image.currentSrc]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, 2, 2, format!("http://{address}/image.png")])
     );
 
     engine.close_async().await.unwrap();

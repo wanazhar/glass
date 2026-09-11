@@ -4420,6 +4420,7 @@ async fn load_external_images(
         if document.image_resource_for_node(node_id).is_some() {
             continue;
         }
+        document.mark_image_load(node_index, source.clone())?;
         match loader.load_image_async(document_url, &source).await {
             Ok(Some(image)) => {
                 document.set_image_resource(node_index, source, image)?;
@@ -5767,6 +5768,7 @@ async fn mutate_script_document(
     let mut history = Vec::new();
     let mut next = current.clone();
     let mut events = next.apply_script_commands_allowing_links(commands)?;
+    next.refresh_image_loads();
     next.refresh_background_image_sources();
     let validation_ids = events
         .iter()
@@ -5816,6 +5818,7 @@ async fn mutate_script_document(
             NativeEventKind::Load,
         ));
     }
+    next.refresh_image_loads();
     next.refresh_background_image_sources();
     let mut navigation = script_navigation_target(&next, &document_url, commands)?;
     if let Some(ScriptNavigationTarget::Form {

@@ -4,7 +4,7 @@ use super::diagnostics::{NativeDiagnostic, NativeDiagnosticSink, NativeDiagnosti
 use super::error::NativeEngineError;
 use super::image::{
     MAX_NATIVE_IMAGE_TRANSFER_BYTES, MAX_NATIVE_IMAGE_TRANSFER_PIXELS, NativeImage,
-    NativeImageResource,
+    NativeImageResource, decode_data_image,
 };
 use super::interaction::{NativeEventKind, validate_native_edit_key, validate_native_key};
 use super::javascript::NativeScriptCommand;
@@ -144,11 +144,19 @@ pub(crate) struct NativeDocumentWire {
     pub(crate) background_image_sources: Vec<NativeBackgroundImageSourceWire>,
     #[serde(default)]
     pub(crate) background_image_resources: Vec<NativeImageResourceWire>,
+    #[serde(default)]
+    pub(crate) image_loads: Vec<NativeImageLoadWire>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct NativeBackgroundImageSourceWire {
     pub(crate) source_id: u32,
+    pub(crate) source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct NativeImageLoadWire {
+    pub(crate) node_index: u32,
     pub(crate) source: String,
 }
 
@@ -382,6 +390,12 @@ pub(crate) struct NativeScriptElementSnapshot {
     pub(crate) selection_start: Option<usize>,
     pub(crate) selection_end: Option<usize>,
     pub(crate) selection_direction: Option<String>,
+    #[serde(default)]
+    pub(crate) image_complete: bool,
+    #[serde(default)]
+    pub(crate) image_natural_width: u32,
+    #[serde(default)]
+    pub(crate) image_natural_height: u32,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq, Serialize)]
@@ -444,6 +458,7 @@ pub struct NativeDocument {
     diagnostics_truncated: bool,
     script_node_ids: BTreeMap<u32, NativeNodeId>,
     image_resources: BTreeMap<u32, NativeImageResource>,
+    image_loads: BTreeMap<u32, String>,
     background_image_sources: BTreeMap<u32, String>,
     background_image_resources: BTreeMap<u32, NativeImageResource>,
 }
@@ -501,6 +516,7 @@ impl NativeDocument {
             diagnostics_truncated: false,
             script_node_ids: BTreeMap::new(),
             image_resources: BTreeMap::new(),
+            image_loads: BTreeMap::new(),
             background_image_sources: BTreeMap::new(),
             background_image_resources: BTreeMap::new(),
         };
@@ -704,6 +720,65 @@ impl NativeDocument {
                 (node.element_name() == Some("img")).then_some((node.id().index(), source))
             })
             .collect()
+    }
+
+    pub(crate) fn image_properties(&self, node_id: NativeNodeId) -> Option<(bool, u32, u32)> {
+        let node = self.node(node_id)?;
+        if node.element_name() != Some("img") {
+            return None;
+        }
+        let Some(source) = node.attribute("src") else {
+            return Some((true, 0, 0));
+        };
+        if source.is_empty() {
+            return Some((true, 0, 0));
+        }
+        if let Some(image) = self.image_resource_for_node(node_id) {
+            return Some((true, image.width, image.height));
+        }
+        if let Some(image) = decode_data_image(source) {
+            return Some((true, image.width, image.height));
+        }
+        Some((
+            self.image_loads
+                .get(&node_id.index())
+                .is_some_and(|loaded_source| loaded_source == source),
+            0,
+            0,
+        ))
+    }
+
+    pub(crate) fn mark_image_load(
+        &mut self,
+        node_index: u32,
+        source: String,
+    ) -> Result<(), NativeEngineError> {
+        let node_id = NativeNodeId::from_parts(self.generation, node_index);
+        let node = self
+            .node(node_id)
+            .ok_or(NativeEngineError::DetachedTarget)?;
+        if node.element_name() != Some("img") || node.attribute("src") != Some(source.as_str()) {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "image load state does not match its image element".into(),
+            });
+        }
+        self.image_loads.insert(node_index, source);
+        Ok(())
+    }
+
+    pub(crate) fn refresh_image_loads(&mut self) {
+        let retained = self
+            .image_loads
+            .iter()
+            .filter_map(|(node_index, source)| {
+                let node_id = NativeNodeId::from_parts(self.generation, *node_index);
+                let node = self.node(node_id)?;
+                (node.element_name() == Some("img")
+                    && node.attribute("src") == Some(source.as_str()))
+                .then(|| (*node_index, source.clone()))
+            })
+            .collect();
+        self.image_loads = retained;
     }
 
     pub(crate) fn background_image_source_for_node(&self, node_id: NativeNodeId) -> Option<&str> {
@@ -929,6 +1004,19 @@ impl NativeDocument {
                 })
             })
             .collect();
+        let image_loads = self
+            .image_loads
+            .iter()
+            .filter_map(|(node_index, source)| {
+                let node = self.node(NativeNodeId::from_parts(self.generation, *node_index))?;
+                (node.element_name() == Some("img")
+                    && node.attribute("src") == Some(source.as_str()))
+                .then(|| NativeImageLoadWire {
+                    node_index: *node_index,
+                    source: source.clone(),
+                })
+            })
+            .collect();
         let background_image_sources = self
             .background_image_sources
             .iter()
@@ -968,6 +1056,7 @@ impl NativeDocument {
             image_resources,
             background_image_sources,
             background_image_resources,
+            image_loads,
         }
     }
 
@@ -1382,6 +1471,50 @@ impl NativeDocument {
                 });
             }
         }
+        if wire.image_loads.len() > limits.max_nodes {
+            return Err(NativeEngineError::limit(
+                "content-process image load states",
+                limits.max_nodes,
+                wire.image_loads.len(),
+            ));
+        }
+        let mut image_loads = BTreeMap::new();
+        for load in wire.image_loads {
+            if load.source.is_empty()
+                || load.source.len() > MAX_ATTRIBUTE_BYTES
+                || load.source.bytes().any(|byte| byte.is_ascii_control())
+            {
+                return Err(NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned an invalid image load source".into(),
+                });
+            }
+            let node_index =
+                usize::try_from(load.node_index).map_err(|_| NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned an invalid image load node index".into(),
+                })?;
+            let node = nodes
+                .get(node_index)
+                .ok_or_else(|| NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned an out-of-range image load node index".into(),
+                })?;
+            if node.element_name() != Some("img")
+                || node.attribute("src") != Some(load.source.as_str())
+            {
+                return Err(NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned an image load for a different node".into(),
+                });
+            }
+            if image_loads.insert(load.node_index, load.source).is_some() {
+                return Err(NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned duplicate image load states".into(),
+                });
+            }
+        }
         let root = NativeNodeId {
             generation,
             index: 0,
@@ -1444,6 +1577,7 @@ impl NativeDocument {
             diagnostics_truncated,
             script_node_ids,
             image_resources,
+            image_loads,
             background_image_sources,
             background_image_resources,
         };
@@ -1518,6 +1652,7 @@ impl NativeDocument {
             diagnostics_truncated: false,
             script_node_ids: BTreeMap::new(),
             image_resources: BTreeMap::new(),
+            image_loads: BTreeMap::new(),
             background_image_sources: BTreeMap::new(),
             background_image_resources: BTreeMap::new(),
         }
@@ -1662,6 +1797,8 @@ impl NativeDocument {
                     .selection_snapshot(node.id())
                     .map(|(start, end, direction)| (Some(start), Some(end), Some(direction)))
                     .unwrap_or((None, None, None));
+                let (image_complete, image_natural_width, image_natural_height) =
+                    self.image_properties(node.id()).unwrap_or((false, 0, 0));
                 Some(NativeScriptElementSnapshot {
                     node_index: node.id().index(),
                     parent_index: self.parent_element_index(node.id()),
@@ -1685,6 +1822,9 @@ impl NativeDocument {
                     selection_start,
                     selection_end,
                     selection_direction,
+                    image_complete,
+                    image_natural_width,
+                    image_natural_height,
                 })
             })
             .collect();

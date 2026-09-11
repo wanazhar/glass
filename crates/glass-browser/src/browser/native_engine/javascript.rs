@@ -8601,7 +8601,7 @@ fn document_bootstrap(
       set(next) {{ element.setAttribute(attribute, String(next)); }},
     }});
   }};
-  const installUrlAttributeProperty = (element, property, attribute, baseUrl) => {{
+  const installUrlAttributeProperty = (element, property, attribute, baseUrl, onSet = null) => {{
     Object.defineProperty(element, property, {{
       enumerable: true,
       configurable: false,
@@ -8610,7 +8610,11 @@ fn document_bootstrap(
         if (value === null || value === "") return "";
         try {{ return new URLNative(value, baseUrl).href; }} catch (_error) {{ return value; }}
       }},
-      set(next) {{ element.setAttribute(attribute, String(next)); }},
+      set(next) {{
+        const value = String(next);
+        element.setAttribute(attribute, value);
+        if (typeof onSet === "function") onSet(value === "");
+      }},
     }});
   }};
   const installCommonAttributeProperties = (element, state = {{}}, baseUrl = host.url) => {{
@@ -8635,9 +8639,46 @@ fn document_bootstrap(
     if (["A", "AREA", "BASE", "LINK"].includes(element.tagName))
       installUrlAttributeProperty(element, "href", "href", baseUrl);
     if (["IMG", "SCRIPT", "IFRAME", "FRAME", "EMBED", "SOURCE", "TRACK", "AUDIO", "VIDEO"].includes(element.tagName))
-      installUrlAttributeProperty(element, "src", "src", baseUrl);
+      installUrlAttributeProperty(element, "src", "src", baseUrl,
+        element.tagName === "IMG" ? state.imageReset : null);
     if (element.tagName === "FORM")
       installUrlAttributeProperty(element, "action", "action", baseUrl);
+    if (element.tagName === "IMG") {{
+      const imageState = () => ({{
+        complete: typeof state.imageComplete === "function"
+          ? Boolean(state.imageComplete())
+          : !element.hasAttribute("src"),
+        naturalWidth: typeof state.imageNaturalWidth === "function"
+          ? Number(state.imageNaturalWidth()) || 0
+          : 0,
+        naturalHeight: typeof state.imageNaturalHeight === "function"
+          ? Number(state.imageNaturalHeight()) || 0
+          : 0,
+      }});
+      Object.defineProperty(element, "complete", {{
+        enumerable: true,
+        configurable: false,
+        get() {{ return imageState().complete; }},
+      }});
+      Object.defineProperty(element, "naturalWidth", {{
+        enumerable: true,
+        configurable: false,
+        get() {{ return imageState().naturalWidth; }},
+      }});
+      Object.defineProperty(element, "naturalHeight", {{
+        enumerable: true,
+        configurable: false,
+        get() {{ return imageState().naturalHeight; }},
+      }});
+      Object.defineProperty(element, "currentSrc", {{
+        enumerable: true,
+        configurable: false,
+        get() {{
+          const value = element.getAttribute("src");
+          return value === null || value === "" ? "" : element.src;
+        }},
+      }});
+    }}
     Object.defineProperty(element, "type", {{
       enumerable: true,
       configurable: false,
@@ -9057,6 +9098,16 @@ fn document_bootstrap(
     let disabled = Boolean(entry.disabled);
     let hidden = Boolean(entry.hidden);
     let multiple = Object.prototype.hasOwnProperty.call(entry.attributes, "multiple");
+    let imageComplete = entry.imageComplete === undefined
+      ? !Object.prototype.hasOwnProperty.call(entry.attributes, "src")
+      : Boolean(entry.imageComplete);
+    let imageNaturalWidth = Number(entry.imageNaturalWidth) || 0;
+    let imageNaturalHeight = Number(entry.imageNaturalHeight) || 0;
+    const resetImageState = (complete = false) => {{
+      imageComplete = complete;
+      imageNaturalWidth = 0;
+      imageNaturalHeight = 0;
+    }};
     if (!entry.attributeNamespaces || typeof entry.attributeNamespaces !== "object") entry.attributeNamespaces = {{}};
     const setNamespacedAttribute = (namespace, name, nextValue) => {{
       const namespaceURI = normalizeAttributeNamespace(namespace);
@@ -9283,6 +9334,7 @@ fn document_bootstrap(
         const stringValue = String(value);
         entry.attributes[key] = stringValue;
         delete entry.attributeNamespaces[key];
+        if (key === "src" && element.tagName === "IMG") resetImageState(stringValue === "");
         if (key === "disabled") disabled = true;
         if (key === "hidden") hidden = true;
         if (key === "multiple") multiple = true;
@@ -9296,6 +9348,7 @@ fn document_bootstrap(
         const key = String(name).toLowerCase();
         delete entry.attributes[key];
         delete entry.attributeNamespaces[key];
+        if (key === "src" && element.tagName === "IMG") resetImageState(true);
         if (key === "disabled") disabled = false;
         if (key === "hidden") hidden = false;
         if (key === "multiple") multiple = false;
@@ -9546,6 +9599,10 @@ fn document_bootstrap(
       disabled: () => disabled,
       hidden: () => hidden,
       multiple: () => multiple,
+      imageComplete: () => imageComplete,
+      imageNaturalWidth: () => imageNaturalWidth,
+      imageNaturalHeight: () => imageNaturalHeight,
+      imageReset: resetImageState,
     }});
     Object.defineProperty(element, "__glassAttributeSource", {{
       enumerable: false,
@@ -9695,6 +9752,11 @@ fn document_bootstrap(
         selectionDirection = nextEntry.selectionDirection || "none";
         checked = nextEntry.checked;
         selected = nextEntry.selected;
+        imageComplete = nextEntry.imageComplete === undefined
+          ? !Object.prototype.hasOwnProperty.call(nextEntry.attributes, "src")
+          : Boolean(nextEntry.imageComplete);
+        imageNaturalWidth = Number(nextEntry.imageNaturalWidth) || 0;
+        imageNaturalHeight = Number(nextEntry.imageNaturalHeight) || 0;
         if (typeof element.__glassSyncAttributeNodes === "function") element.__glassSyncAttributeNodes();
       }}
     }});
@@ -9728,6 +9790,9 @@ fn document_bootstrap(
       selectionStart: null,
       selectionEnd: null,
       selectionDirection: "none",
+      imageComplete: true,
+      imageNaturalWidth: 0,
+      imageNaturalHeight: 0,
     }};
     const element = makeElement(entry);
     element.__glassCreated = true;

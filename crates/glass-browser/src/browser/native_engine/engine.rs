@@ -18,17 +18,18 @@ use super::interaction::{
     validate_native_edit_key, validate_native_key,
 };
 use super::javascript::{
-    MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_DIALOGS, MAX_NATIVE_SCRIPT_BYTES,
-    NativeCookieProfileEntry, NativeDialog, NativeFrameScriptBinding, NativeFrameScriptContext,
-    NativeFrameScriptRequest, NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime,
-    NativePageNavigation, NativePopupRequest, NativePostMessageRequest, NativeScriptCommand,
-    NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState, NativeWindowCloseRequest,
-    NativeWindowNavigationRequest, NativeWindowProxyUpdate, append_storage_changes,
-    apply_indexed_db_changes, diff_indexed_db_changes, execute_inline_scripts, frame_event_script,
-    host_event_script, host_hash_change_event_script, host_message_event_script,
-    host_submit_event_script, load_indexed_db_profile, load_web_storage_profile,
-    new_storage_writer_id, read_storage_event_journal, register_storage_reader,
-    save_web_storage_profile, storage_event_cursor, storage_key, unregister_storage_reader,
+    MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_DIALOGS, MAX_NATIVE_HISTORY_STATE_BYTES,
+    MAX_NATIVE_SCRIPT_BYTES, NativeCookieProfileEntry, NativeDialog, NativeFrameScriptBinding,
+    NativeFrameScriptContext, NativeFrameScriptRequest, NativeIndexedDbChange,
+    NativeIndexedDbState, NativeJavaScriptRuntime, NativePageNavigation, NativePopupRequest,
+    NativePostMessageRequest, NativeScriptCommand, NativeScriptEvaluation, NativeStorageEvent,
+    NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
+    NativeWindowProxyUpdate, append_storage_changes, apply_indexed_db_changes,
+    diff_indexed_db_changes, execute_inline_scripts, frame_event_script, host_event_script,
+    host_hash_change_event_script, host_message_event_script, host_submit_event_script,
+    load_indexed_db_profile, load_web_storage_profile, new_storage_writer_id,
+    read_storage_event_journal, register_storage_reader, save_web_storage_profile,
+    storage_event_cursor, storage_key, unregister_storage_reader,
 };
 use super::layout::{NativeLayoutSnapshot, NativePoint, NativeRect};
 use super::lifecycle::NativeLifecycleState;
@@ -57,6 +58,7 @@ const MAX_NATIVE_PENDING_POPUPS: usize = 8;
 const MAX_NATIVE_COMPLETED_DOWNLOAD_IDS: usize = 8;
 const MAX_NATIVE_DOWNLOAD_FILENAME_BYTES: usize = 128;
 const MAX_NATIVE_DOWNLOAD_DEADLINE: Duration = Duration::from_secs(30);
+const MAX_NATIVE_HISTORY_DELTA: i32 = 1024;
 
 #[derive(Debug)]
 struct NativeRequestLedger {
@@ -1449,6 +1451,7 @@ impl NativeEngine {
             .expect("local JavaScript runtime initialized")
             .set_cookie_state(cookie);
         self.sync_javascript_scroll_offset();
+        self.sync_javascript_history();
         let evaluation = self
             .javascript
             .as_ref()
@@ -2724,6 +2727,7 @@ impl NativeEngine {
                 reason: "script fetch requires a process-backed HTTP(S) document".into(),
             });
         }
+        let history_commands = self.prepare_local_history_commands(commands)?;
         let mut document = self.document.clone();
         let mut events = if allow_script_navigation {
             document.apply_script_commands_allowing_links(commands)?
@@ -2786,11 +2790,48 @@ impl NativeEngine {
                 navigation = None;
             }
         }
+        if history_commands
+            .iter()
+            .any(|command| matches!(command, LocalHistoryCommand::Go(_)))
+            && navigation.is_some()
+        {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "history traversal cannot share a script batch with navigation".into(),
+            });
+        }
         let next_revision = self.next_revision()?;
         document.set_revision(next_revision);
         self.document = document;
         self.revision = next_revision;
         self.history.update_current_scroll(self.scroll_offset);
+        let mut history_traversal = None;
+        for command in &history_commands {
+            match command {
+                LocalHistoryCommand::PushState { url, state } => {
+                    self.url = url.clone();
+                    self.history.push_with_state(
+                        url.clone(),
+                        next_revision,
+                        self.scroll_offset,
+                        state.clone(),
+                        true,
+                    );
+                    self.sync_javascript_history();
+                }
+                LocalHistoryCommand::ReplaceState { url, state } => {
+                    self.url = url.clone();
+                    self.history.replace_current_with_state(
+                        url.clone(),
+                        next_revision,
+                        self.scroll_offset,
+                        state.clone(),
+                        true,
+                    );
+                    self.sync_javascript_history();
+                }
+                LocalHistoryCommand::Go(delta) => history_traversal = Some(*delta),
+            }
+        }
         self.record_effects(events);
         let navigation = match navigation {
             Some(ScriptNavigationTarget::Link { href, popup }) => {
@@ -2818,7 +2859,70 @@ impl NativeEngine {
             }
             None => None,
         };
+        if let Some(delta) = history_traversal
+            && delta != 0
+        {
+            self.traverse_history_delta(delta)?;
+        }
         Ok(navigation)
+    }
+
+    fn prepare_local_history_commands(
+        &self,
+        commands: &[super::javascript::NativeScriptCommand],
+    ) -> Result<Vec<LocalHistoryCommand>, NativeEngineError> {
+        let mut prepared = Vec::new();
+        let mut base_url = self.url.clone();
+        let mut traversal_seen = false;
+        for command in commands {
+            let prepared_command = match command {
+                super::javascript::NativeScriptCommand::HistoryPushState { href, state } => {
+                    if traversal_seen {
+                        return Err(NativeEngineError::TargetNotActionable {
+                            reason:
+                                "history state mutation cannot follow traversal in one script batch"
+                                    .into(),
+                        });
+                    }
+                    let url = self.resolve_history_href_from(&base_url, href)?;
+                    validate_history_state(state)?;
+                    base_url = url.clone();
+                    LocalHistoryCommand::PushState {
+                        url,
+                        state: state.clone(),
+                    }
+                }
+                super::javascript::NativeScriptCommand::HistoryReplaceState { href, state } => {
+                    if traversal_seen {
+                        return Err(NativeEngineError::TargetNotActionable {
+                            reason:
+                                "history state mutation cannot follow traversal in one script batch"
+                                    .into(),
+                        });
+                    }
+                    let url = self.resolve_history_href_from(&base_url, href)?;
+                    validate_history_state(state)?;
+                    base_url = url.clone();
+                    LocalHistoryCommand::ReplaceState {
+                        url,
+                        state: state.clone(),
+                    }
+                }
+                super::javascript::NativeScriptCommand::HistoryGo { delta } => {
+                    if traversal_seen {
+                        return Err(NativeEngineError::TargetNotActionable {
+                            reason: "a script batch cannot request multiple history traversals"
+                                .into(),
+                        });
+                    }
+                    traversal_seen = true;
+                    LocalHistoryCommand::Go(*delta)
+                }
+                _ => continue,
+            };
+            prepared.push(prepared_command);
+        }
+        Ok(prepared)
     }
 
     fn script_navigation_target(
@@ -3402,6 +3506,7 @@ impl NativeEngine {
             .as_ref()
             .expect("local JavaScript runtime is present")
             .set_scroll_offset(self.scroll_offset);
+        self.sync_javascript_history();
         let evaluation = self
             .javascript
             .as_ref()
@@ -3453,6 +3558,7 @@ impl NativeEngine {
             return Ok(None);
         };
         javascript.set_scroll_offset(self.scroll_offset);
+        self.sync_javascript_history();
         let evaluation = javascript.evaluate(
             &source,
             document,
@@ -3481,6 +3587,7 @@ impl NativeEngine {
             return Ok(None);
         };
         javascript.set_scroll_offset(self.scroll_offset);
+        self.sync_javascript_history();
         let evaluation = javascript.evaluate(
             &source,
             document,
@@ -3515,6 +3622,7 @@ impl NativeEngine {
             return Ok(None);
         };
         javascript.set_scroll_offset(self.scroll_offset);
+        self.sync_javascript_history();
         let evaluation = javascript.evaluate(
             &source,
             document,
@@ -4064,7 +4172,9 @@ impl NativeEngine {
             self.scroll_offset = scroll_offset;
             self.sync_javascript_scroll_offset();
             self.revision = revision;
-            self.history.push(resource.url, revision, scroll_offset);
+            self.history
+                .push_same_document(resource.url, revision, scroll_offset);
+            self.sync_javascript_history();
             self.record_effects(events);
             return Ok(NativeActionResult {
                 revision,
@@ -4120,6 +4230,37 @@ impl NativeEngine {
             return Ok(resolved);
         }
         resolve_fixture_relative_url(&self.url, href)
+    }
+
+    fn resolve_history_href_from(
+        &self,
+        base_url: &str,
+        href: &str,
+    ) -> Result<String, NativeEngineError> {
+        validate_url_text("history URL", href)?;
+        let target = self.resolve_page_navigation_href(base_url, href)?;
+        let base = url::Url::parse(base_url).map_err(|_| NativeEngineError::UnsupportedUrl {
+            reason: "history base URL is malformed".into(),
+        })?;
+        let target_url =
+            url::Url::parse(&target).map_err(|_| NativeEngineError::UnsupportedUrl {
+                reason: "history target URL is malformed".into(),
+            })?;
+        let target_origin = NativeOrigin::from_url(&target_url)?;
+        let same_origin = if self.origin == NativeOrigin::Opaque {
+            target_origin == NativeOrigin::Opaque
+                && base.scheme() == target_url.scheme()
+                && base.host_str() == target_url.host_str()
+                && base.port_or_known_default() == target_url.port_or_known_default()
+        } else {
+            target_origin == self.origin
+        };
+        if !same_origin {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "history URL must be same-origin".into(),
+            });
+        }
+        Ok(target)
     }
 
     fn resolve_page_navigation_href(
@@ -4477,6 +4618,7 @@ impl NativeEngine {
                 });
             }
         }
+        self.sync_javascript_history();
         self.flush_pending_lifecycle_effects();
         self.record_initial_events(initial_events)?;
         if let Some(javascript) = self.javascript.as_mut() {
@@ -4598,6 +4740,7 @@ impl NativeEngine {
                 });
             }
         }
+        self.sync_javascript_history();
         self.flush_pending_lifecycle_effects();
         self.record_initial_events(initial_events)?;
         if execute_page_scripts {
@@ -4645,8 +4788,16 @@ impl NativeEngine {
         self.revision = revision;
         let traversing_history = matches!(&history_commit, HistoryCommit::Activate(_));
         match history_commit {
-            HistoryCommit::Push => self.history.push(url, revision, scroll_offset),
-            HistoryCommit::Replace => self.history.replace_current(url, revision, scroll_offset),
+            HistoryCommit::Push => self
+                .history
+                .push_same_document(url, revision, scroll_offset),
+            HistoryCommit::Replace => self.history.replace_current_with_state(
+                url,
+                revision,
+                scroll_offset,
+                serde_json::Value::Null,
+                true,
+            ),
             HistoryCommit::Activate(index) => {
                 self.history.activate(index, revision).ok_or_else(|| {
                     NativeEngineError::Scheduler {
@@ -4655,6 +4806,7 @@ impl NativeEngine {
                 })?;
             }
         }
+        self.sync_javascript_history();
         let mut navigation = if traversing_history {
             self.dispatch_local_pop_state()?
         } else {
@@ -4706,8 +4858,16 @@ impl NativeEngine {
         self.revision = revision;
         let traversing_history = matches!(&history_commit, HistoryCommit::Activate(_));
         match history_commit {
-            HistoryCommit::Push => self.history.push(url, revision, scroll_offset),
-            HistoryCommit::Replace => self.history.replace_current(url, revision, scroll_offset),
+            HistoryCommit::Push => self
+                .history
+                .push_same_document(url, revision, scroll_offset),
+            HistoryCommit::Replace => self.history.replace_current_with_state(
+                url,
+                revision,
+                scroll_offset,
+                serde_json::Value::Null,
+                true,
+            ),
             HistoryCommit::Activate(index) => {
                 self.history.activate(index, revision).ok_or_else(|| {
                     NativeEngineError::Scheduler {
@@ -4716,6 +4876,7 @@ impl NativeEngine {
                 })?;
             }
         }
+        self.sync_javascript_history();
         let mut navigation = if traversing_history {
             self.dispatch_content_events_async(&[NativeEventKind::PopState])
                 .await?
@@ -4878,6 +5039,15 @@ impl NativeEngine {
             })?
             .url
             .clone();
+        if self.history.is_same_document(history_index) {
+            if let Some(navigation) = self.commit_same_document_navigation(
+                target_url,
+                HistoryCommit::Activate(history_index),
+            )? {
+                self.navigate_page_script_sync(navigation, 1)?;
+            }
+            return Ok(Some(self.snapshot_unchecked()));
+        }
         let resource = self.loader.load(&target_url)?;
         if self.is_same_document_navigation(&resource.url) {
             if let Some(navigation) = self.commit_same_document_navigation(
@@ -4893,6 +5063,31 @@ impl NativeEngine {
             self.commit_history_navigation(prepared, history_index)?;
         }
         Ok(Some(self.snapshot_unchecked()))
+    }
+
+    fn traverse_history_delta(&mut self, delta: i32) -> Result<(), NativeEngineError> {
+        let steps = delta.unsigned_abs() as usize;
+        if steps > MAX_NATIVE_HISTORY_DELTA as usize {
+            return Err(NativeEngineError::limit(
+                "native history traversal delta",
+                MAX_NATIVE_HISTORY_DELTA as usize,
+                steps,
+            ));
+        }
+        let direction = if delta < 0 {
+            NativeHistoryDirection::Back
+        } else {
+            NativeHistoryDirection::Forward
+        };
+        for _ in 0..steps {
+            if self
+                .traverse_history(direction, "history traversal")?
+                .is_none()
+            {
+                break;
+            }
+        }
+        Ok(())
     }
 
     async fn traverse_history_async(
@@ -4912,7 +5107,9 @@ impl NativeEngine {
             })?
             .url
             .clone();
-        if self.is_same_document_navigation(&target_url) {
+        if self.history.is_same_document(history_index)
+            || self.is_same_document_navigation(&target_url)
+        {
             if let Some(worker) = self.runtime_worker.clone() {
                 self.commit_same_document_navigation_async(
                     target_url,
@@ -5181,6 +5378,18 @@ impl NativeEngine {
         }
     }
 
+    fn sync_javascript_history(&self) {
+        if let Some(javascript) = self.javascript.as_ref() {
+            let state = self
+                .history
+                .current()
+                .map(|entry| entry.state.clone())
+                .unwrap_or(serde_json::Value::Null);
+            javascript.set_history_state(state);
+            javascript.set_history_length(self.history.len());
+        }
+    }
+
     fn require_running(&self, operation: &str) -> Result<(), NativeEngineError> {
         if self.lifecycle == NativeLifecycleState::Running {
             return Ok(());
@@ -5405,10 +5614,37 @@ enum ScriptNavigationTarget {
     },
 }
 
+enum LocalHistoryCommand {
+    PushState {
+        url: String,
+        state: serde_json::Value,
+    },
+    ReplaceState {
+        url: String,
+        state: serde_json::Value,
+    },
+    Go(i32),
+}
+
 enum HistoryCommit {
     Push,
     Replace,
     Activate(usize),
+}
+
+fn validate_history_state(state: &serde_json::Value) -> Result<(), NativeEngineError> {
+    let encoded = serde_json::to_vec(state).map_err(|_| NativeEngineError::Worker {
+        operation: "serialize native history state".into(),
+        reason: "history state could not be serialized".into(),
+    })?;
+    if encoded.len() > MAX_NATIVE_HISTORY_STATE_BYTES {
+        return Err(NativeEngineError::limit(
+            "native history state",
+            MAX_NATIVE_HISTORY_STATE_BYTES,
+            encoded.len(),
+        ));
+    }
+    Ok(())
 }
 
 fn parse_point_target(target: &str) -> Result<Option<(i64, i64)>, NativeEngineError> {

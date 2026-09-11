@@ -1736,6 +1736,9 @@ impl NativeDocument {
                         });
                     }
                 }
+                NativeScriptCommand::HistoryPushState { .. }
+                | NativeScriptCommand::HistoryReplaceState { .. }
+                | NativeScriptCommand::HistoryGo { .. } => {}
                 NativeScriptCommand::StorageSet { .. }
                 | NativeScriptCommand::StorageRemove { .. }
                 | NativeScriptCommand::StorageClear { .. }

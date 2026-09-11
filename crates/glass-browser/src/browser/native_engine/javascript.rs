@@ -37,6 +37,9 @@ pub(crate) const MAX_NATIVE_SCRIPT_RESULT_BYTES: usize = crate::browser_backend:
 /// bridge. The payload is JSON-backed today, but the limit is kept separate
 /// so future transferable values cannot silently enlarge IPC frames.
 pub(crate) const MAX_NATIVE_POST_MESSAGE_BYTES: usize = 256 * 1024;
+/// Maximum JSON-backed state retained by one History API entry.
+pub(crate) const MAX_NATIVE_HISTORY_STATE_BYTES: usize = 256 * 1024;
+const MAX_NATIVE_HISTORY_DELTA: i32 = 1024;
 /// Maximum frame-window index surface exposed by one script realm.
 pub(crate) const MAX_NATIVE_FRAME_SCRIPT_BINDINGS: usize = 64;
 /// Maximum inline page scripts executed while committing one document.
@@ -97,6 +100,17 @@ pub(crate) enum NativeScriptCommand {
         href: String,
         #[serde(default)]
         replace: bool,
+    },
+    HistoryPushState {
+        href: String,
+        state: serde_json::Value,
+    },
+    HistoryReplaceState {
+        href: String,
+        state: serde_json::Value,
+    },
+    HistoryGo {
+        delta: i32,
     },
     OpenWindow {
         href: String,
@@ -3149,6 +3163,8 @@ pub(crate) struct NativeJavaScriptRuntime {
     frame_script_context: Arc<Mutex<Option<NativeFrameScriptContext>>>,
     frame_id: Arc<Mutex<String>>,
     scroll_offset: Arc<Mutex<NativePoint>>,
+    history_state: Arc<Mutex<serde_json::Value>>,
+    history_length: Arc<Mutex<usize>>,
     window_name: Arc<Mutex<String>>,
     opener_context_id: Option<String>,
     opener_window_name: String,
@@ -3234,6 +3250,8 @@ impl NativeJavaScriptRuntime {
             frame_script_context: Arc::new(Mutex::new(None)),
             frame_id: Arc::new(Mutex::new(context_id.clone())),
             scroll_offset: Arc::new(Mutex::new(NativePoint { x: 0, y: 0 })),
+            history_state: Arc::new(Mutex::new(serde_json::Value::Null)),
+            history_length: Arc::new(Mutex::new(1)),
             window_name: Arc::new(Mutex::new(window_name)),
             opener_context_id: opener_context_id.map(str::to_owned),
             opener_window_name,
@@ -3446,6 +3464,32 @@ impl NativeJavaScriptRuntime {
             .lock()
             .map(|offset| *offset)
             .unwrap_or(NativePoint { x: 0, y: 0 })
+    }
+
+    pub(crate) fn set_history_state(&self, state: serde_json::Value) {
+        if let Ok(mut current) = self.history_state.lock() {
+            *current = state;
+        }
+    }
+
+    pub(crate) fn set_history_length(&self, length: usize) {
+        if let Ok(mut current) = self.history_length.lock() {
+            *current = length.max(1);
+        }
+    }
+
+    fn history_state(&self) -> serde_json::Value {
+        self.history_state
+            .lock()
+            .map(|state| state.clone())
+            .unwrap_or(serde_json::Value::Null)
+    }
+
+    fn history_length(&self) -> usize {
+        self.history_length
+            .lock()
+            .map(|length| (*length).max(1))
+            .unwrap_or(1)
     }
 
     fn frame_id(&self) -> String {
@@ -4072,6 +4116,8 @@ impl NativeJavaScriptRuntime {
         let opener_window_name = self.opener_window_name();
         let frame_id = self.frame_id();
         let scroll_offset = self.scroll_offset();
+        let history_state = self.history_state();
+        let history_length = self.history_length();
         let bootstrap = document_bootstrap(
             document,
             document_url,
@@ -4083,6 +4129,8 @@ impl NativeJavaScriptRuntime {
             origin,
             viewport,
             scroll_offset,
+            &history_state,
+            history_length,
             &self.ready_state,
             self.now_ms(),
             &self.storage_view(document_url, origin),
@@ -4307,6 +4355,8 @@ impl NativeJavaScriptRuntime {
         let opener_window_name = self.opener_window_name();
         let frame_id = self.frame_id();
         let scroll_offset = self.scroll_offset();
+        let history_state = self.history_state();
+        let history_length = self.history_length();
         let bootstrap = document_bootstrap(
             document,
             document_url,
@@ -4318,6 +4368,8 @@ impl NativeJavaScriptRuntime {
             origin,
             viewport,
             scroll_offset,
+            &history_state,
+            history_length,
             &self.ready_state,
             self.now_ms(),
             &self.storage_view(document_url, origin),
@@ -4790,6 +4842,8 @@ fn document_bootstrap(
     origin: &NativeOrigin,
     viewport: Viewport,
     scroll_offset: NativePoint,
+    history_state: &serde_json::Value,
+    history_length: usize,
     ready_state: &str,
     now_ms: u64,
     storage: &NativeWebStorageView,
@@ -4815,6 +4869,8 @@ fn document_bootstrap(
         "opener_url": opener_url,
         "origin": origin.serialized(),
         "state": state,
+        "history_state": history_state,
+        "history_length": history_length,
         "now_ms": now_ms,
         "storage": storage,
         "indexed_db": indexed_db,
@@ -7823,6 +7879,7 @@ fn document_bootstrap(
       defaultPrevented: false,
       returnValue: "",
       submitter: settings.submitter === undefined ? null : settings.submitter,
+      state: settings.state === undefined ? null : settings.state,
       oldURL: settings.oldURL === undefined ? "" : String(settings.oldURL),
       newURL: settings.newURL === undefined ? "" : String(settings.newURL),
       preventDefault() {{
@@ -9915,6 +9972,7 @@ fn document_bootstrap(
       oldURL: descriptor.old_url,
       newURL: descriptor.new_url,
     }});
+    if (event.type === "popstate" && globalThis.history) event.state = globalThis.history.state;
     return dispatchTarget(target, event);
   }});
   globalThis.window = globalThis;
@@ -9993,6 +10051,74 @@ fn document_bootstrap(
   try {{ Object.setPrototypeOf(location, globalThis.Location.prototype); }} catch (_error) {{}}
   Object.freeze(location);
   globalThis.location = location;
+  let currentHistoryState = host.history_state === undefined ? null : host.history_state;
+  let currentHistoryLength = Math.max(1, Number(host.history_length) || 1);
+  let historyScrollRestoration = "auto";
+  const cloneHistoryState = (value) => {{
+    let encoded;
+    try {{ encoded = JSON.stringify(value === undefined ? null : value); }} catch (_error) {{
+      throw new DOMExceptionNative("history state could not be cloned", "DataCloneError");
+    }}
+    if (encoded === undefined) throw new DOMExceptionNative("history state could not be cloned", "DataCloneError");
+    if (encoded.length > {history_state_bytes_limit}) throw new RangeError("native history state exceeds its limit");
+    try {{ return JSON.parse(encoded); }} catch (_error) {{
+      throw new DOMExceptionNative("history state could not be cloned", "DataCloneError");
+    }}
+  }};
+  const historyTarget = (value) => {{
+    if (value === undefined || value === null || String(value) === "") return locationUrl.href;
+    const next = new URLNative(String(value), locationUrl.href);
+    const documentOrigin = String(host.origin || "null");
+    const sameOrigin = documentOrigin !== "null"
+      ? next.origin === documentOrigin
+      : next.protocol === locationUrl.protocol && next.host === locationUrl.host;
+    if (!sameOrigin) throw new DOMExceptionNative("history URL must be same-origin", "SecurityError");
+    return next.href;
+  }};
+  const history = {{
+    back() {{ pushCommand({{ kind: "historyGo", delta: -1 }}); }},
+    forward() {{ pushCommand({{ kind: "historyGo", delta: 1 }}); }},
+    go(delta = 0) {{
+      const numeric = Number(delta);
+      if (!Number.isFinite(numeric)) return;
+      const offset = Math.trunc(numeric);
+      if (offset < -{history_length_limit} || offset > {history_length_limit}) throw new RangeError("native history delta exceeds its limit");
+      pushCommand({{ kind: "historyGo", delta: offset }});
+    }},
+    pushState(state, _title, url) {{
+      const cloned = cloneHistoryState(state);
+      const href = historyTarget(url);
+      currentHistoryState = cloned;
+      currentHistoryLength = Math.min({history_length_limit}, currentHistoryLength + 1);
+      locationUrl.href = href;
+      pushCommand({{ kind: "historyPushState", href, state: cloned }});
+    }},
+    replaceState(state, _title, url) {{
+      const cloned = cloneHistoryState(state);
+      const href = historyTarget(url);
+      currentHistoryState = cloned;
+      locationUrl.href = href;
+      pushCommand({{ kind: "historyReplaceState", href, state: cloned }});
+    }},
+  }};
+  Object.defineProperties(history, {{
+    length: {{ enumerable: true, get: () => currentHistoryLength }},
+    state: {{ enumerable: true, get: () => cloneHistoryState(currentHistoryState) }},
+    scrollRestoration: {{
+      enumerable: true,
+      get: () => historyScrollRestoration,
+      set: value => {{
+        const next = String(value);
+        if (next !== "auto" && next !== "manual") throw new TypeError("invalid history scrollRestoration");
+        historyScrollRestoration = next;
+      }},
+    }},
+  }});
+  if (typeof globalThis.History !== "function") {{
+    globalThis.History = function History() {{ throw new TypeError("Illegal constructor"); }};
+  }}
+  try {{ Object.setPrototypeOf(history, globalThis.History.prototype); }} catch (_error) {{}}
+  globalThis.history = history;
   const windowProxyCache = globalThis.__glassWindowProxyCache instanceof Map
     ? globalThis.__glassWindowProxyCache
     : new Map();
@@ -12082,5 +12208,7 @@ fn document_bootstrap(
         width = viewport.width,
         height = viewport.height,
         ready_state = ready_state,
+        history_state_bytes_limit = MAX_NATIVE_HISTORY_STATE_BYTES,
+        history_length_limit = MAX_NATIVE_HISTORY_DELTA,
     ))
 }

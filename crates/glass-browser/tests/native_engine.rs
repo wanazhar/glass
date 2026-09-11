@@ -3147,6 +3147,89 @@ async fn native_local_script_exposes_animation_frames_and_intersection_observer(
 }
 
 #[tokio::test]
+async fn native_local_script_exposes_same_document_history_api() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://history-api",
+            "<html><body><p>Single document application</p></body></html>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://history-api");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({ length: history.length, state: history.state, url: location.href })"
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({"length": 1, "state": null, "url": "fixture://history-api"})
+    );
+    engine
+        .evaluate_async(
+            "(() => { globalThis.popStates = []; addEventListener('popstate', event => popStates.push({ state: event.state, url: location.href })); history.pushState({ screen: 'settings', count: 1 }, '', '/settings?tab=one'); return { length: history.length, state: history.state, url: location.href }; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({ length: history.length, state: history.state, url: location.href })"
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({"length": 2, "state": {"screen": "settings", "count": 1}, "url": "fixture://history-api/settings?tab=one"})
+    );
+
+    let replaced = engine
+        .evaluate_async(
+            "(() => { history.replaceState({ screen: 'profile' }, '', '?tab=two'); return { state: history.state, url: location.href }; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        replaced,
+        serde_json::json!({"state": {"screen": "profile"}, "url": "fixture://history-api/settings?tab=two"})
+    );
+    engine.evaluate_async("history.back(); true").await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({ length: history.length, state: history.state, url: location.href, popStates })"
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "length": 2,
+            "state": null,
+            "url": "fixture://history-api",
+            "popStates": [{"state": null, "url": "fixture://history-api"}],
+        })
+    );
+    engine
+        .evaluate_async("history.forward(); true")
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("({ state: history.state, url: location.href, popStates })")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "state": {"screen": "profile"},
+            "url": "fixture://history-api/settings?tab=two",
+            "popStates": [
+                {"state": null, "url": "fixture://history-api"},
+                {"state": {"screen": "profile"}, "url": "fixture://history-api/settings?tab=two"},
+            ],
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_delayed_timer_waits_for_due_host_turn() {
     let config = NativeEngineConfig::default()
         .with_fixture(

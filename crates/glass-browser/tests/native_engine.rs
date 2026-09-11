@@ -324,6 +324,28 @@ async fn native_local_document_fragments_preserve_tree_ownership_and_helpers() {
             }
         ]])
     );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const target = document.createElement('p'); document.body.appendChild(target); const log = []; const observer = new MutationObserver(records => log.push(records.map(record => ({ type: record.type, added: record.addedNodes.map(node => node.localName || node.nodeName), removed: record.removedNodes.map(node => node.localName || node.nodeName) })))); observer.observe(target, { childList: true }); target.textContent = 'native text'; globalThis.elementTextContentMutationLog = log; return [target.textContent, target.firstChild.nodeType, target.firstChild.nodeValue, target.childNodes.length, target.firstChild.parentNode === target]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["native text", 3, "native text", 1, true])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.elementTextContentMutationLog")
+            .await
+            .unwrap(),
+        serde_json::json!([[
+            {
+                "type": "childList",
+                "added": ["#text"],
+                "removed": [],
+            }
+        ]])
+    );
     let parsed = engine
         .evaluate_async(
             "(() => { const fragment = document.createDocumentFragment(); fragment.innerHTML = \"<article data-kind='card'><strong>Hi &amp; there</strong> tail</article><br>\"; const article = fragment.firstElementChild; const strong = fragment.querySelector('strong'); const before = [fragment.innerHTML, fragment.childNodes.length, article.localName, strong.textContent, article.parentNode === fragment, article.parentElement === null]; const mount = document.createElement('main'); mount.appendChild(fragment); document.body.appendChild(mount); return { before, after: [fragment.innerHTML, mount.innerHTML, mount.querySelector('strong') === strong, article.parentNode === mount, article.getAttribute('data-kind')] }; })()",
@@ -1179,6 +1201,30 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
             {
                 "type": "childList",
                 "added": ["div", "#text"],
+                "removed": [],
+            }
+        ]])
+    );
+    assert_eq!(
+        session
+            .script(
+                "(() => { const child = document.getElementById('child').contentDocument; const target = child.createElement('p'); child.body.appendChild(target); const log = []; const observer = new MutationObserver(records => log.push(records.map(record => ({ type: record.type, added: record.addedNodes.map(node => node.localName || node.nodeName), removed: record.removedNodes.map(node => node.localName || node.nodeName) })))); observer.observe(target, { childList: true }); target.textContent = 'frame text'; globalThis.frameElementTextContentMutationLog = log; return [target.textContent, target.firstChild.nodeType, target.firstChild.nodeValue, target.childNodes.length, target.firstChild.parentNode === target]; })()",
+            )
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!(["frame text", 3, "frame text", 1, true])
+    );
+    assert_eq!(
+        session
+            .script("globalThis.frameElementTextContentMutationLog")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([[
+            {
+                "type": "childList",
+                "added": ["#text"],
                 "removed": [],
             }
         ]])
@@ -6084,6 +6130,28 @@ async fn native_content_process_document_fragments_cross_the_http_boundary() {
             {
                 "type": "childList",
                 "added": ["div", "#text"],
+                "removed": [],
+            }
+        ]])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const target = document.createElement('p'); document.body.appendChild(target); const log = []; const observer = new MutationObserver(records => log.push(records.map(record => ({ type: record.type, added: record.addedNodes.map(node => node.localName || node.nodeName), removed: record.removedNodes.map(node => node.localName || node.nodeName) })))); observer.observe(target, { childList: true }); target.textContent = 'http text'; globalThis.httpElementTextContentMutationLog = log; return [target.textContent, target.firstChild.nodeType, target.firstChild.nodeValue, target.childNodes.length, target.firstChild.parentNode === target]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["http text", 3, "http text", 1, true])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.httpElementTextContentMutationLog")
+            .await
+            .unwrap(),
+        serde_json::json!([[
+            {
+                "type": "childList",
+                "added": ["#text"],
                 "removed": [],
             }
         ]])

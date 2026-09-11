@@ -8209,11 +8209,16 @@ fn document_bootstrap(
         return;
       }}
       const oldChildren = mutationShadowChildren.get(nodeIndex) || [];
+      const addedNodes = Array.isArray(target.__glassChildren) ? target.__glassChildren.slice() : [];
+      const addedIndexes = addedNodes
+        .map((node) => Number(node && node.nodeIndex))
+        .filter((index) => Number.isFinite(index));
       const removedNodes = mutationIndexList(oldChildren);
-      mutationShadowChildren.set(nodeIndex, []);
       for (const childIndex of oldChildren) mutationShadowParents.delete(Number(childIndex));
-      if (oldChildren.length > 0 || value.length > 0) {{
-        queueMutation({{ type: "childList", target, addedNodes: value.length > 0 ? [mutationTextNode(value)] : [], removedNodes }});
+      mutationShadowChildren.set(nodeIndex, addedIndexes);
+      for (const childIndex of addedIndexes) mutationShadowParents.set(childIndex, nodeIndex);
+      if (oldChildren.length > 0 || addedNodes.length > 0 || value.length > 0) {{
+        queueMutation({{ type: "childList", target, addedNodes, removedNodes }});
       }}
       return;
     }}
@@ -8929,15 +8934,23 @@ fn document_bootstrap(
         configurable: false,
         get() {{ return textContent; }},
         set(next) {{
+          const value = String(next);
+          if (value.length > storageValueLimit) throw new RangeError("native element textContent exceeds its limit");
           for (const child of element.__glassChildren) {{
             child.__glassParent = null;
             child.parentIndex = null;
           }}
           element.__glassChildren = [];
-          textContent = String(next);
-          innerHtml = escapeHtmlText(textContent);
-          element.__glassSyncContent();
-          pushCommand({{ kind: "setTextContent", node_index: entry.nodeIndex, value: textContent }});
+          innerHtml = "";
+          textContent = "";
+          suppressHostCommands += 1;
+          try {{
+            if (value) element.appendChild(makeDetachedText(value));
+          }} finally {{
+            suppressHostCommands -= 1;
+          }}
+          element.__glassSyncContent(true);
+          pushCommand({{ kind: "setTextContent", node_index: entry.nodeIndex, value }});
         }},
       }});
     }}
@@ -11326,11 +11339,16 @@ fn document_bootstrap(
         return;
       }}
       const oldChildren = frameMutationChildren.get(key) || [];
+      const addedNodes = Array.isArray(target.__glassChildren) ? target.__glassChildren.slice() : [];
+      const addedIndexes = addedNodes
+        .map((node) => Number(node && node.nodeIndex))
+        .filter((index) => Number.isFinite(index));
       const removedNodes = oldChildren.map((index) => frameMutationNode(binding, index)).filter(Boolean);
-      frameMutationChildren.set(key, []);
+      frameMutationChildren.set(key, addedIndexes);
       for (const childIndex of oldChildren) frameMutationParents.delete(frameMutationKey(binding, childIndex));
-      if (oldChildren.length > 0 || value.length > 0) {{
-        queueMutation({{ type: "childList", target, addedNodes: value.length > 0 ? [mutationTextNode(value)] : [], removedNodes }});
+      for (const childIndex of addedIndexes) frameMutationParents.set(frameMutationKey(binding, childIndex), nodeIndex);
+      if (oldChildren.length > 0 || addedNodes.length > 0 || value.length > 0) {{
+        queueMutation({{ type: "childList", target, addedNodes, removedNodes }});
       }}
       return;
     }}
@@ -11820,16 +11838,24 @@ fn document_bootstrap(
             configurable: false,
             get() {{ return textContent; }},
             set(next) {{
+              const value = String(next);
+              if (value.length > storageValueLimit) throw new RangeError("native frame element textContent exceeds its limit");
               for (const child of projected.__glassChildren) {{
                 child.__glassParent = null;
                 child.parentIndex = null;
-                child.__glassAttached = false;
+                detachFrameSubtree(child);
               }}
               projected.__glassChildren = [];
-              textContent = String(next);
-              innerHtml = escapeHtmlText(textContent);
-              projected.__glassSyncContent();
-              queueFrameCommand(currentBinding, {{ kind: "setTextContent", node_index: entry.nodeIndex, value: textContent }});
+              innerHtml = "";
+              textContent = "";
+              suppressHostCommands += 1;
+              try {{
+                if (value) projected.appendChild(makeFrameDetachedText(value));
+              }} finally {{
+                suppressHostCommands -= 1;
+              }}
+              projected.__glassSyncContent(true);
+              queueFrameCommand(currentBinding, {{ kind: "setTextContent", node_index: entry.nodeIndex, value }});
             }},
           }});
         }}
@@ -12244,12 +12270,20 @@ fn document_bootstrap(
           configurable: false,
           get() {{ return textContent; }},
           set(next) {{
+            const value = String(next);
+            if (value.length > storageValueLimit) throw new RangeError("native frame element textContent exceeds its limit");
             for (const child of projected.__glassChildren) {{ child.__glassParent = null; child.parentIndex = null; detachFrameSubtree(child); }}
             projected.__glassChildren = [];
-            textContent = String(next);
-            innerHtml = escapeHtmlText(textContent);
-            projected.__glassSyncContent();
-            queueFrameCommand(currentBinding, {{ kind: "setTextContent", node_index: nodeIndex, value: textContent }});
+            innerHtml = "";
+            textContent = "";
+            suppressHostCommands += 1;
+            try {{
+              if (value) projected.appendChild(makeFrameDetachedText(value));
+            }} finally {{
+              suppressHostCommands -= 1;
+            }}
+            projected.__glassSyncContent(true);
+            queueFrameCommand(currentBinding, {{ kind: "setTextContent", node_index: nodeIndex, value }});
           }},
         }});
       }}

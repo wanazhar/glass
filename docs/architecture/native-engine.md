@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-208` slice; the bounded foundation below remains
+`native-engine-browser-209` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5270,11 +5270,23 @@ The completed native-engine-browser-208 slice adds bounded SVG `viewBox` and
 the shared integer geometry path. Rect/circle/ellipse/line/polyline/polygon
 points and path subpaths retain one layout, typed fill/stroke display-list,
 software-raster, clipping, scroll, capture, and hit-test interpretation.
-Malformed viewBox/viewport data fails closed. CSS sizing/percentages, viewport
-clipping, nested viewport placement, dash arrays, explicit cap/join styles,
+Malformed viewBox/viewport data fails closed. CSS sizing/percentages, nested
+viewport placement, dash arrays, explicit cap/join styles,
 gradients, markers, and external resources remain later issue #40 promotion
 work. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-208.md`.
+
+The completed native-engine-browser-209 slice adds SVG viewport clipping to
+the shared rectangle clip owner. Each supported descendant now receives the
+intersection of its laid-out SVG ancestor viewports and any CSS overflow
+clips; the combined document-space clip feeds projected bounds, typed display
+commands, software replay, root-scroll translation, capture, and hit testing.
+Layout bounds remain unchanged, and shapes outside the viewport cannot paint or
+win shape hit ownership. Rounded clip paths, nested viewport placement,
+clip-path/mask semantics, dash arrays, explicit cap/join styles, gradients,
+markers, and external resources remain later issue #40 promotion work. Exact
+evidence is recorded in
+`docs/plan/tasks/native-engine-browser-209.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

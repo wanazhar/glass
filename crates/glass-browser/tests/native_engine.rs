@@ -763,6 +763,49 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
     assert_eq!(
         session
             .script(
+                "(() => { const child = document.getElementById('child').contentDocument; const host = child.createElement('section'); const log = []; const observer = new MutationObserver(records => log.push(records.map(record => ({ type: record.type, target: record.target.id || record.target.nodeName, attributeName: record.attributeName, oldValue: record.oldValue, added: record.addedNodes.length, removed: record.removedNodes.length })))); observer.observe(child, { subtree: true, childList: true }); observer.observe(host, { attributes: true, attributeOldValue: true }); host.setAttribute('data-frame', 'yes'); child.body.appendChild(host); host.remove(); globalThis.frameMutationLog = log; return true; })()",
+            )
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        session
+            .script("globalThis.frameMutationLog")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([[
+            {
+                "type": "attributes",
+                "target": "SECTION",
+                "attributeName": "data-frame",
+                "oldValue": null,
+                "added": 0,
+                "removed": 0,
+            },
+            {
+                "type": "childList",
+                "target": "BODY",
+                "attributeName": null,
+                "oldValue": null,
+                "added": 1,
+                "removed": 0,
+            },
+            {
+                "type": "childList",
+                "target": "BODY",
+                "attributeName": null,
+                "oldValue": null,
+                "added": 0,
+                "removed": 1,
+            },
+        ]])
+    );
+    assert_eq!(
+        session
+            .script(
                 "(() => { const frame = document.getElementById('child'); const child = frame.contentDocument; const inside = child.getElementById('inside'); const calls = []; const topCalls = []; const onInside = event => calls.push(['inside', event.target === inside, event.currentTarget === inside, event.eventPhase]); const onBodyCapture = event => calls.push(['body-capture', event.currentTarget === child.body, event.eventPhase]); const onBody = event => calls.push(['body', event.currentTarget === child.body, event.eventPhase]); const onDocument = event => calls.push(['document', event.currentTarget === child, event.eventPhase]); const onWindow = event => calls.push(['window', event.currentTarget === child.defaultView, event.eventPhase]); inside.addEventListener('probe', onInside); child.body.addEventListener('probe', onBodyCapture, true); child.body.addEventListener('probe', onBody); child.addEventListener('probe', onDocument); child.defaultView.addEventListener('probe', onWindow); document.addEventListener('probe', () => topCalls.push('document')); window.addEventListener('probe', () => topCalls.push('window')); const accepted = inside.dispatchEvent(new Event('probe', { bubbles: true, cancelable: true })); inside.removeEventListener('probe', onInside); const second = inside.dispatchEvent(new Event('probe', { bubbles: true, cancelable: true })); return { accepted, second, calls, topCalls, owners: [inside.ownerDocument === child, child.defaultView === child.defaultView, typeof child.addEventListener === 'function', typeof child.defaultView.dispatchEvent === 'function'] }; })()",
             )
             .await

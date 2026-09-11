@@ -198,6 +198,81 @@ async fn native_runtime_session_uses_explicit_local_constructor() {
 }
 
 #[tokio::test]
+async fn native_local_script_exposes_web_idl_identity_and_dom_collections() {
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(
+            "data:text/html,%3Chtml%3E%3Cbody%3E%3Cform%3E%3Cinput%20id%3D%27name%27%3E%3C%2Fform%3E%3C%2Fbody%3E%3C%2Fhtml%3E",
+        ),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+
+    let identity = engine
+        .evaluate_async(
+            "(() => { const input = document.getElementById('name'); const event = new Event('click', { bubbles: true }); const custom = new CustomEvent('custom', { detail: { ok: true } }); const storage = new StorageEvent('storage', { key: 'theme', newValue: 'dark' }); const nodes = document.querySelectorAll('input'); const tags = document.getElementsByTagName('input'); return { window: window === globalThis && window === self && window instanceof Window, document: document instanceof Document && document.defaultView === window && document.nodeType === 9 && document.nodeName === '#document', input: input instanceof Node && input instanceof Element && input instanceof HTMLElement && input instanceof HTMLInputElement && input.nodeType === 1 && input.nodeName === 'INPUT' && input.localName === 'input' && input.ownerDocument === document, body: document.body instanceof HTMLBodyElement, collections: [nodes instanceof NodeList, tags instanceof HTMLCollection, Array.isArray(nodes), Array.isArray(tags)], location: location instanceof Location, events: [event instanceof Event, custom instanceof Event, custom instanceof CustomEvent, custom.detail.ok, storage instanceof Event, storage instanceof StorageEvent, storage.key, storage.newValue] }; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        identity,
+        serde_json::json!({
+            "window": true,
+            "document": true,
+            "input": true,
+            "body": true,
+            "collections": [true, true, true, true],
+            "location": true,
+            "events": [true, true, true, true, true, true, "theme", "dark"],
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_script_exposes_web_idl_identity() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/identity"));
+        let body = "<html><body><input id='name'></body></html>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/identity")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let identity = engine
+        .evaluate_async(
+            "(() => { const input = document.getElementById('name'); return { window: window instanceof Window, document: document instanceof Document, input: [input instanceof Node, input instanceof Element, input instanceof HTMLElement, input instanceof HTMLInputElement, input.nodeType === 1, input.nodeName === 'INPUT', input.localName === 'input', input.ownerDocument === document], nodes: document.querySelectorAll('input') instanceof NodeList, tags: document.getElementsByTagName('input') instanceof HTMLCollection, location: location instanceof Location, event: new Event('load') instanceof Event }; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        identity,
+        serde_json::json!({
+            "window": true,
+            "document": true,
+            "input": [true, true, true, true, true, true, true, true],
+            "nodes": true,
+            "tags": true,
+            "location": true,
+            "event": true,
+        })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_dialogs_are_owned_by_the_page_realm_and_prompt_backend() {
     let session =
         BrowserRuntimeSession::connect_native(NativeEngineConfig::default().with_initial_url(

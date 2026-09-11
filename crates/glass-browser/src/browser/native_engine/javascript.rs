@@ -7184,6 +7184,9 @@ fn document_bootstrap(
       enumerable: false,
       configurable: false,
     }});
+    if (typeof globalThis.Event === "function" && globalThis.Event.prototype) {{
+      try {{ Object.setPrototypeOf(event, globalThis.Event.prototype); }} catch (_error) {{}}
+    }}
     return event;
   }};
   const ownerFor = (target) => {{
@@ -7318,6 +7321,9 @@ fn document_bootstrap(
       parentIndex: entry.parentIndex,
       formOwnerIndex: entry.formOwnerIndex,
       tagName: entry.tagName.toUpperCase(),
+      nodeType: 1,
+      nodeName: entry.tagName.toUpperCase(),
+      localName: entry.tagName.toLowerCase(),
       id: entry.attributes.id || "",
       className: entry.attributes.class || "",
       textContent: entry.text,
@@ -7505,6 +7511,8 @@ fn document_bootstrap(
         element.nodeIndex = nextEntry.nodeIndex;
         element.parentIndex = nextEntry.parentIndex;
         element.tagName = nextEntry.tagName.toUpperCase();
+        element.nodeName = nextEntry.tagName.toUpperCase();
+        element.localName = nextEntry.tagName.toLowerCase();
         element.id = nextEntry.attributes.id || "";
         element.className = nextEntry.attributes.class || "";
         element.textContent = nextEntry.text;
@@ -7564,15 +7572,15 @@ fn document_bootstrap(
         get() {{
           const current = globalThis.__glassHostElements;
           if (!(current instanceof Map)) return [];
-          return Array.from(current.values()).filter(option =>
+          return asHtmlCollection(Array.from(current.values()).filter(option =>
             option.tagName === "OPTION" && option.parentIndex === element.nodeIndex
-          );
+          ));
         }},
       }});
       Object.defineProperty(element, "selectedOptions", {{
         enumerable: false,
         configurable: false,
-        get() {{ return element.options.filter(option => option.selected); }},
+        get() {{ return asHtmlCollection(element.options.filter(option => option.selected)); }},
       }});
     }}
   }}
@@ -7587,13 +7595,22 @@ fn document_bootstrap(
     pushCommand({{ kind: "focus", node_index: target.nodeIndex }});
     dispatchTarget(target, createEvent("focus"));
   }};
+  const asNativeCollection = (values, constructorName) => {{
+    const constructor = globalThis[constructorName];
+    if (typeof constructor === "function" && constructor.prototype) {{
+      Object.setPrototypeOf(values, constructor.prototype);
+    }}
+    return values;
+  }};
+  const asNodeList = (values) => asNativeCollection(values, "NodeList");
+  const asHtmlCollection = (values) => asNativeCollection(values, "HTMLCollection");
   const matches = (element, selector) => {{
     const value = String(selector).trim();
     if (value.startsWith("#")) return element.id === value.slice(1);
     if (value.startsWith(".")) return element.className.split(/\s+/).includes(value.slice(1));
     return element.tagName.toLowerCase() === value.toLowerCase();
   }};
-  const findAll = (selector) => elements.filter((element) => matches(element, selector));
+  const findAll = (selector) => asNodeList(elements.filter((element) => matches(element, selector)));
   const body = elements.find((element) => element.tagName === "BODY") || null;
   const documentElement = elements.find((element) => element.tagName === "HTML") || null;
   let documentCookie = typeof host.cookie === "string" ? host.cookie : "";
@@ -7612,6 +7629,14 @@ fn document_bootstrap(
     title: state.title,
     body,
     documentElement,
+    nodeType: 9,
+    nodeName: "#document",
+    URL: host.url,
+    documentURI: host.url,
+    compatMode: "CSS1Compat",
+    hidden: false,
+    visibilityState: "visible",
+    get defaultView() {{ return globalThis; }},
     get activeElement() {{ return elements.find((element) => element.focused) || null; }},
     get cookie() {{ return documentCookie; }},
     set cookie(value) {{
@@ -7635,11 +7660,11 @@ fn document_bootstrap(
     querySelectorAll(selector) {{ return findAll(selector); }},
     getElementsByTagName(name) {{
       const value = String(name).toLowerCase();
-      return elements.filter((element) => value === "*" || element.tagName.toLowerCase() === value);
+      return asHtmlCollection(elements.filter((element) => value === "*" || element.tagName.toLowerCase() === value));
     }},
     getElementsByClassName(name) {{
       const value = String(name);
-      return elements.filter((element) => element.className.split(/\s+/).includes(value));
+      return asHtmlCollection(elements.filter((element) => element.className.split(/\s+/).includes(value)));
     }}
   }};
   globalThis.__glassDispatchHostEvents = (events) => events.map((descriptor) => {{
@@ -7729,6 +7754,17 @@ fn document_bootstrap(
     enumerable: true,
     get: () => locationUrl.origin,
   }});
+  if (typeof globalThis.Location !== "function") {{
+    globalThis.Location = function Location() {{
+      throw new TypeError("Illegal constructor");
+    }};
+  }}
+  if (typeof globalThis.Window !== "function") {{
+    globalThis.Window = function Window() {{
+      throw new TypeError("Illegal constructor");
+    }};
+  }}
+  try {{ Object.setPrototypeOf(location, globalThis.Location.prototype); }} catch (_error) {{}}
   Object.freeze(location);
   globalThis.location = location;
   const windowProxyCache = globalThis.__glassWindowProxyCache instanceof Map
@@ -7800,6 +7836,9 @@ fn document_bootstrap(
       reload() {{ navigateTarget(state.targetLocationHref, false); }},
       toString() {{ return state.targetLocationHref; }},
     }};
+    if (typeof globalThis.Location === "function" && globalThis.Location.prototype) {{
+      try {{ Object.setPrototypeOf(targetLocation, globalThis.Location.prototype); }} catch (_error) {{}}
+    }}
     Object.freeze(targetLocation);
     const proxy = {{
       get name() {{ return state.targetName; }},
@@ -7821,6 +7860,9 @@ fn document_bootstrap(
         return {{ name: this.name, closed: this.closed }};
       }},
     }};
+    if (typeof globalThis.Window === "function" && globalThis.Window.prototype) {{
+      try {{ Object.setPrototypeOf(proxy, globalThis.Window.prototype); }} catch (_error) {{}}
+    }}
     windowProxyCache.set(cacheKey, proxy);
     return proxy;
   }};
@@ -7951,14 +7993,115 @@ fn document_bootstrap(
   nativeStorageManager.persisted = () => Promise.resolve(false);
   globalThis.__glassNativeStorageManager = nativeStorageManager;
   globalThis.navigator.storage = nativeStorageManager;
-  globalThis.Event = globalThis.Event || function Event(type, options) {{
-    return createEvent(type, options);
+  const ensureNativeConstructor = (name, parent) => {{
+    let constructor = globalThis[name];
+    if (typeof constructor !== "function") {{
+      constructor = function NativeWebIdlConstructor() {{
+        throw new TypeError("Illegal constructor");
+      }};
+      globalThis[name] = constructor;
+    }}
+    if (constructor.prototype && parent && parent.prototype
+        && Object.getPrototypeOf(constructor.prototype) !== parent.prototype) {{
+      try {{ Object.setPrototypeOf(constructor.prototype, parent.prototype); }} catch (_error) {{}}
+    }}
+    return constructor;
   }};
-  globalThis.CustomEvent = globalThis.CustomEvent || function CustomEvent(type, options) {{
-    const event = createEvent(type, options);
+  const NodeNative = ensureNativeConstructor("Node", null);
+  const DocumentNative = ensureNativeConstructor("Document", NodeNative);
+  const ElementNative = ensureNativeConstructor("Element", NodeNative);
+  const HTMLElementNative = ensureNativeConstructor("HTMLElement", ElementNative);
+  const WindowNative = ensureNativeConstructor("Window", null);
+  const LocationNative = ensureNativeConstructor("Location", null);
+  const NodeListNative = ensureNativeConstructor("NodeList", null);
+  const HtmlCollectionNative = ensureNativeConstructor("HTMLCollection", null);
+  for (const constructor of [NodeListNative, HtmlCollectionNative]) {{
+    if (constructor.prototype && Object.getPrototypeOf(constructor.prototype) !== Array.prototype) {{
+      try {{ Object.setPrototypeOf(constructor.prototype, Array.prototype); }} catch (_error) {{}}
+    }}
+  }}
+  const elementConstructors = {{
+    HTMLUnknownElement: HTMLElementNative,
+    HTMLHtmlElement: HTMLElementNative,
+    HTMLBodyElement: HTMLElementNative,
+    HTMLFormElement: HTMLElementNative,
+    HTMLInputElement: HTMLElementNative,
+    HTMLTextAreaElement: HTMLElementNative,
+    HTMLSelectElement: HTMLElementNative,
+    HTMLOptionElement: HTMLElementNative,
+    HTMLButtonElement: HTMLElementNative,
+    HTMLAnchorElement: HTMLElementNative,
+    HTMLIFrameElement: HTMLElementNative,
+    HTMLFrameElement: HTMLElementNative,
+  }};
+  for (const name of Object.keys(elementConstructors)) {{
+    elementConstructors[name] = ensureNativeConstructor(name, elementConstructors[name]);
+  }}
+  const elementPrototypeFor = (tagName) => {{
+    const name = {{
+      HTML: "HTMLHtmlElement",
+      BODY: "HTMLBodyElement",
+      FORM: "HTMLFormElement",
+      INPUT: "HTMLInputElement",
+      TEXTAREA: "HTMLTextAreaElement",
+      SELECT: "HTMLSelectElement",
+      OPTION: "HTMLOptionElement",
+      BUTTON: "HTMLButtonElement",
+      A: "HTMLAnchorElement",
+      IFRAME: "HTMLIFrameElement",
+      FRAME: "HTMLFrameElement",
+    }}[tagName] || "HTMLUnknownElement";
+    return elementConstructors[name].prototype;
+  }};
+  const EventNative = globalThis.__glassEventConstructor || function Event(type, options) {{
+    return globalThis.__glassCreateEvent(type, options);
+  }};
+  const CustomEventNative = globalThis.__glassCustomEventConstructor || function CustomEvent(type, options) {{
+    const event = globalThis.__glassCreateEvent(type, options);
     event.detail = options && typeof options === "object" ? options.detail : undefined;
+    try {{ Object.setPrototypeOf(event, CustomEventNative.prototype); }} catch (_error) {{}}
     return event;
   }};
+  const StorageEventNative = globalThis.__glassStorageEventConstructor || function StorageEvent(type, options) {{
+    const event = globalThis.__glassCreateEvent(type, options);
+    event.key = options && options.key !== undefined ? options.key : null;
+    event.oldValue = options && options.oldValue !== undefined ? options.oldValue : null;
+    event.newValue = options && options.newValue !== undefined ? options.newValue : null;
+    event.url = options && options.url !== undefined ? String(options.url) : "";
+    event.storageArea = options && options.storageArea !== undefined ? options.storageArea : null;
+    try {{ Object.setPrototypeOf(event, StorageEventNative.prototype); }} catch (_error) {{}}
+    return event;
+  }};
+  globalThis.__glassEventConstructor = EventNative;
+  globalThis.__glassCustomEventConstructor = CustomEventNative;
+  globalThis.__glassStorageEventConstructor = StorageEventNative;
+  globalThis.__glassCreateEvent = createEvent;
+  globalThis.Event = EventNative;
+  globalThis.CustomEvent = CustomEventNative;
+  globalThis.StorageEvent = StorageEventNative;
+  try {{ Object.setPrototypeOf(CustomEventNative.prototype, EventNative.prototype); }} catch (_error) {{}}
+  try {{ Object.setPrototypeOf(StorageEventNative.prototype, EventNative.prototype); }} catch (_error) {{}}
+  try {{ Object.setPrototypeOf(document, DocumentNative.prototype); }} catch (_error) {{}}
+  try {{ Object.setPrototypeOf(location, LocationNative.prototype); }} catch (_error) {{}}
+  for (const element of elements) {{
+    try {{ Object.setPrototypeOf(element, elementPrototypeFor(element.tagName)); }} catch (_error) {{}}
+    if (!Object.prototype.hasOwnProperty.call(element, "ownerDocument")) {{
+      Object.defineProperty(element, "ownerDocument", {{
+        enumerable: false,
+        configurable: false,
+        get() {{ return globalThis.document || null; }},
+      }});
+    }}
+  }}
+  try {{ Object.setPrototypeOf(globalThis, WindowNative.prototype); }} catch (_error) {{}}
+  globalThis.self = globalThis;
+  globalThis.top = globalThis;
+  globalThis.parent = globalThis;
+  globalThis.frames = globalThis;
+  globalThis.length = 0;
+  for (const proxy of windowProxyCache.values()) {{
+    try {{ Object.setPrototypeOf(proxy, WindowNative.prototype); }} catch (_error) {{}}
+  }}
   globalThis.addEventListener = (type, callback, options) => addListener("window", type, callback, options);
   globalThis.removeEventListener = (type, callback, options) => removeListener("window", type, callback, options);
   globalThis.dispatchEvent = (event) => dispatchTarget(globalThis, event);
@@ -7971,15 +8114,6 @@ fn document_bootstrap(
     event.storageArea = descriptor.scope === "session"
       ? globalThis.sessionStorage
       : globalThis.localStorage;
-    return event;
-  }};
-  globalThis.StorageEvent = globalThis.StorageEvent || function StorageEvent(type, options) {{
-    const event = createEvent(type, options);
-    event.key = options && options.key !== undefined ? options.key : null;
-    event.oldValue = options && options.oldValue !== undefined ? options.oldValue : null;
-    event.newValue = options && options.newValue !== undefined ? options.newValue : null;
-    event.url = options && options.url !== undefined ? String(options.url) : "";
-    event.storageArea = options && options.storageArea !== undefined ? options.storageArea : null;
     return event;
   }};
   globalThis.__glassDispatchStorageEvents = (events) => events.map((descriptor) => {{

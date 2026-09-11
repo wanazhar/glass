@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-154`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-155`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
@@ -3117,6 +3117,18 @@ outgoing lifecycle is skipped once for its own handoff, newly committed pages
 receive their normal lifecycle, and bounded multiple/looping handoffs fail
 closed. Popup policy/geometry, shared frame scripting, full Window Web IDL, and
 complete browser parity remain issue #40 work.
+
+The completed native-engine-browser-155 slice adds the first shared Web IDL
+identity boundary for local and HTTP(S) realms. Window, Document, Node,
+Element, supported HTML element classes, Location, NodeList, HTMLCollection,
+Event, CustomEvent, and StorageEvent projections now support normal identity
+checks, while node metadata, document `defaultView`, and stable top-level
+window relationships are available to page scripts. Reused host elements use
+a dynamic current-document owner rather than retaining an obsolete bootstrap
+object. The layer intentionally preserves the existing single Rust DOM and
+bounded array-compatible collections; full Web IDL descriptors, mutation,
+shadow/custom elements, ranges, frame property access, shared frame scripting,
+and complete browser parity remain open.
 
 The completed native-engine-browser-133 batch extends the native target seam
 with a side-effect-free preflight result. The engine resolves the current

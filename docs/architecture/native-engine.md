@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-154` slice; the bounded foundation below remains
+`native-engine-browser-155` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -1533,6 +1533,19 @@ the newly committed document follows its normal lifecycle. Same-document and
 full-navigation loops remain bounded and ambiguous multiple handoffs fail
 closed. Popup permission/geometry, shared frame scripting, full Window Web IDL
 descriptors, and complete browser topology remain issue #40 gates.
+
+The completed native-engine-browser-155 slice adds a bounded Web IDL identity
+foundation to both local and HTTP(S) page realms. Window, Document, Node,
+Element, supported HTML element classes, Location, NodeList, HTMLCollection,
+Event, CustomEvent, and StorageEvent values now pass ordinary browser-style
+identity checks; document and element metadata, `defaultView`, and stable
+window relationship properties are also projected. Element `ownerDocument`
+resolves through the current realm document so reused host objects do not
+retain an obsolete bootstrap snapshot. This is a prototype/identity layer
+over the existing Rust DOM, not a second DOM implementation: full Web IDL
+descriptors and methods, live mutation, shadow/custom elements, ranges,
+cross-origin frame properties, shared frame scripting, and complete browser
+parity remain open.
 
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third

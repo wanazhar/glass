@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-178` locally. The versioned
+`native-engine-browser-179` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1687,6 +1687,20 @@ intentionally does not claim fragment `innerHTML` setters, direct
 `MutationObserver` records for fragment staging, or complete Web IDL descriptors.
 Its contract and local evidence are recorded in
 [native-engine-browser-178](tasks/native-engine-browser-178.md); cross-document
+session history, bfcache, cross-origin history, and browser-wide parity remain
+issue #40 promotion gates.
+
+The completed native-engine-browser-179 slice adds bounded fragment
+`innerHTML` parsing and live same-turn tree queries. Detached fragments now
+construct nested elements/text, decode common and numeric entities, preserve
+attributes and void elements, and expose selector/collection traversal before
+attachment; local, HTTP(S) content-worker, and same-origin frame realms share
+the behavior. Newly attached nodes are also visible through element query
+methods during the same script turn. The parser remains a bounded element/text
+tree builder rather than a claim of full HTML parsing, comment/raw-text/
+foreign-content rules and complete Web IDL descriptors remain open. Its
+contract and local evidence are recorded in
+[native-engine-browser-179](tasks/native-engine-browser-179.md); cross-document
 session history, bfcache, cross-origin history, and browser-wide parity remain
 issue #40 promotion gates.
 

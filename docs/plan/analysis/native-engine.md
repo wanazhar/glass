@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-178`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-179`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
@@ -3360,6 +3360,19 @@ leaves fragment `innerHTML` setters, direct fragment-staging observer records,
 and complete Web IDL descriptor parity for later conformance work. Exact local
 evidence is in `docs/plan/tasks/native-engine-browser-178.md`; browser-complete
 promotion remains tracked issue-40 work.
+
+The completed native-engine-browser-179 slice closes the fragment
+`innerHTML`/same-turn query gap. A bounded host tokenizer builds detached
+element/text subtrees with common/numeric entity decoding, attribute
+reflection, void-element termination, and fragment serialization; the shared
+tree accessor layer supplies fragment selector and collection methods, and
+element/frame queries now include newly attached nodes immediately. This keeps
+detached construction in the JavaScript host and reuses the existing typed
+create/attribute/attach commands, but it is not a full HTML tree builder:
+comments, raw-text/foreign-content rules, malformed-input recovery, and full
+Web IDL descriptor parity remain conformance work. Exact local evidence is in
+`docs/plan/tasks/native-engine-browser-179.md`; browser-complete promotion
+remains tracked issue-40 work.
 
 The completed native-engine-browser-169 slice adds frame-qualified EventTarget
 behavior to same-origin projected elements, detached projected elements,

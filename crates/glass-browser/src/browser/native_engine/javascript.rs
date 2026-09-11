@@ -3485,7 +3485,7 @@ impl NativeJavaScriptRuntime {
             .unwrap_or(serde_json::Value::Null)
     }
 
-    fn history_length(&self) -> usize {
+    pub(crate) fn history_length(&self) -> usize {
         self.history_length
             .lock()
             .map(|length| (*length).max(1))

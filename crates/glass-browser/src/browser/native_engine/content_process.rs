@@ -12,18 +12,18 @@ use super::interaction::{
     MAX_NATIVE_EFFECTS, NativeEventKind, validate_native_edit_key, validate_native_key,
 };
 use super::javascript::{
-    MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_DIALOGS, MAX_NATIVE_INDEXED_DB_CHANGES,
-    MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_SCRIPT_BYTES, MAX_NATIVE_XHR_TIMEOUT_MS,
-    NativeCookieProfileEntry, NativeDialog, NativeFrameScriptBinding, NativeFrameScriptContext,
-    NativeFrameScriptRequest, NativeFrameScriptWindow, NativeIndexedDbChange, NativeIndexedDbState,
-    NativeJavaScriptRuntime, NativePageScript, NativePopupRequest, NativePostMessageRequest,
-    NativeScriptCommand, NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState,
-    NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
-    diff_indexed_db_changes, execute_page_scripts, host_event_script,
-    host_hash_change_event_script, host_key_event_script, host_key_event_script_with_modifiers,
-    host_submit_event_script, literal_dynamic_module_specifiers, load_indexed_db_profile,
-    load_web_storage_profile, order_page_scripts, save_web_storage_profile,
-    static_module_specifiers, storage_key,
+    MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_DIALOGS, MAX_NATIVE_HISTORY_STATE_BYTES,
+    MAX_NATIVE_INDEXED_DB_CHANGES, MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_SCRIPT_BYTES,
+    MAX_NATIVE_XHR_TIMEOUT_MS, NativeCookieProfileEntry, NativeDialog, NativeFrameScriptBinding,
+    NativeFrameScriptContext, NativeFrameScriptRequest, NativeFrameScriptWindow,
+    NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime, NativePageScript,
+    NativePopupRequest, NativePostMessageRequest, NativeScriptCommand, NativeScriptEvaluation,
+    NativeStorageEvent, NativeWebStorageState, NativeWindowCloseRequest,
+    NativeWindowNavigationRequest, NativeWindowProxyUpdate, diff_indexed_db_changes,
+    execute_page_scripts, host_event_script, host_hash_change_event_script, host_key_event_script,
+    host_key_event_script_with_modifiers, host_submit_event_script,
+    literal_dynamic_module_specifiers, load_indexed_db_profile, load_web_storage_profile,
+    order_page_scripts, save_web_storage_profile, static_module_specifiers, storage_key,
 };
 use super::layout::NativePoint;
 use super::origin::NativeOrigin;
@@ -107,6 +107,7 @@ pub(crate) struct NativeContentMutation {
 pub(crate) struct NativeContentScriptResult {
     pub(crate) value: Value,
     pub(crate) mutation: Option<NativeContentMutation>,
+    pub(crate) history: Vec<NativeScriptCommand>,
     pub(crate) frame_scripts: Vec<NativeFrameScriptRequest>,
     pub(crate) storage_events: Vec<NativeStorageEvent>,
     pub(crate) indexed_db_changes: Vec<NativeIndexedDbChange>,
@@ -628,6 +629,62 @@ impl NativeContentProcess {
             let _ = self.child.start_kill();
         } else {
             self.scroll_offset = scroll_offset;
+        }
+        result
+    }
+
+    pub(crate) async fn sync_history(
+        &mut self,
+        url: &str,
+        state: &Value,
+        length: usize,
+    ) -> Result<(), NativeEngineError> {
+        validate_url_text("content process history URL", url)?;
+        let encoded = serde_json::to_vec(state).map_err(|_| NativeEngineError::Worker {
+            operation: "serialize content process history state".into(),
+            reason: "history state could not be serialized".into(),
+        })?;
+        if encoded.len() > MAX_NATIVE_HISTORY_STATE_BYTES {
+            return Err(NativeEngineError::limit(
+                "content process history state",
+                MAX_NATIVE_HISTORY_STATE_BYTES,
+                encoded.len(),
+            ));
+        }
+        let id = self.next_id();
+        let response = match timeout(
+            CONTENT_PROCESS_SCRIPT_TIMEOUT,
+            self.exchange(json!({
+                "kind": "history_sync",
+                "id": id,
+                "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
+                "url": url,
+                "state": state,
+                "length": length.max(1),
+            })),
+        )
+        .await
+        {
+            Ok(response) => response?,
+            Err(_) => {
+                self.mark_failed(NativeWorkerFailureKind::Timeout);
+                let _ = self.child.start_kill();
+                return Err(NativeEngineError::worker_failure(
+                    "content process history synchronization",
+                    NativeWorkerFailureKind::Timeout,
+                    "content process history synchronization exceeded its deadline",
+                ));
+            }
+        };
+        let result = require_response_kind(
+            &response,
+            "history_synced",
+            id,
+            "content process history synchronization",
+        );
+        if result.is_err() {
+            self.mark_failed(NativeWorkerFailureKind::InvalidTransfer);
+            let _ = self.child.start_kill();
         }
         result
     }
@@ -1449,6 +1506,68 @@ fn decode_mutation_payload(
     })
 }
 
+fn decode_history_commands(
+    response: &Value,
+    operation: &str,
+) -> Result<Vec<NativeScriptCommand>, NativeEngineError> {
+    let Some(value) = response.get("history") else {
+        return Ok(Vec::new());
+    };
+    let values = value.as_array().ok_or_else(|| NativeEngineError::Worker {
+        operation: operation.into(),
+        reason: "content process returned invalid history commands".into(),
+    })?;
+    if values.len() > MAX_NATIVE_EFFECTS {
+        return Err(NativeEngineError::limit(
+            "content-process history commands",
+            MAX_NATIVE_EFFECTS,
+            values.len(),
+        ));
+    }
+    let commands =
+        serde_json::from_value::<Vec<NativeScriptCommand>>(value.clone()).map_err(|_| {
+            NativeEngineError::Worker {
+                operation: operation.into(),
+                reason: "content process returned malformed history commands".into(),
+            }
+        })?;
+    for command in &commands {
+        match command {
+            NativeScriptCommand::HistoryPushState { state, .. }
+            | NativeScriptCommand::HistoryReplaceState { state, .. } => {
+                let encoded = serde_json::to_vec(state).map_err(|_| NativeEngineError::Worker {
+                    operation: operation.into(),
+                    reason: "content process returned unserializable history state".into(),
+                })?;
+                if encoded.len() > MAX_NATIVE_HISTORY_STATE_BYTES {
+                    return Err(NativeEngineError::limit(
+                        "content-process history state",
+                        MAX_NATIVE_HISTORY_STATE_BYTES,
+                        encoded.len(),
+                    ));
+                }
+            }
+            NativeScriptCommand::HistoryGo { delta } => {
+                if delta.unsigned_abs() > 1024 {
+                    return Err(NativeEngineError::limit(
+                        "content-process history traversal delta",
+                        1024,
+                        delta.unsigned_abs() as usize,
+                    ));
+                }
+            }
+            _ => {
+                return Err(NativeEngineError::Worker {
+                    operation: operation.into(),
+                    reason: "content process returned a non-history command in history output"
+                        .into(),
+                });
+            }
+        }
+    }
+    Ok(commands)
+}
+
 fn decode_event_payload(
     response: &Value,
     operation: &str,
@@ -1861,6 +1980,7 @@ fn decode_script_response(
         decode_window_navigation_requests(&response, "decode content process script")?;
     let frame_scripts = decode_frame_script_requests(&response, "decode content process script")?;
     let window_name = decode_window_name(&response, "decode content process script")?;
+    let history = decode_history_commands(&response, "decode content process script")?;
     Ok(NativeContentScriptResult {
         value,
         storage_events: if has_mutation {
@@ -1869,6 +1989,7 @@ fn decode_script_response(
             storage_events
         },
         mutation,
+        history,
         frame_scripts,
         indexed_db_changes,
         dialogs: if has_mutation { Vec::new() } else { dialogs },
@@ -2399,6 +2520,39 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 }
                 json!({"kind":"scroll_synced","id":id})
             }
+            "history_sync" if protocol_matches(&request) && running => {
+                let requested_url =
+                    request.get("url").and_then(Value::as_str).ok_or_else(|| {
+                        NativeEngineError::invalid("content-process history URL", "must be text")
+                    })?;
+                validate_url_text("content-process history URL", requested_url)?;
+                let requested_state = request.get("state").ok_or_else(|| {
+                    NativeEngineError::invalid("content-process history state", "must be present")
+                })?;
+                validate_content_history_state(requested_state)?;
+                let length = request
+                    .get("length")
+                    .and_then(Value::as_u64)
+                    .and_then(|value| usize::try_from(value).ok())
+                    .ok_or_else(|| {
+                        NativeEngineError::invalid(
+                            "content-process history length",
+                            "must be a positive integer",
+                        )
+                    })?;
+                if length == 0 {
+                    return Err(NativeEngineError::invalid(
+                        "content-process history length",
+                        "must be a positive integer",
+                    ));
+                }
+                document_url = Some(requested_url.to_owned());
+                if let Some(runtime) = javascript_runtime.as_ref() {
+                    runtime.set_history_state(requested_state.clone());
+                    runtime.set_history_length(length);
+                }
+                json!({"kind":"history_synced","id":id})
+            }
             "cookies" if protocol_matches(&request) && running => {
                 let requested_url = request
                     .get("document_url")
@@ -2799,7 +2953,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 }
                 let runtime = javascript_runtime.as_ref().expect("runtime initialized");
                 runtime.set_scroll_offset(scroll_offset);
-                let Some(document_url) = document_url.as_deref() else {
+                let Some(committed_url) = document_url.clone() else {
                     let response = content_error_response(
                         id,
                         NativeEngineError::Worker {
@@ -2822,19 +2976,31 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     continue;
                 };
                 runtime.set_indexed_db_state(
-                    indexed_db_state.origin(&storage_key(document_url, document_origin)),
+                    indexed_db_state.origin(&storage_key(&committed_url, document_origin)),
                 );
-                match runtime.evaluate(source, current, document_url, document_origin, viewport) {
+                match runtime.evaluate(source, current, &committed_url, document_origin, viewport) {
                     Ok(NativeScriptEvaluation { value, commands }) if commands.is_empty() => {
                         let frame_scripts = runtime.take_frame_script_events();
                         json!({
                             "kind":"evaluated",
                             "id":id,
                             "value":value,
+                            "history": [],
                             "frame_scripts":frame_scripts,
                         })
                     }
                     Ok(NativeScriptEvaluation { value, commands }) => {
+                        let history = extract_history_commands(&commands);
+                        if let Err(error) = apply_content_runtime_history(
+                            &history,
+                            &mut document_url,
+                            document_origin,
+                            runtime,
+                        ) {
+                            let response = content_error_response(id, error);
+                            write_value_frame(&mut stdout, &response).await?;
+                            continue;
+                        }
                         let fetches = match fetch_commands(&commands) {
                             Ok(fetches) => fetches,
                             Err(error) => {
@@ -2851,7 +3017,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                         current,
                                         runtime,
                                         loader,
-                                        document_url,
+                                        &committed_url,
                                         document_origin,
                                         viewport,
                                         NativeScriptEvaluation {
@@ -2870,7 +3036,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             mutate_script_document(
                                 current,
                                 runtime,
-                                document_url,
+                                &committed_url,
                                 document_origin,
                                 viewport,
                                 &commands,
@@ -2884,6 +3050,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                     "kind": "evaluated",
                                     "id": id,
                                     "value": value,
+                                    "history": history,
                                     "frame_scripts": frame_scripts,
                                     "document_base64": base64::engine::general_purpose::STANDARD
                                         .encode(serde_json::to_vec(&mutation.document).unwrap_or_default()),
@@ -4979,6 +5146,130 @@ fn split_location_navigation(
         }
     }
     Ok((retained, navigation))
+}
+
+fn extract_history_commands(commands: &[NativeScriptCommand]) -> Vec<NativeScriptCommand> {
+    commands
+        .iter()
+        .filter(|command| {
+            matches!(
+                command,
+                NativeScriptCommand::HistoryPushState { .. }
+                    | NativeScriptCommand::HistoryReplaceState { .. }
+                    | NativeScriptCommand::HistoryGo { .. }
+            )
+        })
+        .cloned()
+        .collect()
+}
+
+fn apply_content_runtime_history(
+    commands: &[NativeScriptCommand],
+    document_url: &mut Option<String>,
+    document_origin: &NativeOrigin,
+    runtime: &NativeJavaScriptRuntime,
+) -> Result<(), NativeEngineError> {
+    let Some(current_url) = document_url.as_deref() else {
+        return Err(NativeEngineError::Worker {
+            operation: "content process history".into(),
+            reason: "history requires a committed document URL".into(),
+        });
+    };
+    let mut base_url = current_url.to_owned();
+    let mut traversal_seen = false;
+    for command in commands {
+        match command {
+            NativeScriptCommand::HistoryPushState { href, state } => {
+                if traversal_seen {
+                    return Err(NativeEngineError::TargetNotActionable {
+                        reason:
+                            "history state mutation cannot follow traversal in one script batch"
+                                .into(),
+                    });
+                }
+                let url = resolve_content_history_href(&base_url, document_origin, href)?;
+                validate_content_history_state(state)?;
+                let length = runtime.history_length().saturating_add(1);
+                runtime.set_history_state(state.clone());
+                runtime.set_history_length(length);
+                *document_url = Some(url.clone());
+                base_url = url;
+            }
+            NativeScriptCommand::HistoryReplaceState { href, state } => {
+                if traversal_seen {
+                    return Err(NativeEngineError::TargetNotActionable {
+                        reason:
+                            "history state mutation cannot follow traversal in one script batch"
+                                .into(),
+                    });
+                }
+                let url = resolve_content_history_href(&base_url, document_origin, href)?;
+                validate_content_history_state(state)?;
+                runtime.set_history_state(state.clone());
+                *document_url = Some(url.clone());
+                base_url = url;
+            }
+            NativeScriptCommand::HistoryGo { delta } => {
+                if traversal_seen {
+                    return Err(NativeEngineError::TargetNotActionable {
+                        reason: "a script batch cannot request multiple history traversals".into(),
+                    });
+                }
+                if delta.unsigned_abs() > 1024 {
+                    return Err(NativeEngineError::limit(
+                        "content-process history traversal delta",
+                        1024,
+                        delta.unsigned_abs() as usize,
+                    ));
+                }
+                traversal_seen = true;
+            }
+            _ => unreachable!("history extraction only returns history commands"),
+        }
+    }
+    Ok(())
+}
+
+fn resolve_content_history_href(
+    base_url: &str,
+    document_origin: &NativeOrigin,
+    href: &str,
+) -> Result<String, NativeEngineError> {
+    validate_url_text("content-process history URL", href)?;
+    let base = Url::parse(base_url).map_err(|_| NativeEngineError::UnsupportedUrl {
+        reason: "content-process history base URL is malformed".into(),
+    })?;
+    let target = if let Ok(absolute) = Url::parse(href) {
+        absolute
+    } else {
+        base.join(href)
+            .map_err(|_| NativeEngineError::UnsupportedUrl {
+                reason: "content-process history URL is malformed".into(),
+            })?
+    };
+    if NativeOrigin::from_url(&target)? != *document_origin {
+        return Err(NativeEngineError::UnsupportedUrl {
+            reason: "content-process history URL must be same-origin".into(),
+        });
+    }
+    let target = target.to_string();
+    validate_url_text("content-process history URL", &target)?;
+    Ok(target)
+}
+
+fn validate_content_history_state(state: &Value) -> Result<(), NativeEngineError> {
+    let encoded = serde_json::to_vec(state).map_err(|_| NativeEngineError::Worker {
+        operation: "serialize content-process history state".into(),
+        reason: "history state could not be serialized".into(),
+    })?;
+    if encoded.len() > MAX_NATIVE_HISTORY_STATE_BYTES {
+        return Err(NativeEngineError::limit(
+            "content-process history state",
+            MAX_NATIVE_HISTORY_STATE_BYTES,
+            encoded.len(),
+        ));
+    }
+    Ok(())
 }
 
 fn mutate_before_unload(

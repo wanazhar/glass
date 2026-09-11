@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-176` slice; the bounded foundation below remains
+`native-engine-browser-177` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -1748,6 +1748,17 @@ content-worker and projected same-origin realms retain the existing typed
 geometry/scroll ownership. Independent vsync, fractional/composited layout,
 resource observers, complete scheduling, Web IDL descriptor parity, and
 browser-wide parity remain open promotion gates.
+
+The completed native-engine-browser-177 slice carries the History API through
+both native execution boundaries. `pushState()`, `replaceState()`, bounded
+structured state, `history.length`, and bounded traversal now remain coherent
+after direct evaluation, local input/lifecycle dispatch, and process-backed
+HTTP(S) event callbacks. Content-worker mutation replies include a validated
+history envelope and synchronize URL/state/length before the next callback;
+the parent applies those commands once and rejects ambiguous traversal plus
+competing navigation. Cross-document session history, bfcache, cross-origin
+history, complete Web IDL descriptors, and browser-wide parity remain issue
+#40 promotion gates.
 
 The completed native-engine-browser-169 slice adds frame-qualified EventTarget
 behavior to same-origin projected elements, detached projected elements,

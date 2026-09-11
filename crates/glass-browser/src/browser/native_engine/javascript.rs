@@ -8,7 +8,9 @@ use super::config::{
     MAX_NATIVE_WINDOW_NAME_BYTES, Viewport, validate_context_id, validate_url_text,
     validate_window_name,
 };
-use super::dom::{NativeDocument, NativePageScriptSource, NativePageScriptTiming};
+use super::dom::{
+    NativeDocument, NativePageScriptSource, NativePageScriptTiming, NativeScriptDocumentSnapshot,
+};
 use super::error::NativeEngineError;
 use super::interaction::NativeEventKind;
 use super::origin::NativeOrigin;
@@ -267,6 +269,24 @@ pub(crate) struct NativeWindowProxyUpdate {
     pub(crate) href: String,
     pub(crate) name: String,
     pub(crate) closed: bool,
+}
+
+/// A parent-owned snapshot for one directly embedded browsing context.
+///
+/// The child engine remains the authority for navigation and mutation. The
+/// snapshot only lets the embedding realm expose the browser's frame object
+/// relationships and same-origin read projections without sharing an engine
+/// pointer across JavaScript realms.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NativeFrameScriptBinding {
+    pub(crate) node_index: u32,
+    pub(crate) frame_id: String,
+    pub(crate) url: String,
+    pub(crate) origin: String,
+    pub(crate) revision: u64,
+    pub(crate) same_origin: bool,
+    pub(crate) document: NativeScriptDocumentSnapshot,
 }
 
 #[derive(Debug, Clone)]
@@ -2961,6 +2981,7 @@ pub(crate) struct NativeJavaScriptRuntime {
     window_close_events: Arc<Mutex<Vec<NativeWindowCloseRequest>>>,
     window_navigation_events: Arc<Mutex<Vec<NativeWindowNavigationRequest>>>,
     pending_window_proxy_updates: Arc<Mutex<Vec<NativeWindowProxyUpdate>>>,
+    frame_script_bindings: Arc<Mutex<Vec<NativeFrameScriptBinding>>>,
     window_name: Arc<Mutex<String>>,
     opener_context_id: Option<String>,
     opener_window_name: String,
@@ -3041,6 +3062,7 @@ impl NativeJavaScriptRuntime {
             window_close_events: Arc::new(Mutex::new(Vec::new())),
             window_navigation_events: Arc::new(Mutex::new(Vec::new())),
             pending_window_proxy_updates: Arc::new(Mutex::new(Vec::new())),
+            frame_script_bindings: Arc::new(Mutex::new(Vec::new())),
             window_name: Arc::new(Mutex::new(window_name)),
             opener_context_id: opener_context_id.map(str::to_owned),
             opener_window_name,
@@ -3214,6 +3236,19 @@ impl NativeJavaScriptRuntime {
             .unwrap_or_default()
     }
 
+    pub(crate) fn set_frame_script_bindings(&self, bindings: Vec<NativeFrameScriptBinding>) {
+        if let Ok(mut current) = self.frame_script_bindings.lock() {
+            *current = bindings;
+        }
+    }
+
+    fn frame_script_bindings(&self) -> Vec<NativeFrameScriptBinding> {
+        self.frame_script_bindings
+            .lock()
+            .map(|bindings| bindings.clone())
+            .unwrap_or_default()
+    }
+
     pub(crate) fn sync_window_proxies(
         &self,
         updates: &[NativeWindowProxyUpdate],
@@ -3335,7 +3370,15 @@ impl NativeJavaScriptRuntime {
         else {
             return Ok(false);
         };
-        validate_url_text("window navigation target", target)?;
+        if target.is_empty() && target_context_id.is_none() {
+            return Err(NativeEngineError::invalid(
+                "window navigation target",
+                "must not be empty without a direct target context",
+            ));
+        }
+        if !target.is_empty() {
+            validate_url_text("window navigation target", target)?;
+        }
         validate_url_text("window navigation href", href)?;
         if let Some(target_context_id) = target_context_id {
             validate_context_id(target_context_id)?;
@@ -3660,7 +3703,15 @@ impl NativeJavaScriptRuntime {
         else {
             return Ok(false);
         };
-        validate_url_text("postMessage target", target)?;
+        if target.is_empty() && target_context_id.is_none() {
+            return Err(NativeEngineError::invalid(
+                "postMessage target",
+                "must not be empty without a direct target context",
+            ));
+        }
+        if !target.is_empty() {
+            validate_url_text("postMessage target", target)?;
+        }
         validate_url_text("postMessage target origin", target_origin)?;
         if let Some(target_context_id) = target_context_id {
             validate_context_id(target_context_id)?;
@@ -3748,6 +3799,7 @@ impl NativeJavaScriptRuntime {
             &self.indexed_db_state(),
             &storage_events,
             &self.cookie_state(),
+            &self.frame_script_bindings(),
             self.timer_pump_enabled(),
         )?;
         let deadline = Instant::now() + NATIVE_SCRIPT_TIMEOUT;
@@ -3961,6 +4013,7 @@ impl NativeJavaScriptRuntime {
             &self.indexed_db_state(),
             &storage_events,
             &self.cookie_state(),
+            &self.frame_script_bindings(),
             self.timer_pump_enabled(),
         )?;
         let deadline = Instant::now() + NATIVE_SCRIPT_TIMEOUT;
@@ -4413,6 +4466,7 @@ fn document_bootstrap(
     indexed_db: &NativeIndexedDbOrigin,
     storage_events: &[NativeStorageEvent],
     cookie: &str,
+    frame_bindings: &[NativeFrameScriptBinding],
     run_timers: bool,
 ) -> Result<String, NativeEngineError> {
     let state = document.script_snapshot(crate::browser_backend::MAX_TEXT_BYTES);
@@ -4430,6 +4484,7 @@ fn document_bootstrap(
         "indexed_db": indexed_db,
         "storage_events": storage_events,
         "cookie": cookie,
+        "frames": frame_bindings,
     }))
     .map_err(|_| NativeEngineError::Worker {
         operation: "serialize JavaScript host view".into(),
@@ -7565,6 +7620,25 @@ fn document_bootstrap(
         get() {{ return element.parentElement; }},
       }});
     }}
+    if (["IFRAME", "FRAME"].includes(element.tagName)
+        && !Object.prototype.hasOwnProperty.call(element, "contentWindow")) {{
+      Object.defineProperty(element, "contentWindow", {{
+        enumerable: false,
+        configurable: false,
+        get() {{
+          const binding = frameBindingForNode(element.nodeIndex);
+          return binding ? makeFrameWindow(binding, element) : null;
+        }},
+      }});
+      Object.defineProperty(element, "contentDocument", {{
+        enumerable: false,
+        configurable: false,
+        get() {{
+          const binding = frameBindingForNode(element.nodeIndex);
+          return binding && binding.sameOrigin ? makeFrameDocument(binding) : null;
+        }},
+      }});
+    }}
     if (element.tagName === "SELECT" && !Object.prototype.hasOwnProperty.call(element, "options")) {{
       Object.defineProperty(element, "options", {{
         enumerable: false,
@@ -8053,6 +8127,157 @@ fn document_bootstrap(
     }}[tagName] || "HTMLUnknownElement";
     return elementConstructors[name].prototype;
   }};
+  const frameBindingForNode = (nodeIndex) => {{
+    const bindings = Array.isArray(globalThis.__glassFrameBindings)
+      ? globalThis.__glassFrameBindings
+      : [];
+    return bindings.find((binding) => binding && binding.nodeIndex === nodeIndex) || null;
+  }};
+  const frameBindingForId = (frameId) => {{
+    const bindings = Array.isArray(globalThis.__glassFrameBindings)
+      ? globalThis.__glassFrameBindings
+      : [];
+    return bindings.find((binding) => binding && binding.frameId === frameId) || null;
+  }};
+  const frameDocumentCache = globalThis.__glassFrameDocumentCache instanceof Map
+    ? globalThis.__glassFrameDocumentCache
+    : new Map();
+  const frameWindowCache = globalThis.__glassFrameWindowCache instanceof Map
+    ? globalThis.__glassFrameWindowCache
+    : new Map();
+  globalThis.__glassFrameDocumentCache = frameDocumentCache;
+  globalThis.__glassFrameWindowCache = frameWindowCache;
+  const projectedFrameMatches = (element, selector) => {{
+    const value = String(selector).trim();
+    if (value.startsWith("#")) return element.id === value.slice(1);
+    if (value.startsWith(".")) return element.className.split(/\s+/).includes(value.slice(1));
+    return element.tagName.toLowerCase() === value.toLowerCase();
+  }};
+  const makeFrameDocument = (binding) => {{
+    const cached = frameDocumentCache.get(binding.frameId);
+    if (cached && cached.url === binding.url && cached.revision === binding.revision) return cached.document;
+    const snapshot = binding.document && typeof binding.document === "object"
+      ? binding.document
+      : {{ title: "", visibleText: "", elements: [] }};
+    let frameDocument;
+    const frameElements = (Array.isArray(snapshot.elements) ? snapshot.elements : []).map((entry) => {{
+      const attributes = entry.attributes && typeof entry.attributes === "object" ? entry.attributes : {{}};
+      const projected = {{
+        nodeIndex: entry.nodeIndex,
+        parentIndex: entry.parentIndex == null ? null : entry.parentIndex,
+        tagName: String(entry.tagName || "").toUpperCase(),
+        nodeType: 1,
+        nodeName: String(entry.tagName || "").toUpperCase(),
+        localName: String(entry.tagName || "").toLowerCase(),
+        id: attributes.id || "",
+        className: attributes.class || "",
+        textContent: String(entry.text || ""),
+        innerText: String(entry.text || ""),
+        value: entry.value == null ? "" : entry.value,
+        checked: Boolean(entry.checked),
+        selected: Boolean(entry.selected),
+        disabled: Boolean(entry.disabled),
+        hidden: Boolean(entry.hidden),
+        getAttribute(name) {{
+          const key = String(name).toLowerCase();
+          for (const attribute of Object.keys(attributes)) {{
+            if (attribute.toLowerCase() === key) return attributes[attribute];
+          }}
+          return null;
+        }},
+        hasAttribute(name) {{ return this.getAttribute(name) !== null; }},
+      }};
+      Object.defineProperty(projected, "ownerDocument", {{
+        enumerable: false,
+        configurable: false,
+        get() {{ return frameDocument; }},
+      }});
+      return projected;
+    }});
+    const find = (selector) => frameElements.filter((element) => projectedFrameMatches(element, selector));
+    const findById = (id) => frameElements.find((element) => element.id === String(id)) || null;
+    const body = frameElements.find((element) => element.tagName === "BODY") || null;
+    const documentElement = frameElements.find((element) => element.tagName === "HTML") || null;
+    frameDocument = {{
+      nodeType: 9,
+      nodeName: "#document",
+      URL: String(binding.url),
+      documentURI: String(binding.url),
+      title: String(snapshot.title || ""),
+      textContent: String(snapshot.visibleText || ""),
+      body,
+      documentElement,
+      get defaultView() {{
+        const current = frameBindingForId(binding.frameId) || binding;
+        return makeFrameWindow(current, null);
+      }},
+      getElementById: findById,
+      querySelector(selector) {{ return find(selector)[0] || null; }},
+      querySelectorAll(selector) {{ return asNodeList(find(selector)); }},
+      getElementsByTagName(name) {{
+        const value = String(name).toLowerCase();
+        return asHtmlCollection(frameElements.filter((element) => value === "*" || element.tagName.toLowerCase() === value));
+      }},
+      getElementsByClassName(name) {{
+        const value = String(name);
+        return asHtmlCollection(frameElements.filter((element) => element.className.split(/\s+/).includes(value)));
+      }},
+    }};
+    try {{ Object.setPrototypeOf(frameDocument, DocumentNative.prototype); }} catch (_error) {{}}
+    frameDocumentCache.set(binding.frameId, {{
+      url: binding.url,
+      revision: binding.revision,
+      document: frameDocument,
+    }});
+    return frameDocument;
+  }};
+  const makeFrameWindow = (binding, frameElement) => {{
+    const currentBinding = frameBindingForId(binding.frameId) || binding;
+    const proxy = makeWindowProxy("", "", String(currentBinding.frameId), String(currentBinding.url));
+    const cacheKey = String(currentBinding.frameId) + "\\u0000";
+    const state = windowProxyStates.get(cacheKey);
+    if (state) {{
+      state.targetLocationHref = String(currentBinding.url);
+      state.closed = false;
+    }}
+    if (!frameWindowCache.has(currentBinding.frameId)) {{
+      Object.defineProperty(proxy, "window", {{ enumerable: true, configurable: false, get: () => proxy }});
+      Object.defineProperty(proxy, "self", {{ enumerable: true, configurable: false, get: () => proxy }});
+      Object.defineProperty(proxy, "parent", {{ enumerable: true, configurable: false, get: () => globalThis }});
+      Object.defineProperty(proxy, "top", {{ enumerable: true, configurable: false, get: () => globalThis }});
+      Object.defineProperty(proxy, "frameElement", {{
+        enumerable: true,
+        configurable: false,
+        get: () => frameElement || (globalThis.__glassHostElements instanceof Map
+          ? globalThis.__glassHostElements.get(currentBinding.nodeIndex) || null
+          : null),
+      }});
+      Object.defineProperty(proxy, "document", {{
+        enumerable: true,
+        configurable: false,
+        get() {{
+          const current = frameBindingForId(currentBinding.frameId) || currentBinding;
+          if (!current.sameOrigin) throw new Error("cross-origin frame document access denied");
+          return makeFrameDocument(current);
+        }},
+      }});
+      Object.defineProperty(proxy, "length", {{ enumerable: true, configurable: false, value: 0 }});
+      frameWindowCache.set(currentBinding.frameId, proxy);
+    }}
+    return frameWindowCache.get(currentBinding.frameId);
+  }};
+  const frameBindings = Array.isArray(host.frames) ? host.frames : [];
+  globalThis.__glassFrameBindings = frameBindings;
+  globalThis.length = frameBindings.length;
+  for (let index = 0; index < frameBindings.length; index += 1) {{
+    try {{
+      Object.defineProperty(globalThis, String(index), {{
+        enumerable: false,
+        configurable: true,
+        get() {{ return makeFrameWindow(frameBindings[index], null); }},
+      }});
+    }} catch (_error) {{}}
+  }};
   const EventNative = globalThis.__glassEventConstructor || function Event(type, options) {{
     return globalThis.__glassCreateEvent(type, options);
   }};
@@ -8098,7 +8323,7 @@ fn document_bootstrap(
   globalThis.top = globalThis;
   globalThis.parent = globalThis;
   globalThis.frames = globalThis;
-  globalThis.length = 0;
+  globalThis.length = frameBindings.length;
   for (const proxy of windowProxyCache.values()) {{
     try {{ Object.setPrototypeOf(proxy, WindowNative.prototype); }} catch (_error) {{}}
   }}

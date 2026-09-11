@@ -527,7 +527,11 @@ navigation/history path, preserves cancellation, and rejects ambiguous loops.
   accepts `about:blank`, bounded `data:text/html`, and validated HTTP(S)
   navigation; page scripts also receive bounded browser-style Window,
   Document, Node/Element, supported HTML-element, Location, collection, and
-  Event identity projections in both local and HTTP(S) realms. Fixtures remain
+  Event identity projections in both local and HTTP(S) realms. Direct frame
+  elements also expose parent-owned same-origin `contentDocument` snapshots
+  and `contentWindow` proxies, with bounded `window.frames`, parent/top
+  relationships, origin-checked messaging, and child WindowProxy navigation.
+  Fixtures remain
   a Rust configuration path. Native downloads
   complete into existing authorized directories through the runtime and MCP
   surfaces. It is not a browser-parity claim or security boundary for hostile

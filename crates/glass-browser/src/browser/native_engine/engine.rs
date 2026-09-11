@@ -8,7 +8,7 @@ use super::content_process::{
     NativeContentScriptResult,
 };
 use super::diagnostics::NativeDiagnostic;
-use super::dom::{NativeDocument, NativeNodeId};
+use super::dom::{NativeDocument, NativeNodeId, NativeScriptDocumentSnapshot};
 use super::error::NativeEngineError;
 use super::error::NativeWorkerFailureKind;
 use super::history::{NativeHistory, NativeHistoryDirection};
@@ -18,11 +18,11 @@ use super::interaction::{
 };
 use super::javascript::{
     MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_DIALOGS, NativeCookieProfileEntry, NativeDialog,
-    NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime, NativePageNavigation,
-    NativePopupRequest, NativePostMessageRequest, NativeScriptEvaluation, NativeStorageEvent,
-    NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
-    NativeWindowProxyUpdate, append_storage_changes, apply_indexed_db_changes,
-    diff_indexed_db_changes, execute_inline_scripts, host_event_script,
+    NativeFrameScriptBinding, NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime,
+    NativePageNavigation, NativePopupRequest, NativePostMessageRequest, NativeScriptEvaluation,
+    NativeStorageEvent, NativeWebStorageState, NativeWindowCloseRequest,
+    NativeWindowNavigationRequest, NativeWindowProxyUpdate, append_storage_changes,
+    apply_indexed_db_changes, diff_indexed_db_changes, execute_inline_scripts, host_event_script,
     host_hash_change_event_script, host_message_event_script, host_submit_event_script,
     load_indexed_db_profile, load_web_storage_profile, new_storage_writer_id,
     read_storage_event_journal, register_storage_reader, save_web_storage_profile,
@@ -351,6 +351,7 @@ pub struct NativeEngine {
     url: String,
     origin: NativeOrigin,
     document_frame_sources: Option<Vec<String>>,
+    frame_script_bindings: Vec<NativeFrameScriptBinding>,
     embedding_document_url: Option<String>,
     embedding_frame_sources: Option<Vec<String>>,
     revision: u64,
@@ -423,6 +424,7 @@ impl NativeEngine {
             document: NativeDocument::empty(),
             origin: NativeOrigin::Opaque,
             document_frame_sources: None,
+            frame_script_bindings: Vec::new(),
             embedding_document_url: None,
             embedding_frame_sources: None,
             revision: 0,
@@ -439,6 +441,22 @@ impl NativeEngine {
 
     pub(crate) fn set_frame_id(&mut self, frame_id: String) {
         self.frame_id = frame_id;
+    }
+
+    pub(crate) fn set_frame_script_bindings(&mut self, bindings: Vec<NativeFrameScriptBinding>) {
+        self.frame_script_bindings = bindings.clone();
+        if let Some(javascript) = self.javascript.as_ref() {
+            javascript.set_frame_script_bindings(bindings);
+        }
+    }
+
+    pub(crate) fn script_document_snapshot(
+        &self,
+    ) -> Result<NativeScriptDocumentSnapshot, NativeEngineError> {
+        self.require_running("frame script projection")?;
+        Ok(self
+            .document
+            .script_snapshot(crate::browser_backend::MAX_TEXT_BYTES))
     }
 
     pub(crate) fn document_generation(&self) -> Result<u32, NativeEngineError> {
@@ -1324,6 +1342,11 @@ impl NativeEngine {
         self.sync_external_storage_events()?;
         if self.content_process.is_some() {
             self.deliver_pending_external_storage_events().await?;
+            if let Some(process) = self.content_process.as_mut() {
+                process
+                    .sync_frame_script_bindings(&self.frame_script_bindings)
+                    .await?;
+            }
             let NativeContentScriptResult {
                 value,
                 mutation,
@@ -1385,6 +1408,7 @@ impl NativeEngine {
                 self.indexed_db
                     .origin(&storage_key(&self.url, &self.origin)),
             );
+            javascript.set_frame_script_bindings(self.frame_script_bindings.clone());
             self.javascript = Some(javascript);
         }
         self.deliver_pending_external_storage_events().await?;
@@ -1781,7 +1805,15 @@ impl NativeEngine {
                 self.pending_post_messages.len().saturating_add(1),
             ));
         }
-        validate_url_text("postMessage target", &message.target)?;
+        if message.target.is_empty() && message.target_context_id.is_none() {
+            return Err(NativeEngineError::invalid(
+                "postMessage target",
+                "must not be empty without a direct target context",
+            ));
+        }
+        if !message.target.is_empty() {
+            validate_url_text("postMessage target", &message.target)?;
+        }
         validate_url_text("postMessage target origin", &message.target_origin)?;
         if let Some(target_context_id) = message.target_context_id.as_deref() {
             super::config::validate_context_id(target_context_id)?;
@@ -1880,7 +1912,15 @@ impl NativeEngine {
                 self.pending_window_navigations.len().saturating_add(1),
             ));
         }
-        validate_url_text("window navigation target", &request.target)?;
+        if request.target.is_empty() && request.target_context_id.is_none() {
+            return Err(NativeEngineError::invalid(
+                "window navigation target",
+                "must not be empty without a direct target context",
+            ));
+        }
+        if !request.target.is_empty() {
+            validate_url_text("window navigation target", &request.target)?;
+        }
         validate_url_text("window navigation href", &request.href)?;
         if let Some(target_context_id) = request.target_context_id.as_deref() {
             super::config::validate_context_id(target_context_id)?;

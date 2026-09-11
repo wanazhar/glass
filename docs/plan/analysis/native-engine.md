@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-155`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-156`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
@@ -3129,6 +3129,20 @@ object. The layer intentionally preserves the existing single Rust DOM and
 bounded array-compatible collections; full Web IDL descriptors, mutation,
 shadow/custom elements, ranges, frame property access, shared frame scripting,
 and complete browser parity remain open.
+
+The completed native-engine-browser-156 slice bridges direct frame properties
+into page scripts. The parent registry transfers bounded child frame bindings
+to local and content-worker realms, where `iframe`/`frame` elements expose
+`contentWindow` and same-origin `contentDocument`, the embedding window
+exposes `frames`, and child windows expose stable `parent`, `top`, and
+`frameElement` relationships. Same-origin snapshot DOM access, selectors, and
+collections are available without sharing engine pointers; cross-origin
+document access fails closed. Direct child `postMessage()` and
+`location.assign()`/`replace()` effects return through the parent route with
+origin validation, and child navigation replaces its projection without
+reconciling from a stale embedding source. Snapshot transfer still leaves
+complete cross-realm identity, nested child-window projection in every event
+path, popup policy/geometry, full frame lifecycle, and browser parity open.
 
 The completed native-engine-browser-133 batch extends the native target seam
 with a side-effect-free preflight result. The engine resolves the current

@@ -14,15 +14,15 @@ use super::interaction::{
 use super::javascript::{
     MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_DIALOGS, MAX_NATIVE_INDEXED_DB_CHANGES,
     MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_SCRIPT_BYTES, MAX_NATIVE_XHR_TIMEOUT_MS,
-    NativeCookieProfileEntry, NativeDialog, NativeFrameScriptBinding, NativeIndexedDbChange,
-    NativeIndexedDbState, NativeJavaScriptRuntime, NativePageScript, NativePopupRequest,
-    NativePostMessageRequest, NativeScriptCommand, NativeScriptEvaluation, NativeStorageEvent,
-    NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
-    NativeWindowProxyUpdate, diff_indexed_db_changes, execute_page_scripts, host_event_script,
-    host_hash_change_event_script, host_key_event_script, host_key_event_script_with_modifiers,
-    host_submit_event_script, literal_dynamic_module_specifiers, load_indexed_db_profile,
-    load_web_storage_profile, order_page_scripts, save_web_storage_profile,
-    static_module_specifiers, storage_key,
+    NativeCookieProfileEntry, NativeDialog, NativeFrameScriptBinding, NativeFrameScriptContext,
+    NativeFrameScriptWindow, NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime,
+    NativePageScript, NativePopupRequest, NativePostMessageRequest, NativeScriptCommand,
+    NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState, NativeWindowCloseRequest,
+    NativeWindowNavigationRequest, NativeWindowProxyUpdate, diff_indexed_db_changes,
+    execute_page_scripts, host_event_script, host_hash_change_event_script, host_key_event_script,
+    host_key_event_script_with_modifiers, host_submit_event_script,
+    literal_dynamic_module_specifiers, load_indexed_db_profile, load_web_storage_profile,
+    order_page_scripts, save_web_storage_profile, static_module_specifiers, storage_key,
 };
 use super::origin::NativeOrigin;
 use super::resource_loader::{
@@ -47,7 +47,7 @@ use url::Url;
 
 const MAX_CONTENT_IPC_FRAME_BYTES: usize = 4 * 1024 * 1024;
 const MAX_CONTENT_DOCUMENT_WIRE_BYTES: usize = 2 * 1024 * 1024;
-const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 6;
+const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 7;
 const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTENT_PROCESS_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -209,10 +209,12 @@ impl NativeContentProcess {
         &mut self,
         storage_path: Option<&Path>,
         context_id: &str,
+        frame_id: &str,
         window_name: &str,
         opener_context_id: Option<&str>,
         opener_window_name: &str,
         opener_url: &str,
+        frame_context: Option<&NativeFrameScriptContext>,
     ) -> Result<(), NativeEngineError> {
         let id = self.next_id();
         let response = self
@@ -222,10 +224,12 @@ impl NativeContentProcess {
                 "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
                 "storage_path": storage_path.map(|path| path.to_string_lossy().into_owned()),
                 "context_id": context_id,
+                "frame_id": frame_id,
                 "window_name": window_name,
                 "opener_context_id": opener_context_id,
                 "opener_window_name": opener_window_name,
                 "opener_url": opener_url,
+                "frame_context": frame_context,
             }))
             .await?;
         let result = require_response_kind(&response, "started", id, "content process start");
@@ -248,6 +252,46 @@ impl NativeContentProcess {
         let result = require_response_kind(&response, "committed", id, "content process commit");
         if result.is_err() {
             self.mark_failed(NativeWorkerFailureKind::Protocol);
+            let _ = self.child.start_kill();
+        }
+        result
+    }
+
+    pub(crate) async fn sync_frame_script_context(
+        &mut self,
+        context: Option<&NativeFrameScriptContext>,
+    ) -> Result<(), NativeEngineError> {
+        let id = self.next_id();
+        let response = match timeout(
+            CONTENT_PROCESS_SCRIPT_TIMEOUT,
+            self.exchange(json!({
+                "kind": "frame_script_context_sync",
+                "id": id,
+                "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
+                "context": context,
+            })),
+        )
+        .await
+        {
+            Ok(response) => response?,
+            Err(_) => {
+                self.mark_failed(NativeWorkerFailureKind::Timeout);
+                let _ = self.child.start_kill();
+                return Err(NativeEngineError::worker_failure(
+                    "content process frame script context synchronization",
+                    NativeWorkerFailureKind::Timeout,
+                    "content process frame script context synchronization exceeded its deadline",
+                ));
+            }
+        };
+        let result = require_response_kind(
+            &response,
+            "frame_script_context_synced",
+            id,
+            "content process frame script context synchronization",
+        );
+        if result.is_err() {
+            self.mark_failed(NativeWorkerFailureKind::InvalidTransfer);
             let _ = self.child.start_kill();
         }
         result
@@ -1190,6 +1234,81 @@ fn decode_frame_script_bindings(
     Ok(bindings)
 }
 
+fn decode_frame_script_context(
+    value: Option<&Value>,
+    operation: &str,
+) -> Result<Option<NativeFrameScriptContext>, NativeEngineError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let encoded = serde_json::to_vec(value).map_err(|_| NativeEngineError::Worker {
+        operation: operation.into(),
+        reason: "content process frame script context was not serializable".into(),
+    })?;
+    if encoded.len() > MAX_CONTENT_DOCUMENT_WIRE_BYTES {
+        return Err(NativeEngineError::limit(
+            "content-process frame script context",
+            MAX_CONTENT_DOCUMENT_WIRE_BYTES,
+            encoded.len(),
+        ));
+    }
+    let context: NativeFrameScriptContext =
+        serde_json::from_value(value.clone()).map_err(|_| NativeEngineError::Worker {
+            operation: operation.into(),
+            reason: "content process returned invalid frame script context".into(),
+        })?;
+    validate_context_id(&context.current_frame_id)?;
+    if let Some(parent) = context.parent.as_ref() {
+        validate_frame_script_window(parent, operation)?;
+    }
+    if let Some(top) = context.top.as_ref() {
+        validate_frame_script_window(top, operation)?;
+    }
+    Ok(Some(context))
+}
+
+fn validate_frame_script_window(
+    window: &NativeFrameScriptWindow,
+    operation: &str,
+) -> Result<(), NativeEngineError> {
+    validate_context_id(&window.context_id)?;
+    validate_url_text("content-process frame script window URL", &window.url)?;
+    if window.origin.is_empty() {
+        return Err(NativeEngineError::Worker {
+            operation: operation.into(),
+            reason: "content process returned an empty frame script window origin".into(),
+        });
+    }
+    if window.children.len() > MAX_CONTENT_FRAME_SOURCES {
+        return Err(NativeEngineError::limit(
+            "content-process frame script window children",
+            MAX_CONTENT_FRAME_SOURCES,
+            window.children.len(),
+        ));
+    }
+    for child in &window.children {
+        validate_context_id(&child.frame_id)?;
+        validate_url_text("content-process frame script child URL", &child.url)?;
+        if child.origin.is_empty() {
+            return Err(NativeEngineError::Worker {
+                operation: operation.into(),
+                reason: "content process returned an empty frame script child origin".into(),
+            });
+        }
+        if child.children.len() > MAX_CONTENT_FRAME_SOURCES {
+            return Err(NativeEngineError::limit(
+                "content-process frame script descendants",
+                MAX_CONTENT_FRAME_SOURCES,
+                child.children.len(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn decode_cookie_profiles(
     response: &Value,
     id: u64,
@@ -2018,10 +2137,12 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut indexed_db_state = NativeIndexedDbState::default();
     let mut storage_profile_path: Option<PathBuf> = None;
     let mut storage_context_id = NATIVE_CONTEXT_ID.to_owned();
+    let mut frame_id = NATIVE_CONTEXT_ID.to_owned();
     let mut window_name = String::new();
     let mut opener_context_id: Option<String> = None;
     let mut opener_window_name = String::new();
     let mut opener_url = String::new();
+    let mut frame_script_context: Option<NativeFrameScriptContext> = None;
     let mut frame_script_bindings = Vec::new();
     loop {
         let payload = read_frame(&mut stdin).await?;
@@ -2061,6 +2182,13 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         NativeEngineError::invalid("content-process context id", "must be text")
                     })?;
                 validate_context_id(requested_context_id)?;
+                let requested_frame_id = request
+                    .get("frame_id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        NativeEngineError::invalid("content-process frame id", "must be text")
+                    })?;
+                validate_context_id(requested_frame_id)?;
                 let requested_window_name = request
                     .get("window_name")
                     .and_then(Value::as_str)
@@ -2083,6 +2211,10 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 if !requested_opener_url.is_empty() {
                     validate_url_text("content-process opener URL", requested_opener_url)?;
                 }
+                let requested_frame_context = decode_frame_script_context(
+                    request.get("frame_context"),
+                    "decode content process frame script context",
+                )?;
                 let requested_path = request
                     .get("storage_path")
                     .and_then(Value::as_str)
@@ -2105,10 +2237,12 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         }
                         storage_profile_path = requested_path;
                         storage_context_id = requested_context_id.to_owned();
+                        frame_id = requested_frame_id.to_owned();
                         window_name = requested_window_name.to_owned();
                         opener_context_id = requested_opener_context_id.map(str::to_owned);
                         opener_window_name = requested_opener_window_name.to_owned();
                         opener_url = requested_opener_url.to_owned();
+                        frame_script_context = requested_frame_context;
                         running = true;
                         json!({"kind":"started","id":id})
                     }
@@ -2210,6 +2344,16 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 }
                 json!({"kind":"frame_script_synced","id":id})
             }
+            "frame_script_context_sync" if protocol_matches(&request) && running => {
+                frame_script_context = decode_frame_script_context(
+                    request.get("context"),
+                    "decode content process frame script context",
+                )?;
+                if let Some(runtime) = javascript_runtime.as_ref() {
+                    runtime.set_frame_script_context(frame_script_context.clone());
+                }
+                json!({"kind":"frame_script_context_synced","id":id})
+            }
             "storage_state" if protocol_matches(&request) && running => {
                 let value = request.get("state").ok_or_else(|| {
                     NativeEngineError::invalid("content-process storage state", "must be an object")
@@ -2281,6 +2425,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 }
                             };
                         if let Some(runtime) = script_runtime.as_ref() {
+                            runtime.set_frame_id(frame_id.clone());
+                            runtime.set_frame_script_context(frame_script_context.clone());
                             runtime.set_frame_script_bindings(frame_script_bindings.clone());
                         }
                         let document_cookie = resource_loader
@@ -2474,6 +2620,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     ) {
                         Ok(runtime) => {
                             runtime.set_storage_state(storage_state.clone());
+                            runtime.set_frame_id(frame_id.clone());
+                            runtime.set_frame_script_context(frame_script_context.clone());
                             runtime.set_frame_script_bindings(frame_script_bindings.clone());
                             javascript_runtime = Some(runtime);
                         }
@@ -2639,6 +2787,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     ) {
                         Ok(runtime) => {
                             runtime.set_storage_state(storage_state.clone());
+                            runtime.set_frame_id(frame_id.clone());
+                            runtime.set_frame_script_context(frame_script_context.clone());
                             javascript_runtime = Some(runtime);
                         }
                         Err(error) => {
@@ -2744,6 +2894,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     ) {
                         Ok(runtime) => {
                             runtime.set_storage_state(storage_state.clone());
+                            runtime.set_frame_id(frame_id.clone());
+                            runtime.set_frame_script_context(frame_script_context.clone());
                             javascript_runtime = Some(runtime);
                         }
                         Err(error) => {
@@ -2865,6 +3017,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     ) {
                         Ok(runtime) => {
                             runtime.set_storage_state(storage_state.clone());
+                            runtime.set_frame_id(frame_id.clone());
+                            runtime.set_frame_script_context(frame_script_context.clone());
                             javascript_runtime = Some(runtime);
                         }
                         Err(error) => {
@@ -2975,6 +3129,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     ) {
                         Ok(runtime) => {
                             runtime.set_storage_state(storage_state.clone());
+                            runtime.set_frame_id(frame_id.clone());
+                            runtime.set_frame_script_context(frame_script_context.clone());
                             javascript_runtime = Some(runtime);
                         }
                         Err(error) => {

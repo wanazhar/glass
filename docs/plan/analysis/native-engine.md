@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-157`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-158`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
@@ -3153,9 +3153,22 @@ Nested `postMessage()` and WindowProxy navigation continue through the parent
 resolver for parked descendants. Window/document caches use descendant
 revision and topology keys so nested navigation and message mutation refresh
 the projection without replaying a stale source. This remains a snapshot
-embedding view rather than live multi-realm DOM identity; selected-child realm
-parent metadata, full cross-origin Window behavior, complete frame lifecycle,
-and browser parity remain open.
+embedding view rather than live multi-realm DOM identity; complete cross-origin
+Window behavior, complete frame lifecycle, and browser parity remain open.
+
+The completed native-engine-browser-158 slice installs real selected-frame
+context metadata in both local and content-worker realms. The parent sends the
+actual frame ID separately from target/storage context, includes the active
+selected child in recursive parent/top descriptors, and the JavaScript bridge
+normalizes parent `contextId` descriptors with embedded `frameId` bindings.
+Selected scripts therefore retain identity across `window.parent`,
+`window.top`, `frameElement`, parent-document `defaultView`, parent indexed
+frames, and nested children; message/navigation effects remain frame-scoped.
+This is still a bounded snapshot projection rather than live cross-realm DOM
+identity, and complete cross-origin Window behavior, frame lifecycle/load
+ordering, and browser parity remain issue #40 gates. The content-worker wire
+is protocol 7 so older helpers fail negotiation instead of creating a realm
+with the wrong frame identity.
 
 The completed native-engine-browser-133 batch extends the native target seam
 with a side-effect-free preflight result. The engine resolves the current

@@ -769,7 +769,14 @@ async fn native_nested_frame_script_projection_preserves_window_chain() {
     )
     .await
     .unwrap();
-    assert_eq!(session.native_list_frames().await.unwrap().len(), 3);
+    let frames = session.native_list_frames().await.unwrap();
+    assert_eq!(frames.len(), 3);
+    let child_id = frames
+        .iter()
+        .find(|frame| frame.parent_id.as_deref() == Some("native-context:main"))
+        .unwrap()
+        .id
+        .clone();
     let identity = session
         .script(
             "(() => { const child = document.getElementById('child'); const childWindow = child.contentWindow; const childDocument = child.contentDocument; const grand = childDocument.getElementById('grand'); const grandWindow = grand.contentWindow; const grandDocument = grand.contentDocument; return { childWindow: childWindow instanceof Window, childFrames: childWindow.frames === childWindow && childWindow.length === 1 && childWindow.frames[0] === grandWindow, chain: grandWindow.parent === childWindow && grandWindow.top === window, document: grandWindow.document === grandDocument && grandDocument.defaultView === grandWindow, frameElement: grandWindow.frameElement === grand, content: grandDocument.body.textContent }; })()",
@@ -814,6 +821,24 @@ async fn native_nested_frame_script_projection_preserves_window_chain() {
             .unwrap()
             .value,
         serde_json::json!([true, "/grand-next", "next grandchild"])
+    );
+    session.native_select_frame(&child_id).await.unwrap();
+    let selected_child = session
+        .script(
+            "(() => ({ parent: window.parent !== window, top: window.top === window.parent && window.top !== window, frameElement: window.frameElement && window.frameElement.id === 'child' && window.frameElement.tagName === 'IFRAME', parentDocument: window.parent.document instanceof Document && window.parent.document.defaultView === window.parent, parentFrame: window.parent.frames[0] === window && window.parent.document.getElementById('child').contentWindow === window, nested: window.frames.length === 1 && window.frames[0].parent === window && window.frames[0].top === window.top }))()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        selected_child.value,
+        serde_json::json!({
+            "parent": true,
+            "top": true,
+            "frameElement": true,
+            "parentDocument": true,
+            "parentFrame": true,
+            "nested": true,
+        })
     );
     session.close().await.unwrap();
     server.await.unwrap();

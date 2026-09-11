@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-157` slice; the bounded foundation below remains
+`native-engine-browser-158` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -1569,9 +1569,23 @@ Nested message and navigation effects resolve through the existing parent-owned
 flat registry, including parked descendants. Revision/URL/origin/topology
 keys refresh cached projections without sharing engine pointers or allowing a
 cross-origin document snapshot through. Selected-child realm relationship
-metadata, complete cross-origin Window Web IDL behavior, live cross-realm
-identity, full frame lifecycle/topology, and complete browser parity remain
-issue #40 gates.
+metadata is now installed by slice 158; complete cross-origin Window Web IDL
+behavior, live cross-realm identity, full frame lifecycle/topology, and
+complete browser parity remain issue #40 gates.
+
+The completed native-engine-browser-158 slice installs the selected-frame
+script context. Every realm now carries its frame identity independently of
+storage ownership, and the parent registry transfers bounded parent/top
+Window/document descriptors through local and content-worker execution. The
+active selected frame is merged into the recursive parent/top projection, so
+`window.parent.document.defaultView`, `parent.frames[n]`, `frameElement`, and
+the selected global's nested WindowProxy all preserve identity. The bridge
+normalizes `contextId` window descriptors and `frameId` embedded bindings into
+one cache key. The content-worker envelope is protocol 7 so an older helper
+cannot silently construct a realm with the wrong frame identity. This remains
+a parent-owned snapshot boundary; cross-origin Window Web IDL, full frame
+lifecycle/load ordering, live cross-realm identity,
+and complete browser parity remain issue #40 gates.
 
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third

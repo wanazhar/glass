@@ -2800,6 +2800,109 @@ async fn native_local_scripts_drain_microtasks_and_next_turn_timers() {
 }
 
 #[tokio::test]
+async fn native_local_mutation_observer_delivers_script_dom_changes() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://mutation-observer",
+            "<main id='root'><p id='copy'>hello</p></main>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://mutation-observer");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"(() => {
+                    const root = document.getElementById('root');
+                    const copy = document.getElementById('copy');
+                    const log = [];
+                    const observer = new MutationObserver(records => {
+                        log.push(records.map(record => ({
+                            type: record.type,
+                            target: record.target.id || record.target.nodeName,
+                            attributeName: record.attributeName,
+                            oldValue: record.oldValue,
+                            added: record.addedNodes.length,
+                            removed: record.removedNodes.length,
+                        })));
+                    });
+                    observer.observe(root, {
+                        subtree: true,
+                        attributes: true,
+                        attributeOldValue: true,
+                        childList: true,
+                        characterData: true,
+                        characterDataOldValue: true,
+                    });
+                    copy.setAttribute('data-state', 'one');
+                    copy.setAttribute('data-state', 'two');
+                    copy.firstChild.data = 'updated';
+                    const extra = document.createElement('span');
+                    extra.textContent = 'new';
+                    root.appendChild(extra);
+                    copy.remove();
+                    globalThis.mutationLog = log;
+                    return true;
+                })()"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.mutationLog")
+            .await
+            .unwrap(),
+        serde_json::json!([[
+            {
+                "type": "attributes",
+                "target": "copy",
+                "attributeName": "data-state",
+                "oldValue": null,
+                "added": 0,
+                "removed": 0,
+            },
+            {
+                "type": "attributes",
+                "target": "copy",
+                "attributeName": "data-state",
+                "oldValue": "one",
+                "added": 0,
+                "removed": 0,
+            },
+            {
+                "type": "characterData",
+                "target": "#text",
+                "attributeName": null,
+                "oldValue": "hello",
+                "added": 0,
+                "removed": 0,
+            },
+            {
+                "type": "childList",
+                "target": "root",
+                "attributeName": null,
+                "oldValue": null,
+                "added": 1,
+                "removed": 0,
+            },
+            {
+                "type": "childList",
+                "target": "root",
+                "attributeName": null,
+                "oldValue": null,
+                "added": 0,
+                "removed": 1,
+            },
+        ]])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_delayed_timer_waits_for_due_host_turn() {
     let config = NativeEngineConfig::default()
         .with_fixture(

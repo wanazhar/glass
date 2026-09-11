@@ -5,6 +5,7 @@ use super::css::{
 };
 use super::dom::{NativeDocument, NativeNode, NativeNodeId};
 use super::error::NativeEngineError;
+use super::image::decode_data_image;
 use super::layout::{
     MAX_NATIVE_SVG_POINTS, NativeLayoutPaintOrder, NativeLayoutSnapshot, NativePoint, NativeRect,
     NativeSvgSubpath, svg_line_points, svg_path_subpaths, svg_points, svg_transform_for_node,
@@ -76,6 +77,14 @@ pub enum NativeDisplayCommand {
         rect: NativeRect,
         radius: NativeBorderRadius,
         color: NativeColor,
+        clip: Option<NativeRect>,
+    },
+    Image {
+        node_id: NativeNodeId,
+        rect: NativeRect,
+        source_width: u32,
+        source_height: u32,
+        pixels: Vec<u8>,
         clip: Option<NativeRect>,
     },
     SvgStroke {
@@ -238,6 +247,11 @@ impl NativeDisplayList {
                             },
                         )?;
                     }
+                    if let Some(command) =
+                        image_paint_command(document, layout_box.node_id, layout_box.rect, clip)
+                    {
+                        push_command(&mut commands, command)?;
+                    }
                     for command in
                         svg_paint_commands(document, layout_box.node_id, layout_box.rect, clip)
                     {
@@ -305,6 +319,27 @@ impl NativeDisplayList {
             text_run_boundaries,
         })
     }
+}
+
+fn image_paint_command(
+    document: &NativeDocument,
+    node_id: NativeNodeId,
+    bounds: NativeRect,
+    clip: Option<NativeRect>,
+) -> Option<NativeDisplayCommand> {
+    let node = document.node(node_id)?;
+    if node.element_name() != Some("img") || bounds.width == 0 || bounds.height == 0 {
+        return None;
+    }
+    let image = decode_data_image(node.attribute("src")?)?;
+    Some(NativeDisplayCommand::Image {
+        node_id,
+        rect: bounds,
+        source_width: image.width,
+        source_height: image.height,
+        pixels: image.pixels,
+        clip,
+    })
 }
 
 const MAX_NATIVE_SVG_SCANLINES: u32 = 1024;

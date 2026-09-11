@@ -8,6 +8,7 @@ use super::css::{
 };
 use super::dom::{NativeDocument, NativeNode, NativeNodeId, NativeNodeKind};
 use super::error::NativeEngineError;
+use super::image::image_dimensions_from_source;
 
 const DEFAULT_LINE_HEIGHT: u32 = 20;
 const DEFAULT_CONTROL_HEIGHT: u32 = 24;
@@ -1847,6 +1848,8 @@ impl<'a> LayoutBuilder<'a> {
         let default_content_height = if is_block {
             minimum_line_height
         } else if self.document.node(id).and_then(|node| node.element_name()) == Some("svg") {
+            self.intrinsic_inline_height(id)
+        } else if self.document.node(id).and_then(|node| node.element_name()) == Some("img") {
             self.intrinsic_inline_height(id)
         } else {
             self.intrinsic_inline_height(id).max(minimum_line_height)
@@ -4774,6 +4777,10 @@ impl<'a> LayoutBuilder<'a> {
                 .attribute("width")
                 .and_then(|value| value.trim().parse::<u32>().ok())
                 .unwrap_or(DEFAULT_SVG_WIDTH),
+            Some("img") => self
+                .image_dimensions(id)
+                .map(|(width, _)| width)
+                .unwrap_or(CHARACTER_WIDTH),
             Some("button") => self
                 .intrinsic_text_width(id, style)
                 .saturating_add(24)
@@ -4832,7 +4839,55 @@ impl<'a> LayoutBuilder<'a> {
                 .and_then(|node| node.attribute("height"))
                 .and_then(|value| value.trim().parse::<u32>().ok())
                 .unwrap_or(DEFAULT_SVG_HEIGHT),
+            Some("img") => self
+                .image_dimensions(id)
+                .map(|(_, height)| height)
+                .unwrap_or(DEFAULT_LINE_HEIGHT),
             _ => DEFAULT_LINE_HEIGHT,
+        }
+    }
+
+    fn image_dimensions(&self, id: NativeNodeId) -> Option<(u32, u32)> {
+        let node = self.document.node(id)?;
+        let declared_width = node
+            .attribute("width")
+            .and_then(|value| value.trim().parse::<u32>().ok())
+            .filter(|value| *value > 0);
+        let declared_height = node
+            .attribute("height")
+            .and_then(|value| value.trim().parse::<u32>().ok())
+            .filter(|value| *value > 0);
+        let intrinsic = node.attribute("src").and_then(image_dimensions_from_source);
+        match (declared_width, declared_height, intrinsic) {
+            (Some(width), Some(height), _) => Some((width, height)),
+            (Some(width), None, Some((intrinsic_width, intrinsic_height)))
+                if intrinsic_width > 0 =>
+            {
+                Some((
+                    width,
+                    u32::try_from(
+                        u64::from(intrinsic_height) * u64::from(width) / u64::from(intrinsic_width),
+                    )
+                    .unwrap_or(u32::MAX)
+                    .max(1),
+                ))
+            }
+            (None, Some(height), Some((intrinsic_width, intrinsic_height)))
+                if intrinsic_height > 0 =>
+            {
+                Some((
+                    u32::try_from(
+                        u64::from(intrinsic_width) * u64::from(height)
+                            / u64::from(intrinsic_height),
+                    )
+                    .unwrap_or(u32::MAX)
+                    .max(1),
+                    height,
+                ))
+            }
+            (Some(width), None, _) => Some((width, DEFAULT_LINE_HEIGHT)),
+            (None, Some(height), _) => Some((CHARACTER_WIDTH, height)),
+            (None, None, intrinsic) => intrinsic,
         }
     }
 

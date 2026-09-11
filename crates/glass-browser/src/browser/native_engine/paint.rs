@@ -3,7 +3,7 @@ use super::css::{
     FontStyleValue, FontWeightValue, NativeBorderRadius, NativeBorderStyle, NativeColor,
     NativeTextDecorationSkipInk, NativeTextDecorationSkipSpaces, NativeTextDecorationStyle,
 };
-use super::dom::{NativeDocument, NativeNodeId};
+use super::dom::{NativeDocument, NativeNode, NativeNodeId};
 use super::error::NativeEngineError;
 use super::layout::{NativeLayoutPaintOrder, NativeLayoutSnapshot, NativePoint, NativeRect};
 
@@ -185,6 +185,11 @@ impl NativeDisplayList {
                             },
                         )?;
                     }
+                    for command in
+                        svg_fill_commands(document, layout_box.node_id, layout_box.rect, clip)
+                    {
+                        push_command(&mut commands, command)?;
+                    }
                 }
                 NativeLayoutPaintOrder::Text(text_index) => {
                     let text_run = layout.text_runs.get(text_index).ok_or_else(|| {
@@ -247,6 +252,95 @@ impl NativeDisplayList {
             text_run_boundaries,
         })
     }
+}
+
+const MAX_NATIVE_SVG_SCANLINES: u32 = 1024;
+
+fn svg_fill_commands(
+    document: &NativeDocument,
+    node_id: NativeNodeId,
+    bounds: NativeRect,
+    clip: Option<NativeRect>,
+) -> Vec<NativeDisplayCommand> {
+    let Some(node) = document.node(node_id) else {
+        return Vec::new();
+    };
+    let Some(shape) = node.element_name() else {
+        return Vec::new();
+    };
+    if !matches!(shape, "rect" | "circle" | "ellipse") || bounds.width == 0 || bounds.height == 0 {
+        return Vec::new();
+    }
+    let fill = svg_presentation_value(node, "fill").unwrap_or("black");
+    if fill.eq_ignore_ascii_case("none") {
+        return Vec::new();
+    }
+    let color = super::css::parse_color(fill).unwrap_or(NativeColor::BLACK);
+    if shape == "rect" {
+        return vec![NativeDisplayCommand::FillRect {
+            node_id,
+            rect: bounds,
+            radius: NativeBorderRadius::default(),
+            color,
+            clip,
+        }];
+    }
+
+    let rows = bounds.height.min(MAX_NATIVE_SVG_SCANLINES);
+    let mut commands = Vec::with_capacity(rows as usize);
+    for row in 0..rows {
+        let top = bounds.y.saturating_add(
+            u32::try_from(u64::from(row) * u64::from(bounds.height) / u64::from(rows))
+                .unwrap_or(u32::MAX),
+        );
+        let bottom = bounds.y.saturating_add(
+            u32::try_from(
+                u64::from(row.saturating_add(1)) * u64::from(bounds.height) / u64::from(rows),
+            )
+            .unwrap_or(u32::MAX),
+        );
+        if bottom <= top {
+            continue;
+        }
+        let normalized_y = (f64::from(row) + 0.5) / f64::from(rows) * 2.0 - 1.0;
+        let horizontal = (1.0 - normalized_y * normalized_y).max(0.0).sqrt();
+        let center = f64::from(bounds.width) / 2.0;
+        let half_width = center * horizontal;
+        let left = half_width.mul_add(-1.0, center).floor().max(0.0) as u32;
+        let right = half_width
+            .mul_add(1.0, center)
+            .ceil()
+            .min(f64::from(bounds.width)) as u32;
+        if right <= left {
+            continue;
+        }
+        commands.push(NativeDisplayCommand::FillRect {
+            node_id,
+            rect: NativeRect {
+                x: bounds.x.saturating_add(left),
+                y: top,
+                width: right.saturating_sub(left),
+                height: bottom.saturating_sub(top),
+            },
+            radius: NativeBorderRadius::default(),
+            color,
+            clip,
+        });
+    }
+    commands
+}
+
+fn svg_presentation_value<'a>(node: &'a NativeNode, property: &str) -> Option<&'a str> {
+    if let Some(value) = node.attribute(property) {
+        return Some(value);
+    }
+    let style = node.attribute("style")?;
+    style.split(';').find_map(|declaration| {
+        let (name, value) = declaration.split_once(':')?;
+        name.trim()
+            .eq_ignore_ascii_case(property)
+            .then_some(value.trim())
+    })
 }
 
 fn paint_clip(

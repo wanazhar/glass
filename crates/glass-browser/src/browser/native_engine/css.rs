@@ -5568,6 +5568,7 @@ fn parse_declarations_with_diagnostics(
             }
             "line-height" => parse_line_height_declaration(value).is_some(),
             "background-color" => parse_background_color_declaration(value).is_some(),
+            "fill" | "stroke" => parse_svg_paint_declaration(value),
             "color" => parse_local_color_declaration(value).is_some(),
             "border" | "border-top" | "border-right" | "border-bottom" | "border-left" => {
                 parse_border_declaration(value).is_some()
@@ -5740,6 +5741,8 @@ fn is_known_css_property(property: &str) -> bool {
             | "max-height"
             | "line-height"
             | "background-color"
+            | "fill"
+            | "stroke"
             | "color"
             | "border"
             | "border-top"
@@ -7943,7 +7946,7 @@ fn parse_box_sizing(value: &str) -> Option<NativeBoxSizing> {
     }
 }
 
-fn parse_color(value: &str) -> Option<NativeColor> {
+pub(crate) fn parse_color(value: &str) -> Option<NativeColor> {
     let value = value.trim().to_ascii_lowercase();
     match value.as_str() {
         "black" => Some(NativeColor::BLACK),
@@ -8000,6 +8003,11 @@ fn parse_color(value: &str) -> Option<NativeColor> {
         }
         _ => None,
     }
+}
+
+fn parse_svg_paint_declaration(value: &str) -> bool {
+    let value = value.trim();
+    value.eq_ignore_ascii_case("none") || parse_color(value).is_some()
 }
 
 fn parse_color_channel(value: &str) -> Option<u8> {

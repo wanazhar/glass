@@ -262,6 +262,24 @@ async fn native_local_script_exposes_web_idl_identity_and_dom_collections() {
             .unwrap(),
         serde_json::json!(["Native title", "HEAD", "TITLE"])
     );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const input = document.getElementById('name'); const detached = document.createElement('aside'); return [input.getRootNode() === document, input.isConnected, detached.getRootNode() === detached, detached.isConnected, input.outerHTML]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, true, true, false, "<input id=\"name\">"])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const input = document.getElementById('name'); input.outerHTML = \"<textarea id='replacement'>updated</textarea>\"; const replacement = document.getElementById('replacement'); return [replacement.tagName, replacement.textContent, replacement.parentElement.tagName, document.getElementById('name')]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["TEXTAREA", "updated", "FORM", null])
+    );
     let created = engine
         .evaluate_async(
             "(() => { const host = document.createElement('section'); host.setAttribute('id', 'created'); const child = document.createElement('strong'); const text = document.createTextNode('created'); text.textContent = 'created text'; child.appendChild(text); host.appendChild(child); document.body.appendChild(host); const inserted = document.createElement('em'); inserted.textContent = 'inserted'; document.body.insertBefore(inserted, host); return [host.tagName, host.parentElement === document.body, child.parentElement === host, text.parentNode === child, host.textContent, host.innerHTML, document.body.__glassChildren.map(element => element.tagName)]; })()",
@@ -526,6 +544,15 @@ async fn native_content_process_script_exposes_web_idl_identity() {
             .await
             .unwrap(),
         serde_json::json!(["Worker title", "HEAD", "TITLE"])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const input = document.getElementById('name'); const detached = document.createElement('aside'); const root = input.getRootNode(); input.outerHTML = \"<textarea id='worker-replacement'>updated</textarea>\"; const replacement = document.getElementById('worker-replacement'); const result = [root === document, detached.getRootNode() === detached, replacement.tagName, replacement.textContent, replacement.parentElement === document.body, document.getElementById('name')]; replacement.outerHTML = \"<input id='name'>\"; return result; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, true, "TEXTAREA", "updated", true, null])
     );
     let before_scroll = engine
         .evaluate_async(
@@ -1025,6 +1052,16 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
             .value,
         serde_json::json!(["Frame title", "HEAD"])
     );
+    assert_eq!(
+        session
+            .script(
+            "(() => { const child = document.getElementById('child').contentDocument; const paragraph = child.getElementById('inside'); const root = paragraph.getRootNode(); paragraph.outerHTML = \"<article id='frame-replacement'>replaced</article>\"; const replacement = child.getElementById('frame-replacement'); const articles = child.getElementsByTagName('article'); const result = [root === child, replacement !== null, articles.length, articles[0] ? articles[0].id : null, articles[0] ? articles[0].__glassAttached : null, articles[0] ? articles[0].parentElement === child.body : null, child.getElementById('inside')]; replacement.outerHTML = \"<p id='inside' data-message='none'>same-origin <span id='old-child'>child</span></p>\"; return result; })()",
+            )
+            .await
+            .unwrap()
+            .value,
+    serde_json::json!([true, true, 1, "frame-replacement", true, true, null])
+);
     assert_eq!(
         session
             .script(

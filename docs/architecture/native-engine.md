@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-191` slice; the bounded foundation below remains
+`native-engine-browser-192` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -1779,7 +1779,7 @@ decodes common and numeric entities, applies quoted/unquoted/boolean
 attributes, and stops correctly at void elements; fragment and element
 `querySelector*`/collection methods now walk the current projected tree in the
 same script turn. The same behavior is available in local, content-worker, and
-same-origin frame realms, while comments, raw-text/foreign-content parsing,
+same-origin frame realms, while raw-text/foreign-content parsing,
 full malformed-HTML tree-builder rules, and complete Web IDL parity remain
 open issue #40 promotion work.
 
@@ -5157,6 +5157,17 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - explicit Rust native-session construction and feature-gated CLI dispatch for
   local and bounded HTTP(S) URL shapes, including rejection of remote browser
   endpoints and unsupported browser-only flags.
+
+The completed native-engine-browser-192 slice preserves parsed HTML comments
+and basic document-type metadata as real native nodes across local, HTTP(S)
+content-worker, same-origin frame, and nested-frame projections. Comments use
+the supported CharacterData mutation path but are excluded from visible text,
+layout, and paint; doctypes expose `document.doctype`, node metadata, and
+parentage. The typed document wire, persistent script snapshot, serializer,
+and frame projection now carry these node kinds, while exact local evidence is
+recorded in `docs/plan/tasks/native-engine-browser-192.md`. Complete malformed
+HTML recovery, raw-text/foreign-content parsing, script-created comment/doctype
+construction, and Web IDL conformance remain issue #40 promotion work.
 
 The completed native-engine-browser-191 slice preserves script-created element
 and text-node identity across separate evaluations in local, HTTP(S)

@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-203` slice; the bounded foundation below remains
+`native-engine-browser-204` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -25,6 +25,7 @@ bounded-grid-track-layout/
 bounded-inline-svg-shape-paint/
 bounded-inline-svg-stroke-paint/
 bounded-svg-line-polygon-paint/
+bounded-straight-svg-path-paint/
 bounded-dom-namespace-identity/
 bounded-namespace-qualified-attributes/
 bounded-flex-row-gap/bounded-flex-row-justification/bounded-flex-item-order/
@@ -5215,6 +5216,15 @@ closed. SVG paths, explicit cap/join styles, dash arrays, transforms, viewBox
 mapping, gradients, markers, and external resources remain later issue #40
 promotion work. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-203.md`.
+
+The completed native-engine-browser-204 slice adds bounded straight SVG path
+support for absolute/relative `M`, `L`, `H`, `V`, and `Z` commands. Parsed
+subpaths feed layout bounds, typed `SvgPathFill`/`SvgPathStroke` commands,
+even-odd fill, segment-distance stroke coverage, clipping, scroll translation,
+alpha composition, and hit-test ownership. Curves, arcs, dash arrays,
+explicit cap/join styles, transforms, viewBox mapping, gradients, markers, and
+external resources remain later issue #40 promotion work. Exact evidence is
+recorded in `docs/plan/tasks/native-engine-browser-204.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

@@ -8601,7 +8601,19 @@ fn document_bootstrap(
       set(next) {{ element.setAttribute(attribute, String(next)); }},
     }});
   }};
-  const installCommonAttributeProperties = (element, state = {{}}) => {{
+  const installUrlAttributeProperty = (element, property, attribute, baseUrl) => {{
+    Object.defineProperty(element, property, {{
+      enumerable: true,
+      configurable: false,
+      get() {{
+        const value = element.getAttribute(attribute);
+        if (value === null || value === "") return "";
+        try {{ return new URLNative(value, baseUrl).href; }} catch (_error) {{ return value; }}
+      }},
+      set(next) {{ element.setAttribute(attribute, String(next)); }},
+    }});
+  }};
+  const installCommonAttributeProperties = (element, state = {{}}, baseUrl = host.url) => {{
     installReflectedAttributeProperties(element);
     for (const [property, attribute] of [
       ["disabled", "disabled"], ["hidden", "hidden"], ["multiple", "multiple"],
@@ -8617,9 +8629,15 @@ fn document_bootstrap(
       ["name", "name"], ["title", "title"], ["lang", "lang"], ["dir", "dir"],
       ["slot", "slot"], ["htmlFor", "for"], ["accept", "accept"], ["alt", "alt"],
       ["placeholder", "placeholder"], ["pattern", "pattern"], ["min", "min"],
-      ["max", "max"], ["step", "step"], ["action", "action"], ["method", "method"],
+      ["max", "max"], ["step", "step"], ["method", "method"],
       ["target", "target"], ["rel", "rel"], ["download", "download"],
     ]) installStringAttributeProperty(element, property, attribute);
+    if (["A", "AREA", "BASE", "LINK"].includes(element.tagName))
+      installUrlAttributeProperty(element, "href", "href", baseUrl);
+    if (["IMG", "SCRIPT", "IFRAME", "FRAME", "EMBED", "SOURCE", "TRACK", "AUDIO", "VIDEO"].includes(element.tagName))
+      installUrlAttributeProperty(element, "src", "src", baseUrl);
+    if (element.tagName === "FORM")
+      installUrlAttributeProperty(element, "action", "action", baseUrl);
     Object.defineProperty(element, "type", {{
       enumerable: true,
       configurable: false,
@@ -13078,7 +13096,7 @@ fn document_bootstrap(
         disabled: () => disabled,
         hidden: () => hidden,
         multiple: () => multiple,
-      }});
+      }}, String(currentBinding.url));
       Object.defineProperty(projected, "__glassChildren", {{
         enumerable: false,
         configurable: false,
@@ -13717,7 +13735,7 @@ fn document_bootstrap(
         disabled: () => disabled,
         hidden: () => hidden,
         multiple: () => multiple,
-      }});
+      }}, String(currentBinding.url));
       Object.defineProperty(projected, "__glassChildren", {{ enumerable: false, configurable: false, writable: true, value: [] }});
       Object.defineProperty(projected, "__glassEventOwner", {{
         enumerable: false,

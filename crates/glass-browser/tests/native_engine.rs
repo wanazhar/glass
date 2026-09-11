@@ -33265,6 +33265,60 @@ async fn native_content_process_blocks_csp_disallowed_image_before_request() {
 }
 
 #[tokio::test]
+async fn native_local_url_attributes_resolve_and_persist_through_dom_commands() {
+    let config = NativeEngineConfig::default()
+        .with_initial_url("fixture://url-properties/path/page")
+        .with_fixture(
+            "fixture://url-properties/path/page",
+            "<a id='link' href='../next?tab=one#part'>next</a><img id='image' src='assets/pixel.png'><form id='form' action='/submit'><input></form><script id='script' src='../scripts/app.js'></script><link id='stylesheet' rel='stylesheet' href='../styles/main.css'>",
+        )
+        .unwrap();
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const link = document.getElementById('link'); const image = document.getElementById('image'); const form = document.getElementById('form'); const script = document.getElementById('script'); const stylesheet = document.getElementById('stylesheet'); return [link.href, image.src, form.action, script.src, stylesheet.href, link.getAttribute('href'), image.getAttribute('src')]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([
+            "fixture://url-properties/next?tab=one#part",
+            "fixture://url-properties/path/assets/pixel.png",
+            "fixture://url-properties/submit",
+            "fixture://url-properties/scripts/app.js",
+            "fixture://url-properties/styles/main.css",
+            "../next?tab=one#part",
+            "assets/pixel.png",
+        ])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const image = document.getElementById('image'); image.src = '../images/next.png'; return [image.src, image.getAttribute('src')]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([
+            "fixture://url-properties/images/next.png",
+            "../images/next.png",
+        ])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("[document.getElementById('image').src, document.getElementById('image').getAttribute('src')]")
+            .await
+            .unwrap(),
+        serde_json::json!([
+            "fixture://url-properties/images/next.png",
+            "../images/next.png",
+        ])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_namespace_dom_preserves_svg_mathml_and_foreign_content() {
     let mut engine = NativeEngine::new(NativeEngineConfig::default().with_initial_url(
         "data:text/html,%3Cbody%3E%3Csvg%20id%3D%27parsed-svg%27%3E%3Crect%20id%3D%27parsed-rect%27%3E%3C%2Frect%3E%3CforeignObject%20id%3D%27foreign%27%3E%3Cdiv%20id%3D%27foreign-html%27%3Econtent%3C%2Fdiv%3E%3C%2FforeignObject%3E%3C%2Fsvg%3E%3C%2Fbody%3E",

@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-167` locally. The versioned
+`native-engine-browser-168` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1584,6 +1584,15 @@ pseudo-class selectors; element `matches()` and `closest()` share the same
 grammar. `classList` supports live token reads and add/remove/toggle/replace
 mutation through typed attribute commands. Full CSS selector grammar, complete
 Web IDL descriptors, cross-realm listener identity, and native browser-complete
+promotion remain issue #40 gates.
+
+The completed native-engine-browser-168 slice adds live bounded `style` and
+`dataset` surfaces to local and same-origin frame element projections.
+CSS-style declaration reads, camelCase/dashed property access,
+`setProperty()`/`removeProperty()`, `cssText`, priorities, dataset camelCase
+mapping, enumeration, writes, and deletion all route through the existing
+native attribute command owner. Full CSSOM/value validation, computed-style
+Web IDL parity, cross-realm listener identity, and native browser-complete
 promotion remain issue #40 gates.
 
 The completed bounded Response-constructor slice is

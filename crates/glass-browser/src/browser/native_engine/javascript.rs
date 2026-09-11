@@ -7634,6 +7634,7 @@ fn document_bootstrap(
         }}
         return null;
       }},
+      getAttributeNames() {{ return Object.keys(entry.attributes); }},
       hasAttribute(name) {{ return this.getAttribute(name) !== null; }},
       matches(selector) {{ return matchesSelector(element, selector); }},
       closest(selector) {{
@@ -7894,6 +7895,11 @@ fn document_bootstrap(
       configurable: false,
       get() {{ return globalThis.document || null; }},
     }});
+    Object.defineProperty(element, "__glassAttributeSource", {{
+      enumerable: false,
+      configurable: false,
+      value: () => entry.attributes,
+    }});
     for (const property of ["textContent", "innerText"]) {{
       Object.defineProperty(element, property, {{
         enumerable: true,
@@ -8051,6 +8057,7 @@ fn document_bootstrap(
     element.__glassCreated = true;
     defineTreeAccessors(element);
     installClassList(element);
+    installElementStyleAndDataset(element);
     pushCommand({{ kind: "createElement", node_index: nodeIndex, tag_name: normalized }});
     return element;
   }};
@@ -8058,7 +8065,7 @@ fn document_bootstrap(
     let textContent = String(value);
     if (textContent.length > {storage_value_limit}) throw new RangeError("native text node exceeds its limit");
     const nodeIndex = allocateTemporaryNodeIndex();
-    const text = {{
+      const text = {{
       nodeIndex,
       parentIndex: null,
       nodeType: 3,
@@ -8852,7 +8859,249 @@ fn document_bootstrap(
       get() {{ return current || (current = makeClassList(element)); }},
     }});
   }};
-  for (const element of elements) installClassList(element);
+  const stylePropertyName = (name) => {{
+    let value = String(name).trim();
+    if (!value) return "";
+    if (value === "cssFloat") value = "float";
+    if (!value.startsWith("--")) value = value.replace(/[A-Z]/g, (character) => "-" + character.toLowerCase()).toLowerCase();
+    return value;
+  }};
+  const stylePropertyKey = (name) => {{
+    const value = String(name);
+    if (value.startsWith("--")) return value;
+    return value.replace(/-([a-z])/g, (_match, character) => character.toUpperCase());
+  }};
+  const parseStyleDeclarations = (cssText) => {{
+    const declarations = [];
+    let part = "";
+    let quote = "";
+    let parentheses = 0;
+    const append = (source) => {{
+      const text = String(source).trim();
+      if (!text) return;
+      const separator = text.indexOf(":");
+      if (separator <= 0) return;
+      const name = stylePropertyName(text.slice(0, separator));
+      if (!name) return;
+      let value = text.slice(separator + 1).trim();
+      let priority = "";
+      if (/\s*!important\s*$/i.test(value)) {{
+        priority = "important";
+        value = value.replace(/\s*!important\s*$/i, "").trim();
+      }}
+      if (!value) return;
+      const existing = declarations.find((declaration) => declaration.name === name);
+      if (existing) {{
+        existing.value = value;
+        existing.priority = priority;
+      }} else {{
+        declarations.push({{ name, value, priority }});
+      }}
+    }};
+    const text = String(cssText || "");
+    for (let index = 0; index < text.length; index += 1) {{
+      const character = text[index];
+      if (quote) {{
+        part += character;
+        if (character === quote && text[index - 1] !== "\\") quote = "";
+      }} else if (character === "'" || character === '"') {{
+        quote = character;
+        part += character;
+      }} else if (character === "(") {{
+        parentheses += 1;
+        part += character;
+      }} else if (character === ")" && parentheses > 0) {{
+        parentheses -= 1;
+        part += character;
+      }} else if (character === ";" && parentheses === 0) {{
+        append(part);
+        part = "";
+      }} else {{
+        part += character;
+      }}
+    }}
+    append(part);
+    return declarations;
+  }};
+  const serializeStyleDeclarations = (declarations) =>
+    declarations.length === 0
+      ? ""
+      : declarations.map((declaration) =>
+        declaration.name + ": " + declaration.value
+          + (declaration.priority ? " !important" : "")).join("; ") + ";";
+  const makeStyleDeclaration = (element) => {{
+    const declarations = () => parseStyleDeclarations(element.getAttribute("style") || "");
+    const write = (next) => {{
+      const cssText = serializeStyleDeclarations(next);
+      if (cssText) element.setAttribute("style", cssText);
+      else element.removeAttribute("style");
+    }};
+    const propertyValue = (name) => {{
+      const property = stylePropertyName(name);
+      const declaration = declarations().find((candidate) => candidate.name === property);
+      return declaration ? declaration.value : "";
+    }};
+    const api = {{
+      get length() {{ return declarations().length; }},
+      item(index) {{
+        const numeric = Number(index);
+        const declaration = Number.isSafeInteger(numeric) && numeric >= 0
+          ? declarations()[numeric]
+          : null;
+        return declaration ? declaration.name : "";
+      }},
+      getPropertyValue(name) {{ return propertyValue(name); }},
+      getPropertyPriority(name) {{
+        const property = stylePropertyName(name);
+        const declaration = declarations().find((candidate) => candidate.name === property);
+        return declaration ? declaration.priority : "";
+      }},
+      setProperty(name, value, priority = "") {{
+        const property = stylePropertyName(name);
+        if (!property) return;
+        const text = String(value);
+        if (!text) {{
+          this.removeProperty(property);
+          return;
+        }}
+        const normalizedPriority = String(priority).trim().toLowerCase();
+        if (normalizedPriority !== "" && normalizedPriority !== "important") return;
+        const next = declarations();
+        const existing = next.find((candidate) => candidate.name === property);
+        if (existing) {{
+          existing.value = text;
+          existing.priority = normalizedPriority;
+        }} else {{
+          next.push({{ name: property, value: text, priority: normalizedPriority }});
+        }}
+        write(next);
+      }},
+      removeProperty(name) {{
+        const property = stylePropertyName(name);
+        const next = declarations();
+        const index = next.findIndex((candidate) => candidate.name === property);
+        if (index < 0) return "";
+        const previous = next[index].value;
+        next.splice(index, 1);
+        write(next);
+        return previous;
+      }},
+      get cssText() {{ return element.getAttribute("style") || ""; }},
+      set cssText(next) {{ write(parseStyleDeclarations(next)); }},
+      toString() {{ return this.cssText; }},
+    }};
+    const proxy = new Proxy(api, {{
+      get(target, property, receiver) {{
+        const index = collectionIndex(property);
+        if (index !== null) return target.item(index) || undefined;
+        if (typeof property === "string"
+            && !Object.prototype.hasOwnProperty.call(target, property)
+            && !property.startsWith("__")) {{
+          return propertyValue(property);
+        }}
+        return Reflect.get(target, property, receiver);
+      }},
+      set(target, property, value, receiver) {{
+        if (property === "cssText") {{
+          target.cssText = value;
+          return true;
+        }}
+        if (typeof property === "string"
+            && !Object.prototype.hasOwnProperty.call(target, property)
+            && !property.startsWith("__")) {{
+          target.setProperty(property, value);
+          return true;
+        }}
+        return Reflect.set(target, property, value, receiver);
+      }},
+      getOwnPropertyDescriptor(target, property) {{
+        const index = collectionIndex(property);
+        if (index !== null && index < target.length) {{
+          return {{ enumerable: true, configurable: true, value: target.item(index), writable: false }};
+        }}
+        return Reflect.getOwnPropertyDescriptor(target, property);
+      }},
+    }});
+    const constructor = globalThis.CSSStyleDeclaration;
+    if (typeof constructor === "function" && constructor.prototype) {{
+      try {{ Object.setPrototypeOf(proxy, constructor.prototype); }} catch (_error) {{}}
+    }}
+    return proxy;
+  }};
+  const datasetAttributeName = (key) =>
+    "data-" + String(key).replace(/[A-Z]/g, (character) => "-" + character.toLowerCase());
+  const datasetKeyFromAttribute = (name) =>
+    String(name).slice(5).replace(/-([a-z])/g, (_match, character) => character.toUpperCase());
+  const makeDataset = (element) => {{
+    const target = Object.create(null);
+    const dataNames = () => (typeof element.getAttributeNames === "function"
+      ? element.getAttributeNames()
+      : []).filter((name) => String(name).toLowerCase().startsWith("data-")
+        && String(name).length > 5);
+    const proxy = new Proxy(target, {{
+      get(_target, property) {{
+        if (typeof property !== "string") return undefined;
+        const value = element.getAttribute(datasetAttributeName(property));
+        return value === null ? undefined : value;
+      }},
+      set(_target, property, value) {{
+        if (typeof property !== "string") return false;
+        element.setAttribute(datasetAttributeName(property), String(value));
+        return true;
+      }},
+      has(_target, property) {{
+        return typeof property === "string"
+          && dataNames().some((name) => datasetKeyFromAttribute(name) === property);
+      }},
+      ownKeys() {{
+        return dataNames().map(datasetKeyFromAttribute);
+      }},
+      getOwnPropertyDescriptor(_target, property) {{
+        if (typeof property !== "string" || !dataNames().some((name) => datasetKeyFromAttribute(name) === property)) {{
+          return undefined;
+        }}
+        return {{
+          enumerable: true,
+          configurable: true,
+          value: element.getAttribute(datasetAttributeName(property)),
+          writable: true,
+        }};
+      }},
+      deleteProperty(_target, property) {{
+        if (typeof property !== "string") return true;
+        element.removeAttribute(datasetAttributeName(property));
+        return true;
+      }},
+      defineProperty(_target, property, descriptor) {{
+        if (typeof property !== "string") return false;
+        element.setAttribute(datasetAttributeName(property), descriptor.value === undefined ? "" : String(descriptor.value));
+        return true;
+      }},
+    }});
+    return proxy;
+  }};
+  const installElementStyleAndDataset = (element) => {{
+    if (!Object.prototype.hasOwnProperty.call(element, "style")) {{
+      let current = null;
+      Object.defineProperty(element, "style", {{
+        enumerable: true,
+        configurable: false,
+        get() {{ return current || (current = makeStyleDeclaration(element)); }},
+      }});
+    }}
+    if (!Object.prototype.hasOwnProperty.call(element, "dataset")) {{
+      let current = null;
+      Object.defineProperty(element, "dataset", {{
+        enumerable: true,
+        configurable: false,
+        get() {{ return current || (current = makeDataset(element)); }},
+      }});
+    }}
+  }};
+  for (const element of elements) {{
+    installClassList(element);
+    installElementStyleAndDataset(element);
+  }}
   const matches = (element, selector) => matchesSelector(element, selector);
   const findAll = (selector) => asNodeList(elements.filter((element) => matches(element, selector)));
   const body = elements.find((element) => element.tagName === "BODY") || null;
@@ -9522,6 +9771,7 @@ fn document_bootstrap(
           }}
           return null;
         }},
+        getAttributeNames() {{ return Object.keys(attributes); }},
         hasAttribute(name) {{ return this.getAttribute(name) !== null; }},
         matches(selector) {{ return matchesSelector(projected, selector); }},
         closest(selector) {{
@@ -9921,7 +10171,10 @@ fn document_bootstrap(
     }}
     for (const element of frameElements) defineTreeAccessors(element);
     for (const text of frameTextNodes) defineTreeAccessors(text);
-    for (const element of frameElements) installClassList(element);
+    for (const element of frameElements) {{
+      installClassList(element);
+      installElementStyleAndDataset(element);
+    }}
     const makeFrameDetachedElement = (tagName) => {{
       const normalized = String(tagName).toLowerCase();
       if (!/^[A-Za-z][A-Za-z0-9:_-]*$/.test(normalized)) throw new TypeError("invalid element name");
@@ -9953,6 +10206,7 @@ fn document_bootstrap(
           }}
           return null;
         }},
+        getAttributeNames() {{ return Object.keys(attributes); }},
         hasAttribute(name) {{ return this.getAttribute(name) !== null; }},
         setAttribute(name, nextValue) {{
           const key = String(name).toLowerCase();
@@ -10105,6 +10359,7 @@ fn document_bootstrap(
       try {{ Object.setPrototypeOf(projected, elementPrototypeFor(projected.tagName)); }} catch (_error) {{}}
       defineTreeAccessors(projected);
       installClassList(projected);
+      installElementStyleAndDataset(projected);
       queueFrameCommand(currentBinding, {{ kind: "createElement", node_index: nodeIndex, tag_name: normalized }});
       return projected;
     }};

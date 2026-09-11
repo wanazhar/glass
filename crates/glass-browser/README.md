@@ -525,7 +525,10 @@ navigation/history path, preserves cancellation, and rejects ambiguous loops.
   rollback for `vertical-align` with finite parent/root fallbacks,
   and revision effects for local controls. The CLI default configuration
   accepts `about:blank`, bounded `data:text/html`, and validated HTTP(S)
-  navigation; fixtures remain a Rust configuration path. Native downloads
+  navigation; page scripts also receive bounded browser-style Window,
+  Document, Node/Element, supported HTML-element, Location, collection, and
+  Event identity projections in both local and HTTP(S) realms. Fixtures remain
+  a Rust configuration path. Native downloads
   complete into existing authorized directories through the runtime and MCP
   surfaces. It is not a browser-parity claim or security boundary for hostile
   remote content.

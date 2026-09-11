@@ -27,8 +27,8 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
-the browser-complete expansion is now active through
-`native-engine-browser-154` locally. The versioned
+the browser-complete expansion is now active through the completed
+`native-engine-browser-155` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1446,6 +1446,19 @@ handoffs fail closed. Native lifecycle and same-document callback re-entry are
 now covered by 436 native integration tests. Popup permission/geometry, frame
 lifecycle/shared scripting, complete Web IDL/browser topology, and native
 default promotion remain issue #40 gates.
+
+The completed native-engine-browser-155 slice is
+[native-engine-browser-155](tasks/native-engine-browser-155.md). Local and
+HTTP(S) page realms now expose bounded Window, Document, Node, Element,
+HTML-element, Location, NodeList, HTMLCollection, Event, CustomEvent, and
+StorageEvent identity, including current-document `ownerDocument` refreshes
+and stable `window`/`self`/`parent`/`top`/`frames` relationships. This improves
+ordinary feature detection and collection/event interoperability without
+claiming full Web IDL descriptors, live tree mutation, shadow/custom elements,
+ranges, cross-origin frame properties, shared frame scripting, or complete
+browser parity. Popup permission/geometry, frame lifecycle/shared scripting,
+complete Web IDL/browser topology, and native default promotion remain issue
+#40 gates.
 
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and

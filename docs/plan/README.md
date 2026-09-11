@@ -1490,8 +1490,9 @@ realms now receive their actual frame ID plus bounded parent/top Window and
 document descriptors through both local and content-worker paths. Parent
 descriptors include the active selected child, so `window.parent.document`,
 `defaultView`, `parent.frames[n]`, `frameElement`, and nested WindowProxy
-identity resolve back to the selected global; frame-scoped effects continue to
-use frame IDs while storage remains target-owned. Cross-origin Window Web IDL,
+identity resolve back to the selected global; frame-target routes accept frame
+IDs while popup and target-owner effects retain target-context identity.
+Cross-origin Window Web IDL,
 full frame lifecycle/load ordering, live cross-realm identity, and complete
 browser parity remain issue #40 gates.
 

@@ -1583,8 +1583,9 @@ the selected global's nested WindowProxy all preserve identity. The bridge
 normalizes `contextId` window descriptors and `frameId` embedded bindings into
 one cache key. The content-worker envelope is protocol 7 so an older helper
 cannot silently construct a realm with the wrong frame identity. This remains
-a parent-owned snapshot boundary; cross-origin Window Web IDL, full frame
-lifecycle/load ordering, live cross-realm identity,
+a parent-owned snapshot boundary; frame-target routes use frame IDs while
+popup and target-owner effects retain target-context identity. Cross-origin
+Window Web IDL, full frame lifecycle/load ordering, live cross-realm identity,
 and complete browser parity remain issue #40 gates.
 
 The engine remains inside the existing two-crate workspace. Internal modules,

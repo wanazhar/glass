@@ -3163,7 +3163,8 @@ selected child in recursive parent/top descriptors, and the JavaScript bridge
 normalizes parent `contextId` descriptors with embedded `frameId` bindings.
 Selected scripts therefore retain identity across `window.parent`,
 `window.top`, `frameElement`, parent-document `defaultView`, parent indexed
-frames, and nested children; message/navigation effects remain frame-scoped.
+frames, and nested children; frame-target routes accept frame IDs while popup
+and target-owner effects retain target-context identity.
 This is still a bounded snapshot projection rather than live cross-realm DOM
 identity, and complete cross-origin Window behavior, frame lifecycle/load
 ordering, and browser parity remain issue #40 gates. The content-worker wire

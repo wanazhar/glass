@@ -9643,11 +9643,13 @@ fn document_bootstrap(
     const index = Number(property);
     return Number.isSafeInteger(index) ? index : null;
   }};
-  const liveCollection = (owner, filter, constructorName) => {{
+  const liveCollection = (owner, filter, constructorName, includeDescendants = false) => {{
     const target = [];
-    const current = () => Array.isArray(owner.__glassChildren)
-      ? owner.__glassChildren.filter((child) => child && filter(child))
-      : [];
+    const current = () => includeDescendants
+      ? descendantsInTree(owner, filter)
+      : Array.isArray(owner.__glassChildren)
+        ? owner.__glassChildren.filter((child) => child && filter(child))
+        : [];
     const proxy = new Proxy(target, {{
       get(_target, property, receiver) {{
         const values = current();
@@ -10510,6 +10512,12 @@ fn document_bootstrap(
     visibilityState: "visible",
     get defaultView() {{ return globalThis; }},
     get activeElement() {{ return liveDocumentElements().find((element) => element.focused) || null; }},
+    get head() {{ return liveDocumentElements().find((element) => element.tagName === "HEAD") || null; }},
+    get forms() {{ return liveCollection(document, (element) => element.tagName === "FORM", "HTMLCollection", true); }},
+    get links() {{ return liveCollection(document, (element) => ["A", "AREA"].includes(element.tagName) && element.getAttribute("href") !== null, "HTMLCollection", true); }},
+    get scripts() {{ return liveCollection(document, (element) => element.tagName === "SCRIPT", "HTMLCollection", true); }},
+    get images() {{ return liveCollection(document, (element) => element.tagName === "IMG", "HTMLCollection", true); }},
+    get scrollingElement() {{ return documentElement; }},
     get cookie() {{ return documentCookie; }},
     set cookie(value) {{
       const text = String(value);
@@ -10535,12 +10543,16 @@ fn document_bootstrap(
     querySelectorAll(selector) {{ return findAll(selector); }},
     getElementsByTagName(name) {{
       const value = String(name).toLowerCase();
-      return asHtmlCollection(liveDocumentElements().filter((element) => value === "*" || element.tagName.toLowerCase() === value));
+      return liveCollection(document, (element) => value === "*" || element.tagName.toLowerCase() === value, "HTMLCollection", true);
     }},
     getElementsByClassName(name) {{
       const value = String(name);
-      return asHtmlCollection(liveDocumentElements().filter((element) => element.className.split(/\s+/).includes(value)));
-    }}
+      return liveCollection(document, (element) => element.className.split(/\s+/).includes(value), "HTMLCollection", true);
+    }},
+    getElementsByName(name) {{
+      const value = String(name);
+      return asNodeList(liveDocumentElements().filter((element) => element.getAttribute("name") === value));
+    }},
   }};
   Object.defineProperty(document, "__glassChildren", {{
     enumerable: false,
@@ -12670,6 +12682,7 @@ fn document_bootstrap(
     const findById = (id) => frameElements.find((element) => element.__glassAttached && element.id === String(id)) || null;
     const body = frameElements.find((element) => element.tagName === "BODY") || null;
     const documentElement = frameElements.find((element) => element.tagName === "HTML") || null;
+    const head = frameElements.find((element) => element.tagName === "HEAD") || null;
     const frameRootSnapshot = frameNodeSnapshots.find((entry) => entry && Number(entry.nodeIndex) === 0);
     const frameRootChildren = frameRootSnapshot && Array.isArray(frameRootSnapshot.children)
       ? frameRootSnapshot.children.map((index) => frameNodesByIndex.get(index)).filter(Boolean)
@@ -12683,6 +12696,12 @@ fn document_bootstrap(
       textContent: String(snapshot.visibleText || ""),
       body,
       documentElement,
+      get head() {{ return frameElements.find((element) => element.__glassAttached && element.tagName === "HEAD") || head; }},
+      get forms() {{ return liveCollection(frameDocument, (element) => element.tagName === "FORM", "HTMLCollection", true); }},
+      get links() {{ return liveCollection(frameDocument, (element) => ["A", "AREA"].includes(element.tagName) && element.getAttribute("href") !== null, "HTMLCollection", true); }},
+      get scripts() {{ return liveCollection(frameDocument, (element) => element.tagName === "SCRIPT", "HTMLCollection", true); }},
+      get images() {{ return liveCollection(frameDocument, (element) => element.tagName === "IMG", "HTMLCollection", true); }},
+      get scrollingElement() {{ return documentElement; }},
       get defaultView() {{
         const current = frameBindingForId(currentFrameId) || currentBinding;
         return currentFrameWindow(current, ownerFrameElement, parentWindow, topWindow);
@@ -12695,13 +12714,16 @@ fn document_bootstrap(
       querySelectorAll(selector) {{ return asNodeList(find(selector)); }},
       getElementsByTagName(name) {{
         const value = String(name).toLowerCase();
-        return asHtmlCollection(frameElements.filter((element) => element.__glassAttached
-          && (value === "*" || element.tagName.toLowerCase() === value)));
+        return liveCollection(frameDocument, (element) => value === "*" || element.tagName.toLowerCase() === value, "HTMLCollection", true);
       }},
       getElementsByClassName(name) {{
         const value = String(name);
-        return asHtmlCollection(frameElements.filter((element) => element.__glassAttached
-          && element.className.split(/\s+/).includes(value)));
+        return liveCollection(frameDocument, (element) => element.className.split(/\s+/).includes(value), "HTMLCollection", true);
+      }},
+      getElementsByName(name) {{
+        const value = String(name);
+        return asNodeList(frameElements.filter((element) => element.__glassAttached
+          && element.getAttribute("name") === value));
       }},
       addEventListener(type, callback, options) {{
         addListener(ownerFor(frameDocument), type, callback, options);

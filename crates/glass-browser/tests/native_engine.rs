@@ -706,22 +706,22 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
     assert_eq!(
         session
             .script(
-                "(() => { const child = document.getElementById('child').contentDocument; const inside = child.getElementById('inside'); inside.setAttribute('data-message', 'parent-write'); inside.textContent = 'updated & literal'; child.getElementById('field').value = 'written-by-parent'; return [inside.getAttribute('data-message'), inside.textContent, inside.innerText, child.getElementById('field').value]; })()",
+                "(() => { const child = document.getElementById('child').contentDocument; const inside = child.getElementById('inside'); inside.setAttribute('data-message', 'parent-write'); inside.innerHTML = '<em id=\"new-child\">updated &amp; literal</em>'; child.getElementById('field').value = 'written-by-parent'; return [inside.getAttribute('data-message'), inside.innerHTML, inside.textContent, inside.innerText, child.getElementById('field').value]; })()",
             )
             .await
             .unwrap()
             .value,
-        serde_json::json!(["parent-write", "updated & literal", "updated & literal", "written-by-parent"])
+        serde_json::json!(["parent-write", "<em id=\"new-child\">updated &amp; literal</em>", "updated & literal", "updated & literal", "written-by-parent"])
     );
     assert_eq!(
         session
             .script(
-                "(() => { const child = document.getElementById('child').contentDocument; return [child.getElementById('inside').getAttribute('data-message'), child.getElementById('inside').textContent, child.getElementById('inside').innerText, child.getElementById('old-child'), child.getElementById('field').value]; })()",
+                "(() => { const child = document.getElementById('child').contentDocument; const inside = child.getElementById('inside'); return [inside.getAttribute('data-message'), inside.innerHTML, inside.textContent, inside.innerText, child.getElementById('old-child'), child.getElementById('new-child').textContent, child.getElementById('field').value]; })()",
             )
             .await
             .unwrap()
             .value,
-        serde_json::json!(["parent-write", "updated & literal", "updated & literal", null, "written-by-parent"])
+        serde_json::json!(["parent-write", "<em id=\"new-child\">updated &amp; literal</em>", "updated & literal", "updated & literal", null, "updated & literal", "written-by-parent"])
     );
     let child_id = session
         .native_list_frames()
@@ -4815,6 +4815,36 @@ async fn native_content_process_evaluates_persistent_script_realm() {
             .await
             .unwrap(),
         serde_json::json!(["Updated & literal", null])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("(() => { const paragraph = document.getElementById('copy'); paragraph.innerHTML = \"<strong id='new-copy'>Updated &amp; literal</strong>\"; return [paragraph.innerHTML, paragraph.textContent]; })()")
+            .await
+            .unwrap(),
+        serde_json::json!(["<strong id='new-copy'>Updated &amp; literal</strong>", "Updated & literal"])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "[document.getElementById('copy').innerHTML, document.getElementById('copy').textContent, document.getElementById('old-copy'), document.getElementById('new-copy').textContent]"
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["<strong id=\"new-copy\">Updated &amp; literal</strong>", "Updated & literal", null, "Updated & literal"])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("document.getElementById('new-copy').remove(); true")
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("document.getElementById('new-copy')")
+            .await
+            .unwrap(),
+        serde_json::Value::Null
     );
     assert_eq!(
         engine

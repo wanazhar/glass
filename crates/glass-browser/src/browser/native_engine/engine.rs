@@ -5122,6 +5122,8 @@ fn frame_script_command_source(command: &NativeScriptCommand) -> Result<String, 
             | NativeScriptCommand::SetAttribute { .. }
             | NativeScriptCommand::RemoveAttribute { .. }
             | NativeScriptCommand::SetTextContent { .. }
+            | NativeScriptCommand::SetInnerHtml { .. }
+            | NativeScriptCommand::RemoveNode { .. }
             | NativeScriptCommand::SetCustomValidity { .. }
             | NativeScriptCommand::CheckValidity { .. }
             | NativeScriptCommand::ReportValidity { .. }

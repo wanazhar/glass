@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-161` slice; the bounded foundation below remains
+`native-engine-browser-162` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -1617,9 +1617,21 @@ mutation. `textContent` and `innerText` setters now replace the target's native
 children, detach replaced descendants from selectors, semantic projections,
 layout, and frame discovery, and retain unaffected arena identities. The
 command is available in local realms, content-worker realms, and same-origin
-frame projections. Dynamic element creation, `innerHTML`, live child-node
-collections, cross-realm listener identity, complete frame lifecycle/load
-ordering, and browser-wide Web IDL parity remain promotion gates.
+frame projections. Dynamic element creation, live child-node collections,
+cross-realm listener identity, complete frame lifecycle/load ordering, and
+browser-wide Web IDL parity remain promotion gates.
+
+The completed native-engine-browser-162 slice adds bounded structural DOM
+mutation. `innerHTML` replaces an element subtree through the existing native
+fragment tokenizer and exposes deterministic escaped markup through the script
+snapshot; `remove()` and `removeChild()` detach existing subtrees. The typed
+commands are available in local realms, content-worker realms, and same-origin
+frame projections, with detached arena entries filtered from selectors, layout,
+visible text, and frame discovery. The parser remains bounded rather than a
+full WHATWG fragment implementation, and dynamic element creation, live
+child-node collections, cross-realm listener identity, complete frame
+lifecycle/load ordering, and browser-wide Web IDL parity remain promotion
+gates.
 
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third

@@ -235,6 +235,8 @@ pub(crate) struct NativeScriptElementSnapshot {
     pub(crate) tag_name: String,
     pub(crate) attributes: BTreeMap<String, String>,
     pub(crate) text: String,
+    #[serde(default)]
+    pub(crate) inner_html: String,
     pub(crate) value: Option<String>,
     pub(crate) checked: bool,
     pub(crate) selected: bool,
@@ -302,6 +304,7 @@ pub struct NativeDocument {
     revision: u64,
     root: NativeNodeId,
     max_nodes: usize,
+    max_dom_depth: usize,
     nodes: Vec<NativeNode>,
     stylesheet: NativeStylesheet,
     computed_styles: Option<Vec<NativeComputedStyle>>,
@@ -348,6 +351,7 @@ impl NativeDocument {
             revision: u64::from(generation),
             root,
             max_nodes: limits.max_nodes,
+            max_dom_depth: limits.max_dom_depth,
             nodes: vec![NativeNode {
                 id: root,
                 parent: None,
@@ -657,6 +661,7 @@ impl NativeDocument {
             revision: u64::from(generation),
             root,
             max_nodes: limits.max_nodes,
+            max_dom_depth: limits.max_dom_depth,
             nodes,
             stylesheet: NativeStylesheet::default(),
             computed_styles: Some(wire.computed_styles),
@@ -677,6 +682,7 @@ impl NativeDocument {
             revision: 0,
             root,
             max_nodes: MAX_NATIVE_NODES,
+            max_dom_depth: MAX_NATIVE_DOM_DEPTH,
             nodes: vec![NativeNode {
                 id: root,
                 parent: None,
@@ -796,6 +802,7 @@ impl NativeDocument {
                     tag_name,
                     attributes: node.attributes()?.clone(),
                     text,
+                    inner_html: self.element_inner_html(node.id(), max_text_bytes),
                     value: self.current_value(node.id()),
                     checked: node.state.checked,
                     selected: node.state.selected,
@@ -1682,6 +1689,14 @@ impl NativeDocument {
                     let id = NativeNodeId::from_parts(self.generation, *node_index);
                     self.apply_script_text_content(id, value)?;
                 }
+                NativeScriptCommand::SetInnerHtml { node_index, value } => {
+                    let id = NativeNodeId::from_parts(self.generation, *node_index);
+                    self.apply_script_inner_html(id, value)?;
+                }
+                NativeScriptCommand::RemoveNode { node_index } => {
+                    let id = NativeNodeId::from_parts(self.generation, *node_index);
+                    self.apply_script_remove_node(id)?;
+                }
                 NativeScriptCommand::SetCustomValidity {
                     node_index,
                     message,
@@ -1999,6 +2014,237 @@ impl NativeDocument {
             self.add_node(id, NativeNodeKind::Text(value.to_owned()), self.max_nodes)?;
         }
         Ok(())
+    }
+
+    fn apply_script_inner_html(
+        &mut self,
+        id: NativeNodeId,
+        value: &str,
+    ) -> Result<(), NativeEngineError> {
+        if value.len() > MAX_LOCATOR_BYTES {
+            return Err(NativeEngineError::limit(
+                "script innerHTML",
+                MAX_LOCATOR_BYTES,
+                value.len(),
+            ));
+        }
+        let (target_name, old_children) = {
+            let target = self.node(id).ok_or(NativeEngineError::DetachedTarget)?;
+            let Some(target_name) = target.element_name() else {
+                return Err(NativeEngineError::TargetNotActionable {
+                    reason: "script innerHTML requires an element".into(),
+                });
+            };
+            (target_name.to_owned(), target.children().to_vec())
+        };
+        if target_name.is_empty() {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "script innerHTML requires an element".into(),
+            });
+        }
+        let available_nodes = self.max_nodes.saturating_sub(self.nodes.len());
+        let max_tokens = available_nodes.saturating_mul(2).saturating_add(1).max(1);
+        let tokens = tokenize(value, max_tokens)?;
+        let target_depth = self.element_depth(id);
+        for child in old_children {
+            self.detach_subtree(child)?;
+        }
+        if is_void_element(&target_name) {
+            return Ok(());
+        }
+
+        let mut stack = vec![id];
+        for token in tokens {
+            match token {
+                HtmlToken::StartTag {
+                    name,
+                    attributes,
+                    self_closing,
+                } => {
+                    while stack.len() > 1
+                        && stack.last().is_some_and(|current| {
+                            self.node(*current)
+                                .and_then(NativeNode::element_name)
+                                .is_some_and(|current_name| should_auto_close(current_name, &name))
+                        })
+                    {
+                        stack.pop();
+                    }
+                    let current_depth = target_depth.saturating_add(stack.len().saturating_sub(1));
+                    if current_depth >= self.max_dom_depth {
+                        return Err(NativeEngineError::limit(
+                            "DOM depth",
+                            self.max_dom_depth,
+                            current_depth.saturating_add(1),
+                        ));
+                    }
+                    let parent = *stack.last().ok_or_else(|| NativeEngineError::Parse {
+                        offset: 0,
+                        reason: "fragment parser lost its element parent".into(),
+                    })?;
+                    let child = self.add_node(
+                        parent,
+                        NativeNodeKind::Element {
+                            name: name.clone(),
+                            attributes,
+                        },
+                        self.max_nodes,
+                    )?;
+                    if !self_closing && !is_void_element(&name) {
+                        stack.push(child);
+                    }
+                }
+                HtmlToken::EndTag(name) => {
+                    if let Some(index) = stack.iter().rposition(|current| {
+                        self.node(*current)
+                            .and_then(NativeNode::element_name)
+                            .is_some_and(|current_name| current_name == name)
+                    }) && index > 0
+                    {
+                        stack.truncate(index);
+                    }
+                }
+                HtmlToken::Text(value) => {
+                    if !value.is_empty() {
+                        let parent = *stack.last().ok_or_else(|| NativeEngineError::Parse {
+                            offset: 0,
+                            reason: "fragment parser lost its text parent".into(),
+                        })?;
+                        self.add_node(
+                            parent,
+                            NativeNodeKind::Text(decode_entities(&value)),
+                            self.max_nodes,
+                        )?;
+                    }
+                }
+                HtmlToken::RawText(value) => {
+                    if !value.is_empty() {
+                        let parent = *stack.last().ok_or_else(|| NativeEngineError::Parse {
+                            offset: 0,
+                            reason: "fragment parser lost its raw-text parent".into(),
+                        })?;
+                        self.add_node(parent, NativeNodeKind::Text(value), self.max_nodes)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_script_remove_node(&mut self, id: NativeNodeId) -> Result<(), NativeEngineError> {
+        if id == self.root {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "the document root cannot be removed".into(),
+            });
+        }
+        self.detach_subtree(id)
+    }
+
+    fn element_depth(&self, id: NativeNodeId) -> usize {
+        let mut depth: usize = 0;
+        let mut current = Some(id);
+        while let Some(current_id) = current {
+            let Some(node) = self.node(current_id) else {
+                break;
+            };
+            if node.element_name().is_some() {
+                depth = depth.saturating_add(1);
+            }
+            current = node.parent();
+        }
+        depth
+    }
+
+    fn element_inner_html(&self, id: NativeNodeId, max_bytes: usize) -> String {
+        let mut output = String::new();
+        let mut truncated = false;
+        let children = self
+            .node(id)
+            .map(NativeNode::children)
+            .unwrap_or_default()
+            .to_vec();
+        for child in children {
+            self.append_serialized_node(child, max_bytes, &mut output, &mut truncated, false);
+            if truncated {
+                break;
+            }
+        }
+        output
+    }
+
+    fn append_serialized_node(
+        &self,
+        id: NativeNodeId,
+        max_bytes: usize,
+        output: &mut String,
+        truncated: &mut bool,
+        raw_text: bool,
+    ) {
+        if *truncated {
+            return;
+        }
+        let Some(node) = self.node(id) else {
+            return;
+        };
+        match node.kind() {
+            NativeNodeKind::Text(value) => {
+                let value = if raw_text {
+                    value.clone()
+                } else {
+                    escape_html_text(value)
+                };
+                append_bounded_markup(output, &value, max_bytes, truncated);
+            }
+            NativeNodeKind::Document => {
+                let children = node.children().to_vec();
+                for child in children {
+                    self.append_serialized_node(child, max_bytes, output, truncated, false);
+                    if *truncated {
+                        break;
+                    }
+                }
+            }
+            NativeNodeKind::Element { name, attributes } => {
+                append_bounded_markup(output, "<", max_bytes, truncated);
+                append_bounded_markup(output, name, max_bytes, truncated);
+                for (attribute, value) in attributes {
+                    if *truncated {
+                        break;
+                    }
+                    append_bounded_markup(output, " ", max_bytes, truncated);
+                    append_bounded_markup(output, attribute, max_bytes, truncated);
+                    append_bounded_markup(output, "=\"", max_bytes, truncated);
+                    append_bounded_markup(
+                        output,
+                        &escape_html_attribute(value),
+                        max_bytes,
+                        truncated,
+                    );
+                    append_bounded_markup(output, "\"", max_bytes, truncated);
+                }
+                append_bounded_markup(output, ">", max_bytes, truncated);
+                if *truncated || is_void_element(name) {
+                    return;
+                }
+                let children = node.children().to_vec();
+                let child_raw_text = matches!(name.as_str(), "script" | "style");
+                for child in children {
+                    self.append_serialized_node(
+                        child,
+                        max_bytes,
+                        output,
+                        truncated,
+                        child_raw_text,
+                    );
+                    if *truncated {
+                        return;
+                    }
+                }
+                append_bounded_markup(output, "</", max_bytes, truncated);
+                append_bounded_markup(output, name, max_bytes, truncated);
+                append_bounded_markup(output, ">", max_bytes, truncated);
+            }
+        }
     }
 
     pub fn title(&self, max_bytes: usize) -> (String, bool) {
@@ -4534,6 +4780,38 @@ fn append_word(output: &mut String, word: &str, max_bytes: usize, truncated: &mu
     output.push_str(word);
 }
 
+fn escape_html_text(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+fn escape_html_attribute(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+fn append_bounded_markup(output: &mut String, value: &str, max_bytes: usize, truncated: &mut bool) {
+    if *truncated {
+        return;
+    }
+    let available = max_bytes.saturating_sub(output.len());
+    if value.len() <= available {
+        output.push_str(value);
+        return;
+    }
+    let mut end = available.min(value.len());
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    output.push_str(&value[..end]);
+    *truncated = true;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4580,6 +4858,61 @@ mod tests {
             ("after & literal".into(), false)
         );
         assert_eq!(document.script_snapshot(1024).elements.len(), 2);
+    }
+
+    #[test]
+    fn script_inner_html_replaces_subtree_and_serializes_markup() {
+        let limits = NativeEngineLimits::default();
+        let mut document = NativeDocument::parse(
+            "<body><p id='root'>before <span id='old'>child</span></p></body>",
+            &limits,
+        )
+        .unwrap();
+        let root = document.find_element_by_id("root").unwrap();
+        let old = document.find_element_by_id("old").unwrap();
+
+        document
+            .apply_script_commands(&[NativeScriptCommand::SetInnerHtml {
+                node_index: root.index(),
+                value: "<strong id='new'>after &amp; literal</strong> tail".into(),
+            }])
+            .unwrap();
+
+        let new = document.find_element_by_id("new").unwrap();
+        assert_eq!(
+            document.element_text(root, 1024),
+            Some(("after & literal tail".into(), false))
+        );
+        assert_eq!(
+            document.element_inner_html(root, 1024),
+            "<strong id=\"new\">after &amp; literal</strong> tail"
+        );
+        assert_eq!(document.node(old), None);
+        assert_eq!(document.node(new).and_then(NativeNode::parent), Some(root));
+    }
+
+    #[test]
+    fn script_remove_detaches_existing_subtree() {
+        let limits = NativeEngineLimits::default();
+        let mut document = NativeDocument::parse(
+            "<body><section id='remove'><span id='nested'>gone</span></section><p id='keep'>stay</p></body>",
+            &limits,
+        )
+        .unwrap();
+        let remove = document.find_element_by_id("remove").unwrap();
+        let nested = document.find_element_by_id("nested").unwrap();
+
+        document
+            .apply_script_commands(&[NativeScriptCommand::RemoveNode {
+                node_index: remove.index(),
+            }])
+            .unwrap();
+
+        assert!(document.find_element_by_id("remove").is_none());
+        assert!(document.find_element_by_id("nested").is_none());
+        assert!(document.node(remove).is_none());
+        assert!(document.node(nested).is_none());
+        assert_eq!(document.visible_text(1024), ("stay".into(), false));
     }
 
     #[test]

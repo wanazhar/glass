@@ -4926,11 +4926,130 @@ pub(crate) fn svg_transform_for_node(
         if node.element_name() == Some("svg") {
             in_svg = true;
         }
-        if in_svg && let Some(value) = node.attribute("transform") {
-            transform = parse_svg_transform(value)?.followed_by(transform);
+        if in_svg {
+            let mut local = NativeSvgTransform::IDENTITY;
+            if node.element_name() == Some("svg")
+                && let Some(value) = node.attribute("viewBox")
+            {
+                local = local.followed_by(svg_viewbox_transform(node, value)?);
+            }
+            if let Some(value) = node.attribute("transform") {
+                local = local.followed_by(parse_svg_transform(value)?);
+            }
+            transform = local.followed_by(transform);
         }
     }
     Some(transform)
+}
+
+fn svg_viewbox_transform(node: &NativeNode, value: &str) -> Option<NativeSvgTransform> {
+    let values = tokenize_svg_path(value)?
+        .into_iter()
+        .map(|token| match token {
+            SvgPathToken::Number(value) => Some(value),
+            SvgPathToken::Command(_) => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    if values.len() != 4
+        || !values.iter().all(|value| value.is_finite())
+        || values[2] <= 0.0
+        || values[3] <= 0.0
+    {
+        return None;
+    }
+    let viewport_width = node
+        .attribute("width")
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .unwrap_or(f64::from(DEFAULT_SVG_WIDTH));
+    let viewport_height = node
+        .attribute("height")
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .unwrap_or(f64::from(DEFAULT_SVG_HEIGHT));
+    if !viewport_width.is_finite()
+        || viewport_width <= 0.0
+        || !viewport_height.is_finite()
+        || viewport_height <= 0.0
+    {
+        return None;
+    }
+    let (align_x, align_y, slice) = svg_preserve_aspect_ratio(node)?;
+    let viewbox_width = values[2];
+    let viewbox_height = values[3];
+    let scale_x = viewport_width / viewbox_width;
+    let scale_y = viewport_height / viewbox_height;
+    let (scale_x, scale_y) = if align_x.is_none() {
+        (scale_x, scale_y)
+    } else {
+        let scale = if slice {
+            scale_x.max(scale_y)
+        } else {
+            scale_x.min(scale_y)
+        };
+        (scale, scale)
+    };
+    let rendered_width = viewbox_width * scale_x;
+    let rendered_height = viewbox_height * scale_y;
+    let offset_x = align_x.unwrap_or(0.0) * (viewport_width - rendered_width) - values[0] * scale_x;
+    let offset_y =
+        align_y.unwrap_or(0.0) * (viewport_height - rendered_height) - values[1] * scale_y;
+    let transform = NativeSvgTransform {
+        a: scale_x,
+        d: scale_y,
+        e: offset_x,
+        f: offset_y,
+        ..NativeSvgTransform::IDENTITY
+    };
+    [
+        transform.a,
+        transform.b,
+        transform.c,
+        transform.d,
+        transform.e,
+        transform.f,
+    ]
+    .iter()
+    .all(|value| value.is_finite())
+    .then_some(transform)
+}
+
+fn svg_preserve_aspect_ratio(node: &NativeNode) -> Option<(Option<f64>, Option<f64>, bool)> {
+    let value = node
+        .attribute("preserveAspectRatio")
+        .unwrap_or("xMidYMid meet");
+    let mut tokens = value.split_ascii_whitespace();
+    let mut token = tokens.next()?.to_ascii_lowercase();
+    if token == "defer" {
+        token = tokens.next()?.to_ascii_lowercase();
+    }
+    if token == "none" {
+        return tokens.next().is_none().then_some((None, None, false));
+    }
+    let (align_x, align_y) = match token.as_str() {
+        "xminymin" => (0.0, 0.0),
+        "xminymid" => (0.0, 0.5),
+        "xminymax" => (0.0, 1.0),
+        "xmidymin" => (0.5, 0.0),
+        "xmidymid" => (0.5, 0.5),
+        "xmidymax" => (0.5, 1.0),
+        "xmaxymin" => (1.0, 0.0),
+        "xmaxymid" => (1.0, 0.5),
+        "xmaxymax" => (1.0, 1.0),
+        _ => return None,
+    };
+    let slice = match tokens
+        .next()
+        .unwrap_or("meet")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "meet" => false,
+        "slice" => true,
+        _ => return None,
+    };
+    tokens
+        .next()
+        .is_none()
+        .then_some((Some(align_x), Some(align_y), slice))
 }
 
 pub(crate) fn svg_transformed_points(

@@ -6446,7 +6446,11 @@ fn image_type_is_supported(image_type: Option<&str>) -> bool {
             .unwrap_or_default()
             .trim()
             .to_ascii_lowercase();
-        image_type.is_empty() || matches!(image_type.as_str(), "image/png" | "image/jpeg")
+        image_type.is_empty()
+            || matches!(
+                image_type.as_str(),
+                "image/png" | "image/jpeg" | "image/webp"
+            )
     })
 }
 

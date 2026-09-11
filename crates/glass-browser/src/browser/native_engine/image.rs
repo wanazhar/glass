@@ -1,4 +1,5 @@
 use base64::Engine as _;
+use image_webp::WebPDecoder;
 use png::ColorType;
 use std::io::Cursor;
 use zune_jpeg::JpegDecoder;
@@ -36,7 +37,7 @@ pub(crate) fn decode_data_image(source: &str) -> Option<NativeImage> {
     let (metadata, payload) = source.get(5..)?.split_once(',')?;
     let mut metadata_parts = metadata.split(';');
     let media_type = metadata_parts.next().unwrap_or_default();
-    if !matches_ignore_ascii_case(media_type, &["image/png", "image/jpeg"]) {
+    if !matches_ignore_ascii_case(media_type, &["image/png", "image/jpeg", "image/webp"]) {
         return None;
     }
     let is_base64 = metadata_parts.any(|part| part.eq_ignore_ascii_case("base64"));
@@ -123,6 +124,9 @@ pub(crate) fn decode_image_bytes(
     if media_type.eq_ignore_ascii_case("image/jpeg") {
         return decode_jpeg_bytes(bytes, max_decoded_bytes);
     }
+    if media_type.eq_ignore_ascii_case("image/webp") {
+        return decode_webp_bytes(bytes, max_decoded_bytes);
+    }
     None
 }
 
@@ -160,6 +164,46 @@ fn matches_ignore_ascii_case(value: &str, candidates: &[&str]) -> bool {
     candidates
         .iter()
         .any(|candidate| value.eq_ignore_ascii_case(candidate))
+}
+
+fn decode_webp_bytes(bytes: &[u8], max_decoded_bytes: usize) -> Option<NativeImage> {
+    if bytes.is_empty() || max_decoded_bytes < 4 {
+        return None;
+    }
+    let mut decoder = WebPDecoder::new(Cursor::new(bytes)).ok()?;
+    decoder.set_memory_limit(max_decoded_bytes);
+    if decoder.is_animated() {
+        return None;
+    }
+    let (width, height) = decoder.dimensions();
+    let pixel_count = usize::try_from(width)
+        .ok()?
+        .checked_mul(usize::try_from(height).ok()?)?;
+    let max_pixels = (max_decoded_bytes / 4).min(MAX_NATIVE_IMAGE_BYTES / 4);
+    if width == 0 || height == 0 || pixel_count > max_pixels {
+        return None;
+    }
+    let output_size = decoder.output_buffer_size()?;
+    if output_size > max_decoded_bytes {
+        return None;
+    }
+    let mut decoded = vec![0; output_size];
+    decoder.read_image(&mut decoded).ok()?;
+    let pixels: Vec<u8> = if decoder.has_alpha() {
+        decoded
+    } else {
+        decoded
+            .chunks_exact(3)
+            .flat_map(|pixel| [pixel[0], pixel[1], pixel[2], u8::MAX])
+            .collect()
+    };
+    (pixels.len() == pixel_count.checked_mul(4)? && pixels.len() <= max_decoded_bytes).then_some(
+        NativeImage {
+            width,
+            height,
+            pixels,
+        },
+    )
 }
 
 fn percent_decode_bytes(value: &str) -> Option<Vec<u8>> {

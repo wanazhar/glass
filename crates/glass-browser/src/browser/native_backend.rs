@@ -386,29 +386,20 @@ impl NativeEngineBackend {
         reconcile_native_frames(&mut targets.active_frames, &engine).await?;
         let active_frame_id = targets.active_frames.active_frame_id.clone();
         let parent_snapshot = engine.snapshot().map_err(native_error)?;
-        let mut bindings = Vec::new();
-        for (frame_id, frame) in &targets.active_frames.parked {
-            if frame.parent_id.as_deref() != Some(active_frame_id.as_str()) {
-                continue;
-            }
-            let Some(node_index) = frame.owner_node_index else {
-                continue;
-            };
-            let child_snapshot = frame.engine.snapshot().map_err(native_error)?;
-            bindings.push(NativeFrameScriptBinding {
-                node_index,
-                frame_id: frame_id.clone(),
-                url: child_snapshot.url,
-                origin: child_snapshot.origin.serialized(),
-                revision: child_snapshot.revision,
-                same_origin: parent_snapshot.origin != NativeOrigin::Opaque
-                    && parent_snapshot.origin == child_snapshot.origin,
-                document: frame
-                    .engine
-                    .script_document_snapshot()
-                    .map_err(native_error)?,
-            });
-        }
+        let mut bindings = targets
+            .active_frames
+            .parked
+            .iter()
+            .filter(|(_, frame)| frame.parent_id.as_deref() == Some(active_frame_id.as_str()))
+            .map(|(frame_id, frame)| {
+                native_frame_script_binding(
+                    &targets.active_frames.parked,
+                    frame_id,
+                    frame,
+                    &parent_snapshot.origin,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         bindings.sort_by_key(|binding| binding.node_index);
         Ok(bindings)
     }
@@ -2196,6 +2187,42 @@ fn project_native_frame(
         url: redact_diagnostic_url(&context.url),
         active,
         out_of_process: false,
+    })
+}
+
+fn native_frame_script_binding(
+    frames: &BTreeMap<String, NativeParkedFrame>,
+    frame_id: &str,
+    frame: &NativeParkedFrame,
+    parent_origin: &NativeOrigin,
+) -> Result<NativeFrameScriptBinding, BrowserBackendError> {
+    let child_snapshot = frame.engine.snapshot().map_err(native_error)?;
+    let same_origin =
+        *parent_origin != NativeOrigin::Opaque && *parent_origin == child_snapshot.origin;
+    let mut children = frames
+        .iter()
+        .filter(|(_, child)| child.parent_id.as_deref() == Some(frame_id))
+        .map(|(child_id, child)| {
+            native_frame_script_binding(frames, child_id, child, &child_snapshot.origin)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    children.sort_by_key(|binding| binding.node_index);
+    Ok(NativeFrameScriptBinding {
+        node_index: frame
+            .owner_node_index
+            .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                reason: "native frame owner node disappeared during script projection".into(),
+            })?,
+        frame_id: frame_id.to_owned(),
+        url: child_snapshot.url,
+        origin: child_snapshot.origin.serialized(),
+        revision: child_snapshot.revision,
+        same_origin,
+        document: frame
+            .engine
+            .script_document_snapshot()
+            .map_err(native_error)?,
+        children,
     })
 }
 

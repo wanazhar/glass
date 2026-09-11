@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-156` slice; the bounded foundation below remains
+`native-engine-browser-157` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -1559,6 +1559,19 @@ over the existing Rust DOM, not a second DOM implementation: full Web IDL
 descriptors and methods, live mutation, shadow/custom elements, ranges,
 cross-origin frame properties, shared frame scripting, and complete browser
 parity remain open.
+
+The completed native-engine-browser-157 slice extends the page-script frame
+bridge recursively. Each direct binding carries a bounded child-binding tree,
+so same-origin projected child documents expose nested frame elements,
+`contentWindow`, `contentDocument`, `window.frames`, numeric child windows,
+and stable nested `parent`/`top`/`frameElement`/`document` relationships.
+Nested message and navigation effects resolve through the existing parent-owned
+flat registry, including parked descendants. Revision/URL/origin/topology
+keys refresh cached projections without sharing engine pointers or allowing a
+cross-origin document snapshot through. Selected-child realm relationship
+metadata, complete cross-origin Window Web IDL behavior, live cross-realm
+identity, full frame lifecycle/topology, and complete browser parity remain
+issue #40 gates.
 
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third

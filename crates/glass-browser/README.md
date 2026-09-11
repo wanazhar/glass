@@ -531,6 +531,9 @@ navigation/history path, preserves cancellation, and rejects ambiguous loops.
   elements also expose parent-owned same-origin `contentDocument` snapshots
   and `contentWindow` proxies, with bounded `window.frames`, parent/top
   relationships, origin-checked messaging, and child WindowProxy navigation.
+  Same-origin projected child documents recursively expose bounded nested
+  frame windows/documents and preserve nested `parent`/`top`/`frameElement`
+  identity; the transfer remains snapshot-based.
   Fixtures remain
   a Rust configuration path. Native downloads
   complete into existing authorized directories through the runtime and MCP

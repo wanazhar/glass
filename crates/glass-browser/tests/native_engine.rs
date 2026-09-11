@@ -33148,6 +33148,69 @@ async fn native_content_process_loads_image_after_script_source_mutation() {
 }
 
 #[tokio::test]
+async fn native_content_process_reuses_cacheable_external_png_for_duplicate_images() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let png = native_test_png_bytes();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/image.png"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            if expected_path == "/image.png" {
+                let headers = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nCache-Control: max-age=60\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    png.len()
+                );
+                stream.write_all(headers.as_bytes()).await.unwrap();
+                stream.write_all(&png).await.unwrap();
+            } else {
+                let body = "<div style='width:16px'><img id='first' src='/image.png' width='8'><img id='second' src='/image.png' width='8'></div>";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        }
+        match tokio::time::timeout(Duration::from_millis(250), listener.accept()).await {
+            Ok(Ok((mut stream, _))) => {
+                let _ = read_http_request(&mut stream).await;
+                let response =
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                stream.write_all(response).await.unwrap();
+                true
+            }
+            _ => false,
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_viewport(Viewport {
+                width: 16,
+                height: 8,
+                device_scale_factor_milli: 1000,
+            })
+            .with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let image_count = engine
+        .display_list()
+        .unwrap()
+        .commands
+        .iter()
+        .filter(|command| matches!(command, NativeDisplayCommand::Image { .. }))
+        .count();
+    assert_eq!(image_count, 2);
+
+    engine.close_async().await.unwrap();
+    assert!(!server.await.unwrap(), "duplicate image was requested");
+}
+
+#[tokio::test]
 async fn native_content_process_blocks_csp_disallowed_image_before_request() {
     let _guard = native_content_process_test_lock().lock().await;
     let target_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

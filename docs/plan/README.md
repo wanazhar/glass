@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-189` locally. The versioned
+`native-engine-browser-190` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1689,6 +1689,17 @@ Its contract and local evidence are recorded in
 [native-engine-browser-178](tasks/native-engine-browser-178.md); cross-document
 session history, bfcache, cross-origin history, and browser-wide parity remain
 issue #40 promotion gates.
+
+The completed native-engine-browser-190 slice extends structural DOM behavior
+across local, HTTP(S) content-worker, and same-origin frame realms. Native
+nodes now expose `cloneNode()`, `isSameNode()`, `isEqualNode()`,
+`compareDocumentPosition()`, and `normalize()` over the shared tree projection.
+Shallow and deep element/text/fragment clones preserve attributes and child
+order, disconnected and ancestor/descendant document-position flags are
+deterministic, and adjacent/empty text normalization commits through the
+existing typed mutation transaction, including children of a detached node
+created in the same script batch. The contract and evidence are recorded in
+[native-engine-browser-190](tasks/native-engine-browser-190.md).
 
 The completed native-engine-browser-189 slice closes the structural DOM
 identity/replacement gap across local, HTTP(S) content-worker, and same-origin

@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-189`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-190`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
@@ -3373,6 +3373,19 @@ comments, raw-text/foreign-content rules, malformed-input recovery, and full
 Web IDL descriptor parity remain conformance work. Exact local evidence is in
 `docs/plan/tasks/native-engine-browser-179.md`; browser-complete promotion
 remains tracked issue-40 work.
+
+The completed native-engine-browser-190 slice extends the structural DOM
+identity surface. Local, HTTP(S) content-worker, and same-origin frame nodes
+now expose bounded `cloneNode()`, `isSameNode()`, `isEqualNode()`,
+`compareDocumentPosition()`, and `normalize()` behavior. Deep clones preserve
+element attributes and supported descendants, position flags distinguish
+containment, document order, and disconnected trees, and normalization uses
+the existing command queue to merge adjacent text and remove empty text. The
+Rust command transaction now accepts a current-batch script-created node when
+it is nested under a detached constructed parent without weakening stale
+ordinary-node checks. Exact local evidence is in
+[native-engine-browser-190](../tasks/native-engine-browser-190.md); complete
+HTML tree-builder, Web IDL, and browser-complete promotion work remain active.
 
 The completed native-engine-browser-189 slice closes the structural DOM
 identity/replacement gap. Local, HTTP(S) content-worker, and same-origin frame

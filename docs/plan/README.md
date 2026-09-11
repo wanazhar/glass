@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-200` locally. The versioned
+`native-engine-browser-201` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1723,10 +1723,21 @@ through the native DOM owner, content-worker wire, JavaScript snapshots,
 mutation commands, and same-origin frame projections. Parsed SVG subtrees,
 MathML subtrees, `foreignObject` HTML descendants, script-created
 `createElementNS()` nodes, and namespace-aware fragment parsing now share the
-same contract. Unsupported namespace URIs report `NamespaceError`; qualified
-namespace attributes, XML documents, and complete namespace-specific Web IDL
-remain separate issue #40 work. Exact evidence is recorded in
-[native-engine-browser-200](tasks/native-engine-browser-200.md).
+same contract. Unsupported namespace URIs report `NamespaceError`; at that
+checkpoint qualified namespace attributes, XML documents, and complete
+namespace-specific Web IDL remained separate issue #40 work. Exact evidence is
+recorded in [native-engine-browser-200](tasks/native-engine-browser-200.md).
+
+The completed native-engine-browser-201 slice carries bounded
+namespace-qualified attributes through the native owner, content-worker
+snapshots, mutation commands, local/detached DOM, and same-origin frame
+projections. XLink, XML, and XMLNS identity now survives parsing,
+`get/set/removeAttributeNS`, live `Attr`/`NamedNodeMap` access, cloning, and
+`createAttributeNS`; invalid qualified names and unsupported namespaces fail
+with `NamespaceError`. XML documents, namespace-aware CSS selectors, complete
+namespace-specific Web IDL, and browser-wide conformance remain issue #40
+promotion work. Exact evidence is recorded in
+[native-engine-browser-201](tasks/native-engine-browser-201.md).
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` now returns persistent `Attr`
@@ -1734,9 +1745,10 @@ objects with value/node-value accessors and ownership; element attribute-node
 methods preserve replacement/removal identity and typed errors; and
 `element.attributes` exposes a live indexed/iterable `NamedNodeMap`. Local,
 HTTP(S) content-worker, and same-origin-frame paths share the surface through
-the native host. Namespace-qualified attributes, complete Web IDL descriptors,
-XML documents, and browser-wide conformance remain issue #40 work. Exact
-evidence is recorded in
+the native host. At that checkpoint namespace-qualified attributes, complete
+Web IDL descriptors, XML documents, and browser-wide conformance remained issue
+#40 work; the namespace attribute gap is closed by slice 201. Exact evidence is
+recorded in
 [native-engine-browser-196](tasks/native-engine-browser-196.md).
 
 The completed native-engine-browser-195 slice advances the HTML tree builder's

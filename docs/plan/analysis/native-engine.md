@@ -1,8 +1,12 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-200`, with local and HTTP(S)
-lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
+expansion checkpoint is `native-engine-browser-201`, with local and HTTP(S)
+lifecycle navigation re-entry covered by the native owner. The completed 201
+slice carries bounded XLink, XML, and XMLNS attribute identity through local,
+detached, content-worker, and same-origin frame DOM surfaces, including live
+`Attr`/`NamedNodeMap` lookup, mutation, cloning, and typed namespace validation.
+Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
 committed locally, including the bounded 010 display-list seed and the bounded
@@ -3389,20 +3393,21 @@ Node contract in local, HTTP(S) content-worker, and same-origin frame realms.
 Attribute nodes now use the shared detached-node accessors and support cloning,
 equality, empty child collections, detached roots, and connectivity checks;
 `ownerElement` remains separate from the tree parent link. Exact evidence is
-in `docs/plan/tasks/native-engine-browser-197.md`; namespace-aware storage,
-XML documents, complete Web IDL descriptors, and browser-wide conformance
-remain issue #40 promotion gates.
+in `docs/plan/tasks/native-engine-browser-197.md`; XML documents, complete Web
+IDL descriptors, and browser-wide conformance remain issue #40 promotion
+gates. Namespace-aware attribute storage and mutation are covered by slice
+201.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame
 realms. `document.createAttribute()` creates persistent `Attr` objects;
 attribute-node attach, replacement, mutation, removal, and ownership are
 synchronized with the native element store; and `element.attributes` exposes
-a live indexed/iterable `NamedNodeMap`. Non-null namespaces fail explicitly
-until namespace-aware storage is implemented. Exact evidence is in
+a live indexed/iterable `NamedNodeMap`. At that checkpoint non-null namespaces
+failed explicitly; slice 201 now provides the bounded namespace-aware storage
+and mutation path. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-196.md`; complete Web IDL descriptors,
-XML documents, namespace support, and browser-wide conformance remain issue
-#40 promotion gates.
+XML documents, and browser-wide conformance remain issue #40 promotion gates.
 
 The completed native-engine-browser-195 slice advances bounded HTML recovery
 in both Rust document parsing and JavaScript detached-fragment parsing.

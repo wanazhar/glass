@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-206` slice; the bounded foundation below remains
+`native-engine-browser-207` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5245,10 +5245,23 @@ SVG endpoint-to-center algorithm, and flattens them into the existing bounded
 at most 64 samples per arc, and the 2,048-point budget fail closed before
 partial display geometry is published. The existing layout, typed path
 fill/stroke, clipping, scroll, alpha, capture, and hit-test consumers remain
-the single geometry path. Adaptive flattening, transforms, viewBox mapping,
-dash arrays, explicit cap/join styles, gradients, markers, and external
-resources remain later issue #40 promotion work. Exact evidence is recorded in
+the single geometry path. Adaptive flattening, viewBox mapping, dash arrays,
+explicit cap/join styles, gradients, markers, and external resources remain
+later issue #40 promotion work. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-206.md`.
+
+The completed native-engine-browser-207 slice adds bounded affine SVG
+transforms. `matrix`, `translate`, `scale`, `rotate`, `skewX`, and `skewY`
+lists on SVG roots, groups, and supported shapes compose ancestor matrices in
+the shared layout owner. Transformed rect/circle/ellipse/line/polyline/polygon
+points and path subpaths feed the same typed fill/stroke display commands,
+software rasterizer, clipping, scroll projection, capture, and hit-test
+owners; identity transforms retain the pre-transform command forms. Malformed,
+non-finite, unknown, and over-limit output fails closed. CSS transforms,
+`viewBox`/`preserveAspectRatio`, dash arrays, explicit cap/join styles,
+gradients, markers, and external resources remain later issue #40 promotion
+work. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-207.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-206` locally. The versioned
+`native-engine-browser-207` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1784,10 +1784,22 @@ endpoint-to-center arc conversion are flattened into the shared subpath
 representation with finite-input, invalid-flag, 64-sample-per-arc, and
 2,048-point guards. Layout bounds, typed path fill/stroke paint, clipping,
 scroll translation, alpha composition, capture, and hit-test ownership remain
-shared. Adaptive curve error, transforms, viewBox mapping, dash arrays,
+shared. Adaptive curve error, viewBox mapping, dash arrays,
 explicit cap/join styles, gradients, markers, and external resources remain
 separate issue #40 promotion work. Exact evidence is recorded in
 [native-engine-browser-206](tasks/native-engine-browser-206.md).
+
+The completed native-engine-browser-207 slice adds bounded SVG transform
+matrices for `matrix`, `translate`, `scale`, `rotate`, `skewX`, and `skewY`.
+Root, group, and shape transforms compose through shared integer geometry so
+transformed rectangles, ellipses, lines, polygons, and paths use the same
+layout bounds, typed fill/stroke paint, clipping, scroll translation, alpha
+composition, capture, and hit-test owners. Malformed, non-finite, unknown, and
+over-limit transform output fails closed; identity transforms preserve the
+existing command forms. CSS transforms, viewBox mapping, dash arrays, explicit
+cap/join styles, gradients, markers, and external resources remain separate
+issue #40 promotion work. Exact evidence is recorded in
+[native-engine-browser-207](tasks/native-engine-browser-207.md).
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` now returns persistent `Attr`

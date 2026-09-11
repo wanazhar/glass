@@ -5,9 +5,10 @@
 //! `browser_backend` contract.
 
 use super::native_engine::{
-    NativeAction, NativeEngine, NativeEngineConfig, NativeEngineError, NativeHistoryDirection,
-    NativeInspectionSnapshot, NativePopupRequest, NativePostMessageRequest, NativePreflightAction,
-    NativeTargetPreflight, NativeWindowCloseRequest, NativeWindowNavigationRequest,
+    MAX_NATIVE_EFFECTS, NativeAction, NativeEngine, NativeEngineConfig, NativeEngineError,
+    NativeHistoryDirection, NativeInspectionSnapshot, NativePopupRequest, NativePostMessageRequest,
+    NativePreflightAction, NativeTargetPreflight, NativeWindowCloseRequest,
+    NativeWindowNavigationRequest, NativeWindowProxyUpdate,
 };
 use crate::browser::session::{
     FrameInfo, NavigationControlOutcome, PageTargetInfo, redact_diagnostic_text,
@@ -31,6 +32,7 @@ const NATIVE_ENGINE_BROWSER_FAMILY: &str = "native";
 
 const NATIVE_MAX_TARGETS: usize = crate::browser::session::TOPOLOGY_MAX_TARGETS;
 const NATIVE_MAX_FRAMES: usize = crate::browser::session::TOPOLOGY_MAX_FRAMES;
+const NATIVE_MAX_CLOSED_TARGETS: usize = NATIVE_MAX_TARGETS * 4;
 
 struct NativeParkedFrame {
     engine: NativeEngine,
@@ -105,12 +107,19 @@ struct NativeParkedTarget {
     name: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct NativeClosedTarget {
+    url: String,
+    name: String,
+}
+
 struct NativeTargetState {
     active_target_id: Option<String>,
     active_opener_id: Option<String>,
     active_name: Option<String>,
     active_frames: NativeFrameState,
     parked: BTreeMap<String, NativeParkedTarget>,
+    closed: BTreeMap<String, NativeClosedTarget>,
     window_handles: BTreeMap<(String, String), String>,
     next_target_number: u64,
 }
@@ -123,6 +132,7 @@ impl NativeTargetState {
             active_name,
             active_frames: NativeFrameState::new(&active_target_id),
             parked: BTreeMap::new(),
+            closed: BTreeMap::new(),
             window_handles: BTreeMap::new(),
             next_target_number: 1,
         }
@@ -143,6 +153,17 @@ impl NativeTargetState {
                 return candidate;
             }
         }
+    }
+
+    fn remember_closed_target(&mut self, target_id: String, url: String, name: String) {
+        if self.closed.len() >= NATIVE_MAX_CLOSED_TARGETS
+            && !self.closed.contains_key(&target_id)
+            && let Some(oldest) = self.closed.keys().next().cloned()
+        {
+            self.closed.remove(&oldest);
+        }
+        self.closed
+            .insert(target_id, NativeClosedTarget { url, name });
     }
 }
 
@@ -539,7 +560,12 @@ impl NativeEngineBackend {
         &self,
         target: &str,
     ) -> Result<(ActionResult, PageTargetInfo), BrowserBackendError> {
+        let proxy_updates = self.active_window_proxy_updates()?;
         let mut engine = self.lock_engine(BackendOperation::Action)?;
+        engine
+            .sync_window_proxies(&proxy_updates)
+            .await
+            .map_err(native_error)?;
         let active_context_id = engine.config().context_id.clone();
         let outcome = engine
             .action_async(NativeAction::Click {
@@ -719,6 +745,85 @@ impl NativeEngineBackend {
         Ok(())
     }
 
+    fn window_proxy_updates(
+        &self,
+        source_id: &str,
+    ) -> Result<Vec<NativeWindowProxyUpdate>, BrowserBackendError> {
+        let targets = self.lock_targets(BackendOperation::Script)?;
+        let Some(active_target_id) = targets.active_target_id.as_deref() else {
+            return Ok(Vec::new());
+        };
+        let active_engine = self.lock_engine_raw(BackendOperation::Script)?;
+        let active_url = active_engine.context().map_err(native_error)?.url;
+        let mut snapshots = BTreeMap::new();
+        snapshots.insert(
+            active_target_id.to_owned(),
+            (
+                active_url,
+                targets.active_name.clone().unwrap_or_default(),
+                false,
+            ),
+        );
+        for (target_id, target) in &targets.parked {
+            let context = target.engine.context().map_err(native_error)?;
+            snapshots.insert(
+                target_id.clone(),
+                (context.url, target.name.clone().unwrap_or_default(), false),
+            );
+        }
+        for (target_id, target) in &targets.closed {
+            snapshots.insert(
+                target_id.clone(),
+                (target.url.clone(), target.name.clone(), true),
+            );
+        }
+
+        let mut updates = Vec::with_capacity(snapshots.len() + targets.window_handles.len());
+        for (target_id, (url, name, closed)) in &snapshots {
+            updates.push(NativeWindowProxyUpdate {
+                cache_key: format!("{target_id}\\u0000"),
+                target_context_id: target_id.clone(),
+                href: url.clone(),
+                name: name.clone(),
+                closed: *closed,
+            });
+        }
+        for ((handle_source_id, handle), target_id) in &targets.window_handles {
+            if handle_source_id != source_id {
+                continue;
+            }
+            let Some((url, name, closed)) = snapshots.get(target_id) else {
+                continue;
+            };
+            updates.push(NativeWindowProxyUpdate {
+                cache_key: format!("\\u0000{handle}"),
+                target_context_id: target_id.clone(),
+                href: url.clone(),
+                name: name.clone(),
+                closed: *closed,
+            });
+        }
+        if updates.len() > MAX_NATIVE_EFFECTS {
+            return Err(BrowserBackendError::UnsupportedOperation {
+                operation: "WindowProxy synchronization".into(),
+                reason: format!(
+                    "native WindowProxy update set exceeded its bounded limit ({MAX_NATIVE_EFFECTS})"
+                ),
+            });
+        }
+        Ok(updates)
+    }
+
+    fn active_window_proxy_updates(
+        &self,
+    ) -> Result<Vec<NativeWindowProxyUpdate>, BrowserBackendError> {
+        let source_id = self
+            .lock_targets(BackendOperation::Script)?
+            .active_target_id
+            .clone();
+        source_id.map_or_else(|| Ok(Vec::new()), |id| self.window_proxy_updates(&id))
+    }
+
     fn target_named(&self, name: &str) -> Result<Option<(String, bool)>, BrowserBackendError> {
         let targets = self.lock_targets(BackendOperation::Contexts)?;
         if targets.active_name.as_deref() == Some(name) {
@@ -775,6 +880,7 @@ impl NativeEngineBackend {
             if active || targets.parked.contains_key(target_id) {
                 return Ok(Some((target_id.clone(), active)));
             }
+            return Ok(None);
         }
         drop(targets);
         self.target_named(&message.target)
@@ -806,6 +912,7 @@ impl NativeEngineBackend {
             if active || targets.parked.contains_key(target_id) {
                 return Ok(Some((target_id.clone(), active)));
             }
+            return Ok(None);
         }
         drop(targets);
         self.target_named(&request.target)
@@ -837,6 +944,7 @@ impl NativeEngineBackend {
             if active || targets.parked.contains_key(target_id) {
                 return Ok(Some((target_id.clone(), active)));
             }
+            return Ok(None);
         }
         drop(targets);
         self.target_named(&request.target)
@@ -857,8 +965,13 @@ impl NativeEngineBackend {
         let Some((target_id, active)) = self.message_target(&message)? else {
             return Ok((Vec::new(), Vec::new(), Vec::new(), Vec::new()));
         };
+        let proxy_updates = self.window_proxy_updates(&target_id)?;
         if active {
             let mut engine = self.lock_engine_raw(BackendOperation::Script)?;
+            engine
+                .sync_window_proxies(&proxy_updates)
+                .await
+                .map_err(native_error)?;
             let target_origin = engine.snapshot().map_err(native_error)?.origin.serialized();
             if !native_message_target_origin_matches(
                 &message.source_origin,
@@ -893,6 +1006,11 @@ impl NativeEngineBackend {
         let Some(parked) = targets.parked.get_mut(&target_id) else {
             return Ok((Vec::new(), Vec::new(), Vec::new(), Vec::new()));
         };
+        parked
+            .engine
+            .sync_window_proxies(&proxy_updates)
+            .await
+            .map_err(native_error)?;
         let target_origin = parked
             .engine
             .snapshot()
@@ -946,6 +1064,7 @@ impl NativeEngineBackend {
         ),
         BrowserBackendError,
     > {
+        let proxy_updates = self.window_proxy_updates(target_id)?;
         if active {
             let opener_id = self
                 .lock_targets(BackendOperation::Contexts)?
@@ -960,6 +1079,10 @@ impl NativeEngineBackend {
                 window_name,
             ) = {
                 let mut engine = self.lock_engine_raw(BackendOperation::Navigate)?;
+                engine
+                    .sync_window_proxies(&proxy_updates)
+                    .await
+                    .map_err(native_error)?;
                 engine
                     .navigate_async_with_history(url, replace_history)
                     .await
@@ -1003,6 +1126,10 @@ impl NativeEngineBackend {
                 name,
                 frames,
             } = parked;
+            engine
+                .sync_window_proxies(&proxy_updates)
+                .await
+                .map_err(native_error)?;
             let result = engine
                 .navigate_async_with_history(url, replace_history)
                 .await;
@@ -1053,15 +1180,15 @@ impl NativeEngineBackend {
         let mut targets = self.lock_targets(BackendOperation::Close)?;
         if targets.active_target_id.as_deref() == Some(target_id) {
             let mut engine = self.lock_engine_raw(BackendOperation::Close)?;
+            let closed_url = engine.context().map_err(native_error)?.url;
+            let closed_name = targets.active_name.clone().unwrap_or_default();
             engine.close_async().await.map_err(native_error)?;
             let mut frames =
                 std::mem::replace(&mut targets.active_frames, NativeFrameState::empty());
             targets.active_target_id = None;
             targets.active_opener_id = None;
             targets.active_name = None;
-            targets
-                .window_handles
-                .retain(|_, target| target != target_id);
+            targets.remember_closed_target(target_id.to_owned(), closed_url, closed_name);
             return close_parked_frames(&mut frames).await;
         }
         let Some(mut parked) = targets.parked.remove(target_id) else {
@@ -1070,13 +1197,13 @@ impl NativeEngineBackend {
                     .into(),
             });
         };
+        let closed_url = parked.engine.context().map_err(native_error)?.url;
+        let closed_name = parked.name.clone().unwrap_or_default();
         if let Err(error) = parked.engine.close_async().await {
             targets.parked.insert(target_id.to_owned(), parked);
             return Err(native_error(error));
         }
-        targets
-            .window_handles
-            .retain(|_, target| target != target_id);
+        targets.remember_closed_target(target_id.to_owned(), closed_url, closed_name);
         close_parked_frames(&mut parked.frames).await
     }
 
@@ -1371,7 +1498,25 @@ impl BrowserBackend for NativeEngineBackend {
                 self.close_all().await?;
                 return Ok(BackendResponse::Unit);
             }
+            let proxy_updates = if matches!(
+                operation,
+                BackendOperation::Navigate
+                    | BackendOperation::Action
+                    | BackendOperation::Effects
+                    | BackendOperation::Script
+                    | BackendOperation::Prompt
+            ) {
+                Some(self.active_window_proxy_updates()?)
+            } else {
+                None
+            };
             let mut engine = self.lock_engine(operation)?;
+            if let Some(proxy_updates) = proxy_updates.as_deref() {
+                engine
+                    .sync_window_proxies(proxy_updates)
+                    .await
+                    .map_err(native_error)?;
+            }
             let active_context_id = engine.config().context_id.clone();
             match (operation, request) {
                 (BackendOperation::Initialize, BackendRequest::Initialize) => {

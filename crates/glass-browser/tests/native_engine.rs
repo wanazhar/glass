@@ -1220,6 +1220,165 @@ async fn native_http_window_proxy_location_navigates_content_process_target() {
 }
 
 #[tokio::test]
+async fn native_window_proxy_identity_tracks_navigation_and_close() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://proxy-identity-parent",
+            "<title>Proxy identity parent</title><script>globalThis.popup = window.open('fixture://proxy-identity-child', 'proxy-identity-target');</script><p>parent</p>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://proxy-identity-parent-next",
+            "<title>Proxy identity parent next</title><p>parent next</p>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://proxy-identity-child",
+            "<title>Proxy identity child</title><p>child</p>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://proxy-identity-child-next",
+            "<title>Proxy identity child next</title><p>child next</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://proxy-identity-parent");
+    let session = BrowserRuntimeSession::connect_native(config).await.unwrap();
+
+    let child_id = session
+        .native_list_targets()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|target| !target.active)
+        .unwrap()
+        .id;
+    session.native_select_target(&child_id).await.unwrap();
+    session
+        .navigate("fixture://proxy-identity-child-next")
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .native_list_targets()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|target| target.id == child_id)
+            .unwrap()
+            .url,
+        "fixture://proxy-identity-child-next"
+    );
+    session
+        .native_select_target("native-context")
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("[popup.location.href, popup.closed]")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!(["fixture://proxy-identity-child-next", false])
+    );
+
+    session
+        .navigate("fixture://proxy-identity-parent-next")
+        .await
+        .unwrap();
+    session.native_select_target(&child_id).await.unwrap();
+    assert_eq!(
+        session.script("opener.location.href").await.unwrap().value,
+        serde_json::json!("fixture://proxy-identity-parent-next")
+    );
+    session
+        .native_select_target("native-context")
+        .await
+        .unwrap();
+    session.native_close_target("native-context").await.unwrap();
+    session.native_select_target(&child_id).await.unwrap();
+    assert_eq!(
+        session.script("opener.closed").await.unwrap().value,
+        serde_json::json!(true)
+    );
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_http_window_proxy_identity_tracks_navigation_and_close() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..3 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap();
+            let body = match path {
+                "/proxy-identity-parent" => {
+                    "<title>HTTP proxy identity parent</title><script>globalThis.popup = window.open('/proxy-identity-child', 'proxy-identity-target');</script><p>parent</p>"
+                }
+                "/proxy-identity-child" => {
+                    "<title>HTTP proxy identity child</title><script>globalThis.initialOpener = opener.location.href;</script><p>child</p>"
+                }
+                "/proxy-identity-parent-next" => {
+                    "<title>HTTP proxy identity parent next</title><p>parent next</p>"
+                }
+                other => panic!("unexpected WindowProxy identity request path: {other}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/proxy-identity-parent")),
+    )
+    .await
+    .unwrap();
+    let child_id = session
+        .native_list_targets()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|target| !target.active)
+        .unwrap()
+        .id;
+    session
+        .navigate(format!("http://{address}/proxy-identity-parent-next"))
+        .await
+        .unwrap();
+    session.native_select_target(&child_id).await.unwrap();
+    assert_eq!(
+        session
+            .script("[opener.location.href, opener.closed]")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([
+            format!("http://{address}/proxy-identity-parent-next"),
+            false
+        ])
+    );
+    session
+        .native_select_target("native-context")
+        .await
+        .unwrap();
+    session.native_close_target("native-context").await.unwrap();
+    session.native_select_target(&child_id).await.unwrap();
+    assert_eq!(
+        session.script("opener.closed").await.unwrap().value,
+        serde_json::json!(true)
+    );
+    session.close().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_http_window_identity_crosses_content_worker() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

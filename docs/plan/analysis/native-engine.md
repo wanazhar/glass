@@ -3093,6 +3093,19 @@ and bounded, while live updates to previously-held proxies, full cross-origin
 Window property access, popup policy/geometry, frame lifecycle/shared
 scripting, and complete browser parity remain separate issue #40 work.
 
+The completed native-engine-browser-153 slice makes cached WindowProxy
+identity observable after other target owners change. The parent builds a
+bounded snapshot set for live and recently closed targets plus the current
+source's private handles; the local runtime and content worker queue that set
+and apply it immediately after each host bootstrap. Proxy closures now retain
+their target identity and URL through bounded tombstones, and stale private
+handles stop at the recorded closed target instead of falling through to a
+new named target. This preserves object identity without sharing an engine
+pointer, at the cost of snapshot timing: refresh occurs before the next
+observable operation rather than through asynchronous mutation of every realm.
+Full Window Web IDL, cross-origin property access, popup policy/geometry, frame
+lifecycle/shared scripting, and complete browser parity remain issue #40 work.
+
 The completed native-engine-browser-133 batch extends the native target seam
 with a side-effect-free preflight result. The engine resolves the current
 semantic locator and derives viewport geometry and actionability under the

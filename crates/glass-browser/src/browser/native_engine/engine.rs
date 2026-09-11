@@ -21,12 +21,12 @@ use super::javascript::{
     NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime, NativePageNavigation,
     NativePopupRequest, NativePostMessageRequest, NativeScriptEvaluation, NativeStorageEvent,
     NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
-    append_storage_changes, apply_indexed_db_changes, diff_indexed_db_changes,
-    execute_inline_scripts, host_event_script, host_hash_change_event_script,
-    host_message_event_script, host_submit_event_script, load_indexed_db_profile,
-    load_web_storage_profile, new_storage_writer_id, read_storage_event_journal,
-    register_storage_reader, save_web_storage_profile, storage_event_cursor, storage_key,
-    unregister_storage_reader,
+    NativeWindowProxyUpdate, append_storage_changes, apply_indexed_db_changes,
+    diff_indexed_db_changes, execute_inline_scripts, host_event_script,
+    host_hash_change_event_script, host_message_event_script, host_submit_event_script,
+    load_indexed_db_profile, load_web_storage_profile, new_storage_writer_id,
+    read_storage_event_journal, register_storage_reader, save_web_storage_profile,
+    storage_event_cursor, storage_key, unregister_storage_reader,
 };
 use super::layout::{NativeLayoutSnapshot, NativePoint, NativeRect};
 use super::lifecycle::NativeLifecycleState;
@@ -1335,6 +1335,27 @@ impl NativeEngine {
             self.navigate_request_async(navigation, 0).await?;
         }
         Ok(evaluation.value)
+    }
+
+    pub(crate) async fn sync_window_proxies(
+        &mut self,
+        updates: &[NativeWindowProxyUpdate],
+    ) -> Result<(), NativeEngineError> {
+        self.require_running("WindowProxy synchronization")?;
+        if updates.len() > MAX_NATIVE_EFFECTS {
+            return Err(NativeEngineError::limit(
+                "native WindowProxy updates",
+                MAX_NATIVE_EFFECTS,
+                updates.len(),
+            ));
+        }
+        if let Some(process) = self.content_process.as_mut() {
+            process.sync_window_proxies(updates).await
+        } else if let Some(javascript) = self.javascript.as_ref() {
+            javascript.sync_window_proxies(updates)
+        } else {
+            Ok(())
+        }
     }
 
     /// Read or mutate the page-visible Web Storage owned by this engine.

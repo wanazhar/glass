@@ -479,6 +479,10 @@ proxy reports `closed === true`, and repeated stale closes are harmless.
 getters, `href` assignment, `assign()`, `replace()`, and `reload()`; navigation
 effects resolve through the same parent-owned target and history path across
 local and HTTP(S) pages, and child opener projections carry the opener URL.
+Already-held WindowProxy objects receive bounded refreshes before the next
+observable operation, so location, name, and `closed` state track later target
+changes across local and content-worker pages; stale closed handles cannot
+fall through to a different named target.
 
 ## Safety and support
 

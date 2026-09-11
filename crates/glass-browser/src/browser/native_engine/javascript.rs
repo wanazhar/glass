@@ -259,6 +259,16 @@ pub(crate) struct NativeWindowNavigationRequest {
     pub(crate) source_context_id: String,
 }
 
+/// A trusted parent-owned refresh for one cached WindowProxy.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub(crate) struct NativeWindowProxyUpdate {
+    pub(crate) cache_key: String,
+    pub(crate) target_context_id: String,
+    pub(crate) href: String,
+    pub(crate) name: String,
+    pub(crate) closed: bool,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct NativePageNavigation {
     pub(crate) href: String,
@@ -2950,6 +2960,7 @@ pub(crate) struct NativeJavaScriptRuntime {
     post_message_events: Arc<Mutex<Vec<NativePostMessageRequest>>>,
     window_close_events: Arc<Mutex<Vec<NativeWindowCloseRequest>>>,
     window_navigation_events: Arc<Mutex<Vec<NativeWindowNavigationRequest>>>,
+    pending_window_proxy_updates: Arc<Mutex<Vec<NativeWindowProxyUpdate>>>,
     window_name: Arc<Mutex<String>>,
     opener_context_id: Option<String>,
     opener_window_name: String,
@@ -3029,6 +3040,7 @@ impl NativeJavaScriptRuntime {
             post_message_events: Arc::new(Mutex::new(Vec::new())),
             window_close_events: Arc::new(Mutex::new(Vec::new())),
             window_navigation_events: Arc::new(Mutex::new(Vec::new())),
+            pending_window_proxy_updates: Arc::new(Mutex::new(Vec::new())),
             window_name: Arc::new(Mutex::new(window_name)),
             opener_context_id: opener_context_id.map(str::to_owned),
             opener_window_name,
@@ -3199,6 +3211,58 @@ impl NativeJavaScriptRuntime {
         self.window_navigation_events
             .lock()
             .map(|mut requests| std::mem::take(&mut *requests))
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn sync_window_proxies(
+        &self,
+        updates: &[NativeWindowProxyUpdate],
+    ) -> Result<(), NativeEngineError> {
+        if updates.is_empty() {
+            return Ok(());
+        }
+        if updates.len() > super::interaction::MAX_NATIVE_EFFECTS {
+            return Err(NativeEngineError::limit(
+                "native WindowProxy updates",
+                super::interaction::MAX_NATIVE_EFFECTS,
+                updates.len(),
+            ));
+        }
+        for update in updates {
+            if update.cache_key.len() > crate::browser_backend::MAX_JSON_BYTES
+                || update.href.len() > crate::browser_backend::MAX_TEXT_BYTES
+                || update.name.len() > MAX_NATIVE_WINDOW_NAME_BYTES
+            {
+                return Err(NativeEngineError::limit(
+                    "native WindowProxy update",
+                    crate::browser_backend::MAX_JSON_BYTES,
+                    update
+                        .cache_key
+                        .len()
+                        .max(update.href.len())
+                        .max(update.name.len()),
+                ));
+            }
+            validate_context_id(&update.target_context_id)?;
+            validate_url_text("native WindowProxy update URL", &update.href)?;
+            validate_window_name(&update.name)?;
+        }
+        window_proxy_update_script(updates)?;
+        let mut pending =
+            self.pending_window_proxy_updates
+                .lock()
+                .map_err(|_| NativeEngineError::Worker {
+                    operation: "queue native WindowProxy updates".into(),
+                    reason: "native WindowProxy update queue is unavailable".into(),
+                })?;
+        *pending = updates.to_vec();
+        Ok(())
+    }
+
+    fn take_window_proxy_updates(&self) -> Vec<NativeWindowProxyUpdate> {
+        self.pending_window_proxy_updates
+            .lock()
+            .map(|mut updates| std::mem::take(&mut *updates))
             .unwrap_or_default()
     }
 
@@ -3665,6 +3729,7 @@ impl NativeJavaScriptRuntime {
             ));
         }
         let storage_events = self.take_storage_events();
+        let proxy_update_script = window_proxy_update_script(&self.take_window_proxy_updates())?;
         let window_name = self.window_name();
         let opener_window_name = self.opener_window_name();
         let bootstrap = document_bootstrap(
@@ -3695,6 +3760,13 @@ impl NativeJavaScriptRuntime {
                     operation: "install JavaScript host view".into(),
                     reason: "native JavaScript host view could not be installed".into(),
                 })?;
+            if let Some(source) = proxy_update_script.as_deref() {
+                ctx.eval::<(), _>(source)
+                    .map_err(|_| NativeEngineError::Worker {
+                        operation: "synchronize native WindowProxy state".into(),
+                        reason: "native WindowProxy state could not be synchronized".into(),
+                    })?;
+            }
             let (value, async_evaluation): (Value, bool) = match ctx.eval::<Value, _>(source) {
                 Ok(value) => (value, false),
                 Err(_) if contains_await_token(source) => (
@@ -3870,6 +3942,7 @@ impl NativeJavaScriptRuntime {
             ));
         }
         let storage_events = self.take_storage_events();
+        let proxy_update_script = window_proxy_update_script(&self.take_window_proxy_updates())?;
         let window_name = self.window_name();
         let opener_window_name = self.opener_window_name();
         let bootstrap = document_bootstrap(
@@ -3900,6 +3973,13 @@ impl NativeJavaScriptRuntime {
                     operation: "install JavaScript host view".into(),
                     reason: "native JavaScript host view could not be installed".into(),
                 })?;
+            if let Some(source) = proxy_update_script.as_deref() {
+                ctx.eval::<(), _>(source)
+                    .map_err(|_| NativeEngineError::Worker {
+                        operation: "synchronize native WindowProxy state".into(),
+                        reason: "native WindowProxy state could not be synchronized".into(),
+                    })?;
+            }
             Module::evaluate(ctx.clone(), name, source)
                 .and_then(|promise| promise.finish::<()>())
                 .map_err(|_| NativeEngineError::Worker {
@@ -4292,6 +4372,29 @@ pub(crate) fn storage_key(document_url: &str, origin: &NativeOrigin) -> String {
         );
     }
     origin.serialized()
+}
+
+fn window_proxy_update_script(
+    updates: &[NativeWindowProxyUpdate],
+) -> Result<Option<String>, NativeEngineError> {
+    if updates.is_empty() {
+        return Ok(None);
+    }
+    let serialized = serde_json::to_string(updates).map_err(|_| NativeEngineError::Worker {
+        operation: "serialize native WindowProxy updates".into(),
+        reason: "native WindowProxy updates could not be serialized".into(),
+    })?;
+    let source = format!(
+        "globalThis.__glassSyncWindowProxies && globalThis.__glassSyncWindowProxies({serialized});"
+    );
+    if source.len() > MAX_NATIVE_SCRIPT_BYTES {
+        return Err(NativeEngineError::limit(
+            "native WindowProxy update script",
+            MAX_NATIVE_SCRIPT_BYTES,
+            source.len(),
+        ));
+    }
+    Ok(Some(source))
 }
 
 fn document_bootstrap(
@@ -7632,6 +7735,10 @@ fn document_bootstrap(
     ? globalThis.__glassWindowProxyCache
     : new Map();
   globalThis.__glassWindowProxyCache = windowProxyCache;
+  const windowProxyStates = globalThis.__glassWindowProxyStates instanceof Map
+    ? globalThis.__glassWindowProxyStates
+    : new Map();
+  globalThis.__glassWindowProxyStates = windowProxyStates;
   const cloneMessageData = (value) => {{
     let encoded;
     try {{ encoded = JSON.stringify(value); }} catch (_error) {{
@@ -7658,47 +7765,53 @@ fn document_bootstrap(
     const cacheKey = String(targetContextId || "") + "\\u0000" + String(handle || "");
     const existing = windowProxyCache.get(cacheKey);
     if (existing) return existing;
-    let closed = false;
-    let targetLocationHref = String(targetUrl || "about:blank");
+    const state = {{
+      closed: false,
+      targetName: String(targetName || ""),
+      targetContextId: String(targetContextId || ""),
+      targetLocationHref: String(targetUrl || "about:blank"),
+    }};
+    windowProxyStates.set(cacheKey, state);
     const navigateTarget = (value, replaceHistory) => {{
-      if (closed) return;
-      const next = new URLNative(String(value), targetLocationHref || locationUrl.href).href;
-      targetLocationHref = next;
+      if (state.closed) return;
+      const next = new URLNative(String(value), state.targetLocationHref || locationUrl.href).href;
+      state.targetLocationHref = next;
       pushCommand({{
         kind: "navigateWindow",
         target: String(handle || ""),
-        target_context_id: targetContextId || null,
+        target_context_id: state.targetContextId || targetContextId || null,
         href: next,
         replace: Boolean(replaceHistory),
       }});
     }};
     const targetLocation = {{
-      get href() {{ return targetLocationHref; }},
+      get href() {{ return state.targetLocationHref; }},
       set href(value) {{ navigateTarget(value, false); }},
-      get protocol() {{ return new URLNative(targetLocationHref).protocol; }},
-      get host() {{ return new URLNative(targetLocationHref).host; }},
-      get hostname() {{ return new URLNative(targetLocationHref).hostname; }},
-      get port() {{ return new URLNative(targetLocationHref).port; }},
-      get pathname() {{ return new URLNative(targetLocationHref).pathname; }},
-      get search() {{ return new URLNative(targetLocationHref).search; }},
-      get hash() {{ return new URLNative(targetLocationHref).hash; }},
-      get origin() {{ return new URLNative(targetLocationHref).origin; }},
+      get protocol() {{ return new URLNative(state.targetLocationHref).protocol; }},
+      get host() {{ return new URLNative(state.targetLocationHref).host; }},
+      get hostname() {{ return new URLNative(state.targetLocationHref).hostname; }},
+      get port() {{ return new URLNative(state.targetLocationHref).port; }},
+      get pathname() {{ return new URLNative(state.targetLocationHref).pathname; }},
+      get search() {{ return new URLNative(state.targetLocationHref).search; }},
+      get hash() {{ return new URLNative(state.targetLocationHref).hash; }},
+      get origin() {{ return new URLNative(state.targetLocationHref).origin; }},
       assign(value) {{ navigateTarget(value, false); }},
       replace(value) {{ navigateTarget(value, true); }},
-      reload() {{ navigateTarget(targetLocationHref, false); }},
-      toString() {{ return targetLocationHref; }},
+      reload() {{ navigateTarget(state.targetLocationHref, false); }},
+      toString() {{ return state.targetLocationHref; }},
     }};
     Object.freeze(targetLocation);
     const proxy = {{
-      get name() {{ return String(targetName || ""); }},
-      get closed() {{ return closed; }},
+      get name() {{ return state.targetName; }},
+      get closed() {{ return state.closed; }},
       get location() {{ return targetLocation; }},
       close() {{
-        closed = true;
+        if (state.closed) return;
+        state.closed = true;
         pushCommand({{
           kind: "closeWindow",
           target: String(handle || ""),
-          target_context_id: targetContextId || null,
+          target_context_id: state.targetContextId || targetContextId || null,
         }});
       }},
       postMessage(message, targetOrigin = "/") {{
@@ -7710,6 +7823,25 @@ fn document_bootstrap(
     }};
     windowProxyCache.set(cacheKey, proxy);
     return proxy;
+  }};
+  globalThis.__glassSyncWindowProxies = (updates) => {{
+    if (!Array.isArray(updates)) return;
+    for (const update of updates) {{
+      if (!update || typeof update !== "object") continue;
+      const cacheKey = String(update.cache_key || "");
+      const targetContextId = String(update.target_context_id || "");
+      for (const [candidateKey, proxy] of windowProxyCache.entries()) {{
+        const state = windowProxyStates.get(candidateKey);
+        if (!state) continue;
+        if (candidateKey !== cacheKey &&
+            (!targetContextId || state.targetContextId !== targetContextId)) continue;
+        state.targetContextId = targetContextId || state.targetContextId;
+        if (typeof update.href === "string" && update.href.length > 0)
+          state.targetLocationHref = update.href;
+        if (typeof update.name === "string") state.targetName = update.name;
+        state.closed = Boolean(update.closed);
+      }}
+    }}
   }};
   let windowName = typeof globalThis.__glassWindowName === "string"
     ? globalThis.__glassWindowName

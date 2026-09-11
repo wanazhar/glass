@@ -17,11 +17,12 @@ use super::javascript::{
     NativeCookieProfileEntry, NativeDialog, NativeIndexedDbChange, NativeIndexedDbState,
     NativeJavaScriptRuntime, NativePageScript, NativePopupRequest, NativePostMessageRequest,
     NativeScriptCommand, NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState,
-    NativeWindowCloseRequest, NativeWindowNavigationRequest, diff_indexed_db_changes,
-    execute_page_scripts, host_event_script, host_hash_change_event_script, host_key_event_script,
-    host_key_event_script_with_modifiers, host_submit_event_script,
-    literal_dynamic_module_specifiers, load_indexed_db_profile, load_web_storage_profile,
-    order_page_scripts, save_web_storage_profile, static_module_specifiers, storage_key,
+    NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
+    diff_indexed_db_changes, execute_page_scripts, host_event_script,
+    host_hash_change_event_script, host_key_event_script, host_key_event_script_with_modifiers,
+    host_submit_event_script, literal_dynamic_module_specifiers, load_indexed_db_profile,
+    load_web_storage_profile, order_page_scripts, save_web_storage_profile,
+    static_module_specifiers, storage_key,
 };
 use super::origin::NativeOrigin;
 use super::resource_loader::{
@@ -533,6 +534,56 @@ impl NativeContentProcess {
             });
         }
         decode_script_response(&response, id)
+    }
+
+    pub(crate) async fn sync_window_proxies(
+        &mut self,
+        updates: &[NativeWindowProxyUpdate],
+    ) -> Result<(), NativeEngineError> {
+        if updates.is_empty() {
+            return Ok(());
+        }
+        if updates.len() > MAX_NATIVE_EFFECTS {
+            return Err(NativeEngineError::limit(
+                "native WindowProxy updates",
+                MAX_NATIVE_EFFECTS,
+                updates.len(),
+            ));
+        }
+        let id = self.next_id();
+        let response = match timeout(
+            CONTENT_PROCESS_SCRIPT_TIMEOUT,
+            self.exchange(json!({
+                "kind": "window_proxy_sync",
+                "id": id,
+                "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
+                "updates": updates,
+            })),
+        )
+        .await
+        {
+            Ok(response) => response?,
+            Err(_) => {
+                self.mark_failed(NativeWorkerFailureKind::Timeout);
+                let _ = self.child.start_kill();
+                return Err(NativeEngineError::worker_failure(
+                    "content process WindowProxy synchronization",
+                    NativeWorkerFailureKind::Timeout,
+                    "content process WindowProxy synchronization exceeded its deadline",
+                ));
+            }
+        };
+        let result = require_response_kind(
+            &response,
+            "window_proxy_synced",
+            id,
+            "content process WindowProxy synchronization",
+        );
+        if result.is_err() {
+            self.mark_failed(NativeWorkerFailureKind::InvalidTransfer);
+            let _ = self.child.start_kill();
+        }
+        result
     }
 
     pub(crate) async fn sync_storage_events(
@@ -1635,6 +1686,46 @@ fn decode_window_navigation_requests(
     Ok(requests)
 }
 
+fn decode_window_proxy_updates(
+    value: Option<&Value>,
+    operation: &str,
+) -> Result<Vec<NativeWindowProxyUpdate>, NativeEngineError> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let values = value.as_array().ok_or_else(|| NativeEngineError::Worker {
+        operation: operation.into(),
+        reason: "content process received invalid WindowProxy updates".into(),
+    })?;
+    if values.len() > MAX_NATIVE_EFFECTS {
+        return Err(NativeEngineError::limit(
+            "content-process WindowProxy updates",
+            MAX_NATIVE_EFFECTS,
+            values.len(),
+        ));
+    }
+    let updates =
+        serde_json::from_value::<Vec<NativeWindowProxyUpdate>>(value.clone()).map_err(|_| {
+            NativeEngineError::Worker {
+                operation: operation.into(),
+                reason: "content process received malformed WindowProxy updates".into(),
+            }
+        })?;
+    for update in &updates {
+        if update.cache_key.len() > super::javascript::MAX_NATIVE_SCRIPT_RESULT_BYTES {
+            return Err(NativeEngineError::limit(
+                "content-process WindowProxy cache key",
+                super::javascript::MAX_NATIVE_SCRIPT_RESULT_BYTES,
+                update.cache_key.len(),
+            ));
+        }
+        validate_context_id(&update.target_context_id)?;
+        validate_url_text("content-process WindowProxy URL", &update.href)?;
+        validate_window_name(&update.name)?;
+    }
+    Ok(updates)
+}
+
 fn decode_dialogs(
     response: &Value,
     operation: &str,
@@ -1985,6 +2076,16 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     runtime.set_storage_events(events)?;
                 }
                 json!({"kind":"storage_events_synced","id":id})
+            }
+            "window_proxy_sync" if protocol_matches(&request) && running => {
+                let updates = decode_window_proxy_updates(
+                    request.get("updates"),
+                    "decode content process WindowProxy updates",
+                )?;
+                if let Some(runtime) = javascript_runtime.as_ref() {
+                    runtime.sync_window_proxies(&updates)?;
+                }
+                json!({"kind":"window_proxy_synced","id":id})
             }
             "storage_state" if protocol_matches(&request) && running => {
                 let value = request.get("state").ok_or_else(|| {

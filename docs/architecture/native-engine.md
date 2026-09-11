@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-152` slice; the bounded foundation below remains
+`native-engine-browser-153` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -1511,6 +1511,17 @@ reusing the existing navigation/history/frame/storage owner. Popup creation
 also carries a validated opener URL snapshot for child `window.opener` reads.
 Live proxy observation, popup policy/geometry, frame lifecycle/shared scripting,
 and complete browser topology remain later issue #40 gates.
+
+The completed native-engine-browser-153 slice closes the stale-identity gap for
+cached WindowProxy objects. The parent target registry emits bounded snapshots
+for every live or recently closed context and source-owned private handle;
+local and content-worker realms queue those snapshots and apply them after
+their host bootstrap, preserving proxy object identity while refreshing URL,
+name, target identity, and `closed` state. Closed target tombstones and private
+handle mappings prevent stale handles from resolving to a different named
+context. Synchronization remains parent-owned and bounded, while complete
+Window Web IDL identity, popup policy/geometry, frame lifecycle/shared
+scripting, and full browser topology remain later issue #40 gates.
 
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third

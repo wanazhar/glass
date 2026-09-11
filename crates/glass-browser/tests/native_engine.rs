@@ -209,7 +209,7 @@ async fn native_local_script_exposes_web_idl_identity_and_dom_collections() {
 
     let identity = engine
         .evaluate_async(
-            "(() => { const input = document.getElementById('name'); const event = new Event('click', { bubbles: true }); const custom = new CustomEvent('custom', { detail: { ok: true } }); const storage = new StorageEvent('storage', { key: 'theme', newValue: 'dark' }); const nodes = document.querySelectorAll('input'); const tags = document.getElementsByTagName('input'); return { window: window === globalThis && window === self && window instanceof Window, document: document instanceof Document && document.defaultView === window && document.nodeType === 9 && document.nodeName === '#document', input: input instanceof Node && input instanceof Element && input instanceof HTMLElement && input instanceof HTMLInputElement && input.nodeType === 1 && input.nodeName === 'INPUT' && input.localName === 'input' && input.ownerDocument === document, body: document.body instanceof HTMLBodyElement, collections: [nodes instanceof NodeList, tags instanceof HTMLCollection, Array.isArray(nodes), Array.isArray(tags)], location: location instanceof Location, events: [event instanceof Event, custom instanceof Event, custom instanceof CustomEvent, custom.detail.ok, storage instanceof Event, storage instanceof StorageEvent, storage.key, storage.newValue] }; })()",
+            "(() => { const input = document.getElementById('name'); const event = new Event('click', { bubbles: true }); const custom = new CustomEvent('custom', { detail: { ok: true } }); const storage = new StorageEvent('storage', { key: 'theme', newValue: 'dark' }); const nodes = document.querySelectorAll('input'); const tags = document.getElementsByTagName('input'); const text = document.createTextNode('native'); return { window: window === globalThis && window === self && window instanceof Window, document: document instanceof Document && document.defaultView === window && document.nodeType === 9 && document.nodeName === '#document', input: input instanceof Node && input instanceof Element && input instanceof HTMLElement && input instanceof HTMLInputElement && input.nodeType === 1 && input.nodeName === 'INPUT' && input.localName === 'input' && input.ownerDocument === document, body: document.body instanceof HTMLBodyElement, collections: [nodes instanceof NodeList, tags instanceof HTMLCollection, Array.isArray(nodes), Array.isArray(tags)], location: location instanceof Location, events: [event instanceof Event, custom instanceof Event, custom instanceof CustomEvent, custom.detail.ok, storage instanceof Event, storage instanceof StorageEvent, storage.key, storage.newValue], text: [text instanceof Node, text instanceof CharacterData, text instanceof Text, text.data, text.nodeValue, text.length] }; })()",
         )
         .await
         .unwrap();
@@ -223,7 +223,17 @@ async fn native_local_script_exposes_web_idl_identity_and_dom_collections() {
             "collections": [true, true, true, true],
             "location": true,
             "events": [true, true, true, true, true, true, "theme", "dark"],
+            "text": [true, true, true, "native", "native", 6],
         })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const text = document.createTextNode('abc'); const before = [text.data, text.length, text.substringData(1, 2)]; text.nodeValue = 'abcd'; text.insertData(1, 'X'); text.deleteData(2, 1); text.replaceData(1, 1, 'Y'); return [before, text.data, text.nodeValue, text.textContent, text.length, text.substringData(1, 2)]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([["abc", 3, "bc"], "aYcd", "aYcd", "aYcd", 4, "Yc"])
     );
     let created = engine
         .evaluate_async(
@@ -454,7 +464,7 @@ async fn native_content_process_script_exposes_web_idl_identity() {
     engine.initialize_async().await.unwrap();
     let identity = engine
         .evaluate_async(
-            "(() => { const input = document.getElementById('name'); return { window: window instanceof Window, document: document instanceof Document, input: [input instanceof Node, input instanceof Element, input instanceof HTMLElement, input instanceof HTMLInputElement, input.nodeType === 1, input.nodeName === 'INPUT', input.localName === 'input', input.ownerDocument === document], nodes: document.querySelectorAll('input') instanceof NodeList, tags: document.getElementsByTagName('input') instanceof HTMLCollection, location: location instanceof Location, event: new Event('load') instanceof Event }; })()",
+            "(() => { const input = document.getElementById('name'); const text = document.createTextNode('worker'); return { window: window instanceof Window, document: document instanceof Document, input: [input instanceof Node, input instanceof Element, input instanceof HTMLElement, input instanceof HTMLInputElement, input.nodeType === 1, input.nodeName === 'INPUT', input.localName === 'input', input.ownerDocument === document], nodes: document.querySelectorAll('input') instanceof NodeList, tags: document.getElementsByTagName('input') instanceof HTMLCollection, location: location instanceof Location, event: new Event('load') instanceof Event, text: [text instanceof Node, text instanceof CharacterData, text instanceof Text, text.data, text.nodeValue, text.length] }; })()",
         )
         .await
         .unwrap();
@@ -468,6 +478,7 @@ async fn native_content_process_script_exposes_web_idl_identity() {
             "tags": true,
             "location": true,
             "event": true,
+            "text": [true, true, true, "worker", "worker", 6],
         })
     );
     let before_scroll = engine
@@ -931,7 +942,7 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
     assert_eq!(frames.len(), 2);
     let identity = session
         .script(
-            "(() => { const frame = document.getElementById('child'); const childWindow = frame.contentWindow; const childDocument = frame.contentDocument; const inside = childDocument.querySelector('#inside'); const first = inside.firstChild; return { window: childWindow instanceof Window, document: childDocument instanceof Document && childWindow.document === childDocument && childDocument.defaultView === childWindow, parent: childWindow.parent === window && childWindow.top === window, frameElement: childWindow.frameElement === frame, content: childDocument.body.textContent, query: inside.textContent, textNodes: [first.nodeType, first.nodeValue, first.parentNode === inside, first.nextSibling === childDocument.getElementById('old-child'), inside.childNodes.length, inside.children.length], collections: [childDocument.querySelectorAll('p') instanceof NodeList, childDocument.getElementsByTagName('p') instanceof HTMLCollection], frames: window.length === 1 && window.frames[0] === childWindow }; })()",
+            "(() => { const frame = document.getElementById('child'); const childWindow = frame.contentWindow; const childDocument = frame.contentDocument; const inside = childDocument.querySelector('#inside'); const first = inside.firstChild; return { window: childWindow instanceof Window, document: childDocument instanceof Document && childWindow.document === childDocument && childDocument.defaultView === childWindow, parent: childWindow.parent === window && childWindow.top === window, frameElement: childWindow.frameElement === frame, content: childDocument.body.textContent, query: inside.textContent, textNodes: [first.nodeType, first.nodeValue, first instanceof Node, first instanceof CharacterData, first instanceof Text, first.data, first.length, first.parentNode === inside, first.nextSibling === childDocument.getElementById('old-child'), inside.childNodes.length, inside.children.length], collections: [childDocument.querySelectorAll('p') instanceof NodeList, childDocument.getElementsByTagName('p') instanceof HTMLCollection], frames: window.length === 1 && window.frames[0] === childWindow }; })()",
         )
         .await
         .unwrap();
@@ -944,7 +955,7 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
             "frameElement": true,
             "content": "same-origin child",
             "query": "same-origin child",
-            "textNodes": [3, "same-origin ", true, true, 2, 1],
+            "textNodes": [3, "same-origin ", true, true, true, "same-origin ", 12, true, true, 2, 1],
             "collections": [true, true],
             "frames": true,
         })

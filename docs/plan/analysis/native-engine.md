@@ -1,10 +1,13 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-204`, with local and HTTP(S)
-lifecycle navigation re-entry covered by the native owner. The completed 204
-slice carries bounded straight SVG path geometry through shared path parsing,
-layout, display-list, raster, clipping, and capture owners. The preceding 203
+expansion checkpoint is `native-engine-browser-205`, with local and HTTP(S)
+lifecycle navigation re-entry covered by the native owner. The completed 205
+slice carries bounded quadratic/cubic SVG path geometry through shared path
+parsing, flattening, layout, display-list, raster, clipping, and capture
+owners. The preceding 204 slice carries bounded straight SVG path geometry
+through shared path parsing, layout, display-list, raster, clipping, and capture
+owners. The preceding 203
 slice carries bounded SVG line/polyline/polygon geometry through shared point
 parsing, layout, display-list, raster, clipping, and capture owners. The
 preceding 202 slice carries bounded SVG stroke paint through the existing
@@ -3433,6 +3436,16 @@ cap/join styles, transforms, viewBox mapping, gradients, markers, and external
 resources remain issue #40 promotion work. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-204.md`.
 
+The completed native-engine-browser-205 slice adds bounded quadratic and cubic
+SVG path curves through absolute/relative `Q` and `C` commands. Fixed-count
+curve flattening feeds shared subpath layout bounds, typed path fill/stroke
+commands, polygon/segment rasterization, clipping, scroll translation, alpha
+composition, capture, and hit-test ownership. Smooth/reflected commands,
+elliptical arcs, dash arrays, explicit cap/join styles, transforms, viewBox
+mapping, gradients, markers, and external resources remain issue #40 promotion
+work. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-205.md`.
+
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame
 realms. `document.createAttribute()` creates persistent `Attr` objects;
@@ -4509,9 +4522,9 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-198.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-197.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-196.md` is the preceding completed task;
-`docs/plan/tasks/native-engine-browser-204.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-205.md` is the latest completed browser
 task;
-`docs/plan/tasks/native-engine-browser-203.md` is the preceding completed
+`docs/plan/tasks/native-engine-browser-204.md` is the preceding completed
 browser task;
 `docs/plan/tasks/native-engine-browser-197.md` is the preceding completed
 browser task;

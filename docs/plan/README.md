@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-204` locally. The versioned
+`native-engine-browser-205` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1767,6 +1767,16 @@ arrays, explicit cap/join styles, transforms, viewBox mapping, gradients,
 markers, and external resources remain separate issue #40 promotion work.
 Exact evidence is recorded in
 [native-engine-browser-204](tasks/native-engine-browser-204.md).
+
+The completed native-engine-browser-205 slice adds bounded quadratic and cubic
+SVG path curves through absolute/relative `Q` and `C` commands. Fixed-count
+curve flattening now feeds the existing shared subpath layout bounds, typed
+path fill/stroke commands, clipping, scroll translation, alpha composition,
+capture, and hit-test surfaces. Smooth/reflected commands, elliptical arcs,
+dash arrays, explicit cap/join styles, transforms, viewBox mapping, gradients,
+markers, and external SVG resources remain separate issue #40 promotion work.
+Exact evidence is recorded in
+[native-engine-browser-205](tasks/native-engine-browser-205.md).
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` now returns persistent `Attr`

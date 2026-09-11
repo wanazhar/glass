@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-168` locally. The versioned
+`native-engine-browser-169` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1592,8 +1592,17 @@ CSS-style declaration reads, camelCase/dashed property access,
 `setProperty()`/`removeProperty()`, `cssText`, priorities, dataset camelCase
 mapping, enumeration, writes, and deletion all route through the existing
 native attribute command owner. Full CSSOM/value validation, computed-style
-Web IDL parity, cross-realm listener identity, and native browser-complete
-promotion remain issue #40 gates.
+Web IDL parity, complete cross-process event delivery, and native
+browser-complete promotion remain issue #40 gates.
+
+The completed native-engine-browser-169 slice adds frame-qualified EventTarget
+behavior to same-origin projected elements, detached projected elements,
+documents, and window proxies. Capture/bubble dispatch follows the projected
+parent-node tree to the frame-local document and window, detached nodes stay
+detached, listener removal is honored, and projected click/focus/blur retain
+their typed child-command handoff. Complete cross-process event observation,
+full Web IDL parity, and native browser-complete promotion remain issue #40
+gates.
 
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and

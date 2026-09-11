@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-168` slice; the bounded foundation below remains
+`native-engine-browser-169` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -1681,8 +1681,17 @@ reads, indexed names, camelCase/dashed property access, `cssText`,
 `setProperty()`/`removeProperty()`, priorities, dataset camelCase mapping,
 enumeration, writes, and deletion reuse the existing attribute command owner,
 so layout still consumes Rust-owned committed style state. Full CSSOM/value
-validation, computed-style descriptor parity, cross-realm listener identity,
-and browser-wide parity remain separate promotion work.
+validation, computed-style descriptor parity, complete cross-process event
+delivery, and browser-wide parity remain separate promotion work.
+
+The completed native-engine-browser-169 slice adds frame-qualified EventTarget
+behavior to same-origin projected elements, detached projected elements,
+documents, and window proxies. The shared dispatcher derives capture/bubble
+paths from the projected parent-node tree and stops at the frame-local document
+and default window; detached nodes do not leak events to an owner document.
+Projected click/focus/blur dispatch parent-side events while retaining their
+typed child command handoff. Complete cross-process event observation, full Web
+IDL descriptor parity, and browser-wide parity remain separate promotion work.
 
 The completed native-engine-browser-166 slice adds attached text-node records
 to the bounded script snapshot. Local, content-worker, and same-origin frame

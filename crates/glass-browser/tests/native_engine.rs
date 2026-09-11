@@ -470,7 +470,7 @@ async fn native_local_document_fragments_preserve_tree_ownership_and_helpers() {
             )
             .await
             .unwrap(),
-        serde_json::json!([1, "a > b", "if (a < b) x = \"</div>\";", "<em>safe</em>", true])
+        serde_json::json!([2, "a > b", "if (a < b) x = \"</div>\";", "<em>safe</em>", true])
     );
     assert_eq!(
         engine
@@ -553,6 +553,46 @@ async fn native_local_script_exposes_comments_and_doctype_nodes() {
             .await
             .unwrap(),
         serde_json::json!([true, true, true, "inside-updated", "<!--inside-updated-->Visible"])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_local_script_creates_and_persists_comment_nodes() {
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_fixture(
+                "fixture://created-comments",
+                "<html><body><p>start</p></body></html>",
+            )
+            .unwrap()
+            .with_initial_url("fixture://created-comments"),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const direct = document.createComment('direct'); const fragment = document.createDocumentFragment(); fragment.innerHTML = 'a<!--fragment--><b>b</b>'; document.body.append(direct, fragment); globalThis.__createdComment = direct; const nested = Array.from(document.body.childNodes).find(node => node.nodeType === 8 && node.data === 'fragment'); return { direct: [direct instanceof Node, direct instanceof CharacterData, direct instanceof Comment, direct.nodeType, direct.nodeName, direct.data, direct.parentNode === document.body, direct.parentElement === document.body], fragment: [fragment.childNodes.length, nested.nodeType, nested instanceof Comment, nested.data, nested.parentNode === document.body], content: [document.body.textContent, document.body.innerHTML], markup: direct.__glassMarkup }; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "direct": [true, true, true, 8, "#comment", "direct", true, true],
+            "fragment": [0, 8, true, "fragment", true],
+            "content": ["startab", "<p>start</p><!--direct-->a<!--fragment--><b>b</b>"],
+            "markup": "<!--direct-->",
+        })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const current = Array.from(document.body.childNodes).find(node => node.nodeType === 8 && node.data === 'direct'); return [current === globalThis.__createdComment, globalThis.__createdComment.data, current.parentNode === document.body, document.body.textContent]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, "direct", true, "startab"])
     );
     engine.close_async().await.unwrap();
 }
@@ -645,20 +685,20 @@ async fn native_content_process_script_exposes_web_idl_identity() {
     assert_eq!(
         engine
             .evaluate_async(
-                "(() => { const host = document.createElement('article'); const child = document.createElement('span'); child.id = 'persistent-worker'; const text = document.createTextNode('persistent worker text'); host.append(child, text); document.body.appendChild(host); globalThis.__persistentWorkerHost = host; globalThis.__persistentWorkerChild = child; globalThis.__persistentWorkerText = text; return [child.isConnected, child.parentNode === host, text.parentNode === host]; })()",
+                "(() => { const host = document.createElement('article'); const child = document.createElement('span'); child.id = 'persistent-worker'; const text = document.createTextNode('persistent worker text'); const comment = document.createComment('persistent worker comment'); host.append(child, text, comment); document.body.appendChild(host); globalThis.__persistentWorkerHost = host; globalThis.__persistentWorkerChild = child; globalThis.__persistentWorkerText = text; globalThis.__persistentWorkerComment = comment; return [child.isConnected, child.parentNode === host, text.parentNode === host, comment instanceof Comment, comment.parentNode === host, comment.data]; })()",
             )
             .await
             .unwrap(),
-        serde_json::json!([true, true, true])
+        serde_json::json!([true, true, true, true, true, "persistent worker comment"])
     );
     assert_eq!(
         engine
             .evaluate_async(
-                "(() => { const host = globalThis.__persistentWorkerHost; const child = globalThis.__persistentWorkerChild; const text = globalThis.__persistentWorkerText; const current = document.getElementById('persistent-worker'); const currentText = host.lastChild; const result = [current === child, host.contains(child), child.getRootNode() === document, child.parentElement === host, currentText === text, host.contains(text), text.parentNode === host, text.getRootNode() === document, text.data]; text.data = 'updated'; host.remove(); return result; })()",
+                "(() => { const host = globalThis.__persistentWorkerHost; const child = globalThis.__persistentWorkerChild; const text = globalThis.__persistentWorkerText; const comment = globalThis.__persistentWorkerComment; const current = document.getElementById('persistent-worker'); const currentComment = host.lastChild; const result = [current === child, host.contains(child), child.getRootNode() === document, child.parentElement === host, currentComment === comment, host.contains(text), text.parentNode === host, text.getRootNode() === document, text.data, comment.data, comment.parentNode === host, comment instanceof Comment]; text.data = 'updated'; host.remove(); return result; })()",
             )
             .await
             .unwrap(),
-        serde_json::json!([true, true, true, true, true, true, true, true, "persistent worker text"])
+        serde_json::json!([true, true, true, true, true, true, true, true, "persistent worker text", "persistent worker comment", true, true])
     );
     let before_scroll = engine
         .evaluate_async(
@@ -1121,7 +1161,7 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
     assert_eq!(frames.len(), 2);
     let identity = session
         .script(
-            "(() => { const frame = document.getElementById('child'); const childWindow = frame.contentWindow; const childDocument = frame.contentDocument; const inside = childDocument.querySelector('#inside'); const first = inside.firstChild; const bodyComment = childDocument.body.firstChild; return { window: childWindow instanceof Window, document: childDocument instanceof Document && childWindow.document === childDocument && childDocument.defaultView === childWindow, parent: childWindow.parent === window && childWindow.top === window, frameElement: childWindow.frameElement === frame, content: childDocument.body.textContent, query: inside.textContent, textNodes: [first.nodeType, first.nodeValue, first instanceof Node, first instanceof CharacterData, first instanceof Text, first.data, first.length, first.parentNode === inside, first.nextSibling === childDocument.getElementById('old-child'), inside.childNodes.length, inside.children.length], domNodes: [childDocument.doctype instanceof DocumentType, childDocument.doctype.name, bodyComment instanceof Comment, bodyComment.data, bodyComment.parentNode === childDocument.body], collections: [childDocument.querySelectorAll('p') instanceof NodeList, childDocument.getElementsByTagName('p') instanceof HTMLCollection], surfaces: [childDocument.head === childDocument.querySelector('head'), childDocument.scripts instanceof HTMLCollection, childDocument.scripts.length, childDocument.scrollingElement === childDocument.documentElement], frames: window.length === 1 && window.frames[0] === childWindow }; })()",
+            "(() => { const frame = document.getElementById('child'); const childWindow = frame.contentWindow; const childDocument = frame.contentDocument; const inside = childDocument.querySelector('#inside'); const first = inside.firstChild; const bodyComment = childDocument.body.firstChild; const createdComment = childDocument.createComment('frame-created'); childDocument.body.appendChild(createdComment); return { window: childWindow instanceof Window, document: childDocument instanceof Document && childWindow.document === childDocument && childDocument.defaultView === childWindow, parent: childWindow.parent === window && childWindow.top === window, frameElement: childWindow.frameElement === frame, content: childDocument.body.textContent, query: inside.textContent, textNodes: [first.nodeType, first.nodeValue, first instanceof Node, first instanceof CharacterData, first instanceof Text, first.data, first.length, first.parentNode === inside, first.nextSibling === childDocument.getElementById('old-child'), inside.childNodes.length, inside.children.length], domNodes: [childDocument.doctype instanceof DocumentType, childDocument.doctype.name, bodyComment instanceof Comment, bodyComment.data, bodyComment.parentNode === childDocument.body, createdComment instanceof Comment, createdComment.data, createdComment.parentNode === childDocument.body, childDocument.body.lastChild === createdComment], collections: [childDocument.querySelectorAll('p') instanceof NodeList, childDocument.getElementsByTagName('p') instanceof HTMLCollection], surfaces: [childDocument.head === childDocument.querySelector('head'), childDocument.scripts instanceof HTMLCollection, childDocument.scripts.length, childDocument.scrollingElement === childDocument.documentElement], frames: window.length === 1 && window.frames[0] === childWindow }; })()",
         )
         .await
         .unwrap();
@@ -1135,7 +1175,7 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
             "content": "same-origin child",
             "query": "same-origin child",
             "textNodes": [3, "same-origin ", true, true, true, "same-origin ", 12, true, true, 2, 1],
-            "domNodes": [true, "html", true, "frame-body", true],
+            "domNodes": [true, "html", true, "frame-body", true, true, "frame-created", true, true],
             "collections": [true, true],
             "surfaces": [true, true, 1, true],
             "frames": true,
@@ -1388,7 +1428,7 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
             .await
             .unwrap()
             .value,
-        serde_json::json!([1, "a > b", "if (a < b) x = \"</div>\";", "<em>safe</em>", true])
+        serde_json::json!([2, "a > b", "if (a < b) x = \"</div>\";", "<em>safe</em>", true])
     );
     assert_eq!(
         session
@@ -6325,7 +6365,7 @@ async fn native_content_process_document_fragments_cross_the_http_boundary() {
             )
             .await
             .unwrap(),
-        serde_json::json!([1, "a > b", "if (a < b) x = \"</div>\";", "<em>safe</em>", true])
+        serde_json::json!([2, "a > b", "if (a < b) x = \"</div>\";", "<em>safe</em>", true])
     );
     assert_eq!(
         engine

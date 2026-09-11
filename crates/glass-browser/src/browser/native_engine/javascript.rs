@@ -231,6 +231,10 @@ pub(crate) enum NativeScriptCommand {
         node_index: u32,
         value: String,
     },
+    CreateComment {
+        node_index: u32,
+        value: String,
+    },
     AppendChild {
         parent_index: u32,
         child_index: u32,
@@ -8379,7 +8383,7 @@ fn document_bootstrap(
         : match;
     }})
     .replace(/&amp;/gi, "&");
-  const populateDetachedFragment = (fragment, markup, createElement, createText) => {{
+  const populateDetachedFragment = (fragment, markup, createElement, createText, createComment) => {{
     const stack = [fragment];
     const source = String(markup);
     const voidElements = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
@@ -8419,6 +8423,8 @@ fn document_bootstrap(
       const parent = stack[stack.length - 1];
       if (source.startsWith("<!--", cursor)) {{
         const end = source.indexOf("-->", cursor + 4);
+        const commentEnd = end < 0 ? source.length : end;
+        parent.appendChild(createComment(source.slice(cursor + 4, commentEnd)));
         cursor = end < 0 ? source.length : end + 3;
         continue;
       }}
@@ -8875,7 +8881,7 @@ fn document_bootstrap(
       }},
       append(...items) {{
         for (const item of items) element.appendChild(
-          item && (item.nodeType === 1 || item.nodeType === 3 || item.__glassFragment === true)
+          item && (item.nodeType === 1 || item.nodeType === 3 || item.nodeType === 8 || item.__glassFragment === true)
             ? item
             : makeDetachedText(String(item)),
         );
@@ -8883,7 +8889,7 @@ fn document_bootstrap(
       prepend(...items) {{
         const before = element.__glassChildren[0] || null;
         for (const item of items) element.insertBefore(
-          item && (item.nodeType === 1 || item.nodeType === 3 || item.__glassFragment === true)
+          item && (item.nodeType === 1 || item.nodeType === 3 || item.nodeType === 8 || item.__glassFragment === true)
             ? item
             : makeDetachedText(String(item)),
           before,
@@ -8893,7 +8899,7 @@ fn document_bootstrap(
         const parent = element.__glassParent;
         if (!parent || typeof parent.insertBefore !== "function") return;
         for (const item of items) parent.insertBefore(
-          item && (item.nodeType === 1 || item.nodeType === 3 || item.__glassFragment === true)
+          item && (item.nodeType === 1 || item.nodeType === 3 || item.nodeType === 8 || item.__glassFragment === true)
             ? item
             : makeDetachedText(String(item)),
           element,
@@ -8904,7 +8910,7 @@ fn document_bootstrap(
         if (!parent || typeof parent.insertBefore !== "function") return;
         const before = element.nextSibling;
         for (const item of items) parent.insertBefore(
-          item && (item.nodeType === 1 || item.nodeType === 3 || item.__glassFragment === true)
+          item && (item.nodeType === 1 || item.nodeType === 3 || item.nodeType === 8 || item.__glassFragment === true)
             ? item
             : makeDetachedText(String(item)),
           before,
@@ -8914,7 +8920,7 @@ fn document_bootstrap(
         const parent = element.__glassParent;
         if (!parent || typeof parent.insertBefore !== "function") return;
         for (const item of items) parent.insertBefore(
-          item && (item.nodeType === 1 || item.nodeType === 3 || item.__glassFragment === true)
+          item && (item.nodeType === 1 || item.nodeType === 3 || item.nodeType === 8 || item.__glassFragment === true)
             ? item
             : makeDetachedText(String(item)),
           element,
@@ -8989,7 +8995,7 @@ fn document_bootstrap(
         const owner = element.__glassParent || null;
         if (!owner || typeof owner.insertBefore !== "function") throw new TypeError("outerHTML requires an attached element");
         const fragment = document.createDocumentFragment();
-        populateDetachedFragment(fragment, value, makeDetachedElement, makeDetachedText);
+        populateDetachedFragment(fragment, value, makeDetachedElement, makeDetachedText, makeDetachedComment);
         for (const child of fragment.__glassChildren.slice()) owner.insertBefore(child, element);
         element.remove();
       }},
@@ -9074,7 +9080,7 @@ fn document_bootstrap(
         textContent = "";
         suppressHostCommands += 1;
         try {{
-          populateDetachedFragment(element, value, makeDetachedElement, makeDetachedText);
+          populateDetachedFragment(element, value, makeDetachedElement, makeDetachedText, makeDetachedComment);
         }} finally {{
           suppressHostCommands -= 1;
         }}
@@ -9311,6 +9317,94 @@ fn document_bootstrap(
     pushCommand({{ kind: "createTextNode", node_index: nodeIndex, value: textContent }});
     return text;
   }};
+  const makeDetachedComment = (value) => {{
+    let textContent = String(value);
+    if (textContent.length > {storage_value_limit}) throw new RangeError("native comment node exceeds its limit");
+    let nodeIndex = allocateTemporaryNodeIndex();
+    const comment = {{
+      nodeIndex,
+      parentIndex: null,
+      nodeType: 8,
+      nodeName: "#comment",
+      nodeValue: textContent,
+      remove() {{
+        const parent = comment.__glassParent || null;
+        if (!parent && comment.parentIndex === null) return;
+        const commitRemoval = !comment.__glassCreated || comment.parentIndex !== null;
+        queueFragmentChildRemoval(parent, comment);
+        if (parent && Array.isArray(parent.__glassChildren)) parent.__glassChildren = parent.__glassChildren.filter(candidate => candidate !== comment);
+        comment.__glassParent = null;
+        comment.parentIndex = null;
+        if (parent && typeof parent.__glassSyncContent === "function") parent.__glassSyncContent(true);
+        if (commitRemoval) pushCommand({{ kind: "removeNode", node_index: nodeIndex }});
+      }},
+    }};
+    Object.defineProperty(comment, "__glassParent", {{ enumerable: false, configurable: false, writable: true, value: null }});
+    Object.defineProperty(comment, "__glassCreated", {{ enumerable: false, configurable: false, writable: true, value: true }});
+    Object.defineProperty(comment, "__glassTextValue", {{ enumerable: false, configurable: false, get() {{ return ""; }} }});
+    Object.defineProperty(comment, "__glassMarkup", {{ enumerable: false, configurable: false, get() {{ return "<!--" + textContent + "-->"; }} }});
+    Object.defineProperty(comment, "__glassRefresh", {{
+      enumerable: false,
+      configurable: false,
+      value(nextEntry) {{
+        nodeIndex = Number(nextEntry.nodeIndex);
+        comment.nodeIndex = nodeIndex;
+        comment.parentIndex = nextEntry.parentIndex == null ? null : nextEntry.parentIndex;
+        textContent = String(nextEntry.nodeValue || "");
+      }},
+    }});
+    Object.defineProperty(comment, "parentElement", {{
+      enumerable: false,
+      configurable: false,
+      get() {{
+        let current = comment.__glassParent || null;
+        while (current && current.nodeType !== 1) current = current.__glassParent || null;
+        return current || null;
+      }},
+    }});
+    Object.defineProperty(comment, "parentNode", {{
+      enumerable: false,
+      configurable: false,
+      get() {{
+        if (comment.__glassParent) return comment.__glassParent;
+        const owner = globalThis.document;
+        return owner && Array.isArray(owner.__glassChildren) && owner.__glassChildren.includes(comment)
+          ? owner
+          : null;
+      }},
+    }});
+    Object.defineProperty(comment, "ownerDocument", {{ enumerable: false, configurable: false, get() {{ return globalThis.document || null; }} }});
+    Object.defineProperty(comment, "nodeValue", {{
+      enumerable: true,
+      configurable: false,
+      get() {{ return textContent; }},
+      set(next) {{ comment.textContent = next; }},
+    }});
+    Object.defineProperty(comment, "textContent", {{
+      enumerable: true,
+      configurable: false,
+      get() {{ return textContent; }},
+      set(next) {{
+        const nextValue = String(next);
+        if (nextValue.length > {storage_value_limit}) throw new RangeError("native comment node exceeds its limit");
+        textContent = nextValue;
+        if (comment.__glassParent && typeof comment.__glassParent.__glassSyncContent === "function") comment.__glassParent.__glassSyncContent();
+        pushCommand({{ kind: "setTextContent", node_index: nodeIndex, value: nextValue }});
+      }},
+    }});
+    Object.defineProperty(comment, "data", {{
+      enumerable: true,
+      configurable: false,
+      get() {{ return textContent; }},
+      set(next) {{ comment.textContent = next; }},
+    }});
+    try {{ Object.setPrototypeOf(comment, CommentNative.prototype); }} catch (_error) {{}}
+    defineTreeAccessors(comment);
+    mutationCreatedNodes.set(nodeIndex, comment);
+    scriptNodeObjects.set(nodeIndex, comment);
+    pushCommand({{ kind: "createComment", node_index: nodeIndex, value: textContent }});
+    return comment;
+  }};
   const makeDocumentFragment = () => {{
     const fragment = {{
       nodeType: 11,
@@ -9326,7 +9420,7 @@ fn document_bootstrap(
           child.__glassChildren = [];
           return child;
         }}
-        if (!child || ![1, 3].includes(Number(child.nodeType)))
+        if (!child || ![1, 3, 8].includes(Number(child.nodeType)))
           throw new TypeError("DocumentFragment children must be elements or text nodes");
         const oldParent = child.__glassParent || null;
         if (oldParent && Array.isArray(oldParent.__glassChildren)) {{
@@ -9354,7 +9448,7 @@ fn document_bootstrap(
           child.__glassChildren = [];
           return child;
         }}
-        if (!child || ![1, 3].includes(Number(child.nodeType)))
+        if (!child || ![1, 3, 8].includes(Number(child.nodeType)))
           throw new TypeError("DocumentFragment children must be elements or text nodes");
         if (before.__glassParent !== this) throw new TypeError("reference node is not a child");
         const oldParent = child.__glassParent || null;
@@ -9421,7 +9515,7 @@ fn document_bootstrap(
         const value = String(next);
         if (value.length > storageValueLimit) throw new RangeError("native fragment innerHTML exceeds its limit");
         for (const child of fragment.__glassChildren.slice()) child.remove();
-        populateDetachedFragment(fragment, value, makeDetachedElement, makeDetachedText);
+        populateDetachedFragment(fragment, value, makeDetachedElement, makeDetachedText, makeDetachedComment);
       }},
     }});
     defineTreeAccessors(fragment);
@@ -10049,7 +10143,7 @@ fn document_bootstrap(
         configurable: false,
         value(next, oldChild) {{
           if (!oldChild || oldChild.__glassParent !== node) throw new TypeError("old child is not contained by this node");
-          if (!next || ![1, 3, 11].includes(Number(next.nodeType))) throw new TypeError("replacement must be a native node");
+          if (!next || ![1, 3, 8, 11].includes(Number(next.nodeType))) throw new TypeError("replacement must be a native node");
           if (next === oldChild) return oldChild;
           node.insertBefore(next, oldChild);
           oldChild.remove();
@@ -10101,6 +10195,7 @@ fn document_bootstrap(
           }}
         }};
         if (node.nodeType === 3) return owner.createTextNode(String(node.nodeValue || ""));
+        if (node.nodeType === 8) return owner.createComment(String(node.nodeValue || ""));
         if (node.nodeType === 1) {{
           const clone = owner.createElement(node.localName);
           for (const name of node.getAttributeNames()) {{
@@ -10849,6 +10944,7 @@ fn document_bootstrap(
     }},
     createElement(tagName) {{ return makeDetachedElement(tagName); }},
     createTextNode(value) {{ return makeDetachedText(value); }},
+    createComment(value) {{ return makeDetachedComment(value); }},
     createDocumentFragment() {{ return makeDocumentFragment(); }},
     getElementById(id) {{ return liveDocumentElements().find((element) => element.id === String(id)) || null; }},
     querySelector(selector) {{ return findAll(selector)[0] || null; }},
@@ -11640,7 +11736,7 @@ fn document_bootstrap(
   }};
   const characterDataText = (target) => {{
     const text = characterDataTarget(target);
-    return String(text.__glassTextValue ?? text.nodeValue ?? "");
+    return String(Number(text.nodeType) === 8 ? text.nodeValue ?? "" : text.__glassTextValue ?? text.nodeValue ?? "");
   }};
   const characterDataOffset = (target, value) => {{
     const numeric = Number(value);
@@ -11920,7 +12016,7 @@ fn document_bootstrap(
   const frameBatchableCommand = (command) => command && [
     "setValue", "setSelection", "setChecked", "setSelected",
     "setAttribute", "removeAttribute", "setTextContent", "setInnerHtml",
-    "removeNode", "createElement", "createTextNode", "appendChild",
+    "removeNode", "createElement", "createTextNode", "createComment", "appendChild",
     "insertBefore", "setCustomValidity",
   ].includes(String(command.kind));
   const queueFrameCommand = (binding, command) => {{
@@ -12349,7 +12445,7 @@ fn document_bootstrap(
           const owner = projected.__glassParent || null;
           if (!owner || typeof owner.insertBefore !== "function") throw new TypeError("outerHTML requires an attached element");
           const fragment = makeFrameDocumentFragment();
-          populateDetachedFragment(fragment, value, makeFrameDetachedElement, makeFrameDetachedText);
+          populateDetachedFragment(fragment, value, makeFrameDetachedElement, makeFrameDetachedText, makeFrameDetachedComment);
           for (const child of fragment.__glassChildren.slice()) owner.insertBefore(child, projected);
           projected.remove();
         }},
@@ -12414,7 +12510,7 @@ fn document_bootstrap(
           textContent = "";
           suppressHostCommands += 1;
           try {{
-            populateDetachedFragment(projected, value, makeFrameDetachedElement, makeFrameDetachedText);
+          populateDetachedFragment(projected, value, makeFrameDetachedElement, makeFrameDetachedText, makeFrameDetachedComment);
           }} finally {{
             suppressHostCommands -= 1;
           }}
@@ -12889,7 +12985,7 @@ fn document_bootstrap(
           const owner = projected.__glassParent || null;
           if (!owner || typeof owner.insertBefore !== "function") throw new TypeError("outerHTML requires an attached element");
           const fragment = makeFrameDocumentFragment();
-          populateDetachedFragment(fragment, value, makeFrameDetachedElement, makeFrameDetachedText);
+          populateDetachedFragment(fragment, value, makeFrameDetachedElement, makeFrameDetachedText, makeFrameDetachedComment);
           for (const child of fragment.__glassChildren.slice()) owner.insertBefore(child, projected);
           projected.remove();
         }},
@@ -12932,7 +13028,7 @@ fn document_bootstrap(
           textContent = "";
           suppressHostCommands += 1;
           try {{
-            populateDetachedFragment(projected, value, makeFrameDetachedElement, makeFrameDetachedText);
+            populateDetachedFragment(projected, value, makeFrameDetachedElement, makeFrameDetachedText, makeFrameDetachedComment);
           }} finally {{
             suppressHostCommands -= 1;
           }}
@@ -13025,6 +13121,59 @@ fn document_bootstrap(
       try {{ Object.setPrototypeOf(text, TextNative.prototype); }} catch (_error) {{}}
       return text;
     }};
+    const makeFrameDetachedComment = (value) => {{
+      let textContent = String(value);
+      if (textContent.length > {storage_value_limit}) throw new RangeError("native frame comment node exceeds its limit");
+      let nodeIndex = allocateTemporaryNodeIndex();
+      const comment = {{ nodeIndex, parentIndex: null, nodeType: 8, nodeName: "#comment", nodeValue: textContent }};
+      Object.defineProperty(comment, "__glassParent", {{ enumerable: false, configurable: false, writable: true, value: null }});
+      Object.defineProperty(comment, "__glassCreated", {{ enumerable: false, configurable: false, writable: true, value: true }});
+      Object.defineProperty(comment, "__glassAttached", {{ enumerable: false, configurable: false, writable: true, value: false }});
+      Object.defineProperty(comment, "__glassTextValue", {{ enumerable: false, configurable: false, get() {{ return ""; }} }});
+      Object.defineProperty(comment, "__glassMarkup", {{ enumerable: false, configurable: false, get() {{ return "<!--" + textContent + "-->"; }} }});
+      Object.defineProperty(comment, "parentElement", {{ enumerable: false, configurable: false, get() {{
+        let current = comment.__glassParent || null;
+        while (current && current.nodeType !== 1) current = current.__glassParent || null;
+        return current || null;
+      }} }});
+      Object.defineProperty(comment, "parentNode", {{ enumerable: false, configurable: false, get() {{ return comment.__glassParent || null; }} }});
+      Object.defineProperty(comment, "nodeValue", {{ enumerable: true, configurable: false, get() {{ return textContent; }}, set(next) {{ comment.textContent = next; }} }});
+      Object.defineProperty(comment, "textContent", {{ enumerable: true, configurable: false, get() {{ return textContent; }}, set(next) {{
+        const nextValue = String(next);
+        if (nextValue.length > {storage_value_limit}) throw new RangeError("native frame comment node exceeds its limit");
+        textContent = nextValue;
+        if (comment.__glassParent && typeof comment.__glassParent.__glassSyncContent === "function") comment.__glassParent.__glassSyncContent();
+        queueFrameCommand(currentBinding, {{ kind: "setTextContent", node_index: nodeIndex, value: nextValue }});
+      }} }});
+      Object.defineProperty(comment, "data", {{ enumerable: true, configurable: false, get() {{ return textContent; }}, set(next) {{ comment.textContent = next; }} }});
+      Object.defineProperty(comment, "ownerDocument", {{ enumerable: false, configurable: false, get() {{ return frameDocumentCache.get(currentFrameId)?.document || frameDocument; }} }});
+      Object.defineProperty(comment, "__glassRefresh", {{ enumerable: false, configurable: false, value(nextEntry) {{
+        nodeIndex = Number(nextEntry.nodeIndex);
+        comment.nodeIndex = nodeIndex;
+        comment.parentIndex = nextEntry.parentIndex == null ? null : nextEntry.parentIndex;
+        textContent = String(nextEntry.nodeValue || "");
+      }} }});
+      comment.remove = () => {{
+        const parent = comment.__glassParent || null;
+        if (!parent && comment.parentIndex === null) return;
+        const commitRemoval = !comment.__glassCreated || comment.parentIndex !== null;
+        queueFragmentChildRemoval(parent, comment);
+        if (parent && Array.isArray(parent.__glassChildren)) parent.__glassChildren = parent.__glassChildren.filter(candidate => candidate !== comment);
+        comment.__glassParent = null;
+        comment.parentIndex = null;
+        detachFrameSubtree(comment);
+        if (parent && typeof parent.__glassSyncContent === "function") parent.__glassSyncContent(true);
+        if (commitRemoval) queueFrameCommand(currentBinding, {{ kind: "removeNode", node_index: nodeIndex }});
+      }};
+      defineTreeAccessors(comment);
+      frameMutationNodes.set(frameMutationKey(currentBinding, nodeIndex), comment);
+      frameMutationText.set(frameMutationKey(currentBinding, nodeIndex), textContent);
+      frameMutationChildren.set(frameMutationKey(currentBinding, nodeIndex), []);
+      frameScriptNodeObjects.set(nodeIndex, comment);
+      queueFrameCommand(currentBinding, {{ kind: "createComment", node_index: nodeIndex, value: textContent }});
+      try {{ Object.setPrototypeOf(comment, CommentNative.prototype); }} catch (_error) {{}}
+      return comment;
+    }};
     const makeFrameDocumentFragment = () => {{
       const fragment = {{
         nodeType: 11,
@@ -13040,7 +13189,7 @@ fn document_bootstrap(
             child.__glassChildren = [];
             return child;
           }}
-          if (!child || ![1, 3].includes(Number(child.nodeType)))
+          if (!child || ![1, 3, 8].includes(Number(child.nodeType)))
             throw new TypeError("DocumentFragment children must be elements or text nodes");
           const oldParent = child.__glassParent || null;
           if (oldParent && Array.isArray(oldParent.__glassChildren)) {{
@@ -13069,7 +13218,7 @@ fn document_bootstrap(
             return child;
           }}
           if (before == null) return this.appendChild(child);
-          if (!child || ![1, 3].includes(Number(child.nodeType)))
+          if (!child || ![1, 3, 8].includes(Number(child.nodeType)))
             throw new TypeError("DocumentFragment children must be elements or text nodes");
           if (before.__glassParent !== this) throw new TypeError("reference node is not a child");
           const oldParent = child.__glassParent || null;
@@ -13137,7 +13286,7 @@ fn document_bootstrap(
           const value = String(next);
           if (value.length > storageValueLimit) throw new RangeError("native frame fragment innerHTML exceeds its limit");
           for (const child of fragment.__glassChildren.slice()) child.remove();
-          populateDetachedFragment(fragment, value, makeFrameDetachedElement, makeFrameDetachedText);
+            populateDetachedFragment(fragment, value, makeFrameDetachedElement, makeFrameDetachedText, makeFrameDetachedComment);
         }},
       }});
       defineTreeAccessors(fragment);
@@ -13203,6 +13352,7 @@ fn document_bootstrap(
       }},
       createElement(tagName) {{ return makeFrameDetachedElement(tagName); }},
       createTextNode(value) {{ return makeFrameDetachedText(value); }},
+      createComment(value) {{ return makeFrameDetachedComment(value); }},
       createDocumentFragment() {{ return makeFrameDocumentFragment(); }},
       getElementById: findById,
       querySelector(selector) {{ return find(selector)[0] || null; }},

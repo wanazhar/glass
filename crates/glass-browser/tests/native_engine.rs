@@ -32435,6 +32435,77 @@ fn native_svg_curve_paths_flatten_quadratic_and_cubic_segments() {
     assert_eq!(layout.hit_test(16, 6).unwrap(), Some(quadratic));
 }
 
+#[test]
+fn native_svg_smooth_and_arc_paths_share_bounded_geometry() {
+    let document = NativeDocument::parse(
+        "<div style='width:40px;height:24px'><svg width='36' height='20'><path id='smooth' d='M2 10 C2 4 6 4 8 10 S14 16 16 10 Q12 2 8 10 T2 10 Z' fill='blue' stroke='green' stroke-width='1'></path><path id='arc' d='M24 10 A5 5 0 1 1 30 10 A5 5 0 1 1 24 10 Z' fill='blue' stroke='green' stroke-width='1'></path></svg></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let smooth = document.resolve_target("id=smooth").unwrap();
+    let arc = document.resolve_target("id=arc").unwrap();
+    let viewport = Viewport {
+        width: 40,
+        height: 24,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+    assert!(layout.box_for(smooth).unwrap().width >= 15);
+    assert!(layout.box_for(arc).unwrap().width >= 7);
+
+    let list = document.display_list(viewport).unwrap();
+    for (node_id, minimum_points) in [(smooth, 48), (arc, 16)] {
+        assert!(list.commands.iter().any(|command| {
+            matches!(
+                command,
+                NativeDisplayCommand::SvgPathFill {
+                    node_id: command_node,
+                    subpaths,
+                    color,
+                    ..
+                } if *command_node == node_id
+                    && subpaths.len() == 1
+                    && subpaths[0].closed
+                    && subpaths[0].points.len() >= minimum_points
+                    && *color == NativeColor { red: 0, green: 0, blue: 255, alpha: 255 }
+            )
+        }));
+        assert!(list.commands.iter().any(|command| {
+            matches!(
+                command,
+                NativeDisplayCommand::SvgPathStroke {
+                    node_id: command_node,
+                    subpaths,
+                    width,
+                    color,
+                    ..
+                } if *command_node == node_id
+                    && subpaths.len() == 1
+                    && subpaths[0].closed
+                    && subpaths[0].points.len() >= minimum_points
+                    && *width == 1
+                    && *color == NativeColor { red: 0, green: 128, blue: 0, alpha: 255 }
+            )
+        }));
+    }
+
+    let surface = list.rasterize().unwrap();
+    assert!(
+        surface
+            .rgba()
+            .chunks_exact(4)
+            .any(|pixel| pixel == [0, 0, 255, 255])
+    );
+    assert!(
+        surface
+            .rgba()
+            .chunks_exact(4)
+            .any(|pixel| pixel == [0, 128, 0, 255])
+    );
+    assert_eq!(layout.hit_test(5, 8).unwrap(), Some(smooth));
+    assert_eq!(layout.hit_test(27, 10).unwrap(), Some(arc));
+}
+
 #[tokio::test]
 async fn native_local_namespace_dom_preserves_svg_mathml_and_foreign_content() {
     let mut engine = NativeEngine::new(NativeEngineConfig::default().with_initial_url(

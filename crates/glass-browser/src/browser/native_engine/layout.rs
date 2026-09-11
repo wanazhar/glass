@@ -18,6 +18,7 @@ const DEFAULT_SVG_HEIGHT: u32 = 150;
 const CHARACTER_WIDTH: u32 = 8;
 pub(crate) const MAX_NATIVE_SVG_POINTS: usize = 2048;
 const MAX_NATIVE_SVG_CURVE_SEGMENTS: usize = 16;
+const MAX_NATIVE_SVG_ARC_SEGMENTS: usize = 64;
 
 /// An integer-pixel point in the native viewport coordinate space.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4831,12 +4832,33 @@ pub(crate) fn svg_path_subpaths(node: &NativeNode) -> Option<Vec<NativeSvgSubpat
     let mut subpaths: Vec<NativeSvgSubpath> = Vec::new();
     let mut current = (0.0, 0.0);
     let mut command = None;
+    let mut previous_command = None;
+    let mut previous_cubic_control = None;
+    let mut previous_quadratic_control = None;
     let mut index = 0usize;
     while index < tokens.len() {
         if let SvgPathToken::Command(next) = tokens[index] {
             if !matches!(
                 next,
-                'M' | 'm' | 'L' | 'l' | 'H' | 'h' | 'V' | 'v' | 'C' | 'c' | 'Q' | 'q' | 'Z' | 'z'
+                'M' | 'm'
+                    | 'L'
+                    | 'l'
+                    | 'H'
+                    | 'h'
+                    | 'V'
+                    | 'v'
+                    | 'C'
+                    | 'c'
+                    | 'Q'
+                    | 'q'
+                    | 'S'
+                    | 's'
+                    | 'T'
+                    | 't'
+                    | 'A'
+                    | 'a'
+                    | 'Z'
+                    | 'z'
             ) {
                 return None;
             }
@@ -4852,6 +4874,9 @@ pub(crate) fn svg_path_subpaths(node: &NativeNode) -> Option<Vec<NativeSvgSubpat
                     .map(|point| (f64::from(point.x), f64::from(point.y)))
                     .unwrap_or(current);
                 command = None;
+                previous_command = Some(next);
+                previous_cubic_control = None;
+                previous_quadratic_control = None;
             } else {
                 command = Some(next);
             }
@@ -4887,6 +4912,9 @@ pub(crate) fn svg_path_subpaths(node: &NativeNode) -> Option<Vec<NativeSvgSubpat
                     subpath.points.push(svg_path_point(point));
                 }
                 current = point;
+                previous_command = Some(upper);
+                previous_cubic_control = None;
+                previous_quadratic_control = None;
             }
             'H' => {
                 let x = svg_path_number(&tokens, &mut index)?;
@@ -4896,6 +4924,9 @@ pub(crate) fn svg_path_subpaths(node: &NativeNode) -> Option<Vec<NativeSvgSubpat
                 };
                 subpath.points.push(svg_path_point(point));
                 current = point;
+                previous_command = Some(upper);
+                previous_cubic_control = None;
+                previous_quadratic_control = None;
             }
             'V' => {
                 let y = svg_path_number(&tokens, &mut index)?;
@@ -4905,6 +4936,9 @@ pub(crate) fn svg_path_subpaths(node: &NativeNode) -> Option<Vec<NativeSvgSubpat
                 };
                 subpath.points.push(svg_path_point(point));
                 current = point;
+                previous_command = Some(upper);
+                previous_cubic_control = None;
+                previous_quadratic_control = None;
             }
             'C' => {
                 let control_1 = svg_path_pair(&tokens, &mut index)?;
@@ -4930,6 +4964,9 @@ pub(crate) fn svg_path_subpaths(node: &NativeNode) -> Option<Vec<NativeSvgSubpat
                 };
                 append_cubic_curve(&mut subpath.points, current, control_1, control_2, end);
                 current = end;
+                previous_command = Some(upper);
+                previous_cubic_control = Some(control_2);
+                previous_quadratic_control = None;
             }
             'Q' => {
                 let control = svg_path_pair(&tokens, &mut index)?;
@@ -4949,6 +4986,96 @@ pub(crate) fn svg_path_subpaths(node: &NativeNode) -> Option<Vec<NativeSvgSubpat
                 };
                 append_quadratic_curve(&mut subpath.points, current, control, end);
                 current = end;
+                previous_command = Some(upper);
+                previous_cubic_control = None;
+                previous_quadratic_control = Some(control);
+            }
+            'S' => {
+                let control_2 = svg_path_pair(&tokens, &mut index)?;
+                let end = svg_path_pair(&tokens, &mut index)?;
+                let control_1 = if matches!(previous_command, Some('C' | 'S')) {
+                    previous_cubic_control
+                        .map(|control| (current.0 * 2.0 - control.0, current.1 * 2.0 - control.1))
+                        .unwrap_or(current)
+                } else {
+                    current
+                };
+                let control_2 = if relative {
+                    (current.0 + control_2.0, current.1 + control_2.1)
+                } else {
+                    control_2
+                };
+                let end = if relative {
+                    (current.0 + end.0, current.1 + end.1)
+                } else {
+                    end
+                };
+                let Some(subpath) = subpaths.last_mut() else {
+                    return None;
+                };
+                append_cubic_curve(&mut subpath.points, current, control_1, control_2, end);
+                current = end;
+                previous_command = Some(upper);
+                previous_cubic_control = Some(control_2);
+                previous_quadratic_control = None;
+            }
+            'T' => {
+                let end = svg_path_pair(&tokens, &mut index)?;
+                let control = if matches!(previous_command, Some('Q' | 'T')) {
+                    previous_quadratic_control
+                        .map(|control| (current.0 * 2.0 - control.0, current.1 * 2.0 - control.1))
+                        .unwrap_or(current)
+                } else {
+                    current
+                };
+                let end = if relative {
+                    (current.0 + end.0, current.1 + end.1)
+                } else {
+                    end
+                };
+                let Some(subpath) = subpaths.last_mut() else {
+                    return None;
+                };
+                append_quadratic_curve(&mut subpath.points, current, control, end);
+                current = end;
+                previous_command = Some(upper);
+                previous_cubic_control = None;
+                previous_quadratic_control = Some(control);
+            }
+            'A' => {
+                let radius_x = svg_path_number(&tokens, &mut index)?;
+                let radius_y = svg_path_number(&tokens, &mut index)?;
+                let rotation = svg_path_number(&tokens, &mut index)?;
+                let large_arc = svg_path_number(&tokens, &mut index)?;
+                let sweep = svg_path_number(&tokens, &mut index)?;
+                let end = svg_path_pair(&tokens, &mut index)?;
+                if !matches!(large_arc, 0.0 | 1.0) || !matches!(sweep, 0.0 | 1.0) {
+                    return None;
+                }
+                let end = if relative {
+                    (current.0 + end.0, current.1 + end.1)
+                } else {
+                    end
+                };
+                let Some(subpath) = subpaths.last_mut() else {
+                    return None;
+                };
+                if !append_elliptical_arc(
+                    &mut subpath.points,
+                    current,
+                    radius_x,
+                    radius_y,
+                    rotation,
+                    large_arc == 1.0,
+                    sweep == 1.0,
+                    end,
+                ) {
+                    return None;
+                }
+                current = end;
+                previous_command = Some(upper);
+                previous_cubic_control = None;
+                previous_quadratic_control = None;
             }
             _ => return None,
         }
@@ -5072,6 +5199,142 @@ fn append_quadratic_curve(
         let y = inverse * inverse * start.1 + 2.0 * inverse * t * control.1 + t * t * end.1;
         points.push(svg_path_point((x, y)));
     }
+}
+
+fn append_elliptical_arc(
+    points: &mut Vec<NativePoint>,
+    start: (f64, f64),
+    radius_x: f64,
+    radius_y: f64,
+    rotation_degrees: f64,
+    large_arc: bool,
+    sweep: bool,
+    end: (f64, f64),
+) -> bool {
+    if ![
+        start.0,
+        start.1,
+        radius_x,
+        radius_y,
+        rotation_degrees,
+        end.0,
+        end.1,
+    ]
+    .iter()
+    .all(|value| value.is_finite())
+    {
+        return false;
+    }
+    let radius_x = radius_x.abs();
+    let radius_y = radius_y.abs();
+    if radius_x == 0.0 || radius_y == 0.0 {
+        if points.len() >= MAX_NATIVE_SVG_POINTS {
+            return false;
+        }
+        points.push(svg_path_point(end));
+        return true;
+    }
+    if start == end {
+        return true;
+    }
+
+    let rotation = rotation_degrees.to_radians();
+    let (sin_rotation, cos_rotation) = rotation.sin_cos();
+    let delta_x = (start.0 - end.0) / 2.0;
+    let delta_y = (start.1 - end.1) / 2.0;
+    let transformed_x = cos_rotation * delta_x + sin_rotation * delta_y;
+    let transformed_y = -sin_rotation * delta_x + cos_rotation * delta_y;
+    let radius_x_squared = radius_x * radius_x;
+    let radius_y_squared = radius_y * radius_y;
+    let transformed_x_squared = transformed_x * transformed_x;
+    let transformed_y_squared = transformed_y * transformed_y;
+    let radii_ratio =
+        transformed_x_squared / radius_x_squared + transformed_y_squared / radius_y_squared;
+    if !radii_ratio.is_finite() {
+        return false;
+    }
+    let radius_scale = radii_ratio.sqrt().max(1.0);
+    let radius_x = radius_x * radius_scale;
+    let radius_y = radius_y * radius_scale;
+    let radius_x_squared = radius_x * radius_x;
+    let radius_y_squared = radius_y * radius_y;
+    let numerator = radius_x_squared * radius_y_squared
+        - radius_x_squared * transformed_y_squared
+        - radius_y_squared * transformed_x_squared;
+    let denominator =
+        radius_x_squared * transformed_y_squared + radius_y_squared * transformed_x_squared;
+    if ![radius_x, radius_y, numerator, denominator]
+        .iter()
+        .all(|value| value.is_finite())
+        || denominator == 0.0
+    {
+        return false;
+    }
+    let sign = if large_arc == sweep { -1.0 } else { 1.0 };
+    let center_scale = sign * (numerator.max(0.0) / denominator).sqrt();
+    let center_x = center_scale * radius_x * transformed_y / radius_y;
+    let center_y = center_scale * -radius_y * transformed_x / radius_x;
+    let center = (
+        cos_rotation * center_x - sin_rotation * center_y + (start.0 + end.0) / 2.0,
+        sin_rotation * center_x + cos_rotation * center_y + (start.1 + end.1) / 2.0,
+    );
+    let start_vector = (
+        (transformed_x - center_x) / radius_x,
+        (transformed_y - center_y) / radius_y,
+    );
+    let end_vector = (
+        (-transformed_x - center_x) / radius_x,
+        (-transformed_y - center_y) / radius_y,
+    );
+    let start_angle = start_vector.1.atan2(start_vector.0);
+    let mut sweep_angle = (start_vector.0 * end_vector.1 - start_vector.1 * end_vector.0)
+        .atan2(start_vector.0 * end_vector.0 + start_vector.1 * end_vector.1);
+    if sweep && sweep_angle < 0.0 {
+        sweep_angle += std::f64::consts::TAU;
+    } else if !sweep && sweep_angle > 0.0 {
+        sweep_angle -= std::f64::consts::TAU;
+    }
+    if ![
+        center.0,
+        center.1,
+        start_angle,
+        sweep_angle,
+        radius_x,
+        radius_y,
+    ]
+    .iter()
+    .all(|value| value.is_finite())
+    {
+        return false;
+    }
+    let segment_count = ((sweep_angle.abs() / (std::f64::consts::PI / 2.0)) * 16.0)
+        .ceil()
+        .max(1.0)
+        .min(MAX_NATIVE_SVG_ARC_SEGMENTS as f64) as usize;
+    if points.len().saturating_add(segment_count) > MAX_NATIVE_SVG_POINTS {
+        return false;
+    }
+    for segment in 1..=segment_count {
+        let progress = segment as f64 / segment_count as f64;
+        let angle = start_angle + sweep_angle * progress;
+        let (sin_angle, cos_angle) = angle.sin_cos();
+        let point = if segment == segment_count {
+            end
+        } else {
+            (
+                center.0 + cos_rotation * radius_x * cos_angle
+                    - sin_rotation * radius_y * sin_angle,
+                center.1
+                    + sin_rotation * radius_x * cos_angle
+                    + cos_rotation * radius_y * sin_angle,
+            )
+        };
+        if !point.0.is_finite() || !point.1.is_finite() {
+            return false;
+        }
+        points.push(svg_path_point(point));
+    }
+    true
 }
 
 fn svg_path_point((x, y): (f64, f64)) -> NativePoint {

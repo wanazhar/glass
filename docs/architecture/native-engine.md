@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-220` slice; the bounded foundation below remains
+`native-engine-browser-221` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5396,6 +5396,19 @@ fetched and transferred through the existing image lifecycle, so intrinsic
 dimensions and `currentSrc` remain coherent after initial load and script
 mutation. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-220.md`.
+
+The completed native-engine-browser-221 slice extends that owner to
+`<picture>`. Direct preceding `<source>` children are considered in document
+order; a source must match the bounded viewport-width media grammar, pass the
+`image/png` type gate, and provide a valid `srcset` before it can win over the
+`<img>` fallback. The selected source continues through the existing
+`srcset`/`sizes` candidate algorithm, content-process policy and cache, typed
+image wire, intrinsic state, `currentSrc`, paint, and terminal load/error
+events. Mutating source `media`, `type`, `srcset`, or `sizes` re-evaluates the
+picture selection through the same native refresh path. Complex media queries,
+non-PNG decoders, preload/fetch-priority scheduling, and full source-element
+Web IDL remain explicit promotion work. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-221.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

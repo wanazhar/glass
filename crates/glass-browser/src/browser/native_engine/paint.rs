@@ -5,7 +5,10 @@ use super::css::{
 };
 use super::dom::{NativeDocument, NativeNode, NativeNodeId};
 use super::error::NativeEngineError;
-use super::layout::{NativeLayoutPaintOrder, NativeLayoutSnapshot, NativePoint, NativeRect};
+use super::layout::{
+    MAX_NATIVE_SVG_POINTS, NativeLayoutPaintOrder, NativeLayoutSnapshot, NativePoint, NativeRect,
+    svg_line_points, svg_points,
+};
 
 /// Maximum number of immutable commands retained in one native display list.
 pub const MAX_NATIVE_DISPLAY_COMMANDS: usize = MAX_NATIVE_NODES.saturating_mul(4).saturating_add(1);
@@ -78,6 +81,22 @@ pub enum NativeDisplayCommand {
         node_id: NativeNodeId,
         shape: NativeSvgStrokeShape,
         rect: NativeRect,
+        width: u32,
+        color: NativeColor,
+        clip: Option<NativeRect>,
+    },
+    SvgPolygonFill {
+        node_id: NativeNodeId,
+        rect: NativeRect,
+        points: Vec<NativePoint>,
+        color: NativeColor,
+        clip: Option<NativeRect>,
+    },
+    SvgPolyline {
+        node_id: NativeNodeId,
+        rect: NativeRect,
+        points: Vec<NativePoint>,
+        closed: bool,
         width: u32,
         color: NativeColor,
         clip: Option<NativeRect>,
@@ -287,13 +306,30 @@ fn svg_paint_commands(
     let Some(shape) = node.element_name() else {
         return Vec::new();
     };
-    if !matches!(shape, "rect" | "circle" | "ellipse") || bounds.width == 0 || bounds.height == 0 {
+    if !matches!(
+        shape,
+        "rect" | "circle" | "ellipse" | "line" | "polyline" | "polygon"
+    ) || bounds.width == 0
+        || bounds.height == 0
+    {
+        return Vec::new();
+    }
+    let points = match shape {
+        "line" => Some(svg_line_points(node)),
+        "polyline" | "polygon" => svg_points(node),
+        _ => None,
+    };
+    if matches!(shape, "line" | "polyline" | "polygon")
+        && points
+            .as_ref()
+            .is_none_or(|points| points.len() < 2 || points.len() > MAX_NATIVE_SVG_POINTS)
+    {
         return Vec::new();
     }
     let mut commands = Vec::new();
     let fill = svg_presentation_value(node, "fill").unwrap_or("black");
     if !fill.eq_ignore_ascii_case("none") {
-        let color = super::css::parse_color(fill).unwrap_or(NativeColor::BLACK);
+        let color = svg_paint_color(document, node_id, fill).unwrap_or(NativeColor::BLACK);
         if shape == "rect" {
             commands.push(NativeDisplayCommand::FillRect {
                 node_id,
@@ -302,7 +338,7 @@ fn svg_paint_commands(
                 color,
                 clip,
             });
-        } else {
+        } else if matches!(shape, "circle" | "ellipse") {
             let rows = bounds.height.min(MAX_NATIVE_SVG_SCANLINES);
             commands.reserve(rows as usize);
             for row in 0..rows {
@@ -345,6 +381,16 @@ fn svg_paint_commands(
                     clip,
                 });
             }
+        } else if shape == "polygon" {
+            if let Some(points) = points.as_ref() {
+                commands.push(NativeDisplayCommand::SvgPolygonFill {
+                    node_id,
+                    rect: bounds,
+                    points: points.clone(),
+                    color,
+                    clip,
+                });
+            }
         }
     }
 
@@ -361,18 +407,32 @@ fn svg_paint_commands(
     if width == 0 {
         return commands;
     }
-    commands.push(NativeDisplayCommand::SvgStroke {
-        node_id,
-        shape: if shape == "rect" {
-            NativeSvgStrokeShape::Rect
-        } else {
-            NativeSvgStrokeShape::Ellipse
-        },
-        rect: bounds,
-        width,
-        color,
-        clip,
-    });
+    if matches!(shape, "line" | "polyline" | "polygon") {
+        if let Some(points) = points {
+            commands.push(NativeDisplayCommand::SvgPolyline {
+                node_id,
+                rect: bounds,
+                points,
+                closed: shape == "polygon",
+                width,
+                color,
+                clip,
+            });
+        }
+    } else {
+        commands.push(NativeDisplayCommand::SvgStroke {
+            node_id,
+            shape: if shape == "rect" {
+                NativeSvgStrokeShape::Rect
+            } else {
+                NativeSvgStrokeShape::Ellipse
+            },
+            rect: bounds,
+            width,
+            color,
+            clip,
+        });
+    }
     commands
 }
 

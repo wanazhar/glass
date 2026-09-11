@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-155` slice; the bounded foundation below remains
+`native-engine-browser-156` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -508,6 +508,19 @@ the parent validates the typed submitter handoff before navigation. Image
 submit coordinates, target contexts, multipart or
 `text/plain` encoding, full constraint-validation APIs, and FormData/Web IDL
 parity remain open.
+
+The completed native-engine-browser-156 slice connects the parent-owned frame
+registry to page-script frame properties. Direct `iframe` and `frame` elements
+now expose stable `contentWindow` proxies, same-origin `contentDocument`
+snapshots, and bounded child selectors/collections; the embedding realm also
+projects `window.frames`, `parent`, `top`, and `frameElement`. Direct
+WindowProxy `postMessage()` and `location.assign()`/`replace()` are routed back
+through the owning target, with target-origin checks and descendant cleanup;
+child navigation refreshes its document projection without replaying a stale
+embedding `src`. The transfer remains parent-owned and snapshot-based, so
+complete cross-realm identity, nested child-window projection in every event
+path, popup policy/geometry, full frame lifecycle, and complete browser parity
+remain issue #40 gates.
 
 The native-engine-browser-041 batch adds a bounded resource completion point
 for the process-backed document path. Successfully fetched external stylesheet

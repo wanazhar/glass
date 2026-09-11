@@ -650,6 +650,92 @@ async fn native_runtime_session_owns_and_routes_child_frames() {
 }
 
 #[tokio::test]
+async fn native_same_origin_frame_script_projection_matches_window_contract() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..3 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap();
+            let body = match path {
+                "/parent" => {
+                    "<html><body><iframe id='child' src='/child'></iframe><p>parent</p></body></html>"
+                }
+                "/child" => {
+                    "<html><head><script>addEventListener('message', event => document.getElementById('inside').setAttribute('data-message', event.data.ok ? 'received' : 'bad'));</script></head><body><p id='inside' data-message='none'>same-origin child</p></body></html>"
+                }
+                "/child-next" => "<html><body><p id='next'>navigated frame</p></body></html>",
+                other => panic!("unexpected frame projection request path: {other}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/parent")),
+    )
+    .await
+    .unwrap();
+    let frames = session.native_list_frames().await.unwrap();
+    assert_eq!(frames.len(), 2);
+    let identity = session
+        .script(
+            "(() => { const frame = document.getElementById('child'); const childWindow = frame.contentWindow; const childDocument = frame.contentDocument; return { window: childWindow instanceof Window, document: childDocument instanceof Document && childWindow.document === childDocument && childDocument.defaultView === childWindow, parent: childWindow.parent === window && childWindow.top === window, frameElement: childWindow.frameElement === frame, content: childDocument.body.textContent, query: childDocument.querySelector('#inside').textContent, collections: [childDocument.querySelectorAll('p') instanceof NodeList, childDocument.getElementsByTagName('p') instanceof HTMLCollection], frames: window.length === 1 && window.frames[0] === childWindow }; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        identity.value,
+        serde_json::json!({
+            "window": true,
+            "document": true,
+            "parent": true,
+            "frameElement": true,
+            "content": "same-origin child",
+            "query": "same-origin child",
+            "collections": [true, true],
+            "frames": true,
+        })
+    );
+    session
+        .script(
+            "(() => { const frame = document.getElementById('child'); frame.contentWindow.postMessage({ ok: true }, frame.contentWindow.location.origin); return true; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("document.getElementById('child').contentDocument.getElementById('inside').getAttribute('data-message')")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("received")
+    );
+    session
+        .script(
+            "document.getElementById('child').contentWindow.location.assign('/child-next'); true",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("(() => { const frame = document.getElementById('child'); return [frame.contentWindow.location.pathname, frame.contentDocument.body.textContent]; })()")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!(["/child-next", "navigated frame"])
+    );
+    session.close().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_runtime_opener_links_create_routable_popup_targets() {
     let config = NativeEngineConfig::default()
         .with_fixture(

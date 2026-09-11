@@ -218,7 +218,7 @@ pub struct NativeSemanticNode {
 /// These remain snapshots rather than live DOM identities; committed document
 /// state is still owned by Rust while target-local event callbacks execute in
 /// the persistent JavaScript realm.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct NativeScriptDocumentSnapshot {
     pub(crate) title: String,
@@ -226,7 +226,7 @@ pub(crate) struct NativeScriptDocumentSnapshot {
     pub(crate) elements: Vec<NativeScriptElementSnapshot>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct NativeScriptElementSnapshot {
     pub(crate) node_index: u32,
@@ -250,7 +250,7 @@ pub(crate) struct NativeScriptElementSnapshot {
     pub(crate) selection_direction: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct NativeValiditySnapshot {
     pub(crate) bad_input: bool,

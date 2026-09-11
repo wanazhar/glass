@@ -14,11 +14,11 @@ use super::interaction::{
 use super::javascript::{
     MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_DIALOGS, MAX_NATIVE_INDEXED_DB_CHANGES,
     MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_SCRIPT_BYTES, MAX_NATIVE_XHR_TIMEOUT_MS,
-    NativeCookieProfileEntry, NativeDialog, NativeIndexedDbChange, NativeIndexedDbState,
-    NativeJavaScriptRuntime, NativePageScript, NativePopupRequest, NativePostMessageRequest,
-    NativeScriptCommand, NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState,
-    NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
-    diff_indexed_db_changes, execute_page_scripts, host_event_script,
+    NativeCookieProfileEntry, NativeDialog, NativeFrameScriptBinding, NativeIndexedDbChange,
+    NativeIndexedDbState, NativeJavaScriptRuntime, NativePageScript, NativePopupRequest,
+    NativePostMessageRequest, NativeScriptCommand, NativeScriptEvaluation, NativeStorageEvent,
+    NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
+    NativeWindowProxyUpdate, diff_indexed_db_changes, execute_page_scripts, host_event_script,
     host_hash_change_event_script, host_key_event_script, host_key_event_script_with_modifiers,
     host_submit_event_script, literal_dynamic_module_specifiers, load_indexed_db_profile,
     load_web_storage_profile, order_page_scripts, save_web_storage_profile,
@@ -586,6 +586,53 @@ impl NativeContentProcess {
         result
     }
 
+    pub(crate) async fn sync_frame_script_bindings(
+        &mut self,
+        bindings: &[NativeFrameScriptBinding],
+    ) -> Result<(), NativeEngineError> {
+        if bindings.len() > MAX_CONTENT_FRAME_SOURCES {
+            return Err(NativeEngineError::limit(
+                "native frame script bindings",
+                MAX_CONTENT_FRAME_SOURCES,
+                bindings.len(),
+            ));
+        }
+        let id = self.next_id();
+        let response = match timeout(
+            CONTENT_PROCESS_SCRIPT_TIMEOUT,
+            self.exchange(json!({
+                "kind": "frame_script_sync",
+                "id": id,
+                "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
+                "bindings": bindings,
+            })),
+        )
+        .await
+        {
+            Ok(response) => response?,
+            Err(_) => {
+                self.mark_failed(NativeWorkerFailureKind::Timeout);
+                let _ = self.child.start_kill();
+                return Err(NativeEngineError::worker_failure(
+                    "content process frame script synchronization",
+                    NativeWorkerFailureKind::Timeout,
+                    "content process frame script synchronization exceeded its deadline",
+                ));
+            }
+        };
+        let result = require_response_kind(
+            &response,
+            "frame_script_synced",
+            id,
+            "content process frame script synchronization",
+        );
+        if result.is_err() {
+            self.mark_failed(NativeWorkerFailureKind::InvalidTransfer);
+            let _ = self.child.start_kill();
+        }
+        result
+    }
+
     pub(crate) async fn sync_storage_events(
         &mut self,
         events: &[NativeStorageEvent],
@@ -1095,6 +1142,54 @@ fn decode_frame_sources(
     Ok(Some(decoded))
 }
 
+fn decode_frame_script_bindings(
+    value: Option<&Value>,
+    operation: &str,
+) -> Result<Vec<NativeFrameScriptBinding>, NativeEngineError> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let encoded = serde_json::to_vec(value).map_err(|_| NativeEngineError::Worker {
+        operation: operation.into(),
+        reason: "content process frame script bindings were not serializable".into(),
+    })?;
+    if encoded.len() > MAX_CONTENT_DOCUMENT_WIRE_BYTES {
+        return Err(NativeEngineError::limit(
+            "content-process frame script bindings",
+            MAX_CONTENT_DOCUMENT_WIRE_BYTES,
+            encoded.len(),
+        ));
+    }
+    let bindings: Vec<NativeFrameScriptBinding> =
+        serde_json::from_value(value.clone()).map_err(|_| NativeEngineError::Worker {
+            operation: operation.into(),
+            reason: "content process returned invalid frame script bindings".into(),
+        })?;
+    if bindings.len() > MAX_CONTENT_FRAME_SOURCES {
+        return Err(NativeEngineError::limit(
+            "content-process frame script bindings",
+            MAX_CONTENT_FRAME_SOURCES,
+            bindings.len(),
+        ));
+    }
+    for binding in &bindings {
+        if binding.frame_id.is_empty() {
+            return Err(NativeEngineError::Worker {
+                operation: operation.into(),
+                reason: "content process returned an empty frame script ID".into(),
+            });
+        }
+        validate_url_text("content-process frame script URL", &binding.url)?;
+        if binding.origin.is_empty() {
+            return Err(NativeEngineError::Worker {
+                operation: operation.into(),
+                reason: "content process returned an empty frame script origin".into(),
+            });
+        }
+    }
+    Ok(bindings)
+}
+
 fn decode_cookie_profiles(
     response: &Value,
     id: u64,
@@ -1276,7 +1371,15 @@ fn decode_post_message_requests(
             }
         })?;
     for message in &messages {
-        validate_url_text("content-process postMessage target", &message.target)?;
+        if message.target.is_empty() && message.target_context_id.is_none() {
+            return Err(NativeEngineError::invalid(
+                "content-process postMessage target",
+                "must not be empty without a direct target context",
+            ));
+        }
+        if !message.target.is_empty() {
+            validate_url_text("content-process postMessage target", &message.target)?;
+        }
         validate_url_text(
             "content-process postMessage target origin",
             &message.target_origin,
@@ -1677,7 +1780,15 @@ fn decode_window_navigation_requests(
             reason: "content process returned malformed window navigation requests".into(),
         })?;
     for request in &requests {
-        validate_url_text("content-process window navigation target", &request.target)?;
+        if request.target.is_empty() && request.target_context_id.is_none() {
+            return Err(NativeEngineError::invalid(
+                "content-process window navigation target",
+                "must not be empty without a direct target context",
+            ));
+        }
+        if !request.target.is_empty() {
+            validate_url_text("content-process window navigation target", &request.target)?;
+        }
         validate_url_text("content-process window navigation href", &request.href)?;
         if let Some(target_context_id) = request.target_context_id.as_deref() {
             validate_context_id(target_context_id)?;
@@ -1911,6 +2022,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut opener_context_id: Option<String> = None;
     let mut opener_window_name = String::new();
     let mut opener_url = String::new();
+    let mut frame_script_bindings = Vec::new();
     loop {
         let payload = read_frame(&mut stdin).await?;
         let request: Value =
@@ -2087,6 +2199,17 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 }
                 json!({"kind":"window_proxy_synced","id":id})
             }
+            "frame_script_sync" if protocol_matches(&request) && running => {
+                let bindings = decode_frame_script_bindings(
+                    request.get("bindings"),
+                    "decode content process frame script bindings",
+                )?;
+                frame_script_bindings = bindings;
+                if let Some(runtime) = javascript_runtime.as_ref() {
+                    runtime.set_frame_script_bindings(frame_script_bindings.clone());
+                }
+                json!({"kind":"frame_script_synced","id":id})
+            }
             "storage_state" if protocol_matches(&request) && running => {
                 let value = request.get("state").ok_or_else(|| {
                     NativeEngineError::invalid("content-process storage state", "must be an object")
@@ -2124,6 +2247,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 json!({"kind":"storage_state_synced","id":id})
             }
             "load" if protocol_matches(&request) && running => {
+                frame_script_bindings.clear();
                 if let Some(runtime) = javascript_runtime.as_ref() {
                     storage_state = runtime.storage_state();
                 }
@@ -2156,6 +2280,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                     continue;
                                 }
                             };
+                        if let Some(runtime) = script_runtime.as_ref() {
+                            runtime.set_frame_script_bindings(frame_script_bindings.clone());
+                        }
                         let document_cookie = resource_loader
                             .as_ref()
                             .map(|loader| loader.document_cookie(&resource.url))
@@ -2347,6 +2474,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     ) {
                         Ok(runtime) => {
                             runtime.set_storage_state(storage_state.clone());
+                            runtime.set_frame_script_bindings(frame_script_bindings.clone());
                             javascript_runtime = Some(runtime);
                         }
                         Err(error) => {

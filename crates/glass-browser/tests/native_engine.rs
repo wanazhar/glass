@@ -31930,6 +31930,77 @@ fn native_flex_shorthand_expands_zero_basis_and_preserves_shared_consumers() {
 }
 
 #[test]
+fn native_grid_tracks_place_children_through_layout_paint_and_hit_test() {
+    let document = NativeDocument::parse(
+        "<style>#grid { grid-template-columns: REPEAT(2, 1FR); grid-template-rows: 8px 8px; gap: 2px; align-items: center; }</style><div id='grid' style='display:grid;width:24px;height:18px'><div id='first' style='height:4px;background-color:red'>A</div><div id='second' style='height:4px;background-color:green'>B</div><div id='third' style='height:4px;background-color:blue'>C</div><div id='fourth' style='height:4px;background-color:black'>D</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let grid = document.resolve_target("id=grid").unwrap();
+    let first = document.resolve_target("id=first").unwrap();
+    let second = document.resolve_target("id=second").unwrap();
+    let third = document.resolve_target("id=third").unwrap();
+    let fourth = document.resolve_target("id=fourth").unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 24,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(layout.box_for(grid).unwrap().width, 24);
+    assert_eq!(layout.box_for(grid).unwrap().height, 18);
+    assert_eq!(
+        layout.box_for(first).unwrap(),
+        NativeRect {
+            x: 0,
+            y: 2,
+            width: 11,
+            height: 4,
+        }
+    );
+    assert_eq!(
+        layout.box_for(second).unwrap(),
+        NativeRect {
+            x: 13,
+            y: 2,
+            width: 11,
+            height: 4,
+        }
+    );
+    assert_eq!(
+        layout.box_for(third).unwrap(),
+        NativeRect {
+            x: 0,
+            y: 12,
+            width: 11,
+            height: 4,
+        }
+    );
+    assert_eq!(
+        layout.box_for(fourth).unwrap(),
+        NativeRect {
+            x: 13,
+            y: 12,
+            width: 11,
+            height: 4,
+        }
+    );
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == first && *rect == NativeRect { x: 0, y: 2, width: 11, height: 4 }
+                    && *color == NativeColor::RED
+        )
+    }));
+    assert_eq!(layout.hit_test(1, 3).unwrap(), Some(first));
+    assert_eq!(layout.hit_test(14, 13).unwrap(), Some(fourth));
+}
+
+#[test]
 fn native_flex_sizing_css_wide_resets_reach_layout_and_raster() {
     let document = NativeDocument::parse(
         "<style>.row { display:flex; width:32px; height:8px; gap:2px; align-items:flex-start; } .item { width:4px; height:4px; flex-shrink:0; } #reset { flex:4 5 12px; background-color:red; } #reset { flex:InItIaL; } #longhands { flex-grow:4; flex-shrink:5; flex-basis:12px; background-color:green; } #longhands { flex-grow:UnSeT; } #longhands { flex-shrink:ReVeRt; flex-basis:INITIAL; } #invalid { flex:2 3 8px; background-color:blue; } #invalid { flex:inherit 1 auto; } #important { flex:5 6 10px !important; background-color:black; } #important { flex:initial; }</style><div id='row' class='row'><div id='reset' class='item'>A</div><div id='longhands' class='item'>B</div><div id='invalid' class='item'>C</div><div id='important' class='item'>D</div></div>",
@@ -33364,10 +33435,6 @@ fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
             && diagnostic.detail == "text-overflow"
-    }));
-    assert!(diagnostics.iter().any(|diagnostic| {
-        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
-            && diagnostic.detail == "display"
     }));
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue

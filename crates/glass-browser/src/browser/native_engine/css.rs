@@ -5,6 +5,7 @@ use super::error::NativeEngineError;
 use serde::{Deserialize, Serialize};
 
 pub(crate) const MAX_NATIVE_STYLE_RULES: usize = 512;
+pub(crate) const MAX_NATIVE_GRID_TRACKS: usize = 8;
 pub(crate) const MIN_NATIVE_FLEX_ITEM_ORDER: i32 = -1024;
 pub(crate) const MAX_NATIVE_FLEX_ITEM_ORDER: i32 = 1024;
 pub(crate) const MAX_NATIVE_FLEX_GROW: u32 = 1024;
@@ -491,7 +492,42 @@ pub(crate) enum DisplayValue {
     Inline,
     Contents,
     Flex,
+    Grid,
     Other,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum NativeGridTrack {
+    Length(u32),
+    Fr(u32),
+    #[default]
+    Auto,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct NativeGridTrackList {
+    tracks: [NativeGridTrack; MAX_NATIVE_GRID_TRACKS],
+    len: u8,
+}
+
+impl NativeGridTrackList {
+    pub(crate) const fn len(self) -> usize {
+        self.len as usize
+    }
+
+    pub(crate) const fn track(self, index: usize) -> NativeGridTrack {
+        self.tracks[index]
+    }
+
+    fn push(&mut self, track: NativeGridTrack) -> bool {
+        let index = usize::from(self.len);
+        if index >= MAX_NATIVE_GRID_TRACKS {
+            return false;
+        }
+        self.tracks[index] = track;
+        self.len = self.len.saturating_add(1);
+        true
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1105,6 +1141,8 @@ impl NativeAutoEdges {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct NativeComputedStyle {
     display: DisplayValue,
+    grid_template_columns: NativeGridTrackList,
+    grid_template_rows: NativeGridTrackList,
     visibility_hidden: bool,
     opacity: Option<u8>,
     white_space: WhiteSpaceValue,
@@ -1169,6 +1207,14 @@ impl NativeComputedStyle {
 
     pub(crate) const fn display(self) -> DisplayValue {
         self.display
+    }
+
+    pub(crate) const fn grid_template_columns(self) -> NativeGridTrackList {
+        self.grid_template_columns
+    }
+
+    pub(crate) const fn grid_template_rows(self) -> NativeGridTrackList {
+        self.grid_template_rows
     }
 
     pub(crate) const fn opacity(self) -> u8 {
@@ -1504,6 +1550,12 @@ impl NativeStylesheet {
     ) -> NativeComputedStyle {
         let mut display: [Option<CascadeValue<LocalCascadeDeclaration<DisplayValue>>>;
             MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
+        let mut grid_template_columns: [Option<
+            CascadeValue<LocalCascadeDeclaration<NativeGridTrackList>>,
+        >; MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
+        let mut grid_template_rows: [Option<
+            CascadeValue<LocalCascadeDeclaration<NativeGridTrackList>>,
+        >; MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
         let mut visibility: [Option<CascadeValue<LocalCascadeDeclaration<VisibilityValue>>>;
             MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
         let mut opacity: [Option<CascadeValue<LocalCascadeDeclaration<u8>>>;
@@ -1660,6 +1712,22 @@ impl NativeStylesheet {
                 false,
                 rule.declarations.local_importance.display,
                 &mut display,
+            );
+            apply_local_important_cascade_declaration(
+                rule.declarations.grid_template_columns,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.grid_template_columns_important,
+                &mut grid_template_columns,
+            );
+            apply_local_important_cascade_declaration(
+                rule.declarations.grid_template_rows,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.grid_template_rows_important,
+                &mut grid_template_rows,
             );
             apply_local_important_cascade_declaration(
                 rule.declarations.visibility,
@@ -2121,6 +2189,22 @@ impl NativeStylesheet {
                 true,
                 declarations.local_importance.display,
                 &mut display,
+            );
+            apply_local_important_cascade_declaration(
+                declarations.grid_template_columns,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.grid_template_columns_important,
+                &mut grid_template_columns,
+            );
+            apply_local_important_cascade_declaration(
+                declarations.grid_template_rows,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.grid_template_rows_important,
+                &mut grid_template_rows,
             );
             apply_local_important_cascade_declaration(
                 declarations.visibility,
@@ -2675,6 +2759,14 @@ impl NativeStylesheet {
             resolve_local_inherited_cascade_declaration(box_sizing, inherited.box_sizing);
         NativeComputedStyle {
             display: resolve_local_cascade_declaration(display, DisplayValue::Auto),
+            grid_template_columns: resolve_local_cascade_declaration(
+                grid_template_columns,
+                NativeGridTrackList::default(),
+            ),
+            grid_template_rows: resolve_local_cascade_declaration(
+                grid_template_rows,
+                NativeGridTrackList::default(),
+            ),
             visibility_hidden: resolve_local_cascade_declaration(
                 visibility,
                 VisibilityValue::Other,
@@ -4875,6 +4967,10 @@ struct NativeTextDeclarationImportance {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct NativeDeclarations {
     display: Option<LocalCascadeDeclaration<DisplayValue>>,
+    grid_template_columns: Option<LocalCascadeDeclaration<NativeGridTrackList>>,
+    grid_template_columns_important: bool,
+    grid_template_rows: Option<LocalCascadeDeclaration<NativeGridTrackList>>,
+    grid_template_rows_important: bool,
     visibility: Option<LocalCascadeDeclaration<VisibilityValue>>,
     opacity: Option<LocalCascadeDeclaration<u8>>,
     local_importance: NativeLocalDeclarationImportance,
@@ -5212,6 +5308,8 @@ fn parse_style_rule(
         context.diagnostics,
     );
     let has_supported_declaration = declarations.display.is_some()
+        || declarations.grid_template_columns.is_some()
+        || declarations.grid_template_rows.is_some()
         || declarations.visibility.is_some()
         || declarations.opacity.is_some()
         || declarations.white_space.is_some()
@@ -5422,6 +5520,9 @@ fn parse_declarations_with_diagnostics(
         let property_name = property.to_ascii_lowercase();
         let supported = match property_name.as_str() {
             "display" => supports_display_declaration(value),
+            "grid-template-columns" | "grid-template-rows" => {
+                parse_grid_track_list_declaration(value).is_some()
+            }
             "visibility" => parse_visibility_declaration(value).is_some(),
             "opacity" => parse_opacity_declaration(value).is_some(),
             "white-space" => parse_white_space_declaration(value).is_some(),
@@ -5591,6 +5692,8 @@ fn is_known_css_property(property: &str) -> bool {
     matches!(
         property,
         "display"
+            | "grid-template-columns"
+            | "grid-template-rows"
             | "visibility"
             | "opacity"
             | "white-space"
@@ -5756,6 +5859,18 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 if let Some(parsed) = parse_display_declaration(value) {
                     declarations.display = Some(parsed);
                     declarations.local_importance.display = important;
+                }
+            }
+            "grid-template-columns" => {
+                if let Some(parsed) = parse_grid_track_list_declaration(value) {
+                    declarations.grid_template_columns = Some(parsed);
+                    declarations.grid_template_columns_important = important;
+                }
+            }
+            "grid-template-rows" => {
+                if let Some(parsed) = parse_grid_track_list_declaration(value) {
+                    declarations.grid_template_rows = Some(parsed);
+                    declarations.grid_template_rows_important = important;
                 }
             }
             "visibility" => {
@@ -7929,7 +8044,7 @@ fn parse_display(value: &str) -> Option<DisplayValue> {
         "inline" | "inline-block" | "inline-flex" | "inline-grid" => Some(DisplayValue::Inline),
         "contents" => Some(DisplayValue::Contents),
         "flex" => Some(DisplayValue::Flex),
-        "grid" => Some(DisplayValue::Other),
+        "grid" => Some(DisplayValue::Grid),
         _ => None,
     }
 }
@@ -7953,8 +8068,105 @@ fn supports_display_declaration(value: &str) -> bool {
                 | "inline-flex"
                 | "inline-grid"
                 | "flex"
+                | "grid"
                 | "contents"
         )
+}
+
+fn parse_grid_track_list_declaration(
+    value: &str,
+) -> Option<LocalCascadeDeclaration<NativeGridTrackList>> {
+    let value = value.trim();
+    if is_inherit_keyword(value) {
+        return Some(LocalCascadeDeclaration::Inherit);
+    }
+    if is_local_reset_keyword(value) {
+        return Some(LocalCascadeDeclaration::Reset);
+    }
+    if value.eq_ignore_ascii_case("revert-layer") {
+        return Some(LocalCascadeDeclaration::RevertLayer);
+    }
+    parse_grid_track_list(value).map(LocalCascadeDeclaration::Value)
+}
+
+fn parse_grid_track_list(value: &str) -> Option<NativeGridTrackList> {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("none") {
+        return Some(NativeGridTrackList::default());
+    }
+    let tokens = split_grid_track_tokens(value)?;
+    let mut tracks = NativeGridTrackList::default();
+    for token in tokens {
+        if let Some((count, track)) = parse_grid_repeat(token) {
+            for _ in 0..count {
+                if !tracks.push(track) {
+                    return None;
+                }
+            }
+        } else {
+            let track = parse_grid_track(token)?;
+            if !tracks.push(track) {
+                return None;
+            }
+        }
+    }
+    (tracks.len() > 0).then_some(tracks)
+}
+
+fn split_grid_track_tokens(value: &str) -> Option<Vec<&str>> {
+    let mut tokens = Vec::new();
+    let mut start = None;
+    let mut depth = 0usize;
+    for (index, character) in value.char_indices() {
+        match character {
+            '(' => depth = depth.checked_add(1)?,
+            ')' => {
+                depth = depth.checked_sub(1)?;
+            }
+            character if character.is_ascii_whitespace() && depth == 0 => {
+                if let Some(start) = start.take() {
+                    tokens.push(&value[start..index]);
+                }
+                continue;
+            }
+            _ => {}
+        }
+        if start.is_none() {
+            start = Some(index);
+        }
+    }
+    if depth != 0 {
+        return None;
+    }
+    if let Some(start) = start {
+        tokens.push(&value[start..]);
+    }
+    (!tokens.is_empty()).then_some(tokens)
+}
+
+fn parse_grid_repeat(value: &str) -> Option<(usize, NativeGridTrack)> {
+    let value = value.trim().to_ascii_lowercase();
+    let inner = value.strip_prefix("repeat(")?.strip_suffix(')')?;
+    let (count, track) = inner.split_once(',')?;
+    let count = count.trim().parse::<usize>().ok()?;
+    if count == 0 || count > MAX_NATIVE_GRID_TRACKS {
+        return None;
+    }
+    Some((count, parse_grid_track(track.trim())?))
+}
+
+fn parse_grid_track(value: &str) -> Option<NativeGridTrack> {
+    let value = value.trim().to_ascii_lowercase();
+    if matches!(value.as_str(), "auto" | "min-content" | "max-content") {
+        return Some(NativeGridTrack::Auto);
+    }
+    if let Some(fr) = value.strip_suffix("fr") {
+        if fr.is_empty() || !fr.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        return Some(NativeGridTrack::Fr(fr.parse().ok()?));
+    }
+    parse_dimension(&value).map(NativeGridTrack::Length)
 }
 
 fn parse_dimension(value: &str) -> Option<u32> {
@@ -9135,11 +9347,31 @@ mod tests {
     #[test]
     fn declarations_parse_only_supported_presentation_properties() {
         let declarations = parse_declarations(
-            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; text-align-last: end; text-justify: inter-word; justify-content: space-between; align-items: flex-end; align-self: center; align-content: stretch; flex-direction: row-reverse; direction: RTL; flex-wrap: wrap-reverse; order: -12; flex-grow: 2; flex-shrink: 3; flex-basis: 40px; text-decoration: underline; text-decoration-style: dotted; text-decoration-thickness: 2px; text-underline-offset: -2px; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; gap: 12px 14px; row-gap: 13px; column-gap: 15px; font-weight: bold; font-style: italic; word-break: break-all; text-overflow: ellipsis; vertical-align: bottom; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
+            "color: red; display: none !important; grid-template-columns: repeat(2, 1fr); grid-template-rows: 40px auto; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; text-align-last: end; text-justify: inter-word; justify-content: space-between; align-items: flex-end; align-self: center; align-content: stretch; flex-direction: row-reverse; direction: RTL; flex-wrap: wrap-reverse; order: -12; flex-grow: 2; flex-shrink: 3; flex-basis: 40px; text-decoration: underline; text-decoration-style: dotted; text-decoration-thickness: 2px; text-underline-offset: -2px; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; gap: 12px 14px; row-gap: 13px; column-gap: 15px; font-weight: bold; font-style: italic; word-break: break-all; text-overflow: ellipsis; vertical-align: bottom; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
         );
         assert_eq!(
             declarations.display,
             Some(LocalCascadeDeclaration::Value(DisplayValue::None))
+        );
+        let expected_grid_columns = {
+            let mut tracks = NativeGridTrackList::default();
+            tracks.push(NativeGridTrack::Fr(1));
+            tracks.push(NativeGridTrack::Fr(1));
+            tracks
+        };
+        let expected_grid_rows = {
+            let mut tracks = NativeGridTrackList::default();
+            tracks.push(NativeGridTrack::Length(40));
+            tracks.push(NativeGridTrack::Auto);
+            tracks
+        };
+        assert_eq!(
+            declarations.grid_template_columns,
+            Some(LocalCascadeDeclaration::Value(expected_grid_columns))
+        );
+        assert_eq!(
+            declarations.grid_template_rows,
+            Some(LocalCascadeDeclaration::Value(expected_grid_rows))
         );
         assert_eq!(
             declarations.visibility,
@@ -9371,7 +9603,7 @@ mod tests {
         assert_eq!(parse_white_space("nowrap"), Some(WhiteSpaceValue::NoWrap));
         assert_eq!(parse_display("flex"), Some(DisplayValue::Flex));
         assert_eq!(parse_display("FLEX"), Some(DisplayValue::Flex));
-        assert_eq!(parse_display("grid"), Some(DisplayValue::Other));
+        assert_eq!(parse_display("grid"), Some(DisplayValue::Grid));
         assert_eq!(parse_overflow("scroll"), Some(OverflowValue::Other));
         assert_eq!(parse_overflow("visible"), Some(OverflowValue::Other));
         assert_eq!(parse_overflow("auto"), Some(OverflowValue::Other));

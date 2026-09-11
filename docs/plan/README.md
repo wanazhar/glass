@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-201` locally. The versioned
+`native-engine-browser-202` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1738,6 +1738,15 @@ with `NamespaceError`. XML documents, namespace-aware CSS selectors, complete
 namespace-specific Web IDL, and browser-wide conformance remain issue #40
 promotion work. Exact evidence is recorded in
 [native-engine-browser-201](tasks/native-engine-browser-201.md).
+
+The completed native-engine-browser-202 slice adds bounded SVG stroke paint to
+the existing `rect`, `circle`, and `ellipse` layout boxes. A typed display-list
+stroke command and shared software raster path now honor `stroke`, `none`,
+inline-style declarations, `currentColor`, bounded numeric/`px` widths,
+fill-less shapes, scroll translation, clipping, and alpha composition. Paths,
+line caps/joins, transforms, viewBox mapping, gradients, markers, and external
+SVG resources remain separate issue #40 promotion work. Exact evidence is
+recorded in [native-engine-browser-202](tasks/native-engine-browser-202.md).
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` now returns persistent `Attr`

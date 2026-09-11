@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-201` slice; the bounded foundation below remains
+`native-engine-browser-202` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -23,6 +23,7 @@ bounded-inherited-word-break slices,
 bounded-text-overflow/bounded-vertical-align/bounded-flex-row/
 bounded-grid-track-layout/
 bounded-inline-svg-shape-paint/
+bounded-inline-svg-stroke-paint/
 bounded-dom-namespace-identity/
 bounded-namespace-qualified-attributes/
 bounded-flex-row-gap/bounded-flex-row-justification/bounded-flex-item-order/
@@ -5194,6 +5195,15 @@ Unsupported namespace URIs and reserved-prefix mismatches fail closed with
 IDL descriptor parity, and browser-wide conformance remain issue #40 promotion
 work. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-201.md`.
+
+The completed native-engine-browser-202 slice adds a typed `SvgStroke` display
+command for the existing SVG `rect`, `circle`, and `ellipse` layout families.
+The software rasterizer paints deterministic inside-bounded rings with shared
+scroll translation, clipping, alpha blending, fill-less behavior, bounded
+numeric/`px` widths, `stroke="none"`, and `currentColor` resolution. SVG paths,
+line caps/joins, transforms, viewBox mapping, gradients, markers, and external
+resources remain later issue #40 promotion work. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-202.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

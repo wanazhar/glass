@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-179` slice; the bounded foundation below remains
+`native-engine-browser-180` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -1782,6 +1782,15 @@ same script turn. The same behavior is available in local, content-worker, and
 same-origin frame realms, while comments, raw-text/foreign-content parsing,
 full malformed-HTML tree-builder rules, and complete Web IDL parity remain
 open issue #40 promotion work.
+
+The completed native-engine-browser-180 slice makes detached document
+fragments valid `MutationObserver` targets. The shared observer queue records
+fragment child-list insertion/removal and sibling context directly while the
+existing typed command recorder continues to own attached-element changes;
+moving an attached node into a fragment emits the corresponding native
+removal. Local, content-worker, and same-origin frame realms use the same
+bounded delivery checkpoint and subtree matching. Full observer ordering and
+descriptor conformance remain issue #40 promotion work.
 
 The completed native-engine-browser-169 slice adds frame-qualified EventTarget
 behavior to same-origin projected elements, detached projected elements,

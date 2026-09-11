@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-179`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-180`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
@@ -3373,6 +3373,17 @@ comments, raw-text/foreign-content rules, malformed-input recovery, and full
 Web IDL descriptor parity remain conformance work. Exact local evidence is in
 `docs/plan/tasks/native-engine-browser-179.md`; browser-complete promotion
 remains tracked issue-40 work.
+
+The completed native-engine-browser-180 slice closes the detached-fragment
+observer gap. `MutationObserver.observe()` now accepts node type 11, and
+fragment insertion/removal emits direct bounded child-list records with
+previous/next sibling context; observers on fragment subtrees continue to use
+the shared parent walk. Element-to-fragment reparenting additionally produces
+the typed native removal command so detached JavaScript staging cannot leave
+the Rust document stale. The implementation is shared by local, HTTP(S)
+content-worker, and same-origin frame realms; complete observer ordering,
+staging semantics, and Web IDL descriptors remain conformance work. Exact
+local evidence is in `docs/plan/tasks/native-engine-browser-180.md`.
 
 The completed native-engine-browser-169 slice adds frame-qualified EventTarget
 behavior to same-origin projected elements, detached projected elements,

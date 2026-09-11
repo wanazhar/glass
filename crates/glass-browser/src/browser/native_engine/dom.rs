@@ -1797,7 +1797,7 @@ impl NativeDocument {
                 }
                 NativeScriptCommand::RemoveNode { node_index } => {
                     let id = self.resolve_script_node_id(*node_index, &script_nodes);
-                    self.apply_script_remove_node(id)?;
+                    self.apply_script_remove_node(id, &script_nodes)?;
                     script_nodes.insert(*node_index, id);
                 }
                 NativeScriptCommand::CreateElement {
@@ -2375,13 +2375,18 @@ impl NativeDocument {
         Ok(())
     }
 
-    fn apply_script_remove_node(&mut self, id: NativeNodeId) -> Result<(), NativeEngineError> {
+    fn apply_script_remove_node(
+        &mut self,
+        id: NativeNodeId,
+        script_nodes: &BTreeMap<u32, NativeNodeId>,
+    ) -> Result<(), NativeEngineError> {
         if id == self.root {
             return Err(NativeEngineError::TargetNotActionable {
                 reason: "the document root cannot be removed".into(),
             });
         }
-        if self.node(id).is_none() {
+        let is_script_node = script_nodes.values().any(|candidate| *candidate == id);
+        if (!is_script_node && self.node(id).is_none()) || self.raw_node(id).is_none() {
             return Err(NativeEngineError::DetachedTarget);
         }
         self.detach_subtree(id)

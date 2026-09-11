@@ -265,6 +265,24 @@ async fn native_local_script_exposes_web_idl_identity_and_dom_collections() {
     assert_eq!(
         engine
             .evaluate_async(
+                "(() => { const form = document.querySelector('form'); const input = document.getElementById('name'); const shallow = form.cloneNode(); const deep = form.cloneNode(true); return [shallow !== form, shallow.isEqualNode(form), shallow.childNodes.length, deep !== form, deep.isEqualNode(form), deep.firstElementChild !== input, deep.firstElementChild.isEqualNode(input), form.isSameNode(form), form.compareDocumentPosition(input), input.compareDocumentPosition(form), deep.parentNode === null, deep.getRootNode() === deep]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, false, 0, true, true, true, true, true, 20, 10, true, true])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const host = document.createElement('section'); const first = document.createTextNode('a'); const empty = document.createTextNode(''); const second = document.createTextNode('b'); host.append(first, empty, second); host.normalize(); return [host.childNodes.length, host.firstChild.data, empty.parentNode === null, second.parentNode === null]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([1, "ab", true, true])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
                 "(() => { const input = document.getElementById('name'); const detached = document.createElement('aside'); return [input.getRootNode() === document, input.isConnected, detached.getRootNode() === detached, detached.isConnected, input.outerHTML]; })()",
             )
             .await
@@ -544,6 +562,15 @@ async fn native_content_process_script_exposes_web_idl_identity() {
             .await
             .unwrap(),
         serde_json::json!(["Worker title", "HEAD", "TITLE"])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const input = document.getElementById('name'); const clone = input.cloneNode(); return [clone !== input, clone.isEqualNode(input), clone.parentNode === null, clone.getRootNode() === clone, input.getRootNode() === document]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, true, true, true, true])
     );
     assert_eq!(
         engine
@@ -1055,13 +1082,23 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
     assert_eq!(
         session
             .script(
-            "(() => { const child = document.getElementById('child').contentDocument; const paragraph = child.getElementById('inside'); const root = paragraph.getRootNode(); paragraph.outerHTML = \"<article id='frame-replacement'>replaced</article>\"; const replacement = child.getElementById('frame-replacement'); const articles = child.getElementsByTagName('article'); const result = [root === child, replacement !== null, articles.length, articles[0] ? articles[0].id : null, articles[0] ? articles[0].__glassAttached : null, articles[0] ? articles[0].parentElement === child.body : null, child.getElementById('inside')]; replacement.outerHTML = \"<p id='inside' data-message='none'>same-origin <span id='old-child'>child</span></p>\"; return result; })()",
+                "(() => { const child = document.getElementById('child').contentDocument; const paragraph = child.getElementById('inside'); const root = paragraph.getRootNode(); paragraph.outerHTML = \"<article id='frame-replacement'>replaced</article>\"; const replacement = child.getElementById('frame-replacement'); const articles = child.getElementsByTagName('article'); const result = [root === child, replacement !== null, articles.length, articles[0] ? articles[0].id : null, articles[0] ? articles[0].__glassAttached : null, articles[0] ? articles[0].parentElement === child.body : null, child.getElementById('inside')]; replacement.outerHTML = \"<p id='inside' data-message='none'>same-origin <span id='old-child'>child</span></p>\"; return result; })()",
             )
             .await
             .unwrap()
             .value,
     serde_json::json!([true, true, 1, "frame-replacement", true, true, null])
 );
+    assert_eq!(
+        session
+            .script(
+                "(() => { const child = document.getElementById('child').contentDocument; const inside = child.getElementById('inside'); const clone = inside.cloneNode(true); return [clone !== inside, clone.isEqualNode(inside), clone.firstElementChild !== inside.firstElementChild, clone.firstElementChild.tagName, clone.parentNode === null, clone.getRootNode() === clone, child.body.compareDocumentPosition(inside), inside.compareDocumentPosition(child.body)]; })()",
+            )
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([true, true, true, "SPAN", true, true, 20, 10])
+    );
     assert_eq!(
         session
             .script(

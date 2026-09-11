@@ -691,7 +691,7 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
                     "<html><body><iframe id='child' src='/child'></iframe><p>parent</p></body></html>"
                 }
                 "/child" => {
-                    "<html><head><script>addEventListener('message', event => document.getElementById('inside').setAttribute('data-message', event.data.ok ? 'received' : 'bad'));</script></head><body><p id='inside' data-message='none'>same-origin <span id='old-child'>child</span></p><input id='field' value='before'></body></html>"
+                    "<html><head><script>addEventListener('message', event => document.getElementById('inside').setAttribute('data-message', event.data.ok ? 'received' : 'bad'));</script></head><body><p id='inside' data-message='none'>same-origin <span id='old-child'>child</span></p><input id='field' value='before'><button id='trigger'></button></body></html>"
                 }
                 "/child-next" => "<html><body><p id='next'>navigated frame</p></body></html>",
                 other => panic!("unexpected frame projection request path: {other}"),
@@ -834,10 +834,16 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
         .find(|frame| frame.parent_id.as_deref() == Some("native-context:main"))
         .unwrap()
         .id;
+    session
+        .script(
+            "(() => { const frame = document.getElementById('child'); const child = frame.contentDocument; const inside = child.getElementById('trigger'); globalThis.frameEventLog = []; const record = label => event => globalThis.frameEventLog.push([label, event.type, event.target && event.target.nodeType || 0, event.currentTarget && event.currentTarget.nodeType || 0, event.eventPhase]); inside.addEventListener('focus', record('inside-focus')); inside.addEventListener('click', record('inside-click')); child.body.addEventListener('click', record('body-capture'), true); child.body.addEventListener('click', record('body')); child.addEventListener('click', record('document')); child.defaultView.addEventListener('click', record('window')); document.addEventListener('click', () => globalThis.frameEventLog.push(['top-document'])); window.addEventListener('click', () => globalThis.frameEventLog.push(['top-window'])); return true; })()",
+        )
+        .await
+        .unwrap();
     session.native_select_frame(&child_id).await.unwrap();
     session
         .script(
-            "window.parent.document.getElementById('child').setAttribute('data-from-child', 'yes'); true",
+            "document.getElementById('trigger').click(); window.parent.document.getElementById('child').setAttribute('data-from-child', 'yes'); true",
         )
         .await
         .unwrap();
@@ -845,6 +851,21 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
         .native_select_frame("native-context:main")
         .await
         .unwrap();
+    assert_eq!(
+        session
+            .script("globalThis.frameEventLog")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([
+            ["inside-focus", "focus", 1, 1, 2],
+            ["body-capture", "click", 1, 1, 1],
+            ["inside-click", "click", 1, 1, 2],
+            ["body", "click", 1, 1, 3],
+            ["document", "click", 1, 9, 3],
+            ["window", "click", 1, 0, 3],
+        ])
+    );
     assert_eq!(
         session
             .script("document.getElementById('child').getAttribute('data-from-child')")

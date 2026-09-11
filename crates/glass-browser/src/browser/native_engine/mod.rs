@@ -55,7 +55,7 @@ pub use history::{NativeHistory, NativeHistoryDirection, NativeHistoryEntry};
 pub use interaction::{MAX_NATIVE_EFFECTS, NativeAction, NativeEffect, NativeEventKind};
 pub(crate) use javascript::{
     NativeFrameScriptBinding, NativeFrameScriptContext, NativeFrameScriptRequest,
-    NativeFrameScriptWindow, NativePopupRequest, NativePostMessageRequest,
+    NativeFrameScriptWindow, NativePopupRequest, NativePostMessageRequest, NativeScriptCommand,
     NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
 };
 pub use layout::{

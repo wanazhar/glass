@@ -2846,6 +2846,76 @@ pub(crate) fn host_event_script(
     host_event_script_with_submitters(&events)
 }
 
+/// Build the internal source used to project events from a child browsing
+/// context into its same-origin parent realm. The child node identity remains
+/// data; the receiving realm resolves it against its own immutable binding
+/// snapshot before dispatching the event.
+pub(crate) fn frame_event_script(
+    frame_id: &str,
+    events: &[(u32, NativeEventKind)],
+) -> Result<Option<String>, NativeEngineError> {
+    if events.is_empty() {
+        return Ok(None);
+    }
+    validate_context_id(frame_id)?;
+    if events.len() > super::interaction::MAX_NATIVE_EFFECTS {
+        return Err(NativeEngineError::limit(
+            "native frame event dispatch",
+            super::interaction::MAX_NATIVE_EFFECTS,
+            events.len(),
+        ));
+    }
+    let descriptors = events
+        .iter()
+        .map(|(node_index, kind)| {
+            let (event_type, bubbles, cancelable) = match kind {
+                NativeEventKind::Blur => ("blur", false, false),
+                NativeEventKind::Focus => ("focus", false, false),
+                NativeEventKind::ReadyStateChange => ("readystatechange", false, false),
+                NativeEventKind::DomContentLoaded => ("DOMContentLoaded", false, false),
+                NativeEventKind::Load => ("load", false, false),
+                NativeEventKind::PageHide => ("pagehide", false, false),
+                NativeEventKind::Unload => ("unload", false, false),
+                NativeEventKind::PageShow => ("pageshow", false, false),
+                NativeEventKind::BeforeUnload => ("beforeunload", false, true),
+                NativeEventKind::HashChange => ("hashchange", false, false),
+                NativeEventKind::PopState => ("popstate", false, false),
+                NativeEventKind::Invalid => ("invalid", false, true),
+                NativeEventKind::KeyDown => ("keydown", true, true),
+                NativeEventKind::KeyUp => ("keyup", true, false),
+                NativeEventKind::Submit => ("submit", true, true),
+                NativeEventKind::Click => ("click", true, true),
+                NativeEventKind::Input => ("input", true, false),
+                NativeEventKind::Change => ("change", true, false),
+                NativeEventKind::Scroll => ("scroll", true, false),
+            };
+            serde_json::json!({
+                "node_index": node_index,
+                "type": event_type,
+                "bubbles": bubbles,
+                "cancelable": cancelable,
+            })
+        })
+        .collect::<Vec<_>>();
+    let encoded = serde_json::to_string(&descriptors).map_err(|_| NativeEngineError::Worker {
+        operation: "serialize native frame event dispatch".into(),
+        reason: "native frame event metadata could not be serialized".into(),
+    })?;
+    let frame_id = serde_json::to_string(frame_id).map_err(|_| NativeEngineError::Worker {
+        operation: "serialize native frame event dispatch".into(),
+        reason: "native frame event context could not be serialized".into(),
+    })?;
+    let source = format!("globalThis.__glassDispatchFrameEvents({frame_id}, {encoded})");
+    if source.len() > MAX_NATIVE_SCRIPT_BYTES {
+        return Err(NativeEngineError::limit(
+            "native frame event dispatch",
+            MAX_NATIVE_SCRIPT_BYTES,
+            source.len(),
+        ));
+    }
+    Ok(Some(source))
+}
+
 pub(crate) fn host_submit_event_script(
     form_index: u32,
     submitter_index: Option<u32>,
@@ -10518,6 +10588,17 @@ fn document_bootstrap(
       configurable: false,
       value: "frame:" + currentFrameId + ":document",
     }});
+    Object.defineProperty(frameDocument, "__glassEventTargetForNode", {{
+      enumerable: false,
+      configurable: false,
+      value(nodeIndex) {{
+        const index = Number(nodeIndex);
+        if (index === 0) return frameDocument;
+        if (index === 4294967295) return frameDocument.defaultView;
+        const node = frameNodesByIndex.get(index);
+        return node && node.__glassAttached ? node : null;
+      }},
+    }});
     defineTreeAccessors(frameDocument);
     try {{ Object.setPrototypeOf(frameDocument, DocumentNative.prototype); }} catch (_error) {{}}
     frameDocumentCache.set(currentFrameId, {{
@@ -10527,6 +10608,24 @@ fn document_bootstrap(
       document: frameDocument,
     }});
     return frameDocument;
+  }};
+  globalThis.__glassDispatchFrameEvents = (frameId, events) => {{
+    const identifier = String(frameId || "");
+    const binding = frameBindingForId(identifier);
+    if (!binding || binding.sameOrigin !== true) throw crossOriginSecurityError("event");
+    if (!Array.isArray(events)) throw new TypeError("native frame events must be an array");
+    if (events.length > {max_commands}) throw new RangeError("native frame event limit exceeded");
+    const projectedDocument = makeFrameDocument(binding);
+    return events.map((descriptor) => {{
+      if (!descriptor || typeof descriptor !== "object") throw new TypeError("native frame event is invalid");
+      const target = projectedDocument.__glassEventTargetForNode(descriptor.node_index);
+      if (!target) throw new TypeError("native frame event target is detached");
+      const event = createEvent(descriptor.type, {{
+        bubbles: Boolean(descriptor.bubbles),
+        cancelable: Boolean(descriptor.cancelable),
+      }});
+      return dispatchTarget(target, event);
+    }});
   }};
   const makeFrameWindow = (
     binding,

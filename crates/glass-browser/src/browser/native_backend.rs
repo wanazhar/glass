@@ -5,11 +5,12 @@
 //! `browser_backend` contract.
 
 use super::native_engine::{
-    MAX_NATIVE_EFFECTS, NativeAction, NativeEngine, NativeEngineConfig, NativeEngineError,
-    NativeFrameScriptBinding, NativeFrameScriptContext, NativeFrameScriptRequest,
-    NativeFrameScriptWindow, NativeHistoryDirection, NativeInspectionSnapshot, NativeOrigin,
-    NativePopupRequest, NativePostMessageRequest, NativePreflightAction, NativeTargetPreflight,
-    NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
+    MAX_NATIVE_EFFECTS, NativeAction, NativeEffect, NativeEngine, NativeEngineConfig,
+    NativeEngineError, NativeEventKind, NativeFrameScriptBinding, NativeFrameScriptContext,
+    NativeFrameScriptRequest, NativeFrameScriptWindow, NativeHistoryDirection,
+    NativeInspectionSnapshot, NativeOrigin, NativePopupRequest, NativePostMessageRequest,
+    NativePreflightAction, NativeScriptCommand, NativeTargetPreflight, NativeWindowCloseRequest,
+    NativeWindowNavigationRequest, NativeWindowProxyUpdate,
 };
 use crate::browser::session::{
     FrameInfo, NavigationControlOutcome, PageTargetInfo, redact_diagnostic_text,
@@ -485,6 +486,26 @@ impl NativeEngineBackend {
         Ok(None)
     }
 
+    fn frame_parent_id(&self, frame_id: &str) -> Result<Option<String>, BrowserBackendError> {
+        validate_native_topology_id(frame_id)?;
+        let targets = self.lock_targets(BackendOperation::Script)?;
+        if targets.active_frames.active_frame_id == frame_id {
+            return Ok(targets.active_frames.active_parent_id.clone());
+        }
+        if let Some(frame) = targets.active_frames.parked.get(frame_id) {
+            return Ok(frame.parent_id.clone());
+        }
+        for target in targets.parked.values() {
+            if target.frames.active_frame_id == frame_id {
+                return Ok(target.frames.active_parent_id.clone());
+            }
+            if let Some(frame) = target.frames.parked.get(frame_id) {
+                return Ok(frame.parent_id.clone());
+            }
+        }
+        Ok(None)
+    }
+
     fn frame_origin(&self, frame_id: &str) -> Result<Option<NativeOrigin>, BrowserBackendError> {
         validate_native_topology_id(frame_id)?;
         let targets = self.lock_targets(BackendOperation::Script)?;
@@ -529,10 +550,23 @@ impl NativeEngineBackend {
                     reason: "native frame disappeared before same-origin script routing".into(),
                 }
             })?;
-            let (nested, effects) = self.apply_frame_script_to_frame(route, request).await?;
+            let source_frame_id = request.source_frame_id.clone();
+            let (nested, effects, event_effects) =
+                self.apply_frame_script_to_frame(route, request).await?;
+            let (parent_nested, parent_effects) = self
+                .dispatch_frame_events_to_parent(&source_frame_id, &frame_id, &event_effects)
+                .await?;
+            self.process_pending_browser_effects(
+                parent_effects.0,
+                parent_effects.1,
+                parent_effects.2,
+                parent_effects.3,
+            )
+            .await?;
             self.process_pending_browser_effects(effects.0, effects.1, effects.2, effects.3)
                 .await?;
             pending.extend(nested);
+            pending.extend(parent_nested);
         }
         Ok(())
     }
@@ -541,8 +575,14 @@ impl NativeEngineBackend {
         &self,
         route: NativeFrameRoute,
         request: NativeFrameScriptRequest,
-    ) -> Result<(Vec<NativeFrameScriptRequest>, NativeQueuedBrowserEffects), BrowserBackendError>
-    {
+    ) -> Result<
+        (
+            Vec<NativeFrameScriptRequest>,
+            NativeQueuedBrowserEffects,
+            Vec<NativeEffect>,
+        ),
+        BrowserBackendError,
+    > {
         let source_origin = self
             .frame_origin(&request.source_frame_id)?
             .ok_or_else(|| BrowserBackendError::SelectionFailed {
@@ -562,17 +602,18 @@ impl NativeEngineBackend {
 
         let target_frame_id = request.frame_id.clone();
         let NativeFrameScriptRequest { command, .. } = request;
-        let (nested, effects, owner_id, window_name) = match route {
+        let suppress_parent_events = parent_projected_event_kinds(&command);
+        let (nested, effects, event_effects, owner_id, window_name) = match route {
             NativeFrameRoute::ActiveSelected => {
                 let mut engine = self.lock_engine_raw(BackendOperation::Script)?;
-                engine
-                    .apply_frame_script_command_async(*command)
+                let event_effects = engine
+                    .apply_frame_script_command_with_effects_async(*command)
                     .await
                     .map_err(native_error)?;
                 let nested = engine.take_pending_frame_scripts();
                 let (effects, window_name) = take_native_browser_effects(&mut engine);
                 let owner_id = engine.config().context_id.clone();
-                (nested, effects, owner_id, window_name)
+                (nested, effects, event_effects, owner_id, window_name)
             }
             NativeFrameRoute::ActiveParked => {
                 let mut targets = self.lock_targets(BackendOperation::Script)?;
@@ -585,10 +626,17 @@ impl NativeEngineBackend {
                     })?;
                 let result = frame
                     .engine
-                    .apply_frame_script_command_async(*command)
+                    .apply_frame_script_command_with_effects_async(*command)
                     .await
                     .map_err(native_error);
                 let nested = frame.engine.take_pending_frame_scripts();
+                let event_effects = match result {
+                    Ok(event_effects) => event_effects,
+                    Err(error) => {
+                        targets.active_frames.parked.insert(target_frame_id, frame);
+                        return Err(error);
+                    }
+                };
                 let (effects, window_name) = take_native_browser_effects(&mut frame.engine);
                 let owner_id = targets.active_target_id.clone().ok_or_else(|| {
                     BrowserBackendError::SelectionFailed {
@@ -597,8 +645,7 @@ impl NativeEngineBackend {
                     }
                 })?;
                 targets.active_frames.parked.insert(target_frame_id, frame);
-                result?;
-                (nested, effects, owner_id, window_name)
+                (nested, effects, event_effects, owner_id, window_name)
             }
             NativeFrameRoute::ParkedSelected { target_id } => {
                 let mut targets = self.lock_targets(BackendOperation::Script)?;
@@ -608,14 +655,14 @@ impl NativeEngineBackend {
                             .into(),
                     }
                 })?;
-                target
+                let event_effects = target
                     .engine
-                    .apply_frame_script_command_async(*command)
+                    .apply_frame_script_command_with_effects_async(*command)
                     .await
                     .map_err(native_error)?;
                 let nested = target.engine.take_pending_frame_scripts();
                 let (effects, window_name) = take_native_browser_effects(&mut target.engine);
-                (nested, effects, target_id, window_name)
+                (nested, effects, event_effects, target_id, window_name)
             }
             NativeFrameRoute::ParkedParked { target_id } => {
                 let mut targets = self.lock_targets(BackendOperation::Script)?;
@@ -632,18 +679,195 @@ impl NativeEngineBackend {
                     .ok_or_else(|| BrowserBackendError::SelectionFailed {
                         reason: "native frame disappeared before same-origin script routing".into(),
                     })?;
-                frame
+                let event_effects = frame
                     .engine
-                    .apply_frame_script_command_async(*command)
+                    .apply_frame_script_command_with_effects_async(*command)
                     .await
                     .map_err(native_error)?;
                 let nested = frame.engine.take_pending_frame_scripts();
                 let (effects, window_name) = take_native_browser_effects(&mut frame.engine);
-                (nested, effects, target_id, window_name)
+                (nested, effects, event_effects, target_id, window_name)
             }
         };
         self.sync_target_name(&owner_id, &window_name)?;
-        Ok((nested, effects))
+        let event_effects = event_effects
+            .into_iter()
+            .filter(|effect| !suppress_parent_events.contains(&effect.kind))
+            .collect();
+        Ok((nested, effects, event_effects))
+    }
+
+    async fn dispatch_frame_events_to_parent(
+        &self,
+        parent_id: &str,
+        child_id: &str,
+        effects: &[NativeEffect],
+    ) -> Result<(Vec<NativeFrameScriptRequest>, NativeQueuedBrowserEffects), BrowserBackendError>
+    {
+        let empty = || (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        if effects.is_empty() || self.frame_parent_id(child_id)?.as_deref() != Some(parent_id) {
+            return Ok((Vec::new(), empty()));
+        }
+        let route =
+            self.frame_route(parent_id)?
+                .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                    reason: "native frame parent disappeared before event projection".into(),
+                })?;
+        let child_frame_id = child_id.to_owned();
+        let (nested, queued, owner_id, window_name) = match route {
+            NativeFrameRoute::ActiveSelected => {
+                let targets = self.lock_targets(BackendOperation::Script)?;
+                let mut engine = self.lock_engine_raw(BackendOperation::Script)?;
+                let parent_origin = engine.snapshot().map_err(native_error)?.origin;
+                let bindings = native_frame_script_children(
+                    &targets.active_frames,
+                    &engine,
+                    parent_id,
+                    &parent_origin,
+                )?;
+                engine.set_frame_script_bindings(bindings);
+                engine
+                    .dispatch_frame_events_async(&child_frame_id, effects)
+                    .await
+                    .map_err(native_error)?;
+                let nested = engine.take_pending_frame_scripts();
+                let (queued, window_name) = take_native_browser_effects(&mut engine);
+                let owner_id = targets.active_target_id.clone().ok_or_else(|| {
+                    BrowserBackendError::SelectionFailed {
+                        reason: "native frame owner target disappeared during event projection"
+                            .into(),
+                    }
+                })?;
+                (nested, queued, owner_id, window_name)
+            }
+            NativeFrameRoute::ActiveParked => {
+                let mut targets = self.lock_targets(BackendOperation::Script)?;
+                let active_engine = self.lock_engine_raw(BackendOperation::Script)?;
+                let parent_origin = targets
+                    .active_frames
+                    .parked
+                    .get(parent_id)
+                    .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                        reason: "native frame parent disappeared before event projection".into(),
+                    })?
+                    .engine
+                    .snapshot()
+                    .map_err(native_error)?
+                    .origin;
+                let bindings = native_frame_script_children(
+                    &targets.active_frames,
+                    &active_engine,
+                    parent_id,
+                    &parent_origin,
+                )?;
+                let parent = targets
+                    .active_frames
+                    .parked
+                    .get_mut(parent_id)
+                    .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                        reason: "native frame parent disappeared before event projection".into(),
+                    })?;
+                parent.engine.set_frame_script_bindings(bindings);
+                parent
+                    .engine
+                    .dispatch_frame_events_async(&child_frame_id, effects)
+                    .await
+                    .map_err(native_error)?;
+                let nested = parent.engine.take_pending_frame_scripts();
+                let (queued, window_name) = take_native_browser_effects(&mut parent.engine);
+                let owner_id = targets.active_target_id.clone().ok_or_else(|| {
+                    BrowserBackendError::SelectionFailed {
+                        reason: "native frame owner target disappeared during event projection"
+                            .into(),
+                    }
+                })?;
+                (nested, queued, owner_id, window_name)
+            }
+            NativeFrameRoute::ParkedSelected { target_id } => {
+                let mut targets = self.lock_targets(BackendOperation::Script)?;
+                let target = targets.parked.get_mut(&target_id).ok_or_else(|| {
+                    BrowserBackendError::SelectionFailed {
+                        reason: "native frame owner target disappeared during event projection"
+                            .into(),
+                    }
+                })?;
+                let parent_origin = target.engine.snapshot().map_err(native_error)?.origin;
+                let bindings = native_frame_script_children(
+                    &target.frames,
+                    &target.engine,
+                    parent_id,
+                    &parent_origin,
+                )?;
+                target.engine.set_frame_script_bindings(bindings);
+                target
+                    .engine
+                    .dispatch_frame_events_async(&child_frame_id, effects)
+                    .await
+                    .map_err(native_error)?;
+                let nested = target.engine.take_pending_frame_scripts();
+                let (queued, window_name) = take_native_browser_effects(&mut target.engine);
+                (nested, queued, target_id, window_name)
+            }
+            NativeFrameRoute::ParkedParked { target_id } => {
+                let mut targets = self.lock_targets(BackendOperation::Script)?;
+                let target = targets.parked.get_mut(&target_id).ok_or_else(|| {
+                    BrowserBackendError::SelectionFailed {
+                        reason: "native frame owner target disappeared during event projection"
+                            .into(),
+                    }
+                })?;
+                let parent_origin = target
+                    .frames
+                    .parked
+                    .get(parent_id)
+                    .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                        reason: "native frame parent disappeared before event projection".into(),
+                    })?
+                    .engine
+                    .snapshot()
+                    .map_err(native_error)?
+                    .origin;
+                let bindings = native_frame_script_children(
+                    &target.frames,
+                    &target.engine,
+                    parent_id,
+                    &parent_origin,
+                )?;
+                let parent = target.frames.parked.get_mut(parent_id).ok_or_else(|| {
+                    BrowserBackendError::SelectionFailed {
+                        reason: "native frame parent disappeared during event projection".into(),
+                    }
+                })?;
+                parent.engine.set_frame_script_bindings(bindings);
+                parent
+                    .engine
+                    .dispatch_frame_events_async(&child_frame_id, effects)
+                    .await
+                    .map_err(native_error)?;
+                let nested = parent.engine.take_pending_frame_scripts();
+                let (queued, window_name) = take_native_browser_effects(&mut parent.engine);
+                (nested, queued, target_id, window_name)
+            }
+        };
+        self.sync_target_name(&owner_id, &window_name)?;
+        Ok((nested, queued))
+    }
+
+    async fn process_selected_frame_events(
+        &self,
+        frame_id: &str,
+        effects: Vec<NativeEffect>,
+    ) -> Result<(), BrowserBackendError> {
+        let Some(parent_id) = self.frame_parent_id(frame_id)? else {
+            return Ok(());
+        };
+        let (nested, queued) = self
+            .dispatch_frame_events_to_parent(&parent_id, frame_id, &effects)
+            .await?;
+        self.process_pending_frame_scripts(nested).await?;
+        self.process_pending_browser_effects(queued.0, queued.1, queued.2, queued.3)
+            .await?;
+        Ok(())
     }
 
     pub fn active_frame_id(&self) -> Result<String, BrowserBackendError> {
@@ -1996,6 +2220,14 @@ impl BrowserBackend for NativeEngineBackend {
             } else {
                 None
             };
+            let selected_frame_id = if matches!(
+                operation,
+                BackendOperation::Navigate | BackendOperation::Action | BackendOperation::Script
+            ) {
+                Some(self.active_frame_id()?)
+            } else {
+                None
+            };
             let mut engine = self.lock_engine(operation)?;
             if let Some(proxy_updates) = proxy_updates.as_deref() {
                 engine
@@ -2030,10 +2262,15 @@ impl BrowserBackend for NativeEngineBackend {
                     Ok(BackendResponse::Unit)
                 }
                 (BackendOperation::Navigate, BackendRequest::Navigate(request)) => {
+                    let previous_revision = engine.revision();
                     let snapshot = engine
                         .navigate_async(request.url)
                         .await
                         .map_err(native_error)?;
+                    let event_effects = engine
+                        .effects_since(previous_revision)
+                        .map_err(native_error)?
+                        .effects;
                     let popup_requests = engine.take_pending_popups();
                     let post_messages = engine.take_pending_post_messages();
                     let window_closes = engine.take_pending_window_closes();
@@ -2041,6 +2278,10 @@ impl BrowserBackend for NativeEngineBackend {
                     let window_name = engine.config().window_name.clone();
                     drop(engine);
                     self.sync_target_name(&active_context_id, &window_name)?;
+                    if let Some(frame_id) = selected_frame_id.as_deref() {
+                        self.process_selected_frame_events(frame_id, event_effects)
+                            .await?;
+                    }
                     self.process_pending_browser_effects(
                         popup_requests,
                         post_messages,
@@ -2107,7 +2348,12 @@ impl BrowserBackend for NativeEngineBackend {
                             NativeAction::Scroll { delta_x, delta_y }
                         }
                     };
+                    let previous_revision = engine.revision();
                     let outcome = engine.action_async(action).await.map_err(native_error)?;
+                    let event_effects = engine
+                        .effects_since(previous_revision)
+                        .map_err(native_error)?
+                        .effects;
                     let popup_requests = engine.take_pending_popups();
                     let post_messages = engine.take_pending_post_messages();
                     let window_closes = engine.take_pending_window_closes();
@@ -2115,6 +2361,10 @@ impl BrowserBackend for NativeEngineBackend {
                     let window_name = engine.config().window_name.clone();
                     drop(engine);
                     self.sync_target_name(&active_context_id, &window_name)?;
+                    if let Some(frame_id) = selected_frame_id.as_deref() {
+                        self.process_selected_frame_events(frame_id, event_effects)
+                            .await?;
+                    }
                     self.process_pending_browser_effects(
                         popup_requests,
                         post_messages,
@@ -2141,10 +2391,15 @@ impl BrowserBackend for NativeEngineBackend {
                 }
                 (BackendOperation::Script, BackendRequest::Script(request)) => {
                     require_context_id(&request.context_id, &active_context_id)?;
+                    let previous_revision = engine.revision();
                     let value = engine
                         .evaluate_async(request.source)
                         .await
                         .map_err(native_error)?;
+                    let event_effects = engine
+                        .effects_since(previous_revision)
+                        .map_err(native_error)?
+                        .effects;
                     let frame_scripts = engine.take_pending_frame_scripts();
                     let popup_requests = engine.take_pending_popups();
                     let post_messages = engine.take_pending_post_messages();
@@ -2153,6 +2408,10 @@ impl BrowserBackend for NativeEngineBackend {
                     let window_name = engine.config().window_name.clone();
                     drop(engine);
                     self.sync_target_name(&active_context_id, &window_name)?;
+                    if let Some(frame_id) = selected_frame_id.as_deref() {
+                        self.process_selected_frame_events(frame_id, event_effects)
+                            .await?;
+                    }
                     self.process_pending_frame_scripts(frame_scripts).await?;
                     self.process_pending_browser_effects(
                         popup_requests,
@@ -2326,6 +2585,15 @@ type NativeQueuedBrowserEffects = (
     Vec<NativeWindowCloseRequest>,
     Vec<NativeWindowNavigationRequest>,
 );
+
+fn parent_projected_event_kinds(command: &NativeScriptCommand) -> &'static [NativeEventKind] {
+    match command {
+        NativeScriptCommand::Focus { .. } => &[NativeEventKind::Focus],
+        NativeScriptCommand::Blur { .. } => &[NativeEventKind::Blur],
+        NativeScriptCommand::Click { .. } => &[NativeEventKind::Click],
+        _ => &[],
+    }
+}
 
 async fn close_native_frame_descendants(
     frames: &mut NativeFrameState,

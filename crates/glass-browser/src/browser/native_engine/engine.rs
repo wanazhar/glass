@@ -24,11 +24,11 @@ use super::javascript::{
     NativePageNavigation, NativePopupRequest, NativePostMessageRequest, NativeScriptCommand,
     NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState, NativeWindowCloseRequest,
     NativeWindowNavigationRequest, NativeWindowProxyUpdate, append_storage_changes,
-    apply_indexed_db_changes, diff_indexed_db_changes, execute_inline_scripts, host_event_script,
-    host_hash_change_event_script, host_message_event_script, host_submit_event_script,
-    load_indexed_db_profile, load_web_storage_profile, new_storage_writer_id,
-    read_storage_event_journal, register_storage_reader, save_web_storage_profile,
-    storage_event_cursor, storage_key, unregister_storage_reader,
+    apply_indexed_db_changes, diff_indexed_db_changes, execute_inline_scripts, frame_event_script,
+    host_event_script, host_hash_change_event_script, host_message_event_script,
+    host_submit_event_script, load_indexed_db_profile, load_web_storage_profile,
+    new_storage_writer_id, read_storage_event_journal, register_storage_reader,
+    save_web_storage_profile, storage_event_cursor, storage_key, unregister_storage_reader,
 };
 use super::layout::{NativeLayoutSnapshot, NativePoint, NativeRect};
 use super::lifecycle::NativeLifecycleState;
@@ -2034,6 +2034,33 @@ impl NativeEngine {
         command: NativeScriptCommand,
     ) -> Result<(), NativeEngineError> {
         let source = frame_script_command_source(&command)?;
+        self.evaluate_async(source).await.map(|_| ())
+    }
+
+    pub(crate) async fn apply_frame_script_command_with_effects_async(
+        &mut self,
+        command: NativeScriptCommand,
+    ) -> Result<Vec<NativeEffect>, NativeEngineError> {
+        let previous_revision = self.revision();
+        self.apply_frame_script_command_async(command).await?;
+        Ok(self.effects_since(previous_revision)?.effects)
+    }
+
+    /// Deliver events observed by a child engine to the parent realm's
+    /// same-origin projection. The backend supplies only typed effect records;
+    /// the parent runtime resolves node identity from its current binding.
+    pub(crate) async fn dispatch_frame_events_async(
+        &mut self,
+        frame_id: &str,
+        effects: &[NativeEffect],
+    ) -> Result<(), NativeEngineError> {
+        let metadata = effects
+            .iter()
+            .map(|effect| (effect.node_id.index(), effect.kind))
+            .collect::<Vec<_>>();
+        let Some(source) = frame_event_script(frame_id, &metadata)? else {
+            return Ok(());
+        };
         self.evaluate_async(source).await.map(|_| ())
     }
 

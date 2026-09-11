@@ -3885,10 +3885,11 @@ impl NativeEngine {
             .into_iter()
             .map(|event| {
                 let node_id = NativeNodeId::from_parts(generation, event.node_index);
-                document
-                    .node(node_id)
-                    .map(|_| (node_id, event.kind))
-                    .ok_or(NativeEngineError::DetachedTarget)
+                if event.node_index == u32::MAX || document.node(node_id).is_some() {
+                    Ok((node_id, event.kind))
+                } else {
+                    Err(NativeEngineError::DetachedTarget)
+                }
             })
             .collect::<Result<Vec<_>, _>>()
         {

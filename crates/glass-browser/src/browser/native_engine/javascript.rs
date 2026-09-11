@@ -7985,6 +7985,19 @@ fn document_bootstrap(
     : new Map();
   mutationCreatedNodes.clear();
   globalThis.__glassCreatedNodes = mutationCreatedNodes;
+  const scriptNodeObjects = globalThis.__glassScriptNodeObjects instanceof Map
+    ? globalThis.__glassScriptNodeObjects
+    : new Map();
+  globalThis.__glassScriptNodeObjects = scriptNodeObjects;
+  const scriptNodeAliasesByIndex = new Map();
+  for (const identity of Array.isArray(state.scriptNodes) ? state.scriptNodes : []) {{
+    const temporaryIndex = Number(identity && identity.temporaryIndex);
+    const nodeIndex = Number(identity && identity.nodeIndex);
+    const object = scriptNodeObjects.get(temporaryIndex);
+    if (!object || !Number.isSafeInteger(nodeIndex) || nodeIndex < 0) continue;
+    object.nodeIndex = nodeIndex;
+    scriptNodeAliasesByIndex.set(nodeIndex, object);
+  }}
   const mutationShadowAttributes = new Map();
   for (const entry of Array.isArray(state.elements) ? state.elements : []) {{
     mutationShadowAttributes.set(Number(entry.nodeIndex), {{ ...(entry.attributes || {{}}) }});
@@ -9192,6 +9205,7 @@ fn document_bootstrap(
     installClassList(element);
     installElementStyleAndDataset(element);
     mutationCreatedNodes.set(nodeIndex, element);
+    scriptNodeObjects.set(nodeIndex, element);
     pushCommand({{ kind: "createElement", node_index: nodeIndex, tag_name: normalized }});
     return element;
   }};
@@ -9278,6 +9292,7 @@ fn document_bootstrap(
     try {{ Object.setPrototypeOf(text, TextNative.prototype); }} catch (_error) {{}}
     defineTreeAccessors(text);
     mutationCreatedNodes.set(nodeIndex, text);
+    scriptNodeObjects.set(nodeIndex, text);
     pushCommand({{ kind: "createTextNode", node_index: nodeIndex, value: textContent }});
     return text;
   }};
@@ -9490,7 +9505,7 @@ fn document_bootstrap(
     : new Map();
   const snapshotNodes = Array.isArray(state.nodes) ? state.nodes : [];
   const elements = state.elements.map((entry) => {{
-    const existing = previousElements.get(entry.nodeIndex);
+    const existing = scriptNodeAliasesByIndex.get(entry.nodeIndex) || previousElements.get(entry.nodeIndex);
     if (existing && typeof existing.__glassRefresh === "function") {{
       existing.__glassRefresh(entry);
       return existing;
@@ -9502,9 +9517,11 @@ fn document_bootstrap(
     .filter((entry) => entry && Number(entry.nodeType) === 3)
     .map((entry) => {{
       const existing = previousNodes.get(entry.nodeIndex);
-      if (existing && typeof existing.__glassRefresh === "function") {{
-        existing.__glassRefresh(entry);
-        return existing;
+      const scriptAlias = scriptNodeAliasesByIndex.get(entry.nodeIndex);
+      const reusable = scriptAlias || existing;
+      if (reusable && typeof reusable.__glassRefresh === "function") {{
+        reusable.__glassRefresh(entry);
+        return reusable;
       }}
       return makeSnapshotText(entry);
     }});

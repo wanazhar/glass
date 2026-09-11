@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-165`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-167`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
@@ -3251,6 +3251,15 @@ identity across evaluations, exposing `nodeValue`, `data`, `parentNode`,
 siblings, and live `childNodes`/`children` filtering. Text mutation continues
 through the typed Rust owner path; full Web IDL descriptors, observer delivery,
 complete frame lifecycle/load ordering, and browser-wide parity remain open.
+
+The completed native-engine-browser-167 slice adds a shared bounded selector
+and class-token layer. Scoped element/document queries, `matches()`, and
+`closest()` handle compound, descendant, child, comma-list, attribute, and
+common state/structural pseudo-class selectors; `classList` exposes live token
+reads and validated add/remove/toggle/replace mutation through typed attribute
+commands. Full CSS selector grammar, complete Web IDL descriptors,
+cross-realm listener identity, complete frame lifecycle/load ordering, and
+browser-wide parity remain open.
 
 The completed native-engine-browser-133 batch extends the native target seam
 with a side-effect-free preflight result. The engine resolves the current

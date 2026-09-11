@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-165` slice; the bounded foundation below remains
+`native-engine-browser-167` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -1664,6 +1664,15 @@ traversal, `hasChildNodes()`, `contains()`, `replaceChild()`, and
 `isConnected`; document root lists participate in parent-node and containment
 queries. Parser text-node projection, full Web IDL descriptors, observer
 delivery, and browser-wide parity remain separate promotion work.
+
+The completed native-engine-browser-167 slice adds a shared bounded selector
+and class-token surface to local and same-origin frame projections. Scoped
+element queries, document queries, `matches()`, and `closest()` support
+compound, descendant, child, comma-list, attribute, and common state or
+structural pseudo-class selectors. `classList` retains its owner and routes
+validated token mutations through the existing typed attribute command. The
+full CSS selector grammar, complete Web IDL descriptors, cross-realm listener
+identity, and browser-wide parity remain separate promotion work.
 
 The completed native-engine-browser-166 slice adds attached text-node records
 to the bounded script snapshot. Local, content-worker, and same-origin frame

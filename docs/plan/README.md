@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-165` locally. The versioned
+`native-engine-browser-167` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1575,6 +1575,16 @@ siblings, and live `childNodes`/`children` filtering in local, content-worker,
 and same-origin frame realms. Rust remains the source of truth for the
 attached tree and text mutation; full Web IDL descriptors, observer delivery,
 and native browser-complete promotion remain issue #40 gates.
+
+The completed native-engine-browser-167 slice expands selector and class
+mutation behavior across top-level and same-origin frame realms. Scoped
+`querySelector()`/`querySelectorAll()`/`getElementsBy*()` now handle compound,
+descendant, child, comma-list, attribute, and common state/structural
+pseudo-class selectors; element `matches()` and `closest()` share the same
+grammar. `classList` supports live token reads and add/remove/toggle/replace
+mutation through typed attribute commands. Full CSS selector grammar, complete
+Web IDL descriptors, cross-realm listener identity, and native browser-complete
+promotion remain issue #40 gates.
 
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and

@@ -7635,6 +7635,30 @@ fn document_bootstrap(
         return null;
       }},
       hasAttribute(name) {{ return this.getAttribute(name) !== null; }},
+      matches(selector) {{ return matchesSelector(element, selector); }},
+      closest(selector) {{
+        let current = element;
+        while (current) {{
+          if (matchesSelector(current, selector)) return current;
+          current = current.parentElement;
+        }}
+        return null;
+      }},
+      querySelector(selector) {{
+        return descendantsMatching(element, elements, selector)[0] || null;
+      }},
+      querySelectorAll(selector) {{
+        return asNodeList(descendantsMatching(element, elements, selector));
+      }},
+      getElementsByTagName(name) {{
+        const value = String(name).toLowerCase();
+        return asHtmlCollection(descendantsMatching(element, elements, value === "*" ? "*" : value));
+      }},
+      getElementsByClassName(name) {{
+        const value = String(name).trim();
+        if (!value) return asHtmlCollection([]);
+        return asHtmlCollection(descendantsMatching(element, elements, value.split(/\s+/).map(token => "." + token).join("")));
+      }},
       addEventListener(type, callback, options) {{
         addListener("node:" + entry.nodeIndex, type, callback, options);
       }},
@@ -8026,6 +8050,7 @@ fn document_bootstrap(
     const element = makeElement(entry);
     element.__glassCreated = true;
     defineTreeAccessors(element);
+    installClassList(element);
     pushCommand({{ kind: "createElement", node_index: nodeIndex, tag_name: normalized }});
     return element;
   }};
@@ -8542,12 +8567,293 @@ fn document_bootstrap(
   }};
   for (const element of elements) defineTreeAccessors(element);
   for (const text of textNodes) defineTreeAccessors(text);
-  const matches = (element, selector) => {{
+  const splitSelectorList = (selector) => {{
     const value = String(selector).trim();
-    if (value.startsWith("#")) return element.id === value.slice(1);
-    if (value.startsWith(".")) return element.className.split(/\s+/).includes(value.slice(1));
-    return element.tagName.toLowerCase() === value.toLowerCase();
+    if (!value) throw new SyntaxError("selector cannot be empty");
+    const result = [];
+    let part = "";
+    let depth = 0;
+    let quote = "";
+    for (let index = 0; index < value.length; index += 1) {{
+      const character = value[index];
+      if (quote) {{
+        part += character;
+        if (character === quote && value[index - 1] !== "\\") quote = "";
+        continue;
+      }}
+      if (character === "'" || character === '"') {{
+        quote = character;
+        part += character;
+      }} else if (character === "[" || character === "(") {{
+        depth += 1;
+        part += character;
+      }} else if (character === "]" || character === ")") {{
+        depth -= 1;
+        if (depth < 0) throw new SyntaxError("unbalanced selector");
+        part += character;
+      }} else if (character === "," && depth === 0) {{
+        if (!part.trim()) throw new SyntaxError("empty selector list member");
+        result.push(part.trim());
+        part = "";
+      }} else {{
+        part += character;
+      }}
+    }}
+    if (quote || depth !== 0 || !part.trim()) throw new SyntaxError("invalid selector");
+    result.push(part.trim());
+    return result;
   }};
+  const parseSelectorChain = (selector) => {{
+    const tokens = [];
+    let part = "";
+    let depth = 0;
+    let quote = "";
+    let pendingSpace = false;
+    const pushSimple = () => {{
+      if (!part.trim()) return;
+      tokens.push({{ type: "simple", value: part.trim() }});
+      part = "";
+    }};
+    for (let index = 0; index < selector.length; index += 1) {{
+      const character = selector[index];
+      if (quote) {{
+        part += character;
+        if (character === quote && selector[index - 1] !== "\\") quote = "";
+        continue;
+      }}
+      if (character === "'" || character === '"') {{
+        quote = character;
+        part += character;
+      }} else if (character === "[" || character === "(") {{
+        depth += 1;
+        pendingSpace = false;
+        part += character;
+      }} else if (character === "]" || character === ")") {{
+        depth -= 1;
+        if (depth < 0) throw new SyntaxError("unbalanced selector");
+        part += character;
+      }} else if (depth === 0 && character === ">") {{
+        pushSimple();
+        if (tokens[tokens.length - 1] && tokens[tokens.length - 1].type === "combinator") {{
+          throw new SyntaxError("invalid selector combinator");
+        }}
+        tokens.push({{ type: "combinator", value: ">" }});
+        pendingSpace = false;
+      }} else if (depth === 0 && /\s/.test(character)) {{
+        pushSimple();
+        pendingSpace = true;
+      }} else {{
+        if (pendingSpace && tokens.length > 0
+            && tokens[tokens.length - 1].type === "simple") {{
+          tokens.push({{ type: "combinator", value: " " }});
+        }}
+        pendingSpace = false;
+        part += character;
+      }}
+    }}
+    pushSimple();
+    if (quote || depth !== 0 || tokens.length === 0
+        || tokens[0].type !== "simple"
+        || tokens[tokens.length - 1].type !== "simple") {{
+      throw new SyntaxError("invalid selector chain");
+    }}
+    return tokens;
+  }};
+  const selectorAttribute = (element, expression) => {{
+    const match = String(expression).trim().match(
+      /^([^\s~|^$*!=]+)\s*(?:(!=|[~|^$*]?=)\s*(.*?)\s*)?$/
+    );
+    if (!match) throw new SyntaxError("invalid attribute selector");
+    const name = match[1];
+    const operator = match[2] || null;
+    let expected = match[3] === undefined ? null : match[3].trim();
+    let insensitive = false;
+    if (expected && /\s+i$/i.test(expected)) {{
+      expected = expected.replace(/\s+i$/i, "").trim();
+      insensitive = true;
+    }}
+    if (expected && ((expected.startsWith('"') && expected.endsWith('"'))
+        || (expected.startsWith("'") && expected.endsWith("'")))) {{
+      expected = expected.slice(1, -1);
+    }}
+    const actual = element.getAttribute(name);
+    if (!operator) return actual !== null;
+    if (actual === null) return operator === "!=";
+    const left = insensitive ? actual.toLowerCase() : actual;
+    const right = insensitive ? expected.toLowerCase() : expected;
+    switch (operator) {{
+      case "=": return left === right;
+      case "!=": return left !== right;
+      case "~=": return left.split(/\s+/).includes(right);
+      case "|=": return left === right || left.startsWith(right + "-");
+      case "^=": return left.startsWith(right);
+      case "$=": return left.endsWith(right);
+      case "*=": return left.includes(right);
+      default: throw new SyntaxError("unsupported attribute operator");
+    }}
+  }};
+  const elementChildren = (element) => element && Array.isArray(element.__glassChildren)
+    ? element.__glassChildren.filter((child) => child && child.nodeType === 1)
+    : [];
+  const matchesSimpleSelector = (element, selector) => {{
+    if (!element || element.nodeType !== 1) return false;
+    let rest = String(selector).trim();
+    const tag = rest.match(/^([A-Za-z][A-Za-z0-9:_-]*|\*)/);
+    if (tag) {{
+      if (tag[1] !== "*" && element.tagName.toLowerCase() !== tag[1].toLowerCase()) return false;
+      rest = rest.slice(tag[0].length);
+    }}
+    while (rest.length > 0) {{
+      if (rest[0] === "#") {{
+        const match = rest.slice(1).match(/^[A-Za-z0-9_\-:]+/);
+        if (!match || element.id !== match[0]) return false;
+        rest = rest.slice(match[0].length + 1);
+      }} else if (rest[0] === ".") {{
+        const match = rest.slice(1).match(/^[A-Za-z0-9_\-]+/);
+        if (!match || !String(element.className).split(/\s+/).includes(match[0])) return false;
+        rest = rest.slice(match[0].length + 1);
+      }} else if (rest[0] === "[") {{
+        const end = rest.indexOf("]");
+        if (end < 0) throw new SyntaxError("unclosed attribute selector");
+        if (!selectorAttribute(element, rest.slice(1, end))) return false;
+        rest = rest.slice(end + 1);
+      }} else if (rest[0] === ":") {{
+        const pseudo = rest.match(/^:([A-Za-z-]+)(?:\(([^()]*)\))?/);
+        if (!pseudo) throw new SyntaxError("invalid pseudo-class");
+        const name = pseudo[1].toLowerCase();
+        const argument = pseudo[2];
+        const siblings = elementChildren(element.parentElement);
+        const position = siblings.indexOf(element) + 1;
+        if (name === "not") {{
+          if (argument === undefined || matchesSelector(element, argument)) return false;
+        }} else if (name === "is" || name === "where") {{
+          if (argument === undefined || !matchesSelector(element, argument)) return false;
+        }} else if (name === "first-child" && position !== 1) return false;
+        else if (name === "last-child" && position !== siblings.length) return false;
+        else if (name === "only-child" && siblings.length !== 1) return false;
+        else if (name === "nth-child") {{
+          const value = String(argument || "").trim().toLowerCase();
+          const expected = value === "odd" ? position % 2 === 1
+            : value === "even" ? position % 2 === 0
+            : Number.isInteger(Number(value)) && position === Number(value);
+          if (!expected) return false;
+        }} else if (name === "root") {{
+          if (!element.ownerDocument || element.ownerDocument.documentElement !== element) return false;
+        }} else if (name === "empty") {{
+          if (Array.isArray(element.__glassChildren)
+              && element.__glassChildren.some((child) => child.nodeType === 1
+                || String(child.__glassTextValue || "").length > 0)) return false;
+        }} else if (name === "checked" && !element.checked) return false;
+        else if (name === "selected" && !element.selected) return false;
+        else if (name === "disabled" && !element.disabled) return false;
+        else if (name === "enabled" && element.disabled) return false;
+        else if (name !== "not" && name !== "is" && name !== "where"
+            && name !== "first-child" && name !== "last-child"
+            && name !== "only-child" && name !== "nth-child" && name !== "root"
+            && name !== "empty" && name !== "checked" && name !== "selected"
+            && name !== "disabled" && name !== "enabled") {{
+          throw new SyntaxError("unsupported pseudo-class");
+        }}
+        rest = rest.slice(pseudo[0].length);
+      }} else {{
+        throw new SyntaxError("invalid selector token");
+      }}
+    }}
+    return true;
+  }};
+  const matchesSelector = (element, selector) => splitSelectorList(selector).some((member) => {{
+    const chain = parseSelectorChain(member);
+    const visit = (candidate, index) => {{
+      if (!candidate || !matchesSimpleSelector(candidate, chain[index].value)) return false;
+      if (index === 0) return true;
+      const combinator = chain[index - 1].value;
+      if (combinator === ">") return visit(candidate.parentElement, index - 2);
+      let ancestor = candidate.parentElement;
+      while (ancestor) {{
+        if (visit(ancestor, index - 2)) return true;
+        ancestor = ancestor.parentElement;
+      }}
+      return false;
+    }};
+    return visit(element, chain.length - 1);
+  }});
+  const isDescendantOf = (element, owner) => {{
+    let parent = element && element.parentElement;
+    while (parent) {{
+      if (parent === owner) return true;
+      parent = parent.parentElement;
+    }}
+    return false;
+  }};
+  const descendantsMatching = (owner, candidates, selector) =>
+    candidates.filter((element) => isDescendantOf(element, owner) && matchesSelector(element, selector));
+  const classToken = (value) => {{
+    const token = String(value);
+    if (!token || /\s/.test(token)) throw new TypeError("class token must be non-empty and whitespace-free");
+    return token;
+  }};
+  const makeClassList = (element) => {{
+    const tokens = () => String(element.className || "").split(/\s+/).filter(Boolean);
+    const write = (next) => element.setAttribute("class", Array.from(new Set(next)).join(" "));
+    const api = {{
+      get length() {{ return tokens().length; }},
+      item(index) {{
+        const value = tokens()[Number(index)];
+        return value === undefined ? null : value;
+      }},
+      contains(value) {{ return tokens().includes(classToken(value)); }},
+      add(...values) {{
+        const next = tokens();
+        for (const value of values) {{
+          const token = classToken(value);
+          if (!next.includes(token)) next.push(token);
+        }}
+        write(next);
+      }},
+      remove(...values) {{
+        const removed = new Set(values.map(classToken));
+        write(tokens().filter((token) => !removed.has(token)));
+      }},
+      toggle(value, force) {{
+        const token = classToken(value);
+        const present = tokens().includes(token);
+        const shouldAdd = force === undefined ? !present : Boolean(force);
+        if (shouldAdd && !present) write([...tokens(), token]);
+        if (!shouldAdd && present) write(tokens().filter((candidate) => candidate !== token));
+        return shouldAdd;
+      }},
+      replace(oldValue, newValue) {{
+        const oldToken = classToken(oldValue);
+        const newToken = classToken(newValue);
+        const next = tokens();
+        const index = next.indexOf(oldToken);
+        if (index < 0) return false;
+        next[index] = newToken;
+        write(next);
+        return true;
+      }},
+      toString() {{ return tokens().join(" "); }},
+      get value() {{ return tokens().join(" "); }},
+      set value(next) {{ write(String(next).split(/\s+/).filter(Boolean)); }},
+    }};
+    api[Symbol.iterator] = function() {{ return tokens()[Symbol.iterator](); }};
+    const constructor = globalThis.DOMTokenList;
+    if (typeof constructor === "function" && constructor.prototype) {{
+      try {{ Object.setPrototypeOf(api, constructor.prototype); }} catch (_error) {{}}
+    }}
+    return api;
+  }};
+  const installClassList = (element) => {{
+    if (Object.prototype.hasOwnProperty.call(element, "classList")) return;
+    let current = null;
+    Object.defineProperty(element, "classList", {{
+      enumerable: false,
+      configurable: false,
+      get() {{ return current || (current = makeClassList(element)); }},
+    }});
+  }};
+  for (const element of elements) installClassList(element);
+  const matches = (element, selector) => matchesSelector(element, selector);
   const findAll = (selector) => asNodeList(elements.filter((element) => matches(element, selector)));
   const body = elements.find((element) => element.tagName === "BODY") || null;
   const documentElement = elements.find((element) => element.tagName === "HTML") || null;
@@ -9170,10 +9476,7 @@ fn document_bootstrap(
   globalThis.__glassFrameDocumentCache = frameDocumentCache;
   globalThis.__glassFrameWindowCache = frameWindowCache;
   const projectedFrameMatches = (element, selector) => {{
-    const value = String(selector).trim();
-    if (value.startsWith("#")) return element.id === value.slice(1);
-    if (value.startsWith(".")) return element.className.split(/\s+/).includes(value.slice(1));
-    return element.tagName.toLowerCase() === value.toLowerCase();
+    return matchesSelector(element, selector);
   }};
   const makeFrameDocument = (
     binding,
@@ -9220,6 +9523,30 @@ fn document_bootstrap(
           return null;
         }},
         hasAttribute(name) {{ return this.getAttribute(name) !== null; }},
+        matches(selector) {{ return matchesSelector(projected, selector); }},
+        closest(selector) {{
+          let current = projected;
+          while (current) {{
+            if (matchesSelector(current, selector)) return current;
+            current = current.parentElement;
+          }}
+          return null;
+        }},
+        querySelector(selector) {{
+          return descendantsMatching(projected, frameElements, selector)[0] || null;
+        }},
+        querySelectorAll(selector) {{
+          return asNodeList(descendantsMatching(projected, frameElements, selector));
+        }},
+        getElementsByTagName(name) {{
+          const value = String(name).toLowerCase();
+          return asHtmlCollection(descendantsMatching(projected, frameElements, value === "*" ? "*" : value));
+        }},
+        getElementsByClassName(name) {{
+          const value = String(name).trim();
+          if (!value) return asHtmlCollection([]);
+          return asHtmlCollection(descendantsMatching(projected, frameElements, value.split(/\s+/).map(token => "." + token).join("")));
+        }},
         focus() {{
           if (this.disabled || this.hidden) return;
           queueFrameCommand(currentBinding, {{ kind: "focus", node_index: entry.nodeIndex }});
@@ -9594,6 +9921,7 @@ fn document_bootstrap(
     }}
     for (const element of frameElements) defineTreeAccessors(element);
     for (const text of frameTextNodes) defineTreeAccessors(text);
+    for (const element of frameElements) installClassList(element);
     const makeFrameDetachedElement = (tagName) => {{
       const normalized = String(tagName).toLowerCase();
       if (!/^[A-Za-z][A-Za-z0-9:_-]*$/.test(normalized)) throw new TypeError("invalid element name");
@@ -9776,6 +10104,7 @@ fn document_bootstrap(
       Object.defineProperty(projected, "ownerDocument", {{ enumerable: false, configurable: false, get() {{ return frameDocument; }} }});
       try {{ Object.setPrototypeOf(projected, elementPrototypeFor(projected.tagName)); }} catch (_error) {{}}
       defineTreeAccessors(projected);
+      installClassList(projected);
       queueFrameCommand(currentBinding, {{ kind: "createElement", node_index: nodeIndex, tag_name: normalized }});
       return projected;
     }};

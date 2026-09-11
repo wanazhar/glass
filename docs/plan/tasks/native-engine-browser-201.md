@@ -67,6 +67,14 @@ attribute model for the issue #40 promotion work.
   (1 passed, 0 failed)
 - `cargo test --quiet -p glass-browser --features native-engine --test native_engine native_same_origin_frame_script_projection_matches_window_contract -- --nocapture`
   (1 passed, 0 failed)
+- `python3 scripts/check-documentation-coverage.py` (851 Markdown files; 345
+  full-product MCP tools; 100 browser-only tools; 17 examples; 22 public
+  modules)
+- `python3 scripts/check-documentation-depth.py` (93 current guides; 19
+  substantive contracts)
+- `python3 scripts/check-release-documentation.py --previous-version 0.3.13
+  --require-previous-version` (851 documents; 61 previous-version hits; 1010
+  semantic audit hits; 0 current-claim failures)
 
 The focused witnesses cover parsed SVG XLink/XML attributes, detached SVG
 fragment parsing, namespace-aware Attr ownership and value mutation,

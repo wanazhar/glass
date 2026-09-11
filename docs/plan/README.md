@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-172` locally. The versioned
+`native-engine-browser-173` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1629,6 +1629,15 @@ DOM/document effects are ignored after navigation while stable frame-window
 lifecycle events remain observable. Complete observer APIs, resource
 scheduling, cross-realm identity, Web IDL parity, and native browser-complete
 promotion remain issue #40 gates.
+
+The completed native-engine-browser-173 slice adds bounded `MutationObserver`
+delivery to local and content-worker page realms. Script-representable
+attribute, character-data, child-list, reparenting, removal, and text/HTML
+replacement commands produce ordered records with optional old values and
+subtree filtering, and one existing Promise-job checkpoint delivers a callback
+batch. `disconnect()` and `takeRecords()` are supported. Cross-realm observer
+projection, layout/resource observers, complete resource scheduling, Web IDL,
+and browser-wide parity remain issue #40 gates.
 
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and

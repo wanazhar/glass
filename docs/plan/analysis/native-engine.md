@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-182`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-183`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
@@ -3373,6 +3373,18 @@ comments, raw-text/foreign-content rules, malformed-input recovery, and full
 Web IDL descriptor parity remain conformance work. Exact local evidence is in
 `docs/plan/tasks/native-engine-browser-179.md`; browser-complete promotion
 remains tracked issue-40 work.
+
+The completed native-engine-browser-183 slice closes the element `innerHTML`
+same-turn visibility gap. Element setters now use the bounded fragment parser
+to construct nested temporary children in local and projected realms; nested
+create/attribute/attach commands are suppressed during preview and one
+authoritative `setInnerHtml` command carries the mutation to Rust. Live element
+and document queries see parsed children before the script returns, and the
+mutation shadow queues expose added nodes to observers. Local, HTTP(S)
+content-worker, and same-origin frame tests cover immediate queries,
+serialization, text, and observer payloads. Full HTML tree-builder semantics
+and issue-40 browser parity remain open. Exact local evidence is in
+[native-engine-browser-183](../tasks/native-engine-browser-183.md).
 
 The completed native-engine-browser-182 slice extends the reflected-attribute
 contract from identity/class fields to common form and HTML properties. Local

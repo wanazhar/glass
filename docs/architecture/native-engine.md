@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-182` slice; the bounded foundation below remains
+`native-engine-browser-183` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5157,6 +5157,14 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - explicit Rust native-session construction and feature-gated CLI dispatch for
   local and bounded HTTP(S) URL shapes, including rejection of remote browser
   endpoints and unsupported browser-only flags.
+
+The completed native-engine-browser-183 slice extends live DOM mutation to
+element `innerHTML`. The bounded parser builds same-turn nested host children,
+so selectors, text, serialization, and `MutationObserver` added-node payloads
+observe the mutation immediately; a suppressed preview command scope keeps
+the Rust owner on one authoritative `setInnerHtml` transaction. Local,
+HTTP(S) content-worker, and same-origin frame paths are covered, while full
+HTML parsing and the remaining issue #40 promotion gates remain open.
 
 The completed native-engine-browser-182 slice extends reflected DOM properties
 to common form and HTML controls. Boolean properties (`disabled`, `hidden`,

@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-182` locally. The versioned
+`native-engine-browser-183` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1689,6 +1689,16 @@ Its contract and local evidence are recorded in
 [native-engine-browser-178](tasks/native-engine-browser-178.md); cross-document
 session history, bfcache, cross-origin history, and browser-wide parity remain
 issue #40 promotion gates.
+
+The completed native-engine-browser-183 slice makes element `innerHTML`
+mutation visible in the current script turn. Local, HTTP(S) content-worker,
+and same-origin frame elements now parse bounded nested markup into live host
+children for immediate selectors, text, serialization, and observer records;
+the authoritative Rust command remains one `setInnerHtml` transaction while
+temporary parser commands are suppressed. Full HTML parsing, Web IDL
+reflection, and browser-wide promotion remain issue #40 gates. Its contract
+and local evidence are recorded in
+[native-engine-browser-183](tasks/native-engine-browser-183.md).
 
 The completed native-engine-browser-182 slice extends the attribute-backed
 DOM surface to common form and HTML properties: boolean properties such as

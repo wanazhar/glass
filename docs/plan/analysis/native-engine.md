@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-176`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-177`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
@@ -3334,6 +3334,17 @@ share the delivery checkpoint and limits; independent rendering/vsync,
 fractional/composited geometry, resource observers, complete scheduling, Web
 IDL descriptor parity, and browser-complete promotion remain tracked issue-40
 work.
+
+The completed native-engine-browser-177 slice carries the History API through
+the local and process-backed event owners. Bounded structured state and
+same-origin URL resolution now survive direct evaluation, local input and
+lifecycle callbacks, HTTP(S) content-worker callbacks, and fetch-resolved
+callback turns. Parent and worker history state/length/URL are synchronized by
+typed mutation envelopes, while ambiguous traversal plus competing navigation
+is rejected. Cross-document session history, bfcache, cross-origin history,
+complete Web IDL descriptors, and browser-complete promotion remain tracked
+issue-40 work; exact local evidence is in
+`docs/plan/tasks/native-engine-browser-177.md`.
 
 The completed native-engine-browser-169 slice adds frame-qualified EventTarget
 behavior to same-origin projected elements, detached projected elements,

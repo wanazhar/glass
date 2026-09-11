@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-176` locally. The versioned
+`native-engine-browser-177` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1666,6 +1666,16 @@ layout and scroll snapshot in local and process-backed realms; cancelled frame
 callbacks do not run. Independent rendering/vsync, fractional/composited
 geometry, resource observers, complete scheduling, Web IDL descriptor parity,
 and browser-wide parity remain issue #40 gates.
+
+The completed native-engine-browser-177 slice carries the History API through
+direct evaluation, local input/lifecycle dispatch, and process-backed HTTP(S)
+event callbacks. Bounded structured state, same-origin URL resolution,
+`history.length`, same-document traversal, popstate state, and worker URL/state
+synchronization are now typed and tested across both execution boundaries;
+ambiguous traversal plus competing navigation fails closed. Cross-document
+session history, bfcache, cross-origin history, complete Web IDL descriptors,
+and browser-wide parity remain issue #40 gates. Its contract and local evidence
+are recorded in [native-engine-browser-177](tasks/native-engine-browser-177.md).
 
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and

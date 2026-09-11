@@ -282,23 +282,25 @@ async fn native_local_document_fragments_preserve_tree_ownership_and_helpers() {
     assert_eq!(
         engine
             .evaluate_async(
-                "(() => { const host = document.querySelector('section'); host.id = 'property-id'; host.className = 'alpha beta'; const assigned = [host.id, host.className, host.getAttribute('id'), host.getAttribute('class'), document.getElementById('property-id') === host, document.querySelector('.beta') === host]; host.setAttribute('id', 'attribute-id'); host.removeAttribute('class'); return { assigned, method: [host.id, host.className, host.getAttribute('id'), host.getAttribute('class'), host.hasAttribute('class'), document.getElementById('attribute-id') === host] }; })()",
+                "(() => { const host = document.querySelector('section'); host.id = 'property-id'; host.className = 'alpha beta'; const assigned = [host.id, host.className, host.getAttribute('id'), host.getAttribute('class'), document.getElementById('property-id') === host, document.querySelector('.beta') === host]; host.setAttribute('id', 'attribute-id'); host.removeAttribute('class'); host.title = 'Title'; host.name = 'field'; host.required = true; host.readOnly = true; host.hidden = true; host.disabled = true; host.multiple = true; host.type = 'BUTTON'; const form = [host.title, host.name, host.required, host.readOnly, host.hidden, host.disabled, host.multiple, host.type, host.getAttribute('title'), host.getAttribute('name'), host.getAttribute('required'), host.getAttribute('readonly'), host.getAttribute('hidden'), host.getAttribute('disabled'), host.getAttribute('multiple'), host.getAttribute('type')]; host.required = false; host.readOnly = false; host.hidden = false; host.disabled = false; host.multiple = false; return { assigned, method: [host.id, host.className, host.getAttribute('id'), host.getAttribute('class'), host.hasAttribute('class'), document.getElementById('attribute-id') === host], form, cleared: [host.required, host.readOnly, host.hidden, host.disabled, host.multiple, host.hasAttribute('required'), host.hasAttribute('readonly'), host.hasAttribute('hidden'), host.hasAttribute('disabled'), host.hasAttribute('multiple')] }; })()",
             )
             .await
             .unwrap(),
         serde_json::json!({
             "assigned": ["property-id", "alpha beta", "property-id", "alpha beta", true, true],
             "method": ["attribute-id", "", "attribute-id", null, false, true],
+            "form": ["Title", "field", true, true, true, true, true, "button", "Title", "field", "", "", "", "", "", "BUTTON"],
+            "cleared": [false, false, false, false, false, false, false, false, false, false],
         })
     );
     assert_eq!(
         engine
             .evaluate_async(
-                "(() => { const host = document.getElementById('attribute-id'); return [host.id, host.className, host.getAttribute('id'), host.getAttribute('class'), document.querySelector('#attribute-id') === host]; })()",
+                "(() => { const host = document.getElementById('attribute-id'); return [host.id, host.className, host.getAttribute('id'), host.getAttribute('class'), document.querySelector('#attribute-id') === host, host.title, host.name, host.required, host.readOnly, host.hidden, host.disabled, host.multiple, host.type]; })()",
             )
             .await
             .unwrap(),
-        serde_json::json!(["attribute-id", "", "attribute-id", null, true])
+        serde_json::json!(["attribute-id", "", "attribute-id", null, true, "Title", "field", false, false, false, false, false, "button"])
     );
     let parsed = engine
         .evaluate_async(
@@ -1113,7 +1115,7 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
     assert_eq!(
         session
             .script(
-                "(() => { const child = document.getElementById('child').contentDocument; const reflected = child.createElement('label'); reflected.id = 'frame-property-id'; reflected.className = 'frame alpha'; child.body.appendChild(reflected); const assigned = [reflected.id, reflected.className, reflected.getAttribute('id'), reflected.getAttribute('class'), child.getElementById('frame-property-id') === reflected, child.querySelector('.alpha') === reflected]; reflected.setAttribute('id', 'frame-attribute-id'); reflected.removeAttribute('class'); return { assigned, method: [reflected.id, reflected.className, reflected.getAttribute('id'), reflected.getAttribute('class'), reflected.hasAttribute('class'), child.getElementById('frame-attribute-id') === reflected] }; })()",
+                "(() => { const child = document.getElementById('child').contentDocument; const reflected = child.createElement('label'); reflected.id = 'frame-property-id'; reflected.className = 'frame alpha'; child.body.appendChild(reflected); const assigned = [reflected.id, reflected.className, reflected.getAttribute('id'), reflected.getAttribute('class'), child.getElementById('frame-property-id') === reflected, child.querySelector('.alpha') === reflected]; reflected.setAttribute('id', 'frame-attribute-id'); reflected.removeAttribute('class'); reflected.title = 'Frame title'; reflected.name = 'frame-field'; reflected.required = true; reflected.readOnly = true; reflected.hidden = true; reflected.disabled = true; reflected.multiple = true; reflected.type = 'BUTTON'; const form = [reflected.title, reflected.name, reflected.required, reflected.readOnly, reflected.hidden, reflected.disabled, reflected.multiple, reflected.type, reflected.getAttribute('title'), reflected.getAttribute('name'), reflected.getAttribute('required'), reflected.getAttribute('readonly'), reflected.getAttribute('hidden'), reflected.getAttribute('disabled'), reflected.getAttribute('multiple'), reflected.getAttribute('type')]; reflected.required = false; reflected.readOnly = false; reflected.hidden = false; reflected.disabled = false; reflected.multiple = false; return { assigned, method: [reflected.id, reflected.className, reflected.getAttribute('id'), reflected.getAttribute('class'), reflected.hasAttribute('class'), child.getElementById('frame-attribute-id') === reflected], form, cleared: [reflected.required, reflected.readOnly, reflected.hidden, reflected.disabled, reflected.multiple, reflected.hasAttribute('required'), reflected.hasAttribute('readonly'), reflected.hasAttribute('hidden'), reflected.hasAttribute('disabled'), reflected.hasAttribute('multiple')] }; })()",
             )
             .await
             .unwrap()
@@ -1121,17 +1123,19 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
         serde_json::json!({
             "assigned": ["frame-property-id", "frame alpha", "frame-property-id", "frame alpha", true, true],
             "method": ["frame-attribute-id", "", "frame-attribute-id", null, false, true],
+            "form": ["Frame title", "frame-field", true, true, true, true, true, "button", "Frame title", "frame-field", "", "", "", "", "", "BUTTON"],
+            "cleared": [false, false, false, false, false, false, false, false, false, false],
         })
     );
     assert_eq!(
         session
             .script(
-                "(() => { const child = document.getElementById('child').contentDocument; const reflected = child.getElementById('frame-attribute-id'); return [reflected.id, reflected.className, reflected.getAttribute('id'), reflected.getAttribute('class'), child.querySelector('#frame-attribute-id') === reflected]; })()",
+                "(() => { const child = document.getElementById('child').contentDocument; const reflected = child.getElementById('frame-attribute-id'); return [reflected.id, reflected.className, reflected.getAttribute('id'), reflected.getAttribute('class'), child.querySelector('#frame-attribute-id') === reflected, reflected.title, reflected.name, reflected.required, reflected.readOnly, reflected.hidden, reflected.disabled, reflected.multiple, reflected.type]; })()",
             )
             .await
             .unwrap()
             .value,
-        serde_json::json!(["frame-attribute-id", "", "frame-attribute-id", null, true])
+        serde_json::json!(["frame-attribute-id", "", "frame-attribute-id", null, true, "Frame title", "frame-field", false, false, false, false, false, "button"])
     );
     let child_id = session
         .native_list_frames()
@@ -5996,23 +6000,25 @@ async fn native_content_process_document_fragments_cross_the_http_boundary() {
     assert_eq!(
         engine
             .evaluate_async(
-                "(() => { const reflected = document.createElement('label'); reflected.id = 'http-property-id'; reflected.className = 'http alpha'; document.body.appendChild(reflected); const assigned = [reflected.id, reflected.className, reflected.getAttribute('id'), reflected.getAttribute('class'), document.getElementById('http-property-id') === reflected, document.querySelector('.alpha') === reflected]; reflected.setAttribute('id', 'http-attribute-id'); reflected.removeAttribute('class'); return { assigned, method: [reflected.id, reflected.className, reflected.getAttribute('id'), reflected.getAttribute('class'), reflected.hasAttribute('class'), document.getElementById('http-attribute-id') === reflected] }; })()",
+                "(() => { const reflected = document.createElement('label'); reflected.id = 'http-property-id'; reflected.className = 'http alpha'; document.body.appendChild(reflected); const assigned = [reflected.id, reflected.className, reflected.getAttribute('id'), reflected.getAttribute('class'), document.getElementById('http-property-id') === reflected, document.querySelector('.alpha') === reflected]; reflected.setAttribute('id', 'http-attribute-id'); reflected.removeAttribute('class'); reflected.title = 'HTTP title'; reflected.name = 'http-field'; reflected.required = true; reflected.readOnly = true; reflected.type = 'BUTTON'; const form = [reflected.title, reflected.name, reflected.required, reflected.readOnly, reflected.type, reflected.getAttribute('title'), reflected.getAttribute('name'), reflected.getAttribute('required'), reflected.getAttribute('readonly'), reflected.getAttribute('type')]; reflected.required = false; reflected.readOnly = false; return { assigned, method: [reflected.id, reflected.className, reflected.getAttribute('id'), reflected.getAttribute('class'), reflected.hasAttribute('class'), document.getElementById('http-attribute-id') === reflected], form, cleared: [reflected.required, reflected.readOnly, reflected.hasAttribute('required'), reflected.hasAttribute('readonly')] }; })()",
             )
             .await
             .unwrap(),
         serde_json::json!({
             "assigned": ["http-property-id", "http alpha", "http-property-id", "http alpha", true, true],
             "method": ["http-attribute-id", "", "http-attribute-id", null, false, true],
+            "form": ["HTTP title", "http-field", true, true, "button", "HTTP title", "http-field", "", "", "BUTTON"],
+            "cleared": [false, false, false, false],
         })
     );
     assert_eq!(
         engine
             .evaluate_async(
-                "(() => { const reflected = document.getElementById('http-attribute-id'); return [reflected.id, reflected.className, reflected.getAttribute('id'), reflected.getAttribute('class'), document.querySelector('#http-attribute-id') === reflected]; })()",
+                "(() => { const reflected = document.getElementById('http-attribute-id'); return [reflected.id, reflected.className, reflected.getAttribute('id'), reflected.getAttribute('class'), document.querySelector('#http-attribute-id') === reflected, reflected.title, reflected.name, reflected.required, reflected.readOnly, reflected.type]; })()",
             )
             .await
             .unwrap(),
-        serde_json::json!(["http-attribute-id", "", "http-attribute-id", null, true])
+        serde_json::json!(["http-attribute-id", "", "http-attribute-id", null, true, "HTTP title", "http-field", false, false, "button"])
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

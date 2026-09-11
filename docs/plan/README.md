@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-179` locally. The versioned
+`native-engine-browser-180` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1689,6 +1689,16 @@ Its contract and local evidence are recorded in
 [native-engine-browser-178](tasks/native-engine-browser-178.md); cross-document
 session history, bfcache, cross-origin history, and browser-wide parity remain
 issue #40 promotion gates.
+
+The completed native-engine-browser-180 slice extends `MutationObserver` to
+document fragments. Fragment targets now accept child-list observation with
+ordered added/removed nodes and sibling payloads for detached insertion,
+reparenting, removal, and fragment staging; moving an attached node through a
+fragment also emits the native removal command needed to keep Rust state
+authoritative. Local, HTTP(S) content-worker, and same-origin frame realms
+share the contract, while broader observer/Web IDL parity and browser-wide
+promotion remain issue #40 gates. Its contract and local evidence are recorded
+in [native-engine-browser-180](tasks/native-engine-browser-180.md).
 
 The completed native-engine-browser-179 slice adds bounded fragment
 `innerHTML` parsing and live same-turn tree queries. Detached fragments now

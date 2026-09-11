@@ -8317,6 +8317,78 @@ fn document_bootstrap(
     .replace(/&quot;/gi, "\"")
     .replace(/&#39;/g, "'")
     .replace(/&amp;/gi, "&");
+  const decodeHtmlEntities = (value) => String(value)
+    .replace(/&nbsp;/gi, "\u00a0")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, "\"")
+    .replace(/&#39;/g, "'")
+    .replace(/&#x([0-9a-f]+);/gi, (match, digits) => {{
+      const codePoint = Number.parseInt(digits, 16);
+      return Number.isFinite(codePoint) && codePoint <= 0x10ffff
+        && !(codePoint >= 0xd800 && codePoint <= 0xdfff)
+        ? String.fromCodePoint(codePoint)
+        : match;
+    }})
+    .replace(/&#([0-9]+);/g, (match, digits) => {{
+      const codePoint = Number.parseInt(digits, 10);
+      return Number.isFinite(codePoint) && codePoint <= 0x10ffff
+        && !(codePoint >= 0xd800 && codePoint <= 0xdfff)
+        ? String.fromCodePoint(codePoint)
+        : match;
+    }})
+    .replace(/&amp;/gi, "&");
+  const populateDetachedFragment = (fragment, markup, createElement, createText) => {{
+    const stack = [fragment];
+    const tokens = String(markup).match(/<!--[\s\S]*?-->|<\/?[^>]*>|[^<]+|</g) || [];
+    const voidElements = ["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"];
+    for (const token of tokens) {{
+      if (token.startsWith("<!--")) continue;
+      if (token.startsWith("</")) {{
+        const closing = /^<\s*\/\s*([A-Za-z][A-Za-z0-9:_-]*)/.exec(token);
+        if (!closing) {{
+          stack[stack.length - 1].appendChild(createText(decodeHtmlEntities(token)));
+          continue;
+        }}
+        const name = closing[1].toLowerCase();
+        for (let index = stack.length - 1; index > 0; index -= 1) {{
+          if (stack[index].localName === name) {{
+            stack.length = index;
+            break;
+          }}
+        }}
+        continue;
+      }}
+      if (token.startsWith("<")) {{
+        const opening = /^<\s*([A-Za-z][A-Za-z0-9:_-]*)/.exec(token);
+        if (!opening || !token.endsWith(">")) {{
+          stack[stack.length - 1].appendChild(createText(decodeHtmlEntities(token)));
+          continue;
+        }}
+        const element = createElement(opening[1]);
+        const selfClosing = /\/\s*>$/.test(token);
+        const attributeSource = token
+          .slice(opening[0].length, token.length - 1)
+          .replace(/\/\s*$/, "");
+        const attributes = /([A-Za-z_:][A-Za-z0-9:._-]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>]+)))?/g;
+        let attribute;
+        while ((attribute = attributes.exec(attributeSource)) !== null) {{
+          const value = attribute[2] !== undefined
+            ? attribute[2]
+            : attribute[3] !== undefined
+              ? attribute[3]
+              : attribute[4] !== undefined
+                ? attribute[4]
+                : "";
+          element.setAttribute(attribute[1], decodeHtmlEntities(value));
+        }}
+        stack[stack.length - 1].appendChild(element);
+        if (!selfClosing && !voidElements.includes(element.localName)) stack.push(element);
+        continue;
+      }}
+      stack[stack.length - 1].appendChild(createText(decodeHtmlEntities(token)));
+    }}
+  }};
   let nextTemporaryNodeIndex = 4294967294;
   const allocateTemporaryNodeIndex = () => {{
     const value = nextTemporaryNodeIndex;
@@ -8420,19 +8492,22 @@ fn document_bootstrap(
         return null;
       }},
       querySelector(selector) {{
-        return descendantsMatching(element, elements, selector)[0] || null;
+        return descendantsInTree(element, (candidate) => matchesSelector(candidate, selector))[0] || null;
       }},
       querySelectorAll(selector) {{
-        return asNodeList(descendantsMatching(element, elements, selector));
+        return asNodeList(descendantsInTree(element, (candidate) => matchesSelector(candidate, selector)));
       }},
       getElementsByTagName(name) {{
         const value = String(name).toLowerCase();
-        return asHtmlCollection(descendantsMatching(element, elements, value === "*" ? "*" : value));
+        return asHtmlCollection(descendantsInTree(element, (candidate) =>
+          value === "*" || candidate.tagName.toLowerCase() === value));
       }},
       getElementsByClassName(name) {{
         const value = String(name).trim();
         if (!value) return asHtmlCollection([]);
-        return asHtmlCollection(descendantsMatching(element, elements, value.split(/\s+/).map(token => "." + token).join("")));
+        const tokens = value.split(/\s+/);
+        return asHtmlCollection(descendantsInTree(element, (candidate) =>
+          tokens.every((token) => String(candidate.className).split(/\s+/).includes(token))));
       }},
       addEventListener(type, callback, options) {{
         addListener("node:" + entry.nodeIndex, type, callback, options);
@@ -8688,7 +8763,7 @@ fn document_bootstrap(
           innerHtml = "";
           textContent = "";
         }}
-        if (element.__glassParent) element.__glassParent.__glassSyncContent(clearEmpty);
+        if (element.__glassParent && typeof element.__glassParent.__glassSyncContent === "function") element.__glassParent.__glassSyncContent(clearEmpty);
       }},
     }});
     Object.defineProperty(element, "__glassTextValue", {{
@@ -8977,7 +9052,7 @@ fn document_bootstrap(
         if (value.length > {storage_value_limit}) throw new RangeError("native text node exceeds its limit");
         textContent = value;
         text.nodeValue = value;
-        if (text.__glassParent) text.__glassParent.__glassSyncContent();
+        if (text.__glassParent && typeof text.__glassParent.__glassSyncContent === "function") text.__glassParent.__glassSyncContent();
         pushCommand({{ kind: "setTextContent", node_index: nodeIndex, value }});
       }},
     }});
@@ -9072,6 +9147,17 @@ fn document_bootstrap(
         for (const child of fragment.__glassChildren.slice()) child.remove();
         const value = String(next);
         if (value) fragment.appendChild(fragment.ownerDocument.createTextNode(value));
+        }},
+      }});
+    Object.defineProperty(fragment, "innerHTML", {{
+      enumerable: true,
+      configurable: false,
+      get() {{ return fragment.__glassMarkup; }},
+      set(next) {{
+        const value = String(next);
+        if (value.length > storageValueLimit) throw new RangeError("native fragment innerHTML exceeds its limit");
+        for (const child of fragment.__glassChildren.slice()) child.remove();
+        populateDetachedFragment(fragment, value, makeDetachedElement, makeDetachedText);
       }},
     }});
     defineTreeAccessors(fragment);
@@ -9136,7 +9222,7 @@ fn document_bootstrap(
         if (value.length > {storage_value_limit}) throw new RangeError("native text node exceeds its limit");
         textContent = value;
         text.nodeValue = value;
-        if (text.__glassParent) text.__glassParent.__glassSyncContent();
+        if (text.__glassParent && typeof text.__glassParent.__glassSyncContent === "function") text.__glassParent.__glassSyncContent();
         pushCommand({{ kind: "setTextContent", node_index: text.nodeIndex, value }});
       }},
     }});
@@ -9387,6 +9473,17 @@ fn document_bootstrap(
   const defineMissing = (target, name, descriptor) => {{
     if (!Object.prototype.hasOwnProperty.call(target, name)) Object.defineProperty(target, name, descriptor);
   }};
+  const descendantsInTree = (owner, predicate) => {{
+    const result = [];
+    const visit = (node) => {{
+      for (const child of Array.isArray(node && node.__glassChildren) ? node.__glassChildren : []) {{
+        if (child && child.nodeType === 1 && predicate(child)) result.push(child);
+        visit(child);
+      }}
+    }};
+    visit(owner);
+    return result;
+  }};
   const defineTreeAccessors = (node) => {{
     if (!node || typeof node !== "object") return node;
     const children = () => Array.isArray(node.__glassChildren) ? node.__glassChildren : [];
@@ -9488,6 +9585,42 @@ fn document_bootstrap(
       }},
     }});
     if (node.nodeType === 1 || node.nodeType === 3 || node.nodeType === 11) {{
+      if (node.nodeType === 1 || node.nodeType === 11) {{
+        defineMissing(node, "querySelector", {{
+          enumerable: false,
+          configurable: false,
+          value(selector) {{
+            return descendantsInTree(node, (candidate) => matchesSelector(candidate, selector))[0] || null;
+          }},
+        }});
+        defineMissing(node, "querySelectorAll", {{
+          enumerable: false,
+          configurable: false,
+          value(selector) {{
+            return asNodeList(descendantsInTree(node, (candidate) => matchesSelector(candidate, selector)));
+          }},
+        }});
+        defineMissing(node, "getElementsByTagName", {{
+          enumerable: false,
+          configurable: false,
+          value(name) {{
+            const value = String(name).toLowerCase();
+            return asHtmlCollection(descendantsInTree(node, (candidate) =>
+              value === "*" || candidate.tagName.toLowerCase() === value));
+          }},
+        }});
+        defineMissing(node, "getElementsByClassName", {{
+          enumerable: false,
+          configurable: false,
+          value(name) {{
+            const value = String(name).trim();
+            if (!value) return asHtmlCollection([]);
+            const tokens = value.split(/\s+/);
+            return asHtmlCollection(descendantsInTree(node, (candidate) =>
+              tokens.every((token) => String(candidate.className).split(/\s+/).includes(token))));
+          }},
+        }});
+      }}
       const insertionText = (value) => node.ownerDocument
         && typeof node.ownerDocument.createTextNode === "function"
         ? node.ownerDocument.createTextNode(String(value))
@@ -11274,19 +11407,22 @@ fn document_bootstrap(
           return null;
         }},
         querySelector(selector) {{
-          return descendantsMatching(projected, frameElements, selector)[0] || null;
+          return descendantsInTree(projected, (candidate) => matchesSelector(candidate, selector))[0] || null;
         }},
         querySelectorAll(selector) {{
-          return asNodeList(descendantsMatching(projected, frameElements, selector));
+          return asNodeList(descendantsInTree(projected, (candidate) => matchesSelector(candidate, selector)));
         }},
         getElementsByTagName(name) {{
           const value = String(name).toLowerCase();
-          return asHtmlCollection(descendantsMatching(projected, frameElements, value === "*" ? "*" : value));
+          return asHtmlCollection(descendantsInTree(projected, (candidate) =>
+            value === "*" || candidate.tagName.toLowerCase() === value));
         }},
         getElementsByClassName(name) {{
           const value = String(name).trim();
           if (!value) return asHtmlCollection([]);
-          return asHtmlCollection(descendantsMatching(projected, frameElements, value.split(/\s+/).map(token => "." + token).join("")));
+          const tokens = value.split(/\s+/);
+          return asHtmlCollection(descendantsInTree(projected, (candidate) =>
+            tokens.every((token) => String(candidate.className).split(/\s+/).includes(token))));
         }},
         focus() {{
           if (this.disabled || this.hidden) return;
@@ -11477,7 +11613,7 @@ fn document_bootstrap(
             innerHtml = "";
             textContent = "";
           }}
-          if (projected.__glassParent) projected.__glassParent.__glassSyncContent(clearEmpty);
+          if (projected.__glassParent && typeof projected.__glassParent.__glassSyncContent === "function") projected.__glassParent.__glassSyncContent(clearEmpty);
         }},
       }});
       Object.defineProperty(projected, "__glassTextValue", {{
@@ -11666,7 +11802,7 @@ fn document_bootstrap(
             if (value.length > {storage_value_limit}) throw new RangeError("native text node exceeds its limit");
             textContent = value;
             text.nodeValue = value;
-            if (text.__glassParent) text.__glassParent.__glassSyncContent();
+            if (text.__glassParent && typeof text.__glassParent.__glassSyncContent === "function") text.__glassParent.__glassSyncContent();
             queueFrameCommand(currentBinding, {{ kind: "setTextContent", node_index: text.nodeIndex, value }});
           }},
         }});
@@ -11897,7 +12033,7 @@ fn document_bootstrap(
             innerHtml = "";
             textContent = "";
           }}
-          if (projected.__glassParent) projected.__glassParent.__glassSyncContent(clearEmpty);
+          if (projected.__glassParent && typeof projected.__glassParent.__glassSyncContent === "function") projected.__glassParent.__glassSyncContent(clearEmpty);
         }},
       }});
       Object.defineProperty(projected, "__glassTextValue", {{ enumerable: false, configurable: false, get() {{ return textContent; }} }});
@@ -11913,7 +12049,7 @@ fn document_bootstrap(
         }},
       }});
       Object.defineProperty(projected, "parentElement", {{ enumerable: false, configurable: false, get() {{ return projected.__glassParent && projected.__glassParent.nodeType === 1 ? projected.__glassParent : null; }} }});
-      Object.defineProperty(projected, "parentNode", {{ enumerable: false, configurable: false, get() {{ return projected.parentElement; }} }});
+      Object.defineProperty(projected, "parentNode", {{ enumerable: false, configurable: false, get() {{ return projected.__glassParent || projected.parentElement; }} }});
       for (const property of ["textContent", "innerText"]) {{
         Object.defineProperty(projected, property, {{
           enumerable: true,
@@ -11982,7 +12118,7 @@ fn document_bootstrap(
             : null;
         }},
       }});
-      Object.defineProperty(text, "textContent", {{ enumerable: true, configurable: false, get() {{ return textContent; }}, set(next) {{ textContent = String(next); if (text.__glassParent) text.__glassParent.__glassSyncContent(); queueFrameCommand(currentBinding, {{ kind: "setTextContent", node_index: nodeIndex, value: textContent }}); }} }});
+      Object.defineProperty(text, "textContent", {{ enumerable: true, configurable: false, get() {{ return textContent; }}, set(next) {{ textContent = String(next); if (text.__glassParent && typeof text.__glassParent.__glassSyncContent === "function") text.__glassParent.__glassSyncContent(); queueFrameCommand(currentBinding, {{ kind: "setTextContent", node_index: nodeIndex, value: textContent }}); }} }});
       Object.defineProperty(text, "ownerDocument", {{ enumerable: false, configurable: false, get() {{ return frameDocument; }} }});
       text.remove = () => {{
         const parent = text.__glassParent || null;
@@ -12090,6 +12226,17 @@ fn document_bootstrap(
           for (const child of fragment.__glassChildren.slice()) child.remove();
           const value = String(next);
           if (value) fragment.appendChild(fragment.ownerDocument.createTextNode(value));
+          }},
+        }});
+      Object.defineProperty(fragment, "innerHTML", {{
+        enumerable: true,
+        configurable: false,
+        get() {{ return fragment.__glassMarkup; }},
+        set(next) {{
+          const value = String(next);
+          if (value.length > storageValueLimit) throw new RangeError("native frame fragment innerHTML exceeds its limit");
+          for (const child of fragment.__glassChildren.slice()) child.remove();
+          populateDetachedFragment(fragment, value, makeFrameDetachedElement, makeFrameDetachedText);
         }},
       }});
       defineTreeAccessors(fragment);

@@ -6240,7 +6240,7 @@ async fn native_content_process_evaluates_persistent_script_realm() {
             .evaluate_async("(() => { const paragraph = document.getElementById('copy'); paragraph.innerHTML = \"<strong id='new-copy'>Updated &amp; literal</strong>\"; return [paragraph.innerHTML, paragraph.textContent]; })()")
             .await
             .unwrap(),
-        serde_json::json!(["<strong id='new-copy'>Updated &amp; literal</strong>", "Updated & literal"])
+        serde_json::json!(["<strong id=\"new-copy\">Updated &amp; literal</strong>", "Updated & literal"])
     );
     assert_eq!(
         engine

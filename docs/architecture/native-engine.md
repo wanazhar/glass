@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-223` slice; the bounded foundation below remains
+`native-engine-browser-224` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5429,6 +5429,16 @@ load/error behavior with PNG and JPEG. The picture type gate accepts WebP when
 the source is static; animated WebP is rejected until a native frame/timing
 owner exists, avoiding a false first-frame-only playback claim. Exact evidence
 is in `docs/plan/tasks/native-engine-browser-223.md`.
+
+The completed native-engine-browser-224 slice extends the image decoder owner
+to static GIF. Local data URLs and external HTTP(S) `image/gif` responses now
+decode one full-canvas frame to bounded RGBA pixels, with decoder memory,
+dimensions, pixel count, and transfer size validated before publication.
+`<picture>` accepts GIF sources through the same source-selection, cache,
+intrinsic-state, display-list, capture, and terminal load/error path. Multi-
+frame, sub-rect, malformed, and over-limit GIFs remain broken until native
+frame timing, compositing, and repaint invalidation are owned. Exact evidence
+is in `docs/plan/tasks/native-engine-browser-224.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

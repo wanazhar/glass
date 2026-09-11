@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-223` locally. The versioned
+`native-engine-browser-224` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1957,6 +1957,15 @@ cache state, and lifecycle/current-source results; `<picture type="image/webp">`
 can select the native decoder. Animated WebP remains queued for the frame and
 timing owner. Exact evidence is recorded in
 [native-engine-browser-223](tasks/native-engine-browser-223.md).
+
+The completed native-engine-browser-224 slice adds bounded static GIF image
+decode alongside PNG, JPEG, and WebP. Local data URLs and external HTTP(S)
+resources now decode one validated full-canvas frame to RGBA pixels, preserving
+intrinsic dimensions, display-list paint, cache state, and lifecycle/current-
+source results; `<picture type="image/gif">` can select the native decoder.
+Multi-frame, sub-rect, malformed, and over-limit GIFs remain broken until the
+native frame, compositing, and repaint owners exist. Exact evidence is
+recorded in [native-engine-browser-224](tasks/native-engine-browser-224.md).
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` now returns persistent `Attr`

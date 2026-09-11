@@ -61,6 +61,7 @@ pub(crate) struct NativeContentLoad {
     pub(crate) origin: NativeOrigin,
     pub(crate) document: NativeDocumentWire,
     pub(crate) frame_sources: Option<Vec<String>>,
+    pub(crate) events: Vec<NativeContentEvent>,
     pub(crate) navigation: Option<NativeContentNavigation>,
     pub(crate) storage_events: Vec<NativeStorageEvent>,
     pub(crate) indexed_db_changes: Vec<NativeIndexedDbChange>,
@@ -1095,6 +1096,7 @@ fn decode_loaded_response(
         ));
     }
     let document = decode_document_wire(&document_bytes, "decode content process load")?;
+    let events = decode_event_payload(response, "decode content process load")?;
     let origin_url =
         url::Url::parse(without_fragment(url)).map_err(|_| NativeEngineError::Worker {
             operation: "decode content process load".into(),
@@ -1121,6 +1123,7 @@ fn decode_loaded_response(
         origin,
         document,
         frame_sources,
+        events,
         navigation,
         storage_events,
         indexed_db_changes,
@@ -1364,40 +1367,7 @@ fn decode_mutation_payload(
             reason: "content process returned an invalid document snapshot".into(),
         })?;
     let document = decode_document_wire(&document_bytes, operation)?;
-    let event_values = response
-        .get("events")
-        .and_then(Value::as_array)
-        .ok_or_else(|| NativeEngineError::Worker {
-            operation: operation.into(),
-            reason: "content process omitted mutation effects".into(),
-        })?;
-    if event_values.len() > MAX_NATIVE_EFFECTS {
-        return Err(NativeEngineError::limit(
-            "content-process mutation effects",
-            MAX_NATIVE_EFFECTS,
-            event_values.len(),
-        ));
-    }
-    let mut events = Vec::with_capacity(event_values.len());
-    for value in event_values {
-        let node_index = value
-            .get("node_index")
-            .and_then(Value::as_u64)
-            .and_then(|value| u32::try_from(value).ok())
-            .ok_or_else(|| NativeEngineError::Worker {
-                operation: operation.into(),
-                reason: "content process returned an invalid mutation node".into(),
-            })?;
-        let kind = value
-            .get("kind")
-            .and_then(Value::as_str)
-            .and_then(parse_event_kind)
-            .ok_or_else(|| NativeEngineError::Worker {
-                operation: operation.into(),
-                reason: "content process returned an invalid mutation effect".into(),
-            })?;
-        events.push(NativeContentEvent { node_index, kind });
-    }
+    let events = decode_event_payload(response, operation)?;
     let navigation = response
         .get("navigation")
         .filter(|value| !value.is_null())
@@ -1428,6 +1398,47 @@ fn decode_mutation_payload(
         window_navigations,
         window_name,
     })
+}
+
+fn decode_event_payload(
+    response: &Value,
+    operation: &str,
+) -> Result<Vec<NativeContentEvent>, NativeEngineError> {
+    let event_values = response
+        .get("events")
+        .and_then(Value::as_array)
+        .ok_or_else(|| NativeEngineError::Worker {
+            operation: operation.into(),
+            reason: "content process omitted event effects".into(),
+        })?;
+    if event_values.len() > MAX_NATIVE_EFFECTS {
+        return Err(NativeEngineError::limit(
+            "content-process mutation effects",
+            MAX_NATIVE_EFFECTS,
+            event_values.len(),
+        ));
+    }
+    let mut events = Vec::with_capacity(event_values.len());
+    for value in event_values {
+        let node_index = value
+            .get("node_index")
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or_else(|| NativeEngineError::Worker {
+                operation: operation.into(),
+                reason: "content process returned an invalid mutation node".into(),
+            })?;
+        let kind = value
+            .get("kind")
+            .and_then(Value::as_str)
+            .and_then(parse_event_kind)
+            .ok_or_else(|| NativeEngineError::Worker {
+                operation: operation.into(),
+                reason: "content process returned an invalid mutation effect".into(),
+            })?;
+        events.push(NativeContentEvent { node_index, kind });
+    }
+    Ok(events)
 }
 
 fn decode_popup_requests(
@@ -2508,6 +2519,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         let prepared = match page_scripts {
                             Ok(page_scripts) if page_scripts.navigation.is_some() => {
                                 let dialogs = page_scripts.dialogs;
+                                let events = page_scripts.events;
                                 let navigation = page_scripts.navigation.map(|navigation| {
                                     NativeContentNavigation {
                                         node_index: 0,
@@ -2517,13 +2529,14 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                         replace_history: navigation.replace_history,
                                     }
                                 });
-                                Ok((parsed, navigation, dialogs))
+                                Ok((parsed, navigation, dialogs, events))
                             }
                             Ok(page_scripts) if page_scripts.pending_fetches.is_empty() => {
-                                Ok((parsed, None, page_scripts.dialogs))
+                                Ok((parsed, None, page_scripts.dialogs, page_scripts.events))
                             }
                             Ok(page_scripts) => {
                                 let page_dialogs = page_scripts.dialogs;
+                                let mut page_events = page_scripts.events;
                                 match (script_runtime.as_ref(), resource_loader.as_mut()) {
                                     (Some(runtime), Some(loader)) => {
                                         match resolve_script_fetches(
@@ -2541,7 +2554,17 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                         .await
                                         {
                                             Ok((next, mutation)) => {
-                                                Ok((next, mutation.navigation, page_dialogs))
+                                                page_events.extend(
+                                                    mutation.events.into_iter().map(|event| {
+                                                        (event.node_index, event.kind)
+                                                    }),
+                                                );
+                                                Ok((
+                                                    next,
+                                                    mutation.navigation,
+                                                    page_dialogs,
+                                                    page_events,
+                                                ))
                                             }
                                             Err(error) => Err(error),
                                         }
@@ -2555,7 +2578,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             Err(error) => Err(error),
                         };
                         match prepared {
-                            Ok((parsed, navigation, dialogs)) => {
+                            Ok((parsed, navigation, dialogs, events)) => {
                                 if let Some(runtime) = script_runtime.as_ref() {
                                     storage_state = runtime.storage_state();
                                     indexed_db_state.replace_origin(
@@ -2581,6 +2604,10 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                         "replace_history": navigation.replace_history,
                                     })),
                                     "dialogs": dialogs,
+                                    "events": events.iter().map(|(node_index, kind)| json!({
+                                        "node_index": node_index,
+                                        "kind": event_kind_text(*kind),
+                                    })).collect::<Vec<_>>(),
                                     "frame_sources": resource.frame_sources,
                                     "document_base64": base64::engine::general_purpose::STANDARD
                                         .encode(serde_json::to_vec(&document_wire).unwrap_or_default()),
@@ -4046,6 +4073,7 @@ async fn load_content_resource(
             origin: resource.origin,
             document: wire,
             frame_sources,
+            events: Vec::new(),
             navigation: None,
             storage_events: Vec::new(),
             indexed_db_changes: Vec::new(),

@@ -2845,6 +2845,7 @@ fn native_frame_script_binding_from_engine(
     parent_origin: &NativeOrigin,
 ) -> Result<NativeFrameScriptBinding, BrowserBackendError> {
     let child_snapshot = frame_engine.snapshot().map_err(native_error)?;
+    let generation = frame_engine.document_generation().map_err(native_error)?;
     let same_origin =
         *parent_origin != NativeOrigin::Opaque && *parent_origin == child_snapshot.origin;
     let children =
@@ -2856,6 +2857,7 @@ fn native_frame_script_binding_from_engine(
         frame_id: frame_id.to_owned(),
         url: child_snapshot.url,
         origin: child_snapshot.origin.serialized(),
+        generation,
         revision: child_snapshot.revision,
         same_origin,
         document: frame_engine
@@ -2915,10 +2917,12 @@ fn native_frame_script_window(
     same_origin: bool,
 ) -> Result<NativeFrameScriptWindow, BrowserBackendError> {
     let snapshot = engine.snapshot().map_err(native_error)?;
+    let generation = engine.document_generation().map_err(native_error)?;
     Ok(NativeFrameScriptWindow {
         context_id: frame_id.to_owned(),
         url: snapshot.url,
         origin: snapshot.origin.serialized(),
+        generation,
         revision: snapshot.revision,
         same_origin,
         document: engine.script_document_snapshot().map_err(native_error)?,

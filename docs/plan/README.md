@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-164` locally. The versioned
+`native-engine-browser-165` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1556,6 +1556,17 @@ frame snapshot exposes the committed nodes. Live child-node collections,
 cross-origin restrictions, cross-realm listener identity, full frame
 lifecycle/load ordering, and native browser-complete promotion remain issue
 #40 gates.
+
+The completed native-engine-browser-165 slice is
+[native-engine-browser-165](tasks/native-engine-browser-165.md). Top-level and
+same-origin frame realms now expose owner-backed live `NodeList`/`HTMLCollection`
+views for `childNodes` and `children`, including live length, indexed access,
+iteration, `item()`, and `namedItem()` behavior. Element and text hosts expose
+child/sibling traversal, `hasChildNodes()`, `contains()`, `replaceChild()`, and
+connectivity checks across insertion, removal, replacement, and subtree moves.
+Full Web IDL descriptors, parser text-node identity, cross-realm listener
+identity, complete frame lifecycle/load ordering, and native browser-complete
+promotion remain issue #40 gates.
 
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and

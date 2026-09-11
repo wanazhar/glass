@@ -753,12 +753,12 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
     assert_eq!(
         session
             .script(
-                "(() => { const child = document.getElementById('child').contentDocument; const host = child.createElement('section'); host.setAttribute('id', 'created-in-frame'); const text = child.createTextNode('created'); text.textContent = 'created in frame'; host.appendChild(text); child.body.appendChild(host); return [host.tagName, host.parentElement === child.body, text.parentNode === host, host.textContent, host.innerHTML]; })()",
+                "(() => { const child = document.getElementById('child').contentDocument; const host = child.createElement('section'); host.setAttribute('id', 'created-in-frame'); const text = child.createTextNode('created'); text.textContent = 'created in frame'; host.appendChild(text); child.body.appendChild(host); const children = host.children; const nodes = host.childNodes; const extra = child.createElement('em'); host.insertBefore(extra, text); const inserted = [children instanceof HTMLCollection, nodes instanceof NodeList, children.length, nodes.length, host.firstChild === extra, host.lastChild === text, extra.nextSibling === text, host.contains(text), child.contains(host)]; host.replaceChild(text, extra); return [host.tagName, host.parentElement === child.body, text.parentNode === host, host.textContent, host.innerHTML, inserted, children.length, nodes.length, host.firstChild === text, host.lastChild === text]; })()",
             )
             .await
             .unwrap()
             .value,
-        serde_json::json!(["SECTION", true, true, "created in frame", "created in frame"])
+        serde_json::json!(["SECTION", true, true, "created in frame", "created in frame", [true, true, 1, 2, true, true, true, true, true], 0, 1, true, true])
     );
     assert_eq!(
         session
@@ -4895,20 +4895,20 @@ async fn native_content_process_evaluates_persistent_script_realm() {
     assert_eq!(
         engine
             .evaluate_async(
-                "(() => { const host = document.createElement('article'); host.setAttribute('id', 'created-copy'); const child = document.createElement('b'); const text = document.createTextNode('created'); text.textContent = 'created'; child.appendChild(text); host.appendChild(child); document.body.appendChild(host); return [host.parentElement === document.body, child.parentElement === host, text.parentNode === child, host.textContent, host.innerHTML]; })()",
+                "(() => { const host = document.createElement('article'); host.setAttribute('id', 'created-copy'); const child = document.createElement('b'); const text = document.createTextNode('created'); text.textContent = 'created'; child.appendChild(text); host.appendChild(child); document.body.appendChild(host); const children = host.children; const nodes = host.childNodes; const extra = document.createElement('i'); const extraText = document.createTextNode('!'); extra.appendChild(extraText); host.insertBefore(extra, child); const inserted = [children.length, nodes.length, host.firstChild === extra, host.lastChild === child, extra.firstChild === extraText, extraText.parentNode === extra, host.contains(extraText), document.contains(host)]; host.replaceChild(child, extra); return [host.parentElement === document.body, child.parentElement === host, text.parentNode === child, host.textContent, host.innerHTML, inserted, children.length, nodes.length, host.firstChild === child, host.lastChild === child]; })()",
             )
             .await
             .unwrap(),
-        serde_json::json!([true, true, true, "created", "<b>created</b>"])
+        serde_json::json!([true, true, true, "created", "<b>created</b>", [2, 2, true, true, true, true, true, true], 1, 1, true, true])
     );
     assert_eq!(
         engine
             .evaluate_async(
-                "[document.getElementById('created-copy').innerHTML, document.getElementById('created-copy').textContent, document.getElementById('created-copy').firstChild || null]",
+                "(() => { const host = document.getElementById('created-copy'); const first = host.firstChild; return [host.innerHTML, host.textContent, first && first.tagName, first && first.nodeType, first && first.parentNode === host, host.children.length, host.childNodes.length, host.firstElementChild === first, host.lastChild === first]; })()",
             )
             .await
             .unwrap(),
-        serde_json::json!(["<b>created</b>", "created", null])
+        serde_json::json!(["<b>created</b>", "created", "B", 1, true, 1, 1, true, true])
     );
     assert_eq!(
         engine

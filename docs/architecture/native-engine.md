@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-164` slice; the bounded foundation below remains
+`native-engine-browser-165` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -1652,8 +1652,18 @@ the child frame's native document owner. The child queues those typed commands
 through its normal Rust transaction, preserving origin validation, temporary
 node quotas, subtree ownership, and one revision; no object or arena pointer
 crosses the realm boundary. Live child-node collections, cross-realm listener
-identity, complete frame lifecycle/load ordering, and browser-wide Web IDL
-parity remain promotion gates.
+  identity, complete frame lifecycle/load ordering, and browser-wide Web IDL
+  parity remain promotion gates.
+
+The completed native-engine-browser-165 slice adds owner-backed live DOM tree
+identity to local and same-origin frame projections. `childNodes` and
+`children` retain their collection objects while indexed access, `length`,
+iteration, `item()`, and HTML collection `namedItem()` reflect structural
+changes. Element and text hosts expose first/last child, element and sibling
+traversal, `hasChildNodes()`, `contains()`, `replaceChild()`, and
+`isConnected`; document root lists participate in parent-node and containment
+queries. Parser text-node projection, full Web IDL descriptors, observer
+delivery, and browser-wide parity remain separate promotion work.
 
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third

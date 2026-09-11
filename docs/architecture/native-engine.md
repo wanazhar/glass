@@ -5169,6 +5169,17 @@ tree-builder, and Web IDL/conformance promotion remain issue #40 work. The
 bounded malformed-input recovery subset is recorded in the later
 `native-engine-browser-195` checkpoint.
 
+The completed native-engine-browser-196 slice closes the bounded attribute-node
+Web IDL surface. `document.createAttribute()` creates persistent `Attr`
+objects, element attribute-node methods preserve ownership and replacement
+identity, and `element.attributes` exposes a live indexed/iterable
+`NamedNodeMap`. The shared host surface is installed for local elements,
+content-worker projections, and same-origin frame elements; unsupported
+namespace-qualified attributes fail explicitly. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-196.md`. Namespace-aware storage,
+complete Web IDL descriptor parity, XML documents, and browser-wide
+conformance remain issue #40 work.
+
 The completed native-engine-browser-195 slice advances the document tree
 builder's recovery contract. Rust and detached JavaScript parsing now recover
 unterminated comments, bogus declarations, and EOF-terminated tags without

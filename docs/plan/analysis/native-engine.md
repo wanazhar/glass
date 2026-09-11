@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-173`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-174`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
@@ -3305,6 +3305,15 @@ is intentionally the same command transaction that Rust commits, so observer
 delivery does not create a parallel mutation owner. Projected cross-realm
 observer identity, layout/resource observers, complete resource scheduling,
 Window/Web IDL parity, and browser-complete promotion remain issue #40 gates.
+
+The completed native-engine-browser-174 slice extends that command-owned
+observer path through same-origin frame projections. Parent-side projected
+nodes use frame-qualified identity and their own attribute/text/parent/child
+shadow state, so records are delivered against the frame document before the
+validated `FrameScriptBatch` handoff. Detached projected targets remain
+observable without leaking native pointers; independent child-task effects,
+layout/resource observers, complete scheduling, Window/Web IDL parity, and
+browser-complete promotion remain issue #40 gates.
 
 The completed native-engine-browser-169 slice adds frame-qualified EventTarget
 behavior to same-origin projected elements, detached projected elements,

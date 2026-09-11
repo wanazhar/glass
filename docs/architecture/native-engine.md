@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-173` slice; the bounded foundation below remains
+`native-engine-browser-174` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -1720,6 +1720,14 @@ values and subtree filtering, and delivery runs at the existing Promise-job
 checkpoint. Detached record payloads remain data owned by the page realm.
 Projected cross-realm observer delivery, layout/resource observers, complete
 resource scheduling, Web IDL identity, and browser parity remain open.
+
+The completed native-engine-browser-174 slice extends mutation observation into
+same-origin frame projections. Frame-qualified node keys keep child and parent
+indexes isolated; projected DOM command batches generate records against the
+projected frame document, including detached-node observation, before the
+validated typed handoff to the child owner. Cross-origin disclosure remains
+blocked. Independently running child-task effects, layout/resource observers,
+complete resource scheduling, Web IDL identity, and browser parity remain open.
 
 The completed native-engine-browser-169 slice adds frame-qualified EventTarget
 behavior to same-origin projected elements, detached projected elements,

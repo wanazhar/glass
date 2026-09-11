@@ -8869,13 +8869,18 @@ fn document_bootstrap(
       }},
     }});
     const namedNodeMapConstructor = globalThis.NamedNodeMap;
-    if (typeof namedNodeMapConstructor === "function" && namedNodeMapConstructor.prototype) {{
-      try {{ Object.setPrototypeOf(namedNodeMap, namedNodeMapConstructor.prototype); }} catch (_error) {{}}
-    }}
+    const syncNamedNodeMapPrototype = () => {{
+      const constructor = globalThis.NamedNodeMap || namedNodeMapConstructor;
+      if (typeof constructor === "function" && constructor.prototype
+          && Object.getPrototypeOf(namedNodeMap) !== constructor.prototype) {{
+        try {{ Object.setPrototypeOf(namedNodeMap, constructor.prototype); }} catch (_error) {{}}
+      }}
+    }};
     Object.defineProperty(element, "attributes", {{
       enumerable: true,
       configurable: false,
       get() {{
+        syncNamedNodeMapPrototype();
         syncAttributeNodes();
         return namedNodeMapView;
       }},

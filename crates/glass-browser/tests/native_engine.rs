@@ -229,13 +229,13 @@ async fn native_local_script_exposes_web_idl_identity_and_dom_collections() {
     assert_eq!(
         engine
             .evaluate_async(
-                "(() => { const host = document.createElement('div'); host.setAttribute('data-existing', 'yes'); const attr = document.createAttribute('DATA-OWNED'); attr.value = 'one'; const identity = [attr instanceof Node, attr instanceof Attr, attr.nodeType, attr.nodeName, attr.name, attr.localName, attr.value, attr.nodeValue, attr.textContent, attr.ownerElement === null, attr.ownerDocument === document, attr.parentNode === null]; const first = host.setAttributeNode(attr); const attributes = host.attributes; const attached = [first === null, attributes instanceof NamedNodeMap, attributes.length, attributes[0].name, attributes[1] === attr, attributes.getNamedItem('data-owned') === attr, attr.ownerElement === host, host.getAttribute('data-owned') === 'one']; attr.nodeValue = 'two'; const clone = attr.cloneNode(); const cloneState = [clone !== attr, clone instanceof Attr, clone.name, clone.value, clone.ownerElement === null, clone.parentNode === null, clone.getRootNode() === clone, clone.childNodes instanceof NodeList, clone.childNodes.length, clone.isEqualNode(attr)]; const changed = [attr.value, attr.textContent, host.getAttribute('data-owned')]; const replacement = document.createAttribute('data-owned'); replacement.value = 'three'; const old = host.setAttributeNode(replacement); const replaced = [old === attr, attr.ownerElement === null, replacement.ownerElement === host, attributes.getNamedItemNS(null, 'data-owned') === replacement, attributes.item(1) === replacement]; const mapped = document.createAttribute('data-mapped'); mapped.value = 'map'; const mapOld = attributes.setNamedItem(mapped); const mapState = [mapOld === null, attributes.length, attributes[2] === mapped, attributes.getNamedItem('data-mapped') === mapped, attributes.removeNamedItem('data-mapped') === mapped, mapped.ownerElement === null]; const removed = host.removeAttributeNode(replacement); const errors = [removed === replacement, replacement.ownerElement === null, host.getAttribute('data-owned') === null, (() => { try { document.createAttribute('bad name'); return null; } catch (error) { return error.name; } })(), (() => { try { host.removeAttributeNode(replacement); return null; } catch (error) { return error.name; } })()]; return { identity, attached, cloneState, changed, replaced, mapState, errors }; })()",
+                "(() => { const host = document.createElement('div'); host.setAttribute('data-existing', 'yes'); const attr = document.createAttribute('DATA-OWNED'); attr.value = 'one'; const identity = [attr instanceof Node, attr instanceof Attr, attr.nodeType, attr.nodeName, attr.name, attr.localName, attr.value, attr.nodeValue, attr.textContent, attr.ownerElement === null, attr.ownerDocument === document, attr.parentNode === null]; const first = host.setAttributeNode(attr); const attributes = host.attributes; const attached = [first === null, attributes instanceof NamedNodeMap, attributes.length, attributes[0].name, attributes[1] === attr, attributes.getNamedItem('data-owned') === attr, attr.ownerElement === host, host.getAttribute('data-owned') === 'one', document.querySelector('form').attributes instanceof NamedNodeMap]; attr.nodeValue = 'two'; const clone = attr.cloneNode(); const cloneState = [clone !== attr, clone instanceof Attr, clone.name, clone.value, clone.ownerElement === null, clone.parentNode === null, clone.getRootNode() === clone, clone.childNodes instanceof NodeList, clone.childNodes.length, clone.isEqualNode(attr)]; const changed = [attr.value, attr.textContent, host.getAttribute('data-owned')]; const replacement = document.createAttribute('data-owned'); replacement.value = 'three'; const old = host.setAttributeNode(replacement); const replaced = [old === attr, attr.ownerElement === null, replacement.ownerElement === host, attributes.getNamedItemNS(null, 'data-owned') === replacement, attributes.item(1) === replacement]; const mapped = document.createAttribute('data-mapped'); mapped.value = 'map'; const mapOld = attributes.setNamedItem(mapped); const mapState = [mapOld === null, attributes.length, attributes[2] === mapped, attributes.getNamedItem('data-mapped') === mapped, attributes.removeNamedItem('data-mapped') === mapped, mapped.ownerElement === null]; const removed = host.removeAttributeNode(replacement); const errors = [removed === replacement, replacement.ownerElement === null, host.getAttribute('data-owned') === null, (() => { try { document.createAttribute('bad name'); return null; } catch (error) { return error.name; } })(), (() => { try { host.removeAttributeNode(replacement); return null; } catch (error) { return error.name; } })()]; return { identity, attached, cloneState, changed, replaced, mapState, errors }; })()",
             )
             .await
             .unwrap(),
         serde_json::json!({
             "identity": [true, true, 2, "data-owned", "data-owned", "data-owned", "one", "one", "one", true, true, true],
-            "attached": [true, true, 2, "data-existing", true, true, true, true],
+            "attached": [true, true, 2, "data-existing", true, true, true, true, true],
             "cloneState": [true, true, "data-owned", "two", true, true, true, true, 0, true],
             "changed": ["two", "two", "two"],
             "replaced": [true, true, true, true, true],
@@ -8455,7 +8455,7 @@ async fn native_content_process_enforces_child_owned_document_limit() {
 }
 
 #[tokio::test]
-async fn native_content_process_rejects_malformed_html_before_parent_commit() {
+async fn native_content_process_commits_recovered_malformed_html() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -8479,22 +8479,22 @@ async fn native_content_process_rejects_malformed_html_before_parent_commit() {
         }
     });
 
+    let stable_url = format!("http://{address}/stable");
+    let broken_url = format!("http://{address}/broken");
     let session = BrowserRuntimeSession::connect_native(
-        NativeEngineConfig::default().with_initial_url(format!("http://{address}/stable")),
+        NativeEngineConfig::default().with_initial_url(stable_url),
     )
     .await
     .unwrap();
     let before = session.evidence(EvidenceLevel::Compact).await.unwrap();
-    let error = session
-        .navigate(format!("http://{address}/broken"))
-        .await
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("content process load"), "{error}");
+    let navigation = session.navigate(broken_url.clone()).await.unwrap();
+    assert_eq!(navigation.url, broken_url);
+    assert_eq!(navigation.revision, before.revision + 1);
     let after = session.evidence(EvidenceLevel::Compact).await.unwrap();
-    assert_eq!(after.url, before.url);
-    assert_eq!(after.title, before.title);
-    assert_eq!(after.visible_text, before.visible_text);
+    assert_eq!(after.url, navigation.url);
+    assert!(after.title.is_empty());
+    assert_eq!(after.visible_text, "<p title='unfinished>");
+    assert!(after.complete);
     session.close().await.unwrap();
     server.await.unwrap();
 }
@@ -30253,7 +30253,7 @@ async fn unsupported_resources_fail_without_state_mutation() {
 }
 
 #[tokio::test]
-async fn parse_failure_preserves_the_current_document_and_revision() {
+async fn recovered_malformed_document_commits_with_a_new_revision() {
     let config = NativeEngineConfig::default()
         .with_fixture("fixture://broken", "<p title='unfinished>")
         .unwrap();
@@ -30268,17 +30268,14 @@ async fn parse_failure_preserves_the_current_document_and_revision() {
         .await
         .unwrap();
 
-    let error = dispatcher
+    let navigation = dispatcher
         .navigate(NavigationRequest {
             url: "fixture://broken".into(),
         })
         .await
-        .unwrap_err();
-    assert!(matches!(
-        error,
-        glass_browser::browser_backend::BrowserBackendError::InvalidConfiguration { field, .. }
-            if field == "native HTML document"
-    ));
+        .unwrap();
+    assert_eq!(navigation.url, "fixture://broken");
+    assert_eq!(navigation.revision, before.revision + 1);
     let after = dispatcher
         .evidence(EvidenceRequest {
             context_id: "native-context".into(),
@@ -30286,7 +30283,10 @@ async fn parse_failure_preserves_the_current_document_and_revision() {
         })
         .await
         .unwrap();
-    assert_eq!(after, before);
+    assert_eq!(after.url, navigation.url);
+    assert!(after.title.is_empty());
+    assert_eq!(after.visible_text, "<p title='unfinished>");
+    assert!(after.complete);
     dispatcher.close().await.unwrap();
 }
 

@@ -1628,7 +1628,8 @@ impl NativeDocument {
                 | NativeScriptCommand::SetWindowName { .. }
                 | NativeScriptCommand::CloseWindow { .. }
                 | NativeScriptCommand::NavigateWindow { .. }
-                | NativeScriptCommand::PostMessage { .. } => {}
+                | NativeScriptCommand::PostMessage { .. }
+                | NativeScriptCommand::FrameScript { .. } => {}
                 NativeScriptCommand::SetValue { node_index, value } => {
                     let id = NativeNodeId::from_parts(self.generation, *node_index);
                     self.apply_script_value(id, value)?;

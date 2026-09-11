@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-159`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-160`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
@@ -3182,6 +3182,16 @@ close, message, and topology operations remain unchanged. This is a typed
 security projection, not complete Window Web IDL descriptor parity; live
 cross-realm identity, full frame lifecycle/load ordering, and browser-complete
 promotion remain open.
+
+The completed native-engine-browser-160 slice makes same-origin frame DOM
+projections writable through a bounded command bridge. Element focus, blur,
+click, value, selection, checked/selected state, validity, and attribute
+operations emitted from `contentDocument` are routed to the child frame's
+actual native document owner; the reverse selected-child-to-parent path is
+covered too. Source and target origins are revalidated by the backend, and
+content-worker transfer remains data-only. Structural DOM creation/removal,
+cross-realm event-listener identity, complete frame lifecycle/load ordering,
+and complete browser parity remain issue #40 gates.
 
 The completed native-engine-browser-133 batch extends the native target seam
 with a side-effect-free preflight result. The engine resolves the current

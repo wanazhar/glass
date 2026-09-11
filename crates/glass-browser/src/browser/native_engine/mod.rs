@@ -54,9 +54,9 @@ pub use error::{NativeEngineError, NativeWorkerFailureKind};
 pub use history::{NativeHistory, NativeHistoryDirection, NativeHistoryEntry};
 pub use interaction::{MAX_NATIVE_EFFECTS, NativeAction, NativeEffect, NativeEventKind};
 pub(crate) use javascript::{
-    NativeFrameScriptBinding, NativeFrameScriptContext, NativeFrameScriptWindow,
-    NativePopupRequest, NativePostMessageRequest, NativeWindowCloseRequest,
-    NativeWindowNavigationRequest, NativeWindowProxyUpdate,
+    NativeFrameScriptBinding, NativeFrameScriptContext, NativeFrameScriptRequest,
+    NativeFrameScriptWindow, NativePopupRequest, NativePostMessageRequest,
+    NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
 };
 pub use layout::{
     NativeLayoutBox, NativeLayoutSnapshot, NativePoint, NativeRect, NativeTextLayout,

@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-159` slice; the bounded foundation below remains
+`native-engine-browser-160` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -1600,6 +1600,17 @@ proxy origin state is refreshed after navigation so a target crossing origins
 cannot retain the old access level. Complete Window Web IDL descriptors, live
 cross-realm identity, full frame lifecycle/load ordering, and complete browser
 parity remain issue #40 gates.
+
+The completed native-engine-browser-160 slice adds same-origin frame DOM
+command routing. Projected `contentDocument` elements can now send the
+already-supported bounded focus, blur, click, value, selection,
+checked/selected, validity, and attribute operations to the child frame's
+actual native document owner; the selected-child parent projection is covered
+as well. The backend validates the source and target origins and the command
+crosses the content-worker boundary as bounded data, so no JavaScript object or
+engine pointer is shared. Structural DOM creation/removal, cross-realm event
+listener identity, complete frame lifecycle/load ordering, and browser-wide
+Web IDL parity remain promotion gates.
 
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third

@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-220` locally. The versioned
+`native-engine-browser-221` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1932,6 +1932,15 @@ The selected candidate drives content-process fetches, intrinsic state, and
 `currentSrc`; script mutations to `srcset` or `sizes` invalidate and reload the
 selected resource through the existing policy/cache/event path. Exact evidence
 is recorded in [native-engine-browser-220](tasks/native-engine-browser-220.md).
+
+The completed native-engine-browser-221 slice adds bounded `<picture>` source
+selection. Matching preceding `<source>` elements now participate before the
+`<img>` fallback, with simple viewport width media conditions and an explicit
+`image/png` type gate; each source reuses the shared `srcset`/`sizes` selector.
+Source media mutations reselect and reload the image through the existing
+policy/cache/lifecycle/event path, and the typed wire accepts the selected
+picture candidate without weakening source identity validation. Exact evidence
+is recorded in [native-engine-browser-221](tasks/native-engine-browser-221.md).
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` now returns persistent `Attr`

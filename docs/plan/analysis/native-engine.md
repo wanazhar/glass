@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-220`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-221`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 205
 slice carries bounded quadratic/cubic SVG path geometry through shared path
 parsing, flattening, layout, display-list, raster, clipping, and capture
@@ -3576,6 +3576,19 @@ content-process image loading, intrinsic state, and `currentSrc`. `srcset` and
 source selection, type/media source sets, preload hints, and the broader image
 format pipeline remain separate promotion work. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-220.md`.
+
+The completed native-engine-browser-221 slice closes the next responsive-image
+selection boundary. The shared DOM owner scans preceding `<picture><source>`
+children in document order, accepts only sources whose bounded viewport-width
+media condition matches and whose declared type is absent or `image/png`, then
+feeds the winning source's `srcset` and `sizes` into the existing candidate
+selector. The `<img>` `srcset`/`src` fallback remains authoritative when no
+source wins. Source `media`, `type`, `srcset`, and `sizes` mutations reuse the
+existing content refresh/load/error path; selected picture candidates are
+validated by the typed document wire and reflected through intrinsic state and
+`currentSrc`. Complex media evaluation, non-PNG decoding, preload scheduling,
+and complete picture/source Web IDL remain later promotion work. Exact evidence
+is in `docs/plan/tasks/native-engine-browser-221.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

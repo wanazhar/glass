@@ -27,6 +27,10 @@ use url::Url;
 const MAX_ATTRIBUTE_BYTES: usize = 1024;
 const MAX_LOCATOR_BYTES: usize = crate::browser_backend::MAX_TEXT_BYTES;
 const MAX_FORM_CONTROLS: usize = 128;
+// Script-created nodes use an index range that cannot collide with the
+// document arena or the reserved window event target. They are resolved to
+// real arena nodes while one command batch is committed.
+const SCRIPT_TEMP_NODE_BASE: u32 = u32::MAX - 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeFormEncoding {
@@ -1555,6 +1559,7 @@ impl NativeDocument {
         allow_script_navigation: bool,
     ) -> Result<Vec<(NativeNodeId, NativeEventKind)>, NativeEngineError> {
         let mut events = Vec::new();
+        let mut script_nodes = BTreeMap::new();
         for command in commands {
             match command {
                 NativeScriptCommand::Focus { node_index } => {
@@ -1647,8 +1652,7 @@ impl NativeDocument {
                 | NativeScriptCommand::PostMessage { .. }
                 | NativeScriptCommand::FrameScript { .. } => {}
                 NativeScriptCommand::SetValue { node_index, value } => {
-                    let id = NativeNodeId::from_parts(self.generation, *node_index);
-                    self.apply_script_value(id, value)?;
+                    self.apply_script_value(*node_index, value, &script_nodes)?;
                 }
                 NativeScriptCommand::SetSelection {
                     node_index,
@@ -1663,8 +1667,7 @@ impl NativeDocument {
                     node_index,
                     checked,
                 } => {
-                    let id = NativeNodeId::from_parts(self.generation, *node_index);
-                    self.apply_script_checked(id, *checked)?;
+                    self.apply_script_checked(*node_index, *checked, &script_nodes)?;
                 }
                 NativeScriptCommand::SetSelected {
                     node_index,
@@ -1678,31 +1681,84 @@ impl NativeDocument {
                     name,
                     value,
                 } => {
-                    let id = NativeNodeId::from_parts(self.generation, *node_index);
-                    self.apply_script_attribute(id, name, value)?;
+                    self.apply_script_attribute(*node_index, name, value, &script_nodes)?;
                 }
                 NativeScriptCommand::RemoveAttribute { node_index, name } => {
-                    let id = NativeNodeId::from_parts(self.generation, *node_index);
-                    self.remove_script_attribute(id, name)?;
+                    self.remove_script_attribute(*node_index, name, &script_nodes)?;
                 }
                 NativeScriptCommand::SetTextContent { node_index, value } => {
-                    let id = NativeNodeId::from_parts(self.generation, *node_index);
-                    self.apply_script_text_content(id, value)?;
+                    self.apply_script_text_content(*node_index, value, &script_nodes)?;
                 }
                 NativeScriptCommand::SetInnerHtml { node_index, value } => {
-                    let id = NativeNodeId::from_parts(self.generation, *node_index);
-                    self.apply_script_inner_html(id, value)?;
+                    self.apply_script_inner_html(*node_index, value, &script_nodes)?;
                 }
                 NativeScriptCommand::RemoveNode { node_index } => {
-                    let id = NativeNodeId::from_parts(self.generation, *node_index);
+                    let id = self.resolve_script_node_id(*node_index, &script_nodes);
                     self.apply_script_remove_node(id)?;
+                    script_nodes.insert(*node_index, id);
+                }
+                NativeScriptCommand::CreateElement {
+                    node_index,
+                    tag_name,
+                } => {
+                    if *node_index < SCRIPT_TEMP_NODE_BASE || script_nodes.contains_key(node_index)
+                    {
+                        return Err(NativeEngineError::TargetNotActionable {
+                            reason: "script-created node index is invalid".into(),
+                        });
+                    }
+                    let name = validate_script_element_name(tag_name)?;
+                    let id = self.add_detached_node(
+                        NativeNodeKind::Element {
+                            name,
+                            attributes: BTreeMap::new(),
+                        },
+                        self.max_nodes,
+                    )?;
+                    script_nodes.insert(*node_index, id);
+                }
+                NativeScriptCommand::CreateTextNode { node_index, value } => {
+                    if *node_index < SCRIPT_TEMP_NODE_BASE || script_nodes.contains_key(node_index)
+                    {
+                        return Err(NativeEngineError::TargetNotActionable {
+                            reason: "script-created node index is invalid".into(),
+                        });
+                    }
+                    if value.len() > MAX_LOCATOR_BYTES {
+                        return Err(NativeEngineError::limit(
+                            "script text node",
+                            MAX_LOCATOR_BYTES,
+                            value.len(),
+                        ));
+                    }
+                    let id = self
+                        .add_detached_node(NativeNodeKind::Text(value.clone()), self.max_nodes)?;
+                    script_nodes.insert(*node_index, id);
+                }
+                NativeScriptCommand::AppendChild {
+                    parent_index,
+                    child_index,
+                } => {
+                    let parent = self.resolve_script_node_id(*parent_index, &script_nodes);
+                    let child = self.resolve_script_node_id(*child_index, &script_nodes);
+                    self.append_script_child(parent, child, None, &script_nodes)?;
+                }
+                NativeScriptCommand::InsertBefore {
+                    parent_index,
+                    child_index,
+                    before_index,
+                } => {
+                    let parent = self.resolve_script_node_id(*parent_index, &script_nodes);
+                    let child = self.resolve_script_node_id(*child_index, &script_nodes);
+                    let before =
+                        before_index.map(|index| self.resolve_script_node_id(index, &script_nodes));
+                    self.append_script_child(parent, child, before, &script_nodes)?;
                 }
                 NativeScriptCommand::SetCustomValidity {
                     node_index,
                     message,
                 } => {
-                    let id = NativeNodeId::from_parts(self.generation, *node_index);
-                    self.apply_script_custom_validity(id, message)?;
+                    self.apply_script_custom_validity(*node_index, message, &script_nodes)?;
                 }
                 NativeScriptCommand::CheckValidity { node_index }
                 | NativeScriptCommand::ReportValidity { node_index } => {
@@ -1723,8 +1779,9 @@ impl NativeDocument {
 
     fn apply_script_custom_validity(
         &mut self,
-        id: NativeNodeId,
+        node_index: u32,
         message: &str,
+        script_nodes: &BTreeMap<u32, NativeNodeId>,
     ) -> Result<(), NativeEngineError> {
         if message.len() > MAX_LOCATOR_BYTES {
             return Err(NativeEngineError::limit(
@@ -1733,7 +1790,10 @@ impl NativeDocument {
                 message.len(),
             ));
         }
-        let node = self.node_mut(id).ok_or(NativeEngineError::DetachedTarget)?;
+        let id = self.resolve_script_node_id(node_index, script_nodes);
+        let node = self
+            .script_node_mut(id, script_nodes)
+            .ok_or(NativeEngineError::DetachedTarget)?;
         if !matches!(
             node.element_name(),
             Some("button" | "input" | "select" | "textarea")
@@ -1813,8 +1873,9 @@ impl NativeDocument {
 
     fn apply_script_value(
         &mut self,
-        id: NativeNodeId,
+        node_index: u32,
         value: &str,
+        script_nodes: &BTreeMap<u32, NativeNodeId>,
     ) -> Result<(), NativeEngineError> {
         if value.len() > MAX_LOCATOR_BYTES {
             return Err(NativeEngineError::limit(
@@ -1823,8 +1884,9 @@ impl NativeDocument {
                 value.len(),
             ));
         }
+        let id = self.resolve_script_node_id(node_index, script_nodes);
         let element_name = self
-            .node(id)
+            .script_node(id, script_nodes)
             .and_then(NativeNode::element_name)
             .ok_or(NativeEngineError::DetachedTarget)?;
         if element_name == "select" {
@@ -1846,7 +1908,9 @@ impl NativeDocument {
             });
         }
         {
-            let node = self.node_mut(id).ok_or(NativeEngineError::DetachedTarget)?;
+            let node = self
+                .script_node_mut(id, script_nodes)
+                .ok_or(NativeEngineError::DetachedTarget)?;
             node.state.value = Some(value.to_owned());
         }
         if self
@@ -1861,10 +1925,14 @@ impl NativeDocument {
 
     fn apply_script_checked(
         &mut self,
-        id: NativeNodeId,
+        node_index: u32,
         checked: bool,
+        script_nodes: &BTreeMap<u32, NativeNodeId>,
     ) -> Result<(), NativeEngineError> {
-        let node = self.node(id).ok_or(NativeEngineError::DetachedTarget)?;
+        let id = self.resolve_script_node_id(node_index, script_nodes);
+        let node = self
+            .script_node(id, script_nodes)
+            .ok_or(NativeEngineError::DetachedTarget)?;
         if node.element_name() != Some("input")
             || !matches!(
                 node.attribute("type").unwrap_or("text"),
@@ -1899,7 +1967,7 @@ impl NativeDocument {
                     .checked = radio_id == id;
             }
         } else {
-            self.node_mut(id)
+            self.script_node_mut(id, script_nodes)
                 .ok_or(NativeEngineError::DetachedTarget)?
                 .state
                 .checked = checked;
@@ -1944,9 +2012,10 @@ impl NativeDocument {
 
     fn apply_script_attribute(
         &mut self,
-        id: NativeNodeId,
+        node_index: u32,
         name: &str,
         value: &str,
+        script_nodes: &BTreeMap<u32, NativeNodeId>,
     ) -> Result<(), NativeEngineError> {
         let name = validate_script_attribute(name)?;
         if value.len() > MAX_ATTRIBUTE_BYTES {
@@ -1956,7 +2025,10 @@ impl NativeDocument {
                 value.len(),
             ));
         }
-        let node = self.node_mut(id).ok_or(NativeEngineError::DetachedTarget)?;
+        let id = self.resolve_script_node_id(node_index, script_nodes);
+        let node = self
+            .script_node_mut(id, script_nodes)
+            .ok_or(NativeEngineError::DetachedTarget)?;
         let NativeNodeKind::Element { attributes, .. } = &mut node.kind else {
             return Err(NativeEngineError::TargetNotActionable {
                 reason: "script attributes require an element".into(),
@@ -1968,11 +2040,15 @@ impl NativeDocument {
 
     fn remove_script_attribute(
         &mut self,
-        id: NativeNodeId,
+        node_index: u32,
         name: &str,
+        script_nodes: &BTreeMap<u32, NativeNodeId>,
     ) -> Result<(), NativeEngineError> {
         let name = validate_script_attribute(name)?;
-        let node = self.node_mut(id).ok_or(NativeEngineError::DetachedTarget)?;
+        let id = self.resolve_script_node_id(node_index, script_nodes);
+        let node = self
+            .script_node_mut(id, script_nodes)
+            .ok_or(NativeEngineError::DetachedTarget)?;
         let NativeNodeKind::Element { attributes, .. } = &mut node.kind else {
             return Err(NativeEngineError::TargetNotActionable {
                 reason: "script attributes require an element".into(),
@@ -1984,8 +2060,9 @@ impl NativeDocument {
 
     fn apply_script_text_content(
         &mut self,
-        id: NativeNodeId,
+        node_index: u32,
         value: &str,
+        script_nodes: &BTreeMap<u32, NativeNodeId>,
     ) -> Result<(), NativeEngineError> {
         if value.len() > MAX_LOCATOR_BYTES {
             return Err(NativeEngineError::limit(
@@ -1994,16 +2071,25 @@ impl NativeDocument {
                 value.len(),
             ));
         }
-        if self
-            .node(id)
-            .is_none_or(|node| !matches!(node.kind(), NativeNodeKind::Element { .. }))
-        {
+        let id = self.resolve_script_node_id(node_index, script_nodes);
+        let kind = self
+            .script_node(id, script_nodes)
+            .ok_or(NativeEngineError::DetachedTarget)?
+            .kind()
+            .clone();
+        if matches!(kind, NativeNodeKind::Text(_)) {
+            self.script_node_mut(id, script_nodes)
+                .ok_or(NativeEngineError::DetachedTarget)?
+                .kind = NativeNodeKind::Text(value.to_owned());
+            return Ok(());
+        }
+        if !matches!(kind, NativeNodeKind::Element { .. }) {
             return Err(NativeEngineError::TargetNotActionable {
                 reason: "script text content requires an element".into(),
             });
         }
         let children = self
-            .node(id)
+            .script_node(id, script_nodes)
             .ok_or(NativeEngineError::DetachedTarget)?
             .children
             .to_vec();
@@ -2018,8 +2104,9 @@ impl NativeDocument {
 
     fn apply_script_inner_html(
         &mut self,
-        id: NativeNodeId,
+        node_index: u32,
         value: &str,
+        script_nodes: &BTreeMap<u32, NativeNodeId>,
     ) -> Result<(), NativeEngineError> {
         if value.len() > MAX_LOCATOR_BYTES {
             return Err(NativeEngineError::limit(
@@ -2028,8 +2115,11 @@ impl NativeDocument {
                 value.len(),
             ));
         }
+        let id = self.resolve_script_node_id(node_index, script_nodes);
         let (target_name, old_children) = {
-            let target = self.node(id).ok_or(NativeEngineError::DetachedTarget)?;
+            let target = self
+                .script_node(id, script_nodes)
+                .ok_or(NativeEngineError::DetachedTarget)?;
             let Some(target_name) = target.element_name() else {
                 return Err(NativeEngineError::TargetNotActionable {
                     reason: "script innerHTML requires an element".into(),
@@ -2063,7 +2153,7 @@ impl NativeDocument {
                 } => {
                     while stack.len() > 1
                         && stack.last().is_some_and(|current| {
-                            self.node(*current)
+                            self.raw_node(*current)
                                 .and_then(NativeNode::element_name)
                                 .is_some_and(|current_name| should_auto_close(current_name, &name))
                         })
@@ -2096,7 +2186,7 @@ impl NativeDocument {
                 }
                 HtmlToken::EndTag(name) => {
                     if let Some(index) = stack.iter().rposition(|current| {
-                        self.node(*current)
+                        self.raw_node(*current)
                             .and_then(NativeNode::element_name)
                             .is_some_and(|current_name| current_name == name)
                     }) && index > 0
@@ -2137,6 +2227,9 @@ impl NativeDocument {
                 reason: "the document root cannot be removed".into(),
             });
         }
+        if self.node(id).is_none() {
+            return Err(NativeEngineError::DetachedTarget);
+        }
         self.detach_subtree(id)
     }
 
@@ -2144,7 +2237,7 @@ impl NativeDocument {
         let mut depth: usize = 0;
         let mut current = Some(id);
         while let Some(current_id) = current {
-            let Some(node) = self.node(current_id) else {
+            let Some(node) = self.raw_node(current_id) else {
                 break;
             };
             if node.element_name().is_some() {
@@ -2272,6 +2365,12 @@ impl NativeDocument {
         kind: NativeNodeKind,
         max_nodes: usize,
     ) -> Result<NativeNodeId, NativeEngineError> {
+        if self.raw_node(parent).is_none() {
+            return Err(NativeEngineError::Parse {
+                offset: 0,
+                reason: "tree builder referenced an unknown parent".into(),
+            });
+        }
         if self.nodes.len() >= max_nodes {
             return Err(NativeEngineError::limit(
                 "DOM nodes",
@@ -2299,13 +2398,48 @@ impl NativeDocument {
             kind,
             state,
         });
-        let Some(parent_node) = self.node_mut(parent) else {
+        let Some(parent_node) = self.raw_node_mut(parent) else {
             return Err(NativeEngineError::Parse {
                 offset: 0,
                 reason: "tree builder referenced an unknown parent".into(),
             });
         };
         parent_node.children.push(id);
+        Ok(id)
+    }
+
+    fn add_detached_node(
+        &mut self,
+        kind: NativeNodeKind,
+        max_nodes: usize,
+    ) -> Result<NativeNodeId, NativeEngineError> {
+        if self.nodes.len() >= max_nodes {
+            return Err(NativeEngineError::limit(
+                "DOM nodes",
+                max_nodes,
+                self.nodes.len().saturating_add(1),
+            ));
+        }
+        let index = u32::try_from(self.nodes.len()).map_err(|_| {
+            NativeEngineError::limit("DOM node index", u32::MAX as usize, self.nodes.len())
+        })?;
+        let id = NativeNodeId {
+            generation: self.generation,
+            index,
+        };
+        let state = match &kind {
+            NativeNodeKind::Element { name, attributes } => {
+                NativeElementState::initial(name, attributes)
+            }
+            NativeNodeKind::Document | NativeNodeKind::Text(_) => NativeElementState::default(),
+        };
+        self.nodes.push(NativeNode {
+            id,
+            parent: None,
+            children: Vec::new(),
+            kind,
+            state,
+        });
         Ok(id)
     }
 
@@ -2347,12 +2481,47 @@ impl NativeDocument {
             .flatten()
     }
 
+    fn resolve_script_node_id(
+        &self,
+        node_index: u32,
+        script_nodes: &BTreeMap<u32, NativeNodeId>,
+    ) -> NativeNodeId {
+        script_nodes
+            .get(&node_index)
+            .copied()
+            .unwrap_or_else(|| NativeNodeId::from_parts(self.generation, node_index))
+    }
+
+    fn script_node<'a>(
+        &'a self,
+        id: NativeNodeId,
+        script_nodes: &BTreeMap<u32, NativeNodeId>,
+    ) -> Option<&'a NativeNode> {
+        if script_nodes.values().any(|candidate| *candidate == id) {
+            self.raw_node(id)
+        } else {
+            self.node(id)
+        }
+    }
+
+    fn script_node_mut<'a>(
+        &'a mut self,
+        id: NativeNodeId,
+        script_nodes: &BTreeMap<u32, NativeNodeId>,
+    ) -> Option<&'a mut NativeNode> {
+        if script_nodes.values().any(|candidate| *candidate == id) {
+            self.raw_node_mut(id)
+        } else {
+            self.node_mut(id)
+        }
+    }
+
     fn detach_subtree(&mut self, id: NativeNodeId) -> Result<(), NativeEngineError> {
         let parent = self
-            .node(id)
+            .raw_node(id)
             .and_then(NativeNode::parent)
             .ok_or(NativeEngineError::DetachedTarget)?;
-        let Some(parent_node) = self.node_mut(parent) else {
+        let Some(parent_node) = self.raw_node_mut(parent) else {
             return Err(NativeEngineError::DetachedTarget);
         };
         parent_node.children.retain(|child| *child != id);
@@ -2376,6 +2545,87 @@ impl NativeDocument {
             node.children.clear();
             node.state.focused = false;
         }
+        Ok(())
+    }
+
+    fn append_script_child(
+        &mut self,
+        parent: NativeNodeId,
+        child: NativeNodeId,
+        before: Option<NativeNodeId>,
+        script_nodes: &BTreeMap<u32, NativeNodeId>,
+    ) -> Result<(), NativeEngineError> {
+        let parent_node = self
+            .script_node(parent, script_nodes)
+            .ok_or(NativeEngineError::DetachedTarget)?;
+        if !matches!(parent_node.kind(), NativeNodeKind::Element { .. }) {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "appendChild parent must be an element".into(),
+            });
+        }
+        let child_node = self
+            .script_node(child, script_nodes)
+            .ok_or(NativeEngineError::DetachedTarget)?;
+        if !matches!(
+            child_node.kind(),
+            NativeNodeKind::Element { .. } | NativeNodeKind::Text(_)
+        ) {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "appendChild cannot insert a document node".into(),
+            });
+        }
+        if child == self.root || parent == child {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "appendChild would create a DOM hierarchy cycle".into(),
+            });
+        }
+        if before == Some(child) {
+            return Ok(());
+        }
+        if let Some(before) = before {
+            let before_node = self
+                .script_node(before, script_nodes)
+                .ok_or(NativeEngineError::DetachedTarget)?;
+            if before_node.parent() != Some(parent) {
+                return Err(NativeEngineError::TargetNotActionable {
+                    reason: "insertBefore reference is not a child of the parent".into(),
+                });
+            }
+        }
+
+        let mut ancestor = Some(parent);
+        for _ in 0..=self.nodes.len() {
+            if ancestor == Some(child) {
+                return Err(NativeEngineError::TargetNotActionable {
+                    reason: "appendChild would create a DOM hierarchy cycle".into(),
+                });
+            }
+            let Some(current) = ancestor else {
+                break;
+            };
+            ancestor = self.raw_node(current).and_then(NativeNode::parent);
+        }
+
+        let old_parent = self.raw_node(child).and_then(NativeNode::parent);
+        if let Some(old_parent) = old_parent {
+            let Some(old_parent_node) = self.raw_node_mut(old_parent) else {
+                return Err(NativeEngineError::DetachedTarget);
+            };
+            old_parent_node
+                .children
+                .retain(|candidate| *candidate != child);
+        }
+        let Some(child_node) = self.raw_node_mut(child) else {
+            return Err(NativeEngineError::DetachedTarget);
+        };
+        child_node.parent = Some(parent);
+        let Some(parent_node) = self.raw_node_mut(parent) else {
+            return Err(NativeEngineError::DetachedTarget);
+        };
+        let insertion_index = before
+            .and_then(|before| parent_node.children.iter().position(|id| *id == before))
+            .unwrap_or(parent_node.children.len());
+        parent_node.children.insert(insertion_index, child);
         Ok(())
     }
 
@@ -4725,6 +4975,29 @@ fn validate_script_attribute(name: &str) -> Result<String, NativeEngineError> {
     Ok(name.to_ascii_lowercase())
 }
 
+fn validate_script_element_name(name: &str) -> Result<String, NativeEngineError> {
+    if name.len() > MAX_ATTRIBUTE_BYTES {
+        return Err(NativeEngineError::limit(
+            "script element name",
+            MAX_ATTRIBUTE_BYTES,
+            name.len(),
+        ));
+    }
+    let Some((normalized, end)) = read_name(name, 0) else {
+        return Err(NativeEngineError::invalid(
+            "script element name",
+            "must start with an ASCII letter",
+        ));
+    };
+    if end != name.len() {
+        return Err(NativeEngineError::invalid(
+            "script element name",
+            "contains an unsupported character",
+        ));
+    }
+    Ok(normalized)
+}
+
 fn collapse_text(value: &str, max_bytes: usize) -> (String, bool) {
     let mut output = String::new();
     let mut truncated = false;
@@ -4913,6 +5186,103 @@ mod tests {
         assert!(document.node(remove).is_none());
         assert!(document.node(nested).is_none());
         assert_eq!(document.visible_text(1024), ("stay".into(), false));
+    }
+
+    #[test]
+    fn script_create_element_and_insert_child_commits_owned_nodes() {
+        let limits = NativeEngineLimits::default();
+        let mut document = NativeDocument::parse(
+            "<body><p id='before'>before</p><p id='after'>after</p></body>",
+            &limits,
+        )
+        .unwrap();
+        let body = document.find_element(document.root(), "body").unwrap();
+        let first = u32::MAX - 1;
+        let child = u32::MAX - 2;
+        let inserted = u32::MAX - 3;
+        let child_text = u32::MAX - 4;
+
+        document
+            .apply_script_commands(&[
+                NativeScriptCommand::CreateElement {
+                    node_index: first,
+                    tag_name: "section".into(),
+                },
+                NativeScriptCommand::CreateElement {
+                    node_index: child,
+                    tag_name: "strong".into(),
+                },
+                NativeScriptCommand::CreateTextNode {
+                    node_index: child_text,
+                    value: "created text".into(),
+                },
+                NativeScriptCommand::SetAttribute {
+                    node_index: first,
+                    name: "id".into(),
+                    value: "created".into(),
+                },
+                NativeScriptCommand::AppendChild {
+                    parent_index: child,
+                    child_index: child_text,
+                },
+                NativeScriptCommand::AppendChild {
+                    parent_index: first,
+                    child_index: child,
+                },
+                NativeScriptCommand::AppendChild {
+                    parent_index: body.index(),
+                    child_index: first,
+                },
+                NativeScriptCommand::CreateElement {
+                    node_index: inserted,
+                    tag_name: "em".into(),
+                },
+                NativeScriptCommand::SetTextContent {
+                    node_index: inserted,
+                    value: "inserted".into(),
+                },
+                NativeScriptCommand::InsertBefore {
+                    parent_index: body.index(),
+                    child_index: inserted,
+                    before_index: Some(first),
+                },
+            ])
+            .unwrap();
+
+        let created = document.find_element_by_id("created").unwrap();
+        let created_child = document.find_element(created, "strong").unwrap();
+        let inserted_node = document.find_element(body, "em").unwrap();
+        assert_eq!(
+            document.element_text(created, 1024),
+            Some(("created text".into(), false))
+        );
+        assert_eq!(
+            document.element_inner_html(created, 1024),
+            "<strong>created text</strong>"
+        );
+        assert_eq!(
+            document.node(created_child).and_then(NativeNode::parent),
+            Some(created)
+        );
+        assert_eq!(
+            document.node(inserted_node).and_then(NativeNode::parent),
+            Some(body)
+        );
+        assert_eq!(
+            document
+                .node(body)
+                .unwrap()
+                .children()
+                .iter()
+                .position(|id| *id == inserted_node),
+            document
+                .node(body)
+                .unwrap()
+                .children()
+                .iter()
+                .position(|id| *id == created)
+                .map(|position| position.saturating_sub(1))
+        );
     }
 
     #[test]

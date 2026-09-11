@@ -205,6 +205,24 @@ pub(crate) enum NativeScriptCommand {
     RemoveNode {
         node_index: u32,
     },
+    CreateElement {
+        node_index: u32,
+        tag_name: String,
+    },
+    CreateTextNode {
+        node_index: u32,
+        value: String,
+    },
+    AppendChild {
+        parent_index: u32,
+        child_index: u32,
+    },
+    InsertBefore {
+        parent_index: u32,
+        child_index: u32,
+        #[serde(default)]
+        before_index: Option<u32>,
+    },
     SetCustomValidity {
         node_index: u32,
         message: String,
@@ -7532,6 +7550,13 @@ fn document_bootstrap(
     .replace(/&quot;/gi, "\"")
     .replace(/&#39;/g, "'")
     .replace(/&amp;/gi, "&");
+  let nextTemporaryNodeIndex = 4294967294;
+  const allocateTemporaryNodeIndex = () => {{
+    const value = nextTemporaryNodeIndex;
+    nextTemporaryNodeIndex -= 1;
+    if (value < 4294963200) throw new RangeError("native temporary node limit exceeded");
+    return value;
+  }};
   const makeElement = (initialEntry) => {{
     let entry = initialEntry;
     let textContent = String(entry.text || "");
@@ -7679,6 +7704,7 @@ fn document_bootstrap(
         if (key === "class") this.className = stringValue;
         if (key === "disabled") this.disabled = true;
         if (key === "hidden") this.hidden = true;
+        element.__glassSyncContent();
         pushCommand({{ kind: "setAttribute", node_index: entry.nodeIndex, name: key, value: stringValue }});
       }},
       removeAttribute(name) {{
@@ -7688,29 +7714,159 @@ fn document_bootstrap(
         if (key === "class") this.className = "";
         if (key === "disabled") this.disabled = false;
         if (key === "hidden") this.hidden = false;
+        element.__glassSyncContent();
         pushCommand({{ kind: "removeAttribute", node_index: entry.nodeIndex, name: key }});
+      }},
+      appendChild(child) {{
+        if (!child || typeof child.nodeIndex !== "number") throw new TypeError("child must be a native element");
+        if (child === element) throw new TypeError("a node cannot contain itself");
+        let ancestor = element;
+        while (ancestor) {{
+          if (ancestor === child) throw new TypeError("a node cannot contain one of its ancestors");
+          ancestor = ancestor.__glassParent || null;
+        }}
+        const oldParent = child.__glassParent || null;
+        if (oldParent && Array.isArray(oldParent.__glassChildren)) {{
+          oldParent.__glassChildren = oldParent.__glassChildren.filter(candidate => candidate !== child);
+        }}
+        element.__glassChildren = element.__glassChildren.filter(candidate => candidate !== child);
+        element.__glassChildren.push(child);
+        child.__glassParent = element;
+        child.parentIndex = element.nodeIndex;
+        element.__glassSyncContent();
+        pushCommand({{ kind: "appendChild", parent_index: entry.nodeIndex, child_index: child.nodeIndex }});
+        return child;
+      }},
+      insertBefore(child, before) {{
+        if (before == null) return this.appendChild(child);
+        if (!child || typeof child.nodeIndex !== "number"
+            || typeof before.nodeIndex !== "number") {{
+          throw new TypeError("insertBefore requires native elements");
+        }}
+        if (before.__glassParent !== element) throw new TypeError("reference node is not a child");
+        if (child === before) return child;
+        let ancestor = element;
+        while (ancestor) {{
+          if (ancestor === child) throw new TypeError("a node cannot contain one of its ancestors");
+          ancestor = ancestor.__glassParent || null;
+        }}
+        const oldParent = child.__glassParent || null;
+        if (oldParent && Array.isArray(oldParent.__glassChildren)) {{
+          oldParent.__glassChildren = oldParent.__glassChildren.filter(candidate => candidate !== child);
+        }}
+        element.__glassChildren = element.__glassChildren.filter(candidate => candidate !== child);
+        const index = element.__glassChildren.indexOf(before);
+        element.__glassChildren.splice(index < 0 ? element.__glassChildren.length : index, 0, child);
+        child.__glassParent = element;
+        child.parentIndex = element.nodeIndex;
+        element.__glassSyncContent();
+        pushCommand({{
+          kind: "insertBefore",
+          parent_index: entry.nodeIndex,
+          child_index: child.nodeIndex,
+          before_index: before.nodeIndex,
+        }});
+        return child;
       }},
       remove() {{
         if (element.parentIndex === null) return;
+        const parent = element.__glassParent;
+        if (parent && Array.isArray(parent.__glassChildren)) {{
+          parent.__glassChildren = parent.__glassChildren.filter(candidate => candidate !== element);
+        }}
+        element.__glassParent = null;
         element.parentIndex = null;
+        if (parent) parent.__glassSyncContent();
         pushCommand({{ kind: "removeNode", node_index: entry.nodeIndex }});
       }},
       removeChild(child) {{
-        if (!child || Number(child.parentIndex) !== Number(entry.nodeIndex)) {{
+        if (!child || child.__glassParent !== element) {{
           throw new TypeError("child is not contained by this element");
         }}
         child.remove();
         return child;
       }}
     }};
+    Object.defineProperty(element, "__glassChildren", {{
+      enumerable: false,
+      configurable: false,
+      writable: true,
+      value: [],
+    }});
+    Object.defineProperty(element, "__glassParent", {{
+      enumerable: false,
+      configurable: false,
+      writable: true,
+      value: null,
+    }});
+    Object.defineProperty(element, "__glassCreated", {{
+      enumerable: false,
+      configurable: false,
+      writable: true,
+      value: false,
+    }});
+    Object.defineProperty(element, "__glassSyncContent", {{
+      enumerable: false,
+      configurable: false,
+      value() {{
+        if (element.__glassChildren.length > 0) {{
+          innerHtml = element.__glassChildren.map(child => child.__glassMarkup).join("");
+          textContent = element.__glassChildren.map(child => child.__glassTextValue).join("");
+        }}
+        if (element.__glassParent) element.__glassParent.__glassSyncContent();
+      }},
+    }});
+    Object.defineProperty(element, "__glassTextValue", {{
+      enumerable: false,
+      configurable: false,
+      get() {{ return textContent; }},
+    }});
+    Object.defineProperty(element, "__glassMarkup", {{
+      enumerable: false,
+      configurable: false,
+      get() {{
+        const attributes = Object.keys(entry.attributes)
+          .sort()
+          .map(name => " " + name + "=\"" + escapeHtmlText(entry.attributes[name]).replace(/\"/g, "&quot;") + "\"")
+          .join("");
+        const opening = "<" + element.localName + attributes + ">";
+        if (["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"].includes(element.localName)) return opening;
+        const content = element.__glassChildren.length > 0
+          ? element.__glassChildren.map(child => child.__glassMarkup).join("")
+          : innerHtml;
+        return opening + content + "</" + element.localName + ">";
+      }},
+    }});
+    Object.defineProperty(element, "parentElement", {{
+      enumerable: false,
+      configurable: false,
+      get() {{
+        if (element.__glassCreated) return element.__glassParent || null;
+        if (element.parentIndex === null) return null;
+        const current = globalThis.__glassHostElements;
+        if (!(current instanceof Map) || current.get(element.nodeIndex) !== element) return null;
+        return current.get(element.parentIndex) || null;
+      }},
+    }});
+    Object.defineProperty(element, "parentNode", {{
+      enumerable: false,
+      configurable: false,
+      get() {{ return element.parentElement; }},
+    }});
     for (const property of ["textContent", "innerText"]) {{
       Object.defineProperty(element, property, {{
         enumerable: true,
         configurable: false,
         get() {{ return textContent; }},
         set(next) {{
+          for (const child of element.__glassChildren) {{
+            child.__glassParent = null;
+            child.parentIndex = null;
+          }}
+          element.__glassChildren = [];
           textContent = String(next);
           innerHtml = escapeHtmlText(textContent);
+          element.__glassSyncContent();
           pushCommand({{ kind: "setTextContent", node_index: entry.nodeIndex, value: textContent }});
         }},
       }});
@@ -7720,8 +7876,14 @@ fn document_bootstrap(
       configurable: false,
       get() {{ return innerHtml; }},
       set(next) {{
+        for (const child of element.__glassChildren) {{
+          child.__glassParent = null;
+          child.parentIndex = null;
+        }}
+        element.__glassChildren = [];
         innerHtml = String(next);
         textContent = textFromHtml(innerHtml);
+        element.__glassSyncContent();
         pushCommand({{ kind: "setInnerHtml", node_index: entry.nodeIndex, value: innerHtml }});
       }},
     }});
@@ -7818,6 +7980,107 @@ fn document_bootstrap(
     }});
     return element;
   }};
+  const makeDetachedElement = (tagName) => {{
+    const normalized = String(tagName).toLowerCase();
+    if (!/^[A-Za-z][A-Za-z0-9:_-]*$/.test(normalized)) throw new TypeError("invalid element name");
+    const nodeIndex = allocateTemporaryNodeIndex();
+    const entry = {{
+      nodeIndex,
+      parentIndex: null,
+      formOwnerIndex: null,
+      tagName: normalized,
+      attributes: {{}},
+      text: "",
+      innerHtml: "",
+      value: null,
+      checked: false,
+      selected: false,
+      disabled: false,
+      hidden: false,
+      focused: false,
+      validity: {{ valid: true }},
+      validationMessage: "",
+      customValidity: "",
+      willValidate: false,
+      selectionStart: null,
+      selectionEnd: null,
+      selectionDirection: "none",
+    }};
+    const element = makeElement(entry);
+    element.__glassCreated = true;
+    pushCommand({{ kind: "createElement", node_index: nodeIndex, tag_name: normalized }});
+    return element;
+  }};
+  const makeDetachedText = (value) => {{
+    let textContent = String(value);
+    if (textContent.length > {storage_value_limit}) throw new RangeError("native text node exceeds its limit");
+    const nodeIndex = allocateTemporaryNodeIndex();
+    const text = {{
+      nodeIndex,
+      parentIndex: null,
+      nodeType: 3,
+      nodeName: "#text",
+      nodeValue: textContent,
+      remove() {{
+        if (text.parentIndex === null) return;
+        const parent = text.__glassParent;
+        if (parent && Array.isArray(parent.__glassChildren)) {{
+          parent.__glassChildren = parent.__glassChildren.filter(candidate => candidate !== text);
+        }}
+        text.__glassParent = null;
+        text.parentIndex = null;
+        if (parent) parent.__glassSyncContent();
+        pushCommand({{ kind: "removeNode", node_index: nodeIndex }});
+      }},
+    }};
+    Object.defineProperty(text, "__glassParent", {{
+      enumerable: false,
+      configurable: false,
+      writable: true,
+      value: null,
+    }});
+    Object.defineProperty(text, "__glassCreated", {{
+      enumerable: false,
+      configurable: false,
+      writable: true,
+      value: true,
+    }});
+    Object.defineProperty(text, "__glassTextValue", {{
+      enumerable: false,
+      configurable: false,
+      get() {{ return textContent; }},
+    }});
+    Object.defineProperty(text, "__glassMarkup", {{
+      enumerable: false,
+      configurable: false,
+      get() {{ return escapeHtmlText(textContent); }},
+    }});
+    Object.defineProperty(text, "parentElement", {{
+      enumerable: false,
+      configurable: false,
+      get() {{ return text.__glassParent || null; }},
+    }});
+    Object.defineProperty(text, "parentNode", {{
+      enumerable: false,
+      configurable: false,
+      get() {{ return text.parentElement; }},
+    }});
+    Object.defineProperty(text, "textContent", {{
+      enumerable: true,
+      configurable: false,
+      get() {{ return textContent; }},
+      set(next) {{
+        const value = String(next);
+        if (value.length > {storage_value_limit}) throw new RangeError("native text node exceeds its limit");
+        textContent = value;
+        text.nodeValue = value;
+        if (text.__glassParent) text.__glassParent.__glassSyncContent();
+        pushCommand({{ kind: "setTextContent", node_index: nodeIndex, value }});
+      }},
+    }});
+    pushCommand({{ kind: "createTextNode", node_index: nodeIndex, value: textContent }});
+    return text;
+  }};
   const previousElements = globalThis.__glassHostElements instanceof Map
     ? globalThis.__glassHostElements
     : new Map();
@@ -7831,6 +8094,17 @@ fn document_bootstrap(
   }});
   const elementsByIndex = new Map(elements.map((element) => [element.nodeIndex, element]));
   globalThis.__glassHostElements = elementsByIndex;
+  for (const element of elements) {{
+    element.__glassChildren = [];
+    element.__glassParent = null;
+  }}
+  for (const element of elements) {{
+    if (element.parentIndex === null) continue;
+    const parent = elementsByIndex.get(element.parentIndex);
+    if (!parent) continue;
+    parent.__glassChildren.push(element);
+    element.__glassParent = parent;
+  }}
   globalThis.__glassApplyNativeCommand = (command) => {{
     if (!command || typeof command !== "object") throw new TypeError("native frame command must be an object");
     const current = globalThis.__glassHostElements;
@@ -7987,6 +8261,8 @@ fn document_bootstrap(
     dispatchEvent(event) {{
       return dispatchTarget(this, event);
     }},
+    createElement(tagName) {{ return makeDetachedElement(tagName); }},
+    createTextNode(value) {{ return makeDetachedText(value); }},
     getElementById(id) {{ return elements.find((element) => element.id === String(id)) || null; }},
     querySelector(selector) {{ return findAll(selector)[0] || null; }},
     querySelectorAll(selector) {{ return findAll(selector); }},

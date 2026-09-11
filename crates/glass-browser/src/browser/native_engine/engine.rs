@@ -5124,6 +5124,10 @@ fn frame_script_command_source(command: &NativeScriptCommand) -> Result<String, 
             | NativeScriptCommand::SetTextContent { .. }
             | NativeScriptCommand::SetInnerHtml { .. }
             | NativeScriptCommand::RemoveNode { .. }
+            | NativeScriptCommand::CreateElement { .. }
+            | NativeScriptCommand::CreateTextNode { .. }
+            | NativeScriptCommand::AppendChild { .. }
+            | NativeScriptCommand::InsertBefore { .. }
             | NativeScriptCommand::SetCustomValidity { .. }
             | NativeScriptCommand::CheckValidity { .. }
             | NativeScriptCommand::ReportValidity { .. }

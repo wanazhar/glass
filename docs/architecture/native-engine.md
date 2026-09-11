@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-162` slice; the bounded foundation below remains
+`native-engine-browser-163` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -1632,6 +1632,18 @@ full WHATWG fragment implementation, and dynamic element creation, live
 child-node collections, cross-realm listener identity, complete frame
 lifecycle/load ordering, and browser-wide Web IDL parity remain promotion
 gates.
+
+The completed native-engine-browser-163 slice adds Rust-owned DOM node
+construction. Local and content-worker page realms can create bounded
+elements and text nodes while detached, set their attributes/text, nest them,
+move existing subtrees, and commit deterministic `appendChild()` or
+`insertBefore()` order. The host preserves parent identity and serializes the
+constructed subtree during the current evaluation; the native snapshot is the
+authority on the next evaluation. Same-origin frame projections retain the
+typed command allow-list but still need a detached construction factory,
+while live child-node collections, cross-realm listener identity, complete
+frame lifecycle/load ordering, and browser-wide Web IDL parity remain
+promotion gates.
 
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third

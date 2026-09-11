@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-162` locally. The versioned
+`native-engine-browser-163` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1535,6 +1535,17 @@ are covered through local document, HTTP content-worker, and same-origin frame
 owners. Dynamic element creation, live child-node collections, cross-realm
 listener identity, full frame lifecycle/load ordering, and native
 browser-complete promotion remain issue #40 gates.
+
+The completed native-engine-browser-163 slice is
+[native-engine-browser-163](tasks/native-engine-browser-163.md). Local and
+HTTP content-worker realms can now create Rust-owned elements and text nodes,
+populate detached trees, move existing subtrees, and insert children at a
+validated position through `appendChild()`/`insertBefore()`. Same-evaluation
+parent identity and bounded markup are coherent, and the next evaluation
+refreshes the committed snapshot. Same-origin frame construction, live
+child-node collections, cross-realm listener identity, full frame
+lifecycle/load ordering, and native browser-complete promotion remain issue
+#40 gates.
 
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and

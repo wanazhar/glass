@@ -2270,6 +2270,8 @@ fn supported_image_media_type(
         Some("image/jpeg")
     } else if media_type.eq_ignore_ascii_case("image/webp") {
         Some("image/webp")
+    } else if media_type.eq_ignore_ascii_case("image/gif") {
+        Some("image/gif")
     } else {
         None
     })

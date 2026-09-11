@@ -137,6 +137,19 @@ fn native_test_small_webp_data_url() -> String {
     )
 }
 
+fn native_test_gif_bytes() -> Vec<u8> {
+    base64::engine::general_purpose::STANDARD
+        .decode("R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==")
+        .unwrap()
+}
+
+fn native_test_small_gif_data_url() -> String {
+    format!(
+        "data:image/gif;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(native_test_gif_bytes())
+    )
+}
+
 #[tokio::test]
 async fn native_runtime_session_uses_explicit_local_constructor() {
     let session =
@@ -33176,6 +33189,56 @@ async fn native_webp_data_images_expose_intrinsic_dimensions_and_paint() {
 }
 
 #[tokio::test]
+async fn native_gif_data_images_expose_intrinsic_dimensions_and_paint() {
+    let source = native_test_small_gif_data_url();
+    let config = NativeEngineConfig::default()
+        .with_initial_url("fixture://gif-image/page")
+        .with_fixture(
+            "fixture://gif-image/page",
+            format!("<img id='image' src='{source}' style='width:2px;height:2px'>"),
+        )
+        .unwrap();
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const image = document.getElementById('image'); return [image.complete, image.naturalWidth, image.naturalHeight, image.currentSrc]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, 1, 1, source])
+    );
+
+    let document = NativeDocument::parse(
+        &format!("<img id='image' src='{source}' style='width:2px;height:2px'>"),
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let image_id = document.resolve_target("id=image").unwrap();
+    let list = document
+        .display_list(Viewport {
+            width: 2,
+            height: 2,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::Image {
+                node_id,
+                source_width: 1,
+                source_height: 1,
+                pixels,
+                ..
+            } if *node_id == image_id && pixels.len() == 1 * 1 * 4
+        )
+    }));
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_images_expose_accessible_role_and_alt_name() {
     let source = native_test_png_data_url();
     let config = NativeEngineConfig::default()
@@ -33398,6 +33461,53 @@ async fn native_content_process_loads_webp_picture_source() {
             .await
             .unwrap(),
         serde_json::json!([true, 2, 2, format!("http://{address}/photo.webp")])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_loads_gif_picture_source() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let gif = native_test_gif_bytes();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/photo.gif"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            if expected_path == "/photo.gif" {
+                let headers = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: image/gif\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    gif.len()
+                );
+                stream.write_all(headers.as_bytes()).await.unwrap();
+                stream.write_all(&gif).await.unwrap();
+            } else {
+                let body = "<picture><source type='image/gif' srcset='/photo.gif 1x'><img id='image' src='/fallback.png' alt='photo'></picture>";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const image = document.getElementById('image'); return [image.complete, image.naturalWidth, image.naturalHeight, image.currentSrc]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, 1, 1, format!("http://{address}/photo.gif")])
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

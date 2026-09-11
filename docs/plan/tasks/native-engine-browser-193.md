@@ -2,6 +2,9 @@
 
 Status: completed locally.
 
+The document-type construction follow-up identified here was closed by
+`native-engine-browser-194`.
+
 ## Objective
 
 Close the remaining comment-construction gap after parsed comment projection.

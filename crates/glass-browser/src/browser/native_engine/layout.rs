@@ -13,6 +13,8 @@ const DEFAULT_LINE_HEIGHT: u32 = 20;
 const DEFAULT_CONTROL_HEIGHT: u32 = 24;
 const DEFAULT_CONTROL_WIDTH: u32 = 160;
 const DEFAULT_BUTTON_WIDTH: u32 = 80;
+const DEFAULT_SVG_WIDTH: u32 = 300;
+const DEFAULT_SVG_HEIGHT: u32 = 150;
 const CHARACTER_WIDTH: u32 = 8;
 
 /// An integer-pixel point in the native viewport coordinate space.
@@ -1731,6 +1733,8 @@ impl<'a> LayoutBuilder<'a> {
         let minimum_line_height = style.line_height().unwrap_or(DEFAULT_LINE_HEIGHT);
         let default_content_height = if is_block {
             minimum_line_height
+        } else if self.document.node(id).and_then(|node| node.element_name()) == Some("svg") {
+            self.intrinsic_inline_height(id)
         } else {
             self.intrinsic_inline_height(id).max(minimum_line_height)
         };
@@ -1756,28 +1760,39 @@ impl<'a> LayoutBuilder<'a> {
             .push(NativeLayoutPaintOrder::Box(box_index));
 
         let content_width = width.saturating_sub(horizontal_inset);
-        let children = match display {
-            DisplayValue::Flex if self.can_use_flex_layout(id) => self.layout_flex_children(
+        let children = if self.document.node(id).and_then(|node| node.element_name()) == Some("svg")
+        {
+            self.layout_svg_children(
                 id,
                 x.saturating_add(left_inset),
                 y.saturating_add(top_inset),
                 content_width,
                 depth + 1,
-            ),
-            DisplayValue::Grid => self.layout_grid_children(
-                id,
-                x.saturating_add(left_inset),
-                y.saturating_add(top_inset),
-                content_width,
-                depth + 1,
-            ),
-            _ => self.layout_children(
-                id,
-                x.saturating_add(left_inset),
-                y.saturating_add(top_inset),
-                content_width,
-                depth + 1,
-            ),
+            )
+        } else {
+            match display {
+                DisplayValue::Flex if self.can_use_flex_layout(id) => self.layout_flex_children(
+                    id,
+                    x.saturating_add(left_inset),
+                    y.saturating_add(top_inset),
+                    content_width,
+                    depth + 1,
+                ),
+                DisplayValue::Grid => self.layout_grid_children(
+                    id,
+                    x.saturating_add(left_inset),
+                    y.saturating_add(top_inset),
+                    content_width,
+                    depth + 1,
+                ),
+                _ => self.layout_children(
+                    id,
+                    x.saturating_add(left_inset),
+                    y.saturating_add(top_inset),
+                    content_width,
+                    depth + 1,
+                ),
+            }
         };
         let auto_content_height = default_content_height.max(children.height);
         let height = forced_outer_size.height.unwrap_or_else(|| {
@@ -1880,6 +1895,94 @@ impl<'a> LayoutBuilder<'a> {
         let text_start = text_start.min(text_end);
         for text_run in &mut self.text_runs[text_start..text_end] {
             text_run.origin.y = shift(text_run.origin.y);
+        }
+    }
+
+    fn layout_svg_children(
+        &mut self,
+        parent: NativeNodeId,
+        x: u32,
+        y: u32,
+        available_width: u32,
+        depth: usize,
+    ) -> FlowSize {
+        let children = self
+            .document
+            .node(parent)
+            .map(|node| node.children().to_vec())
+            .unwrap_or_default();
+        let mut max_right = x;
+        let mut max_bottom = y;
+        for child in children {
+            let Some(node) = self.document.node(child) else {
+                continue;
+            };
+            if !matches!(node.kind(), NativeNodeKind::Element { .. })
+                || self.is_non_rendered(child)
+                || self.document.is_hidden_for_layout(child)
+                || self.effective_display(child) == DisplayValue::None
+            {
+                continue;
+            }
+            if node.element_name() == Some("g") {
+                let nested = self.layout_svg_children(child, x, y, available_width, depth + 1);
+                max_right = max_right.max(x.saturating_add(nested.width));
+                max_bottom = max_bottom.max(y.saturating_add(nested.height));
+                continue;
+            }
+            let Some((offset_x, offset_y, width, height)) = self.svg_shape_box(child) else {
+                continue;
+            };
+            self.layout_element_with_outer_width(
+                child,
+                x.saturating_add(offset_x),
+                y.saturating_add(offset_y),
+                width,
+                depth,
+                ForcedOuterSize {
+                    width: Some(width),
+                    height: Some(height),
+                },
+            );
+            max_right = max_right.max(x.saturating_add(offset_x).saturating_add(width));
+            max_bottom = max_bottom.max(y.saturating_add(offset_y).saturating_add(height));
+        }
+        FlowSize {
+            width: max_right.saturating_sub(x).max(available_width),
+            height: max_bottom.saturating_sub(y),
+        }
+    }
+
+    fn svg_shape_box(&self, id: NativeNodeId) -> Option<(u32, u32, u32, u32)> {
+        let node = self.document.node(id)?;
+        let number = |name: &str| {
+            node.attribute(name)
+                .and_then(|value| value.trim().parse::<u32>().ok())
+                .unwrap_or(0)
+        };
+        match node.element_name()? {
+            "rect" => Some((number("x"), number("y"), number("width"), number("height"))),
+            "circle" => {
+                let radius = number("r");
+                let diameter = radius.saturating_mul(2);
+                Some((
+                    number("cx").saturating_sub(radius),
+                    number("cy").saturating_sub(radius),
+                    diameter,
+                    diameter,
+                ))
+            }
+            "ellipse" => {
+                let radius_x = number("rx");
+                let radius_y = number("ry");
+                Some((
+                    number("cx").saturating_sub(radius_x),
+                    number("cy").saturating_sub(radius_y),
+                    radius_x.saturating_mul(2),
+                    radius_y.saturating_mul(2),
+                ))
+            }
+            _ => None,
         }
     }
 
@@ -4502,6 +4605,10 @@ impl<'a> LayoutBuilder<'a> {
         };
         match node.element_name() {
             Some("input" | "textarea" | "select") => DEFAULT_CONTROL_WIDTH,
+            Some("svg") => node
+                .attribute("width")
+                .and_then(|value| value.trim().parse::<u32>().ok())
+                .unwrap_or(DEFAULT_SVG_WIDTH),
             Some("button") => self
                 .intrinsic_text_width(id, style)
                 .saturating_add(24)
@@ -4554,6 +4661,12 @@ impl<'a> LayoutBuilder<'a> {
     fn intrinsic_inline_height(&self, id: NativeNodeId) -> u32 {
         match self.document.node(id).and_then(|node| node.element_name()) {
             Some("input" | "textarea" | "select" | "button") => DEFAULT_CONTROL_HEIGHT,
+            Some("svg") => self
+                .document
+                .node(id)
+                .and_then(|node| node.attribute("height"))
+                .and_then(|value| value.trim().parse::<u32>().ok())
+                .unwrap_or(DEFAULT_SVG_HEIGHT),
             _ => DEFAULT_LINE_HEIGHT,
         }
     }

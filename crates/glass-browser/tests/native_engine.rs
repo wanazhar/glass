@@ -32001,6 +32001,77 @@ fn native_grid_tracks_place_children_through_layout_paint_and_hit_test() {
 }
 
 #[test]
+fn native_inline_svg_shapes_share_layout_paint_and_hit_test_geometry() {
+    let document = NativeDocument::parse(
+        "<div id='host' style='width:40px;height:30px'><svg id='icon' width='24' height='18'><rect id='rect' x='2' y='3' width='8' height='6' fill='red'></rect><circle id='circle' cx='18' cy='9' r='4' style='fill:blue'></circle></svg></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let svg = document.resolve_target("id=icon").unwrap();
+    let rect = document.resolve_target("id=rect").unwrap();
+    let circle = document.resolve_target("id=circle").unwrap();
+    assert!(document.diagnostics().is_empty());
+    let viewport = Viewport {
+        width: 40,
+        height: 30,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(
+        layout.box_for(svg).unwrap(),
+        NativeRect {
+            x: 0,
+            y: 0,
+            width: 24,
+            height: 18,
+        }
+    );
+    assert_eq!(
+        layout.box_for(rect).unwrap(),
+        NativeRect {
+            x: 2,
+            y: 3,
+            width: 8,
+            height: 6,
+        }
+    );
+    assert_eq!(
+        layout.box_for(circle).unwrap(),
+        NativeRect {
+            x: 14,
+            y: 5,
+            width: 8,
+            height: 8,
+        }
+    );
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect: shape, color, .. }
+                if *node_id == rect
+                    && *shape == NativeRect { x: 2, y: 3, width: 8, height: 6 }
+                    && *color == NativeColor::RED
+        )
+    }));
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, color, .. }
+                if *node_id == circle && *color == NativeColor { red: 0, green: 0, blue: 255, alpha: 255 }
+        )
+    }));
+
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(3, 4), Some([255, 0, 0, 255]));
+    assert_eq!(surface.pixel(18, 9), Some([0, 0, 255, 255]));
+    assert_eq!(layout.hit_test(3, 4).unwrap(), Some(rect));
+    assert_eq!(layout.hit_test(18, 9).unwrap(), Some(circle));
+}
+
+#[test]
 fn native_flex_sizing_css_wide_resets_reach_layout_and_raster() {
     let document = NativeDocument::parse(
         "<style>.row { display:flex; width:32px; height:8px; gap:2px; align-items:flex-start; } .item { width:4px; height:4px; flex-shrink:0; } #reset { flex:4 5 12px; background-color:red; } #reset { flex:InItIaL; } #longhands { flex-grow:4; flex-shrink:5; flex-basis:12px; background-color:green; } #longhands { flex-grow:UnSeT; } #longhands { flex-shrink:ReVeRt; flex-basis:INITIAL; } #invalid { flex:2 3 8px; background-color:blue; } #invalid { flex:inherit 1 auto; } #important { flex:5 6 10px !important; background-color:black; } #important { flex:initial; }</style><div id='row' class='row'><div id='reset' class='item'>A</div><div id='longhands' class='item'>B</div><div id='invalid' class='item'>C</div><div id='important' class='item'>D</div></div>",

@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-186` locally. The versioned
+`native-engine-browser-187` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1689,6 +1689,14 @@ Its contract and local evidence are recorded in
 [native-engine-browser-178](tasks/native-engine-browser-178.md); cross-document
 session history, bfcache, cross-origin history, and browser-wide parity remain
 issue #40 promotion gates.
+
+The completed native-engine-browser-187 slice exposes live document-facing DOM
+surfaces across local, HTTP(S) content-worker, and same-origin frame realms.
+Documents now provide head, forms, links, scripts, images, scrollingElement,
+live tag/class collections, and getElementsByName while reusing the existing
+tree ownership and collection identity machinery. The contract and local
+evidence are recorded in
+[native-engine-browser-187](tasks/native-engine-browser-187.md).
 
 The completed native-engine-browser-186 slice exposes the shared character-data
 contract across local, HTTP(S) content-worker, and same-origin frame realms.

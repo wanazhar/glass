@@ -8402,6 +8402,26 @@ fn document_bootstrap(
       stack[stack.length - 1].appendChild(createText(decodeHtmlEntities(token)));
     }}
   }};
+  const installReflectedAttributeProperties = (element) => {{
+    Object.defineProperty(element, "id", {{
+      enumerable: true,
+      configurable: false,
+      get() {{
+        const value = element.getAttribute("id");
+        return value === null ? "" : value;
+      }},
+      set(next) {{ element.setAttribute("id", String(next)); }},
+    }});
+    Object.defineProperty(element, "className", {{
+      enumerable: true,
+      configurable: false,
+      get() {{
+        const value = element.getAttribute("class");
+        return value === null ? "" : value;
+      }},
+      set(next) {{ element.setAttribute("class", String(next)); }},
+    }});
+  }};
   let nextTemporaryNodeIndex = 4294967294;
   const allocateTemporaryNodeIndex = () => {{
     const value = nextTemporaryNodeIndex;
@@ -8593,8 +8613,6 @@ fn document_bootstrap(
         const key = String(name).toLowerCase();
         const stringValue = String(value);
         entry.attributes[key] = stringValue;
-        if (key === "id") this.id = stringValue;
-        if (key === "class") this.className = stringValue;
         if (key === "disabled") this.disabled = true;
         if (key === "hidden") this.hidden = true;
         element.__glassSyncContent();
@@ -8603,8 +8621,6 @@ fn document_bootstrap(
       removeAttribute(name) {{
         const key = String(name).toLowerCase();
         delete entry.attributes[key];
-        if (key === "id") this.id = "";
-        if (key === "class") this.className = "";
         if (key === "disabled") this.disabled = false;
         if (key === "hidden") this.hidden = false;
         element.__glassSyncContent();
@@ -8831,6 +8847,7 @@ fn document_bootstrap(
       configurable: false,
       get() {{ return globalThis.document || null; }},
     }});
+    installReflectedAttributeProperties(element);
     Object.defineProperty(element, "__glassAttributeSource", {{
       enumerable: false,
       configurable: false,
@@ -8941,8 +8958,6 @@ fn document_bootstrap(
         element.tagName = nextEntry.tagName.toUpperCase();
         element.nodeName = nextEntry.tagName.toUpperCase();
         element.localName = nextEntry.tagName.toLowerCase();
-        element.id = nextEntry.attributes.id || "";
-        element.className = nextEntry.attributes.class || "";
         textContent = String(nextEntry.text || "");
         innerHtml = String(nextEntry.innerHtml || "");
         element.disabled = nextEntry.disabled;
@@ -10279,13 +10294,25 @@ fn document_bootstrap(
     installElementStyleAndDataset(element);
   }}
   const matches = (element, selector) => matchesSelector(element, selector);
-  const findAll = (selector) => asNodeList(elements.filter((element) => matches(element, selector)));
+  const findAll = (selector) => asNodeList(liveDocumentElements().filter((element) => matches(element, selector)));
   const body = elements.find((element) => element.tagName === "BODY") || null;
   const documentElement = elements.find((element) => element.tagName === "HTML") || null;
   const rootSnapshot = snapshotNodes.find((entry) => entry && Number(entry.nodeIndex) === 0);
   const rootChildren = rootSnapshot && Array.isArray(rootSnapshot.children)
     ? rootSnapshot.children.map((index) => nodesByIndex.get(index)).filter(Boolean)
     : elements.filter((element) => element.parentIndex === null);
+  const liveDocumentElements = () => {{
+    const values = [];
+    const seen = new Set();
+    const visit = (node) => {{
+      if (!node || seen.has(node)) return;
+      seen.add(node);
+      if (Number(node.nodeType) === 1) values.push(node);
+      for (const child of node.__glassChildren || []) visit(child);
+    }};
+    for (const root of rootChildren) visit(root);
+    return values;
+  }};
   let documentCookie = typeof host.cookie === "string" ? host.cookie : "";
   const previewCookieSet = (current, value) => {{
     const pair = String(value).split(";", 1)[0].trim();
@@ -10310,7 +10337,7 @@ fn document_bootstrap(
     hidden: false,
     visibilityState: "visible",
     get defaultView() {{ return globalThis; }},
-    get activeElement() {{ return elements.find((element) => element.focused) || null; }},
+    get activeElement() {{ return liveDocumentElements().find((element) => element.focused) || null; }},
     get cookie() {{ return documentCookie; }},
     set cookie(value) {{
       const text = String(value);
@@ -10331,16 +10358,16 @@ fn document_bootstrap(
     createElement(tagName) {{ return makeDetachedElement(tagName); }},
     createTextNode(value) {{ return makeDetachedText(value); }},
     createDocumentFragment() {{ return makeDocumentFragment(); }},
-    getElementById(id) {{ return elements.find((element) => element.id === String(id)) || null; }},
+    getElementById(id) {{ return liveDocumentElements().find((element) => element.id === String(id)) || null; }},
     querySelector(selector) {{ return findAll(selector)[0] || null; }},
     querySelectorAll(selector) {{ return findAll(selector); }},
     getElementsByTagName(name) {{
       const value = String(name).toLowerCase();
-      return asHtmlCollection(elements.filter((element) => value === "*" || element.tagName.toLowerCase() === value));
+      return asHtmlCollection(liveDocumentElements().filter((element) => value === "*" || element.tagName.toLowerCase() === value));
     }},
     getElementsByClassName(name) {{
       const value = String(name);
-      return asHtmlCollection(elements.filter((element) => element.className.split(/\s+/).includes(value)));
+      return asHtmlCollection(liveDocumentElements().filter((element) => element.className.split(/\s+/).includes(value)));
     }}
   }};
   Object.defineProperty(document, "__glassChildren", {{
@@ -11484,8 +11511,6 @@ fn document_bootstrap(
           const key = String(name).toLowerCase();
           const stringValue = String(nextValue);
           attributes[key] = stringValue;
-          if (key === "id") this.id = stringValue;
-          if (key === "class") this.className = stringValue;
           if (key === "disabled") this.disabled = true;
           if (key === "hidden") this.hidden = true;
           projected.__glassSyncContent();
@@ -11494,8 +11519,6 @@ fn document_bootstrap(
         removeAttribute(name) {{
           const key = String(name).toLowerCase();
           delete attributes[key];
-          if (key === "id") this.id = "";
-          if (key === "class") this.className = "";
           if (key === "disabled") this.disabled = false;
           if (key === "hidden") this.hidden = false;
           projected.__glassSyncContent();
@@ -11600,6 +11623,7 @@ fn document_bootstrap(
           return child;
         }},
       }};
+      installReflectedAttributeProperties(projected);
       Object.defineProperty(projected, "__glassChildren", {{
         enumerable: false,
         configurable: false,
@@ -11960,8 +11984,6 @@ fn document_bootstrap(
           const key = String(name).toLowerCase();
           const stringValue = String(nextValue);
           attributes[key] = stringValue;
-          if (key === "id") projected.id = stringValue;
-          if (key === "class") projected.className = stringValue;
           if (key === "disabled") projected.disabled = true;
           if (key === "hidden") projected.hidden = true;
           projected.__glassSyncContent();
@@ -11970,8 +11992,6 @@ fn document_bootstrap(
         removeAttribute(name) {{
           const key = String(name).toLowerCase();
           delete attributes[key];
-          if (key === "id") projected.id = "";
-          if (key === "class") projected.className = "";
           if (key === "disabled") projected.disabled = false;
           if (key === "hidden") projected.hidden = false;
           projected.__glassSyncContent();
@@ -12068,6 +12088,7 @@ fn document_bootstrap(
           return child;
         }},
       }};
+      installReflectedAttributeProperties(projected);
       Object.defineProperty(projected, "__glassChildren", {{ enumerable: false, configurable: false, writable: true, value: [] }});
       Object.defineProperty(projected, "__glassEventOwner", {{
         enumerable: false,

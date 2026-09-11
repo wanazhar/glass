@@ -232,6 +232,14 @@ impl NativeDisplayList {
                             },
                         )?;
                     }
+                    if let Some(command) = background_image_paint_command(
+                        document,
+                        layout_box.node_id,
+                        layout_box.rect,
+                        clip,
+                    ) {
+                        push_command(&mut commands, command)?;
+                    }
                     if let Some(border) = style.border()
                         && border.any_width()
                     {
@@ -335,6 +343,30 @@ fn image_paint_command(
         .image_resource_for_node(node_id)
         .cloned()
         .or_else(|| decode_data_image(node.attribute("src")?))?;
+    Some(NativeDisplayCommand::Image {
+        node_id,
+        rect: bounds,
+        source_width: image.width,
+        source_height: image.height,
+        pixels: image.pixels,
+        clip,
+    })
+}
+
+fn background_image_paint_command(
+    document: &NativeDocument,
+    node_id: NativeNodeId,
+    bounds: NativeRect,
+    clip: Option<NativeRect>,
+) -> Option<NativeDisplayCommand> {
+    if bounds.width == 0 || bounds.height == 0 {
+        return None;
+    }
+    let source = document.background_image_source_for_node(node_id)?;
+    let image = document
+        .background_image_resource_for_node(node_id)
+        .cloned()
+        .or_else(|| decode_data_image(source))?;
     Some(NativeDisplayCommand::Image {
         node_id,
         rect: bounds,

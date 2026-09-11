@@ -3,6 +3,7 @@ use super::diagnostics::{NativeDiagnosticCode, NativeDiagnosticSink, NativeDiagn
 use super::dom::{NativeDocument, NativeNode, NativeNodeId};
 use super::error::NativeEngineError;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 pub(crate) const MAX_NATIVE_STYLE_RULES: usize = 512;
 pub(crate) const MAX_NATIVE_GRID_TRACKS: usize = 8;
@@ -196,6 +197,25 @@ impl NativeBackgroundColorValue {
             Self::CurrentColor => Some(current_color),
             Self::Inherit => inherited_background,
             Self::Unset | Self::Initial | Self::Revert => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeBackgroundImageValue {
+    Url(u32),
+    None,
+    Inherit,
+    Unset,
+    Initial,
+    Revert,
+}
+
+impl NativeBackgroundImageValue {
+    const fn resolve(self) -> Option<u32> {
+        match self {
+            Self::Url(source) => Some(source),
+            Self::None | Self::Inherit | Self::Unset | Self::Initial | Self::Revert => None,
         }
     }
 }
@@ -1186,6 +1206,7 @@ pub(crate) struct NativeComputedStyle {
     max_height: Option<u32>,
     line_height: Option<u32>,
     background_color: Option<NativeColor>,
+    background_image: Option<u32>,
     border: Option<NativeBorder>,
     border_colors: Option<[NativeColor; 4]>,
     border_widths: [u32; 4],
@@ -1388,6 +1409,10 @@ impl NativeComputedStyle {
         self.background_color
     }
 
+    pub(crate) const fn background_image(self) -> Option<u32> {
+        self.background_image
+    }
+
     pub(crate) const fn border(self) -> Option<NativeBorder> {
         self.border
     }
@@ -1472,6 +1497,7 @@ impl NativeComputedStyle {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct NativeStylesheet {
     rules: Vec<NativeStyleRule>,
+    background_image_sources: BTreeMap<u32, String>,
 }
 
 impl NativeStylesheet {
@@ -1498,9 +1524,14 @@ impl NativeStylesheet {
                 NativeDiagnosticSource::Stylesheet { index },
                 diagnostics,
                 &mut layers,
+                &mut stylesheet.background_image_sources,
             )?;
         }
         Ok(stylesheet)
+    }
+
+    pub(crate) fn background_image_sources(&self) -> &BTreeMap<u32, String> {
+        &self.background_image_sources
     }
 
     #[cfg(test)]
@@ -1643,6 +1674,9 @@ impl NativeStylesheet {
             MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
         let mut background_color: [Option<
             CascadeValue<LocalCascadeDeclaration<NativeBackgroundColorValue>>,
+        >; MAX_NATIVE_PAINT_CASCADE_LAYERS] = [None; MAX_NATIVE_PAINT_CASCADE_LAYERS];
+        let mut background_image: [Option<
+            CascadeValue<LocalCascadeDeclaration<NativeBackgroundImageValue>>,
         >; MAX_NATIVE_PAINT_CASCADE_LAYERS] = [None; MAX_NATIVE_PAINT_CASCADE_LAYERS];
         let mut border: [[Option<CascadeValue<LocalCascadeDeclaration<NativeBorderDeclaration>>>;
             MAX_NATIVE_CASCADE_LAYERS]; 4] = [[None; MAX_NATIVE_CASCADE_LAYERS]; 4];
@@ -2065,6 +2099,14 @@ impl NativeStylesheet {
                 false,
                 rule.declarations.background_color_important,
                 &mut background_color,
+            );
+            apply_paint_cascade_declaration(
+                rule.declarations.background_image,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.background_image_important,
+                &mut background_image,
             );
             apply_local_cascade_edges(
                 &rule.declarations.border,
@@ -2535,6 +2577,14 @@ impl NativeStylesheet {
                 declarations.background_color_important,
                 &mut background_color,
             );
+            apply_paint_cascade_declaration(
+                declarations.background_image,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.background_image_important,
+                &mut background_image,
+            );
             apply_local_cascade_edges(
                 &declarations.border,
                 u16::MAX,
@@ -2722,6 +2772,8 @@ impl NativeStylesheet {
             inherited.background_color,
             current_color,
         );
+        let resolved_background_image =
+            resolve_local_background_image_declaration(background_image);
         let resolved_border_color: [Option<NativeColor>; 4] = std::array::from_fn(|index| {
             resolve_local_border_color_declaration(
                 border_color[index],
@@ -2872,6 +2924,7 @@ impl NativeStylesheet {
             ),
             line_height: resolve_line_height(line_height, inherited.line_height),
             background_color: resolved_background_color,
+            background_image: resolved_background_image,
             border: NativeBorder::from_sides(resolved_border),
             border_colors: Some(border_colors),
             border_widths,
@@ -3306,6 +3359,18 @@ fn resolve_local_background_color_declaration(
         LocalCascadeDeclaration::Inherit => None,
         LocalCascadeDeclaration::Reset => Some(None),
         LocalCascadeDeclaration::RevertLayer => None,
+    })
+}
+
+fn resolve_local_background_image_declaration(
+    candidates: [Option<CascadeValue<LocalCascadeDeclaration<NativeBackgroundImageValue>>>;
+        MAX_NATIVE_PAINT_CASCADE_LAYERS],
+) -> Option<u32> {
+    resolve_alignment_candidates(candidates, None, |declaration| match declaration {
+        LocalCascadeDeclaration::Value(value) => Some(value.resolve()),
+        LocalCascadeDeclaration::Inherit
+        | LocalCascadeDeclaration::Reset
+        | LocalCascadeDeclaration::RevertLayer => None,
     })
 }
 
@@ -5028,6 +5093,8 @@ struct NativeDeclarations {
     line_height: Option<InheritedTextDeclaration<u32>>,
     background_color: Option<LocalCascadeDeclaration<NativeBackgroundColorValue>>,
     background_color_important: bool,
+    background_image: Option<LocalCascadeDeclaration<NativeBackgroundImageValue>>,
+    background_image_important: bool,
     border: [Option<LocalCascadeDeclaration<NativeBorderDeclaration>>; 4],
     border_order: [usize; 4],
     border_important: [bool; 4],
@@ -5177,6 +5244,7 @@ fn parse_source(
     diagnostic_source: NativeDiagnosticSource,
     diagnostics: &mut NativeDiagnosticSink,
     layers: &mut Vec<String>,
+    background_image_sources: &mut BTreeMap<u32, String>,
 ) -> Result<(), NativeEngineError> {
     let source = strip_comments(source);
     let end = source.len();
@@ -5187,6 +5255,7 @@ fn parse_source(
         diagnostic_source,
         diagnostics,
         layers,
+        background_image_sources,
     };
     parse_source_block(&mut context, 0, end, None)
 }
@@ -5198,6 +5267,7 @@ struct NativeCssParseContext<'a> {
     diagnostic_source: NativeDiagnosticSource,
     diagnostics: &'a mut NativeDiagnosticSink,
     layers: &'a mut Vec<String>,
+    background_image_sources: &'a mut BTreeMap<u32, String>,
 }
 
 fn parse_source_block(
@@ -5307,6 +5377,7 @@ fn parse_style_rule(
         open.saturating_add(1),
         context.diagnostics,
     );
+    collect_background_image_sources(&source[open + 1..close], context.background_image_sources);
     let has_supported_declaration = declarations.display.is_some()
         || declarations.grid_template_columns.is_some()
         || declarations.grid_template_rows.is_some()
@@ -5354,6 +5425,7 @@ fn parse_style_rule(
         || declarations.max_height.is_some()
         || declarations.line_height.is_some()
         || declarations.background_color.is_some()
+        || declarations.background_image.is_some()
         || declarations.border.iter().any(Option::is_some)
         || declarations.logical_border.has_any()
         || declarations.border_width.iter().any(Option::is_some)
@@ -5488,10 +5560,8 @@ fn parse_declarations_with_diagnostics(
     diagnostics: &mut NativeDiagnosticSink,
 ) -> NativeDeclarations {
     let declarations = parse_declarations(source);
-    let mut declaration_offset = 0;
-    for declaration in source.split(';') {
+    for (declaration_offset, declaration) in split_css_declarations(source) {
         let offset = base_offset.saturating_add(declaration_offset);
-        declaration_offset = declaration_offset.saturating_add(declaration.len().saturating_add(1));
         let declaration = declaration.trim();
         if declaration.is_empty() {
             continue;
@@ -5568,6 +5638,7 @@ fn parse_declarations_with_diagnostics(
             }
             "line-height" => parse_line_height_declaration(value).is_some(),
             "background-color" => parse_background_color_declaration(value).is_some(),
+            "background-image" => parse_background_image_declaration(value).is_some(),
             "fill" | "stroke" => parse_svg_paint_declaration(value),
             "color" => parse_local_color_declaration(value).is_some(),
             "border" | "border-top" | "border-right" | "border-bottom" | "border-left" => {
@@ -5741,6 +5812,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "max-height"
             | "line-height"
             | "background-color"
+            | "background-image"
             | "fill"
             | "stroke"
             | "color"
@@ -5826,6 +5898,40 @@ fn is_known_css_property(property: &str) -> bool {
     )
 }
 
+fn split_css_declarations(source: &str) -> Vec<(usize, &str)> {
+    let mut declarations = Vec::new();
+    let mut start = 0;
+    let mut parentheses = 0usize;
+    let mut quote = None;
+    let mut escaped = false;
+    for (index, byte) in source.bytes().enumerate() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if let Some(delimiter) = quote {
+            if byte == b'\\' {
+                escaped = true;
+            } else if byte == delimiter {
+                quote = None;
+            }
+            continue;
+        }
+        match byte {
+            b'\'' | b'"' => quote = Some(byte),
+            b'(' => parentheses = parentheses.saturating_add(1),
+            b')' => parentheses = parentheses.saturating_sub(1),
+            b';' if parentheses == 0 => {
+                declarations.push((start, &source[start..index]));
+                start = index.saturating_add(1);
+            }
+            _ => {}
+        }
+    }
+    declarations.push((start, &source[start..]));
+    declarations
+}
+
 fn selector_diagnostic_detail(selector: &str) -> &'static str {
     let selector = selector.trim();
     if selector.is_empty() {
@@ -5847,7 +5953,9 @@ fn selector_diagnostic_detail(selector: &str) -> &'static str {
 
 fn parse_declarations(source: &str) -> NativeDeclarations {
     let mut declarations = NativeDeclarations::default();
-    for (declaration_order, declaration) in source.split(';').enumerate() {
+    for (declaration_order, (_, declaration)) in
+        split_css_declarations(source).into_iter().enumerate()
+    {
         let Some((property, value)) = declaration.split_once(':') else {
             continue;
         };
@@ -6169,6 +6277,12 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 if let Some(parsed) = parse_background_color_declaration(value) {
                     declarations.background_color = Some(parsed);
                     declarations.background_color_important = important;
+                }
+            }
+            "background-image" => {
+                if let Some(parsed) = parse_background_image_declaration(value) {
+                    declarations.background_image = Some(parsed);
+                    declarations.background_image_important = important;
                 }
             }
             "border" => {
@@ -7245,6 +7359,104 @@ fn parse_background_color_declaration(
     value: &str,
 ) -> Option<LocalCascadeDeclaration<NativeBackgroundColorValue>> {
     parse_local_cascade_declaration(value, parse_background_color_value)
+}
+
+fn background_image_source_id(source: &str) -> u32 {
+    let mut hash = 2_166_136_261u32;
+    for byte in source.bytes() {
+        hash ^= u32::from(byte);
+        hash = hash.wrapping_mul(16_777_619);
+    }
+    if hash == 0 { 1 } else { hash }
+}
+
+fn parse_background_image_url(value: &str) -> Option<&str> {
+    let value = value.trim();
+    let open = value.find('(')?;
+    if !value[..open].trim().eq_ignore_ascii_case("url") || !value.ends_with(')') {
+        return None;
+    }
+    let inner = value[open + 1..value.len().saturating_sub(1)].trim();
+    if inner.len() > 2 {
+        let bytes = inner.as_bytes();
+        if matches!(bytes.first(), Some(b'"' | b'\'')) {
+            if bytes.last() != bytes.first() {
+                return None;
+            }
+            let inner = &inner[1..inner.len().saturating_sub(1)];
+            if inner.is_empty()
+                || inner.len() > 1024
+                || inner.bytes().any(|byte| byte.is_ascii_control())
+            {
+                return None;
+            }
+            return Some(inner);
+        }
+    }
+    if inner.is_empty()
+        || inner.len() > 1024
+        || inner
+            .bytes()
+            .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
+    {
+        return None;
+    }
+    Some(inner)
+}
+
+fn parse_background_image_value(value: &str) -> Option<NativeBackgroundImageValue> {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("none") {
+        return Some(NativeBackgroundImageValue::None);
+    }
+    if value.eq_ignore_ascii_case("inherit") {
+        return Some(NativeBackgroundImageValue::Inherit);
+    }
+    if value.eq_ignore_ascii_case("unset") {
+        return Some(NativeBackgroundImageValue::Unset);
+    }
+    if value.eq_ignore_ascii_case("initial") {
+        return Some(NativeBackgroundImageValue::Initial);
+    }
+    if value.eq_ignore_ascii_case("revert") {
+        return Some(NativeBackgroundImageValue::Revert);
+    }
+    parse_background_image_url(value)
+        .map(background_image_source_id)
+        .map(NativeBackgroundImageValue::Url)
+}
+
+fn parse_background_image_declaration(
+    value: &str,
+) -> Option<LocalCascadeDeclaration<NativeBackgroundImageValue>> {
+    parse_local_cascade_declaration(value, parse_background_image_value)
+}
+
+pub(crate) fn collect_background_image_sources(
+    source: &str,
+    background_image_sources: &mut BTreeMap<u32, String>,
+) {
+    for (_, declaration) in split_css_declarations(source) {
+        let Some((property, value)) = declaration.split_once(':') else {
+            continue;
+        };
+        if !property.trim().eq_ignore_ascii_case("background-image") {
+            continue;
+        }
+        let (value, _) = strip_important_suffix(value);
+        let Some(source) = parse_background_image_url(value) else {
+            continue;
+        };
+        let source_id = background_image_source_id(source);
+        if background_image_sources
+            .get(&source_id)
+            .is_none_or(|existing| existing == source)
+        {
+            background_image_sources
+                .entry(source_id)
+                .or_insert_with(|| source.to_owned());
+        }
+    }
 }
 
 fn split_css_value_tokens(value: &str) -> Option<Vec<&str>> {

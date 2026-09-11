@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-168`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-169`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
@@ -3267,8 +3267,17 @@ Declaration-level CSSOM reads and writes, priority/removal, camelCase/dashed
 property access, `cssText`, dataset camelCase mapping, enumeration, assignment,
 and deletion reuse the existing typed attribute command path. Full CSS value and
 CSSOM descriptor parity, computed-style mutation semantics, cross-realm
-listener identity, complete frame lifecycle/load ordering, and browser-wide
+listener delivery, complete frame lifecycle/load ordering, and browser-wide
 parity remain open.
+
+The completed native-engine-browser-169 slice adds frame-qualified EventTarget
+behavior to same-origin projected elements, detached projected elements,
+documents, and window proxies. Capture/bubble dispatch follows projected
+parent-node links to the frame-local document and default window, listener
+removal is respected, and projected click/focus/blur preserve their typed
+child-command handoff. Parent-side listener projection is isolated from
+top-level owners; a complete cross-process event-observation bridge, full Web
+IDL parity, complete lifecycle ordering, and browser-wide parity remain open.
 
 The completed native-engine-browser-133 batch extends the native target seam
 with a side-effect-free preflight result. The engine resolves the current

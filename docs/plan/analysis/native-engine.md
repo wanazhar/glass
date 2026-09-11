@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-184`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-185`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
@@ -3373,6 +3373,14 @@ comments, raw-text/foreign-content rules, malformed-input recovery, and full
 Web IDL descriptor parity remain conformance work. Exact local evidence is in
 `docs/plan/tasks/native-engine-browser-179.md`; browser-complete promotion
 remains tracked issue-40 work.
+
+The completed native-engine-browser-185 slice closes a parser correctness gap
+in the shared detached-fragment path. A quote-aware scanner now finds tag
+boundaries without splitting quoted `>` values, skips declarations/comments,
+and consumes `script`/`style` raw text plus `textarea`/`title` RCDATA until
+their matching end tags. The behavior is covered in local, HTTP(S), and
+same-origin frame projections; exact evidence is in
+[native-engine-browser-185](../tasks/native-engine-browser-185.md).
 
 The completed native-engine-browser-184 slice closes the same-turn
 `textContent`/`innerText` child-materialization gap. Local and projected

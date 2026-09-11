@@ -1,4 +1,5 @@
 use super::layout::NativePoint;
+use serde_json::Value;
 
 /// One committed local navigation entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -6,6 +7,12 @@ pub struct NativeHistoryEntry {
     pub url: String,
     pub revision: u64,
     pub scroll_offset: NativePoint,
+    /// JSON-backed state supplied by the page's History API.
+    pub state: Value,
+    /// Identity of the document lifecycle that owns this entry. Entries
+    /// created by History API or fragment navigation share this identity;
+    /// full resource commits allocate a new one.
+    pub document_id: u64,
 }
 
 /// Direction for explicit bounded history traversal.
@@ -21,6 +28,7 @@ pub struct NativeHistory {
     entries: Vec<NativeHistoryEntry>,
     current: Option<usize>,
     max_entries: usize,
+    next_document_id: u64,
 }
 
 impl NativeHistory {
@@ -29,10 +37,38 @@ impl NativeHistory {
             entries: Vec::new(),
             current: None,
             max_entries,
+            next_document_id: 1,
         }
     }
 
     pub(crate) fn push(&mut self, url: String, revision: u64, scroll_offset: NativePoint) {
+        self.push_with_state(url, revision, scroll_offset, Value::Null, false);
+    }
+
+    pub(crate) fn push_same_document(
+        &mut self,
+        url: String,
+        revision: u64,
+        scroll_offset: NativePoint,
+    ) {
+        self.push_with_state(url, revision, scroll_offset, Value::Null, true);
+    }
+
+    pub(crate) fn push_with_state(
+        &mut self,
+        url: String,
+        revision: u64,
+        scroll_offset: NativePoint,
+        state: Value,
+        same_document: bool,
+    ) {
+        let document_id = if same_document {
+            self.current()
+                .map(|entry| entry.document_id)
+                .unwrap_or_else(|| self.allocate_document_id())
+        } else {
+            self.allocate_document_id()
+        };
         if let Some(current) = self.current {
             self.entries.truncate(current.saturating_add(1));
         }
@@ -40,6 +76,8 @@ impl NativeHistory {
             url,
             revision,
             scroll_offset,
+            state,
+            document_id,
         });
         if self.entries.len() > self.max_entries {
             let overflow = self.entries.len() - self.max_entries;
@@ -54,8 +92,26 @@ impl NativeHistory {
         revision: u64,
         scroll_offset: NativePoint,
     ) {
+        self.replace_current_with_state(url, revision, scroll_offset, Value::Null, false);
+    }
+
+    pub(crate) fn replace_current_with_state(
+        &mut self,
+        url: String,
+        revision: u64,
+        scroll_offset: NativePoint,
+        state: Value,
+        same_document: bool,
+    ) {
+        let document_id = if same_document {
+            self.current()
+                .map(|entry| entry.document_id)
+                .unwrap_or_else(|| self.allocate_document_id())
+        } else {
+            self.allocate_document_id()
+        };
         let Some(current) = self.current else {
-            self.push(url, revision, scroll_offset);
+            self.push_with_state(url, revision, scroll_offset, state, same_document);
             return;
         };
         if let Some(entry) = self.entries.get_mut(current) {
@@ -63,9 +119,11 @@ impl NativeHistory {
                 url,
                 revision,
                 scroll_offset,
+                state,
+                document_id,
             };
         } else {
-            self.push(url, revision, scroll_offset);
+            self.push_with_state(url, revision, scroll_offset, state, same_document);
         }
     }
 
@@ -100,6 +158,15 @@ impl NativeHistory {
         self.entries.get(index)
     }
 
+    pub(crate) fn is_same_document(&self, index: usize) -> bool {
+        let Some(current) = self.current.and_then(|index| self.entries.get(index)) else {
+            return false;
+        };
+        self.entries
+            .get(index)
+            .is_some_and(|entry| entry.document_id == current.document_id)
+    }
+
     pub(crate) fn update_current_scroll(&mut self, scroll_offset: NativePoint) {
         if let Some(index) = self.current
             && let Some(entry) = self.entries.get_mut(index)
@@ -121,5 +188,11 @@ impl NativeHistory {
 
     pub const fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    fn allocate_document_id(&mut self) -> u64 {
+        let id = self.next_document_id;
+        self.next_document_id = self.next_document_id.saturating_add(1);
+        id
     }
 }

@@ -375,6 +375,15 @@ async fn native_local_document_fragments_preserve_tree_ownership_and_helpers() {
     assert_eq!(
         engine
             .evaluate_async(
+                "(() => { const fragment = document.createDocumentFragment(); fragment.innerHTML = '<!doctype html><!--ignored--><div title=\"a > b\">before<script>if (a < b) x = \"</div>\";</script><textarea>&lt;em&gt;safe&lt;/em&gt;</textarea></div>'; const div = fragment.firstElementChild; const script = div.querySelector('script'); const textarea = div.querySelector('textarea'); return [fragment.childNodes.length, div.getAttribute('title'), script.textContent, textarea.textContent, div.querySelector('em') === null]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([1, "a > b", "if (a < b) x = \"</div>\";", "<em>safe</em>", true])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
                 "(() => { const source = document.createElement('section'); source.setAttribute('id', 'moving-source'); const moved = document.createElement('b'); source.appendChild(moved); document.body.appendChild(source); const fragment = document.createDocumentFragment(); fragment.append(moved); const stable = document.createElement('i'); fragment.appendChild(stable); const records = []; const observer = new MutationObserver(entries => records.push(entries.map(record => ({ type: record.type, target: record.target === fragment, added: record.addedNodes.map(node => node.localName || node.nodeName), removed: record.removedNodes.map(node => node.localName || node.nodeName), previous: record.previousSibling && (record.previousSibling.localName || record.previousSibling.nodeName), next: record.nextSibling && (record.nextSibling.localName || record.nextSibling.nodeName) })))); observer.observe(fragment, { childList: true, subtree: true }); const inserted = document.createElement('em'); fragment.insertBefore(inserted, stable); stable.remove(); globalThis.fragmentMutationLog = records; return [moved.parentNode === fragment, source.childNodes.length, fragment.childNodes.length]; })()",
             )
             .await
@@ -1120,6 +1129,16 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
             true,
             "<section data-source=\"frame\"><em>Projected &amp; ready</em> tail</section><hr>",
         ])
+    );
+    assert_eq!(
+        session
+            .script(
+                "(() => { const child = document.getElementById('child').contentDocument; const fragment = child.createDocumentFragment(); fragment.innerHTML = '<!doctype html><!--ignored--><div title=\"a > b\">before<script>if (a < b) x = \"</div>\";</script><textarea>&lt;em&gt;safe&lt;/em&gt;</textarea></div>'; const div = fragment.firstElementChild; const script = div.querySelector('script'); const textarea = div.querySelector('textarea'); return [fragment.childNodes.length, div.getAttribute('title'), script.textContent, textarea.textContent, div.querySelector('em') === null]; })()",
+            )
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([1, "a > b", "if (a < b) x = \"</div>\";", "<em>safe</em>", true])
     );
     assert_eq!(
         session
@@ -6048,6 +6067,15 @@ async fn native_content_process_document_fragments_cross_the_http_boundary() {
             true,
             "<aside></aside>before-<h1>Native</h1>-after<section data-source=\"http\"><em>Parsed &amp; ready</em> tail</section><hr>",
         ])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const fragment = document.createDocumentFragment(); fragment.innerHTML = '<!doctype html><!--ignored--><div title=\"a > b\">before<script>if (a < b) x = \"</div>\";</script><textarea>&lt;em&gt;safe&lt;/em&gt;</textarea></div>'; const div = fragment.firstElementChild; const script = div.querySelector('script'); const textarea = div.querySelector('textarea'); return [fragment.childNodes.length, div.getAttribute('title'), script.textContent, textarea.textContent, div.querySelector('em') === null]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([1, "a > b", "if (a < b) x = \"</div>\";", "<em>safe</em>", true])
     );
     assert_eq!(
         engine

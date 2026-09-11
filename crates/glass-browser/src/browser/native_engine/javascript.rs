@@ -8365,14 +8365,69 @@ fn document_bootstrap(
     .replace(/&amp;/gi, "&");
   const populateDetachedFragment = (fragment, markup, createElement, createText) => {{
     const stack = [fragment];
-    const tokens = String(markup).match(/<!--[\s\S]*?-->|<\/?[^>]*>|[^<]+|</g) || [];
-    const voidElements = ["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"];
-    for (const token of tokens) {{
-      if (token.startsWith("<!--")) continue;
-      if (token.startsWith("</")) {{
-        const closing = /^<\s*\/\s*([A-Za-z][A-Za-z0-9:_-]*)/.exec(token);
+    const source = String(markup);
+    const voidElements = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
+    const rawTextElements = new Set(["script", "style"]);
+    const rcdataElements = new Set(["textarea", "title"]);
+    const findTagEnd = (from) => {{
+      let quote = null;
+      for (let index = from; index < source.length; index += 1) {{
+        const character = source[index];
+        if (quote !== null) {{
+          if (character === quote) quote = null;
+        }} else if (character === "\"" || character === "'") {{
+          quote = character;
+        }} else if (character === ">") {{
+          return index;
+        }}
+      }}
+      return -1;
+    }};
+    const findSpecialEnd = (from, name) => {{
+      const lowerSource = source.toLowerCase();
+      const needle = "</" + name.toLowerCase();
+      let candidate = lowerSource.indexOf(needle, from);
+      while (candidate >= 0) {{
+        const afterName = candidate + needle.length;
+        const boundary = source[afterName];
+        if (boundary === undefined || /[\s>]/.test(boundary)) {{
+          const end = findTagEnd(afterName);
+          if (end >= 0) return {{ start: candidate, end: end + 1 }};
+        }}
+        candidate = lowerSource.indexOf(needle, candidate + 1);
+      }}
+      return null;
+    }};
+    let cursor = 0;
+    while (cursor < source.length) {{
+      const parent = stack[stack.length - 1];
+      if (source.startsWith("<!--", cursor)) {{
+        const end = source.indexOf("-->", cursor + 4);
+        cursor = end < 0 ? source.length : end + 3;
+        continue;
+      }}
+      if (source[cursor] !== "<") {{
+        const end = source.indexOf("<", cursor);
+        const textEnd = end < 0 ? source.length : end;
+        if (textEnd > cursor) parent.appendChild(createText(decodeHtmlEntities(source.slice(cursor, textEnd))));
+        cursor = textEnd;
+        continue;
+      }}
+      if (source.startsWith("<!", cursor) || source.startsWith("<?", cursor)) {{
+        const end = findTagEnd(cursor + 2);
+        cursor = end < 0 ? source.length : end + 1;
+        continue;
+      }}
+      if (source.startsWith("</", cursor)) {{
+        const end = findTagEnd(cursor + 2);
+        if (end < 0) {{
+          parent.appendChild(createText(decodeHtmlEntities(source.slice(cursor))));
+          break;
+        }}
+        const closing = /^\s*([A-Za-z][A-Za-z0-9:_-]*)/.exec(source.slice(cursor + 2, end));
         if (!closing) {{
-          stack[stack.length - 1].appendChild(createText(decodeHtmlEntities(token)));
+          parent.appendChild(createText(decodeHtmlEntities(source.slice(cursor, end + 1))));
+          cursor = end + 1;
           continue;
         }}
         const name = closing[1].toLowerCase();
@@ -8382,36 +8437,52 @@ fn document_bootstrap(
             break;
           }}
         }}
+        cursor = end + 1;
         continue;
       }}
-      if (token.startsWith("<")) {{
-        const opening = /^<\s*([A-Za-z][A-Za-z0-9:_-]*)/.exec(token);
-        if (!opening || !token.endsWith(">")) {{
-          stack[stack.length - 1].appendChild(createText(decodeHtmlEntities(token)));
-          continue;
-        }}
-        const element = createElement(opening[1]);
-        const selfClosing = /\/\s*>$/.test(token);
-        const attributeSource = token
-          .slice(opening[0].length, token.length - 1)
-          .replace(/\/\s*$/, "");
-        const attributes = /([A-Za-z_:][A-Za-z0-9:._-]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>]+)))?/g;
-        let attribute;
-        while ((attribute = attributes.exec(attributeSource)) !== null) {{
-          const value = attribute[2] !== undefined
-            ? attribute[2]
-            : attribute[3] !== undefined
-              ? attribute[3]
-              : attribute[4] !== undefined
-                ? attribute[4]
-                : "";
-          element.setAttribute(attribute[1], decodeHtmlEntities(value));
-        }}
-        stack[stack.length - 1].appendChild(element);
-        if (!selfClosing && !voidElements.includes(element.localName)) stack.push(element);
+      const end = findTagEnd(cursor + 1);
+      if (end < 0) {{
+        parent.appendChild(createText(decodeHtmlEntities(source.slice(cursor))));
+        break;
+      }}
+      const rawTag = source.slice(cursor + 1, end);
+      const opening = /^\s*([A-Za-z][A-Za-z0-9:_-]*)/.exec(rawTag);
+      if (!opening) {{
+        cursor = end + 1;
         continue;
       }}
-      stack[stack.length - 1].appendChild(createText(decodeHtmlEntities(token)));
+      const element = createElement(opening[1]);
+      const selfClosing = /\/\s*$/.test(rawTag);
+      const attributeSource = rawTag
+        .slice(opening[0].length)
+        .replace(/\/\s*$/, "");
+      const attributes = /([A-Za-z_:][A-Za-z0-9:._-]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>]+)))?/g;
+      let attribute;
+      while ((attribute = attributes.exec(attributeSource)) !== null) {{
+        const value = attribute[2] !== undefined
+          ? attribute[2]
+          : attribute[3] !== undefined
+            ? attribute[3]
+            : attribute[4] !== undefined
+              ? attribute[4]
+              : "";
+        element.setAttribute(attribute[1], decodeHtmlEntities(value));
+      }}
+      parent.appendChild(element);
+      cursor = end + 1;
+      if (selfClosing || voidElements.has(element.localName)) continue;
+      if (rawTextElements.has(element.localName) || rcdataElements.has(element.localName)) {{
+        const special = findSpecialEnd(cursor, element.localName);
+        const textEnd = special ? special.start : source.length;
+        if (textEnd > cursor) element.appendChild(createText(
+          rawTextElements.has(element.localName)
+            ? source.slice(cursor, textEnd)
+            : decodeHtmlEntities(source.slice(cursor, textEnd)),
+        ));
+        cursor = special ? special.end : source.length;
+        continue;
+      }}
+      stack.push(element);
     }}
   }};
   const installReflectedAttributeProperties = (element) => {{

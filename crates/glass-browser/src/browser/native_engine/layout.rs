@@ -34,6 +34,76 @@ pub struct NativeSvgSubpath {
     pub closed: bool,
 }
 
+/// A bounded SVG affine transform in the SVG `(a b c d e f)` form.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct NativeSvgTransform {
+    a: f64,
+    b: f64,
+    c: f64,
+    d: f64,
+    e: f64,
+    f: f64,
+}
+
+impl NativeSvgTransform {
+    const IDENTITY: Self = Self {
+        a: 1.0,
+        b: 0.0,
+        c: 0.0,
+        d: 1.0,
+        e: 0.0,
+        f: 0.0,
+    };
+
+    fn translation(x: f64, y: f64) -> Self {
+        Self {
+            e: x,
+            f: y,
+            ..Self::IDENTITY
+        }
+    }
+
+    fn scale(x: f64, y: f64) -> Self {
+        Self {
+            a: x,
+            d: y,
+            ..Self::IDENTITY
+        }
+    }
+
+    fn rotation(radians: f64) -> Self {
+        let (sin, cos) = radians.sin_cos();
+        Self {
+            a: cos,
+            b: sin,
+            c: -sin,
+            d: cos,
+            ..Self::IDENTITY
+        }
+    }
+
+    fn followed_by(self, next: Self) -> Self {
+        Self {
+            a: next.a * self.a + next.c * self.b,
+            b: next.b * self.a + next.d * self.b,
+            c: next.a * self.c + next.c * self.d,
+            d: next.b * self.c + next.d * self.d,
+            e: next.a * self.e + next.c * self.f + next.e,
+            f: next.b * self.e + next.d * self.f + next.f,
+        }
+    }
+
+    fn apply(self, point: (f64, f64)) -> Option<(f64, f64)> {
+        let x = self.a * point.0 + self.c * point.1 + self.e;
+        let y = self.b * point.0 + self.d * point.1 + self.f;
+        (x.is_finite() && y.is_finite()).then_some((x, y))
+    }
+
+    pub(crate) fn is_identity(self) -> bool {
+        self == Self::IDENTITY
+    }
+}
+
 /// A half-open integer-pixel rectangle in the native viewport coordinate
 /// space.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -1965,11 +2035,29 @@ impl<'a> LayoutBuilder<'a> {
 
     fn svg_shape_box(&self, id: NativeNodeId) -> Option<(u32, u32, u32, u32)> {
         let node = self.document.node(id)?;
+        let transform = svg_transform_for_node(self.document, id)?;
         let number = |name: &str| {
             node.attribute(name)
                 .and_then(|value| value.trim().parse::<u32>().ok())
                 .unwrap_or(0)
         };
+        if !transform.is_identity() {
+            let points = if node.element_name() == Some("path") {
+                svg_transformed_subpaths(node, transform)?
+                    .into_iter()
+                    .flat_map(|subpath| subpath.points)
+                    .collect::<Vec<_>>()
+            } else {
+                svg_transformed_points(node, transform)?
+            };
+            let (min_x, min_y, max_x, max_y) = svg_points_bounds(&points)?;
+            return Some((
+                min_x,
+                min_y,
+                max_x.saturating_sub(min_x).saturating_add(1),
+                max_y.saturating_sub(min_y).saturating_add(1),
+            ));
+        }
         match node.element_name()? {
             "rect" => Some((number("x"), number("y"), number("width"), number("height"))),
             "circle" => {
@@ -4818,6 +4906,248 @@ pub(crate) fn svg_line_points(node: &NativeNode) -> Vec<NativePoint> {
             y: number("y2"),
         },
     ]
+}
+
+pub(crate) fn svg_transform_for_node(
+    document: &NativeDocument,
+    node_id: NativeNodeId,
+) -> Option<NativeSvgTransform> {
+    let mut ancestors = Vec::new();
+    let mut current = Some(node_id);
+    while let Some(id) = current {
+        let node = document.node(id)?;
+        ancestors.push(id);
+        current = node.parent();
+    }
+    let mut transform = NativeSvgTransform::IDENTITY;
+    let mut in_svg = false;
+    for id in ancestors.iter().rev() {
+        let node = document.node(*id)?;
+        if node.element_name() == Some("svg") {
+            in_svg = true;
+        }
+        if in_svg && let Some(value) = node.attribute("transform") {
+            transform = parse_svg_transform(value)?.followed_by(transform);
+        }
+    }
+    Some(transform)
+}
+
+pub(crate) fn svg_transformed_points(
+    node: &NativeNode,
+    transform: NativeSvgTransform,
+) -> Option<Vec<NativePoint>> {
+    let number = |name: &str| {
+        node.attribute(name)
+            .map(|value| value.trim().parse::<f64>().ok())
+            .unwrap_or(Some(0.0))
+            .filter(|value| value.is_finite())
+    };
+    let points = match node.element_name()? {
+        "rect" => {
+            let x = number("x")?;
+            let y = number("y")?;
+            let width = number("width")?;
+            let height = number("height")?;
+            if width < 0.0 || height < 0.0 {
+                return None;
+            }
+            vec![
+                (x, y),
+                (x + width, y),
+                (x + width, y + height),
+                (x, y + height),
+            ]
+        }
+        "circle" => {
+            let center_x = number("cx")?;
+            let center_y = number("cy")?;
+            let radius = number("r")?;
+            if radius < 0.0 {
+                return None;
+            }
+            sampled_ellipse_points(center_x, center_y, radius, radius)
+        }
+        "ellipse" => {
+            let center_x = number("cx")?;
+            let center_y = number("cy")?;
+            let radius_x = number("rx")?;
+            let radius_y = number("ry")?;
+            if radius_x < 0.0 || radius_y < 0.0 {
+                return None;
+            }
+            sampled_ellipse_points(center_x, center_y, radius_x, radius_y)
+        }
+        "line" => svg_line_points(node)
+            .into_iter()
+            .map(|point| (f64::from(point.x), f64::from(point.y)))
+            .collect(),
+        "polyline" | "polygon" => svg_points(node)?
+            .into_iter()
+            .map(|point| (f64::from(point.x), f64::from(point.y)))
+            .collect(),
+        _ => return None,
+    };
+    transform_points(&points, transform)
+}
+
+pub(crate) fn svg_transformed_subpaths(
+    node: &NativeNode,
+    transform: NativeSvgTransform,
+) -> Option<Vec<NativeSvgSubpath>> {
+    svg_path_subpaths(node)?
+        .into_iter()
+        .map(|subpath| {
+            Some(NativeSvgSubpath {
+                points: transform_points(
+                    &subpath
+                        .points
+                        .iter()
+                        .map(|point| (f64::from(point.x), f64::from(point.y)))
+                        .collect::<Vec<_>>(),
+                    transform,
+                )?,
+                closed: subpath.closed,
+            })
+        })
+        .collect()
+}
+
+const MAX_NATIVE_SVG_ELLIPSE_POINTS: usize = 32;
+
+fn sampled_ellipse_points(
+    center_x: f64,
+    center_y: f64,
+    radius_x: f64,
+    radius_y: f64,
+) -> Vec<(f64, f64)> {
+    (0..MAX_NATIVE_SVG_ELLIPSE_POINTS)
+        .map(|index| {
+            let angle = std::f64::consts::TAU * index as f64 / MAX_NATIVE_SVG_ELLIPSE_POINTS as f64;
+            (
+                center_x + radius_x * angle.cos(),
+                center_y + radius_y * angle.sin(),
+            )
+        })
+        .collect()
+}
+
+fn transform_points(
+    points: &[(f64, f64)],
+    transform: NativeSvgTransform,
+) -> Option<Vec<NativePoint>> {
+    if points.len() > MAX_NATIVE_SVG_POINTS {
+        return None;
+    }
+    points
+        .iter()
+        .copied()
+        .map(|point| transform.apply(point).map(svg_path_point))
+        .collect()
+}
+
+fn parse_svg_transform(value: &str) -> Option<NativeSvgTransform> {
+    let characters = value.chars().collect::<Vec<_>>();
+    let mut index = 0usize;
+    let mut transform = NativeSvgTransform::IDENTITY;
+    while index < characters.len() {
+        while index < characters.len()
+            && (characters[index].is_ascii_whitespace() || characters[index] == ',')
+        {
+            index = index.saturating_add(1);
+        }
+        if index == characters.len() {
+            break;
+        }
+        let name_start = index;
+        while index < characters.len() && characters[index].is_ascii_alphabetic() {
+            index = index.saturating_add(1);
+        }
+        if name_start == index {
+            return None;
+        }
+        let name = characters[name_start..index]
+            .iter()
+            .collect::<String>()
+            .to_ascii_lowercase();
+        while index < characters.len() && characters[index].is_ascii_whitespace() {
+            index = index.saturating_add(1);
+        }
+        if characters.get(index) != Some(&'(') {
+            return None;
+        }
+        index = index.saturating_add(1);
+        let argument_start = index;
+        while index < characters.len() && characters[index] != ')' {
+            if characters[index] == '(' {
+                return None;
+            }
+            index = index.saturating_add(1);
+        }
+        if index == characters.len() {
+            return None;
+        }
+        let argument_text = characters[argument_start..index].iter().collect::<String>();
+        let arguments = tokenize_svg_path(&argument_text)?
+            .into_iter()
+            .map(|token| match token {
+                SvgPathToken::Number(value) => Some(value),
+                SvgPathToken::Command(_) => None,
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let local = match name.as_str() {
+            "matrix" if arguments.len() == 6 => NativeSvgTransform {
+                a: arguments[0],
+                b: arguments[1],
+                c: arguments[2],
+                d: arguments[3],
+                e: arguments[4],
+                f: arguments[5],
+            },
+            "translate" if matches!(arguments.len(), 1 | 2) => NativeSvgTransform::translation(
+                arguments[0],
+                arguments.get(1).copied().unwrap_or(0.0),
+            ),
+            "scale" if matches!(arguments.len(), 1 | 2) => NativeSvgTransform::scale(
+                arguments[0],
+                arguments.get(1).copied().unwrap_or(arguments[0]),
+            ),
+            "rotate" if matches!(arguments.len(), 1 | 3) => {
+                let rotation = NativeSvgTransform::rotation(arguments[0].to_radians());
+                if arguments.len() == 1 {
+                    rotation
+                } else {
+                    NativeSvgTransform::translation(-arguments[1], -arguments[2])
+                        .followed_by(rotation)
+                        .followed_by(NativeSvgTransform::translation(arguments[1], arguments[2]))
+                }
+            }
+            "skewx" if arguments.len() == 1 => {
+                let tangent = arguments[0].to_radians().tan();
+                NativeSvgTransform {
+                    c: tangent,
+                    ..NativeSvgTransform::IDENTITY
+                }
+            }
+            "skewy" if arguments.len() == 1 => {
+                let tangent = arguments[0].to_radians().tan();
+                NativeSvgTransform {
+                    b: tangent,
+                    ..NativeSvgTransform::IDENTITY
+                }
+            }
+            _ => return None,
+        };
+        if ![local.a, local.b, local.c, local.d, local.e, local.f]
+            .iter()
+            .all(|number| number.is_finite())
+        {
+            return None;
+        }
+        transform = transform.followed_by(local);
+        index = index.saturating_add(1);
+    }
+    Some(transform)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

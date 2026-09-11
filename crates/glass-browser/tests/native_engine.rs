@@ -32506,6 +32506,213 @@ fn native_svg_smooth_and_arc_paths_share_bounded_geometry() {
     assert_eq!(layout.hit_test(27, 10).unwrap(), Some(arc));
 }
 
+#[test]
+fn native_svg_transforms_share_nested_layout_paint_and_hit_geometry() {
+    let document = NativeDocument::parse(
+        "<div style='width:48px;height:24px'><svg width='40' height='20'><g transform='translate(10 4)'><rect id='rect' x='1' y='1' width='4' height='3' fill='blue' stroke='green' stroke-width='1'></rect><path id='path' d='M20 2 L24 2 L24 6 Z' transform='rotate(90 22 4)' fill='red' stroke='black' stroke-width='1'></path></g></svg></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let rect = document.resolve_target("id=rect").unwrap();
+    let path = document.resolve_target("id=path").unwrap();
+    let viewport = Viewport {
+        width: 48,
+        height: 24,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+    assert_eq!(
+        layout.box_for(rect).unwrap(),
+        NativeRect {
+            x: 11,
+            y: 5,
+            width: 5,
+            height: 4,
+        }
+    );
+    assert_eq!(
+        layout.box_for(path).unwrap(),
+        NativeRect {
+            x: 30,
+            y: 6,
+            width: 5,
+            height: 5,
+        }
+    );
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::SvgPolygonFill { node_id, rect: command_rect, points, color, .. }
+                if *node_id == rect
+                    && *command_rect == NativeRect { x: 11, y: 5, width: 5, height: 4 }
+                    && points == &vec![
+                        NativePoint { x: 11, y: 5 },
+                        NativePoint { x: 15, y: 5 },
+                        NativePoint { x: 15, y: 8 },
+                        NativePoint { x: 11, y: 8 },
+                    ]
+                    && *color == NativeColor { red: 0, green: 0, blue: 255, alpha: 255 }
+        )
+    }));
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::SvgPolyline { node_id, rect: command_rect, points, closed, color, .. }
+                if *node_id == rect
+                    && *command_rect == NativeRect { x: 11, y: 5, width: 5, height: 4 }
+                    && *closed
+                    && points == &vec![
+                        NativePoint { x: 11, y: 5 },
+                        NativePoint { x: 15, y: 5 },
+                        NativePoint { x: 15, y: 8 },
+                        NativePoint { x: 11, y: 8 },
+                    ]
+                    && *color == NativeColor { red: 0, green: 128, blue: 0, alpha: 255 }
+        )
+    }));
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::SvgPathFill { node_id, rect: command_rect, subpaths, color, .. }
+                if *node_id == path
+                    && *command_rect == NativeRect { x: 30, y: 6, width: 5, height: 5 }
+                    && subpaths.len() == 1
+                    && subpaths[0].closed
+                    && subpaths[0].points == vec![
+                        NativePoint { x: 34, y: 6 },
+                        NativePoint { x: 34, y: 10 },
+                        NativePoint { x: 30, y: 10 },
+                    ]
+                    && *color == NativeColor { red: 255, green: 0, blue: 0, alpha: 255 }
+        )
+    }));
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::SvgPathStroke { node_id, rect: command_rect, subpaths, width, color, .. }
+                if *node_id == path
+                    && *command_rect == NativeRect { x: 30, y: 6, width: 5, height: 5 }
+                    && subpaths.len() == 1
+                    && subpaths[0].closed
+                    && subpaths[0].points == vec![
+                        NativePoint { x: 34, y: 6 },
+                        NativePoint { x: 34, y: 10 },
+                        NativePoint { x: 30, y: 10 },
+                    ]
+                    && *width == 1
+                    && *color == NativeColor { red: 0, green: 0, blue: 0, alpha: 255 }
+        )
+    }));
+
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(12, 6), Some([0, 0, 255, 255]));
+    assert!(
+        surface
+            .rgba()
+            .chunks_exact(4)
+            .any(|pixel| pixel == [255, 0, 0, 255])
+    );
+    assert_eq!(layout.hit_test(12, 6).unwrap(), Some(rect));
+    assert_eq!(layout.hit_test(33, 8).unwrap(), Some(path));
+}
+
+#[test]
+fn native_svg_transform_variants_bound_shared_geometry() {
+    let document = NativeDocument::parse(
+        "<div style='width:64px;height:24px'><svg width='60' height='20'><rect id='scale' x='1' y='1' width='2' height='2' transform='scale(2 3)' fill='blue'></rect><polygon id='matrix' points='1,1 3,1 3,3' transform='matrix(1 0 0 1 8 2)' fill='red'></polygon><line id='skew-x' x1='1' y1='2' x2='5' y2='2' transform='skewX(45)' stroke='black' fill='none'></line><line id='skew-y' x1='1' y1='2' x2='1' y2='5' transform='skewY(45)' stroke='black' fill='none'></line></svg></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let scale = document.resolve_target("id=scale").unwrap();
+    let matrix = document.resolve_target("id=matrix").unwrap();
+    let skew_x = document.resolve_target("id=skew-x").unwrap();
+    let skew_y = document.resolve_target("id=skew-y").unwrap();
+    let viewport = Viewport {
+        width: 64,
+        height: 24,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+    assert_eq!(
+        layout.box_for(scale).unwrap(),
+        NativeRect {
+            x: 2,
+            y: 3,
+            width: 5,
+            height: 7,
+        }
+    );
+    assert_eq!(
+        layout.box_for(matrix).unwrap(),
+        NativeRect {
+            x: 9,
+            y: 3,
+            width: 3,
+            height: 3,
+        }
+    );
+    assert_eq!(
+        layout.box_for(skew_x).unwrap(),
+        NativeRect {
+            x: 3,
+            y: 2,
+            width: 5,
+            height: 1,
+        }
+    );
+    assert_eq!(
+        layout.box_for(skew_y).unwrap(),
+        NativeRect {
+            x: 1,
+            y: 3,
+            width: 1,
+            height: 4,
+        }
+    );
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::SvgPolygonFill { node_id, points, color, .. }
+                if *node_id == scale
+                    && points == &vec![
+                        NativePoint { x: 2, y: 3 },
+                        NativePoint { x: 6, y: 3 },
+                        NativePoint { x: 6, y: 9 },
+                        NativePoint { x: 2, y: 9 },
+                    ]
+                    && *color == NativeColor { red: 0, green: 0, blue: 255, alpha: 255 }
+        )
+    }));
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::SvgPolyline { node_id, points, color, .. }
+                if *node_id == skew_x
+                    && points == &vec![
+                        NativePoint { x: 3, y: 2 },
+                        NativePoint { x: 7, y: 2 },
+                    ]
+                    && *color == NativeColor { red: 0, green: 0, blue: 0, alpha: 255 }
+        )
+    }));
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::SvgPolyline { node_id, points, color, .. }
+                if *node_id == skew_y
+                    && points == &vec![
+                        NativePoint { x: 1, y: 3 },
+                        NativePoint { x: 1, y: 6 },
+                    ]
+                    && *color == NativeColor { red: 0, green: 0, blue: 0, alpha: 255 }
+        )
+    }));
+}
+
 #[tokio::test]
 async fn native_local_namespace_dom_preserves_svg_mathml_and_foreign_content() {
     let mut engine = NativeEngine::new(NativeEngineConfig::default().with_initial_url(

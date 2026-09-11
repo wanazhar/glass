@@ -33162,7 +33162,7 @@ async fn native_content_process_dispatches_external_image_error_event() {
                     .await
                     .unwrap();
             } else {
-                let body = "<img id='image' src='/missing.png'><script>globalThis.imageEvents = []; const image = document.getElementById('image'); image.addEventListener('load', () => imageEvents.push('load')); image.addEventListener('error', (event) => imageEvents.push(event.type));</script>";
+                let body = "<img id='image' src='/missing.png'><script>globalThis.imageEvents = []; const image = document.getElementById('image'); image.addEventListener('load', () => imageEvents.push('load')); image.addEventListener('error', (event) => imageEvents.push(event.type)); image.onerror = (event) => imageEvents.push('property-' + event.type);</script>";
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
@@ -33185,11 +33185,11 @@ async fn native_content_process_dispatches_external_image_error_event() {
             )
             .await
             .unwrap(),
-        serde_json::json!([true, 0, 0, format!("http://{address}/missing.png"), ["error"]])
+        serde_json::json!([true, 0, 0, format!("http://{address}/missing.png"), ["error", "property-error"]])
     );
     engine
         .evaluate_async(
-            "(() => { document.getElementById('image').src = '/missing-again.png'; return true; })()",
+            "(() => { const image = document.getElementById('image'); image.onerror = () => imageEvents.push('replacement-error'); image.src = '/missing-again.png'; return true; })()",
         )
         .await
         .unwrap();
@@ -33200,7 +33200,7 @@ async fn native_content_process_dispatches_external_image_error_event() {
             )
             .await
             .unwrap(),
-        serde_json::json!([true, 0, 0, format!("http://{address}/missing-again.png"), ["error", "error"]])
+        serde_json::json!([true, 0, 0, format!("http://{address}/missing-again.png"), ["error", "property-error", "error", "replacement-error"]])
     );
 
     engine.close_async().await.unwrap();

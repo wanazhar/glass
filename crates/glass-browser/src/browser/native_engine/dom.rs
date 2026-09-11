@@ -32,6 +32,9 @@ use url::Url;
 const MAX_ATTRIBUTE_BYTES: usize = 1024;
 const MAX_LOCATOR_BYTES: usize = crate::browser_backend::MAX_TEXT_BYTES;
 const MAX_FORM_CONTROLS: usize = 128;
+const MAX_IMAGE_SRCSET_CANDIDATES: usize = 32;
+const MAX_IMAGE_DENSITY_MILLI: u32 = 64_000;
+const DEFAULT_IMAGE_DENSITY_MILLI: u32 = 1_000;
 pub(crate) const HTML_NAMESPACE_URI: &str = "http://www.w3.org/1999/xhtml";
 pub(crate) const SVG_NAMESPACE_URI: &str = "http://www.w3.org/2000/svg";
 pub(crate) const MATHML_NAMESPACE_URI: &str = "http://www.w3.org/1998/Math/MathML";
@@ -53,6 +56,18 @@ enum NativeFormEncoding {
 const SUPPORTED_ROLES: [&str; 9] = [
     "button", "link", "textbox", "checkbox", "radio", "combobox", "option", "heading", "img",
 ];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeImageCandidateDescriptor {
+    Density(u32),
+    Width(u32),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeImageCandidate {
+    source: String,
+    descriptor: NativeImageCandidateDescriptor,
+}
 
 /// Generational identity for one node in a native document arena.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -396,6 +411,8 @@ pub(crate) struct NativeScriptElementSnapshot {
     pub(crate) image_natural_width: u32,
     #[serde(default)]
     pub(crate) image_natural_height: u32,
+    #[serde(default)]
+    pub(crate) image_current_src: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq, Serialize)]
@@ -704,12 +721,12 @@ impl NativeDocument {
             .collect()
     }
 
-    pub(crate) fn external_image_links(&self) -> Vec<(u32, String)> {
+    pub(crate) fn external_image_links(&self, viewport: Viewport) -> Vec<(u32, String)> {
         self.nodes
             .iter()
             .filter_map(|node| {
                 self.node(node.id())?;
-                let source = node.attribute("src")?.to_owned();
+                let source = self.selected_image_source(node.id(), viewport)?;
                 if source.is_empty()
                     || source
                         .get(..5)
@@ -722,27 +739,105 @@ impl NativeDocument {
             .collect()
     }
 
-    pub(crate) fn image_properties(&self, node_id: NativeNodeId) -> Option<(bool, u32, u32)> {
+    fn selected_image_source(&self, node_id: NativeNodeId, viewport: Viewport) -> Option<String> {
         let node = self.node(node_id)?;
         if node.element_name() != Some("img") {
             return None;
         }
-        let Some(source) = node.attribute("src") else {
-            return Some((true, 0, 0));
-        };
+        let fallback = node.attribute("src").map(str::to_owned);
+        let candidates = node
+            .attribute("srcset")
+            .map(parse_image_srcset)
+            .unwrap_or_default();
+        if candidates.is_empty() {
+            return fallback;
+        }
+        let source_size = image_source_size(node.attribute("sizes"), viewport);
+        let device_scale_factor = viewport
+            .device_scale_factor_milli
+            .max(DEFAULT_IMAGE_DENSITY_MILLI);
+        let selected = match candidates[0].descriptor {
+            NativeImageCandidateDescriptor::Density(_) => candidates
+                .iter()
+                .filter(|candidate| {
+                    matches!(
+                        candidate.descriptor,
+                        NativeImageCandidateDescriptor::Density(_)
+                    )
+                })
+                .min_by_key(|candidate| {
+                    let density = match candidate.descriptor {
+                        NativeImageCandidateDescriptor::Density(value) => value,
+                        NativeImageCandidateDescriptor::Width(_) => unreachable!(
+                            "mixed image candidate descriptors were rejected during parsing"
+                        ),
+                    };
+                    (
+                        density < device_scale_factor,
+                        density.abs_diff(device_scale_factor),
+                    )
+                }),
+            NativeImageCandidateDescriptor::Width(_) => {
+                let target_width = u64::from(source_size)
+                    .saturating_mul(u64::from(device_scale_factor))
+                    .saturating_add(u64::from(DEFAULT_IMAGE_DENSITY_MILLI - 1))
+                    / u64::from(DEFAULT_IMAGE_DENSITY_MILLI);
+                candidates
+                    .iter()
+                    .filter(|candidate| {
+                        matches!(
+                            candidate.descriptor,
+                            NativeImageCandidateDescriptor::Width(_)
+                        )
+                    })
+                    .min_by_key(|candidate| {
+                        let width = match candidate.descriptor {
+                            NativeImageCandidateDescriptor::Width(value) => value,
+                            NativeImageCandidateDescriptor::Density(_) => unreachable!(
+                                "mixed image candidate descriptors were rejected during parsing"
+                            ),
+                        };
+                        (
+                            u64::from(width) < target_width,
+                            u64::from(width).abs_diff(target_width),
+                        )
+                    })
+            }
+        }?;
+        Some(selected.source.clone())
+    }
+
+    pub(crate) fn image_current_src(&self, node_id: NativeNodeId, viewport: Viewport) -> String {
+        self.image_loads
+            .get(&node_id.index())
+            .cloned()
+            .or_else(|| self.selected_image_source(node_id, viewport))
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn image_properties(
+        &self,
+        node_id: NativeNodeId,
+        viewport: Viewport,
+    ) -> Option<(bool, u32, u32)> {
+        let node = self.node(node_id)?;
+        if node.element_name() != Some("img") {
+            return None;
+        }
+        let source = self.image_current_src(node_id, viewport);
         if source.is_empty() {
             return Some((true, 0, 0));
         }
         if let Some(image) = self.image_resource_for_node(node_id) {
             return Some((true, image.width, image.height));
         }
-        if let Some(image) = decode_data_image(source) {
+        if let Some(image) = decode_data_image(&source) {
             return Some((true, image.width, image.height));
         }
         Some((
             self.image_loads
                 .get(&node_id.index())
-                .is_some_and(|loaded_source| loaded_source == source),
+                .is_some_and(|loaded_source| loaded_source == &source),
             0,
             0,
         ))
@@ -752,12 +847,15 @@ impl NativeDocument {
         &mut self,
         node_index: u32,
         source: String,
+        viewport: Viewport,
     ) -> Result<(), NativeEngineError> {
         let node_id = NativeNodeId::from_parts(self.generation, node_index);
         let node = self
             .node(node_id)
             .ok_or(NativeEngineError::DetachedTarget)?;
-        if node.element_name() != Some("img") || node.attribute("src") != Some(source.as_str()) {
+        if node.element_name() != Some("img")
+            || self.selected_image_source(node_id, viewport).as_deref() != Some(source.as_str())
+        {
             return Err(NativeEngineError::TargetNotActionable {
                 reason: "image load state does not match its image element".into(),
             });
@@ -766,7 +864,7 @@ impl NativeDocument {
         Ok(())
     }
 
-    pub(crate) fn refresh_image_loads(&mut self) {
+    pub(crate) fn refresh_image_loads(&mut self, viewport: Viewport) {
         let retained = self
             .image_loads
             .iter()
@@ -774,7 +872,8 @@ impl NativeDocument {
                 let node_id = NativeNodeId::from_parts(self.generation, *node_index);
                 let node = self.node(node_id)?;
                 (node.element_name() == Some("img")
-                    && node.attribute("src") == Some(source.as_str()))
+                    && self.selected_image_source(node_id, viewport).as_deref()
+                        == Some(source.as_str()))
                 .then(|| (*node_index, source.clone()))
             })
             .collect();
@@ -811,7 +910,7 @@ impl NativeDocument {
         let resource = self.image_resources.get(&node_id.index())?;
         let node = self.node(node_id)?;
         (node.element_name() == Some("img")
-            && node.attribute("src") == Some(resource.source.as_str()))
+            && self.image_loads.get(&node_id.index()) == Some(&resource.source))
         .then_some(&resource.image)
     }
 
@@ -851,7 +950,8 @@ impl NativeDocument {
         let node = self
             .node(node_id)
             .ok_or(NativeEngineError::DetachedTarget)?;
-        if node.element_name() != Some("img") || node.attribute("src") != Some(source.as_str()) {
+        if node.element_name() != Some("img") || self.image_loads.get(&node_index) != Some(&source)
+        {
             return Err(NativeEngineError::TargetNotActionable {
                 reason: "external image resource does not match its image element".into(),
             });
@@ -993,7 +1093,7 @@ impl NativeDocument {
             .filter_map(|(node_index, resource)| {
                 let node = self.node(NativeNodeId::from_parts(self.generation, *node_index))?;
                 (node.element_name() == Some("img")
-                    && node.attribute("src") == Some(resource.source.as_str()))
+                    && self.image_loads.get(node_index) == Some(&resource.source))
                 .then(|| NativeImageResourceWire {
                     node_index: *node_index,
                     source: resource.source.clone(),
@@ -1009,9 +1109,7 @@ impl NativeDocument {
             .iter()
             .filter_map(|(node_index, source)| {
                 let node = self.node(NativeNodeId::from_parts(self.generation, *node_index))?;
-                (node.element_name() == Some("img")
-                    && node.attribute("src") == Some(source.as_str()))
-                .then(|| NativeImageLoadWire {
+                (node.element_name() == Some("img")).then(|| NativeImageLoadWire {
                     node_index: *node_index,
                     source: source.clone(),
                 })
@@ -1292,7 +1390,7 @@ impl NativeDocument {
                     reason: "content process returned an out-of-range image node index".into(),
                 })?;
             if node.element_name() != Some("img")
-                || node.attribute("src") != Some(resource.source.as_str())
+                || !image_source_is_declared(node, &resource.source)
             {
                 return Err(NativeEngineError::Parse {
                     offset: 0,
@@ -1500,9 +1598,7 @@ impl NativeDocument {
                     offset: 0,
                     reason: "content process returned an out-of-range image load node index".into(),
                 })?;
-            if node.element_name() != Some("img")
-                || node.attribute("src") != Some(load.source.as_str())
-            {
+            if node.element_name() != Some("img") || !image_source_is_declared(node, &load.source) {
                 return Err(NativeEngineError::Parse {
                     offset: 0,
                     reason: "content process returned an image load for a different node".into(),
@@ -1738,7 +1834,11 @@ impl NativeDocument {
             .collect()
     }
 
-    pub(crate) fn script_snapshot(&self, max_text_bytes: usize) -> NativeScriptDocumentSnapshot {
+    fn script_snapshot_for_viewport(
+        &self,
+        max_text_bytes: usize,
+        viewport: Viewport,
+    ) -> NativeScriptDocumentSnapshot {
         let (title, _) = self.title(max_text_bytes);
         let (visible_text, _) = self.visible_text(max_text_bytes);
         let nodes = self
@@ -1797,8 +1897,14 @@ impl NativeDocument {
                     .selection_snapshot(node.id())
                     .map(|(start, end, direction)| (Some(start), Some(end), Some(direction)))
                     .unwrap_or((None, None, None));
-                let (image_complete, image_natural_width, image_natural_height) =
-                    self.image_properties(node.id()).unwrap_or((false, 0, 0));
+                let (image_complete, image_natural_width, image_natural_height) = self
+                    .image_properties(node.id(), viewport)
+                    .unwrap_or((false, 0, 0));
+                let image_current_src = if tag_name == "img" {
+                    self.image_current_src(node.id(), viewport)
+                } else {
+                    String::new()
+                };
                 Some(NativeScriptElementSnapshot {
                     node_index: node.id().index(),
                     parent_index: self.parent_element_index(node.id()),
@@ -1825,6 +1931,7 @@ impl NativeDocument {
                     image_complete,
                     image_natural_width,
                     image_natural_height,
+                    image_current_src,
                 })
             })
             .collect();
@@ -1854,7 +1961,7 @@ impl NativeDocument {
         viewport: Viewport,
         scroll_offset: NativePoint,
     ) -> Result<NativeScriptDocumentSnapshot, NativeEngineError> {
-        let mut snapshot = self.script_snapshot(max_text_bytes);
+        let mut snapshot = self.script_snapshot_for_viewport(max_text_bytes, viewport);
         let layout = self.layout(viewport)?.with_scroll_offset(scroll_offset)?;
         snapshot.geometry = layout
             .boxes
@@ -6286,6 +6393,162 @@ fn is_void_element(name: &str) -> bool {
     )
 }
 
+fn parse_image_srcset(value: &str) -> Vec<NativeImageCandidate> {
+    let mut candidates = Vec::new();
+    let mut descriptor_kind = None;
+    for component in value.split(',').take(MAX_IMAGE_SRCSET_CANDIDATES) {
+        let mut tokens = component.split_ascii_whitespace();
+        let Some(source) = tokens.next() else {
+            continue;
+        };
+        if source.is_empty()
+            || source.len() > MAX_ATTRIBUTE_BYTES
+            || source.bytes().any(|byte| byte.is_ascii_control())
+            || tokens.next().is_some_and(|_| tokens.next().is_some())
+        {
+            continue;
+        }
+        let descriptor_token = component
+            .split_ascii_whitespace()
+            .nth(1)
+            .unwrap_or_default();
+        let descriptor = if descriptor_token.is_empty() {
+            NativeImageCandidateDescriptor::Density(DEFAULT_IMAGE_DENSITY_MILLI)
+        } else if let Some(value) = descriptor_token.strip_suffix('w') {
+            let Some(width) = value.parse::<u32>().ok().filter(|width| *width > 0) else {
+                continue;
+            };
+            NativeImageCandidateDescriptor::Width(width)
+        } else if let Some(value) = descriptor_token.strip_suffix('x') {
+            let Some(density) = parse_image_density(value) else {
+                continue;
+            };
+            NativeImageCandidateDescriptor::Density(density)
+        } else {
+            continue;
+        };
+        let is_density = matches!(descriptor, NativeImageCandidateDescriptor::Density(_));
+        if descriptor_kind.is_some_and(|kind| kind != is_density) {
+            return Vec::new();
+        }
+        descriptor_kind = Some(is_density);
+        if candidates
+            .iter()
+            .any(|candidate: &NativeImageCandidate| candidate.descriptor == descriptor)
+        {
+            continue;
+        }
+        candidates.push(NativeImageCandidate {
+            source: source.to_owned(),
+            descriptor,
+        });
+    }
+    candidates
+}
+
+fn image_source_is_declared(node: &NativeNode, source: &str) -> bool {
+    node.attribute("src") == Some(source)
+        || node.attribute("srcset").is_some_and(|srcset| {
+            parse_image_srcset(srcset)
+                .iter()
+                .any(|candidate| candidate.source == source)
+        })
+}
+
+fn parse_image_density(value: &str) -> Option<u32> {
+    let density = value.parse::<f64>().ok()?;
+    if !density.is_finite()
+        || density <= 0.0
+        || density * 1000.0 > f64::from(MAX_IMAGE_DENSITY_MILLI)
+    {
+        return None;
+    }
+    let density = (density * 1000.0).round();
+    (density >= 1.0).then_some(density as u32)
+}
+
+fn image_source_size(sizes: Option<&str>, viewport: Viewport) -> u32 {
+    let default_size = viewport.width.max(1);
+    let Some(sizes) = sizes else {
+        return default_size;
+    };
+    for component in sizes.split(',') {
+        let component = component.trim();
+        if component.is_empty() {
+            continue;
+        }
+        let (condition, length) = if component.starts_with('(') {
+            let Some(condition_end) = component.find(')') else {
+                continue;
+            };
+            (
+                Some(&component[..=condition_end]),
+                component[condition_end.saturating_add(1)..].trim(),
+            )
+        } else {
+            (None, component)
+        };
+        if condition.is_some_and(|condition| !image_size_condition_matches(condition, viewport)) {
+            continue;
+        }
+        if let Some(size) = parse_image_source_length(length, viewport) {
+            return size.max(1);
+        }
+    }
+    default_size
+}
+
+fn image_size_condition_matches(condition: &str, viewport: Viewport) -> bool {
+    let Some(condition) = condition
+        .strip_prefix('(')
+        .and_then(|condition| condition.strip_suffix(')'))
+    else {
+        return false;
+    };
+    let Some((feature, value)) = condition.split_once(':') else {
+        return false;
+    };
+    let Some(value) = parse_fixed_css_pixels(value.trim()) else {
+        return false;
+    };
+    let viewport_width = f64::from(viewport.width);
+    match feature.trim().to_ascii_lowercase().as_str() {
+        "max-width" => viewport_width <= value,
+        "min-width" => viewport_width >= value,
+        "width" => (viewport_width - value).abs() < f64::EPSILON,
+        _ => false,
+    }
+}
+
+fn parse_image_source_length(value: &str, viewport: Viewport) -> Option<u32> {
+    let value = value.trim();
+    let (number, unit) = if let Some(number) = value.strip_suffix("px") {
+        (number, "px")
+    } else if let Some(number) = value.strip_suffix("vw") {
+        (number, "vw")
+    } else {
+        return None;
+    };
+    let number = number.trim().parse::<f64>().ok()?;
+    if !number.is_finite() || number < 0.0 {
+        return None;
+    }
+    let pixels = if unit == "vw" {
+        number * f64::from(viewport.width) / 100.0
+    } else {
+        number
+    };
+    if !pixels.is_finite() {
+        return None;
+    }
+    Some(pixels.round().clamp(1.0, f64::from(u32::MAX)) as u32)
+}
+
+fn parse_fixed_css_pixels(value: &str) -> Option<f64> {
+    let number = value.strip_suffix("px")?.trim().parse::<f64>().ok()?;
+    (!number.is_nan() && number.is_finite() && number >= 0.0).then_some(number)
+}
+
 fn should_auto_close(current: &str, next: &str) -> bool {
     (current == "li" && next == "li")
         || (current == "p"
@@ -6615,7 +6878,7 @@ mod tests {
             Some(NativeNodeKind::Comment(value)) if value == "before"
         ));
 
-        let snapshot = document.script_snapshot(1024);
+        let snapshot = document.script_snapshot_for_viewport(1024, Viewport::default());
         assert!(
             snapshot
                 .nodes
@@ -6683,7 +6946,13 @@ mod tests {
             document.visible_text(1024),
             ("after & literal".into(), false)
         );
-        assert_eq!(document.script_snapshot(1024).elements.len(), 2);
+        assert_eq!(
+            document
+                .script_snapshot_for_viewport(1024, Viewport::default())
+                .elements
+                .len(),
+            2
+        );
     }
 
     #[test]

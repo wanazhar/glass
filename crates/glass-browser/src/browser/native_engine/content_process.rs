@@ -4374,7 +4374,8 @@ async fn load_content_resource(
     }
     let mut document =
         NativeDocument::parse_with_stylesheets(&resource.body, &limits, &external_stylesheets, 1)?;
-    resource_events.extend(load_external_images(&mut document, loader, &resource.url).await?);
+    resource_events
+        .extend(load_external_images(&mut document, loader, &resource.url, viewport).await?);
     let (script_sources, mut script_resource_nodes) =
         load_page_script_sources(&document, loader, &resource.url).await?;
     resource_events.extend(
@@ -4419,10 +4420,11 @@ async fn load_external_images(
     document: &mut NativeDocument,
     loader: &mut NativeResourceLoader,
     document_url: &str,
+    viewport: Viewport,
 ) -> Result<Vec<(u32, NativeEventKind)>, NativeEngineError> {
     let mut image_events = Vec::new();
     for (node_index, source) in document
-        .external_image_links()
+        .external_image_links(viewport)
         .into_iter()
         .take(MAX_CONTENT_IMAGES)
     {
@@ -4430,7 +4432,7 @@ async fn load_external_images(
         if document.image_resource_for_node(node_id).is_some() {
             continue;
         }
-        document.mark_image_load(node_index, source.clone())?;
+        document.mark_image_load(node_index, source.clone(), viewport)?;
         let event_kind = match loader.load_image_async(document_url, &source).await {
             Ok(Some(image)) => {
                 document.set_image_resource(node_index, source, image)?;
@@ -5779,7 +5781,7 @@ async fn mutate_script_document(
     let mut history = Vec::new();
     let mut next = current.clone();
     let mut events = next.apply_script_commands_allowing_links(commands)?;
-    next.refresh_image_loads();
+    next.refresh_image_loads(viewport);
     next.refresh_background_image_sources();
     let validation_ids = events
         .iter()
@@ -5806,7 +5808,7 @@ async fn mutate_script_document(
         events.extend(next.apply_script_commands(&evaluation.commands)?);
     }
     let image_events = if let Some(loader) = loader {
-        load_external_images(&mut next, loader, &document_url).await?
+        load_external_images(&mut next, loader, &document_url, viewport).await?
     } else {
         Vec::new()
     };
@@ -5829,7 +5831,7 @@ async fn mutate_script_document(
             event_kind,
         ));
     }
-    next.refresh_image_loads();
+    next.refresh_image_loads(viewport);
     next.refresh_background_image_sources();
     let mut navigation = script_navigation_target(&next, &document_url, commands)?;
     if let Some(ScriptNavigationTarget::Form {

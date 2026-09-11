@@ -8659,6 +8659,8 @@ fn document_bootstrap(
     if (element.tagName === "FORM")
       installUrlAttributeProperty(element, "action", "action", baseUrl);
     if (element.tagName === "IMG") {{
+      installStringAttributeProperty(element, "srcset", "srcset");
+      installStringAttributeProperty(element, "sizes", "sizes");
       const imageState = () => ({{
         complete: typeof state.imageComplete === "function"
           ? Boolean(state.imageComplete())
@@ -8689,8 +8691,12 @@ fn document_bootstrap(
         enumerable: true,
         configurable: false,
         get() {{
-          const value = element.getAttribute("src");
-          return value === null || value === "" ? "" : element.src;
+          const selected = typeof state.imageCurrentSrc === "function"
+            ? String(state.imageCurrentSrc() || "")
+            : "";
+          const value = selected || element.getAttribute("src");
+          if (value === null || value === "") return "";
+          try {{ return new URLNative(value, baseUrl).href; }} catch (_error) {{ return value; }}
         }},
       }});
       installEventHandlerProperty(element, "load");
@@ -9120,10 +9126,12 @@ fn document_bootstrap(
       : Boolean(entry.imageComplete);
     let imageNaturalWidth = Number(entry.imageNaturalWidth) || 0;
     let imageNaturalHeight = Number(entry.imageNaturalHeight) || 0;
+    let imageCurrentSrc = String(entry.imageCurrentSrc || "");
     const resetImageState = (complete = false) => {{
       imageComplete = complete;
       imageNaturalWidth = 0;
       imageNaturalHeight = 0;
+      imageCurrentSrc = "";
     }};
     if (!entry.attributeNamespaces || typeof entry.attributeNamespaces !== "object") entry.attributeNamespaces = {{}};
     const setNamespacedAttribute = (namespace, name, nextValue) => {{
@@ -9351,7 +9359,7 @@ fn document_bootstrap(
         const stringValue = String(value);
         entry.attributes[key] = stringValue;
         delete entry.attributeNamespaces[key];
-        if (key === "src" && element.tagName === "IMG") resetImageState(stringValue === "");
+        if (["src", "srcset", "sizes"].includes(key) && element.tagName === "IMG") resetImageState(stringValue === "" && key === "src");
         if (key === "disabled") disabled = true;
         if (key === "hidden") hidden = true;
         if (key === "multiple") multiple = true;
@@ -9365,7 +9373,7 @@ fn document_bootstrap(
         const key = String(name).toLowerCase();
         delete entry.attributes[key];
         delete entry.attributeNamespaces[key];
-        if (key === "src" && element.tagName === "IMG") resetImageState(true);
+        if (["src", "srcset", "sizes"].includes(key) && element.tagName === "IMG") resetImageState(key === "src");
         if (key === "disabled") disabled = false;
         if (key === "hidden") hidden = false;
         if (key === "multiple") multiple = false;
@@ -9619,6 +9627,7 @@ fn document_bootstrap(
       imageComplete: () => imageComplete,
       imageNaturalWidth: () => imageNaturalWidth,
       imageNaturalHeight: () => imageNaturalHeight,
+      imageCurrentSrc: () => imageCurrentSrc,
       imageReset: resetImageState,
     }});
     Object.defineProperty(element, "__glassAttributeSource", {{
@@ -9774,6 +9783,7 @@ fn document_bootstrap(
           : Boolean(nextEntry.imageComplete);
         imageNaturalWidth = Number(nextEntry.imageNaturalWidth) || 0;
         imageNaturalHeight = Number(nextEntry.imageNaturalHeight) || 0;
+        imageCurrentSrc = String(nextEntry.imageCurrentSrc || "");
         if (typeof element.__glassSyncAttributeNodes === "function") element.__glassSyncAttributeNodes();
       }}
     }});
@@ -9810,6 +9820,7 @@ fn document_bootstrap(
       imageComplete: true,
       imageNaturalWidth: 0,
       imageNaturalHeight: 0,
+      imageCurrentSrc: "",
     }};
     const element = makeElement(entry);
     element.__glassCreated = true;

@@ -33081,6 +33081,41 @@ async fn native_images_expose_accessible_role_and_alt_name() {
 }
 
 #[tokio::test]
+async fn native_images_select_srcset_candidates_from_viewport_and_density() {
+    let config = NativeEngineConfig::default()
+        .with_initial_url("fixture://image-srcset/page")
+        .with_viewport(Viewport {
+            width: 600,
+            height: 400,
+            device_scale_factor_milli: 2000,
+        })
+        .with_fixture(
+            "fixture://image-srcset/page",
+            "<img id='width' src='/fallback.png' srcset='/small.png 400w, /large.png 800w' sizes='600px'><img id='density' src='/fallback-density.png' srcset='/one.png 1x, /two.png 2x, /three.png 3x'>",
+        )
+        .unwrap();
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const width = document.getElementById('width'); const density = document.getElementById('density'); return [width.srcset, width.sizes, width.currentSrc, density.currentSrc]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([
+            "/small.png 400w, /large.png 800w",
+            "600px",
+            "fixture://image-srcset/large.png",
+            "fixture://image-srcset/two.png"
+        ])
+    );
+
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_loads_external_png_through_document_wire() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -33167,6 +33202,76 @@ async fn native_content_process_loads_external_png_through_document_wire() {
             .await
             .unwrap(),
         serde_json::json!([true, 2, 2, format!("http://{address}/image.png")])
+    );
+
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_reloads_the_selected_srcset_candidate_after_sizes_mutation() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let png = native_test_png_bytes();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/large.png", "/small.png"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            if expected_path != "/page" {
+                let headers = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    png.len()
+                );
+                stream.write_all(headers.as_bytes()).await.unwrap();
+                stream.write_all(&png).await.unwrap();
+            } else {
+                let body = "<img id='image' src='/fallback.png' srcset='/small.png 400w, /large.png 800w' sizes='600px'>";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_viewport(Viewport {
+                width: 600,
+                height: 400,
+                device_scale_factor_milli: 1000,
+            })
+            .with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const image = document.getElementById('image'); return [image.complete, image.naturalWidth, image.currentSrc]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, 2, format!("http://{address}/large.png")])
+    );
+
+    engine
+        .evaluate_async(
+            "(() => { const image = document.getElementById('image'); image.sizes = '300px'; return true; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const image = document.getElementById('image'); return [image.complete, image.naturalWidth, image.currentSrc]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, 2, format!("http://{address}/small.png")])
     );
 
     engine.close_async().await.unwrap();

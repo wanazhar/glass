@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-170`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-171`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
@@ -3279,6 +3279,14 @@ capture/target/bubble path through the projected document and window. Parent
 focus/blur/click preflight is not replayed, while ancestor and cross-origin
 targets remain isolated. Full event ordering, observer APIs, Web IDL identity,
 complete lifecycle/input coverage, and browser-wide parity remain open.
+
+The completed native-engine-browser-171 slice propagates child runtime effects
+from navigation and `postMessage` through validated same-origin parent and
+ancestor projections. Lifecycle/hash-change mutations use an explicit window
+target, parent-handler effects are captured and boundedly forwarded upward,
+and pending child frame scripts/browser queues remain part of the handoff.
+Initial document-load observer delivery, stale-generation rejection, complete
+Window Web IDL identity, and browser-wide parity remain open.
 
 The completed native-engine-browser-169 slice adds frame-qualified EventTarget
 behavior to same-origin projected elements, detached projected elements,

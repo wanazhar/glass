@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-219` slice; the bounded foundation below remains
+`native-engine-browser-220` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5387,6 +5387,15 @@ existing `aria-label` and `aria-labelledby` precedence is unchanged. The
 shared semantic owner means local documents and validated content-process
 snapshots expose the same image projection. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-219.md`.
+
+The completed native-engine-browser-220 slice adds bounded responsive image
+selection. Width (`w`) and density (`x`) candidates are selected against the
+configured viewport/device scale, with simple `sizes` media conditions and
+`px`/`vw` lengths feeding width selection. The selected source is the one
+fetched and transferred through the existing image lifecycle, so intrinsic
+dimensions and `currentSrc` remain coherent after initial load and script
+mutation. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-220.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

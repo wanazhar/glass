@@ -59,7 +59,8 @@ pub(crate) use javascript::{
     NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
 };
 pub use layout::{
-    NativeLayoutBox, NativeLayoutSnapshot, NativePoint, NativeRect, NativeTextLayout,
+    NativeLayoutBox, NativeLayoutSnapshot, NativePoint, NativeRect, NativeSvgSubpath,
+    NativeTextLayout,
 };
 pub use lifecycle::NativeLifecycleState;
 pub use origin::NativeOrigin;

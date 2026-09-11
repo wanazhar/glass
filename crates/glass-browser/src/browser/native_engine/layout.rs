@@ -25,6 +25,13 @@ pub struct NativePoint {
     pub y: u32,
 }
 
+/// A bounded SVG path subpath retained as shared layout/paint geometry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeSvgSubpath {
+    pub points: Vec<NativePoint>,
+    pub closed: bool,
+}
+
 /// A half-open integer-pixel rectangle in the native viewport coordinate
 /// space.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -1995,6 +2002,20 @@ impl<'a> LayoutBuilder<'a> {
             }
             "polyline" | "polygon" => {
                 let points = svg_points(node)?;
+                let (min_x, min_y, max_x, max_y) = svg_points_bounds(&points)?;
+                Some((
+                    min_x,
+                    min_y,
+                    max_x.saturating_sub(min_x).saturating_add(1),
+                    max_y.saturating_sub(min_y).saturating_add(1),
+                ))
+            }
+            "path" => {
+                let subpaths = svg_path_subpaths(node)?;
+                let points = subpaths
+                    .iter()
+                    .flat_map(|subpath| subpath.points.iter().copied())
+                    .collect::<Vec<_>>();
                 let (min_x, min_y, max_x, max_y) = svg_points_bounds(&points)?;
                 Some((
                     min_x,
@@ -4795,6 +4816,191 @@ pub(crate) fn svg_line_points(node: &NativeNode) -> Vec<NativePoint> {
             y: number("y2"),
         },
     ]
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SvgPathToken {
+    Command(char),
+    Number(f64),
+}
+
+pub(crate) fn svg_path_subpaths(node: &NativeNode) -> Option<Vec<NativeSvgSubpath>> {
+    let value = node.attribute("d")?;
+    let tokens = tokenize_svg_path(value)?;
+    let mut subpaths: Vec<NativeSvgSubpath> = Vec::new();
+    let mut current = (0.0, 0.0);
+    let mut command = None;
+    let mut index = 0usize;
+    while index < tokens.len() {
+        if let SvgPathToken::Command(next) = tokens[index] {
+            if !matches!(
+                next,
+                'M' | 'm' | 'L' | 'l' | 'H' | 'h' | 'V' | 'v' | 'Z' | 'z'
+            ) {
+                return None;
+            }
+            index = index.saturating_add(1);
+            if matches!(next, 'Z' | 'z') {
+                let Some(subpath) = subpaths.last_mut() else {
+                    return None;
+                };
+                subpath.closed = true;
+                current = subpath
+                    .points
+                    .first()
+                    .map(|point| (f64::from(point.x), f64::from(point.y)))
+                    .unwrap_or(current);
+                command = None;
+            } else {
+                command = Some(next);
+            }
+            continue;
+        }
+
+        let Some(next) = command else {
+            return None;
+        };
+        let relative = next.is_ascii_lowercase();
+        let upper = next.to_ascii_uppercase();
+        match upper {
+            'M' | 'L' => {
+                let (x, y) = svg_path_pair(&tokens, &mut index)?;
+                let point = if relative {
+                    (current.0 + x, current.1 + y)
+                } else {
+                    (x, y)
+                };
+                if upper == 'M' {
+                    subpaths.push(NativeSvgSubpath {
+                        points: vec![svg_path_point(point)],
+                        closed: false,
+                    });
+                    if subpaths.len() > MAX_NATIVE_SVG_POINTS {
+                        return None;
+                    }
+                    command = Some(if relative { 'l' } else { 'L' });
+                } else {
+                    let Some(subpath) = subpaths.last_mut() else {
+                        return None;
+                    };
+                    subpath.points.push(svg_path_point(point));
+                }
+                current = point;
+            }
+            'H' => {
+                let x = svg_path_number(&tokens, &mut index)?;
+                let point = (if relative { current.0 + x } else { x }, current.1);
+                let Some(subpath) = subpaths.last_mut() else {
+                    return None;
+                };
+                subpath.points.push(svg_path_point(point));
+                current = point;
+            }
+            'V' => {
+                let y = svg_path_number(&tokens, &mut index)?;
+                let point = (current.0, if relative { current.1 + y } else { y });
+                let Some(subpath) = subpaths.last_mut() else {
+                    return None;
+                };
+                subpath.points.push(svg_path_point(point));
+                current = point;
+            }
+            _ => return None,
+        }
+        let point_count = subpaths
+            .iter()
+            .map(|subpath| subpath.points.len())
+            .sum::<usize>();
+        if point_count > MAX_NATIVE_SVG_POINTS {
+            return None;
+        }
+    }
+    (!subpaths.is_empty()).then_some(subpaths)
+}
+
+fn tokenize_svg_path(value: &str) -> Option<Vec<SvgPathToken>> {
+    let characters = value.chars().collect::<Vec<_>>();
+    let mut tokens = Vec::new();
+    let mut index = 0usize;
+    while index < characters.len() {
+        let character = characters[index];
+        if character.is_ascii_alphabetic() {
+            tokens.push(SvgPathToken::Command(character));
+            index = index.saturating_add(1);
+            continue;
+        }
+        if character == ',' || character.is_ascii_whitespace() {
+            index = index.saturating_add(1);
+            continue;
+        }
+        let start = index;
+        if matches!(character, '+' | '-') {
+            index = index.saturating_add(1);
+        }
+        let mut has_digit = false;
+        while index < characters.len() && characters[index].is_ascii_digit() {
+            has_digit = true;
+            index = index.saturating_add(1);
+        }
+        if index < characters.len() && characters[index] == '.' {
+            index = index.saturating_add(1);
+            while index < characters.len() && characters[index].is_ascii_digit() {
+                has_digit = true;
+                index = index.saturating_add(1);
+            }
+        }
+        if !has_digit {
+            return None;
+        }
+        if index < characters.len() && matches!(characters[index], 'e' | 'E') {
+            let exponent = index;
+            index = index.saturating_add(1);
+            if index < characters.len() && matches!(characters[index], '+' | '-') {
+                index = index.saturating_add(1);
+            }
+            let exponent_start = index;
+            while index < characters.len() && characters[index].is_ascii_digit() {
+                index = index.saturating_add(1);
+            }
+            if exponent_start == index {
+                index = exponent;
+            }
+        }
+        let number = characters[start..index].iter().collect::<String>();
+        tokens.push(SvgPathToken::Number(number.parse().ok()?));
+        if tokens.len() > MAX_NATIVE_SVG_POINTS.saturating_mul(4) {
+            return None;
+        }
+    }
+    Some(tokens)
+}
+
+fn svg_path_number(tokens: &[SvgPathToken], index: &mut usize) -> Option<f64> {
+    let SvgPathToken::Number(value) = tokens.get(*index).copied()? else {
+        return None;
+    };
+    *index = index.saturating_add(1);
+    Some(value)
+}
+
+fn svg_path_pair(tokens: &[SvgPathToken], index: &mut usize) -> Option<(f64, f64)> {
+    Some((
+        svg_path_number(tokens, index)?,
+        svg_path_number(tokens, index)?,
+    ))
+}
+
+fn svg_path_point((x, y): (f64, f64)) -> NativePoint {
+    let coordinate = |value: f64| {
+        if !value.is_finite() {
+            return 0;
+        }
+        value.round().max(0.0).min(f64::from(u32::MAX)) as u32
+    };
+    NativePoint {
+        x: coordinate(x),
+        y: coordinate(y),
+    }
 }
 
 fn svg_points_bounds(points: &[NativePoint]) -> Option<(u32, u32, u32, u32)> {

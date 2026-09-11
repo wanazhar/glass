@@ -7,7 +7,8 @@ use super::dom::{NativeDocument, NativeNode, NativeNodeId};
 use super::error::NativeEngineError;
 use super::layout::{
     MAX_NATIVE_SVG_POINTS, NativeLayoutPaintOrder, NativeLayoutSnapshot, NativePoint, NativeRect,
-    NativeSvgSubpath, svg_line_points, svg_path_subpaths, svg_points,
+    NativeSvgSubpath, svg_line_points, svg_path_subpaths, svg_points, svg_transform_for_node,
+    svg_transformed_points, svg_transformed_subpaths,
 };
 
 /// Maximum number of immutable commands retained in one native display list.
@@ -329,12 +330,39 @@ fn svg_paint_commands(
     {
         return Vec::new();
     }
+    let Some(transform) = svg_transform_for_node(document, node_id) else {
+        return Vec::new();
+    };
+    let transformed = !transform.is_identity();
     let points = match shape {
-        "line" => Some(svg_line_points(node)),
-        "polyline" | "polygon" => svg_points(node),
+        "line" => {
+            if transformed {
+                svg_transformed_points(node, transform)
+            } else {
+                Some(svg_line_points(node))
+            }
+        }
+        "polyline" | "polygon" => {
+            if transformed {
+                svg_transformed_points(node, transform)
+            } else {
+                svg_points(node)
+            }
+        }
         _ => None,
     };
-    let subpaths = (shape == "path").then(|| svg_path_subpaths(node)).flatten();
+    let transformed_shape_points = (transformed && matches!(shape, "rect" | "circle" | "ellipse"))
+        .then(|| svg_transformed_points(node, transform))
+        .flatten();
+    let subpaths = if shape == "path" {
+        if transformed {
+            svg_transformed_subpaths(node, transform)
+        } else {
+            svg_path_subpaths(node)
+        }
+    } else {
+        None
+    };
     if shape == "path"
         && subpaths
             .as_ref()
@@ -354,55 +382,75 @@ fn svg_paint_commands(
     if !fill.eq_ignore_ascii_case("none") {
         let color = svg_paint_color(document, node_id, fill).unwrap_or(NativeColor::BLACK);
         if shape == "rect" {
-            commands.push(NativeDisplayCommand::FillRect {
-                node_id,
-                rect: bounds,
-                radius: NativeBorderRadius::default(),
-                color,
-                clip,
-            });
-        } else if matches!(shape, "circle" | "ellipse") {
-            let rows = bounds.height.min(MAX_NATIVE_SVG_SCANLINES);
-            commands.reserve(rows as usize);
-            for row in 0..rows {
-                let top = bounds.y.saturating_add(
-                    u32::try_from(u64::from(row) * u64::from(bounds.height) / u64::from(rows))
-                        .unwrap_or(u32::MAX),
-                );
-                let bottom = bounds.y.saturating_add(
-                    u32::try_from(
-                        u64::from(row.saturating_add(1)) * u64::from(bounds.height)
-                            / u64::from(rows),
-                    )
-                    .unwrap_or(u32::MAX),
-                );
-                if bottom <= top {
-                    continue;
-                }
-                let normalized_y = (f64::from(row) + 0.5) / f64::from(rows) * 2.0 - 1.0;
-                let horizontal = (1.0 - normalized_y * normalized_y).max(0.0).sqrt();
-                let center = f64::from(bounds.width) / 2.0;
-                let half_width = center * horizontal;
-                let left = half_width.mul_add(-1.0, center).floor().max(0.0) as u32;
-                let right = half_width
-                    .mul_add(1.0, center)
-                    .ceil()
-                    .min(f64::from(bounds.width)) as u32;
-                if right <= left {
-                    continue;
-                }
+            if let Some(points) = transformed_shape_points.as_ref() {
+                commands.push(NativeDisplayCommand::SvgPolygonFill {
+                    node_id,
+                    rect: bounds,
+                    points: points.clone(),
+                    color,
+                    clip,
+                });
+            } else {
                 commands.push(NativeDisplayCommand::FillRect {
                     node_id,
-                    rect: NativeRect {
-                        x: bounds.x.saturating_add(left),
-                        y: top,
-                        width: right.saturating_sub(left),
-                        height: bottom.saturating_sub(top),
-                    },
+                    rect: bounds,
                     radius: NativeBorderRadius::default(),
                     color,
                     clip,
                 });
+            }
+        } else if matches!(shape, "circle" | "ellipse") {
+            if let Some(points) = transformed_shape_points.as_ref() {
+                commands.push(NativeDisplayCommand::SvgPolygonFill {
+                    node_id,
+                    rect: bounds,
+                    points: points.clone(),
+                    color,
+                    clip,
+                });
+            } else {
+                let rows = bounds.height.min(MAX_NATIVE_SVG_SCANLINES);
+                commands.reserve(rows as usize);
+                for row in 0..rows {
+                    let top = bounds.y.saturating_add(
+                        u32::try_from(u64::from(row) * u64::from(bounds.height) / u64::from(rows))
+                            .unwrap_or(u32::MAX),
+                    );
+                    let bottom = bounds.y.saturating_add(
+                        u32::try_from(
+                            u64::from(row.saturating_add(1)) * u64::from(bounds.height)
+                                / u64::from(rows),
+                        )
+                        .unwrap_or(u32::MAX),
+                    );
+                    if bottom <= top {
+                        continue;
+                    }
+                    let normalized_y = (f64::from(row) + 0.5) / f64::from(rows) * 2.0 - 1.0;
+                    let horizontal = (1.0 - normalized_y * normalized_y).max(0.0).sqrt();
+                    let center = f64::from(bounds.width) / 2.0;
+                    let half_width = center * horizontal;
+                    let left = half_width.mul_add(-1.0, center).floor().max(0.0) as u32;
+                    let right = half_width
+                        .mul_add(1.0, center)
+                        .ceil()
+                        .min(f64::from(bounds.width)) as u32;
+                    if right <= left {
+                        continue;
+                    }
+                    commands.push(NativeDisplayCommand::FillRect {
+                        node_id,
+                        rect: NativeRect {
+                            x: bounds.x.saturating_add(left),
+                            y: top,
+                            width: right.saturating_sub(left),
+                            height: bottom.saturating_sub(top),
+                        },
+                        radius: NativeBorderRadius::default(),
+                        color,
+                        clip,
+                    });
+                }
             }
         } else if shape == "polygon" {
             if let Some(points) = points.as_ref() {
@@ -463,6 +511,16 @@ fn svg_paint_commands(
                 clip,
             });
         }
+    } else if let Some(points) = transformed_shape_points {
+        commands.push(NativeDisplayCommand::SvgPolyline {
+            node_id,
+            rect: bounds,
+            points,
+            closed: true,
+            width,
+            color,
+            clip,
+        });
     } else {
         commands.push(NativeDisplayCommand::SvgStroke {
             node_id,

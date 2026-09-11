@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-219`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-220`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 205
 slice carries bounded quadratic/cubic SVG path geometry through shared path
 parsing, flattening, layout, display-list, raster, clipping, and capture
@@ -3566,6 +3566,16 @@ consume the native tree. The shared DOM semantic owner covers local and
 content-process reconstruction; figure relationships, image-map semantics,
 and the wider accessibility tree remain separate promotion work. Exact
 evidence is in `docs/plan/tasks/native-engine-browser-219.md`.
+
+The completed native-engine-browser-220 slice closes the basic responsive-image
+selection path. The shared DOM owner parses bounded all-density or all-width
+`srcset` candidate lists, applies configured device scale and a bounded `sizes`
+source-width calculation, and transfers the chosen source identity through
+content-process image loading, intrinsic state, and `currentSrc`. `srcset` and
+`sizes` mutations reuse the existing refresh/load/event transaction. Picture
+source selection, type/media source sets, preload hints, and the broader image
+format pipeline remain separate promotion work. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-220.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

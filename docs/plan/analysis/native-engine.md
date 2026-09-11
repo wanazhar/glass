@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-186`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-187`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
@@ -3373,6 +3373,15 @@ comments, raw-text/foreign-content rules, malformed-input recovery, and full
 Web IDL descriptor parity remain conformance work. Exact local evidence is in
 `docs/plan/tasks/native-engine-browser-179.md`; browser-complete promotion
 remains tracked issue-40 work.
+
+The completed native-engine-browser-187 slice closes the document-facing DOM
+surface gap. Local, HTTP(S) content-worker, and same-origin frame documents now
+expose head, forms, links, scripts, images, scrollingElement, live tag/class
+collections, and getElementsByName. Document collections reuse the native tree
+walker and therefore see attached mutations without a parallel document model.
+Exact local evidence is in
+[native-engine-browser-187](../tasks/native-engine-browser-187.md); complete
+Web IDL descriptors and browser-complete promotion remain open.
 
 The completed native-engine-browser-186 slice closes the text-node Web IDL
 identity and mutation gap. Text projections in local, HTTP(S) content-worker,

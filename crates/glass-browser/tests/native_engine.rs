@@ -3079,6 +3079,74 @@ async fn native_local_script_exposes_layout_geometry_and_resize_observer() {
 }
 
 #[tokio::test]
+async fn native_local_script_exposes_animation_frames_and_intersection_observer() {
+    let config = NativeEngineConfig::default()
+        .with_viewport(Viewport {
+            width: 240,
+            height: 100,
+            device_scale_factor_milli: 1000,
+        })
+        .with_fixture(
+            "fixture://intersection-observer",
+            "<html><head><style>#target { width: 40px; height: 20px; }</style></head><body><div style='height: 120px'></div><div id='target'>target</div></body></html>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://intersection-observer");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    let first = engine
+        .evaluate_async(
+            "(() => { const target = document.getElementById('target'); globalThis.intersectionLog = []; globalThis.frameLog = []; globalThis.intersectionObserver = new IntersectionObserver(entries => { globalThis.intersectionLog.push(entries.map(entry => ({ isIntersecting: entry.isIntersecting, ratio: entry.intersectionRatio, top: entry.boundingClientRect.top, rootHeight: entry.rootBounds.height, entryType: entry instanceof IntersectionObserverEntry }))); }, { threshold: [0, 1], rootMargin: '0px' }); globalThis.intersectionObserver.observe(target); const frameId = requestAnimationFrame(time => globalThis.frameLog.push({ time, now: performance.now() })); const cancelledId = requestAnimationFrame(() => globalThis.frameLog.push({ cancelled: true })); cancelAnimationFrame(cancelledId); return { frameId, perfNow: performance.now(), timeOrigin: performance.timeOrigin, thresholds: globalThis.intersectionObserver.thresholds, rootMargin: globalThis.intersectionObserver.rootMargin }; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(first["frameId"], serde_json::json!(1));
+    assert!(first["perfNow"].as_u64().is_some());
+    assert!(first["timeOrigin"].as_i64().is_some());
+    assert_eq!(first["thresholds"], serde_json::json!([0, 1]));
+    assert_eq!(first["rootMargin"], serde_json::json!("0px 0px 0px 0px"));
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.intersectionLog")
+            .await
+            .unwrap(),
+        serde_json::json!([[
+            {
+                "isIntersecting": false,
+                "ratio": 0,
+                "top": 120,
+                "rootHeight": 100,
+                "entryType": true,
+            }
+        ]])
+    );
+
+    engine
+        .action(NativeAction::Scroll {
+            delta_x: 0,
+            delta_y: 40,
+        })
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let second = engine
+        .evaluate_async("({ frames: globalThis.frameLog, intersections: globalThis.intersectionLog, perfNow: performance.now() })")
+        .await
+        .unwrap();
+    assert_eq!(second["frames"].as_array().unwrap().len(), 1);
+    assert!(second["frames"][0]["time"].as_u64().is_some());
+    assert!(second["frames"][0]["now"].as_u64().is_some());
+    assert_eq!(second["intersections"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        second["intersections"][1][0]["isIntersecting"],
+        serde_json::json!(true)
+    );
+    assert_eq!(second["intersections"][1][0]["ratio"], serde_json::json!(1));
+    assert_eq!(second["intersections"][1][0]["top"], serde_json::json!(80));
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_delayed_timer_waits_for_due_host_turn() {
     let config = NativeEngineConfig::default()
         .with_fixture(

@@ -1387,6 +1387,7 @@ impl NativeEngine {
                 window_navigations,
                 frame_scripts,
                 window_name,
+                history,
             } = {
                 let process = self
                     .content_process
@@ -1408,9 +1409,11 @@ impl NativeEngine {
             };
             self.config.window_name = window_name;
             self.queue_frame_script_requests(frame_scripts)?;
+            let mut history_traversal = None;
             if let Some(mutation) = mutation {
                 let navigation = mutation.navigation.clone();
                 self.apply_content_process_mutation(mutation)?;
+                history_traversal = self.apply_content_history_commands(&history)?;
                 if let Some(navigation) = navigation {
                     self.navigate_script_navigation_async(navigation, 0).await?;
                 }
@@ -1422,6 +1425,14 @@ impl NativeEngine {
                 self.queue_window_navigation_requests(window_navigations)?;
                 let dialog_url = self.url.clone();
                 self.install_dialogs(dialogs, &dialog_url)?;
+            }
+            if !history.is_empty() {
+                self.sync_content_history_async().await?;
+            }
+            if let Some(delta) = history_traversal
+                && delta != 0
+            {
+                self.traverse_history_delta_async(delta).await?;
             }
             return Ok(value);
         }
@@ -3987,6 +3998,51 @@ impl NativeEngine {
         Ok(())
     }
 
+    fn apply_content_history_commands(
+        &mut self,
+        commands: &[NativeScriptCommand],
+    ) -> Result<Option<i32>, NativeEngineError> {
+        let prepared = self.prepare_local_history_commands(commands)?;
+        let revision = self.revision;
+        let mut traversal = None;
+        for command in prepared {
+            match command {
+                LocalHistoryCommand::PushState { url, state } => {
+                    self.url = url.clone();
+                    self.history
+                        .push_with_state(url, revision, self.scroll_offset, state, true);
+                }
+                LocalHistoryCommand::ReplaceState { url, state } => {
+                    self.url = url.clone();
+                    self.history.replace_current_with_state(
+                        url,
+                        revision,
+                        self.scroll_offset,
+                        state,
+                        true,
+                    );
+                }
+                LocalHistoryCommand::Go(delta) => traversal = Some(delta),
+            }
+        }
+        self.sync_javascript_history();
+        Ok(traversal)
+    }
+
+    async fn sync_content_history_async(&mut self) -> Result<(), NativeEngineError> {
+        let state = self
+            .history
+            .current()
+            .map(|entry| entry.state.clone())
+            .unwrap_or(serde_json::Value::Null);
+        if let Some(process) = self.content_process.as_mut() {
+            process
+                .sync_history(&self.url, &state, self.history.len())
+                .await?;
+        }
+        Ok(())
+    }
+
     fn apply_content_process_mutation_at(
         &mut self,
         next_revision: u64,
@@ -4741,6 +4797,7 @@ impl NativeEngine {
             }
         }
         self.sync_javascript_history();
+        self.sync_content_history_async().await?;
         self.flush_pending_lifecycle_effects();
         self.record_initial_events(initial_events)?;
         if execute_page_scripts {
@@ -4812,9 +4869,13 @@ impl NativeEngine {
         } else {
             None
         };
-        if let Some(next_navigation) =
-            self.dispatch_local_hash_change(&old_url, &self.url.clone())?
-        {
+        let hash_navigation =
+            if old_url != self.url && without_fragment(&old_url) == without_fragment(&self.url) {
+                self.dispatch_local_hash_change(&old_url, &self.url.clone())?
+            } else {
+                None
+            };
+        if let Some(next_navigation) = hash_navigation {
             if navigation.is_some() {
                 return Err(NativeEngineError::TargetNotActionable {
                     reason: "multiple same-document lifecycle navigations are not supported".into(),
@@ -4877,6 +4938,7 @@ impl NativeEngine {
             }
         }
         self.sync_javascript_history();
+        self.sync_content_history_async().await?;
         let mut navigation = if traversing_history {
             self.dispatch_content_events_async(&[NativeEventKind::PopState])
                 .await?
@@ -4884,16 +4946,21 @@ impl NativeEngine {
             None
         };
         let new_url = self.url.clone();
-        let hash_navigation = if self
-            .content_process
-            .as_ref()
-            .is_some_and(NativeContentProcess::is_healthy)
-        {
-            self.dispatch_content_hash_change_async(&old_url, &new_url)
-                .await?
-        } else {
-            self.dispatch_local_hash_change(&old_url, &new_url)?
-        };
+        let hash_navigation =
+            if old_url != new_url && without_fragment(&old_url) == without_fragment(&new_url) {
+                if self
+                    .content_process
+                    .as_ref()
+                    .is_some_and(NativeContentProcess::is_healthy)
+                {
+                    self.dispatch_content_hash_change_async(&old_url, &new_url)
+                        .await?
+                } else {
+                    self.dispatch_local_hash_change(&old_url, &new_url)?
+                }
+            } else {
+                None
+            };
         if let Some(next_navigation) = hash_navigation {
             if navigation.is_some() {
                 return Err(NativeEngineError::TargetNotActionable {
@@ -5019,6 +5086,7 @@ impl NativeEngine {
             .ok_or_else(|| NativeEngineError::Scheduler {
                 reason: "history target disappeared during traversal".into(),
             })?;
+        self.sync_content_history_async().await?;
         Ok(())
     }
 
@@ -5173,6 +5241,32 @@ impl NativeEngine {
             ));
         }
         Ok(Some(self.navigate_resource(resource, history_commit)?))
+    }
+
+    async fn traverse_history_delta_async(&mut self, delta: i32) -> Result<(), NativeEngineError> {
+        let steps = delta.unsigned_abs() as usize;
+        if steps > MAX_NATIVE_HISTORY_DELTA as usize {
+            return Err(NativeEngineError::limit(
+                "native history traversal delta",
+                MAX_NATIVE_HISTORY_DELTA as usize,
+                steps,
+            ));
+        }
+        let direction = if delta < 0 {
+            NativeHistoryDirection::Back
+        } else {
+            NativeHistoryDirection::Forward
+        };
+        for _ in 0..steps {
+            if self
+                .traverse_history_async(direction, "history traversal")
+                .await?
+                .is_none()
+            {
+                break;
+            }
+        }
+        Ok(())
     }
 
     fn is_same_document_navigation(&self, target_url: &str) -> bool {

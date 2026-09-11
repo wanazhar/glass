@@ -33064,6 +33064,90 @@ async fn native_content_process_loads_external_png_through_document_wire() {
 }
 
 #[tokio::test]
+async fn native_content_process_loads_image_after_script_source_mutation() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let png = native_test_png_bytes();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/image.png"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            if expected_path == "/image.png" {
+                let headers = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    png.len()
+                );
+                stream.write_all(headers.as_bytes()).await.unwrap();
+                stream.write_all(&png).await.unwrap();
+            } else {
+                let body = "<img id='image' width='8'><script>globalThis.imageLoaded = 0; document.getElementById('image').addEventListener('load', () => { globalThis.imageLoaded = 1; });</script>";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_viewport(Viewport {
+                width: 16,
+                height: 8,
+                device_scale_factor_milli: 1000,
+            })
+            .with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { document.getElementById('image').setAttribute('src', '/image.png'); return true; })()"
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+
+    let list = engine.display_list().unwrap();
+    let image_id = list
+        .commands
+        .iter()
+        .find_map(|command| match command {
+            NativeDisplayCommand::Image { node_id, .. } => Some(*node_id),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        engine.layout().unwrap().box_for(image_id),
+        Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 8,
+            height: 8,
+        })
+    );
+    assert_eq!(
+        list.rasterize().unwrap().pixel(1, 1),
+        Some([255, 0, 0, 255])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.imageLoaded")
+            .await
+            .unwrap(),
+        serde_json::json!(1)
+    );
+
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_blocks_csp_disallowed_image_before_request() {
     let _guard = native_content_process_test_lock().lock().await;
     let target_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -98,10 +98,16 @@ impl NativeElementState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativeNodeKind {
     Document,
+    DocumentType {
+        name: String,
+        public_id: Option<String>,
+        system_id: Option<String>,
+    },
     Element {
         name: String,
         attributes: BTreeMap<String, String>,
     },
+    Comment(String),
     Text(String),
 }
 
@@ -131,10 +137,16 @@ pub(crate) struct NativeNodeWire {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum NativeNodeKindWire {
     Document,
+    DocumentType {
+        name: String,
+        public_id: Option<String>,
+        system_id: Option<String>,
+    },
     Element {
         name: String,
         attributes: BTreeMap<String, String>,
     },
+    Comment(String),
     Text(String),
 }
 
@@ -184,7 +196,10 @@ impl NativeNode {
     pub fn attributes(&self) -> Option<&BTreeMap<String, String>> {
         match &self.kind {
             NativeNodeKind::Element { attributes, .. } => Some(attributes),
-            NativeNodeKind::Document | NativeNodeKind::Text(_) => None,
+            NativeNodeKind::Document
+            | NativeNodeKind::DocumentType { .. }
+            | NativeNodeKind::Comment(_)
+            | NativeNodeKind::Text(_) => None,
         }
     }
 
@@ -201,7 +216,10 @@ impl NativeNode {
     pub fn element_name(&self) -> Option<&str> {
         match &self.kind {
             NativeNodeKind::Element { name, .. } => Some(name),
-            NativeNodeKind::Document | NativeNodeKind::Text(_) => None,
+            NativeNodeKind::Document
+            | NativeNodeKind::DocumentType { .. }
+            | NativeNodeKind::Comment(_)
+            | NativeNodeKind::Text(_) => None,
         }
     }
 }
@@ -275,6 +293,10 @@ pub(crate) struct NativeScriptNodeSnapshot {
     pub(crate) node_type: u8,
     pub(crate) node_name: String,
     pub(crate) node_value: Option<String>,
+    #[serde(default)]
+    pub(crate) public_id: Option<String>,
+    #[serde(default)]
+    pub(crate) system_id: Option<String>,
     pub(crate) children: Vec<u32>,
 }
 
@@ -433,7 +455,10 @@ impl NativeDocument {
                                 .node(*id)
                                 .and_then(|node| match node.kind() {
                                     NativeNodeKind::Element { name, .. } => Some(name.as_str()),
-                                    NativeNodeKind::Document | NativeNodeKind::Text(_) => None,
+                                    NativeNodeKind::Document
+                                    | NativeNodeKind::DocumentType { .. }
+                                    | NativeNodeKind::Comment(_)
+                                    | NativeNodeKind::Text(_) => None,
                                 })
                                 .is_some_and(|current| should_auto_close(current, &name))
                         })
@@ -472,7 +497,10 @@ impl NativeDocument {
                                 NativeNodeKind::Element {
                                     name: node_name, ..
                                 } => Some(node_name == &name),
-                                NativeNodeKind::Document | NativeNodeKind::Text(_) => None,
+                                NativeNodeKind::Document
+                                | NativeNodeKind::DocumentType { .. }
+                                | NativeNodeKind::Comment(_)
+                                | NativeNodeKind::Text(_) => None,
                             })
                             .unwrap_or(false)
                     }) {
@@ -500,6 +528,28 @@ impl NativeDocument {
                         })?;
                         document.add_node(parent, NativeNodeKind::Text(value), limits.max_nodes)?;
                     }
+                }
+                HtmlToken::Comment(value) => {
+                    let parent = *stack.last().ok_or_else(|| NativeEngineError::Parse {
+                        offset: 0,
+                        reason: "tree builder lost its document root".into(),
+                    })?;
+                    document.add_node(parent, NativeNodeKind::Comment(value), limits.max_nodes)?;
+                }
+                HtmlToken::Doctype {
+                    name,
+                    public_id,
+                    system_id,
+                } => {
+                    document.add_node(
+                        root,
+                        NativeNodeKind::DocumentType {
+                            name,
+                            public_id,
+                            system_id,
+                        },
+                        limits.max_nodes,
+                    )?;
                 }
             }
         }
@@ -577,6 +627,16 @@ impl NativeDocument {
                         name: name.clone(),
                         attributes: attributes.clone(),
                     },
+                    NativeNodeKind::DocumentType {
+                        name,
+                        public_id,
+                        system_id,
+                    } => NativeNodeKindWire::DocumentType {
+                        name: name.clone(),
+                        public_id: public_id.clone(),
+                        system_id: system_id.clone(),
+                    },
+                    NativeNodeKind::Comment(value) => NativeNodeKindWire::Comment(value.clone()),
                     NativeNodeKind::Text(value) => NativeNodeKindWire::Text(value.clone()),
                 },
                 state: NativeElementStateWire {
@@ -674,6 +734,41 @@ impl NativeDocument {
                         name: name.clone(),
                         attributes: attributes.clone(),
                     }
+                }
+                NativeNodeKindWire::DocumentType {
+                    name,
+                    public_id,
+                    system_id,
+                } => {
+                    if name.len() > MAX_ATTRIBUTE_BYTES
+                        || public_id
+                            .as_ref()
+                            .is_some_and(|value| value.len() > MAX_ATTRIBUTE_BYTES)
+                        || system_id
+                            .as_ref()
+                            .is_some_and(|value| value.len() > MAX_ATTRIBUTE_BYTES)
+                    {
+                        return Err(NativeEngineError::limit(
+                            "content-process document type",
+                            MAX_ATTRIBUTE_BYTES,
+                            MAX_ATTRIBUTE_BYTES.saturating_add(1),
+                        ));
+                    }
+                    NativeNodeKind::DocumentType {
+                        name: name.clone(),
+                        public_id: public_id.clone(),
+                        system_id: system_id.clone(),
+                    }
+                }
+                NativeNodeKindWire::Comment(value) => {
+                    if value.len() > MAX_ATTRIBUTE_BYTES {
+                        return Err(NativeEngineError::limit(
+                            "content-process comment",
+                            MAX_ATTRIBUTE_BYTES,
+                            value.len(),
+                        ));
+                    }
+                    NativeNodeKind::Comment(value.clone())
                 }
                 NativeNodeKindWire::Text(value) => NativeNodeKind::Text(value.clone()),
             };
@@ -882,8 +977,20 @@ impl NativeDocument {
                 self.node(node.id())?;
                 let (node_type, node_name, node_value) = match node.kind() {
                     NativeNodeKind::Document => (9, "#document".to_owned(), None),
+                    NativeNodeKind::DocumentType { name, .. } => (10, name.clone(), None),
                     NativeNodeKind::Element { name, .. } => (1, name.to_ascii_uppercase(), None),
+                    NativeNodeKind::Comment(value) => {
+                        (8, "#comment".to_owned(), Some(value.clone()))
+                    }
                     NativeNodeKind::Text(value) => (3, "#text".to_owned(), Some(value.clone())),
+                };
+                let (public_id, system_id) = match node.kind() {
+                    NativeNodeKind::DocumentType {
+                        public_id,
+                        system_id,
+                        ..
+                    } => (public_id.clone(), system_id.clone()),
+                    _ => (None, None),
                 };
                 let children = node
                     .children()
@@ -898,6 +1005,8 @@ impl NativeDocument {
                     node_type,
                     node_name,
                     node_value,
+                    public_id,
+                    system_id,
                     children,
                 })
             })
@@ -2247,10 +2356,14 @@ impl NativeDocument {
             .ok_or(NativeEngineError::DetachedTarget)?
             .kind()
             .clone();
-        if matches!(kind, NativeNodeKind::Text(_)) {
-            self.script_node_mut(id, script_nodes)
-                .ok_or(NativeEngineError::DetachedTarget)?
-                .kind = NativeNodeKind::Text(value.to_owned());
+        if matches!(kind, NativeNodeKind::Text(_) | NativeNodeKind::Comment(_)) {
+            let node = self
+                .script_node_mut(id, script_nodes)
+                .ok_or(NativeEngineError::DetachedTarget)?;
+            node.kind = match node.kind() {
+                NativeNodeKind::Comment(_) => NativeNodeKind::Comment(value.to_owned()),
+                _ => NativeNodeKind::Text(value.to_owned()),
+            };
             return Ok(());
         }
         if !matches!(kind, NativeNodeKind::Element { .. }) {
@@ -2437,6 +2550,14 @@ impl NativeDocument {
                         self.add_node(parent, NativeNodeKind::Text(value), self.max_nodes)?;
                     }
                 }
+                HtmlToken::Comment(value) => {
+                    let parent = *stack.last().ok_or_else(|| NativeEngineError::Parse {
+                        offset: 0,
+                        reason: "fragment parser lost its comment parent".into(),
+                    })?;
+                    self.add_node(parent, NativeNodeKind::Comment(value), self.max_nodes)?;
+                }
+                HtmlToken::Doctype { .. } => {}
             }
         }
         Ok(())
@@ -2506,6 +2627,11 @@ impl NativeDocument {
             return;
         };
         match node.kind() {
+            NativeNodeKind::Comment(value) => {
+                append_bounded_markup(output, "<!--", max_bytes, truncated);
+                append_bounded_markup(output, value, max_bytes, truncated);
+                append_bounded_markup(output, "-->", max_bytes, truncated);
+            }
             NativeNodeKind::Text(value) => {
                 let value = if raw_text {
                     value.clone()
@@ -2522,6 +2648,29 @@ impl NativeDocument {
                         break;
                     }
                 }
+            }
+            NativeNodeKind::DocumentType {
+                name,
+                public_id,
+                system_id,
+            } => {
+                append_bounded_markup(output, "<!DOCTYPE ", max_bytes, truncated);
+                append_bounded_markup(output, name, max_bytes, truncated);
+                if let Some(public_id) = public_id {
+                    append_bounded_markup(output, " PUBLIC \"", max_bytes, truncated);
+                    append_bounded_markup(output, public_id, max_bytes, truncated);
+                    append_bounded_markup(output, "\"", max_bytes, truncated);
+                    if let Some(system_id) = system_id {
+                        append_bounded_markup(output, " \"", max_bytes, truncated);
+                        append_bounded_markup(output, system_id, max_bytes, truncated);
+                        append_bounded_markup(output, "\"", max_bytes, truncated);
+                    }
+                } else if let Some(system_id) = system_id {
+                    append_bounded_markup(output, " SYSTEM \"", max_bytes, truncated);
+                    append_bounded_markup(output, system_id, max_bytes, truncated);
+                    append_bounded_markup(output, "\"", max_bytes, truncated);
+                }
+                append_bounded_markup(output, ">", max_bytes, truncated);
             }
             NativeNodeKind::Element { name, attributes } => {
                 append_bounded_markup(output, "<", max_bytes, truncated);
@@ -2615,7 +2764,10 @@ impl NativeDocument {
             NativeNodeKind::Element { name, attributes } => {
                 NativeElementState::initial(name, attributes)
             }
-            NativeNodeKind::Document | NativeNodeKind::Text(_) => NativeElementState::default(),
+            NativeNodeKind::Document
+            | NativeNodeKind::DocumentType { .. }
+            | NativeNodeKind::Comment(_)
+            | NativeNodeKind::Text(_) => NativeElementState::default(),
         };
         self.nodes.push(NativeNode {
             id,
@@ -2657,7 +2809,10 @@ impl NativeDocument {
             NativeNodeKind::Element { name, attributes } => {
                 NativeElementState::initial(name, attributes)
             }
-            NativeNodeKind::Document | NativeNodeKind::Text(_) => NativeElementState::default(),
+            NativeNodeKind::Document
+            | NativeNodeKind::DocumentType { .. }
+            | NativeNodeKind::Comment(_)
+            | NativeNodeKind::Text(_) => NativeElementState::default(),
         };
         self.nodes.push(NativeNode {
             id,
@@ -2794,7 +2949,7 @@ impl NativeDocument {
             .ok_or(NativeEngineError::DetachedTarget)?;
         if !matches!(
             child_node.kind(),
-            NativeNodeKind::Element { .. } | NativeNodeKind::Text(_)
+            NativeNodeKind::Element { .. } | NativeNodeKind::Text(_) | NativeNodeKind::Comment(_)
         ) {
             return Err(NativeEngineError::TargetNotActionable {
                 reason: "appendChild cannot insert a document node".into(),
@@ -4132,6 +4287,7 @@ impl NativeDocument {
                     self.collect_raw_text(*child, output);
                 }
             }
+            NativeNodeKind::DocumentType { .. } | NativeNodeKind::Comment(_) => {}
         }
     }
 
@@ -4170,6 +4326,7 @@ impl NativeDocument {
                 }
             }
             NativeNodeKind::Text(_) => {}
+            NativeNodeKind::DocumentType { .. } | NativeNodeKind::Comment(_) => {}
         }
     }
 }
@@ -4802,6 +4959,12 @@ enum HtmlToken {
         self_closing: bool,
     },
     EndTag(String),
+    Comment(String),
+    Doctype {
+        name: String,
+        public_id: Option<String>,
+        system_id: Option<String>,
+    },
     Text(String),
     RawText(String),
 }
@@ -4829,7 +4992,43 @@ fn tokenize(source: &str, max_tokens: usize) -> Result<Vec<HtmlToken>, NativeEng
                     reason: "unterminated HTML comment".into(),
                 });
             };
+            push_token(
+                &mut tokens,
+                HtmlToken::Comment(source[position + 4..position + 4 + relative_end].to_owned()),
+                max_tokens,
+            )?;
             position += 4 + relative_end + 3;
+            continue;
+        }
+        let doctype_prefix = position.saturating_add(9);
+        if source
+            .as_bytes()
+            .get(position..doctype_prefix)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"<!doctype"))
+            && source
+                .as_bytes()
+                .get(doctype_prefix)
+                .is_none_or(|byte| byte.is_ascii_whitespace() || *byte == b'>')
+        {
+            let Some(end) = find_tag_end(source, doctype_prefix) else {
+                return Err(NativeEngineError::Parse {
+                    offset: position,
+                    reason: "unterminated document declaration".into(),
+                });
+            };
+            if let Some((name, public_id, system_id)) = parse_doctype(&source[doctype_prefix..end])
+            {
+                push_token(
+                    &mut tokens,
+                    HtmlToken::Doctype {
+                        name,
+                        public_id,
+                        system_id,
+                    },
+                    max_tokens,
+                )?;
+            }
+            position = end + 1;
             continue;
         }
         if source[position..].starts_with("<!") || source[position..].starts_with("<?") {
@@ -5025,6 +5224,46 @@ fn parse_start_tag(
         attributes.insert(attribute_name, decode_entities(&value));
     }
     Ok((name, attributes, self_closing))
+}
+
+fn parse_doctype(raw: &str) -> Option<(String, Option<String>, Option<String>)> {
+    let bytes = raw.as_bytes();
+    let mut cursor = 0;
+    skip_ascii_whitespace(bytes, &mut cursor);
+    let (name, next) = read_name(raw, cursor)?;
+    cursor = next;
+    skip_ascii_whitespace(bytes, &mut cursor);
+    if cursor >= raw.len() {
+        return Some((name, None, None));
+    }
+
+    let (keyword, next) = read_name(raw, cursor)?;
+    cursor = next;
+    skip_ascii_whitespace(bytes, &mut cursor);
+    if keyword.eq_ignore_ascii_case("public") {
+        let (public_id, next) = read_quoted_value(raw, cursor)?;
+        cursor = next;
+        skip_ascii_whitespace(bytes, &mut cursor);
+        let system_id = read_quoted_value(raw, cursor).map(|(value, _)| value);
+        return Some((name, Some(public_id), system_id));
+    }
+    if keyword.eq_ignore_ascii_case("system") {
+        let (system_id, _) = read_quoted_value(raw, cursor)?;
+        return Some((name, None, Some(system_id)));
+    }
+    Some((name, None, None))
+}
+
+fn read_quoted_value(raw: &str, start: usize) -> Option<(String, usize)> {
+    let bytes = raw.as_bytes();
+    let quote = *bytes.get(start)?;
+    if !matches!(quote, b'\'' | b'"') {
+        return None;
+    }
+    let value_start = start + 1;
+    let relative_end = raw[value_start..].find(quote as char)?;
+    let end = value_start + relative_end;
+    Some((raw[value_start..end].to_owned(), end + 1))
 }
 
 fn read_name(raw: &str, start: usize) -> Option<(String, usize)> {
@@ -5326,6 +5565,49 @@ mod tests {
         assert_eq!(document.title(1024), ("Example".into(), false));
         assert_eq!(document.visible_text(1024), ("Hello & Glass".into(), false));
         assert!(document.node_count() > 1);
+    }
+
+    #[test]
+    fn preserves_comments_and_doctype_without_affecting_visible_text() {
+        let document = NativeDocument::parse(
+            "<!DOCTYPE html PUBLIC \"public-id\" \"system-id\"><!--before--><html><body><!--inside-->Visible</body></html>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+
+        let root = document.root();
+        let root_children = document.node(root).unwrap().children();
+        assert!(matches!(
+            document.node(root_children[0]).map(NativeNode::kind),
+            Some(NativeNodeKind::DocumentType {
+                name,
+                public_id: Some(public_id),
+                system_id: Some(system_id),
+            }) if name == "html" && public_id == "public-id" && system_id == "system-id"
+        ));
+        assert!(matches!(
+            document.node(root_children[1]).map(NativeNode::kind),
+            Some(NativeNodeKind::Comment(value)) if value == "before"
+        ));
+
+        let snapshot = document.script_snapshot(1024);
+        assert!(
+            snapshot
+                .nodes
+                .iter()
+                .any(|node| node.node_type == 10 && node.node_name == "html")
+        );
+        assert!(
+            snapshot
+                .nodes
+                .iter()
+                .any(|node| node.node_type == 8 && node.node_value.as_deref() == Some("inside"))
+        );
+        assert_eq!(document.visible_text(1024), ("Visible".into(), false));
+        assert_eq!(
+            document.element_inner_html(root, 1024),
+            "<!DOCTYPE html PUBLIC \"public-id\" \"system-id\"><!--before--><html><body><!--inside-->Visible</body></html>"
+        );
     }
 
     #[test]

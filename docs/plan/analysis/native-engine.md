@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-218`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-219`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 205
 slice carries bounded quadratic/cubic SVG path geometry through shared path
 parsing, flattening, layout, display-list, raster, clipping, and capture
@@ -3556,6 +3556,16 @@ the same terminal `load`/`error` semantics. Full event-handler attributes,
 other media-element handlers, and complete Web IDL descriptors remain later
 promotion work. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-218.md`.
+
+The completed native-engine-browser-219 slice closes the first image semantic
+projection gap. Native `img` elements now expose the standard `img` role, and
+an `alt` attribute supplies the accessible name after the existing ARIA naming
+precedence. Empty `alt` is intentional and yields an empty name rather than
+dropping the role, which preserves decorative-image semantics for callers that
+consume the native tree. The shared DOM semantic owner covers local and
+content-process reconstruction; figure relationships, image-map semantics,
+and the wider accessibility tree remain separate promotion work. Exact
+evidence is in `docs/plan/tasks/native-engine-browser-219.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

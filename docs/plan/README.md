@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-218` locally. The versioned
+`native-engine-browser-219` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1918,6 +1918,13 @@ the validated non-bubbling resource-event path with `addEventListener`.
 Initial and script-mutated external image witnesses cover replacement and
 terminal failure delivery. Exact evidence is recorded in
 [native-engine-browser-218](tasks/native-engine-browser-218.md).
+
+The completed native-engine-browser-219 slice adds the standard `img` semantic
+role and derives its accessible name from `alt`, including the explicit empty
+`alt` case used for decorative images. Existing `aria-label` and
+`aria-labelledby` precedence remains intact, and the semantic projection is
+shared by local documents and content-process snapshots. Exact evidence is
+recorded in [native-engine-browser-219](tasks/native-engine-browser-219.md).
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` now returns persistent `Attr`

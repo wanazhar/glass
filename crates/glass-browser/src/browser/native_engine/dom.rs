@@ -1789,6 +1789,9 @@ impl NativeDocument {
                 NativeScriptCommand::SetTextContent { node_index, value } => {
                     self.apply_script_text_content(*node_index, value, &script_nodes)?;
                 }
+                NativeScriptCommand::SetDocumentTitle { value } => {
+                    self.apply_script_document_title(value)?;
+                }
                 NativeScriptCommand::SetInnerHtml { node_index, value } => {
                     self.apply_script_inner_html(*node_index, value, &script_nodes)?;
                 }
@@ -2200,6 +2203,57 @@ impl NativeDocument {
             self.add_node(id, NativeNodeKind::Text(value.to_owned()), self.max_nodes)?;
         }
         Ok(())
+    }
+
+    fn apply_script_document_title(&mut self, value: &str) -> Result<(), NativeEngineError> {
+        if value.len() > MAX_LOCATOR_BYTES {
+            return Err(NativeEngineError::limit(
+                "script document title",
+                MAX_LOCATOR_BYTES,
+                value.len(),
+            ));
+        }
+        let title_id = if let Some(title_id) = self.find_element(self.root, "title") {
+            title_id
+        } else {
+            let parent = if let Some(head_id) = self.find_element(self.root, "head") {
+                head_id
+            } else if let Some(html_id) = self.find_element(self.root, "html") {
+                if self.element_depth(html_id) >= self.max_dom_depth {
+                    return Err(NativeEngineError::limit(
+                        "DOM depth",
+                        self.max_dom_depth,
+                        self.element_depth(html_id).saturating_add(1),
+                    ));
+                }
+                self.add_node(
+                    html_id,
+                    NativeNodeKind::Element {
+                        name: "head".into(),
+                        attributes: BTreeMap::new(),
+                    },
+                    self.max_nodes,
+                )?
+            } else {
+                self.root
+            };
+            if parent != self.root && self.element_depth(parent) >= self.max_dom_depth {
+                return Err(NativeEngineError::limit(
+                    "DOM depth",
+                    self.max_dom_depth,
+                    self.element_depth(parent).saturating_add(1),
+                ));
+            }
+            self.add_node(
+                parent,
+                NativeNodeKind::Element {
+                    name: "title".into(),
+                    attributes: BTreeMap::new(),
+                },
+                self.max_nodes,
+            )?
+        };
+        self.apply_script_text_content(title_id.index(), value, &BTreeMap::new())
     }
 
     fn apply_script_inner_html(
@@ -5200,6 +5254,26 @@ mod tests {
         assert_eq!(document.title(1024), ("Example".into(), false));
         assert_eq!(document.visible_text(1024), ("Hello & Glass".into(), false));
         assert!(document.node_count() > 1);
+    }
+
+    #[test]
+    fn script_document_title_materializes_missing_title_node() {
+        let limits = NativeEngineLimits::default();
+        let mut document = NativeDocument::parse("<body>Content</body>", &limits).unwrap();
+
+        document
+            .apply_script_commands(&[NativeScriptCommand::SetDocumentTitle {
+                value: "Native title".into(),
+            }])
+            .unwrap();
+
+        let title = document.find_element(document.root, "title").unwrap();
+        assert_eq!(document.title(1024), ("Native title".into(), false));
+        assert_eq!(document.node(title).unwrap().parent(), Some(document.root));
+        assert_eq!(
+            document.element_text(title, 1024),
+            Some(("Native title".into(), false))
+        );
     }
 
     #[test]

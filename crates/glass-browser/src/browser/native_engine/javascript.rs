@@ -213,6 +213,9 @@ pub(crate) enum NativeScriptCommand {
         node_index: u32,
         value: String,
     },
+    SetDocumentTitle {
+        value: String,
+    },
     SetInnerHtml {
         node_index: u32,
         value: String,
@@ -10499,8 +10502,34 @@ fn document_bootstrap(
     else pairs.push(pair);
     return pairs.join("; ");
   }};
+  let documentTitle = String(state.title || "");
   const document = {{
-    title: state.title,
+    get title() {{
+      const titleElement = liveDocumentElements().find((element) => element.tagName === "TITLE");
+      return titleElement ? titleElement.textContent : documentTitle;
+    }},
+    set title(value) {{
+      const text = String(value);
+      if (text.length > storageValueLimit) throw new RangeError("native document.title exceeds its limit");
+      documentTitle = text;
+      const titleElement = liveDocumentElements().find((element) => element.tagName === "TITLE");
+      if (titleElement) {{
+        titleElement.textContent = text;
+        return;
+      }}
+      let parent = document.head;
+      if (!parent && documentElement) {{
+        parent = makeDetachedElement("head");
+        documentElement.insertBefore(parent, documentElement.firstChild);
+      }}
+      if (parent) {{
+        const created = makeDetachedElement("title");
+        created.textContent = text;
+        parent.appendChild(created);
+        return;
+      }}
+      pushCommand({{ kind: "setDocumentTitle", value: text }});
+    }},
     body,
     documentElement,
     nodeType: 9,
@@ -11692,6 +11721,7 @@ fn document_bootstrap(
     const snapshot = currentBinding.document && typeof currentBinding.document === "object"
       ? currentBinding.document
       : {{ title: "", visibleText: "", elements: [] }};
+    let frameDocumentTitle = String(snapshot.title || "");
     let frameDocument;
     const frameElements = (Array.isArray(snapshot.elements) ? snapshot.elements : []).map((entry) => {{
       const attributes = entry.attributes && typeof entry.attributes === "object" ? entry.attributes : {{}};
@@ -12692,7 +12722,32 @@ fn document_bootstrap(
       nodeName: "#document",
       URL: String(currentBinding.url),
       documentURI: String(currentBinding.url),
-      title: String(snapshot.title || ""),
+      get title() {{
+        const titleElement = frameElements.find((element) => element.__glassAttached && element.tagName === "TITLE");
+        return titleElement ? titleElement.textContent : frameDocumentTitle;
+      }},
+      set title(value) {{
+        const text = String(value);
+        if (text.length > storageValueLimit) throw new RangeError("native frame document.title exceeds its limit");
+        frameDocumentTitle = text;
+        const titleElement = frameElements.find((element) => element.__glassAttached && element.tagName === "TITLE");
+        if (titleElement) {{
+          titleElement.textContent = text;
+          return;
+        }}
+        let parent = frameDocument.head;
+        if (!parent && documentElement) {{
+          parent = makeFrameDetachedElement("head");
+          documentElement.insertBefore(parent, documentElement.firstChild);
+        }}
+        if (parent) {{
+          const created = makeFrameDetachedElement("title");
+          created.textContent = text;
+          parent.appendChild(created);
+          return;
+        }}
+        queueFrameCommand(currentBinding, {{ kind: "setDocumentTitle", value: text }});
+      }},
       textContent: String(snapshot.visibleText || ""),
       body,
       documentElement,

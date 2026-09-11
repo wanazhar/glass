@@ -244,6 +244,24 @@ async fn native_local_script_exposes_web_idl_identity_and_dom_collections() {
             .unwrap(),
         serde_json::json!([[true, 2, true, true, 2, true], 1])
     );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const before = document.title; document.title = 'Native title'; return [before, document.title, document.head !== null, document.querySelector('title').textContent]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["", "Native title", true, "Native title"])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "[document.title, document.head.tagName, document.head.firstElementChild.tagName]"
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["Native title", "HEAD", "TITLE"])
+    );
     let created = engine
         .evaluate_async(
             "(() => { const host = document.createElement('section'); host.setAttribute('id', 'created'); const child = document.createElement('strong'); const text = document.createTextNode('created'); text.textContent = 'created text'; child.appendChild(text); host.appendChild(child); document.body.appendChild(host); const inserted = document.createElement('em'); inserted.textContent = 'inserted'; document.body.insertBefore(inserted, host); return [host.tagName, host.parentElement === document.body, child.parentElement === host, text.parentNode === child, host.textContent, host.innerHTML, document.body.__glassChildren.map(element => element.tagName)]; })()",
@@ -490,6 +508,24 @@ async fn native_content_process_script_exposes_web_idl_identity() {
             "text": [true, true, true, "worker", "worker", 6],
             "surfaces": [true, true, true, true, true],
         })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const before = document.title; document.title = 'Worker title'; return [before, document.title, document.head !== null, document.querySelector('title').textContent]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["", "Worker title", true, "Worker title"])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "[document.title, document.head.tagName, document.head.firstElementChild.tagName]"
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["Worker title", "HEAD", "TITLE"])
     );
     let before_scroll = engine
         .evaluate_async(
@@ -970,6 +1006,24 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
             "surfaces": [true, true, 1, true],
             "frames": true,
         })
+    );
+    assert_eq!(
+        session
+            .script(
+                "(() => { const child = document.getElementById('child').contentDocument; child.title = 'Frame title'; return [child.title, child.head !== null, child.querySelector('title').textContent]; })()",
+            )
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!(["Frame title", true, "Frame title"])
+    );
+    assert_eq!(
+        session
+            .script("[document.getElementById('child').contentDocument.title, document.getElementById('child').contentDocument.head.tagName]")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!(["Frame title", "HEAD"])
     );
     assert_eq!(
         session

@@ -3062,7 +3062,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 document_origin,
                                 viewport,
                                 &commands,
+                                resource_loader.as_mut(),
                             )
+                            .await
                         };
                         match result {
                             Ok((next, mutation)) => {
@@ -4372,19 +4374,7 @@ async fn load_content_resource(
     }
     let mut document =
         NativeDocument::parse_with_stylesheets(&resource.body, &limits, &external_stylesheets, 1)?;
-    for (node_index, source) in discovery
-        .external_image_links()
-        .into_iter()
-        .take(MAX_CONTENT_IMAGES)
-    {
-        match loader.load_image_async(&resource.url, &source).await {
-            Ok(Some(image)) => {
-                document.set_image_resource(node_index, source, image)?;
-                resource_load_nodes.push(node_index);
-            }
-            Ok(None) | Err(_) => {}
-        }
-    }
+    resource_load_nodes.extend(load_external_images(&mut document, loader, &resource.url).await?);
     let (script_sources, mut script_resource_nodes) =
         load_page_script_sources(&document, loader, &resource.url).await?;
     resource_load_nodes.append(&mut script_resource_nodes);
@@ -4413,6 +4403,32 @@ async fn load_content_resource(
         script_sources,
         resource_load_nodes,
     ))
+}
+
+async fn load_external_images(
+    document: &mut NativeDocument,
+    loader: &mut NativeResourceLoader,
+    document_url: &str,
+) -> Result<Vec<u32>, NativeEngineError> {
+    let mut loaded_nodes = Vec::new();
+    for (node_index, source) in document
+        .external_image_links()
+        .into_iter()
+        .take(MAX_CONTENT_IMAGES)
+    {
+        let node_id = NativeNodeId::from_parts(document.generation(), node_index);
+        if document.image_resource_for_node(node_id).is_some() {
+            continue;
+        }
+        match loader.load_image_async(document_url, &source).await {
+            Ok(Some(image)) => {
+                document.set_image_resource(node_index, source, image)?;
+                loaded_nodes.push(node_index);
+            }
+            Ok(None) | Err(_) => {}
+        }
+    }
+    Ok(loaded_nodes)
 }
 
 async fn load_page_script_sources(
@@ -5719,13 +5735,14 @@ fn mutate_hash_change(
     ))
 }
 
-fn mutate_script_document(
+async fn mutate_script_document(
     current: &NativeDocument,
     runtime: &NativeJavaScriptRuntime,
     document_url: &str,
     document_origin: &NativeOrigin,
     viewport: Viewport,
     commands: &[NativeScriptCommand],
+    loader: Option<&mut NativeResourceLoader>,
 ) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
     let mut document_url = document_url.to_owned();
     let mut history = Vec::new();
@@ -5754,6 +5771,30 @@ fn mutate_script_document(
             &mut history,
         )?;
         events.extend(next.apply_script_commands(&evaluation.commands)?);
+    }
+    let loaded_image_nodes = if let Some(loader) = loader {
+        load_external_images(&mut next, loader, &document_url).await?
+    } else {
+        Vec::new()
+    };
+    for node_index in loaded_image_nodes {
+        let Some(source) = host_event_script(&[(node_index, NativeEventKind::Load)])? else {
+            continue;
+        };
+        let evaluation =
+            runtime.evaluate(&source, &next, &document_url, document_origin, viewport)?;
+        apply_content_event_history(
+            &evaluation.commands,
+            &mut document_url,
+            document_origin,
+            runtime,
+            &mut history,
+        )?;
+        events.extend(next.apply_script_commands(&evaluation.commands)?);
+        events.push((
+            NativeNodeId::from_parts(next.generation(), node_index),
+            NativeEventKind::Load,
+        ));
     }
     let mut navigation = script_navigation_target(&next, &document_url, commands)?;
     if let Some(ScriptNavigationTarget::Form {
@@ -6035,7 +6076,9 @@ async fn resolve_script_fetches(
         document_origin,
         viewport,
         &evaluation.commands,
-    )?;
+        Some(loader),
+    )
+    .await?;
     if !mutation.history.is_empty() {
         current_url =
             resolve_content_history_document_url(&mutation.history, &current_url, document_origin)?;
@@ -6104,7 +6147,9 @@ async fn resolve_script_fetches(
             document_origin,
             viewport,
             &resolved.commands,
-        )?;
+            Some(loader),
+        )
+        .await?;
         next = resolved_next;
         mutation.events.extend(resolved_mutation.events);
         mutation.history.extend(resolved_history);

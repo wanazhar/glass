@@ -302,6 +302,28 @@ async fn native_local_document_fragments_preserve_tree_ownership_and_helpers() {
             .unwrap(),
         serde_json::json!(["attribute-id", "", "attribute-id", null, true, "Title", "field", false, false, false, false, false, "button"])
     );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const target = document.createElement('article'); document.body.appendChild(target); const log = []; const observer = new MutationObserver(records => log.push(records.map(record => ({ type: record.type, added: record.addedNodes.map(node => node.localName || node.nodeName), removed: record.removedNodes.map(node => node.localName || node.nodeName) })))); observer.observe(target, { childList: true }); target.innerHTML = '<div id=inner><span>Hi &amp; there</span></div>tail'; globalThis.elementInnerHtmlMutationLog = log; return [target.innerHTML, target.textContent, target.querySelector('#inner') !== null, target.querySelector('span').textContent, document.getElementById('inner') !== null, target.childNodes.length]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["<div id=\"inner\"><span>Hi &amp; there</span></div>tail", "Hi & theretail", true, "Hi & there", true, 2])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.elementInnerHtmlMutationLog")
+            .await
+            .unwrap(),
+        serde_json::json!([[
+            {
+                "type": "childList",
+                "added": ["div", "#text"],
+                "removed": [],
+            }
+        ]])
+    );
     let parsed = engine
         .evaluate_async(
             "(() => { const fragment = document.createDocumentFragment(); fragment.innerHTML = \"<article data-kind='card'><strong>Hi &amp; there</strong> tail</article><br>\"; const article = fragment.firstElementChild; const strong = fragment.querySelector('strong'); const before = [fragment.innerHTML, fragment.childNodes.length, article.localName, strong.textContent, article.parentNode === fragment, article.parentElement === null]; const mount = document.createElement('main'); mount.appendChild(fragment); document.body.appendChild(mount); return { before, after: [fragment.innerHTML, mount.innerHTML, mount.querySelector('strong') === strong, article.parentNode === mount, article.getAttribute('data-kind')] }; })()",
@@ -1136,6 +1158,30 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
             .unwrap()
             .value,
         serde_json::json!(["frame-attribute-id", "", "frame-attribute-id", null, true, "Frame title", "frame-field", false, false, false, false, false, "button"])
+    );
+    assert_eq!(
+        session
+            .script(
+                "(() => { const child = document.getElementById('child').contentDocument; const target = child.createElement('article'); child.body.appendChild(target); const log = []; const observer = new MutationObserver(records => log.push(records.map(record => ({ type: record.type, added: record.addedNodes.map(node => node.localName || node.nodeName), removed: record.removedNodes.map(node => node.localName || node.nodeName) })))); observer.observe(target, { childList: true }); target.innerHTML = '<div id=inner><span>Hi &amp; there</span></div>tail'; globalThis.frameElementInnerHtmlMutationLog = log; return [target.innerHTML, target.textContent, target.querySelector('#inner') !== null, target.querySelector('span').textContent, child.getElementById('inner') !== null, target.childNodes.length]; })()",
+            )
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!(["<div id=\"inner\"><span>Hi &amp; there</span></div>tail", "Hi & theretail", true, "Hi & there", true, 2])
+    );
+    assert_eq!(
+        session
+            .script("globalThis.frameElementInnerHtmlMutationLog")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([[
+            {
+                "type": "childList",
+                "added": ["div", "#text"],
+                "removed": [],
+            }
+        ]])
     );
     let child_id = session
         .native_list_frames()
@@ -6019,6 +6065,28 @@ async fn native_content_process_document_fragments_cross_the_http_boundary() {
             .await
             .unwrap(),
         serde_json::json!(["http-attribute-id", "", "http-attribute-id", null, true, "HTTP title", "http-field", false, false, "button"])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const target = document.createElement('article'); document.body.appendChild(target); const log = []; const observer = new MutationObserver(records => log.push(records.map(record => ({ type: record.type, added: record.addedNodes.map(node => node.localName || node.nodeName), removed: record.removedNodes.map(node => node.localName || node.nodeName) })))); observer.observe(target, { childList: true }); target.innerHTML = '<div id=inner><span>Hi &amp; there</span></div>tail'; globalThis.httpElementInnerHtmlMutationLog = log; return [target.innerHTML, target.textContent, target.querySelector('#inner') !== null, target.querySelector('span').textContent, document.getElementById('inner') !== null, target.childNodes.length]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["<div id=\"inner\"><span>Hi &amp; there</span></div>tail", "Hi & theretail", true, "Hi & there", true, 2])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.httpElementInnerHtmlMutationLog")
+            .await
+            .unwrap(),
+        serde_json::json!([[
+            {
+                "type": "childList",
+                "added": ["div", "#text"],
+                "removed": [],
+            }
+        ]])
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

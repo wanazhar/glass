@@ -5117,10 +5117,12 @@ fn document_bootstrap(
     }}
   }};
   const commands = [];
+  let suppressHostCommands = 0;
   const activeCommands = () => Array.isArray(globalThis.__glassHostCommandBuffer)
     ? globalThis.__glassHostCommandBuffer
     : commands;
   const pushCommand = (command) => {{
+    if (suppressHostCommands > 0) return;
     const target = activeCommands();
     if (target.length >= {max_commands}) throw new RangeError("native host command limit exceeded");
     target.push(command);
@@ -8218,11 +8220,16 @@ fn document_bootstrap(
     if (kind === "setInnerHtml") {{
       if (!target) return;
       const oldChildren = mutationShadowChildren.get(nodeIndex) || [];
+      const addedNodes = Array.isArray(target.__glassChildren) ? target.__glassChildren.slice() : [];
+      const addedIndexes = addedNodes
+        .map((node) => Number(node && node.nodeIndex))
+        .filter((index) => Number.isFinite(index));
       const removedNodes = mutationIndexList(oldChildren);
-      mutationShadowChildren.set(nodeIndex, []);
       for (const childIndex of oldChildren) mutationShadowParents.delete(Number(childIndex));
-      if (oldChildren.length > 0 || String(command.value).length > 0) {{
-        queueMutation({{ type: "childList", target, addedNodes: [], removedNodes }});
+      mutationShadowChildren.set(nodeIndex, addedIndexes);
+      for (const childIndex of addedIndexes) mutationShadowParents.set(childIndex, nodeIndex);
+      if (oldChildren.length > 0 || addedNodes.length > 0 || String(command.value).length > 0) {{
+        queueMutation({{ type: "childList", target, addedNodes, removedNodes }});
       }}
       return;
     }}
@@ -8939,15 +8946,23 @@ fn document_bootstrap(
       configurable: false,
       get() {{ return innerHtml; }},
       set(next) {{
+        const value = String(next);
+        if (value.length > storageValueLimit) throw new RangeError("native element innerHTML exceeds its limit");
         for (const child of element.__glassChildren) {{
           child.__glassParent = null;
           child.parentIndex = null;
         }}
         element.__glassChildren = [];
-        innerHtml = String(next);
-        textContent = textFromHtml(innerHtml);
-        element.__glassSyncContent();
-        pushCommand({{ kind: "setInnerHtml", node_index: entry.nodeIndex, value: innerHtml }});
+        innerHtml = "";
+        textContent = "";
+        suppressHostCommands += 1;
+        try {{
+          populateDetachedFragment(element, value, makeDetachedElement, makeDetachedText);
+        }} finally {{
+          suppressHostCommands -= 1;
+        }}
+        element.__glassSyncContent(true);
+        pushCommand({{ kind: "setInnerHtml", node_index: entry.nodeIndex, value }});
       }},
     }});
     value = element.value;
@@ -11322,11 +11337,16 @@ fn document_bootstrap(
     if (kind === "setInnerHtml") {{
       if (!target) return;
       const oldChildren = frameMutationChildren.get(key) || [];
+      const addedNodes = Array.isArray(target.__glassChildren) ? target.__glassChildren.slice() : [];
+      const addedIndexes = addedNodes
+        .map((node) => Number(node && node.nodeIndex))
+        .filter((index) => Number.isFinite(index));
       const removedNodes = oldChildren.map((index) => frameMutationNode(binding, index)).filter(Boolean);
-      frameMutationChildren.set(key, []);
       for (const childIndex of oldChildren) frameMutationParents.delete(frameMutationKey(binding, childIndex));
-      if (oldChildren.length > 0 || String(command.value).length > 0) {{
-        queueMutation({{ type: "childList", target, addedNodes: [], removedNodes }});
+      frameMutationChildren.set(key, addedIndexes);
+      for (const childIndex of addedIndexes) frameMutationParents.set(frameMutationKey(binding, childIndex), nodeIndex);
+      if (oldChildren.length > 0 || addedNodes.length > 0 || String(command.value).length > 0) {{
+        queueMutation({{ type: "childList", target, addedNodes, removedNodes }});
       }}
       return;
     }}
@@ -11395,6 +11415,7 @@ fn document_bootstrap(
   ].includes(String(command.kind));
   const queueFrameCommand = (binding, command) => {{
     if (!binding || binding.sameOrigin !== true) throw crossOriginSecurityError("document");
+    if (suppressHostCommands > 0) return;
     if (typeof globalThis.__glassRecordFrameMutation === "function") {{
       globalThis.__glassRecordFrameMutation(binding, command);
     }}
@@ -11817,16 +11838,24 @@ fn document_bootstrap(
         configurable: false,
         get() {{ return innerHtml; }},
         set(next) {{
+          const value = String(next);
+          if (value.length > storageValueLimit) throw new RangeError("native frame element innerHTML exceeds its limit");
           for (const child of projected.__glassChildren) {{
             child.__glassParent = null;
             child.parentIndex = null;
-            child.__glassAttached = false;
+            detachFrameSubtree(child);
           }}
           projected.__glassChildren = [];
-          innerHtml = String(next);
-          textContent = textFromHtml(innerHtml);
-          projected.__glassSyncContent();
-          queueFrameCommand(currentBinding, {{ kind: "setInnerHtml", node_index: entry.nodeIndex, value: innerHtml }});
+          innerHtml = "";
+          textContent = "";
+          suppressHostCommands += 1;
+          try {{
+            populateDetachedFragment(projected, value, makeFrameDetachedElement, makeFrameDetachedText);
+          }} finally {{
+            suppressHostCommands -= 1;
+          }}
+          projected.__glassSyncContent(true);
+          queueFrameCommand(currentBinding, {{ kind: "setInnerHtml", node_index: entry.nodeIndex, value }});
         }},
       }});
       Object.defineProperty(projected, "value", {{
@@ -12229,12 +12258,20 @@ fn document_bootstrap(
         configurable: false,
         get() {{ return innerHtml; }},
         set(next) {{
+          const value = String(next);
+          if (value.length > storageValueLimit) throw new RangeError("native frame element innerHTML exceeds its limit");
           for (const child of projected.__glassChildren) {{ child.__glassParent = null; child.parentIndex = null; detachFrameSubtree(child); }}
           projected.__glassChildren = [];
-          innerHtml = String(next);
-          textContent = textFromHtml(innerHtml);
-          projected.__glassSyncContent();
-          queueFrameCommand(currentBinding, {{ kind: "setInnerHtml", node_index: nodeIndex, value: innerHtml }});
+          innerHtml = "";
+          textContent = "";
+          suppressHostCommands += 1;
+          try {{
+            populateDetachedFragment(projected, value, makeFrameDetachedElement, makeFrameDetachedText);
+          }} finally {{
+            suppressHostCommands -= 1;
+          }}
+          projected.__glassSyncContent(true);
+          queueFrameCommand(currentBinding, {{ kind: "setInnerHtml", node_index: nodeIndex, value }});
         }},
       }});
       Object.defineProperty(projected, "value", {{ enumerable: true, configurable: false, get() {{ return value; }}, set(next) {{ value = String(next); queueFrameCommand(currentBinding, {{ kind: "setValue", node_index: nodeIndex, value }}); }} }});

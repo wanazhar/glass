@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-161`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-162`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
@@ -3198,7 +3198,18 @@ The completed native-engine-browser-161 slice makes bounded `textContent` and
 detached from selectors, semantic projections, layout, visible-text evidence,
 and embedded-frame discovery while unaffected arena identities remain stable;
 the same command crosses local, content-worker, and same-origin frame owners.
-Dynamic element creation, `innerHTML`, live child-node collections,
+Dynamic element creation, live child-node collections, cross-realm
+event-listener identity, complete frame lifecycle/load ordering, and complete
+browser parity remain issue #40 gates.
+
+The completed native-engine-browser-162 slice adds bounded structural DOM
+mutation. `innerHTML` parses a replacement fragment through the existing
+tokenizer, commits new attached nodes, and exposes a canonical bounded markup
+serialization; `remove()` and `removeChild()` use the same typed subtree
+detachment path. Local, content-worker, and same-origin frame command routes
+are covered, including removal from selectors and frame discovery. The
+fragment parser is intentionally bounded and does not execute scripts inserted
+through `innerHTML`; dynamic element creation, live child-node collections,
 cross-realm event-listener identity, complete frame lifecycle/load ordering,
 and complete browser parity remain issue #40 gates.
 

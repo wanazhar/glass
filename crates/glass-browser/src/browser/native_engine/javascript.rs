@@ -198,6 +198,13 @@ pub(crate) enum NativeScriptCommand {
         node_index: u32,
         value: String,
     },
+    SetInnerHtml {
+        node_index: u32,
+        value: String,
+    },
+    RemoveNode {
+        node_index: u32,
+    },
     SetCustomValidity {
         node_index: u32,
         message: String,
@@ -7512,9 +7519,23 @@ fn document_bootstrap(
     if (validity.patternMismatch) return "Please match the requested format.";
     return "";
   }};
+  const escapeHtmlText = (value) => String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  const textFromHtml = (value) => String(value)
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/<[^>]*>/g, "")
+    .replace(/&nbsp;/gi, "\u00a0")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, "\"")
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/gi, "&");
   const makeElement = (initialEntry) => {{
     let entry = initialEntry;
     let textContent = String(entry.text || "");
+    let innerHtml = String(entry.innerHtml || "");
     let value = entry.value === null
       ? (entry.tagName.toLowerCase() === "option"
         ? (entry.attributes.value === undefined ? entry.text : entry.attributes.value)
@@ -7668,6 +7689,18 @@ fn document_bootstrap(
         if (key === "disabled") this.disabled = false;
         if (key === "hidden") this.hidden = false;
         pushCommand({{ kind: "removeAttribute", node_index: entry.nodeIndex, name: key }});
+      }},
+      remove() {{
+        if (element.parentIndex === null) return;
+        element.parentIndex = null;
+        pushCommand({{ kind: "removeNode", node_index: entry.nodeIndex }});
+      }},
+      removeChild(child) {{
+        if (!child || Number(child.parentIndex) !== Number(entry.nodeIndex)) {{
+          throw new TypeError("child is not contained by this element");
+        }}
+        child.remove();
+        return child;
       }}
     }};
     for (const property of ["textContent", "innerText"]) {{
@@ -7677,10 +7710,21 @@ fn document_bootstrap(
         get() {{ return textContent; }},
         set(next) {{
           textContent = String(next);
+          innerHtml = escapeHtmlText(textContent);
           pushCommand({{ kind: "setTextContent", node_index: entry.nodeIndex, value: textContent }});
         }},
       }});
     }}
+    Object.defineProperty(element, "innerHTML", {{
+      enumerable: true,
+      configurable: false,
+      get() {{ return innerHtml; }},
+      set(next) {{
+        innerHtml = String(next);
+        textContent = textFromHtml(innerHtml);
+        pushCommand({{ kind: "setInnerHtml", node_index: entry.nodeIndex, value: innerHtml }});
+      }},
+    }});
     value = element.value;
     Object.defineProperty(element, "value", {{
       enumerable: true,
@@ -7755,6 +7799,7 @@ fn document_bootstrap(
         element.id = nextEntry.attributes.id || "";
         element.className = nextEntry.attributes.class || "";
         textContent = String(nextEntry.text || "");
+        innerHtml = String(nextEntry.innerHtml || "");
         element.disabled = nextEntry.disabled;
         element.hidden = nextEntry.hidden;
         element.focused = nextEntry.focused;
@@ -7803,6 +7848,8 @@ fn document_bootstrap(
       case "setAttribute": element.setAttribute(command.name, command.value); break;
       case "removeAttribute": element.removeAttribute(command.name); break;
       case "setTextContent": element.textContent = String(command.value); break;
+      case "setInnerHtml": element.innerHTML = String(command.value); break;
+      case "removeNode": element.remove(); break;
       case "setCustomValidity": element.setCustomValidity(command.message); break;
       case "checkValidity": element.checkValidity(); break;
       case "reportValidity": element.reportValidity(); break;
@@ -8510,6 +8557,7 @@ fn document_bootstrap(
     const frameElements = (Array.isArray(snapshot.elements) ? snapshot.elements : []).map((entry) => {{
       const attributes = entry.attributes && typeof entry.attributes === "object" ? entry.attributes : {{}};
       let textContent = String(entry.text || "");
+      let innerHtml = String(entry.innerHtml || "");
       let value = entry.value == null ? "" : entry.value;
       let checked = Boolean(entry.checked);
       let selected = Boolean(entry.selected);
@@ -8565,18 +8613,41 @@ fn document_bootstrap(
           if (key === "hidden") this.hidden = false;
           queueFrameCommand(currentBinding, {{ kind: "removeAttribute", node_index: entry.nodeIndex, name: key }});
         }},
+        remove() {{
+          if (projected.parentIndex === null) return;
+          projected.parentIndex = null;
+          queueFrameCommand(currentBinding, {{ kind: "removeNode", node_index: entry.nodeIndex }});
+        }},
+        removeChild(child) {{
+          if (!child || Number(child.parentIndex) !== Number(entry.nodeIndex)) {{
+            throw new TypeError("child is not contained by this element");
+          }}
+          child.remove();
+          return child;
+        }},
       }};
       for (const property of ["textContent", "innerText"]) {{
         Object.defineProperty(projected, property, {{
           enumerable: true,
           configurable: false,
-          get() {{ return textContent; }},
-          set(next) {{
-            textContent = String(next);
-            queueFrameCommand(currentBinding, {{ kind: "setTextContent", node_index: entry.nodeIndex, value: textContent }});
-          }},
-        }});
-      }}
+            get() {{ return textContent; }},
+            set(next) {{
+              textContent = String(next);
+              innerHtml = escapeHtmlText(textContent);
+              queueFrameCommand(currentBinding, {{ kind: "setTextContent", node_index: entry.nodeIndex, value: textContent }});
+            }},
+          }});
+        }}
+      Object.defineProperty(projected, "innerHTML", {{
+        enumerable: true,
+        configurable: false,
+        get() {{ return innerHtml; }},
+        set(next) {{
+          innerHtml = String(next);
+          textContent = textFromHtml(innerHtml);
+          queueFrameCommand(currentBinding, {{ kind: "setInnerHtml", node_index: entry.nodeIndex, value: innerHtml }});
+        }},
+      }});
       Object.defineProperty(projected, "value", {{
         enumerable: true,
         configurable: false,

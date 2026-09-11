@@ -763,6 +763,32 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
     assert_eq!(
         session
             .script(
+                "(() => { const frame = document.getElementById('child'); const child = frame.contentDocument; const inside = child.getElementById('inside'); const calls = []; const topCalls = []; const onInside = event => calls.push(['inside', event.target === inside, event.currentTarget === inside, event.eventPhase]); const onBodyCapture = event => calls.push(['body-capture', event.currentTarget === child.body, event.eventPhase]); const onBody = event => calls.push(['body', event.currentTarget === child.body, event.eventPhase]); const onDocument = event => calls.push(['document', event.currentTarget === child, event.eventPhase]); const onWindow = event => calls.push(['window', event.currentTarget === child.defaultView, event.eventPhase]); inside.addEventListener('probe', onInside); child.body.addEventListener('probe', onBodyCapture, true); child.body.addEventListener('probe', onBody); child.addEventListener('probe', onDocument); child.defaultView.addEventListener('probe', onWindow); document.addEventListener('probe', () => topCalls.push('document')); window.addEventListener('probe', () => topCalls.push('window')); const accepted = inside.dispatchEvent(new Event('probe', { bubbles: true, cancelable: true })); inside.removeEventListener('probe', onInside); const second = inside.dispatchEvent(new Event('probe', { bubbles: true, cancelable: true })); return { accepted, second, calls, topCalls, owners: [inside.ownerDocument === child, child.defaultView === child.defaultView, typeof child.addEventListener === 'function', typeof child.defaultView.dispatchEvent === 'function'] }; })()",
+            )
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!({
+            "accepted": true,
+            "second": true,
+            "calls": [
+                ["body-capture", true, 1],
+                ["inside", true, true, 2],
+                ["body", true, 3],
+                ["document", true, 3],
+                ["window", true, 3],
+                ["body-capture", true, 1],
+                ["body", true, 3],
+                ["document", true, 3],
+                ["window", true, 3],
+            ],
+            "topCalls": [],
+            "owners": [true, true, true, true],
+        })
+    );
+    assert_eq!(
+        session
+            .script(
                 "(() => { const child = document.getElementById('child').contentDocument; const inside = child.getElementById('inside'); inside.setAttribute('data-message', 'parent-write'); inside.innerHTML = '<em id=\"new-child\">updated &amp; literal</em>'; child.getElementById('field').value = 'written-by-parent'; return [inside.getAttribute('data-message'), inside.innerHTML, inside.textContent, inside.innerText, child.getElementById('field').value]; })()",
             )
             .await

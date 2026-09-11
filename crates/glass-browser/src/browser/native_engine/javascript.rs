@@ -8711,6 +8711,7 @@ fn document_bootstrap(
           : value;
       }},
     }});
+    defineTreeAccessors(attribute);
     const constructor = globalThis.Attr;
     if (typeof constructor === "function" && constructor.prototype) {{
       try {{ Object.setPrototypeOf(attribute, constructor.prototype); }} catch (_error) {{}}
@@ -10403,7 +10404,7 @@ fn document_bootstrap(
         && node.__glassChildren && node.__glassChildren.includes(candidate));
       }},
     }});
-    if ([1, 3, 8, 10, 11].includes(Number(node.nodeType))) {{
+    if ([1, 2, 3, 8, 10, 11].includes(Number(node.nodeType))) {{
       if (node.nodeType === 1 || node.nodeType === 11) {{
         defineMissing(node, "querySelector", {{
           enumerable: false,
@@ -10563,6 +10564,11 @@ fn document_bootstrap(
         }};
         if (node.nodeType === 3) return owner.createTextNode(String(node.nodeValue || ""));
         if (node.nodeType === 8) return owner.createComment(String(node.nodeValue || ""));
+        if (node.nodeType === 2) {{
+          const clone = owner.createAttribute(node.name);
+          clone.value = String(node.value || "");
+          return clone;
+        }}
         if (node.nodeType === 10) return owner.implementation.createDocumentType(node.name, node.publicId, node.systemId);
         if (node.nodeType === 1) {{
           const clone = owner.createElement(node.localName);
@@ -10590,6 +10596,8 @@ fn document_bootstrap(
       if (left === right) return true;
       if (!right || Number(left.nodeType) !== Number(right.nodeType) || depth > {max_commands}) return false;
       if ([3, 8].includes(Number(left.nodeType))) return String(left.nodeValue || "") === String(right.nodeValue || "");
+      if (Number(left.nodeType) === 2) return String(left.name || "") === String(right.name || "")
+        && String(left.value || "") === String(right.value || "");
       if (Number(left.nodeType) === 1) {{
         if (String(left.localName) !== String(right.localName)) return false;
         const leftNames = left.getAttributeNames();

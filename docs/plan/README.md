@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-199` locally. The versioned
+`native-engine-browser-200` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1717,6 +1717,16 @@ identity. The contract intentionally leaves paths, lines, gradients, strokes,
 transforms, viewBox mapping, text, external resources, and complete SVG
 namespaces for later work. Exact evidence is recorded in
 [native-engine-browser-199](tasks/native-engine-browser-199.md).
+
+The completed native-engine-browser-200 slice preserves namespace identity
+through the native DOM owner, content-worker wire, JavaScript snapshots,
+mutation commands, and same-origin frame projections. Parsed SVG subtrees,
+MathML subtrees, `foreignObject` HTML descendants, script-created
+`createElementNS()` nodes, and namespace-aware fragment parsing now share the
+same contract. Unsupported namespace URIs report `NamespaceError`; qualified
+namespace attributes, XML documents, and complete namespace-specific Web IDL
+remain separate issue #40 work. Exact evidence is recorded in
+[native-engine-browser-200](tasks/native-engine-browser-200.md).
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` now returns persistent `Attr`

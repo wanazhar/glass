@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-158` slice; the bounded foundation below remains
+`native-engine-browser-159` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -1587,6 +1587,19 @@ a parent-owned snapshot boundary; frame-target routes use frame IDs while
 popup and target-owner effects retain target-context identity. Cross-origin
 Window Web IDL, full frame lifecycle/load ordering, live cross-realm identity,
 and complete browser parity remain issue #40 gates.
+
+The completed native-engine-browser-159 slice closes a cross-origin frame
+security defect in that projection. WindowProxy state is now caller-relative:
+cross-origin `document`, history/storage/IndexedDB and other bounded sensitive
+Window properties raise a typed `DOMException` named `SecurityError` (legacy
+code 18), while `contentDocument` and `frameElement` do not disclose the child
+document or embedding node. A selected cross-origin child likewise observes a
+null `window.frameElement`; same-origin frame identity and the safe URL,
+location, name, close, message, and topology surface remain intact. Cached
+proxy origin state is refreshed after navigation so a target crossing origins
+cannot retain the old access level. Complete Window Web IDL descriptors, live
+cross-realm identity, full frame lifecycle/load ordering, and complete browser
+parity remain issue #40 gates.
 
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third

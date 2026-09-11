@@ -845,6 +845,95 @@ async fn native_nested_frame_script_projection_preserves_window_chain() {
 }
 
 #[tokio::test]
+async fn native_cross_origin_frame_windows_enforce_security_boundary() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let child_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let child_address = child_listener.local_addr().unwrap();
+    let child_server = tokio::spawn(async move {
+        let (mut stream, _) = child_listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/child"));
+        let body = "<html><body><p>cross-origin child</p></body></html>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let parent_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let parent_address = parent_listener.local_addr().unwrap();
+    let parent_server = tokio::spawn(async move {
+        let (mut stream, _) = parent_listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/parent"));
+        let body = format!(
+            "<html><body><iframe id='child' src='http://{child_address}/child'></iframe><p>parent</p></body></html>"
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{parent_address}/parent")),
+    )
+    .await
+    .unwrap();
+    let frames = session.native_list_frames().await.unwrap();
+    assert_eq!(frames.len(), 2);
+    let child_id = frames
+        .iter()
+        .find(|frame| frame.parent_id.as_deref() == Some("native-context:main"))
+        .unwrap()
+        .id
+        .clone();
+
+    let parent_view = session
+        .script(
+            "(() => { const childWindow = document.getElementById('child').contentWindow; let documentError; let historyError; try { childWindow.document; } catch (error) { documentError = [error instanceof DOMException, error.name, error.code]; } try { childWindow.history; } catch (error) { historyError = [error instanceof DOMException, error.name, error.code]; } return { contentDocument: document.getElementById('child').contentDocument, frameElement: childWindow.frameElement, documentError, historyError, length: childWindow.length, parent: childWindow.parent === window, location: childWindow.location.href }; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        parent_view.value,
+        serde_json::json!({
+            "contentDocument": null,
+            "frameElement": null,
+            "documentError": [true, "SecurityError", 18],
+            "historyError": [true, "SecurityError", 18],
+            "length": 0,
+            "parent": true,
+            "location": format!("http://{child_address}/child"),
+        })
+    );
+
+    session.native_select_frame(&child_id).await.unwrap();
+    let child_view = session
+        .script(
+            "(() => { let parentDocumentError; let parentHistoryError; try { window.parent.document; } catch (error) { parentDocumentError = [error instanceof DOMException, error.name, error.code]; } try { window.parent.history; } catch (error) { parentHistoryError = [error instanceof DOMException, error.name, error.code]; } return { frameElement: window.frameElement, parentDocumentError, parentHistoryError, parentLocation: window.parent.location.href, top: window.top === window.parent }; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        child_view.value,
+        serde_json::json!({
+            "frameElement": null,
+            "parentDocumentError": [true, "SecurityError", 18],
+            "parentHistoryError": [true, "SecurityError", 18],
+            "parentLocation": format!("http://{parent_address}/parent"),
+            "top": true,
+        })
+    );
+
+    session.close().await.unwrap();
+    parent_server.await.unwrap();
+    child_server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_runtime_opener_links_create_routable_popup_targets() {
     let config = NativeEngineConfig::default()
         .with_fixture(

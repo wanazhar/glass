@@ -15,14 +15,15 @@ use super::javascript::{
     MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_DIALOGS, MAX_NATIVE_INDEXED_DB_CHANGES,
     MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_SCRIPT_BYTES, MAX_NATIVE_XHR_TIMEOUT_MS,
     NativeCookieProfileEntry, NativeDialog, NativeFrameScriptBinding, NativeFrameScriptContext,
-    NativeFrameScriptWindow, NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime,
-    NativePageScript, NativePopupRequest, NativePostMessageRequest, NativeScriptCommand,
-    NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState, NativeWindowCloseRequest,
-    NativeWindowNavigationRequest, NativeWindowProxyUpdate, diff_indexed_db_changes,
-    execute_page_scripts, host_event_script, host_hash_change_event_script, host_key_event_script,
-    host_key_event_script_with_modifiers, host_submit_event_script,
-    literal_dynamic_module_specifiers, load_indexed_db_profile, load_web_storage_profile,
-    order_page_scripts, save_web_storage_profile, static_module_specifiers, storage_key,
+    NativeFrameScriptRequest, NativeFrameScriptWindow, NativeIndexedDbChange, NativeIndexedDbState,
+    NativeJavaScriptRuntime, NativePageScript, NativePopupRequest, NativePostMessageRequest,
+    NativeScriptCommand, NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState,
+    NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
+    diff_indexed_db_changes, execute_page_scripts, host_event_script,
+    host_hash_change_event_script, host_key_event_script, host_key_event_script_with_modifiers,
+    host_submit_event_script, literal_dynamic_module_specifiers, load_indexed_db_profile,
+    load_web_storage_profile, order_page_scripts, save_web_storage_profile,
+    static_module_specifiers, storage_key,
 };
 use super::origin::NativeOrigin;
 use super::resource_loader::{
@@ -104,6 +105,7 @@ pub(crate) struct NativeContentMutation {
 pub(crate) struct NativeContentScriptResult {
     pub(crate) value: Value,
     pub(crate) mutation: Option<NativeContentMutation>,
+    pub(crate) frame_scripts: Vec<NativeFrameScriptRequest>,
     pub(crate) storage_events: Vec<NativeStorageEvent>,
     pub(crate) indexed_db_changes: Vec<NativeIndexedDbChange>,
     pub(crate) dialogs: Vec<NativeDialog>,
@@ -1797,6 +1799,7 @@ fn decode_script_response(
     let window_closes = decode_window_close_requests(&response, "decode content process script")?;
     let window_navigations =
         decode_window_navigation_requests(&response, "decode content process script")?;
+    let frame_scripts = decode_frame_script_requests(&response, "decode content process script")?;
     let window_name = decode_window_name(&response, "decode content process script")?;
     Ok(NativeContentScriptResult {
         value,
@@ -1806,6 +1809,7 @@ fn decode_script_response(
             storage_events
         },
         mutation,
+        frame_scripts,
         indexed_db_changes,
         dialogs: if has_mutation { Vec::new() } else { dialogs },
         popups: if has_mutation {
@@ -1830,6 +1834,60 @@ fn decode_script_response(
         },
         window_name,
     })
+}
+
+fn decode_frame_script_requests(
+    response: &Value,
+    operation: &str,
+) -> Result<Vec<NativeFrameScriptRequest>, NativeEngineError> {
+    let Some(value) = response.get("frame_scripts") else {
+        return Ok(Vec::new());
+    };
+    let values = value.as_array().ok_or_else(|| NativeEngineError::Worker {
+        operation: operation.into(),
+        reason: "content process returned invalid frame script requests".into(),
+    })?;
+    if values.len() > MAX_NATIVE_EFFECTS {
+        return Err(NativeEngineError::limit(
+            "content-process frame script requests",
+            MAX_NATIVE_EFFECTS,
+            values.len(),
+        ));
+    }
+    let requests =
+        serde_json::from_value::<Vec<NativeFrameScriptRequest>>(value.clone()).map_err(|_| {
+            NativeEngineError::Worker {
+                operation: operation.into(),
+                reason: "content process returned malformed frame script requests".into(),
+            }
+        })?;
+    for request in &requests {
+        validate_context_id(&request.frame_id)?;
+        validate_context_id(&request.source_frame_id)?;
+        if matches!(
+            request.command.as_ref(),
+            NativeScriptCommand::FrameScript { .. }
+        ) {
+            return Err(NativeEngineError::Worker {
+                operation: operation.into(),
+                reason: "content process returned a nested frame script request".into(),
+            });
+        }
+        let encoded = serde_json::to_vec(request.command.as_ref()).map_err(|_| {
+            NativeEngineError::Worker {
+                operation: operation.into(),
+                reason: "content process returned an unserializable frame script command".into(),
+            }
+        })?;
+        if encoded.len() > super::javascript::MAX_NATIVE_SCRIPT_RESULT_BYTES {
+            return Err(NativeEngineError::limit(
+                "content-process frame script command",
+                super::javascript::MAX_NATIVE_SCRIPT_RESULT_BYTES,
+                encoded.len(),
+            ));
+        }
+    }
+    Ok(requests)
 }
 
 fn decode_window_name(response: &Value, _operation: &str) -> Result<String, NativeEngineError> {
@@ -2660,7 +2718,13 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 );
                 match runtime.evaluate(source, current, document_url, document_origin, viewport) {
                     Ok(NativeScriptEvaluation { value, commands }) if commands.is_empty() => {
-                        json!({"kind":"evaluated","id":id,"value":value})
+                        let frame_scripts = runtime.take_frame_script_events();
+                        json!({
+                            "kind":"evaluated",
+                            "id":id,
+                            "value":value,
+                            "frame_scripts":frame_scripts,
+                        })
                     }
                     Ok(NativeScriptEvaluation { value, commands }) => {
                         let fetches = match fetch_commands(&commands) {
@@ -2707,10 +2771,12 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         match result {
                             Ok((next, mutation)) => {
                                 document = Some(next);
+                                let frame_scripts = runtime.take_frame_script_events();
                                 json!({
                                     "kind": "evaluated",
                                     "id": id,
                                     "value": value,
+                                    "frame_scripts": frame_scripts,
                                     "document_base64": base64::engine::general_purpose::STANDARD
                                         .encode(serde_json::to_vec(&mutation.document).unwrap_or_default()),
                                     "events": mutation.events.iter().map(|event| json!({

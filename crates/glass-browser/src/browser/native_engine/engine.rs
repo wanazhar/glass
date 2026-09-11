@@ -1,7 +1,8 @@
 use super::browsing_context::NativeBrowsingContext;
 use super::config::{
     NativeEngineConfig, decode_percent_encoded_fragment, decode_text_fragment_terms,
-    is_network_url, resolve_fixture_relative_url, validate_url_text, without_fragment,
+    is_network_url, resolve_fixture_relative_url, validate_context_id, validate_url_text,
+    without_fragment,
 };
 use super::content_process::{
     NativeContentLoad, NativeContentMutation, NativeContentNavigation, NativeContentProcess,
@@ -17,17 +18,17 @@ use super::interaction::{
     validate_native_edit_key, validate_native_key,
 };
 use super::javascript::{
-    MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_DIALOGS, NativeCookieProfileEntry, NativeDialog,
-    NativeFrameScriptBinding, NativeFrameScriptContext, NativeIndexedDbChange,
-    NativeIndexedDbState, NativeJavaScriptRuntime, NativePageNavigation, NativePopupRequest,
-    NativePostMessageRequest, NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState,
-    NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
-    append_storage_changes, apply_indexed_db_changes, diff_indexed_db_changes,
-    execute_inline_scripts, host_event_script, host_hash_change_event_script,
-    host_message_event_script, host_submit_event_script, load_indexed_db_profile,
-    load_web_storage_profile, new_storage_writer_id, read_storage_event_journal,
-    register_storage_reader, save_web_storage_profile, storage_event_cursor, storage_key,
-    unregister_storage_reader,
+    MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_DIALOGS, MAX_NATIVE_SCRIPT_BYTES,
+    NativeCookieProfileEntry, NativeDialog, NativeFrameScriptBinding, NativeFrameScriptContext,
+    NativeFrameScriptRequest, NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime,
+    NativePageNavigation, NativePopupRequest, NativePostMessageRequest, NativeScriptCommand,
+    NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState, NativeWindowCloseRequest,
+    NativeWindowNavigationRequest, NativeWindowProxyUpdate, append_storage_changes,
+    apply_indexed_db_changes, diff_indexed_db_changes, execute_inline_scripts, host_event_script,
+    host_hash_change_event_script, host_message_event_script, host_submit_event_script,
+    load_indexed_db_profile, load_web_storage_profile, new_storage_writer_id,
+    read_storage_event_journal, register_storage_reader, save_web_storage_profile,
+    storage_event_cursor, storage_key, unregister_storage_reader,
 };
 use super::layout::{NativeLayoutSnapshot, NativePoint, NativeRect};
 use super::lifecycle::NativeLifecycleState;
@@ -343,6 +344,7 @@ pub struct NativeEngine {
     pending_post_messages: VecDeque<NativePostMessageRequest>,
     pending_window_closes: VecDeque<NativeWindowCloseRequest>,
     pending_window_navigations: VecDeque<NativeWindowNavigationRequest>,
+    pending_frame_scripts: VecDeque<NativeFrameScriptRequest>,
     completed_download_ids: VecDeque<String>,
     completed_downloads: u64,
     next_download_id: u64,
@@ -418,6 +420,7 @@ impl NativeEngine {
             pending_post_messages: VecDeque::new(),
             pending_window_closes: VecDeque::new(),
             pending_window_navigations: VecDeque::new(),
+            pending_frame_scripts: VecDeque::new(),
             completed_download_ids: VecDeque::new(),
             completed_downloads: 0,
             next_download_id: 1,
@@ -1377,6 +1380,7 @@ impl NativeEngine {
                 post_messages,
                 window_closes,
                 window_navigations,
+                frame_scripts,
                 window_name,
             } = {
                 let process = self
@@ -1398,6 +1402,7 @@ impl NativeEngine {
                 result?
             };
             self.config.window_name = window_name;
+            self.queue_frame_script_requests(frame_scripts)?;
             if let Some(mutation) = mutation {
                 let navigation = mutation.navigation.clone();
                 self.apply_content_process_mutation(mutation)?;
@@ -1452,6 +1457,12 @@ impl NativeEngine {
             )?;
         self.drain_local_popups()?;
         let navigation = self.apply_local_script_commands(&evaluation.commands, true)?;
+        let frame_scripts = self
+            .javascript
+            .as_ref()
+            .expect("local JavaScript runtime initialized")
+            .take_frame_script_events();
+        self.queue_frame_script_requests(frame_scripts)?;
         self.drain_local_dialogs()?;
         self.persist_local_web_storage()?;
         if let Some(navigation) = navigation {
@@ -1966,6 +1977,34 @@ impl NativeEngine {
         Ok(())
     }
 
+    fn queue_frame_script_requests(
+        &mut self,
+        requests: Vec<NativeFrameScriptRequest>,
+    ) -> Result<(), NativeEngineError> {
+        for request in requests {
+            if self.pending_frame_scripts.len() >= MAX_NATIVE_EFFECTS {
+                return Err(NativeEngineError::limit(
+                    "native pending frame script requests",
+                    MAX_NATIVE_EFFECTS,
+                    self.pending_frame_scripts.len().saturating_add(1),
+                ));
+            }
+            validate_context_id(&request.frame_id)?;
+            validate_context_id(&request.source_frame_id)?;
+            if matches!(
+                request.command.as_ref(),
+                NativeScriptCommand::FrameScript { .. }
+            ) {
+                return Err(NativeEngineError::invalid(
+                    "native frame script command",
+                    "nested frame script commands are not allowed",
+                ));
+            }
+            self.pending_frame_scripts.push_back(request);
+        }
+        Ok(())
+    }
+
     pub(crate) fn take_pending_popups(&mut self) -> Vec<NativePopupRequest> {
         self.pending_popups.drain(..).collect()
     }
@@ -1980,6 +2019,22 @@ impl NativeEngine {
 
     pub(crate) fn take_pending_window_navigations(&mut self) -> Vec<NativeWindowNavigationRequest> {
         self.pending_window_navigations.drain(..).collect()
+    }
+
+    pub(crate) fn take_pending_frame_scripts(&mut self) -> Vec<NativeFrameScriptRequest> {
+        self.pending_frame_scripts.drain(..).collect()
+    }
+
+    /// Apply one already-authorized command emitted by a same-origin parent
+    /// realm to this frame's own document owner. The command enters through
+    /// the normal JavaScript host path so event listeners, navigation, and
+    /// child effects retain their ordinary ordering.
+    pub(crate) async fn apply_frame_script_command_async(
+        &mut self,
+        command: NativeScriptCommand,
+    ) -> Result<(), NativeEngineError> {
+        let source = frame_script_command_source(&command)?;
+        self.evaluate_async(source).await.map(|_| ())
     }
 
     pub(crate) async fn dispatch_post_message(
@@ -5052,6 +5107,42 @@ struct PreparedNavigation {
     frame_sources: Option<Vec<String>>,
     dialogs: Vec<NativeDialog>,
     execute_inline_scripts: bool,
+}
+
+fn frame_script_command_source(command: &NativeScriptCommand) -> Result<String, NativeEngineError> {
+    let supported = matches!(
+        command,
+        NativeScriptCommand::Focus { .. }
+            | NativeScriptCommand::Blur { .. }
+            | NativeScriptCommand::Click { .. }
+            | NativeScriptCommand::SetValue { .. }
+            | NativeScriptCommand::SetSelection { .. }
+            | NativeScriptCommand::SetChecked { .. }
+            | NativeScriptCommand::SetSelected { .. }
+            | NativeScriptCommand::SetAttribute { .. }
+            | NativeScriptCommand::RemoveAttribute { .. }
+            | NativeScriptCommand::SetCustomValidity { .. }
+            | NativeScriptCommand::CheckValidity { .. }
+            | NativeScriptCommand::ReportValidity { .. }
+    );
+    if !supported {
+        return Err(NativeEngineError::TargetNotActionable {
+            reason: "same-origin frame script command is not a DOM operation".into(),
+        });
+    }
+    let serialized = serde_json::to_string(command).map_err(|_| NativeEngineError::Worker {
+        operation: "serialize same-origin frame command".into(),
+        reason: "same-origin frame command could not be serialized".into(),
+    })?;
+    let source = format!("globalThis.__glassApplyNativeCommand({serialized}); true");
+    if source.len() > MAX_NATIVE_SCRIPT_BYTES {
+        return Err(NativeEngineError::limit(
+            "same-origin frame command source",
+            MAX_NATIVE_SCRIPT_BYTES,
+            source.len(),
+        ));
+    }
+    Ok(source)
 }
 
 fn native_download_filename(download_attribute: &str, url: &str) -> String {

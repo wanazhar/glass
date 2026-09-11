@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-159` locally. The versioned
+`native-engine-browser-160` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1506,6 +1506,16 @@ frame projections retain their existing identity and navigation behavior, while
 cached WindowProxy origin state is refreshed after target navigation. Complete
 Window Web IDL, live cross-realm identity, full frame lifecycle/load ordering,
 and native browser-complete promotion remain issue #40 gates.
+
+The completed native-engine-browser-160 slice is
+[native-engine-browser-160](tasks/native-engine-browser-160.md). Same-origin
+`contentDocument` projections now route bounded element focus, click, value,
+selection, checked/selected state, validity, and attribute mutations to the
+child frame's real native document owner; parent and selected-child writes are
+covered through the HTTP frame harness. Routing validates source/target
+origins and preserves the existing process boundary. Structural DOM creation,
+event-listener identity across realms, full frame lifecycle/load ordering, and
+native browser-complete promotion remain issue #40 gates.
 
 The completed bounded Response-constructor slice is
 [native-engine-browser-120](tasks/native-engine-browser-120.md). Fetched and

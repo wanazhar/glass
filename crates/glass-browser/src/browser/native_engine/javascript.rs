@@ -72,7 +72,7 @@ const MAX_NATIVE_FETCH_HEADER_VALUE_BYTES: usize = 64 * 1024;
 const MAX_NATIVE_FETCH_HEADER_BYTES: usize = 128 * 1024;
 pub(crate) const MAX_NATIVE_XHR_TIMEOUT_MS: u32 = 4_000;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub(crate) enum NativeScriptCommand {
     Focus {
@@ -204,11 +204,30 @@ pub(crate) enum NativeScriptCommand {
     ReportValidity {
         node_index: u32,
     },
+    /// Apply one ordinary DOM command in a same-origin embedded browsing
+    /// context. The command is routed by the owning browser topology after
+    /// the caller's script returns; it never transfers a native engine or
+    /// JavaScript object across realms.
+    FrameScript {
+        frame_id: String,
+        source_frame_id: String,
+        command: Box<NativeScriptCommand>,
+    },
 }
 
 pub(crate) struct NativeScriptEvaluation {
     pub(crate) value: serde_json::Value,
     pub(crate) commands: Vec<NativeScriptCommand>,
+}
+
+/// A same-origin DOM operation emitted by one page realm for a different
+/// embedded browsing context.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NativeFrameScriptRequest {
+    pub(crate) frame_id: String,
+    pub(crate) source_frame_id: String,
+    pub(crate) command: Box<NativeScriptCommand>,
 }
 
 /// A browser-context creation request emitted by `window.open`.
@@ -3009,6 +3028,7 @@ pub(crate) struct NativeJavaScriptRuntime {
     post_message_events: Arc<Mutex<Vec<NativePostMessageRequest>>>,
     window_close_events: Arc<Mutex<Vec<NativeWindowCloseRequest>>>,
     window_navigation_events: Arc<Mutex<Vec<NativeWindowNavigationRequest>>>,
+    frame_script_events: Arc<Mutex<Vec<NativeFrameScriptRequest>>>,
     pending_window_proxy_updates: Arc<Mutex<Vec<NativeWindowProxyUpdate>>>,
     frame_script_bindings: Arc<Mutex<Vec<NativeFrameScriptBinding>>>,
     frame_script_context: Arc<Mutex<Option<NativeFrameScriptContext>>>,
@@ -3092,6 +3112,7 @@ impl NativeJavaScriptRuntime {
             post_message_events: Arc::new(Mutex::new(Vec::new())),
             window_close_events: Arc::new(Mutex::new(Vec::new())),
             window_navigation_events: Arc::new(Mutex::new(Vec::new())),
+            frame_script_events: Arc::new(Mutex::new(Vec::new())),
             pending_window_proxy_updates: Arc::new(Mutex::new(Vec::new())),
             frame_script_bindings: Arc::new(Mutex::new(Vec::new())),
             frame_script_context: Arc::new(Mutex::new(None)),
@@ -3264,6 +3285,13 @@ impl NativeJavaScriptRuntime {
 
     pub(crate) fn take_window_navigation_events(&self) -> Vec<NativeWindowNavigationRequest> {
         self.window_navigation_events
+            .lock()
+            .map(|mut requests| std::mem::take(&mut *requests))
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn take_frame_script_events(&self) -> Vec<NativeFrameScriptRequest> {
+        self.frame_script_events
             .lock()
             .map(|mut requests| std::mem::take(&mut *requests))
             .unwrap_or_default()
@@ -3465,6 +3493,73 @@ impl NativeJavaScriptRuntime {
             href: href.clone(),
             replace: *replace,
             source_context_id: String::new(),
+        });
+        Ok(true)
+    }
+
+    fn apply_frame_script_command(
+        &self,
+        command: &NativeScriptCommand,
+    ) -> Result<bool, NativeEngineError> {
+        let NativeScriptCommand::FrameScript {
+            frame_id,
+            source_frame_id,
+            command,
+        } = command
+        else {
+            return Ok(false);
+        };
+        validate_context_id(frame_id)?;
+        validate_context_id(source_frame_id)?;
+        let current_frame_id = self.frame_id();
+        if source_frame_id != &current_frame_id {
+            return Err(NativeEngineError::invalid(
+                "same-origin frame script source",
+                "must identify the current JavaScript frame",
+            ));
+        }
+        if frame_id == source_frame_id {
+            return Err(NativeEngineError::invalid(
+                "same-origin frame script target",
+                "must identify an embedded frame distinct from its caller",
+            ));
+        }
+        if matches!(command.as_ref(), NativeScriptCommand::FrameScript { .. }) {
+            return Err(NativeEngineError::invalid(
+                "same-origin frame script command",
+                "nested frame script commands are not allowed",
+            ));
+        }
+        let encoded =
+            serde_json::to_vec(command.as_ref()).map_err(|_| NativeEngineError::Worker {
+                operation: "serialize same-origin frame script".into(),
+                reason: "same-origin frame script command could not be serialized".into(),
+            })?;
+        if encoded.len() > MAX_NATIVE_SCRIPT_RESULT_BYTES {
+            return Err(NativeEngineError::limit(
+                "same-origin frame script command",
+                MAX_NATIVE_SCRIPT_RESULT_BYTES,
+                encoded.len(),
+            ));
+        }
+        let mut requests =
+            self.frame_script_events
+                .lock()
+                .map_err(|_| NativeEngineError::Worker {
+                    operation: "queue same-origin frame script".into(),
+                    reason: "same-origin frame script queue is unavailable".into(),
+                })?;
+        if requests.len() >= super::interaction::MAX_NATIVE_EFFECTS {
+            return Err(NativeEngineError::limit(
+                "same-origin frame script requests",
+                super::interaction::MAX_NATIVE_EFFECTS,
+                requests.len().saturating_add(1),
+            ));
+        }
+        requests.push(NativeFrameScriptRequest {
+            frame_id: frame_id.clone(),
+            source_frame_id: source_frame_id.clone(),
+            command: command.clone(),
         });
         Ok(true)
     }
@@ -3939,6 +4034,9 @@ impl NativeJavaScriptRuntime {
                 if self.apply_window_navigation_command(&command)? {
                     continue;
                 }
+                if self.apply_frame_script_command(&command)? {
+                    continue;
+                }
                 if self.apply_post_message_command(&command)? {
                     continue;
                 }
@@ -4135,6 +4233,9 @@ impl NativeJavaScriptRuntime {
                     continue;
                 }
                 if self.apply_window_navigation_command(&command)? {
+                    continue;
+                }
+                if self.apply_frame_script_command(&command)? {
                     continue;
                 }
                 if self.apply_post_message_command(&command)? {
@@ -4540,6 +4641,7 @@ fn document_bootstrap(
     let serialized = serde_json::to_string(&serde_json::json!({
         "url": document_url,
         "context_id": context_id,
+        "frame_id": context_id,
         "window_name": window_name,
         "opener_context_id": opener_context_id,
         "opener_window_name": opener_window_name,
@@ -7671,6 +7773,29 @@ fn document_bootstrap(
   }});
   const elementsByIndex = new Map(elements.map((element) => [element.nodeIndex, element]));
   globalThis.__glassHostElements = elementsByIndex;
+  globalThis.__glassApplyNativeCommand = (command) => {{
+    if (!command || typeof command !== "object") throw new TypeError("native frame command must be an object");
+    const current = globalThis.__glassHostElements;
+    const nodeIndex = Number(command.node_index);
+    const element = current instanceof Map ? current.get(nodeIndex) : null;
+    if (!element) throw new Error("native frame command target is detached");
+    switch (String(command.kind)) {{
+      case "focus": element.focus(); break;
+      case "blur": element.blur(); break;
+      case "click": element.click(); break;
+      case "setValue": element.value = String(command.value); break;
+      case "setSelection": element.setSelectionRange(command.start, command.end, command.direction); break;
+      case "setChecked": element.checked = Boolean(command.checked); break;
+      case "setSelected": element.selected = Boolean(command.selected); break;
+      case "setAttribute": element.setAttribute(command.name, command.value); break;
+      case "removeAttribute": element.removeAttribute(command.name); break;
+      case "setCustomValidity": element.setCustomValidity(command.message); break;
+      case "checkValidity": element.checkValidity(); break;
+      case "reportValidity": element.reportValidity(); break;
+      default: throw new TypeError("native frame command is unsupported");
+    }}
+    return true;
+  }};
   for (const element of elements) {{
     if (!Object.prototype.hasOwnProperty.call(element, "parentElement")) {{
       Object.defineProperty(element, "parentElement", {{
@@ -8297,6 +8422,20 @@ fn document_bootstrap(
   const frameIdentifier = (binding) => String(
     binding && (binding.frameId || binding.contextId) || ""
   );
+  const queueFrameCommand = (binding, command) => {{
+    if (!binding || binding.sameOrigin !== true) throw crossOriginSecurityError("document");
+    const frameId = frameIdentifier(binding);
+    const sourceFrameId = String(host.frame_id || host.context_id || "");
+    if (!frameId || !sourceFrameId || frameId === sourceFrameId) {{
+      throw new TypeError("native frame command target is invalid");
+    }}
+    pushCommand({{
+      kind: "frameScript",
+      frame_id: frameId,
+      source_frame_id: sourceFrameId,
+      command,
+    }});
+  }};
   const frameBindingForId = (frameId) => {{
     const visit = (bindings) => {{
       for (const binding of bindings) {{
@@ -8356,6 +8495,9 @@ fn document_bootstrap(
     let frameDocument;
     const frameElements = (Array.isArray(snapshot.elements) ? snapshot.elements : []).map((entry) => {{
       const attributes = entry.attributes && typeof entry.attributes === "object" ? entry.attributes : {{}};
+      let value = entry.value == null ? "" : entry.value;
+      let checked = Boolean(entry.checked);
+      let selected = Boolean(entry.selected);
       const projected = {{
         nodeIndex: entry.nodeIndex,
         parentIndex: entry.parentIndex == null ? null : entry.parentIndex,
@@ -8367,9 +8509,9 @@ fn document_bootstrap(
         className: attributes.class || "",
         textContent: String(entry.text || ""),
         innerText: String(entry.text || ""),
-        value: entry.value == null ? "" : entry.value,
-        checked: Boolean(entry.checked),
-        selected: Boolean(entry.selected),
+        value,
+        checked,
+        selected,
         disabled: Boolean(entry.disabled),
         hidden: Boolean(entry.hidden),
         getAttribute(name) {{
@@ -8380,7 +8522,64 @@ fn document_bootstrap(
           return null;
         }},
         hasAttribute(name) {{ return this.getAttribute(name) !== null; }},
+        focus() {{
+          if (this.disabled || this.hidden) return;
+          queueFrameCommand(currentBinding, {{ kind: "focus", node_index: entry.nodeIndex }});
+        }},
+        blur() {{
+          queueFrameCommand(currentBinding, {{ kind: "blur", node_index: entry.nodeIndex }});
+        }},
+        click() {{
+          if (this.disabled || this.hidden) return;
+          queueFrameCommand(currentBinding, {{ kind: "click", node_index: entry.nodeIndex }});
+        }},
+        setAttribute(name, nextValue) {{
+          const key = String(name).toLowerCase();
+          const stringValue = String(nextValue);
+          attributes[key] = stringValue;
+          if (key === "id") this.id = stringValue;
+          if (key === "class") this.className = stringValue;
+          if (key === "disabled") this.disabled = true;
+          if (key === "hidden") this.hidden = true;
+          queueFrameCommand(currentBinding, {{ kind: "setAttribute", node_index: entry.nodeIndex, name: key, value: stringValue }});
+        }},
+        removeAttribute(name) {{
+          const key = String(name).toLowerCase();
+          delete attributes[key];
+          if (key === "id") this.id = "";
+          if (key === "class") this.className = "";
+          if (key === "disabled") this.disabled = false;
+          if (key === "hidden") this.hidden = false;
+          queueFrameCommand(currentBinding, {{ kind: "removeAttribute", node_index: entry.nodeIndex, name: key }});
+        }},
       }};
+      Object.defineProperty(projected, "value", {{
+        enumerable: true,
+        configurable: false,
+        get() {{ return value; }},
+        set(nextValue) {{
+          value = String(nextValue);
+          queueFrameCommand(currentBinding, {{ kind: "setValue", node_index: entry.nodeIndex, value }});
+        }},
+      }});
+      Object.defineProperty(projected, "checked", {{
+        enumerable: true,
+        configurable: false,
+        get() {{ return checked; }},
+        set(nextValue) {{
+          checked = Boolean(nextValue);
+          queueFrameCommand(currentBinding, {{ kind: "setChecked", node_index: entry.nodeIndex, checked }});
+        }},
+      }});
+      Object.defineProperty(projected, "selected", {{
+        enumerable: true,
+        configurable: false,
+        get() {{ return selected; }},
+        set(nextValue) {{
+          selected = Boolean(nextValue);
+          queueFrameCommand(currentBinding, {{ kind: "setSelected", node_index: entry.nodeIndex, selected }});
+        }},
+      }});
       Object.defineProperty(projected, "ownerDocument", {{
         enumerable: false,
         configurable: false,

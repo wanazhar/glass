@@ -664,7 +664,7 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
                     "<html><body><iframe id='child' src='/child'></iframe><p>parent</p></body></html>"
                 }
                 "/child" => {
-                    "<html><head><script>addEventListener('message', event => document.getElementById('inside').setAttribute('data-message', event.data.ok ? 'received' : 'bad'));</script></head><body><p id='inside' data-message='none'>same-origin child</p></body></html>"
+                    "<html><head><script>addEventListener('message', event => document.getElementById('inside').setAttribute('data-message', event.data.ok ? 'received' : 'bad'));</script></head><body><p id='inside' data-message='none'>same-origin child</p><input id='field' value='before'></body></html>"
                 }
                 "/child-next" => "<html><body><p id='next'>navigated frame</p></body></html>",
                 other => panic!("unexpected frame projection request path: {other}"),
@@ -702,6 +702,53 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
             "collections": [true, true],
             "frames": true,
         })
+    );
+    assert_eq!(
+        session
+            .script(
+                "(() => { const child = document.getElementById('child').contentDocument; const inside = child.getElementById('inside'); inside.setAttribute('data-message', 'parent-write'); child.getElementById('field').value = 'written-by-parent'; return [inside.getAttribute('data-message'), child.getElementById('field').value]; })()",
+            )
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!(["parent-write", "written-by-parent"])
+    );
+    assert_eq!(
+        session
+            .script(
+                "(() => { const child = document.getElementById('child').contentDocument; return [child.getElementById('inside').getAttribute('data-message'), child.getElementById('field').value]; })()",
+            )
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!(["parent-write", "written-by-parent"])
+    );
+    let child_id = session
+        .native_list_frames()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|frame| frame.parent_id.as_deref() == Some("native-context:main"))
+        .unwrap()
+        .id;
+    session.native_select_frame(&child_id).await.unwrap();
+    session
+        .script(
+            "window.parent.document.getElementById('child').setAttribute('data-from-child', 'yes'); true",
+        )
+        .await
+        .unwrap();
+    session
+        .native_select_frame("native-context:main")
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("document.getElementById('child').getAttribute('data-from-child')")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("yes")
     );
     session
         .script(

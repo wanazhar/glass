@@ -4898,7 +4898,7 @@ fn mutate_before_unload(
         })?;
     let mut next = current.clone();
     let mut events = vec![NativeContentEvent {
-        node_index: 0,
+        node_index: u32::MAX,
         kind: NativeEventKind::BeforeUnload,
     }];
     let (commands, navigation) = split_location_navigation(evaluation.commands)?;
@@ -4979,7 +4979,7 @@ fn mutate_lifecycle_events(
         .iter()
         .copied()
         .map(|kind| NativeContentEvent {
-            node_index: 0,
+            node_index: u32::MAX,
             kind,
         })
         .collect::<Vec<_>>();
@@ -5031,7 +5031,7 @@ fn mutate_hash_change(
     let mut next = current.clone();
     let (commands, navigation) = split_location_navigation(evaluation.commands)?;
     let mut events = vec![NativeContentEvent {
-        node_index: 0,
+        node_index: u32::MAX,
         kind: NativeEventKind::HashChange,
     }];
     events.extend(

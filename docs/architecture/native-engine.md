@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-194` slice; the bounded foundation below remains
+`native-engine-browser-195` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5165,7 +5165,19 @@ insertion, duplicate/hierarchy validation, frame batching, and persistent
 identity refresh across local, HTTP(S) content-worker, same-origin frame, and
 nested-frame realms. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-194.md`; broader DOMImplementation,
-tree-builder, and Web IDL/conformance promotion remain issue #40 work.
+tree-builder, and Web IDL/conformance promotion remain issue #40 work. The
+bounded malformed-input recovery subset is recorded in the later
+`native-engine-browser-195` checkpoint.
+
+The completed native-engine-browser-195 slice advances the document tree
+builder's recovery contract. Rust and detached JavaScript parsing now recover
+unterminated comments, bogus declarations, and EOF-terminated tags without
+publishing partial elements; first duplicate HTML attributes win; duplicate or
+late doctypes are ignored; and common paragraph/list/option/ruby/table implied
+end tags close in the native owner. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-195.md`. Full WHATWG insertion modes,
+foreign content, table foster parenting, and Web IDL/conformance promotion
+remain issue #40 work.
 
 The completed native-engine-browser-193 slice closes script-created comment
 construction across local, HTTP(S) content-worker, same-origin frame, and

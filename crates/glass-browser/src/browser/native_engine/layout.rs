@@ -17,6 +17,7 @@ const DEFAULT_SVG_WIDTH: u32 = 300;
 const DEFAULT_SVG_HEIGHT: u32 = 150;
 const CHARACTER_WIDTH: u32 = 8;
 pub(crate) const MAX_NATIVE_SVG_POINTS: usize = 2048;
+const MAX_NATIVE_SVG_CURVE_SEGMENTS: usize = 16;
 
 /// An integer-pixel point in the native viewport coordinate space.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4835,7 +4836,7 @@ pub(crate) fn svg_path_subpaths(node: &NativeNode) -> Option<Vec<NativeSvgSubpat
         if let SvgPathToken::Command(next) = tokens[index] {
             if !matches!(
                 next,
-                'M' | 'm' | 'L' | 'l' | 'H' | 'h' | 'V' | 'v' | 'Z' | 'z'
+                'M' | 'm' | 'L' | 'l' | 'H' | 'h' | 'V' | 'v' | 'C' | 'c' | 'Q' | 'q' | 'Z' | 'z'
             ) {
                 return None;
             }
@@ -4904,6 +4905,50 @@ pub(crate) fn svg_path_subpaths(node: &NativeNode) -> Option<Vec<NativeSvgSubpat
                 };
                 subpath.points.push(svg_path_point(point));
                 current = point;
+            }
+            'C' => {
+                let control_1 = svg_path_pair(&tokens, &mut index)?;
+                let control_2 = svg_path_pair(&tokens, &mut index)?;
+                let end = svg_path_pair(&tokens, &mut index)?;
+                let control_1 = if relative {
+                    (current.0 + control_1.0, current.1 + control_1.1)
+                } else {
+                    control_1
+                };
+                let control_2 = if relative {
+                    (current.0 + control_2.0, current.1 + control_2.1)
+                } else {
+                    control_2
+                };
+                let end = if relative {
+                    (current.0 + end.0, current.1 + end.1)
+                } else {
+                    end
+                };
+                let Some(subpath) = subpaths.last_mut() else {
+                    return None;
+                };
+                append_cubic_curve(&mut subpath.points, current, control_1, control_2, end);
+                current = end;
+            }
+            'Q' => {
+                let control = svg_path_pair(&tokens, &mut index)?;
+                let end = svg_path_pair(&tokens, &mut index)?;
+                let control = if relative {
+                    (current.0 + control.0, current.1 + control.1)
+                } else {
+                    control
+                };
+                let end = if relative {
+                    (current.0 + end.0, current.1 + end.1)
+                } else {
+                    end
+                };
+                let Some(subpath) = subpaths.last_mut() else {
+                    return None;
+                };
+                append_quadratic_curve(&mut subpath.points, current, control, end);
+                current = end;
             }
             _ => return None,
         }
@@ -4988,6 +5033,45 @@ fn svg_path_pair(tokens: &[SvgPathToken], index: &mut usize) -> Option<(f64, f64
         svg_path_number(tokens, index)?,
         svg_path_number(tokens, index)?,
     ))
+}
+
+fn append_cubic_curve(
+    points: &mut Vec<NativePoint>,
+    start: (f64, f64),
+    control_1: (f64, f64),
+    control_2: (f64, f64),
+    end: (f64, f64),
+) {
+    for segment in 1..=MAX_NATIVE_SVG_CURVE_SEGMENTS {
+        let t = segment as f64 / MAX_NATIVE_SVG_CURVE_SEGMENTS as f64;
+        let inverse = 1.0 - t;
+        let inverse_squared = inverse * inverse;
+        let t_squared = t * t;
+        let x = inverse_squared * inverse * start.0
+            + 3.0 * inverse_squared * t * control_1.0
+            + 3.0 * inverse * t_squared * control_2.0
+            + t_squared * t * end.0;
+        let y = inverse_squared * inverse * start.1
+            + 3.0 * inverse_squared * t * control_1.1
+            + 3.0 * inverse * t_squared * control_2.1
+            + t_squared * t * end.1;
+        points.push(svg_path_point((x, y)));
+    }
+}
+
+fn append_quadratic_curve(
+    points: &mut Vec<NativePoint>,
+    start: (f64, f64),
+    control: (f64, f64),
+    end: (f64, f64),
+) {
+    for segment in 1..=MAX_NATIVE_SVG_CURVE_SEGMENTS {
+        let t = segment as f64 / MAX_NATIVE_SVG_CURVE_SEGMENTS as f64;
+        let inverse = 1.0 - t;
+        let x = inverse * inverse * start.0 + 2.0 * inverse * t * control.0 + t * t * end.0;
+        let y = inverse * inverse * start.1 + 2.0 * inverse * t * control.1 + t * t * end.1;
+        points.push(svg_path_point((x, y)));
+    }
 }
 
 fn svg_path_point((x, y): (f64, f64)) -> NativePoint {

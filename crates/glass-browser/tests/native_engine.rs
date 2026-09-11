@@ -32384,6 +32384,57 @@ fn native_svg_straight_paths_share_relative_geometry_and_fill_stroke_paint() {
     assert_eq!(layout.hit_test(5, 4).unwrap(), Some(path));
 }
 
+#[test]
+fn native_svg_curve_paths_flatten_quadratic_and_cubic_segments() {
+    let document = NativeDocument::parse(
+        "<div style='width:24px;height:16px'><svg width='24' height='12'><path id='cubic' d='M2 8 C2 2 10 2 10 8 Z' fill='blue' stroke='green' stroke-width='1'></path><path id='quadratic' d='M12 8 Q16 2 20 8 Z' fill='blue' stroke='green' stroke-width='1'></path></svg></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let cubic = document.resolve_target("id=cubic").unwrap();
+    let quadratic = document.resolve_target("id=quadratic").unwrap();
+    let viewport = Viewport {
+        width: 24,
+        height: 16,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+    assert!(layout.box_for(cubic).unwrap().width >= 9);
+    assert!(layout.box_for(quadratic).unwrap().width >= 9);
+
+    let list = document.display_list(viewport).unwrap();
+    for node_id in [cubic, quadratic] {
+        assert!(list.commands.iter().any(|command| {
+            matches!(
+                command,
+                NativeDisplayCommand::SvgPathFill { node_id: command_node, subpaths, .. }
+                    if *command_node == node_id
+                        && subpaths.len() == 1
+                        && subpaths[0].closed
+                        && subpaths[0].points.len() > 8
+            )
+        }));
+        assert!(list.commands.iter().any(|command| {
+            matches!(
+                command,
+                NativeDisplayCommand::SvgPathStroke { node_id: command_node, subpaths, .. }
+                    if *command_node == node_id
+                        && subpaths.len() == 1
+                        && subpaths[0].closed
+                        && subpaths[0].points.len() > 8
+            )
+        }));
+    }
+
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(5, 6), Some([0, 0, 255, 255]));
+    assert_eq!(surface.pixel(6, 8), Some([0, 128, 0, 255]));
+    assert_eq!(surface.pixel(16, 6), Some([0, 0, 255, 255]));
+    assert_eq!(surface.pixel(16, 8), Some([0, 128, 0, 255]));
+    assert_eq!(layout.hit_test(5, 6).unwrap(), Some(cubic));
+    assert_eq!(layout.hit_test(16, 6).unwrap(), Some(quadratic));
+}
+
 #[tokio::test]
 async fn native_local_namespace_dom_preserves_svg_mathml_and_foreign_content() {
     let mut engine = NativeEngine::new(NativeEngineConfig::default().with_initial_url(

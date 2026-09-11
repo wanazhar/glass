@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-214`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-215`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 205
 slice carries bounded quadratic/cubic SVG path geometry through shared path
 parsing, flattening, layout, display-list, raster, clipping, and capture
@@ -3494,9 +3494,9 @@ The completed native-engine-browser-210 slice adds bounded inline PNG data-URL
 images through one shared image decoder, intrinsic/aspect-ratio layout,
 typed display-list paint, nearest-neighbor RGBA replay, source-over alpha,
 clipping, root scrolling, hit testing, and PNG capture. External image
-resources, decoded-resource transfer/caching, CSS image paints, SVG image
-resources, and animated formats remain active issue #40 browser-completeness
-work. Exact evidence is in
+resources, decoded-resource transfer/caching, CSS image layers beyond the
+single background-image URL, SVG image resources, and animated formats remain
+active issue #40 browser-completeness work. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-210.md`.
 
 The completed native-engine-browser-211 slice adds static external PNG image
@@ -3509,7 +3509,8 @@ Parent layout, typed display-list paint, software replay, clipping, scrolling,
 hit testing, capture, and image `load` delivery consume one resource owner;
 denied, malformed, unsupported, failed, or oversized images remain non-fatal
 broken-image results. Decoded caching, dynamic image invalidation/refetch,
-responsive sources, CSS/SVG image resources, animation, and additional image
+responsive sources, additional CSS image layers beyond the single
+background-image URL, SVG image resources, animation, and additional image
 formats remain active issue #40 work. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-211.md`.
 
@@ -3521,8 +3522,9 @@ mixed-content, referrer, cookie, and redirect policy to new or changed
 sources, and transfers successful RGBA pixels through the typed mutation
 snapshot. The persistent realm receives image `load` events before commit;
 failed images are non-fatal. Decoded caching, recursive loads caused by
-handlers, responsive sources, CSS/SVG image resources, animation, and other
-formats remain active issue #40 work. Exact evidence is in
+handlers, responsive sources, additional CSS image layers beyond the single
+background-image URL, SVG image resources, animation, and other formats remain
+active issue #40 work. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-212.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
@@ -4601,8 +4603,10 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-198.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-197.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-196.md` is the preceding completed task;
-`docs/plan/tasks/native-engine-browser-214.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-215.md` is the latest completed browser
 task;
+`docs/plan/tasks/native-engine-browser-214.md` is the preceding completed
+browser task;
 `docs/plan/tasks/native-engine-browser-213.md` is the preceding completed
 browser task;
 `docs/plan/tasks/native-engine-browser-212.md` is the preceding completed

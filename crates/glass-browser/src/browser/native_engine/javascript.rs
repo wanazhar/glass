@@ -14,6 +14,7 @@ use super::dom::{
 };
 use super::error::NativeEngineError;
 use super::interaction::NativeEventKind;
+use super::layout::NativePoint;
 use super::origin::NativeOrigin;
 use fs2::FileExt;
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
@@ -3147,6 +3148,7 @@ pub(crate) struct NativeJavaScriptRuntime {
     frame_script_bindings: Arc<Mutex<Vec<NativeFrameScriptBinding>>>,
     frame_script_context: Arc<Mutex<Option<NativeFrameScriptContext>>>,
     frame_id: Arc<Mutex<String>>,
+    scroll_offset: Arc<Mutex<NativePoint>>,
     window_name: Arc<Mutex<String>>,
     opener_context_id: Option<String>,
     opener_window_name: String,
@@ -3231,6 +3233,7 @@ impl NativeJavaScriptRuntime {
             frame_script_bindings: Arc::new(Mutex::new(Vec::new())),
             frame_script_context: Arc::new(Mutex::new(None)),
             frame_id: Arc::new(Mutex::new(context_id.clone())),
+            scroll_offset: Arc::new(Mutex::new(NativePoint { x: 0, y: 0 })),
             window_name: Arc::new(Mutex::new(window_name)),
             opener_context_id: opener_context_id.map(str::to_owned),
             opener_window_name,
@@ -3430,6 +3433,19 @@ impl NativeJavaScriptRuntime {
         if let Ok(mut current) = self.frame_id.lock() {
             *current = frame_id;
         }
+    }
+
+    pub(crate) fn set_scroll_offset(&self, scroll_offset: NativePoint) {
+        if let Ok(mut current) = self.scroll_offset.lock() {
+            *current = scroll_offset;
+        }
+    }
+
+    fn scroll_offset(&self) -> NativePoint {
+        self.scroll_offset
+            .lock()
+            .map(|offset| *offset)
+            .unwrap_or(NativePoint { x: 0, y: 0 })
     }
 
     fn frame_id(&self) -> String {
@@ -4055,6 +4071,7 @@ impl NativeJavaScriptRuntime {
         let window_name = self.window_name();
         let opener_window_name = self.opener_window_name();
         let frame_id = self.frame_id();
+        let scroll_offset = self.scroll_offset();
         let bootstrap = document_bootstrap(
             document,
             document_url,
@@ -4065,6 +4082,7 @@ impl NativeJavaScriptRuntime {
             &self.opener_url,
             origin,
             viewport,
+            scroll_offset,
             &self.ready_state,
             self.now_ms(),
             &self.storage_view(document_url, origin),
@@ -4116,6 +4134,13 @@ impl NativeJavaScriptRuntime {
                     });
                 }
             };
+            ctx.eval::<(), _>(
+                "if (typeof globalThis.__glassQueueResizeObserverChanges === 'function') globalThis.__glassQueueResizeObserverChanges();",
+            )
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "queue native resize observers".into(),
+                reason: "native resize observers could not be scheduled".into(),
+            })?;
             for _ in 0..MAX_NATIVE_MODULE_IMPORTS {
                 if !ctx.execute_pending_job() {
                     break;
@@ -4274,6 +4299,7 @@ impl NativeJavaScriptRuntime {
         let window_name = self.window_name();
         let opener_window_name = self.opener_window_name();
         let frame_id = self.frame_id();
+        let scroll_offset = self.scroll_offset();
         let bootstrap = document_bootstrap(
             document,
             document_url,
@@ -4284,6 +4310,7 @@ impl NativeJavaScriptRuntime {
             &self.opener_url,
             origin,
             viewport,
+            scroll_offset,
             &self.ready_state,
             self.now_ms(),
             &self.storage_view(document_url, origin),
@@ -4317,6 +4344,13 @@ impl NativeJavaScriptRuntime {
                     operation: "evaluate JavaScript module".into(),
                     reason: "JavaScript module evaluation failed".into(),
                 })?;
+            ctx.eval::<(), _>(
+                "if (typeof globalThis.__glassQueueResizeObserverChanges === 'function') globalThis.__glassQueueResizeObserverChanges();",
+            )
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "queue native resize observers".into(),
+                reason: "native resize observers could not be scheduled".into(),
+            })?;
             for _ in 0..MAX_NATIVE_MODULE_IMPORTS {
                 if !ctx.execute_pending_job() {
                     break;
@@ -4741,6 +4775,7 @@ fn document_bootstrap(
     opener_url: &str,
     origin: &NativeOrigin,
     viewport: Viewport,
+    scroll_offset: NativePoint,
     ready_state: &str,
     now_ms: u64,
     storage: &NativeWebStorageView,
@@ -4751,7 +4786,11 @@ fn document_bootstrap(
     frame_context: Option<&NativeFrameScriptContext>,
     run_timers: bool,
 ) -> Result<String, NativeEngineError> {
-    let state = document.script_snapshot(crate::browser_backend::MAX_TEXT_BYTES);
+    let state = document.script_snapshot_with_layout(
+        crate::browser_backend::MAX_TEXT_BYTES,
+        viewport,
+        scroll_offset,
+    )?;
     let serialized = serde_json::to_string(&serde_json::json!({
         "url": document_url,
         "context_id": context_id,
@@ -4769,6 +4808,7 @@ fn document_bootstrap(
         "cookie": cookie,
         "frames": frame_bindings,
         "frame_context": frame_context,
+        "device_scale_factor_milli": viewport.device_scale_factor_milli,
     }))
     .map_err(|_| NativeEngineError::Worker {
         operation: "serialize JavaScript host view".into(),
@@ -4783,6 +4823,113 @@ fn document_bootstrap(
         r###"(() => {{
   const host = {serialized};
   const state = host.state;
+  const geometryByIndex = globalThis.__glassHostGeometry instanceof Map
+    ? globalThis.__glassHostGeometry
+    : new Map();
+  geometryByIndex.clear();
+  for (const entry of Array.isArray(state.geometry) ? state.geometry : []) {{
+    if (!entry || entry.nodeIndex === undefined) continue;
+    geometryByIndex.set(Number(entry.nodeIndex), entry);
+  }}
+  globalThis.__glassHostGeometry = geometryByIndex;
+  const zeroGeometry = () => ({{
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+    contentX: 0,
+    contentY: 0,
+    contentWidth: 0,
+    contentHeight: 0,
+  }});
+  const geometryForNode = (node) => {{
+    if (node && typeof node.__glassGeometrySource === "function") {{
+      const projected = node.__glassGeometrySource();
+      if (projected) return projected;
+    }}
+    if (node && node.__glassGeometry) return node.__glassGeometry;
+    return node && typeof node.nodeIndex === "number"
+      ? geometryByIndex.get(Number(node.nodeIndex)) || zeroGeometry()
+      : zeroGeometry();
+  }};
+  const makeDomRect = (geometry) => {{
+    const value = geometry || zeroGeometry();
+    const x = Number(value.x) || 0;
+    const y = Number(value.y) || 0;
+    const width = Math.max(0, Number(value.width) || 0);
+    const height = Math.max(0, Number(value.height) || 0);
+    const Constructor = typeof globalThis.DOMRect === "function" ? globalThis.DOMRect : null;
+    return Constructor
+      ? new Constructor(x, y, width, height)
+      : {{
+          x, y, width, height,
+          top: y,
+          right: x + width,
+          bottom: y + height,
+          left: x,
+          toJSON() {{ return {{ x, y, width, height, top: y, right: x + width, bottom: y + height, left: x }}; }},
+        }};
+  }};
+  const resizeObservers = globalThis.__glassResizeObservers instanceof Set
+    ? globalThis.__glassResizeObservers
+    : new Set();
+  globalThis.__glassResizeObservers = resizeObservers;
+  let resizeDeliveryQueued = false;
+  const resizeGeometryChanged = (previous, next) => !previous
+    || previous.width !== next.width
+    || previous.height !== next.height
+    || previous.contentWidth !== next.contentWidth
+    || previous.contentHeight !== next.contentHeight;
+  const resizeEntry = (target, geometry) => {{
+    const contentRect = makeDomRect({{
+      x: geometry.contentX,
+      y: geometry.contentY,
+      width: geometry.contentWidth,
+      height: geometry.contentHeight,
+    }});
+    const borderBoxSize = [{{ inlineSize: geometry.width, blockSize: geometry.height }}];
+    const contentBoxSize = [{{ inlineSize: geometry.contentWidth, blockSize: geometry.contentHeight }}];
+    const devicePixelContentBoxSize = [{{
+      inlineSize: geometry.contentWidth * (Number(host.device_scale_factor_milli || 1000) / 1000),
+      blockSize: geometry.contentHeight * (Number(host.device_scale_factor_milli || 1000) / 1000),
+    }}];
+    return {{
+      target,
+      contentRect,
+      borderBoxSize,
+      contentBoxSize,
+      devicePixelContentBoxSize,
+    }};
+  }};
+  const deliverResizeObservers = () => {{
+    resizeDeliveryQueued = false;
+    for (const observer of Array.from(resizeObservers)) {{
+      if (!observer.__glassRecords || observer.__glassRecords.length === 0) continue;
+      const records = observer.__glassRecords.splice(0, observer.__glassRecords.length);
+      observer.__glassCallback(records, observer);
+    }}
+  }};
+  const scheduleResizeObserverDelivery = () => {{
+    if (resizeDeliveryQueued) return;
+    resizeDeliveryQueued = true;
+    Promise.resolve().then(deliverResizeObservers);
+  }};
+  const queueResizeObserverChanges = () => {{
+    for (const observer of Array.from(resizeObservers)) {{
+      for (const registration of observer.__glassRegistrations || []) {{
+        const geometry = geometryForNode(registration.target);
+        if (!resizeGeometryChanged(registration.last, geometry)) continue;
+        registration.last = {{ ...geometry }};
+        observer.__glassRecords.push(resizeEntry(registration.target, geometry));
+        if (observer.__glassRecords.length > {max_commands}) {{
+          observer.__glassRecords.splice(0, observer.__glassRecords.length - {max_commands});
+        }}
+      }}
+    }}
+    if (Array.from(resizeObservers).some((observer) => observer.__glassRecords.length > 0)) {{
+      scheduleResizeObserverDelivery();
+    }}
+  }};
   const commands = [];
   const activeCommands = () => Array.isArray(globalThis.__glassHostCommandBuffer)
     ? globalThis.__glassHostCommandBuffer
@@ -8017,6 +8164,19 @@ fn document_bootstrap(
         return validationMessageFor(entry, validityFlags(entry));
       }},
       get willValidate() {{ return Boolean(entry.willValidate); }},
+      getBoundingClientRect() {{ return makeDomRect(geometryForNode(element)); }},
+      getClientRects() {{
+        const geometry = geometryForNode(element);
+        return geometry.width > 0 && geometry.height > 0
+          ? asNodeList([makeDomRect(geometry)])
+          : asNodeList([]);
+      }},
+      get clientWidth() {{ return Number(geometryForNode(element).width) || 0; }},
+      get clientHeight() {{ return Number(geometryForNode(element).height) || 0; }},
+      get offsetWidth() {{ return Number(geometryForNode(element).width) || 0; }},
+      get offsetHeight() {{ return Number(geometryForNode(element).height) || 0; }},
+      get scrollWidth() {{ return Number(geometryForNode(element).width) || 0; }},
+      get scrollHeight() {{ return Number(geometryForNode(element).height) || 0; }},
       getAttribute(name) {{
         const key = String(name).toLowerCase();
         for (const attr of Object.keys(entry.attributes)) {{
@@ -9922,6 +10082,10 @@ fn document_bootstrap(
   }};
   globalThis.innerWidth = {width};
   globalThis.innerHeight = {height};
+  globalThis.scrollX = Number(state.scrollX || 0);
+  globalThis.scrollY = Number(state.scrollY || 0);
+  globalThis.pageXOffset = globalThis.scrollX;
+  globalThis.pageYOffset = globalThis.scrollY;
   globalThis.navigator = globalThis.navigator || {{ userAgent: "GlassNative" }};
   const nativeStorageUsage = () => {{
     const encoded = (value) => {{
@@ -9958,6 +10122,121 @@ fn document_bootstrap(
     }}
     return constructor;
   }};
+  const defineDomRectValues = (target, x, y, width, height, writable) => {{
+    const values = {{
+      x: Number(x) || 0,
+      y: Number(y) || 0,
+      width: Number(width) || 0,
+      height: Number(height) || 0,
+    }};
+    Object.defineProperties(target, {{
+      x: {{ configurable: true, enumerable: true, writable, value: values.x }},
+      y: {{ configurable: true, enumerable: true, writable, value: values.y }},
+      width: {{ configurable: true, enumerable: true, writable, value: values.width }},
+      height: {{ configurable: true, enumerable: true, writable, value: values.height }},
+      top: {{ configurable: true, enumerable: true, get() {{ return this.y; }} }},
+      right: {{ configurable: true, enumerable: true, get() {{ return this.x + this.width; }} }},
+      bottom: {{ configurable: true, enumerable: true, get() {{ return this.y + this.height; }} }},
+      left: {{ configurable: true, enumerable: true, get() {{ return this.x; }} }},
+    }});
+  }};
+  const DOMRectReadOnlyNative = globalThis.__glassDOMRectReadOnlyConstructor || function DOMRectReadOnly(
+    x = 0,
+    y = 0,
+    width = 0,
+    height = 0,
+  ) {{
+    if (!(this instanceof DOMRectReadOnlyNative)) throw new TypeError("DOMRectReadOnly requires new");
+    defineDomRectValues(this, x, y, width, height, false);
+  }};
+  if (!DOMRectReadOnlyNative.prototype.toJSON) {{
+    Object.defineProperty(DOMRectReadOnlyNative.prototype, "toJSON", {{
+      configurable: true,
+      value() {{
+        return {{
+          x: this.x,
+          y: this.y,
+          width: this.width,
+          height: this.height,
+          top: this.top,
+          right: this.right,
+          bottom: this.bottom,
+          left: this.left,
+        }};
+      }},
+    }});
+  }}
+  const DOMRectNative = globalThis.__glassDOMRectConstructor || function DOMRect(
+    x = 0,
+    y = 0,
+    width = 0,
+    height = 0,
+  ) {{
+    if (!(this instanceof DOMRectNative)) throw new TypeError("DOMRect requires new");
+    defineDomRectValues(this, x, y, width, height, true);
+  }};
+  try {{ Object.setPrototypeOf(DOMRectNative.prototype, DOMRectReadOnlyNative.prototype); }} catch (_error) {{}}
+  globalThis.__glassDOMRectReadOnlyConstructor = DOMRectReadOnlyNative;
+  globalThis.__glassDOMRectConstructor = DOMRectNative;
+  globalThis.DOMRectReadOnly = DOMRectReadOnlyNative;
+  globalThis.DOMRect = DOMRectNative;
+  const ResizeObserverNative = globalThis.__glassResizeObserverConstructor || function ResizeObserver(callback) {{
+    if (!(this instanceof ResizeObserverNative)) throw new TypeError("ResizeObserver requires new");
+    if (typeof callback !== "function") throw new TypeError("ResizeObserver callback must be callable");
+    Object.defineProperties(this, {{
+      __glassCallback: {{ configurable: false, enumerable: false, value: callback }},
+      __glassRegistrations: {{ configurable: false, enumerable: false, writable: true, value: [] }},
+      __glassRecords: {{ configurable: false, enumerable: false, writable: true, value: [] }},
+    }});
+    resizeObservers.add(this);
+  }};
+  if (!ResizeObserverNative.prototype.observe) {{
+    Object.defineProperties(ResizeObserverNative.prototype, {{
+      observe: {{
+        configurable: true,
+        value(target, options = {{}}) {{
+          if (!target || typeof target.nodeIndex !== "number") throw new TypeError("ResizeObserver target must be an Element");
+          if (!options || typeof options !== "object") throw new TypeError("ResizeObserver options must be an object");
+          const box = options.box === undefined ? "content-box" : String(options.box);
+          if (!["content-box", "border-box", "device-pixel-content-box"].includes(box)) {{
+            throw new TypeError("ResizeObserver box is unsupported");
+          }}
+          const registrations = this.__glassRegistrations;
+          const existing = registrations.find((registration) => registration.target === target);
+          if (existing) {{
+            existing.box = box;
+            return;
+          }}
+          registrations.push({{ target, box, last: null }});
+        }},
+      }},
+      unobserve: {{
+        configurable: true,
+        value(target) {{
+          this.__glassRegistrations = this.__glassRegistrations.filter(
+            (registration) => registration.target !== target,
+          );
+        }},
+      }},
+      disconnect: {{
+        configurable: true,
+        value() {{
+          this.__glassRegistrations = [];
+          this.__glassRecords = [];
+        }},
+      }},
+      takeRecords: {{
+        configurable: true,
+        value() {{
+          const records = this.__glassRecords.slice();
+          this.__glassRecords = [];
+          return records;
+        }},
+      }},
+    }});
+  }}
+  globalThis.__glassResizeObserverConstructor = ResizeObserverNative;
+  globalThis.ResizeObserver = ResizeObserverNative;
   const DOMExceptionNative = globalThis.__glassDOMExceptionConstructor || (() => {{
     const constructor = function DOMException(message = "", name = "Error") {{
       if (!(this instanceof constructor)) throw new TypeError("DOMException requires new");
@@ -10314,6 +10593,19 @@ fn document_bootstrap(
         selected,
         disabled: Boolean(entry.disabled),
         hidden: Boolean(entry.hidden),
+        getBoundingClientRect() {{ return makeDomRect(geometryForNode(projected)); }},
+        getClientRects() {{
+          const geometry = geometryForNode(projected);
+          return geometry.width > 0 && geometry.height > 0
+            ? asNodeList([makeDomRect(geometry)])
+            : asNodeList([]);
+        }},
+        get clientWidth() {{ return Number(geometryForNode(projected).width) || 0; }},
+        get clientHeight() {{ return Number(geometryForNode(projected).height) || 0; }},
+        get offsetWidth() {{ return Number(geometryForNode(projected).width) || 0; }},
+        get offsetHeight() {{ return Number(geometryForNode(projected).height) || 0; }},
+        get scrollWidth() {{ return Number(geometryForNode(projected).width) || 0; }},
+        get scrollHeight() {{ return Number(geometryForNode(projected).height) || 0; }},
         getAttribute(name) {{
           const key = String(name).toLowerCase();
           for (const attribute of Object.keys(attributes)) {{
@@ -10500,6 +10792,17 @@ fn document_bootstrap(
         enumerable: false,
         configurable: false,
         value: () => attributes,
+      }});
+      Object.defineProperty(projected, "__glassGeometrySource", {{
+        enumerable: false,
+        configurable: false,
+        value: () => {{
+          const active = frameBindingForId(currentFrameId) || currentBinding;
+          const geometry = active && active.document && Array.isArray(active.document.geometry)
+            ? active.document.geometry
+            : [];
+          return geometry.find((candidate) => Number(candidate.nodeIndex) === Number(entry.nodeIndex)) || null;
+        }},
       }});
       Object.defineProperty(projected, "__glassSyncContent", {{
         enumerable: false,
@@ -11458,6 +11761,7 @@ fn document_bootstrap(
   globalThis.console = globalThis.console || {{
     log() {{}}, info() {{}}, warn() {{}}, error() {{}}
   }};
+  globalThis.__glassQueueResizeObserverChanges = queueResizeObserverChanges;
   if (Array.isArray(host.storage_events) && host.storage_events.length > 0) {{
     globalThis.__glassDispatchStorageEvents(host.storage_events);
   }}

@@ -4,7 +4,7 @@ use super::diagnostics::{NativeDiagnostic, NativeDiagnosticSink, NativeDiagnosti
 use super::error::NativeEngineError;
 use super::interaction::{NativeEventKind, validate_native_edit_key, validate_native_key};
 use super::javascript::NativeScriptCommand;
-use super::layout::NativeLayoutSnapshot;
+use super::layout::{NativeLayoutSnapshot, NativePoint};
 use super::paint::NativeDisplayList;
 use super::raster::NativeSurface;
 use super::resource_loader::NativeNavigationRequest;
@@ -230,6 +230,30 @@ pub(crate) struct NativeScriptDocumentSnapshot {
     pub(crate) elements: Vec<NativeScriptElementSnapshot>,
     #[serde(default)]
     pub(crate) nodes: Vec<NativeScriptNodeSnapshot>,
+    #[serde(default)]
+    pub(crate) geometry: Vec<NativeScriptGeometrySnapshot>,
+    #[serde(default)]
+    pub(crate) scroll_x: u32,
+    #[serde(default)]
+    pub(crate) scroll_y: u32,
+}
+
+/// Layout-backed geometry transferred to one JavaScript document realm.
+/// Coordinates are viewport-relative and may be negative after root scrolling;
+/// dimensions remain non-negative integer CSS pixels in the bounded native
+/// layout model.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NativeScriptGeometrySnapshot {
+    pub(crate) node_index: u32,
+    pub(crate) x: i64,
+    pub(crate) y: i64,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) content_x: i64,
+    pub(crate) content_y: i64,
+    pub(crate) content_width: u32,
+    pub(crate) content_height: u32,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -868,7 +892,38 @@ impl NativeDocument {
             visible_text,
             elements,
             nodes,
+            geometry: Vec::new(),
+            scroll_x: 0,
+            scroll_y: 0,
         }
+    }
+
+    pub(crate) fn script_snapshot_with_layout(
+        &self,
+        max_text_bytes: usize,
+        viewport: Viewport,
+        scroll_offset: NativePoint,
+    ) -> Result<NativeScriptDocumentSnapshot, NativeEngineError> {
+        let mut snapshot = self.script_snapshot(max_text_bytes);
+        let layout = self.layout(viewport)?.with_scroll_offset(scroll_offset)?;
+        snapshot.geometry = layout
+            .boxes
+            .iter()
+            .map(|layout_box| NativeScriptGeometrySnapshot {
+                node_index: layout_box.node_id.index(),
+                x: i64::from(layout_box.rect.x) - i64::from(layout.scroll_offset.x),
+                y: i64::from(layout_box.rect.y) - i64::from(layout.scroll_offset.y),
+                width: layout_box.rect.width,
+                height: layout_box.rect.height,
+                content_x: i64::from(layout_box.content_rect.x) - i64::from(layout.scroll_offset.x),
+                content_y: i64::from(layout_box.content_rect.y) - i64::from(layout.scroll_offset.y),
+                content_width: layout_box.content_rect.width,
+                content_height: layout_box.content_rect.height,
+            })
+            .collect();
+        snapshot.scroll_x = layout.scroll_offset.x;
+        snapshot.scroll_y = layout.scroll_offset.y;
+        Ok(snapshot)
     }
 
     pub(crate) fn page_script_sources(

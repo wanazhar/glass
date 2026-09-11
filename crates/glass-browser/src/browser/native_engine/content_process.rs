@@ -25,6 +25,7 @@ use super::javascript::{
     load_web_storage_profile, order_page_scripts, save_web_storage_profile,
     static_module_specifiers, storage_key,
 };
+use super::layout::NativePoint;
 use super::origin::NativeOrigin;
 use super::resource_loader::{
     MAX_NATIVE_RESPONSE_HEADER_BYTES, MAX_NATIVE_RESPONSE_HEADER_NAME_BYTES,
@@ -126,6 +127,7 @@ pub(crate) struct NativeContentProcess {
     next_request_id: u64,
     healthy: bool,
     failure_kind: Option<NativeWorkerFailureKind>,
+    scroll_offset: NativePoint,
     #[cfg(windows)]
     sandbox: NativeContentSandbox,
 }
@@ -185,6 +187,7 @@ impl NativeContentProcess {
             next_request_id: 1,
             healthy: true,
             failure_kind: None,
+            scroll_offset: NativePoint { x: 0, y: 0 },
             #[cfg(windows)]
             sandbox,
         };
@@ -581,6 +584,52 @@ impl NativeContentProcess {
             });
         }
         decode_script_response(&response, id)
+    }
+
+    pub(crate) async fn sync_scroll_offset(
+        &mut self,
+        scroll_offset: NativePoint,
+    ) -> Result<(), NativeEngineError> {
+        if self.scroll_offset == scroll_offset {
+            return Ok(());
+        }
+        let id = self.next_id();
+        let response = match timeout(
+            CONTENT_PROCESS_SCRIPT_TIMEOUT,
+            self.exchange(json!({
+                "kind": "scroll_sync",
+                "id": id,
+                "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
+                "x": scroll_offset.x,
+                "y": scroll_offset.y,
+            })),
+        )
+        .await
+        {
+            Ok(response) => response?,
+            Err(_) => {
+                self.mark_failed(NativeWorkerFailureKind::Timeout);
+                let _ = self.child.start_kill();
+                return Err(NativeEngineError::worker_failure(
+                    "content process scroll synchronization",
+                    NativeWorkerFailureKind::Timeout,
+                    "content process scroll synchronization exceeded its deadline",
+                ));
+            }
+        };
+        let result = require_response_kind(
+            &response,
+            "scroll_synced",
+            id,
+            "content process scroll synchronization",
+        );
+        if result.is_err() {
+            self.mark_failed(NativeWorkerFailureKind::InvalidTransfer);
+            let _ = self.child.start_kill();
+        } else {
+            self.scroll_offset = scroll_offset;
+        }
+        result
     }
 
     pub(crate) async fn sync_window_proxies(
@@ -2200,6 +2249,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut document_url = None;
     let mut document_origin = None;
     let mut viewport = Viewport::default();
+    let mut scroll_offset = NativePoint { x: 0, y: 0 };
     let mut resource_loader = None;
     let mut javascript_runtime: Option<NativeJavaScriptRuntime> = None;
     let mut storage_state = NativeWebStorageState::default();
@@ -2312,6 +2362,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         opener_window_name = requested_opener_window_name.to_owned();
                         opener_url = requested_opener_url.to_owned();
                         frame_script_context = requested_frame_context;
+                        scroll_offset = NativePoint { x: 0, y: 0 };
                         running = true;
                         json!({"kind":"started","id":id})
                     }
@@ -2320,6 +2371,33 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             }
             "commit" if protocol_matches(&request) && running => {
                 json!({"kind":"committed","id":id})
+            }
+            "scroll_sync" if protocol_matches(&request) && running => {
+                let x = request
+                    .get("x")
+                    .and_then(Value::as_u64)
+                    .and_then(|value| u32::try_from(value).ok())
+                    .ok_or_else(|| {
+                        NativeEngineError::invalid(
+                            "content-process scroll x",
+                            "must be a non-negative integer",
+                        )
+                    })?;
+                let y = request
+                    .get("y")
+                    .and_then(Value::as_u64)
+                    .and_then(|value| u32::try_from(value).ok())
+                    .ok_or_else(|| {
+                        NativeEngineError::invalid(
+                            "content-process scroll y",
+                            "must be a non-negative integer",
+                        )
+                    })?;
+                scroll_offset = NativePoint { x, y };
+                if let Some(runtime) = javascript_runtime.as_ref() {
+                    runtime.set_scroll_offset(scroll_offset);
+                }
+                json!({"kind":"scroll_synced","id":id})
             }
             "cookies" if protocol_matches(&request) && running => {
                 let requested_url = request
@@ -2497,6 +2575,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             runtime.set_frame_id(frame_id.clone());
                             runtime.set_frame_script_context(frame_script_context.clone());
                             runtime.set_frame_script_bindings(frame_script_bindings.clone());
+                            runtime.set_scroll_offset(scroll_offset);
                         }
                         let document_cookie = resource_loader
                             .as_ref()
@@ -2708,6 +2787,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             runtime.set_frame_id(frame_id.clone());
                             runtime.set_frame_script_context(frame_script_context.clone());
                             runtime.set_frame_script_bindings(frame_script_bindings.clone());
+                            runtime.set_scroll_offset(scroll_offset);
                             javascript_runtime = Some(runtime);
                         }
                         Err(error) => {
@@ -2718,6 +2798,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     }
                 }
                 let runtime = javascript_runtime.as_ref().expect("runtime initialized");
+                runtime.set_scroll_offset(scroll_offset);
                 let Some(document_url) = document_url.as_deref() else {
                     let response = content_error_response(
                         id,

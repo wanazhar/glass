@@ -233,6 +233,12 @@ pub(crate) enum NativeScriptCommand {
     ReportValidity {
         node_index: u32,
     },
+    /// A same-origin frame construction batch. Parent projections collect
+    /// DOM mutations so the child owner can commit temporary node identities
+    /// in one transaction.
+    FrameScriptBatch {
+        commands: Vec<NativeScriptCommand>,
+    },
     /// Apply one ordinary DOM command in a same-origin embedded browsing
     /// context. The command is routed by the owning browser topology after
     /// the caller's script returns; it never transfers a native engine or
@@ -8131,6 +8137,17 @@ fn document_bootstrap(
     }}
     return true;
   }};
+  globalThis.__glassQueueNativeCommands = (incoming) => {{
+    if (!Array.isArray(incoming)) throw new TypeError("native frame command batch must be an array");
+    for (const command of incoming) {{
+      if (!command || typeof command !== "object") throw new TypeError("native frame command is invalid");
+      if (String(command.kind) === "frameScript" || String(command.kind) === "frameScriptBatch") {{
+        throw new TypeError("nested native frame commands are not allowed");
+      }}
+      pushCommand(command);
+    }}
+    return true;
+  }};
   for (const element of elements) {{
     if (!Object.prototype.hasOwnProperty.call(element, "parentElement")) {{
       Object.defineProperty(element, "parentElement", {{
@@ -8759,12 +8776,30 @@ fn document_bootstrap(
   const frameIdentifier = (binding) => String(
     binding && (binding.frameId || binding.contextId) || ""
   );
+  const frameBatchableCommand = (command) => command && [
+    "setValue", "setSelection", "setChecked", "setSelected",
+    "setAttribute", "removeAttribute", "setTextContent", "setInnerHtml",
+    "removeNode", "createElement", "createTextNode", "appendChild",
+    "insertBefore", "setCustomValidity",
+  ].includes(String(command.kind));
   const queueFrameCommand = (binding, command) => {{
     if (!binding || binding.sameOrigin !== true) throw crossOriginSecurityError("document");
     const frameId = frameIdentifier(binding);
     const sourceFrameId = String(host.frame_id || host.context_id || "");
     if (!frameId || !sourceFrameId || frameId === sourceFrameId) {{
       throw new TypeError("native frame command target is invalid");
+    }}
+    const target = activeCommands();
+    const previous = target[target.length - 1];
+    if (frameBatchableCommand(command)
+        && previous && previous.kind === "frameScript"
+        && previous.frame_id === frameId
+        && previous.source_frame_id === sourceFrameId
+        && (frameBatchableCommand(previous.command)
+          || previous.command && previous.command.kind === "frameScriptBatch")) {{
+      if (previous.command.kind === "frameScriptBatch") previous.command.commands.push(command);
+      else previous.command = {{ kind: "frameScriptBatch", commands: [previous.command, command] }};
+      return;
     }}
     pushCommand({{
       kind: "frameScript",
@@ -8878,6 +8913,7 @@ fn document_bootstrap(
           if (key === "class") this.className = stringValue;
           if (key === "disabled") this.disabled = true;
           if (key === "hidden") this.hidden = true;
+          projected.__glassSyncContent();
           queueFrameCommand(currentBinding, {{ kind: "setAttribute", node_index: entry.nodeIndex, name: key, value: stringValue }});
         }},
         removeAttribute(name) {{
@@ -8887,29 +8923,165 @@ fn document_bootstrap(
           if (key === "class") this.className = "";
           if (key === "disabled") this.disabled = false;
           if (key === "hidden") this.hidden = false;
+          projected.__glassSyncContent();
           queueFrameCommand(currentBinding, {{ kind: "removeAttribute", node_index: entry.nodeIndex, name: key }});
+        }},
+        appendChild(child) {{
+          if (!child || typeof child.nodeIndex !== "number") throw new TypeError("child must be a native node");
+          if (child === projected) throw new TypeError("a node cannot contain itself");
+          let ancestor = projected;
+          while (ancestor) {{
+            if (ancestor === child) throw new TypeError("a node cannot contain one of its ancestors");
+            ancestor = ancestor.__glassParent || null;
+          }}
+          const oldParent = child.__glassParent || null;
+          if (oldParent && Array.isArray(oldParent.__glassChildren)) {{
+            oldParent.__glassChildren = oldParent.__glassChildren.filter(candidate => candidate !== child);
+            oldParent.__glassSyncContent();
+          }}
+          projected.__glassChildren = projected.__glassChildren.filter(candidate => candidate !== child);
+          projected.__glassChildren.push(child);
+          child.__glassParent = projected;
+          child.parentIndex = projected.nodeIndex;
+          if (projected.__glassAttached) registerFrameSubtree(child);
+          else detachFrameSubtree(child);
+          projected.__glassSyncContent();
+          queueFrameCommand(currentBinding, {{ kind: "appendChild", parent_index: entry.nodeIndex, child_index: child.nodeIndex }});
+          return child;
+        }},
+        insertBefore(child, before) {{
+          if (before == null) return this.appendChild(child);
+          if (!child || typeof child.nodeIndex !== "number"
+              || typeof before.nodeIndex !== "number") throw new TypeError("insertBefore requires native nodes");
+          if (before.__glassParent !== projected) throw new TypeError("reference node is not a child");
+          if (child === before) return child;
+          let ancestor = projected;
+          while (ancestor) {{
+            if (ancestor === child) throw new TypeError("a node cannot contain one of its ancestors");
+            ancestor = ancestor.__glassParent || null;
+          }}
+          const oldParent = child.__glassParent || null;
+          if (oldParent && Array.isArray(oldParent.__glassChildren)) {{
+            oldParent.__glassChildren = oldParent.__glassChildren.filter(candidate => candidate !== child);
+            oldParent.__glassSyncContent();
+          }}
+          projected.__glassChildren = projected.__glassChildren.filter(candidate => candidate !== child);
+          const index = projected.__glassChildren.indexOf(before);
+          projected.__glassChildren.splice(index < 0 ? projected.__glassChildren.length : index, 0, child);
+          child.__glassParent = projected;
+          child.parentIndex = projected.nodeIndex;
+          if (projected.__glassAttached) registerFrameSubtree(child);
+          else detachFrameSubtree(child);
+          projected.__glassSyncContent();
+          queueFrameCommand(currentBinding, {{
+            kind: "insertBefore",
+            parent_index: entry.nodeIndex,
+            child_index: child.nodeIndex,
+            before_index: before.nodeIndex,
+          }});
+          return child;
         }},
         remove() {{
           if (projected.parentIndex === null) return;
+          const parent = projected.__glassParent;
+          if (parent && Array.isArray(parent.__glassChildren)) {{
+            parent.__glassChildren = parent.__glassChildren.filter(candidate => candidate !== projected);
+          }}
+          projected.__glassParent = null;
           projected.parentIndex = null;
+          detachFrameSubtree(projected);
+          if (parent) parent.__glassSyncContent();
           queueFrameCommand(currentBinding, {{ kind: "removeNode", node_index: entry.nodeIndex }});
         }},
         removeChild(child) {{
-          if (!child || Number(child.parentIndex) !== Number(entry.nodeIndex)) {{
+          if (!child || child.__glassParent !== projected) {{
             throw new TypeError("child is not contained by this element");
           }}
           child.remove();
           return child;
         }},
       }};
+      Object.defineProperty(projected, "__glassChildren", {{
+        enumerable: false,
+        configurable: false,
+        writable: true,
+        value: [],
+      }});
+      Object.defineProperty(projected, "__glassParent", {{
+        enumerable: false,
+        configurable: false,
+        writable: true,
+        value: null,
+      }});
+      Object.defineProperty(projected, "__glassCreated", {{
+        enumerable: false,
+        configurable: false,
+        writable: true,
+        value: false,
+      }});
+      Object.defineProperty(projected, "__glassAttached", {{
+        enumerable: false,
+        configurable: false,
+        writable: true,
+        value: true,
+      }});
+      Object.defineProperty(projected, "__glassSyncContent", {{
+        enumerable: false,
+        configurable: false,
+        value() {{
+          if (projected.__glassChildren.length > 0) {{
+            innerHtml = projected.__glassChildren.map(child => child.__glassMarkup).join("");
+            textContent = projected.__glassChildren.map(child => child.__glassTextValue).join("");
+          }}
+          if (projected.__glassParent) projected.__glassParent.__glassSyncContent();
+        }},
+      }});
+      Object.defineProperty(projected, "__glassTextValue", {{
+        enumerable: false,
+        configurable: false,
+        get() {{ return textContent; }},
+      }});
+      Object.defineProperty(projected, "__glassMarkup", {{
+        enumerable: false,
+        configurable: false,
+        get() {{
+          const markup = Object.keys(attributes)
+            .sort()
+            .map(name => " " + name + "=\"" + escapeHtmlText(attributes[name]).replace(/\"/g, "&quot;") + "\"")
+            .join("");
+          const opening = "<" + projected.localName + markup + ">";
+          if (["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"].includes(projected.localName)) return opening;
+          const content = projected.__glassChildren.length > 0
+            ? projected.__glassChildren.map(child => child.__glassMarkup).join("")
+            : innerHtml;
+          return opening + content + "</" + projected.localName + ">";
+        }},
+      }});
+      Object.defineProperty(projected, "parentElement", {{
+        enumerable: false,
+        configurable: false,
+        get() {{ return projected.__glassParent || null; }},
+      }});
+      Object.defineProperty(projected, "parentNode", {{
+        enumerable: false,
+        configurable: false,
+        get() {{ return projected.parentElement; }},
+      }});
       for (const property of ["textContent", "innerText"]) {{
         Object.defineProperty(projected, property, {{
-          enumerable: true,
-          configurable: false,
+            enumerable: true,
+            configurable: false,
             get() {{ return textContent; }},
             set(next) {{
+              for (const child of projected.__glassChildren) {{
+                child.__glassParent = null;
+                child.parentIndex = null;
+                child.__glassAttached = false;
+              }}
+              projected.__glassChildren = [];
               textContent = String(next);
               innerHtml = escapeHtmlText(textContent);
+              projected.__glassSyncContent();
               queueFrameCommand(currentBinding, {{ kind: "setTextContent", node_index: entry.nodeIndex, value: textContent }});
             }},
           }});
@@ -8919,8 +9091,15 @@ fn document_bootstrap(
         configurable: false,
         get() {{ return innerHtml; }},
         set(next) {{
+          for (const child of projected.__glassChildren) {{
+            child.__glassParent = null;
+            child.parentIndex = null;
+            child.__glassAttached = false;
+          }}
+          projected.__glassChildren = [];
           innerHtml = String(next);
           textContent = textFromHtml(innerHtml);
+          projected.__glassSyncContent();
           queueFrameCommand(currentBinding, {{ kind: "setInnerHtml", node_index: entry.nodeIndex, value: innerHtml }});
         }},
       }});
@@ -8979,8 +9158,239 @@ fn document_bootstrap(
       }}
       return projected;
     }});
-    const find = (selector) => frameElements.filter((element) => projectedFrameMatches(element, selector));
-    const findById = (id) => frameElements.find((element) => element.id === String(id)) || null;
+    const registerFrameSubtree = (node) => {{
+      if (!frameElements.includes(node)) frameElements.push(node);
+      node.__glassAttached = true;
+      for (const child of node.__glassChildren || []) registerFrameSubtree(child);
+    }};
+    const detachFrameSubtree = (node) => {{
+      node.__glassAttached = false;
+      for (const child of node.__glassChildren || []) detachFrameSubtree(child);
+    }};
+    for (const element of frameElements) {{
+      element.__glassChildren = [];
+      element.__glassParent = null;
+      element.__glassAttached = true;
+    }}
+    for (const element of frameElements) {{
+      if (element.parentIndex === null) continue;
+      const parent = frameElements.find(candidate => candidate.nodeIndex === element.parentIndex);
+      if (!parent) continue;
+      parent.__glassChildren.push(element);
+      element.__glassParent = parent;
+    }}
+    const makeFrameDetachedElement = (tagName) => {{
+      const normalized = String(tagName).toLowerCase();
+      if (!/^[A-Za-z][A-Za-z0-9:_-]*$/.test(normalized)) throw new TypeError("invalid element name");
+      const nodeIndex = allocateTemporaryNodeIndex();
+      const attributes = {{}};
+      let textContent = "";
+      let innerHtml = "";
+      let value = "";
+      let checked = false;
+      let selected = false;
+      const projected = {{
+        nodeIndex,
+        parentIndex: null,
+        tagName: normalized.toUpperCase(),
+        nodeType: 1,
+        nodeName: normalized.toUpperCase(),
+        localName: normalized,
+        id: "",
+        className: "",
+        value: "",
+        checked: false,
+        selected: false,
+        disabled: false,
+        hidden: false,
+        getAttribute(name) {{
+          const key = String(name).toLowerCase();
+          for (const attribute of Object.keys(attributes)) {{
+            if (attribute.toLowerCase() === key) return attributes[attribute];
+          }}
+          return null;
+        }},
+        hasAttribute(name) {{ return this.getAttribute(name) !== null; }},
+        setAttribute(name, nextValue) {{
+          const key = String(name).toLowerCase();
+          const stringValue = String(nextValue);
+          attributes[key] = stringValue;
+          if (key === "id") projected.id = stringValue;
+          if (key === "class") projected.className = stringValue;
+          if (key === "disabled") projected.disabled = true;
+          if (key === "hidden") projected.hidden = true;
+          projected.__glassSyncContent();
+          queueFrameCommand(currentBinding, {{ kind: "setAttribute", node_index: nodeIndex, name: key, value: stringValue }});
+        }},
+        removeAttribute(name) {{
+          const key = String(name).toLowerCase();
+          delete attributes[key];
+          if (key === "id") projected.id = "";
+          if (key === "class") projected.className = "";
+          if (key === "disabled") projected.disabled = false;
+          if (key === "hidden") projected.hidden = false;
+          projected.__glassSyncContent();
+          queueFrameCommand(currentBinding, {{ kind: "removeAttribute", node_index: nodeIndex, name: key }});
+        }},
+        appendChild(child) {{
+          if (!child || typeof child.nodeIndex !== "number") throw new TypeError("child must be a native node");
+          if (child === projected) throw new TypeError("a node cannot contain itself");
+          let ancestor = projected;
+          while (ancestor) {{
+            if (ancestor === child) throw new TypeError("a node cannot contain one of its ancestors");
+            ancestor = ancestor.__glassParent || null;
+          }}
+          const oldParent = child.__glassParent || null;
+          if (oldParent && Array.isArray(oldParent.__glassChildren)) {{
+            oldParent.__glassChildren = oldParent.__glassChildren.filter(candidate => candidate !== child);
+            oldParent.__glassSyncContent();
+          }}
+          projected.__glassChildren = projected.__glassChildren.filter(candidate => candidate !== child);
+          projected.__glassChildren.push(child);
+          child.__glassParent = projected;
+          child.parentIndex = nodeIndex;
+          if (projected.__glassAttached) registerFrameSubtree(child);
+          else detachFrameSubtree(child);
+          projected.__glassSyncContent();
+          queueFrameCommand(currentBinding, {{ kind: "appendChild", parent_index: nodeIndex, child_index: child.nodeIndex }});
+          return child;
+        }},
+        insertBefore(child, before) {{
+          if (before == null) return this.appendChild(child);
+          if (!child || typeof child.nodeIndex !== "number"
+              || typeof before.nodeIndex !== "number") throw new TypeError("insertBefore requires native nodes");
+          if (before.__glassParent !== projected) throw new TypeError("reference node is not a child");
+          if (child === before) return child;
+          let ancestor = projected;
+          while (ancestor) {{
+            if (ancestor === child) throw new TypeError("a node cannot contain one of its ancestors");
+            ancestor = ancestor.__glassParent || null;
+          }}
+          const oldParent = child.__glassParent || null;
+          if (oldParent && Array.isArray(oldParent.__glassChildren)) {{
+            oldParent.__glassChildren = oldParent.__glassChildren.filter(candidate => candidate !== child);
+            oldParent.__glassSyncContent();
+          }}
+          projected.__glassChildren = projected.__glassChildren.filter(candidate => candidate !== child);
+          const index = projected.__glassChildren.indexOf(before);
+          projected.__glassChildren.splice(index < 0 ? projected.__glassChildren.length : index, 0, child);
+          child.__glassParent = projected;
+          child.parentIndex = nodeIndex;
+          if (projected.__glassAttached) registerFrameSubtree(child);
+          else detachFrameSubtree(child);
+          projected.__glassSyncContent();
+          queueFrameCommand(currentBinding, {{ kind: "insertBefore", parent_index: nodeIndex, child_index: child.nodeIndex, before_index: before.nodeIndex }});
+          return child;
+        }},
+        remove() {{
+          if (projected.parentIndex === null) return;
+          const parent = projected.__glassParent;
+          if (parent && Array.isArray(parent.__glassChildren)) parent.__glassChildren = parent.__glassChildren.filter(candidate => candidate !== projected);
+          projected.__glassParent = null;
+          projected.parentIndex = null;
+          detachFrameSubtree(projected);
+          if (parent) parent.__glassSyncContent();
+          queueFrameCommand(currentBinding, {{ kind: "removeNode", node_index: nodeIndex }});
+        }},
+        removeChild(child) {{
+          if (!child || child.__glassParent !== projected) throw new TypeError("child is not contained by this element");
+          child.remove();
+          return child;
+        }},
+      }};
+      Object.defineProperty(projected, "__glassChildren", {{ enumerable: false, configurable: false, writable: true, value: [] }});
+      Object.defineProperty(projected, "__glassParent", {{ enumerable: false, configurable: false, writable: true, value: null }});
+      Object.defineProperty(projected, "__glassCreated", {{ enumerable: false, configurable: false, writable: true, value: true }});
+      Object.defineProperty(projected, "__glassAttached", {{ enumerable: false, configurable: false, writable: true, value: false }});
+      Object.defineProperty(projected, "__glassSyncContent", {{
+        enumerable: false,
+        configurable: false,
+        value() {{
+          if (projected.__glassChildren.length > 0) {{
+            innerHtml = projected.__glassChildren.map(child => child.__glassMarkup).join("");
+            textContent = projected.__glassChildren.map(child => child.__glassTextValue).join("");
+          }}
+          if (projected.__glassParent) projected.__glassParent.__glassSyncContent();
+        }},
+      }});
+      Object.defineProperty(projected, "__glassTextValue", {{ enumerable: false, configurable: false, get() {{ return textContent; }} }});
+      Object.defineProperty(projected, "__glassMarkup", {{
+        enumerable: false,
+        configurable: false,
+        get() {{
+          const markup = Object.keys(attributes).sort().map(name => " " + name + "=\"" + escapeHtmlText(attributes[name]).replace(/\"/g, "&quot;") + "\"").join("");
+          const opening = "<" + normalized + markup + ">";
+          if (["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"].includes(normalized)) return opening;
+          const content = projected.__glassChildren.length > 0 ? projected.__glassChildren.map(child => child.__glassMarkup).join("") : innerHtml;
+          return opening + content + "</" + normalized + ">";
+        }},
+      }});
+      Object.defineProperty(projected, "parentElement", {{ enumerable: false, configurable: false, get() {{ return projected.__glassParent || null; }} }});
+      Object.defineProperty(projected, "parentNode", {{ enumerable: false, configurable: false, get() {{ return projected.parentElement; }} }});
+      for (const property of ["textContent", "innerText"]) {{
+        Object.defineProperty(projected, property, {{
+          enumerable: true,
+          configurable: false,
+          get() {{ return textContent; }},
+          set(next) {{
+            for (const child of projected.__glassChildren) {{ child.__glassParent = null; child.parentIndex = null; detachFrameSubtree(child); }}
+            projected.__glassChildren = [];
+            textContent = String(next);
+            innerHtml = escapeHtmlText(textContent);
+            projected.__glassSyncContent();
+            queueFrameCommand(currentBinding, {{ kind: "setTextContent", node_index: nodeIndex, value: textContent }});
+          }},
+        }});
+      }}
+      Object.defineProperty(projected, "innerHTML", {{
+        enumerable: true,
+        configurable: false,
+        get() {{ return innerHtml; }},
+        set(next) {{
+          for (const child of projected.__glassChildren) {{ child.__glassParent = null; child.parentIndex = null; detachFrameSubtree(child); }}
+          projected.__glassChildren = [];
+          innerHtml = String(next);
+          textContent = textFromHtml(innerHtml);
+          projected.__glassSyncContent();
+          queueFrameCommand(currentBinding, {{ kind: "setInnerHtml", node_index: nodeIndex, value: innerHtml }});
+        }},
+      }});
+      Object.defineProperty(projected, "value", {{ enumerable: true, configurable: false, get() {{ return value; }}, set(next) {{ value = String(next); queueFrameCommand(currentBinding, {{ kind: "setValue", node_index: nodeIndex, value }}); }} }});
+      Object.defineProperty(projected, "checked", {{ enumerable: true, configurable: false, get() {{ return checked; }}, set(next) {{ checked = Boolean(next); queueFrameCommand(currentBinding, {{ kind: "setChecked", node_index: nodeIndex, checked }}); }} }});
+      Object.defineProperty(projected, "selected", {{ enumerable: true, configurable: false, get() {{ return selected; }}, set(next) {{ selected = Boolean(next); queueFrameCommand(currentBinding, {{ kind: "setSelected", node_index: nodeIndex, selected }}); }} }});
+      Object.defineProperty(projected, "ownerDocument", {{ enumerable: false, configurable: false, get() {{ return frameDocument; }} }});
+      try {{ Object.setPrototypeOf(projected, elementPrototypeFor(projected.tagName)); }} catch (_error) {{}}
+      queueFrameCommand(currentBinding, {{ kind: "createElement", node_index: nodeIndex, tag_name: normalized }});
+      return projected;
+    }};
+    const makeFrameDetachedText = (value) => {{
+      let textContent = String(value);
+      if (textContent.length > {storage_value_limit}) throw new RangeError("native text node exceeds its limit");
+      const nodeIndex = allocateTemporaryNodeIndex();
+      const text = {{ nodeIndex, parentIndex: null, nodeType: 3, nodeName: "#text", nodeValue: textContent }};
+      Object.defineProperty(text, "__glassParent", {{ enumerable: false, configurable: false, writable: true, value: null }});
+      Object.defineProperty(text, "__glassCreated", {{ enumerable: false, configurable: false, writable: true, value: true }});
+      Object.defineProperty(text, "__glassAttached", {{ enumerable: false, configurable: false, writable: true, value: false }});
+      Object.defineProperty(text, "__glassTextValue", {{ enumerable: false, configurable: false, get() {{ return textContent; }} }});
+      Object.defineProperty(text, "__glassMarkup", {{ enumerable: false, configurable: false, get() {{ return escapeHtmlText(textContent); }} }});
+      Object.defineProperty(text, "parentElement", {{ enumerable: false, configurable: false, get() {{ return text.__glassParent || null; }} }});
+      Object.defineProperty(text, "parentNode", {{ enumerable: false, configurable: false, get() {{ return text.parentElement; }} }});
+      Object.defineProperty(text, "textContent", {{ enumerable: true, configurable: false, get() {{ return textContent; }}, set(next) {{ textContent = String(next); if (text.__glassParent) text.__glassParent.__glassSyncContent(); queueFrameCommand(currentBinding, {{ kind: "setTextContent", node_index: nodeIndex, value: textContent }}); }} }});
+      text.remove = () => {{
+        if (text.parentIndex === null) return;
+        const parent = text.__glassParent;
+        if (parent && Array.isArray(parent.__glassChildren)) parent.__glassChildren = parent.__glassChildren.filter(candidate => candidate !== text);
+        text.__glassParent = null;
+        text.parentIndex = null;
+        detachFrameSubtree(text);
+        if (parent) parent.__glassSyncContent();
+        queueFrameCommand(currentBinding, {{ kind: "removeNode", node_index: nodeIndex }});
+      }};
+      queueFrameCommand(currentBinding, {{ kind: "createTextNode", node_index: nodeIndex, value: textContent }});
+      return text;
+    }};
+    const find = (selector) => frameElements.filter((element) => element.__glassAttached && projectedFrameMatches(element, selector));
+    const findById = (id) => frameElements.find((element) => element.__glassAttached && element.id === String(id)) || null;
     const body = frameElements.find((element) => element.tagName === "BODY") || null;
     const documentElement = frameElements.find((element) => element.tagName === "HTML") || null;
     frameDocument = {{
@@ -8996,16 +9406,20 @@ fn document_bootstrap(
         const current = frameBindingForId(currentFrameId) || currentBinding;
         return currentFrameWindow(current, ownerFrameElement, parentWindow, topWindow);
       }},
+      createElement(tagName) {{ return makeFrameDetachedElement(tagName); }},
+      createTextNode(value) {{ return makeFrameDetachedText(value); }},
       getElementById: findById,
       querySelector(selector) {{ return find(selector)[0] || null; }},
       querySelectorAll(selector) {{ return asNodeList(find(selector)); }},
       getElementsByTagName(name) {{
         const value = String(name).toLowerCase();
-        return asHtmlCollection(frameElements.filter((element) => value === "*" || element.tagName.toLowerCase() === value));
+        return asHtmlCollection(frameElements.filter((element) => element.__glassAttached
+          && (value === "*" || element.tagName.toLowerCase() === value)));
       }},
       getElementsByClassName(name) {{
         const value = String(name);
-        return asHtmlCollection(frameElements.filter((element) => element.className.split(/\s+/).includes(value)));
+        return asHtmlCollection(frameElements.filter((element) => element.__glassAttached
+          && element.className.split(/\s+/).includes(value)));
       }},
     }};
     try {{ Object.setPrototypeOf(frameDocument, DocumentNative.prototype); }} catch (_error) {{}}

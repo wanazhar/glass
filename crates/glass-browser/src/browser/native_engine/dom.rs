@@ -1650,6 +1650,7 @@ impl NativeDocument {
                 | NativeScriptCommand::CloseWindow { .. }
                 | NativeScriptCommand::NavigateWindow { .. }
                 | NativeScriptCommand::PostMessage { .. }
+                | NativeScriptCommand::FrameScriptBatch { .. }
                 | NativeScriptCommand::FrameScript { .. } => {}
                 NativeScriptCommand::SetValue { node_index, value } => {
                     self.apply_script_value(*node_index, value, &script_nodes)?;

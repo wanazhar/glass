@@ -5110,12 +5110,72 @@ struct PreparedNavigation {
 }
 
 fn frame_script_command_source(command: &NativeScriptCommand) -> Result<String, NativeEngineError> {
-    let supported = matches!(
+    let supported = match command {
+        NativeScriptCommand::FrameScriptBatch { commands } => {
+            if commands.is_empty() || commands.len() > MAX_NATIVE_EFFECTS {
+                return Err(NativeEngineError::limit(
+                    "same-origin frame script batch",
+                    MAX_NATIVE_EFFECTS,
+                    commands.len(),
+                ));
+            }
+            commands.iter().all(is_frame_script_batch_command)
+        }
+        _ => matches!(
+            command,
+            NativeScriptCommand::Focus { .. }
+                | NativeScriptCommand::Blur { .. }
+                | NativeScriptCommand::Click { .. }
+                | NativeScriptCommand::SetValue { .. }
+                | NativeScriptCommand::SetSelection { .. }
+                | NativeScriptCommand::SetChecked { .. }
+                | NativeScriptCommand::SetSelected { .. }
+                | NativeScriptCommand::SetAttribute { .. }
+                | NativeScriptCommand::RemoveAttribute { .. }
+                | NativeScriptCommand::SetTextContent { .. }
+                | NativeScriptCommand::SetInnerHtml { .. }
+                | NativeScriptCommand::RemoveNode { .. }
+                | NativeScriptCommand::CreateElement { .. }
+                | NativeScriptCommand::CreateTextNode { .. }
+                | NativeScriptCommand::AppendChild { .. }
+                | NativeScriptCommand::InsertBefore { .. }
+                | NativeScriptCommand::SetCustomValidity { .. }
+                | NativeScriptCommand::CheckValidity { .. }
+                | NativeScriptCommand::ReportValidity { .. }
+        ),
+    };
+    if !supported {
+        return Err(NativeEngineError::TargetNotActionable {
+            reason: "same-origin frame script command is not a DOM operation".into(),
+        });
+    }
+    let serialized = match command {
+        NativeScriptCommand::FrameScriptBatch { commands } => serde_json::to_string(commands),
+        _ => serde_json::to_string(command),
+    }
+    .map_err(|_| NativeEngineError::Worker {
+        operation: "serialize same-origin frame command".into(),
+        reason: "same-origin frame command could not be serialized".into(),
+    })?;
+    let source = if matches!(command, NativeScriptCommand::FrameScriptBatch { .. }) {
+        format!("globalThis.__glassQueueNativeCommands({serialized}); true")
+    } else {
+        format!("globalThis.__glassApplyNativeCommand({serialized}); true")
+    };
+    if source.len() > MAX_NATIVE_SCRIPT_BYTES {
+        return Err(NativeEngineError::limit(
+            "same-origin frame command source",
+            MAX_NATIVE_SCRIPT_BYTES,
+            source.len(),
+        ));
+    }
+    Ok(source)
+}
+
+fn is_frame_script_batch_command(command: &NativeScriptCommand) -> bool {
+    matches!(
         command,
-        NativeScriptCommand::Focus { .. }
-            | NativeScriptCommand::Blur { .. }
-            | NativeScriptCommand::Click { .. }
-            | NativeScriptCommand::SetValue { .. }
+        NativeScriptCommand::SetValue { .. }
             | NativeScriptCommand::SetSelection { .. }
             | NativeScriptCommand::SetChecked { .. }
             | NativeScriptCommand::SetSelected { .. }
@@ -5129,27 +5189,7 @@ fn frame_script_command_source(command: &NativeScriptCommand) -> Result<String, 
             | NativeScriptCommand::AppendChild { .. }
             | NativeScriptCommand::InsertBefore { .. }
             | NativeScriptCommand::SetCustomValidity { .. }
-            | NativeScriptCommand::CheckValidity { .. }
-            | NativeScriptCommand::ReportValidity { .. }
-    );
-    if !supported {
-        return Err(NativeEngineError::TargetNotActionable {
-            reason: "same-origin frame script command is not a DOM operation".into(),
-        });
-    }
-    let serialized = serde_json::to_string(command).map_err(|_| NativeEngineError::Worker {
-        operation: "serialize same-origin frame command".into(),
-        reason: "same-origin frame command could not be serialized".into(),
-    })?;
-    let source = format!("globalThis.__glassApplyNativeCommand({serialized}); true");
-    if source.len() > MAX_NATIVE_SCRIPT_BYTES {
-        return Err(NativeEngineError::limit(
-            "same-origin frame command source",
-            MAX_NATIVE_SCRIPT_BYTES,
-            source.len(),
-        ));
-    }
-    Ok(source)
+    )
 }
 
 fn native_download_filename(download_attribute: &str, url: &str) -> String {

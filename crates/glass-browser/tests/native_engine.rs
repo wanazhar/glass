@@ -32713,6 +32713,137 @@ fn native_svg_transform_variants_bound_shared_geometry() {
     }));
 }
 
+#[test]
+fn native_svg_viewbox_preserve_aspect_ratio_maps_shared_geometry() {
+    let render = |viewbox: &str, preserve: Option<&str>, shape: &str| {
+        let preserve_attribute = preserve
+            .map(|value| format!("preserveAspectRatio='{value}'"))
+            .unwrap_or_default();
+        let markup = format!(
+            "<div style='width:48px;height:28px'><svg width='40' height='20' viewBox='{viewbox}' {preserve_attribute}>{shape}</svg></div>"
+        );
+        let document = NativeDocument::parse(&markup, &NativeEngineLimits::default()).unwrap();
+        let node_id = document.resolve_target("id=shape").unwrap();
+        let viewport = Viewport {
+            width: 48,
+            height: 28,
+            device_scale_factor_milli: 1000,
+        };
+        let layout = document.layout(viewport).unwrap();
+        let bounds = layout.box_for(node_id).unwrap();
+        let list = document.display_list(viewport).unwrap();
+        let points = list
+            .commands
+            .iter()
+            .find_map(|command| {
+                matches!(command, NativeDisplayCommand::SvgPolygonFill { node_id: command_node, .. }
+                    if *command_node == node_id)
+                .then(|| match command {
+                    NativeDisplayCommand::SvgPolygonFill { points, .. } => points.clone(),
+                    _ => unreachable!(),
+                })
+            })
+            .unwrap();
+        (bounds, points)
+    };
+
+    let (scaled_bounds, scaled_points) = render(
+        "0 0 20 10",
+        None,
+        "<rect id='shape' x='1' y='1' width='4' height='3' fill='blue'></rect>",
+    );
+    assert_eq!(
+        scaled_bounds,
+        NativeRect {
+            x: 2,
+            y: 2,
+            width: 9,
+            height: 7,
+        }
+    );
+    assert_eq!(
+        scaled_points,
+        vec![
+            NativePoint { x: 2, y: 2 },
+            NativePoint { x: 10, y: 2 },
+            NativePoint { x: 10, y: 8 },
+            NativePoint { x: 2, y: 8 },
+        ]
+    );
+
+    let (meet_bounds, meet_points) = render(
+        "0 0 10 20",
+        Some("xMidYMid meet"),
+        "<rect id='shape' x='0' y='0' width='10' height='20' fill='red'></rect>",
+    );
+    assert_eq!(
+        meet_bounds,
+        NativeRect {
+            x: 15,
+            y: 0,
+            width: 11,
+            height: 21,
+        }
+    );
+    assert_eq!(
+        meet_points,
+        vec![
+            NativePoint { x: 15, y: 0 },
+            NativePoint { x: 25, y: 0 },
+            NativePoint { x: 25, y: 20 },
+            NativePoint { x: 15, y: 20 },
+        ]
+    );
+
+    let (none_bounds, none_points) = render(
+        "0 0 10 20",
+        Some("none"),
+        "<rect id='shape' x='0' y='0' width='10' height='20' fill='green'></rect>",
+    );
+    assert_eq!(
+        none_bounds,
+        NativeRect {
+            x: 0,
+            y: 0,
+            width: 41,
+            height: 21,
+        }
+    );
+    assert_eq!(
+        none_points,
+        vec![
+            NativePoint { x: 0, y: 0 },
+            NativePoint { x: 40, y: 0 },
+            NativePoint { x: 40, y: 20 },
+            NativePoint { x: 0, y: 20 },
+        ]
+    );
+
+    let (slice_bounds, slice_points) = render(
+        "0 0 10 20",
+        Some("xMaxYMax slice"),
+        "<rect id='shape' x='0' y='15' width='10' height='5' fill='yellow'></rect>",
+    );
+    assert_eq!(
+        slice_bounds,
+        NativeRect {
+            x: 0,
+            y: 0,
+            width: 41,
+            height: 21,
+        }
+    );
+    assert_eq!(
+        slice_points,
+        vec![
+            NativePoint { x: 0, y: 0 },
+            NativePoint { x: 40, y: 0 },
+            NativePoint { x: 40, y: 20 },
+            NativePoint { x: 0, y: 20 },
+        ]
+    );
+}
+
 #[tokio::test]
 async fn native_local_namespace_dom_preserves_svg_mathml_and_foreign_content() {
     let mut engine = NativeEngine::new(NativeEngineConfig::default().with_initial_url(

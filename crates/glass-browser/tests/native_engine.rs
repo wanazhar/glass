@@ -264,7 +264,7 @@ async fn native_content_process_script_exposes_web_idl_identity() {
         let (mut stream, _) = listener.accept().await.unwrap();
         let request = read_http_request(&mut stream).await;
         assert_eq!(request.split_whitespace().nth(1), Some("/identity"));
-        let body = "<html><body><input id='name'></body></html>";
+        let body = "<html><body><div style='height: 120px'></div><input id='name'></body></html>";
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
@@ -273,7 +273,13 @@ async fn native_content_process_script_exposes_web_idl_identity() {
     });
 
     let mut engine = NativeEngine::new(
-        NativeEngineConfig::default().with_initial_url(format!("http://{address}/identity")),
+        NativeEngineConfig::default()
+            .with_viewport(Viewport {
+                width: 240,
+                height: 100,
+                device_scale_factor_milli: 1000,
+            })
+            .with_initial_url(format!("http://{address}/identity")),
     )
     .unwrap();
     engine.initialize_async().await.unwrap();
@@ -295,6 +301,33 @@ async fn native_content_process_script_exposes_web_idl_identity() {
             "event": true,
         })
     );
+    let before_scroll = engine
+        .evaluate_async(
+            "(() => { const input = document.getElementById('name'); const rect = input.getBoundingClientRect(); return { rect: [rect.x, rect.y, rect.width, rect.height], identity: [rect instanceof DOMRect, input.getClientRects().length === 1], scroll: [window.scrollX, window.scrollY, window.pageYOffset] }; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(before_scroll["identity"], serde_json::json!([true, true]));
+    assert!(before_scroll["rect"][1].as_i64().unwrap_or_default() > 0);
+    assert_eq!(before_scroll["scroll"], serde_json::json!([0, 0, 0]));
+    engine
+        .action_async(NativeAction::Scroll {
+            delta_x: 0,
+            delta_y: 40,
+        })
+        .await
+        .unwrap();
+    let after_scroll = engine
+        .evaluate_async(
+            "[document.getElementById('name').getBoundingClientRect().y, window.scrollY]",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        after_scroll[0].as_i64(),
+        Some(before_scroll["rect"][1].as_i64().unwrap() - 40)
+    );
+    assert_eq!(after_scroll[1], serde_json::json!(40));
     assert_eq!(
         engine
             .evaluate_async(
@@ -2957,6 +2990,90 @@ async fn native_local_mutation_observer_delivers_script_dom_changes() {
                 "removed": 1,
             },
         ]])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_local_script_exposes_layout_geometry_and_resize_observer() {
+    let config = NativeEngineConfig::default()
+        .with_viewport(Viewport {
+            width: 240,
+            height: 100,
+            device_scale_factor_milli: 1000,
+        })
+        .with_fixture(
+            "fixture://layout-observer",
+            "<html><head><style>#box { width: 40px; height: 20px; } #box.grown { height: 60px; }</style></head><body><div id='spacer' style='height: 120px'></div><div id='box'>box</div></body></html>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://layout-observer");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    let initial = engine
+        .evaluate_async(
+            "(() => { const box = document.getElementById('box'); const rect = box.getBoundingClientRect(); return { rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height, right: rect.right, bottom: rect.bottom }, identity: [rect instanceof DOMRect, rect instanceof DOMRectReadOnly, box.getClientRects().length === 1], dimensions: [box.clientWidth, box.clientHeight, box.offsetWidth, box.offsetHeight, box.scrollWidth, box.scrollHeight] }; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(initial["identity"], serde_json::json!([true, true, true]));
+    assert_eq!(initial["rect"]["width"], serde_json::json!(40));
+    assert_eq!(initial["rect"]["height"], serde_json::json!(20));
+    assert_eq!(
+        initial["rect"]["right"].as_i64(),
+        Some(initial["rect"]["x"].as_i64().unwrap() + 40)
+    );
+    assert_eq!(
+        initial["rect"]["bottom"].as_i64(),
+        Some(initial["rect"]["y"].as_i64().unwrap() + 20)
+    );
+    assert_eq!(
+        initial["dimensions"],
+        serde_json::json!([40, 20, 40, 20, 40, 20])
+    );
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const box = document.getElementById('box'); globalThis.resizeLog = []; globalThis.resizeObserver = new ResizeObserver(entries => { globalThis.resizeLog.push(entries.map(entry => [entry.target.id, entry.contentRect.width, entry.contentRect.height, entry.borderBoxSize[0].inlineSize, entry.contentBoxSize[0].blockSize])); }); globalThis.resizeObserver.observe(box, { box: 'border-box' }); return true; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine.evaluate_async("globalThis.resizeLog").await.unwrap(),
+        serde_json::json!([[["box", 40, 20, 40, 20]]])
+    );
+
+    let before_scroll = engine
+        .evaluate_async("document.getElementById('box').getBoundingClientRect().y")
+        .await
+        .unwrap();
+    engine
+        .action(NativeAction::Scroll {
+            delta_x: 0,
+            delta_y: 40,
+        })
+        .unwrap();
+    let after_scroll = engine
+        .evaluate_async("document.getElementById('box').getBoundingClientRect().y")
+        .await
+        .unwrap();
+    assert_eq!(after_scroll, before_scroll.as_i64().unwrap() - 40);
+
+    engine
+        .evaluate_async("document.getElementById('box').setAttribute('class', 'grown'); true")
+        .await
+        .unwrap();
+    engine
+        .evaluate_async("document.getElementById('box').getBoundingClientRect().height")
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.evaluate_async("globalThis.resizeLog").await.unwrap(),
+        serde_json::json!([[["box", 40, 20, 40, 20]], [["box", 40, 60, 40, 60]],])
     );
     engine.close_async().await.unwrap();
 }

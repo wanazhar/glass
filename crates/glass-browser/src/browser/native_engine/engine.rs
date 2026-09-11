@@ -470,9 +470,11 @@ impl NativeEngine {
         &self,
     ) -> Result<NativeScriptDocumentSnapshot, NativeEngineError> {
         self.require_running("frame script projection")?;
-        Ok(self
-            .document
-            .script_snapshot(crate::browser_backend::MAX_TEXT_BYTES))
+        self.document.script_snapshot_with_layout(
+            crate::browser_backend::MAX_TEXT_BYTES,
+            self.config.viewport,
+            self.scroll_offset,
+        )
     }
 
     pub(crate) fn document_generation(&self) -> Result<u32, NativeEngineError> {
@@ -1369,6 +1371,7 @@ impl NativeEngine {
                 process
                     .sync_frame_script_bindings(&self.frame_script_bindings)
                     .await?;
+                process.sync_scroll_offset(self.scroll_offset).await?;
             }
             let NativeContentScriptResult {
                 value,
@@ -1436,6 +1439,7 @@ impl NativeEngine {
             javascript.set_frame_script_bindings(self.frame_script_bindings.clone());
             javascript.set_frame_script_context(self.frame_script_context.clone());
             javascript.set_frame_id(self.frame_id.clone());
+            javascript.set_scroll_offset(self.scroll_offset);
             self.javascript = Some(javascript);
         }
         self.deliver_pending_external_storage_events().await?;
@@ -1444,6 +1448,7 @@ impl NativeEngine {
             .as_ref()
             .expect("local JavaScript runtime initialized")
             .set_cookie_state(cookie);
+        self.sync_javascript_scroll_offset();
         let evaluation = self
             .javascript
             .as_ref()
@@ -2413,6 +2418,11 @@ impl NativeEngine {
                 "content process is unavailable after a failed mutation; navigate to recover it",
             ));
         }
+        self.content_process
+            .as_mut()
+            .expect("content process presence was checked")
+            .sync_scroll_offset(self.scroll_offset)
+            .await?;
         match action {
             NativeAction::Check { target } => {
                 self.action_checked_async_with_click(target, true).await
@@ -3388,6 +3398,10 @@ impl NativeEngine {
                 reason: "hashchange event source was empty".into(),
             }
         })?;
+        self.javascript
+            .as_ref()
+            .expect("local JavaScript runtime is present")
+            .set_scroll_offset(self.scroll_offset);
         let evaluation = self
             .javascript
             .as_ref()
@@ -3438,6 +3452,7 @@ impl NativeEngine {
         let Some(javascript) = self.javascript.as_ref() else {
             return Ok(None);
         };
+        javascript.set_scroll_offset(self.scroll_offset);
         let evaluation = javascript.evaluate(
             &source,
             document,
@@ -3465,6 +3480,7 @@ impl NativeEngine {
         let Some(javascript) = self.javascript.as_ref() else {
             return Ok(None);
         };
+        javascript.set_scroll_offset(self.scroll_offset);
         let evaluation = javascript.evaluate(
             &source,
             document,
@@ -3498,6 +3514,7 @@ impl NativeEngine {
         let Some(javascript) = self.javascript.as_ref() else {
             return Ok(None);
         };
+        javascript.set_scroll_offset(self.scroll_offset);
         let evaluation = javascript.evaluate(
             &source,
             document,
@@ -4045,6 +4062,7 @@ impl NativeEngine {
             self.document.set_revision(revision);
             self.url = resource.url.clone();
             self.scroll_offset = scroll_offset;
+            self.sync_javascript_scroll_offset();
             self.revision = revision;
             self.history.push(resource.url, revision, scroll_offset);
             self.record_effects(events);
@@ -4070,6 +4088,7 @@ impl NativeEngine {
         self.origin = prepared.resource.origin;
         self.document_frame_sources = prepared.frame_sources;
         self.scroll_offset = scroll_offset;
+        self.sync_javascript_scroll_offset();
         self.revision = revision;
         self.history.push(self.url.clone(), revision, scroll_offset);
         Ok(NativeActionResult {
@@ -4441,6 +4460,7 @@ impl NativeEngine {
         self.origin = prepared.resource.origin;
         self.document_frame_sources = prepared.frame_sources;
         self.scroll_offset = scroll_offset;
+        self.sync_javascript_scroll_offset();
         self.revision = revision;
         self.pending_dialogs.clear();
         let dialog_url = self.url.clone();
@@ -4561,6 +4581,7 @@ impl NativeEngine {
         self.origin = prepared.resource.origin;
         self.document_frame_sources = prepared.frame_sources;
         self.scroll_offset = scroll_offset;
+        self.sync_javascript_scroll_offset();
         self.revision = revision;
         self.pending_dialogs.clear();
         let dialog_url = self.url.clone();
@@ -4620,6 +4641,7 @@ impl NativeEngine {
         self.document.set_revision(revision);
         self.url = url.clone();
         self.scroll_offset = scroll_offset;
+        self.sync_javascript_scroll_offset();
         self.revision = revision;
         let traversing_history = matches!(&history_commit, HistoryCommit::Activate(_));
         match history_commit {
@@ -4680,6 +4702,7 @@ impl NativeEngine {
         self.document.set_revision(revision);
         self.url = url.clone();
         self.scroll_offset = scroll_offset;
+        self.sync_javascript_scroll_offset();
         self.revision = revision;
         let traversing_history = matches!(&history_commit, HistoryCommit::Activate(_));
         match history_commit {
@@ -5148,7 +5171,14 @@ impl NativeEngine {
             x: next_x,
             y: next_y,
         };
+        self.sync_javascript_scroll_offset();
         Ok(true)
+    }
+
+    fn sync_javascript_scroll_offset(&self) {
+        if let Some(javascript) = self.javascript.as_ref() {
+            javascript.set_scroll_offset(self.scroll_offset);
+        }
     }
 
     fn require_running(&self, operation: &str) -> Result<(), NativeEngineError> {

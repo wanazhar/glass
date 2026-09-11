@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-189` slice; the bounded foundation below remains
+`native-engine-browser-190` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5157,6 +5157,19 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - explicit Rust native-session construction and feature-gated CLI dispatch for
   local and bounded HTTP(S) URL shapes, including rejection of remote browser
   endpoints and unsupported browser-only flags.
+
+The completed native-engine-browser-190 slice adds generic DOM node identity
+and normalization primitives across local, HTTP(S) content-worker, and
+same-origin frame realms. `cloneNode()` creates bounded detached copies with
+attributes and optional descendants; `isSameNode()` and `isEqualNode()` use
+the host's stable object/tree projection; `compareDocumentPosition()` reports
+same-tree order, containment, and disconnectedness; and `normalize()` removes
+empty text nodes and merges adjacent text through the existing typed mutation
+transaction. The Rust transaction recognizes current-batch script-created
+nodes when detaching a child of a detached constructed tree, while ordinary
+stale references retain the attached-node guard. Exact evidence is recorded
+in `docs/plan/tasks/native-engine-browser-190.md`; complete HTML tree-builder
+and Web IDL conformance remain issue #40 promotion work.
 
 The completed native-engine-browser-189 slice adds structural DOM primitives
 across local, HTTP(S) content-worker, and same-origin frame realms. The shared

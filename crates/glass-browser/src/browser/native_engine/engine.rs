@@ -2815,34 +2815,8 @@ impl NativeEngine {
         self.document = document;
         self.revision = next_revision;
         self.history.update_current_scroll(self.scroll_offset);
-        let mut history_traversal = None;
-        for command in &history_commands {
-            match command {
-                LocalHistoryCommand::PushState { url, state } => {
-                    self.url = url.clone();
-                    self.history.push_with_state(
-                        url.clone(),
-                        next_revision,
-                        self.scroll_offset,
-                        state.clone(),
-                        true,
-                    );
-                    self.sync_javascript_history();
-                }
-                LocalHistoryCommand::ReplaceState { url, state } => {
-                    self.url = url.clone();
-                    self.history.replace_current_with_state(
-                        url.clone(),
-                        next_revision,
-                        self.scroll_offset,
-                        state.clone(),
-                        true,
-                    );
-                    self.sync_javascript_history();
-                }
-                LocalHistoryCommand::Go(delta) => history_traversal = Some(*delta),
-            }
-        }
+        let history_traversal =
+            self.apply_prepared_history_commands(history_commands, next_revision)?;
         self.record_effects(events);
         let navigation = match navigation {
             Some(ScriptNavigationTarget::Link { href, popup }) => {
@@ -3399,6 +3373,7 @@ impl NativeEngine {
         let Some(evaluation) = self.evaluate_local_events(&document, &lifecycle_events)? else {
             return Ok(None);
         };
+        let history_commands = extract_local_history_commands(&evaluation.commands);
         let mut document = self.document.clone();
         let mut effects = document.apply_script_commands_allowing_links(&evaluation.commands)?;
         let navigation = self.script_location_navigation_request(&evaluation.commands)?;
@@ -3412,7 +3387,20 @@ impl NativeEngine {
         self.document = document;
         self.revision = next_revision;
         self.history.update_current_scroll(self.scroll_offset);
+        let history_traversal =
+            self.apply_local_history_commands_at(&history_commands, next_revision)?;
         self.record_effects(effects);
+        if let Some(delta) = history_traversal
+            && delta != 0
+        {
+            if navigation.is_some() {
+                return Err(NativeEngineError::TargetNotActionable {
+                    reason: "history traversal cannot share a lifecycle event with navigation"
+                        .into(),
+                });
+            }
+            self.traverse_history_delta(delta)?;
+        }
         Ok(navigation)
     }
 
@@ -3435,6 +3423,7 @@ impl NativeEngine {
                 operation: "native beforeunload".into(),
                 reason: "beforeunload event result was invalid".into(),
             })?;
+        let history_commands = extract_local_history_commands(&evaluation.commands);
         let mut document = self.document.clone();
         let mut effects = document.apply_script_commands_allowing_links(&evaluation.commands)?;
         let navigation = self.script_location_navigation_request(&evaluation.commands)?;
@@ -3448,7 +3437,19 @@ impl NativeEngine {
         self.document = document;
         self.revision = next_revision;
         self.history.update_current_scroll(self.scroll_offset);
+        let history_traversal =
+            self.apply_local_history_commands_at(&history_commands, next_revision)?;
         self.record_effects(effects);
+        if let Some(delta) = history_traversal
+            && delta != 0
+        {
+            if navigation.is_some() {
+                return Err(NativeEngineError::TargetNotActionable {
+                    reason: "history traversal cannot share beforeunload navigation".into(),
+                });
+            }
+            self.traverse_history_delta(delta)?;
+        }
         Ok((allowed, navigation.filter(|_| allowed)))
     }
 
@@ -3482,6 +3483,7 @@ impl NativeEngine {
         let Some(evaluation) = self.evaluate_local_events(&document, &[event])? else {
             return Ok(None);
         };
+        let history_commands = extract_local_history_commands(&evaluation.commands);
         let mut document = self.document.clone();
         let mut effects = document.apply_script_commands_allowing_links(&evaluation.commands)?;
         let navigation = self.script_location_navigation_request(&evaluation.commands)?;
@@ -3495,7 +3497,19 @@ impl NativeEngine {
         self.document = document;
         self.revision = next_revision;
         self.history.update_current_scroll(self.scroll_offset);
+        let history_traversal =
+            self.apply_local_history_commands_at(&history_commands, next_revision)?;
         self.record_effects(effects);
+        if let Some(delta) = history_traversal
+            && delta != 0
+        {
+            if navigation.is_some() {
+                return Err(NativeEngineError::TargetNotActionable {
+                    reason: "history traversal cannot share popstate navigation".into(),
+                });
+            }
+            self.traverse_history_delta(delta)?;
+        }
         Ok(navigation)
     }
 
@@ -3529,6 +3543,7 @@ impl NativeEngine {
                 &self.origin,
                 self.config.viewport,
             )?;
+        let history_commands = extract_local_history_commands(&evaluation.commands);
         self.drain_local_popups()?;
         self.drain_local_dialogs()?;
         self.persist_local_script_state()?;
@@ -3549,7 +3564,19 @@ impl NativeEngine {
         self.document = document;
         self.revision = next_revision;
         self.history.update_current_scroll(self.scroll_offset);
+        let history_traversal =
+            self.apply_local_history_commands_at(&history_commands, next_revision)?;
         self.record_effects(effects);
+        if let Some(delta) = history_traversal
+            && delta != 0
+        {
+            if navigation.is_some() {
+                return Err(NativeEngineError::TargetNotActionable {
+                    reason: "history traversal cannot share hashchange navigation".into(),
+                });
+            }
+            self.traverse_history_delta(delta)?;
+        }
         Ok(navigation)
     }
 
@@ -3652,8 +3679,10 @@ impl NativeEngine {
         id: NativeNodeId,
     ) -> Result<NativeActionResult, NativeEngineError> {
         let mut document = self.document.clone();
+        let mut history_commands = Vec::new();
         let mut events = document.apply_script_focus(id)?;
         if let Some(evaluation) = self.evaluate_local_events(&document, &events)? {
+            history_commands.extend(extract_local_history_commands(&evaluation.commands));
             events.extend(document.apply_script_commands(&evaluation.commands)?);
         }
 
@@ -3672,6 +3701,7 @@ impl NativeEngine {
                 operation: "native click event preflight".into(),
                 reason: "native click event result was invalid".into(),
             })?;
+        history_commands.extend(extract_local_history_commands(&click_evaluation.commands));
         events.extend(document.apply_script_commands(&click_evaluation.commands)?);
         let mut navigation: Option<(NativeNodeId, NativeNodeId)> = None;
         let mut link_navigation = None;
@@ -3689,6 +3719,8 @@ impl NativeEngine {
                             reason: "native JavaScript realm disappeared during submit dispatch"
                                 .into(),
                         })?;
+                    history_commands
+                        .extend(extract_local_history_commands(&submit_evaluation.commands));
                     let submit_allowed = submit_evaluation
                         .value
                         .as_array()
@@ -3712,6 +3744,8 @@ impl NativeEngine {
                     if let Some(evaluation) =
                         self.evaluate_local_events(&document, &invalid_events)?
                     {
+                        history_commands
+                            .extend(extract_local_history_commands(&evaluation.commands));
                         events.extend(invalid_events);
                         events.extend(document.apply_script_commands(&evaluation.commands)?);
                     }
@@ -3727,12 +3761,25 @@ impl NativeEngine {
                 events.len(),
             ));
         }
+        if history_commands.iter().any(|command| {
+            matches!(
+                command,
+                NativeScriptCommand::HistoryGo { delta } if *delta != 0
+            )
+        }) && (link_navigation.is_some() || navigation.is_some())
+        {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "history traversal cannot share a click with navigation".into(),
+            });
+        }
 
         let next_revision = self.next_revision()?;
         document.set_revision(next_revision);
         self.document = document;
         self.revision = next_revision;
         self.history.update_current_scroll(self.scroll_offset);
+        let history_traversal =
+            self.apply_local_history_commands_at(&history_commands, next_revision)?;
         self.record_effects(events);
         if let Some(href) = link_navigation {
             return self.activate_link(id, &href, true);
@@ -3748,6 +3795,11 @@ impl NativeEngine {
                 revision: snapshot.revision,
                 accepted: true,
             });
+        }
+        if let Some(delta) = history_traversal
+            && delta != 0
+        {
+            self.traverse_history_delta(delta)?;
         }
         Ok(NativeActionResult {
             revision: next_revision,
@@ -3818,10 +3870,12 @@ impl NativeEngine {
         text: &str,
     ) -> Result<NativeActionResult, NativeEngineError> {
         let mut document = self.document.clone();
+        let mut history_commands = Vec::new();
         let mut events = document.apply_type(id, text)?;
         let default_events = events.clone();
         for event in default_events {
             if let Some(evaluation) = self.evaluate_local_events(&document, &[event])? {
+                history_commands.extend(extract_local_history_commands(&evaluation.commands));
                 events.extend(document.apply_script_commands(&evaluation.commands)?);
             }
             if events.len() > MAX_NATIVE_EFFECTS {
@@ -3837,7 +3891,14 @@ impl NativeEngine {
         self.document = document;
         self.revision = next_revision;
         self.history.update_current_scroll(self.scroll_offset);
+        let history_traversal =
+            self.apply_local_history_commands_at(&history_commands, next_revision)?;
         self.record_effects(events);
+        if let Some(delta) = history_traversal
+            && delta != 0
+        {
+            self.traverse_history_delta(delta)?;
+        }
         Ok(NativeActionResult {
             revision: next_revision,
             accepted: true,
@@ -3852,12 +3913,14 @@ impl NativeEngine {
         effect_limit_name: &str,
     ) -> Result<NativeActionResult, NativeEngineError> {
         let mut document = self.document.clone();
+        let mut history_commands = Vec::new();
         let mut events = apply(&mut document)?;
         let default_events = events.clone();
         for (event_node, event_kind) in default_events {
             if let Some(evaluation) =
                 self.evaluate_local_events(&document, &[(event_node, event_kind)])?
             {
+                history_commands.extend(extract_local_history_commands(&evaluation.commands));
                 events.extend(document.apply_script_commands(&evaluation.commands)?);
             }
             if events.len() > MAX_NATIVE_EFFECTS {
@@ -3873,7 +3936,14 @@ impl NativeEngine {
         self.document = document;
         self.revision = next_revision;
         self.history.update_current_scroll(self.scroll_offset);
+        let history_traversal =
+            self.apply_local_history_commands_at(&history_commands, next_revision)?;
         self.record_effects(events);
+        if let Some(delta) = history_traversal
+            && delta != 0
+        {
+            self.traverse_history_delta(delta)?;
+        }
         Ok(NativeActionResult {
             revision: next_revision,
             accepted: true,
@@ -3889,10 +3959,12 @@ impl NativeEngine {
     ) -> Result<NativeActionResult, NativeEngineError> {
         validate_native_key(key)?;
         let mut document = self.document.clone();
+        let mut history_commands = Vec::new();
         let mut events = vec![(id, kind)];
         if let Some(evaluation) =
             self.evaluate_local_key_event_with_modifiers(&document, id, kind, key, modifiers)?
         {
+            history_commands.extend(extract_local_history_commands(&evaluation.commands));
             events.extend(document.apply_script_commands(&evaluation.commands)?);
         }
         if events.len() > MAX_NATIVE_EFFECTS {
@@ -3907,7 +3979,14 @@ impl NativeEngine {
         self.document = document;
         self.revision = next_revision;
         self.history.update_current_scroll(self.scroll_offset);
+        let history_traversal =
+            self.apply_local_history_commands_at(&history_commands, next_revision)?;
         self.record_effects(events);
+        if let Some(delta) = history_traversal
+            && delta != 0
+        {
+            self.traverse_history_delta(delta)?;
+        }
         Ok(NativeActionResult {
             revision: next_revision,
             accepted: true,
@@ -3923,6 +4002,7 @@ impl NativeEngine {
     ) -> Result<NativeActionResult, NativeEngineError> {
         validate_native_key(key)?;
         let mut document = self.document.clone();
+        let mut history_commands = Vec::new();
         let mut events = vec![(id, NativeEventKind::KeyDown)];
         let keydown = self.evaluate_local_key_event_with_modifiers(
             &document,
@@ -3938,6 +4018,7 @@ impl NativeEngine {
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(true);
         if let Some(keydown) = keydown {
+            history_commands.extend(extract_local_history_commands(&keydown.commands));
             events.extend(document.apply_script_commands(&keydown.commands)?);
         }
 
@@ -3954,6 +4035,7 @@ impl NativeEngine {
                 if let Some(evaluation) =
                     self.evaluate_local_events(&document, &[(event_node, event_kind)])?
                 {
+                    history_commands.extend(extract_local_history_commands(&evaluation.commands));
                     events.extend(document.apply_script_commands(&evaluation.commands)?);
                 }
             }
@@ -3967,6 +4049,7 @@ impl NativeEngine {
             key,
             modifiers,
         )? {
+            history_commands.extend(extract_local_history_commands(&evaluation.commands));
             events.extend(document.apply_script_commands(&evaluation.commands)?);
         }
         if events.len() > MAX_NATIVE_EFFECTS {
@@ -3982,7 +4065,14 @@ impl NativeEngine {
         self.document = document;
         self.revision = next_revision;
         self.history.update_current_scroll(self.scroll_offset);
+        let history_traversal =
+            self.apply_local_history_commands_at(&history_commands, next_revision)?;
         self.record_effects(events);
+        if let Some(delta) = history_traversal
+            && delta != 0
+        {
+            self.traverse_history_delta(delta)?;
+        }
         Ok(NativeActionResult {
             revision: next_revision,
             accepted: true,
@@ -4004,6 +4094,14 @@ impl NativeEngine {
     ) -> Result<Option<i32>, NativeEngineError> {
         let prepared = self.prepare_local_history_commands(commands)?;
         let revision = self.revision;
+        self.apply_prepared_history_commands(prepared, revision)
+    }
+
+    fn apply_prepared_history_commands(
+        &mut self,
+        prepared: Vec<LocalHistoryCommand>,
+        revision: u64,
+    ) -> Result<Option<i32>, NativeEngineError> {
         let mut traversal = None;
         for command in prepared {
             match command {
@@ -4027,6 +4125,15 @@ impl NativeEngine {
         }
         self.sync_javascript_history();
         Ok(traversal)
+    }
+
+    fn apply_local_history_commands_at(
+        &mut self,
+        commands: &[NativeScriptCommand],
+        revision: u64,
+    ) -> Result<Option<i32>, NativeEngineError> {
+        let prepared = self.prepare_local_history_commands(commands)?;
+        self.apply_prepared_history_commands(prepared, revision)
     }
 
     async fn sync_content_history_async(&mut self) -> Result<(), NativeEngineError> {
@@ -5718,6 +5825,21 @@ enum LocalHistoryCommand {
         state: serde_json::Value,
     },
     Go(i32),
+}
+
+fn extract_local_history_commands(commands: &[NativeScriptCommand]) -> Vec<NativeScriptCommand> {
+    commands
+        .iter()
+        .filter(|command| {
+            matches!(
+                command,
+                NativeScriptCommand::HistoryPushState { .. }
+                    | NativeScriptCommand::HistoryReplaceState { .. }
+                    | NativeScriptCommand::HistoryGo { .. }
+            )
+        })
+        .cloned()
+        .collect()
 }
 
 enum HistoryCommit {

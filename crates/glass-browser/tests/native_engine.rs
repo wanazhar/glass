@@ -3230,6 +3230,44 @@ async fn native_local_script_exposes_same_document_history_api() {
 }
 
 #[tokio::test]
+async fn native_local_action_event_preserves_history_api() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://history-action",
+            "<button id='push'>Push</button><script>document.getElementById('push').addEventListener('click', () => history.pushState({ view: 'next' }, '', '/next'));</script>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://history-action");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    engine
+        .action(NativeAction::Click {
+            target: "id=push".into(),
+        })
+        .unwrap();
+
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        "fixture://history-action/next"
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({ length: history.length, state: history.state, url: location.href })"
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "length": 2,
+            "state": {"view": "next"},
+            "url": "fixture://history-action/next",
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_script_exposes_same_document_history_api() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

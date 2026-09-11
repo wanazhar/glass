@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-205` slice; the bounded foundation below remains
+`native-engine-browser-206` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5236,6 +5236,19 @@ reflected commands, elliptical arcs, dash arrays, explicit cap/join styles,
 transforms, viewBox mapping, gradients, markers, and external resources remain
 later issue #40 promotion work. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-205.md`.
+
+The completed native-engine-browser-206 slice adds bounded smooth/reflected
+`S`/`T` and elliptical-arc `A` SVG path commands. The evaluator reflects only
+the control point allowed by the preceding command, converts arcs through the
+SVG endpoint-to-center algorithm, and flattens them into the existing bounded
+`NativeSvgSubpath` geometry. Finite-number checks, binary arc-flag validation,
+at most 64 samples per arc, and the 2,048-point budget fail closed before
+partial display geometry is published. The existing layout, typed path
+fill/stroke, clipping, scroll, alpha, capture, and hit-test consumers remain
+the single geometry path. Adaptive flattening, transforms, viewBox mapping,
+dash arrays, explicit cap/join styles, gradients, markers, and external
+resources remain later issue #40 promotion work. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-206.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

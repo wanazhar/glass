@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-205`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-206`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 205
 slice carries bounded quadratic/cubic SVG path geometry through shared path
 parsing, flattening, layout, display-list, raster, clipping, and capture
@@ -3446,6 +3446,17 @@ mapping, gradients, markers, and external resources remain issue #40 promotion
 work. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-205.md`.
 
+The completed native-engine-browser-206 slice adds bounded smooth/reflected
+`S`/`T` and elliptical-arc `A` commands to the shared SVG path evaluator.
+Control reflection follows the SVG preceding-command rules; endpoint-to-center
+arc conversion normalizes radii and honors large-arc/sweep selection before
+fixed flattening. The existing subpath, layout, typed paint, raster, clipping,
+scroll, capture, and hit-test owners receive the same geometry. Finite-input,
+binary-flag, 64-sample-per-arc, and 2,048-point budgets remain fail-closed.
+Adaptive error control, transforms, viewBox mapping, dash/cap/join styling,
+gradients, markers, and external resources remain issue #40 promotion work.
+Exact evidence is in `docs/plan/tasks/native-engine-browser-206.md`.
+
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame
 realms. `document.createAttribute()` creates persistent `Attr` objects;
@@ -4522,8 +4533,10 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-198.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-197.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-196.md` is the preceding completed task;
-`docs/plan/tasks/native-engine-browser-205.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-206.md` is the latest completed browser
 task;
+`docs/plan/tasks/native-engine-browser-205.md` is the preceding completed
+browser task;
 `docs/plan/tasks/native-engine-browser-204.md` is the preceding completed
 browser task;
 `docs/plan/tasks/native-engine-browser-197.md` is the preceding completed

@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-177` slice; the bounded foundation below remains
+`native-engine-browser-178` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -1759,6 +1759,18 @@ the parent applies those commands once and rejects ambiguous traversal plus
 competing navigation. Cross-document session history, bfcache, cross-origin
 history, complete Web IDL descriptors, and browser-wide parity remain issue
 #40 promotion gates.
+
+The completed native-engine-browser-178 slice adds host-owned document-fragment
+construction and mutation across local, process-backed HTTP(S), and same-origin
+frame realms. Fragment identity, ownership, nested-fragment flattening,
+append/prepend, sibling insertion, replacement, and replace-children operations
+now use the same projected-tree cache and removal semantics as attached nodes;
+removing the final child also synchronizes empty content instead of leaving a
+stale markup snapshot. Fragment staging remains a JavaScript-side construction
+surface until attachment, so direct fragment `MutationObserver` records and a
+fragment `innerHTML` setter are not yet claimed. Full Web IDL descriptor parity,
+complete observer semantics, and browser-wide parity remain issue #40
+promotion gates.
 
 The completed native-engine-browser-169 slice adds frame-qualified EventTarget
 behavior to same-origin projected elements, detached projected elements,

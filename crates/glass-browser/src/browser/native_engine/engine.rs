@@ -2056,7 +2056,13 @@ impl NativeEngine {
     ) -> Result<(), NativeEngineError> {
         let metadata = effects
             .iter()
-            .map(|effect| (effect.node_id.index(), effect.kind))
+            .map(|effect| {
+                (
+                    effect.node_id.index(),
+                    effect.node_id.generation(),
+                    effect.kind,
+                )
+            })
             .collect::<Vec<_>>();
         let Some(source) = frame_event_script(frame_id, &metadata)? else {
             return Ok(());
@@ -4288,6 +4294,11 @@ impl NativeEngine {
         let generation = u32::try_from(next_revision).map_err(|_| {
             NativeEngineError::limit("document generations", u32::MAX as usize, usize::MAX)
         })?;
+        let initial_events = content
+            .events
+            .iter()
+            .map(|event| (event.node_index, event.kind))
+            .collect();
         let document =
             NativeDocument::from_content_wire(content.document, &self.config.limits, generation)?;
         Ok(PreparedNavigation {
@@ -4299,6 +4310,7 @@ impl NativeEngine {
             document,
             frame_sources: content.frame_sources,
             dialogs: content.dialogs,
+            initial_events,
             execute_inline_scripts: false,
         })
     }
@@ -4327,6 +4339,7 @@ impl NativeEngine {
             document,
             frame_sources,
             dialogs: Vec::new(),
+            initial_events: Vec::new(),
             execute_inline_scripts: true,
         })
     }
@@ -4337,6 +4350,7 @@ impl NativeEngine {
         history_commit: HistoryCommit,
     ) -> Result<Option<NativeNavigationRequest>, NativeEngineError> {
         let skip_lifecycle = std::mem::take(&mut self.skip_next_navigation_lifecycle);
+        let mut initial_events = std::mem::take(&mut prepared.initial_events);
         if !skip_lifecycle && self.javascript.is_some() {
             let (allowed, before_navigation) = self.dispatch_local_before_unload()?;
             if !allowed {
@@ -4386,6 +4400,7 @@ impl NativeEngine {
                 &cookie,
             )?;
             dialogs.extend(result.dialogs);
+            initial_events.extend(result.events);
             let popups = javascript
                 .as_ref()
                 .map(NativeJavaScriptRuntime::take_popup_events)
@@ -4443,6 +4458,7 @@ impl NativeEngine {
             }
         }
         self.flush_pending_lifecycle_effects();
+        self.record_initial_events(initial_events)?;
         if let Some(javascript) = self.javascript.as_mut() {
             javascript.reset_timer_clock();
         }
@@ -4469,6 +4485,7 @@ impl NativeEngine {
             return Ok(None);
         }
         let execute_page_scripts = prepared.execute_inline_scripts;
+        let mut initial_events = std::mem::take(&mut prepared.initial_events);
         self.persist_local_web_storage()?;
         let storage_state = self.web_storage.clone();
         let cookie = self.loader.document_cookie(&prepared.resource.url)?;
@@ -4502,6 +4519,7 @@ impl NativeEngine {
                 &cookie,
             )?;
             dialogs.extend(result.dialogs);
+            initial_events.extend(result.events);
             let popups = javascript
                 .as_ref()
                 .map(NativeJavaScriptRuntime::take_popup_events)
@@ -4560,6 +4578,7 @@ impl NativeEngine {
             }
         }
         self.flush_pending_lifecycle_effects();
+        self.record_initial_events(initial_events)?;
         if execute_page_scripts {
             if let Some(javascript) = self.javascript.as_mut() {
                 javascript.reset_timer_clock();
@@ -5080,6 +5099,25 @@ impl NativeEngine {
         }
     }
 
+    fn record_initial_events(
+        &mut self,
+        events: Vec<(u32, NativeEventKind)>,
+    ) -> Result<(), NativeEngineError> {
+        let generation = self.document.generation();
+        let events = events
+            .into_iter()
+            .map(|(node_index, kind)| {
+                let node_id = NativeNodeId::from_parts(generation, node_index);
+                if node_index != u32::MAX && self.document.node(node_id).is_none() {
+                    return Err(NativeEngineError::DetachedTarget);
+                }
+                Ok((node_id, kind))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.record_effects(events);
+        Ok(())
+    }
+
     fn flush_pending_lifecycle_effects(&mut self) {
         let effects = std::mem::take(&mut self.pending_lifecycle_effects);
         self.record_effects(effects);
@@ -5134,6 +5172,7 @@ struct PreparedNavigation {
     document: NativeDocument,
     frame_sources: Option<Vec<String>>,
     dialogs: Vec<NativeDialog>,
+    initial_events: Vec<(u32, NativeEventKind)>,
     execute_inline_scripts: bool,
 }
 

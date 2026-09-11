@@ -691,7 +691,7 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
                     "<html><body><iframe id='child' src='/child'></iframe><p>parent</p></body></html>"
                 }
                 "/child" => {
-                    "<html><head><script>addEventListener('message', event => { document.getElementById('inside').setAttribute('data-message', event.data.ok ? 'received' : 'bad'); document.getElementById('field').focus(); });</script></head><body><p id='inside' data-message='none'>same-origin <span id='old-child'>child</span></p><input id='field' value='before'><button id='trigger'></button></body></html>"
+                    "<html><head><script>addEventListener('message', event => { document.getElementById('inside').setAttribute('data-message', event.data.ok ? 'received' : 'bad'); document.getElementById('field').focus(); }); addEventListener('beforeunload', () => document.getElementById('trigger').click());</script></head><body><p id='inside' data-message='none'>same-origin <span id='old-child'>child</span></p><input id='field' value='before'><button id='trigger'></button></body></html>"
                 }
                 "/child-next" => "<html><body><p id='next'>navigated frame</p></body></html>",
                 other => panic!("unexpected frame projection request path: {other}"),
@@ -836,7 +836,7 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
         .id;
     session
         .script(
-            "(() => { const frame = document.getElementById('child'); const child = frame.contentDocument; const inside = child.getElementById('trigger'); const field = child.getElementById('field'); globalThis.frameEventLog = []; globalThis.frameLifecycleLog = []; const record = label => event => globalThis.frameEventLog.push([label, event.type, event.target && event.target.nodeType || 0, event.currentTarget && event.currentTarget.nodeType || 0, event.eventPhase]); const recordLifecycle = event => globalThis.frameLifecycleLog.push([event.type, event.target === child.defaultView, event.currentTarget === child.defaultView, event.eventPhase]); inside.addEventListener('focus', record('inside-focus')); inside.addEventListener('click', record('inside-click')); field.addEventListener('focus', record('field-focus')); child.body.addEventListener('click', record('body-capture'), true); child.body.addEventListener('click', record('body')); child.addEventListener('click', record('document')); child.defaultView.addEventListener('click', record('window')); child.defaultView.addEventListener('pagehide', recordLifecycle); child.defaultView.addEventListener('unload', recordLifecycle); child.defaultView.addEventListener('pageshow', recordLifecycle); document.addEventListener('click', () => globalThis.frameEventLog.push(['top-document'])); window.addEventListener('click', () => globalThis.frameEventLog.push(['top-window'])); return true; })()",
+            "(() => { const frame = document.getElementById('child'); const child = frame.contentDocument; const inside = child.getElementById('trigger'); const field = child.getElementById('field'); globalThis.frameEventLog = []; globalThis.frameLifecycleLog = []; const record = label => event => globalThis.frameEventLog.push([label, event.type, event.target && event.target.nodeType || 0, event.currentTarget && event.currentTarget.nodeType || 0, event.eventPhase]); const recordLifecycle = event => globalThis.frameLifecycleLog.push([event.type, event.target === child.defaultView, event.currentTarget === child.defaultView, event.eventPhase]); inside.addEventListener('focus', record('inside-focus')); inside.addEventListener('click', record('inside-click')); field.addEventListener('focus', record('field-focus')); child.body.addEventListener('click', record('body-capture'), true); child.body.addEventListener('click', record('body')); child.addEventListener('click', record('document')); child.defaultView.addEventListener('click', record('window')); child.defaultView.addEventListener('pagehide', recordLifecycle); child.defaultView.addEventListener('unload', recordLifecycle); child.defaultView.addEventListener('load', recordLifecycle); child.defaultView.addEventListener('pageshow', recordLifecycle); document.addEventListener('click', () => globalThis.frameEventLog.push(['top-document'])); window.addEventListener('click', () => globalThis.frameEventLog.push(['top-window'])); return true; })()",
         )
         .await
         .unwrap();
@@ -927,6 +927,7 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
         serde_json::json!([
             ["pagehide", true, true, 2],
             ["unload", true, true, 2],
+            ["load", true, true, 2],
             ["pageshow", true, true, 2],
         ])
     );

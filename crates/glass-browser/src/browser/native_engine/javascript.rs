@@ -341,6 +341,7 @@ pub(crate) struct NativeFrameScriptBinding {
     pub(crate) frame_id: String,
     pub(crate) url: String,
     pub(crate) origin: String,
+    pub(crate) generation: u32,
     pub(crate) revision: u64,
     pub(crate) same_origin: bool,
     pub(crate) document: NativeScriptDocumentSnapshot,
@@ -356,6 +357,7 @@ pub(crate) struct NativeFrameScriptWindow {
     pub(crate) context_id: String,
     pub(crate) url: String,
     pub(crate) origin: String,
+    pub(crate) generation: u32,
     pub(crate) revision: u64,
     pub(crate) same_origin: bool,
     pub(crate) document: NativeScriptDocumentSnapshot,
@@ -382,6 +384,7 @@ pub(crate) struct NativePageScriptResult {
     pub(crate) pending_fetches: Vec<NativeScriptCommand>,
     pub(crate) navigation: Option<NativePageNavigation>,
     pub(crate) dialogs: Vec<NativeDialog>,
+    pub(crate) events: Vec<(u32, NativeEventKind)>,
 }
 
 /// A bounded JavaScript dialog emitted by a native page realm.
@@ -2681,6 +2684,7 @@ pub(crate) fn execute_page_scripts(
         .set_module_sources(module_sources);
     let mut pending_fetches = Vec::new();
     let mut navigation = None;
+    let mut events = Vec::new();
     for source in sources {
         let evaluation = {
             let script_runtime = runtime.as_ref().expect("page script runtime initialized");
@@ -2725,6 +2729,7 @@ pub(crate) fn execute_page_scripts(
                 viewport,
             )?;
         apply_page_script_evaluation(document, evaluation, &mut pending_fetches, &mut navigation)?;
+        events.push((*node_index, NativeEventKind::Load));
     }
     runtime
         .as_mut()
@@ -2748,6 +2753,7 @@ pub(crate) fn execute_page_scripts(
                 viewport,
             )?;
         apply_page_script_evaluation(document, evaluation, &mut pending_fetches, &mut navigation)?;
+        events.push((target, kind));
     }
     runtime
         .as_mut()
@@ -2771,6 +2777,7 @@ pub(crate) fn execute_page_scripts(
                 viewport,
             )?;
         apply_page_script_evaluation(document, evaluation, &mut pending_fetches, &mut navigation)?;
+        events.push((target, kind));
     }
     runtime
         .as_mut()
@@ -2787,6 +2794,7 @@ pub(crate) fn execute_page_scripts(
             .as_ref()
             .expect("page script runtime initialized")
             .take_dialog_events(),
+        events,
     })
 }
 
@@ -2852,7 +2860,7 @@ pub(crate) fn host_event_script(
 /// snapshot before dispatching the event.
 pub(crate) fn frame_event_script(
     frame_id: &str,
-    events: &[(u32, NativeEventKind)],
+    events: &[(u32, u32, NativeEventKind)],
 ) -> Result<Option<String>, NativeEngineError> {
     if events.is_empty() {
         return Ok(None);
@@ -2867,7 +2875,7 @@ pub(crate) fn frame_event_script(
     }
     let descriptors = events
         .iter()
-        .map(|(node_index, kind)| {
+        .map(|(node_index, generation, kind)| {
             let (event_type, bubbles, cancelable) = match kind {
                 NativeEventKind::Blur => ("blur", false, false),
                 NativeEventKind::Focus => ("focus", false, false),
@@ -2891,6 +2899,7 @@ pub(crate) fn frame_event_script(
             };
             serde_json::json!({
                 "node_index": node_index,
+                "generation": generation,
                 "type": event_type,
                 "bubbles": bubbles,
                 "cancelable": cancelable,
@@ -10616,16 +10625,21 @@ fn document_bootstrap(
     if (!Array.isArray(events)) throw new TypeError("native frame events must be an array");
     if (events.length > {max_commands}) throw new RangeError("native frame event limit exceeded");
     const projectedDocument = makeFrameDocument(binding);
-    return events.map((descriptor) => {{
+    const generation = Number(binding.generation);
+    const delivered = [];
+    for (const descriptor of events) {{
       if (!descriptor || typeof descriptor !== "object") throw new TypeError("native frame event is invalid");
-      const target = projectedDocument.__glassEventTargetForNode(descriptor.node_index);
+      const nodeIndex = Number(descriptor.node_index);
+      if (nodeIndex !== 4294967295 && Number(descriptor.generation) !== generation) continue;
+      const target = projectedDocument.__glassEventTargetForNode(nodeIndex);
       if (!target) throw new TypeError("native frame event target is detached");
       const event = createEvent(descriptor.type, {{
         bubbles: Boolean(descriptor.bubbles),
         cancelable: Boolean(descriptor.cancelable),
       }});
-      return dispatchTarget(target, event);
-    }});
+      delivered.push(dispatchTarget(target, event));
+    }}
+    return delivered;
   }};
   const makeFrameWindow = (
     binding,

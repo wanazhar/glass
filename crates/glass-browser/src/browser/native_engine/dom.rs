@@ -745,66 +745,54 @@ impl NativeDocument {
             return None;
         }
         let fallback = node.attribute("src").map(str::to_owned);
-        let candidates = node
-            .attribute("srcset")
-            .map(parse_image_srcset)
-            .unwrap_or_default();
-        if candidates.is_empty() {
-            return fallback;
+        if let Some((srcset, sizes)) = self.picture_image_source_set(node_id, viewport)
+            && let Some(source) = select_image_srcset_source(&srcset, sizes.as_deref(), viewport)
+        {
+            return Some(source);
         }
-        let source_size = image_source_size(node.attribute("sizes"), viewport);
-        let device_scale_factor = viewport
-            .device_scale_factor_milli
-            .max(DEFAULT_IMAGE_DENSITY_MILLI);
-        let selected = match candidates[0].descriptor {
-            NativeImageCandidateDescriptor::Density(_) => candidates
-                .iter()
-                .filter(|candidate| {
-                    matches!(
-                        candidate.descriptor,
-                        NativeImageCandidateDescriptor::Density(_)
-                    )
-                })
-                .min_by_key(|candidate| {
-                    let density = match candidate.descriptor {
-                        NativeImageCandidateDescriptor::Density(value) => value,
-                        NativeImageCandidateDescriptor::Width(_) => unreachable!(
-                            "mixed image candidate descriptors were rejected during parsing"
-                        ),
-                    };
-                    (
-                        density < device_scale_factor,
-                        density.abs_diff(device_scale_factor),
-                    )
-                }),
-            NativeImageCandidateDescriptor::Width(_) => {
-                let target_width = u64::from(source_size)
-                    .saturating_mul(u64::from(device_scale_factor))
-                    .saturating_add(u64::from(DEFAULT_IMAGE_DENSITY_MILLI - 1))
-                    / u64::from(DEFAULT_IMAGE_DENSITY_MILLI);
-                candidates
-                    .iter()
-                    .filter(|candidate| {
-                        matches!(
-                            candidate.descriptor,
-                            NativeImageCandidateDescriptor::Width(_)
-                        )
-                    })
-                    .min_by_key(|candidate| {
-                        let width = match candidate.descriptor {
-                            NativeImageCandidateDescriptor::Width(value) => value,
-                            NativeImageCandidateDescriptor::Density(_) => unreachable!(
-                                "mixed image candidate descriptors were rejected during parsing"
-                            ),
-                        };
-                        (
-                            u64::from(width) < target_width,
-                            u64::from(width).abs_diff(target_width),
-                        )
-                    })
+        if let Some(srcset) = node.attribute("srcset")
+            && let Some(source) =
+                select_image_srcset_source(srcset, node.attribute("sizes"), viewport)
+        {
+            return Some(source);
+        }
+        fallback
+    }
+
+    fn picture_image_source_set(
+        &self,
+        node_id: NativeNodeId,
+        viewport: Viewport,
+    ) -> Option<(String, Option<String>)> {
+        let node = self.node(node_id)?;
+        let parent_id = node.parent()?;
+        let parent = self.node(parent_id)?;
+        if parent.element_name() != Some("picture") {
+            return None;
+        }
+        for child_id in parent.children() {
+            if *child_id == node_id {
+                break;
             }
-        }?;
-        Some(selected.source.clone())
+            let source = self.node(*child_id)?;
+            if source.element_name() != Some("source")
+                || !image_media_matches(source.attribute("media"), viewport)
+                || !image_type_is_supported(source.attribute("type"))
+            {
+                continue;
+            }
+            let Some(srcset) = source.attribute("srcset") else {
+                continue;
+            };
+            if parse_image_srcset(srcset).is_empty() {
+                continue;
+            }
+            return Some((
+                srcset.to_owned(),
+                source.attribute("sizes").map(str::to_owned),
+            ));
+        }
+        None
     }
 
     pub(crate) fn image_current_src(&self, node_id: NativeNodeId, viewport: Viewport) -> String {
@@ -1390,7 +1378,7 @@ impl NativeDocument {
                     reason: "content process returned an out-of-range image node index".into(),
                 })?;
             if node.element_name() != Some("img")
-                || !image_source_is_declared(node, &resource.source)
+                || !image_source_is_declared(&nodes, node_index, &resource.source)
             {
                 return Err(NativeEngineError::Parse {
                     offset: 0,
@@ -1598,7 +1586,9 @@ impl NativeDocument {
                     offset: 0,
                     reason: "content process returned an out-of-range image load node index".into(),
                 })?;
-            if node.element_name() != Some("img") || !image_source_is_declared(node, &load.source) {
+            if node.element_name() != Some("img")
+                || !image_source_is_declared(&nodes, node_index, &load.source)
+            {
                 return Err(NativeEngineError::Parse {
                     offset: 0,
                     reason: "content process returned an image load for a different node".into(),
@@ -6393,6 +6383,73 @@ fn is_void_element(name: &str) -> bool {
     )
 }
 
+fn select_image_srcset_source(
+    srcset: &str,
+    sizes: Option<&str>,
+    viewport: Viewport,
+) -> Option<String> {
+    let candidates = parse_image_srcset(srcset);
+    if candidates.is_empty() {
+        return None;
+    }
+    let source_size = image_source_size(sizes, viewport);
+    let device_scale_factor = viewport
+        .device_scale_factor_milli
+        .max(DEFAULT_IMAGE_DENSITY_MILLI);
+    let selected = match candidates[0].descriptor {
+        NativeImageCandidateDescriptor::Density(_) => candidates.iter().min_by_key(|candidate| {
+            let density = match candidate.descriptor {
+                NativeImageCandidateDescriptor::Density(value) => value,
+                NativeImageCandidateDescriptor::Width(_) => {
+                    unreachable!("mixed image candidate descriptors were rejected during parsing")
+                }
+            };
+            (
+                density < device_scale_factor,
+                density.abs_diff(device_scale_factor),
+            )
+        }),
+        NativeImageCandidateDescriptor::Width(_) => {
+            let target_width = u64::from(source_size)
+                .saturating_mul(u64::from(device_scale_factor))
+                .saturating_add(u64::from(DEFAULT_IMAGE_DENSITY_MILLI - 1))
+                / u64::from(DEFAULT_IMAGE_DENSITY_MILLI);
+            candidates.iter().min_by_key(|candidate| {
+                let width = match candidate.descriptor {
+                    NativeImageCandidateDescriptor::Width(value) => value,
+                    NativeImageCandidateDescriptor::Density(_) => unreachable!(
+                        "mixed image candidate descriptors were rejected during parsing"
+                    ),
+                };
+                (
+                    u64::from(width) < target_width,
+                    u64::from(width).abs_diff(target_width),
+                )
+            })
+        }
+    }?;
+    Some(selected.source.clone())
+}
+
+fn image_media_matches(media: Option<&str>, viewport: Viewport) -> bool {
+    media.is_none_or(|media| {
+        let media = media.trim();
+        media.is_empty() || image_size_condition_matches(media, viewport)
+    })
+}
+
+fn image_type_is_supported(image_type: Option<&str>) -> bool {
+    image_type.is_none_or(|image_type| {
+        let image_type = image_type
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase();
+        image_type.is_empty() || image_type == "image/png"
+    })
+}
+
 fn parse_image_srcset(value: &str) -> Vec<NativeImageCandidate> {
     let mut candidates = Vec::new();
     let mut descriptor_kind = None;
@@ -6446,13 +6503,53 @@ fn parse_image_srcset(value: &str) -> Vec<NativeImageCandidate> {
     candidates
 }
 
-fn image_source_is_declared(node: &NativeNode, source: &str) -> bool {
-    node.attribute("src") == Some(source)
+fn image_source_is_declared(nodes: &[NativeNode], node_index: usize, source: &str) -> bool {
+    let Some(node) = nodes.get(node_index) else {
+        return false;
+    };
+    if node.attribute("src") == Some(source)
         || node.attribute("srcset").is_some_and(|srcset| {
             parse_image_srcset(srcset)
                 .iter()
                 .any(|candidate| candidate.source == source)
         })
+    {
+        return true;
+    }
+    let Some(parent_index) = node.parent().map(NativeNodeId::index) else {
+        return false;
+    };
+    let Some(parent) = usize::try_from(parent_index)
+        .ok()
+        .and_then(|index| nodes.get(index))
+    else {
+        return false;
+    };
+    if parent.element_name() != Some("picture") {
+        return false;
+    }
+    for child_id in parent.children() {
+        let Some(child_index) = usize::try_from(child_id.index()).ok() else {
+            continue;
+        };
+        if child_index == node_index {
+            break;
+        }
+        if nodes
+            .get(child_index)
+            .is_some_and(|child| child.element_name() == Some("source"))
+            && nodes[child_index]
+                .attribute("srcset")
+                .is_some_and(|srcset| {
+                    parse_image_srcset(srcset)
+                        .iter()
+                        .any(|candidate| candidate.source == source)
+                })
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn parse_image_density(value: &str) -> Option<u32> {

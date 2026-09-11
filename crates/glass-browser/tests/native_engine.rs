@@ -33116,6 +33116,76 @@ async fn native_images_select_srcset_candidates_from_viewport_and_density() {
 }
 
 #[tokio::test]
+async fn native_content_process_selects_picture_source_and_reloads_img_fallback() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let png = native_test_png_bytes();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/wide.png", "/fallback-set.png"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            if expected_path != "/page" {
+                let headers = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    png.len()
+                );
+                stream.write_all(headers.as_bytes()).await.unwrap();
+                stream.write_all(&png).await.unwrap();
+            } else {
+                let body = "<picture><source id='webp' media='(min-width: 500px)' type='image/webp' srcset='/unsupported.webp 1x'><source id='wide' media='(min-width: 500px)' type='image/png' srcset='/wide.png 1x'><source id='narrow' media='(max-width: 499px)' type='image/png' srcset='/narrow.png 1x'><img id='image' src='/fallback.png' srcset='/fallback-set.png 1x' alt='responsive image'></picture>";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_viewport(Viewport {
+                width: 600,
+                height: 400,
+                device_scale_factor_milli: 1000,
+            })
+            .with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const image = document.getElementById('image'); return [image.complete, image.naturalWidth, image.currentSrc]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, 2, format!("http://{address}/wide.png")])
+    );
+
+    engine
+        .evaluate_async(
+            "(() => { document.getElementById('wide').media = '(max-width: 500px)'; return true; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const image = document.getElementById('image'); return [image.complete, image.naturalWidth, image.currentSrc]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, 2, format!("http://{address}/fallback-set.png")])
+    );
+
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_loads_external_png_through_document_wire() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

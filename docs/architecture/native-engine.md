@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-181` slice; the bounded foundation below remains
+`native-engine-browser-182` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5157,6 +5157,15 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - explicit Rust native-session construction and feature-gated CLI dispatch for
   local and bounded HTTP(S) URL shapes, including rejection of remote browser
   endpoints and unsupported browser-only flags.
+
+The completed native-engine-browser-182 slice extends reflected DOM properties
+to common form and HTML controls. Boolean properties (`disabled`, `hidden`,
+`multiple`, `required`, `readOnly`, and related flags) and common string
+properties now use attribute-backed accessors with native command persistence;
+`type` has bounded default/normalization behavior. Local, HTTP(S)
+content-worker, and same-origin frame tests cover the same contract, while
+complete Web IDL reflection and the remaining issue #40 promotion gates are
+still open.
 
 The completed native-engine-browser-181 slice installs reflected `id` and
 `className` accessors on local and projected frame elements. Assignment and

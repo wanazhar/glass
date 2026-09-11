@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-181`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-182`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
@@ -3373,6 +3373,18 @@ comments, raw-text/foreign-content rules, malformed-input recovery, and full
 Web IDL descriptor parity remain conformance work. Exact local evidence is in
 `docs/plan/tasks/native-engine-browser-179.md`; browser-complete promotion
 remains tracked issue-40 work.
+
+The completed native-engine-browser-182 slice extends the reflected-attribute
+contract from identity/class fields to common form and HTML properties. Local
+and projected elements now expose bounded boolean accessors (`disabled`,
+`hidden`, `multiple`, `required`, `readOnly`, and related flags) and common
+string accessors through the same native set/remove-attribute commands; `type`
+provides a bounded default and lower-case normalization. Refresh state is held
+in scoped variables so hydration does not accidentally emit commands. Local,
+HTTP(S) content-worker, and same-origin frame tests cover persistence and
+same-turn values. Complete Web IDL reflection and collection liveness remain
+issue-40 work. Exact local evidence is in
+[native-engine-browser-182](../tasks/native-engine-browser-182.md).
 
 The completed native-engine-browser-181 slice closes the reflected-attribute
 and same-turn document-query gap found while exercising fragment-created

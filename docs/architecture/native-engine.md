@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-174` slice; the bounded foundation below remains
+`native-engine-browser-175` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -1728,6 +1728,16 @@ projected frame document, including detached-node observation, before the
 validated typed handoff to the child owner. Cross-origin disclosure remains
 blocked. Independently running child-task effects, layout/resource observers,
 complete resource scheduling, Web IDL identity, and browser parity remain open.
+
+The completed native-engine-browser-175 slice connects script-visible geometry
+to the Rust layout owner. Layout border/content boxes are transferred through
+the typed document snapshot; local, content-worker, and same-origin projected
+elements expose DOMRect and bounded dimensions, while `ResizeObserver` records
+are delivered at the established Promise-job checkpoint. Content-worker scroll
+offsets are synchronized before script/input evaluation, and position-only
+scrolling does not trigger resize records. Resource/layout observer breadth,
+fractional geometry, complete scheduling, Web IDL descriptor parity, and
+browser-wide parity remain issue-40 promotion gates.
 
 The completed native-engine-browser-169 slice adds frame-qualified EventTarget
 behavior to same-origin projected elements, detached projected elements,

@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-162`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-163`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
@@ -3212,6 +3212,18 @@ fragment parser is intentionally bounded and does not execute scripts inserted
 through `innerHTML`; dynamic element creation, live child-node collections,
 cross-realm event-listener identity, complete frame lifecycle/load ordering,
 and complete browser parity remain issue #40 gates.
+
+The completed native-engine-browser-163 slice adds bounded DOM node
+construction for local and HTTP(S) content-worker realms. `createElement()`
+and `createTextNode()` allocate detached script-owned nodes, while
+`appendChild()` and `insertBefore()` commit nested trees, validated moves, and
+stable order through the Rust arena. The host keeps same-evaluation parent,
+text, and markup identity; the next evaluation refreshes only from the
+committed native snapshot. The frame command protocol is reserved for this
+surface, but projected frame realms still need their own detached factory and
+cross-realm node routing. Live child-node collections, listener identity,
+complete frame lifecycle/load ordering, and complete browser parity remain
+issue #40 gates.
 
 The completed native-engine-browser-133 batch extends the native target seam
 with a side-effect-free preflight result. The engine resolves the current

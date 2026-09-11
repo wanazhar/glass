@@ -225,6 +225,33 @@ async fn native_local_script_exposes_web_idl_identity_and_dom_collections() {
             "events": [true, true, true, true, true, true, "theme", "dark"],
         })
     );
+    let created = engine
+        .evaluate_async(
+            "(() => { const host = document.createElement('section'); host.setAttribute('id', 'created'); const child = document.createElement('strong'); const text = document.createTextNode('created'); text.textContent = 'created text'; child.appendChild(text); host.appendChild(child); document.body.appendChild(host); const inserted = document.createElement('em'); inserted.textContent = 'inserted'; document.body.insertBefore(inserted, host); return [host.tagName, host.parentElement === document.body, child.parentElement === host, text.parentNode === child, host.textContent, host.innerHTML, document.body.__glassChildren.map(element => element.tagName)]; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        created,
+        serde_json::json!([
+            "SECTION",
+            true,
+            true,
+            true,
+            "created text",
+            "<strong>created text</strong>",
+            ["FORM", "EM", "SECTION"],
+        ])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "[document.getElementById('created').innerHTML, document.getElementById('created').textContent, document.querySelector('em').textContent]",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["<strong>created text</strong>", "created text", "inserted"])
+    );
     engine.close_async().await.unwrap();
 }
 
@@ -4763,8 +4790,7 @@ async fn native_content_process_evaluates_persistent_script_realm() {
         let (mut stream, _) = listener.accept().await.unwrap();
         let mut request = [0_u8; 4096];
         let _ = stream.read(&mut request).await.unwrap();
-        let body =
-            "<title>Script</title><p id='copy'>Native <span id='old-copy'>script</span> page</p>";
+        let body = "<html><head><title>Script</title></head><body><p id='copy'>Native <span id='old-copy'>script</span> page</p></body></html>";
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
@@ -4845,6 +4871,24 @@ async fn native_content_process_evaluates_persistent_script_realm() {
             .await
             .unwrap(),
         serde_json::Value::Null
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const host = document.createElement('article'); host.setAttribute('id', 'created-copy'); const child = document.createElement('b'); const text = document.createTextNode('created'); text.textContent = 'created'; child.appendChild(text); host.appendChild(child); document.body.appendChild(host); return [host.parentElement === document.body, child.parentElement === host, text.parentNode === child, host.textContent, host.innerHTML]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, true, true, "created", "<b>created</b>"])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "[document.getElementById('created-copy').innerHTML, document.getElementById('created-copy').textContent, document.getElementById('created-copy').firstChild || null]",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["<b>created</b>", "created", null])
     );
     assert_eq!(
         engine

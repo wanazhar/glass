@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-222` slice; the bounded foundation below remains
+`native-engine-browser-223` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5420,6 +5420,15 @@ gate accepts `image/jpeg` in addition to PNG. Unsupported formats, malformed
 bytes, oversized decoded output, and over-limit progressive images remain
 non-fatal broken-image results. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-222.md`.
+
+The completed native-engine-browser-223 slice extends the image decoder owner
+to static WebP. Local data URLs and external HTTP(S) `image/webp` responses
+now decode to bounded RGBA pixels and share intrinsic sizing, display-list
+paint, software replay, clipping, capture, cache, typed-wire, and terminal
+load/error behavior with PNG and JPEG. The picture type gate accepts WebP when
+the source is static; animated WebP is rejected until a native frame/timing
+owner exists, avoiding a false first-frame-only playback claim. Exact evidence
+is in `docs/plan/tasks/native-engine-browser-223.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

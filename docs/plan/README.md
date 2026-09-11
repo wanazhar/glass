@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-222` locally. The versioned
+`native-engine-browser-223` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1949,6 +1949,14 @@ display-list paint, and `currentSrc`/load state through the same cache, policy,
 typed-wire, and capture owners; `<picture type="image/jpeg">` is selectable
 when its source wins. Exact evidence is recorded in
 [native-engine-browser-222](tasks/native-engine-browser-222.md).
+
+The completed native-engine-browser-223 slice adds bounded static WebP image
+decode alongside PNG and JPEG. Local data URLs and external HTTP(S) resources
+now produce validated RGBA pixels, intrinsic dimensions, display-list paint,
+cache state, and lifecycle/current-source results; `<picture type="image/webp">`
+can select the native decoder. Animated WebP remains queued for the frame and
+timing owner. Exact evidence is recorded in
+[native-engine-browser-223](tasks/native-engine-browser-223.md).
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` now returns persistent `Attr`

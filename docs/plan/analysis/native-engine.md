@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-222`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-223`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 205
 slice carries bounded quadratic/cubic SVG path geometry through shared path
 parsing, flattening, layout, display-list, raster, clipping, and capture
@@ -3601,6 +3601,16 @@ aborting the document. The new decoder dependency adds a small compile-time
 cost and avoids an external native library; full modern image-format coverage,
 animation, and complete picture/source Web IDL remain promotion work. Exact
 evidence is in `docs/plan/tasks/native-engine-browser-222.md`.
+
+The completed native-engine-browser-223 slice closes the static WebP image
+format gap. A pure-Rust decoder handles lossy and lossless non-animated WebP,
+including optional alpha, and converts bounded output to the same RGBA image
+resource consumed by intrinsic layout, paint, capture, cache, typed document
+wire, `currentSrc`, and load/error events. HTTP content-type validation and
+`<picture>` type matching share the decoder registry. Animated WebP remains a
+separate timing/frame-scheduling slice; unsupported or oversized data fails
+closed without aborting the document. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-223.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

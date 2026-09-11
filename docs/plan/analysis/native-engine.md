@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-172`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-173`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
@@ -3295,6 +3295,16 @@ projection drops stale DOM/document targets but keeps window-level lifecycle
 events on the stable frame Window. Complete observer/resource scheduling,
 cross-realm identity, Window Web IDL parity, and browser-wide parity remain
 open.
+
+The completed native-engine-browser-173 slice adds the first usable observer
+contract. The shared JavaScript host exposes `MutationObserver` with bounded
+attribute, character-data, child-list, subtree, old-value, `disconnect()`, and
+`takeRecords()` behavior; typed DOM commands feed ordered records into the
+existing Promise-job checkpoint in local and content-worker realms. The source
+is intentionally the same command transaction that Rust commits, so observer
+delivery does not create a parallel mutation owner. Projected cross-realm
+observer identity, layout/resource observers, complete resource scheduling,
+Window/Web IDL parity, and browser-complete promotion remain issue #40 gates.
 
 The completed native-engine-browser-169 slice adds frame-qualified EventTarget
 behavior to same-origin projected elements, detached projected elements,

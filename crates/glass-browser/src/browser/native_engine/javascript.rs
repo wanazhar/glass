@@ -8093,6 +8093,19 @@ fn document_bootstrap(
     }}
     scheduleMutationDelivery();
   }};
+  const queueFragmentChildRemoval = (parent, child) => {{
+    if (!parent || parent.__glassFragment !== true || !child) return;
+    const children = Array.isArray(parent.__glassChildren) ? parent.__glassChildren : [];
+    const position = children.indexOf(child);
+    if (position < 0) return;
+    queueMutation({{
+      type: "childList",
+      target: parent,
+      removedNodes: [child],
+      previousSibling: position > 0 ? children[position - 1] : null,
+      nextSibling: position + 1 < children.length ? children[position + 1] : null,
+    }});
+  }};
   const normalizeMutationOptions = (rawOptions) => {{
     if (!rawOptions || typeof rawOptions !== "object") throw new TypeError("MutationObserver options must be an object");
     const attributes = rawOptions.attributes === undefined
@@ -8132,7 +8145,7 @@ fn document_bootstrap(
       }});
     }};
   MutationObserverNative.prototype.observe = function(target, rawOptions) {{
-    if (!target || ![1, 3, 9].includes(Number(target.nodeType))) throw new TypeError("MutationObserver target must be a node");
+    if (!target || ![1, 3, 9, 11].includes(Number(target.nodeType))) throw new TypeError("MutationObserver target must be a node");
     const options = normalizeMutationOptions(rawOptions);
     const registrations = this.__glassRegistrations || [];
     const existing = registrations.find((registration) => registration.target === target);
@@ -8613,6 +8626,7 @@ fn document_bootstrap(
         }}
         const oldParent = child.__glassParent || null;
         if (oldParent && Array.isArray(oldParent.__glassChildren)) {{
+          queueFragmentChildRemoval(oldParent, child);
           oldParent.__glassChildren = oldParent.__glassChildren.filter(candidate => candidate !== child);
           if (typeof oldParent.__glassSyncContent === "function") oldParent.__glassSyncContent(true);
         }}
@@ -8645,6 +8659,7 @@ fn document_bootstrap(
         }}
         const oldParent = child.__glassParent || null;
         if (oldParent && Array.isArray(oldParent.__glassChildren)) {{
+          queueFragmentChildRemoval(oldParent, child);
           oldParent.__glassChildren = oldParent.__glassChildren.filter(candidate => candidate !== child);
           if (typeof oldParent.__glassSyncContent === "function") oldParent.__glassSyncContent(true);
         }}
@@ -8666,6 +8681,7 @@ fn document_bootstrap(
         const parent = element.__glassParent || null;
         if (!parent && element.parentIndex === null) return;
         const commitRemoval = !element.__glassCreated || element.parentIndex !== null;
+        queueFragmentChildRemoval(parent, element);
         if (parent && Array.isArray(parent.__glassChildren)) {{
           parent.__glassChildren = parent.__glassChildren.filter(candidate => candidate !== element);
         }}
@@ -8996,6 +9012,7 @@ fn document_bootstrap(
         const parent = text.__glassParent || null;
         if (!parent && text.parentIndex === null) return;
         const commitRemoval = !text.__glassCreated || text.parentIndex !== null;
+        queueFragmentChildRemoval(parent, text);
         if (parent && Array.isArray(parent.__glassChildren)) {{
           parent.__glassChildren = parent.__glassChildren.filter(candidate => candidate !== text);
         }}
@@ -9080,13 +9097,19 @@ fn document_bootstrap(
           throw new TypeError("DocumentFragment children must be elements or text nodes");
         const oldParent = child.__glassParent || null;
         if (oldParent && Array.isArray(oldParent.__glassChildren)) {{
+          queueFragmentChildRemoval(oldParent, child);
           oldParent.__glassChildren = oldParent.__glassChildren.filter(candidate => candidate !== child);
           if (typeof oldParent.__glassSyncContent === "function") oldParent.__glassSyncContent(true);
         }}
+        const oldParentIndex = child.parentIndex;
         this.__glassChildren = this.__glassChildren.filter(candidate => candidate !== child);
         this.__glassChildren.push(child);
         child.__glassParent = this;
         child.parentIndex = null;
+        if (oldParent && oldParent.nodeType === 1 && oldParentIndex !== null && oldParentIndex !== undefined) {{
+          pushCommand({{ kind: "removeNode", node_index: child.nodeIndex }});
+        }}
+        queueMutation({{ type: "childList", target: this, addedNodes: [child], removedNodes: [], previousSibling: this.__glassChildren.length > 1 ? this.__glassChildren[this.__glassChildren.length - 2] : null, nextSibling: null }});
         return child;
       }},
       insertBefore(child, before) {{
@@ -9103,14 +9126,22 @@ fn document_bootstrap(
         if (before.__glassParent !== this) throw new TypeError("reference node is not a child");
         const oldParent = child.__glassParent || null;
         if (oldParent && Array.isArray(oldParent.__glassChildren)) {{
+          queueFragmentChildRemoval(oldParent, child);
           oldParent.__glassChildren = oldParent.__glassChildren.filter(candidate => candidate !== child);
           if (typeof oldParent.__glassSyncContent === "function") oldParent.__glassSyncContent(true);
         }}
+        const oldParentIndex = child.parentIndex;
         this.__glassChildren = this.__glassChildren.filter(candidate => candidate !== child);
         const index = this.__glassChildren.indexOf(before);
+        const previousSibling = index > 0 ? this.__glassChildren[index - 1] : null;
+        const nextSibling = before;
         this.__glassChildren.splice(index < 0 ? this.__glassChildren.length : index, 0, child);
         child.__glassParent = this;
         child.parentIndex = null;
+        if (oldParent && oldParent.nodeType === 1 && oldParentIndex !== null && oldParentIndex !== undefined) {{
+          pushCommand({{ kind: "removeNode", node_index: child.nodeIndex }});
+        }}
+        queueMutation({{ type: "childList", target: this, addedNodes: [child], removedNodes: [], previousSibling, nextSibling }});
         return child;
       }},
     }};
@@ -9179,6 +9210,7 @@ fn document_bootstrap(
         const parent = text.__glassParent || null;
         if (!parent && text.parentIndex === null) return;
         const commitRemoval = !text.__glassCreated || text.parentIndex !== null;
+        queueFragmentChildRemoval(parent, text);
         if (parent && Array.isArray(parent.__glassChildren)) {{
           parent.__glassChildren = parent.__glassChildren.filter(candidate => candidate !== text);
         }}
@@ -11485,13 +11517,18 @@ fn document_bootstrap(
           }}
           const oldParent = child.__glassParent || null;
           if (oldParent && Array.isArray(oldParent.__glassChildren)) {{
+            queueFragmentChildRemoval(oldParent, child);
             oldParent.__glassChildren = oldParent.__glassChildren.filter(candidate => candidate !== child);
             if (typeof oldParent.__glassSyncContent === "function") oldParent.__glassSyncContent(true);
           }}
+          const oldParentIndex = child.parentIndex;
           projected.__glassChildren = projected.__glassChildren.filter(candidate => candidate !== child);
           projected.__glassChildren.push(child);
           child.__glassParent = projected;
           child.parentIndex = projected.nodeIndex;
+          if (oldParent && oldParent.nodeType === 1 && oldParentIndex !== null && oldParentIndex !== undefined) {{
+            queueFrameCommand(currentBinding, {{ kind: "removeNode", node_index: child.nodeIndex }});
+          }}
           if (projected.__glassAttached) registerFrameSubtree(child);
           else detachFrameSubtree(child);
           projected.__glassSyncContent();
@@ -11517,14 +11554,19 @@ fn document_bootstrap(
           }}
           const oldParent = child.__glassParent || null;
           if (oldParent && Array.isArray(oldParent.__glassChildren)) {{
+            queueFragmentChildRemoval(oldParent, child);
             oldParent.__glassChildren = oldParent.__glassChildren.filter(candidate => candidate !== child);
             if (typeof oldParent.__glassSyncContent === "function") oldParent.__glassSyncContent(true);
           }}
+          const oldParentIndex = child.parentIndex;
           projected.__glassChildren = projected.__glassChildren.filter(candidate => candidate !== child);
           const index = projected.__glassChildren.indexOf(before);
           projected.__glassChildren.splice(index < 0 ? projected.__glassChildren.length : index, 0, child);
           child.__glassParent = projected;
           child.parentIndex = projected.nodeIndex;
+          if (oldParent && oldParent.nodeType === 1 && oldParentIndex !== null && oldParentIndex !== undefined) {{
+            queueFrameCommand(currentBinding, {{ kind: "removeNode", node_index: child.nodeIndex }});
+          }}
           if (projected.__glassAttached) registerFrameSubtree(child);
           else detachFrameSubtree(child);
           projected.__glassSyncContent();
@@ -11540,6 +11582,7 @@ fn document_bootstrap(
           const parent = projected.__glassParent || null;
           if (!parent && projected.parentIndex === null) return;
           const commitRemoval = !projected.__glassCreated || projected.parentIndex !== null;
+          queueFragmentChildRemoval(parent, projected);
           if (parent && Array.isArray(parent.__glassChildren)) {{
             parent.__glassChildren = parent.__glassChildren.filter(candidate => candidate !== projected);
           }}
@@ -11759,6 +11802,7 @@ fn document_bootstrap(
             const parent = text.__glassParent || null;
             if (!parent && text.parentIndex === null) return;
             const commitRemoval = !text.__glassCreated || text.parentIndex !== null;
+            queueFragmentChildRemoval(parent, text);
             if (parent && Array.isArray(parent.__glassChildren)) parent.__glassChildren = parent.__glassChildren.filter(candidate => candidate !== text);
             text.__glassParent = null;
             text.parentIndex = null;
@@ -11949,13 +11993,18 @@ fn document_bootstrap(
           }}
           const oldParent = child.__glassParent || null;
           if (oldParent && Array.isArray(oldParent.__glassChildren)) {{
+            queueFragmentChildRemoval(oldParent, child);
             oldParent.__glassChildren = oldParent.__glassChildren.filter(candidate => candidate !== child);
             if (typeof oldParent.__glassSyncContent === "function") oldParent.__glassSyncContent(true);
           }}
+          const oldParentIndex = child.parentIndex;
           projected.__glassChildren = projected.__glassChildren.filter(candidate => candidate !== child);
           projected.__glassChildren.push(child);
           child.__glassParent = projected;
           child.parentIndex = nodeIndex;
+          if (oldParent && oldParent.nodeType === 1 && oldParentIndex !== null && oldParentIndex !== undefined) {{
+            queueFrameCommand(currentBinding, {{ kind: "removeNode", node_index: child.nodeIndex }});
+          }}
           if (projected.__glassAttached) registerFrameSubtree(child);
           else detachFrameSubtree(child);
           projected.__glassSyncContent();
@@ -11982,14 +12031,19 @@ fn document_bootstrap(
           }}
           const oldParent = child.__glassParent || null;
           if (oldParent && Array.isArray(oldParent.__glassChildren)) {{
+            queueFragmentChildRemoval(oldParent, child);
             oldParent.__glassChildren = oldParent.__glassChildren.filter(candidate => candidate !== child);
             if (typeof oldParent.__glassSyncContent === "function") oldParent.__glassSyncContent(true);
           }}
+          const oldParentIndex = child.parentIndex;
           projected.__glassChildren = projected.__glassChildren.filter(candidate => candidate !== child);
           const index = projected.__glassChildren.indexOf(before);
           projected.__glassChildren.splice(index < 0 ? projected.__glassChildren.length : index, 0, child);
           child.__glassParent = projected;
           child.parentIndex = nodeIndex;
+          if (oldParent && oldParent.nodeType === 1 && oldParentIndex !== null && oldParentIndex !== undefined) {{
+            queueFrameCommand(currentBinding, {{ kind: "removeNode", node_index: child.nodeIndex }});
+          }}
           if (projected.__glassAttached) registerFrameSubtree(child);
           else detachFrameSubtree(child);
           projected.__glassSyncContent();
@@ -12000,6 +12054,7 @@ fn document_bootstrap(
           const parent = projected.__glassParent || null;
           if (!parent && projected.parentIndex === null) return;
           const commitRemoval = !projected.__glassCreated || projected.parentIndex !== null;
+          queueFragmentChildRemoval(parent, projected);
           if (parent && Array.isArray(parent.__glassChildren)) parent.__glassChildren = parent.__glassChildren.filter(candidate => candidate !== projected);
           projected.__glassParent = null;
           projected.parentIndex = null;
@@ -12124,6 +12179,7 @@ fn document_bootstrap(
         const parent = text.__glassParent || null;
         if (!parent && text.parentIndex === null) return;
         const commitRemoval = !text.__glassCreated || text.parentIndex !== null;
+        queueFragmentChildRemoval(parent, text);
         if (parent && Array.isArray(parent.__glassChildren)) parent.__glassChildren = parent.__glassChildren.filter(candidate => candidate !== text);
         text.__glassParent = null;
         text.parentIndex = null;
@@ -12157,13 +12213,19 @@ fn document_bootstrap(
             throw new TypeError("DocumentFragment children must be elements or text nodes");
           const oldParent = child.__glassParent || null;
           if (oldParent && Array.isArray(oldParent.__glassChildren)) {{
+            queueFragmentChildRemoval(oldParent, child);
             oldParent.__glassChildren = oldParent.__glassChildren.filter(candidate => candidate !== child);
             if (typeof oldParent.__glassSyncContent === "function") oldParent.__glassSyncContent(true);
           }}
+          const oldParentIndex = child.parentIndex;
           this.__glassChildren = this.__glassChildren.filter(candidate => candidate !== child);
           this.__glassChildren.push(child);
           child.__glassParent = this;
           child.parentIndex = null;
+          if (oldParent && oldParent.nodeType === 1 && oldParentIndex !== null && oldParentIndex !== undefined) {{
+            queueFrameCommand(currentBinding, {{ kind: "removeNode", node_index: child.nodeIndex }});
+          }}
+          queueMutation({{ type: "childList", target: this, addedNodes: [child], removedNodes: [], previousSibling: this.__glassChildren.length > 1 ? this.__glassChildren[this.__glassChildren.length - 2] : null, nextSibling: null }});
           detachFrameSubtree(child);
           return child;
         }},
@@ -12181,14 +12243,22 @@ fn document_bootstrap(
           if (before.__glassParent !== this) throw new TypeError("reference node is not a child");
           const oldParent = child.__glassParent || null;
           if (oldParent && Array.isArray(oldParent.__glassChildren)) {{
+            queueFragmentChildRemoval(oldParent, child);
             oldParent.__glassChildren = oldParent.__glassChildren.filter(candidate => candidate !== child);
             if (typeof oldParent.__glassSyncContent === "function") oldParent.__glassSyncContent(true);
           }}
+          const oldParentIndex = child.parentIndex;
           this.__glassChildren = this.__glassChildren.filter(candidate => candidate !== child);
           const index = this.__glassChildren.indexOf(before);
+          const previousSibling = index > 0 ? this.__glassChildren[index - 1] : null;
+          const nextSibling = before;
           this.__glassChildren.splice(index < 0 ? this.__glassChildren.length : index, 0, child);
           child.__glassParent = this;
           child.parentIndex = null;
+          if (oldParent && oldParent.nodeType === 1 && oldParentIndex !== null && oldParentIndex !== undefined) {{
+            queueFrameCommand(currentBinding, {{ kind: "removeNode", node_index: child.nodeIndex }});
+          }}
+          queueMutation({{ type: "childList", target: this, addedNodes: [child], removedNodes: [], previousSibling, nextSibling }});
           detachFrameSubtree(child);
           return child;
         }},

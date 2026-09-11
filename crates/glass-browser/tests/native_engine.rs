@@ -1254,6 +1254,21 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
             "frames": true,
         })
     );
+    let frame_namespace = session
+        .script(
+            "(() => { const child = document.getElementById('child').contentDocument; const svg = child.createElementNS('http://www.w3.org/2000/svg', 'svg'); const circle = child.createElementNS('http://www.w3.org/2000/svg', 'circle'); svg.appendChild(circle); child.body.appendChild(svg); const math = child.createElementNS('http://www.w3.org/1998/Math/MathML', 'mi'); child.body.appendChild(math); return [svg.namespaceURI, circle.namespaceURI, math.namespaceURI, child.getElementsByTagName('svg')[0] === svg]; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        frame_namespace.value,
+        serde_json::json!([
+            "http://www.w3.org/2000/svg",
+            "http://www.w3.org/2000/svg",
+            "http://www.w3.org/1998/Math/MathML",
+            true,
+        ])
+    );
     let frame_attributes = session
         .script(
             "(() => { const child = document.getElementById('child').contentDocument; const host = child.createElement('section'); const attr = child.createAttribute('data-frame'); attr.value = 'one'; const old = host.setAttributeNode(attr); const collection = host.attributes; const before = collection[0] === attr; attr.value = 'two'; const replacement = child.createAttribute('data-frame'); replacement.value = 'three'; const replaced = collection.setNamedItem(replacement); const removed = collection.removeNamedItem('data-frame'); return [old, collection instanceof NamedNodeMap, before, attr.value, replaced === attr, attr.ownerElement === null, removed === replacement, replacement.ownerElement === null, host.getAttribute('data-frame') === null, (() => { try { host.setAttributeNode(child.createAttribute('bad name')); return null; } catch (error) { return error.name; } })()]; })()",
@@ -32011,6 +32026,14 @@ fn native_inline_svg_shapes_share_layout_paint_and_hit_test_geometry() {
     let rect = document.resolve_target("id=rect").unwrap();
     let circle = document.resolve_target("id=circle").unwrap();
     assert!(document.diagnostics().is_empty());
+    assert_eq!(
+        document.node(svg).unwrap().namespace_uri(),
+        Some("http://www.w3.org/2000/svg")
+    );
+    assert_eq!(
+        document.node(rect).unwrap().namespace_uri(),
+        Some("http://www.w3.org/2000/svg")
+    );
     let viewport = Viewport {
         width: 40,
         height: 30,
@@ -32069,6 +32092,42 @@ fn native_inline_svg_shapes_share_layout_paint_and_hit_test_geometry() {
     assert_eq!(surface.pixel(18, 9), Some([0, 0, 255, 255]));
     assert_eq!(layout.hit_test(3, 4).unwrap(), Some(rect));
     assert_eq!(layout.hit_test(18, 9).unwrap(), Some(circle));
+}
+
+#[tokio::test]
+async fn native_local_namespace_dom_preserves_svg_mathml_and_foreign_content() {
+    let mut engine = NativeEngine::new(NativeEngineConfig::default().with_initial_url(
+        "data:text/html,%3Cbody%3E%3Csvg%20id%3D%27parsed-svg%27%3E%3Crect%20id%3D%27parsed-rect%27%3E%3C%2Frect%3E%3CforeignObject%20id%3D%27foreign%27%3E%3Cdiv%20id%3D%27foreign-html%27%3Econtent%3C%2Fdiv%3E%3C%2FforeignObject%3E%3C%2Fsvg%3E%3C%2Fbody%3E",
+    ))
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+
+    let result = engine
+        .evaluate_async(
+            "(() => { const svg = document.getElementById('parsed-svg'); const rect = document.getElementById('parsed-rect'); const foreign = document.getElementById('foreign'); const foreignHtml = document.getElementById('foreign-html'); const created = document.createElementNS('http://www.w3.org/2000/svg', 'circle'); created.id = 'created-circle'; created.setAttribute('cx', '4'); svg.appendChild(created); const math = document.createElementNS('http://www.w3.org/1998/Math/MathML', 'mi'); math.textContent = 'x'; math.id = 'created-math'; document.body.appendChild(math); const nullNamespace = document.createElementNS(null, 'custom-node'); const html = document.createElement('div'); html.innerHTML = '<svg><circle id=inner-circle></circle></svg>'; document.body.appendChild(html); let invalidName = ''; try { document.createElementNS('https://example.com/not-supported', 'x'); } catch (error) { invalidName = error.name; } return { parsed: [svg.namespaceURI, rect.namespaceURI, foreign.namespaceURI, foreignHtml.namespaceURI], created: [created.namespaceURI, created.localName, created.tagName, document.getElementById('created-circle') === created], math: [math.namespaceURI, math.localName, math.tagName], nullNamespace: nullNamespace.namespaceURI, parser: [html.firstElementChild.namespaceURI, html.firstElementChild.firstElementChild.namespaceURI], invalidName }; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        result,
+        serde_json::json!({
+            "parsed": [
+                "http://www.w3.org/2000/svg",
+                "http://www.w3.org/2000/svg",
+                "http://www.w3.org/2000/svg",
+                "http://www.w3.org/1999/xhtml",
+            ],
+            "created": ["http://www.w3.org/2000/svg", "circle", "circle", true],
+            "math": ["http://www.w3.org/1998/Math/MathML", "mi", "mi"],
+            "nullNamespace": null,
+            "parser": [
+                "http://www.w3.org/2000/svg",
+                "http://www.w3.org/2000/svg",
+            ],
+            "invalidName": "NamespaceError",
+        })
+    );
+    engine.close_async().await.unwrap();
 }
 
 #[test]

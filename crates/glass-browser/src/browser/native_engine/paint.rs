@@ -47,6 +47,16 @@ impl NativeBorderPaint {
     }
 }
 
+/// The bounded SVG shape families understood by the native stroke rasterizer.
+///
+/// `Ellipse` covers both SVG `circle` and `ellipse` elements because layout
+/// has already normalized both into an axis-aligned bounding rectangle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeSvgStrokeShape {
+    Rect,
+    Ellipse,
+}
+
 /// One bounded command consumed by the native software rasterizer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativeDisplayCommand {
@@ -61,6 +71,14 @@ pub enum NativeDisplayCommand {
         node_id: NativeNodeId,
         rect: NativeRect,
         radius: NativeBorderRadius,
+        color: NativeColor,
+        clip: Option<NativeRect>,
+    },
+    SvgStroke {
+        node_id: NativeNodeId,
+        shape: NativeSvgStrokeShape,
+        rect: NativeRect,
+        width: u32,
         color: NativeColor,
         clip: Option<NativeRect>,
     },
@@ -186,7 +204,7 @@ impl NativeDisplayList {
                         )?;
                     }
                     for command in
-                        svg_fill_commands(document, layout_box.node_id, layout_box.rect, clip)
+                        svg_paint_commands(document, layout_box.node_id, layout_box.rect, clip)
                     {
                         push_command(&mut commands, command)?;
                     }
@@ -255,8 +273,9 @@ impl NativeDisplayList {
 }
 
 const MAX_NATIVE_SVG_SCANLINES: u32 = 1024;
+const MAX_NATIVE_SVG_STROKE_WIDTH: u32 = 32;
 
-fn svg_fill_commands(
+fn svg_paint_commands(
     document: &NativeDocument,
     node_id: NativeNodeId,
     bounds: NativeRect,
@@ -271,63 +290,116 @@ fn svg_fill_commands(
     if !matches!(shape, "rect" | "circle" | "ellipse") || bounds.width == 0 || bounds.height == 0 {
         return Vec::new();
     }
+    let mut commands = Vec::new();
     let fill = svg_presentation_value(node, "fill").unwrap_or("black");
-    if fill.eq_ignore_ascii_case("none") {
-        return Vec::new();
-    }
-    let color = super::css::parse_color(fill).unwrap_or(NativeColor::BLACK);
-    if shape == "rect" {
-        return vec![NativeDisplayCommand::FillRect {
-            node_id,
-            rect: bounds,
-            radius: NativeBorderRadius::default(),
-            color,
-            clip,
-        }];
+    if !fill.eq_ignore_ascii_case("none") {
+        let color = super::css::parse_color(fill).unwrap_or(NativeColor::BLACK);
+        if shape == "rect" {
+            commands.push(NativeDisplayCommand::FillRect {
+                node_id,
+                rect: bounds,
+                radius: NativeBorderRadius::default(),
+                color,
+                clip,
+            });
+        } else {
+            let rows = bounds.height.min(MAX_NATIVE_SVG_SCANLINES);
+            commands.reserve(rows as usize);
+            for row in 0..rows {
+                let top = bounds.y.saturating_add(
+                    u32::try_from(u64::from(row) * u64::from(bounds.height) / u64::from(rows))
+                        .unwrap_or(u32::MAX),
+                );
+                let bottom = bounds.y.saturating_add(
+                    u32::try_from(
+                        u64::from(row.saturating_add(1)) * u64::from(bounds.height)
+                            / u64::from(rows),
+                    )
+                    .unwrap_or(u32::MAX),
+                );
+                if bottom <= top {
+                    continue;
+                }
+                let normalized_y = (f64::from(row) + 0.5) / f64::from(rows) * 2.0 - 1.0;
+                let horizontal = (1.0 - normalized_y * normalized_y).max(0.0).sqrt();
+                let center = f64::from(bounds.width) / 2.0;
+                let half_width = center * horizontal;
+                let left = half_width.mul_add(-1.0, center).floor().max(0.0) as u32;
+                let right = half_width
+                    .mul_add(1.0, center)
+                    .ceil()
+                    .min(f64::from(bounds.width)) as u32;
+                if right <= left {
+                    continue;
+                }
+                commands.push(NativeDisplayCommand::FillRect {
+                    node_id,
+                    rect: NativeRect {
+                        x: bounds.x.saturating_add(left),
+                        y: top,
+                        width: right.saturating_sub(left),
+                        height: bottom.saturating_sub(top),
+                    },
+                    radius: NativeBorderRadius::default(),
+                    color,
+                    clip,
+                });
+            }
+        }
     }
 
-    let rows = bounds.height.min(MAX_NATIVE_SVG_SCANLINES);
-    let mut commands = Vec::with_capacity(rows as usize);
-    for row in 0..rows {
-        let top = bounds.y.saturating_add(
-            u32::try_from(u64::from(row) * u64::from(bounds.height) / u64::from(rows))
-                .unwrap_or(u32::MAX),
-        );
-        let bottom = bounds.y.saturating_add(
-            u32::try_from(
-                u64::from(row.saturating_add(1)) * u64::from(bounds.height) / u64::from(rows),
-            )
-            .unwrap_or(u32::MAX),
-        );
-        if bottom <= top {
-            continue;
-        }
-        let normalized_y = (f64::from(row) + 0.5) / f64::from(rows) * 2.0 - 1.0;
-        let horizontal = (1.0 - normalized_y * normalized_y).max(0.0).sqrt();
-        let center = f64::from(bounds.width) / 2.0;
-        let half_width = center * horizontal;
-        let left = half_width.mul_add(-1.0, center).floor().max(0.0) as u32;
-        let right = half_width
-            .mul_add(1.0, center)
-            .ceil()
-            .min(f64::from(bounds.width)) as u32;
-        if right <= left {
-            continue;
-        }
-        commands.push(NativeDisplayCommand::FillRect {
-            node_id,
-            rect: NativeRect {
-                x: bounds.x.saturating_add(left),
-                y: top,
-                width: right.saturating_sub(left),
-                height: bottom.saturating_sub(top),
-            },
-            radius: NativeBorderRadius::default(),
-            color,
-            clip,
-        });
+    let Some(stroke) = svg_presentation_value(node, "stroke") else {
+        return commands;
+    };
+    if stroke.eq_ignore_ascii_case("none") {
+        return commands;
     }
+    let Some(color) = svg_paint_color(document, node_id, stroke) else {
+        return commands;
+    };
+    let width = svg_stroke_width(node);
+    if width == 0 {
+        return commands;
+    }
+    commands.push(NativeDisplayCommand::SvgStroke {
+        node_id,
+        shape: if shape == "rect" {
+            NativeSvgStrokeShape::Rect
+        } else {
+            NativeSvgStrokeShape::Ellipse
+        },
+        rect: bounds,
+        width,
+        color,
+        clip,
+    });
     commands
+}
+
+fn svg_paint_color(
+    document: &NativeDocument,
+    node_id: NativeNodeId,
+    value: &str,
+) -> Option<NativeColor> {
+    if value.eq_ignore_ascii_case("currentcolor") {
+        return document.computed_style_for_layout(node_id).color();
+    }
+    super::css::parse_color(value)
+}
+
+fn svg_stroke_width(node: &NativeNode) -> u32 {
+    let Some(value) = svg_presentation_value(node, "stroke-width") else {
+        return 1;
+    };
+    let value = value.trim();
+    let value = value.strip_suffix("px").map(str::trim).unwrap_or(value);
+    let Ok(value) = value.parse::<f64>() else {
+        return 1;
+    };
+    if !value.is_finite() || value < 0.0 {
+        return 1;
+    }
+    value.ceil().min(f64::from(MAX_NATIVE_SVG_STROKE_WIDTH)) as u32
 }
 
 fn svg_presentation_value<'a>(node: &'a NativeNode, property: &str) -> Option<&'a str> {

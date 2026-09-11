@@ -8,7 +8,7 @@ use glass_browser::browser::native_engine::{
     NativeDisplayCommand, NativeDocument, NativeEngine, NativeEngineConfig, NativeEngineError,
     NativeEngineLimits, NativeEventKind, NativeHistoryDirection, NativeLifecycleState,
     NativeNodeId, NativePoint, NativePreflightAction, NativeRect, NativeRuntimeState,
-    NativeRuntimeTraceKind, NativeSurface, NativeTextDecorationSkipInk,
+    NativeRuntimeTraceKind, NativeSurface, NativeSvgStrokeShape, NativeTextDecorationSkipInk,
     NativeTextDecorationSkipSpaces, NativeTextDecorationStyle, NativeWorkerFailureKind, Viewport,
 };
 use glass_browser::browser::session::{
@@ -9307,6 +9307,7 @@ fn native_display_list_is_revisioned_deterministic_and_visibility_aware() {
     }));
     assert!(!list.commands.iter().any(|command| match command {
         NativeDisplayCommand::FillRect { node_id, .. }
+        | NativeDisplayCommand::SvgStroke { node_id, .. }
         | NativeDisplayCommand::BorderRect { node_id, .. }
         | NativeDisplayCommand::TextRun { node_id, .. } => *node_id == hidden,
         NativeDisplayCommand::BeginOpacityGroup { .. }
@@ -13878,6 +13879,10 @@ fn native_local_presentation_important_priority_reaches_hidden_and_opacity_owner
                 ..
             }
             | NativeDisplayCommand::TextRun {
+                node_id: command_node,
+                ..
+            }
+            | NativeDisplayCommand::SvgStroke {
                 node_id: command_node,
                 ..
             }
@@ -27812,6 +27817,7 @@ fn native_br_elements_create_bounded_hard_breaks_without_layout_nodes() {
     );
     assert!(list.commands.iter().all(|command| match command {
         NativeDisplayCommand::FillRect { node_id, .. }
+        | NativeDisplayCommand::SvgStroke { node_id, .. }
         | NativeDisplayCommand::BorderRect { node_id, .. }
         | NativeDisplayCommand::TextRun { node_id, .. } => {
             *node_id != leading
@@ -32110,6 +32116,81 @@ fn native_inline_svg_shapes_share_layout_paint_and_hit_test_geometry() {
     assert_eq!(surface.pixel(18, 9), Some([0, 0, 255, 255]));
     assert_eq!(layout.hit_test(3, 4).unwrap(), Some(rect));
     assert_eq!(layout.hit_test(18, 9).unwrap(), Some(circle));
+}
+
+#[test]
+fn native_svg_strokes_replay_bounded_rect_and_ellipse_geometry() {
+    let document = NativeDocument::parse(
+        "<div style='width:32px;height:24px'><svg width='28' height='20'><rect id='rect' x='2' y='2' width='8' height='6' fill='red' stroke='black' stroke-width='2'></rect><circle id='circle' cx='20' cy='10' r='4' fill='none' stroke='green' stroke-width='2'></circle><ellipse id='current' cx='25' cy='5' rx='2' ry='2' fill='none' stroke='currentColor' style='color:blue;stroke-width:2px'></ellipse></svg></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let rect = document.resolve_target("id=rect").unwrap();
+    let circle = document.resolve_target("id=circle").unwrap();
+    let current = document.resolve_target("id=current").unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 24,
+        device_scale_factor_milli: 1000,
+    };
+    let list = document.display_list(viewport).unwrap();
+
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::SvgStroke {
+                node_id,
+                shape: NativeSvgStrokeShape::Rect,
+                rect: shape,
+                width,
+                color,
+                ..
+            } if *node_id == rect
+                && *shape == NativeRect { x: 2, y: 2, width: 8, height: 6 }
+                && *width == 2
+                && *color == NativeColor::BLACK
+        )
+    }));
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::SvgStroke {
+                node_id,
+                shape: NativeSvgStrokeShape::Ellipse,
+                width,
+                color,
+                ..
+            } if *node_id == circle
+                && *width == 2
+                && *color == NativeColor {
+                    red: 0,
+                    green: 128,
+                    blue: 0,
+                    alpha: 255,
+                }
+        )
+    }));
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::SvgStroke { node_id, width, color, .. }
+                if *node_id == current
+                    && *width == 2
+                    && *color == NativeColor {
+                        red: 0,
+                        green: 0,
+                        blue: 255,
+                        alpha: 255,
+                    }
+        )
+    }));
+
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(2, 2), Some([0, 0, 0, 255]));
+    assert_eq!(surface.pixel(4, 4), Some([255, 0, 0, 255]));
+    assert_eq!(surface.pixel(20, 6), Some([0, 128, 0, 255]));
+    assert_eq!(surface.pixel(20, 10), Some([255, 255, 255, 255]));
+    assert_eq!(surface.pixel(25, 5), Some([0, 0, 255, 255]));
 }
 
 #[tokio::test]

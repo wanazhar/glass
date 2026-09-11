@@ -5,7 +5,8 @@ use super::css::{
 use super::error::NativeEngineError;
 use super::layout::{NativePoint, NativeRect, rounded_rect_contains};
 use super::paint::{
-    MAX_NATIVE_DISPLAY_COMMANDS, NativeDisplayCommand, NativeDisplayList, NativeTextLineBoundary,
+    MAX_NATIVE_DISPLAY_COMMANDS, NativeDisplayCommand, NativeDisplayList, NativeSvgStrokeShape,
+    NativeTextLineBoundary,
 };
 
 /// Maximum number of logical pixels retained by one native software surface.
@@ -152,6 +153,26 @@ impl NativeSurface {
                         viewport_rect,
                         *rect,
                         *radius,
+                        *color,
+                        clip,
+                        scroll_offset,
+                    );
+                }
+                NativeDisplayCommand::SvgStroke {
+                    shape,
+                    rect,
+                    width,
+                    color,
+                    clip,
+                    ..
+                } => {
+                    let Some(clip) = Self::translate_clip(*clip, scroll_offset) else {
+                        continue;
+                    };
+                    Self::current_surface_mut(&mut surfaces)?.svg_stroke(
+                        *rect,
+                        *shape,
+                        *width,
                         *color,
                         clip,
                         scroll_offset,
@@ -377,6 +398,67 @@ impl NativeSurface {
                     y: y.saturating_add(scroll_offset.y),
                 };
                 if rounded_rect_contains(document_rect, radius, point) {
+                    self.blend_pixel(x, y, color);
+                }
+            }
+        }
+    }
+
+    fn svg_stroke(
+        &mut self,
+        rect: NativeRect,
+        shape: NativeSvgStrokeShape,
+        width: u32,
+        color: super::css::NativeColor,
+        clip: Option<NativeRect>,
+        scroll_offset: NativePoint,
+    ) {
+        if width == 0 || rect.width == 0 || rect.height == 0 {
+            return;
+        }
+        let outer_left = i64::from(rect.x) - i64::from(scroll_offset.x);
+        let outer_top = i64::from(rect.y) - i64::from(scroll_offset.y);
+        let outer_right = i64::from(rect.right()) - i64::from(scroll_offset.x);
+        let outer_bottom = i64::from(rect.bottom()) - i64::from(scroll_offset.y);
+        let Some((left, top, right, bottom)) =
+            self.clipped_signed_bounds(outer_left, outer_top, outer_right, outer_bottom, clip)
+        else {
+            return;
+        };
+        let inner_rect = NativeRect {
+            x: rect.x.saturating_add(width),
+            y: rect.y.saturating_add(width),
+            width: rect.width.saturating_sub(width.saturating_mul(2)),
+            height: rect.height.saturating_sub(width.saturating_mul(2)),
+        };
+        for y in top..bottom {
+            for x in left..right {
+                let document_x = i64::from(x).saturating_add(i64::from(scroll_offset.x));
+                let document_y = i64::from(y).saturating_add(i64::from(scroll_offset.y));
+                let paints = match shape {
+                    NativeSvgStrokeShape::Rect => {
+                        let Some(document_x) = u32::try_from(document_x).ok() else {
+                            continue;
+                        };
+                        let Some(document_y) = u32::try_from(document_y).ok() else {
+                            continue;
+                        };
+                        rect.contains(NativePoint {
+                            x: document_x,
+                            y: document_y,
+                        }) && !inner_rect.contains(NativePoint {
+                            x: document_x,
+                            y: document_y,
+                        })
+                    }
+                    NativeSvgStrokeShape::Ellipse => {
+                        let pixel_x = document_x as f64 + 0.5;
+                        let pixel_y = document_y as f64 + 0.5;
+                        ellipse_contains(rect, pixel_x, pixel_y, 0.0)
+                            && !ellipse_contains(rect, pixel_x, pixel_y, f64::from(width))
+                    }
+                };
+                if paints {
                     self.blend_pixel(x, y, color);
                 }
             }
@@ -961,6 +1043,19 @@ impl NativeSurface {
 
 const fn multiply_alpha(source: u8, multiplier: u8) -> u8 {
     (((source as u16) * (multiplier as u16) + (u8::MAX as u16) / 2) / (u8::MAX as u16)) as u8
+}
+
+fn ellipse_contains(rect: NativeRect, x: f64, y: f64, inset: f64) -> bool {
+    let radius_x = f64::from(rect.width) / 2.0 - inset;
+    let radius_y = f64::from(rect.height) / 2.0 - inset;
+    if radius_x <= 0.0 || radius_y <= 0.0 {
+        return false;
+    }
+    let center_x = f64::from(rect.x) + f64::from(rect.width) / 2.0;
+    let center_y = f64::from(rect.y) + f64::from(rect.height) / 2.0;
+    let normalized_x = (x - center_x) / radius_x;
+    let normalized_y = (y - center_y) / radius_y;
+    normalized_x.mul_add(normalized_x, normalized_y * normalized_y) <= 1.0
 }
 
 impl NativeDisplayList {

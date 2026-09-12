@@ -5280,6 +5280,74 @@ async fn native_local_response_objects_expose_bounded_constructors_and_identity(
 }
 
 #[tokio::test]
+async fn native_local_response_objects_support_stream_bodies_and_tee() {
+    let config = NativeEngineConfig::default()
+        .with_fixture("fixture://response-streams", "<p>Response streams</p>")
+        .unwrap()
+        .with_initial_url("fixture://response-streams");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            r#"(async () => {
+                const makeStream = () => new ReadableStream({
+                    start(controller) {
+                        controller.enqueue('response-');
+                        controller.enqueue('body');
+                        controller.close();
+                    },
+                });
+                const input = makeStream();
+                const response = new Response(input, { headers: { 'Content-Type': 'text/plain' } });
+                const sameBody = response.body === input;
+                const clone = response.clone();
+                const initial = [response.bodyUsed, clone.bodyUsed];
+                const text = await response.text();
+                const cloneText = await clone.text();
+                const after = [response.bodyUsed, clone.bodyUsed];
+                const responseAgain = await response.text().then(() => 'readable', error => error.name);
+                const cloneAgain = await clone.text().then(() => 'readable', error => error.name);
+                const lockedInput = makeStream();
+                const lockedReader = lockedInput.getReader();
+                const lockedResponse = (() => {
+                    try { new Response(lockedInput); return 'constructable'; }
+                    catch (error) { return error.name; }
+                })();
+                lockedReader.releaseLock();
+                globalThis.responseStreamObjects = [
+                    sameBody,
+                    initial,
+                    text,
+                    cloneText,
+                    after,
+                    responseAgain,
+                    cloneAgain,
+                    lockedResponse,
+                ];
+            })()"#,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.responseStreamObjects")
+            .await
+            .unwrap(),
+        serde_json::json!([
+            true,
+            [false, false],
+            "response-body",
+            "response-body",
+            [true, true],
+            "TypeError",
+            "TypeError",
+            "TypeError",
+        ])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_script_applies_bounded_dom_commands_once() {
     let config = NativeEngineConfig::default()
         .with_fixture(

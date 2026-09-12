@@ -7704,18 +7704,32 @@ fn document_bootstrap(
   const RequestNative = function(input, init) {{
     const source = input && input.__glassRequest === true ? input : null;
     const sourceUrl = input && input.__glassUrl === true ? input : null;
-    if (source && (source.bodyUsed || (source.body && source.body.locked)))
+    const overrides = init && typeof init === "object" ? init : {{}};
+    const hasBodyOverride = Object.prototype.hasOwnProperty.call(overrides, "body");
+    if (source && !hasBodyOverride && (source.bodyUsed || (source.body && source.body.locked)))
       throw new TypeError("native Request body is unusable");
     const href = source ? source.url : sourceUrl ? sourceUrl.href : input;
     if (typeof href !== "string") throw new TypeError("native Request URL must be a string");
-    const overrides = init && typeof init === "object" ? init : {{}};
     const settings = Object.assign({{}}, source ? source._settings : {{}}, overrides);
     const inheritedPayload = source && !Object.prototype.hasOwnProperty.call(overrides, "body")
       ? source.__glassRequestBodyPayload
       : null;
-    const payload = inheritedPayload
-      ? {{ bodyNull: inheritedPayload.bodyNull, bytes: inheritedPayload.bytes.slice(), contentType: inheritedPayload.contentType }}
-      : nativeRequestBodyPayload(settings);
+    let payload;
+    if (inheritedPayload && inheritedPayload.stream) {{
+      const [sourceBody, cloneBody] = source.body.tee();
+      source.__glassRequestBodyPayload.stream = sourceBody;
+      source.__glassRequestBodyState.stream = sourceBody;
+      payload = {{ bodyNull: false, bytes: null, stream: cloneBody, contentType: inheritedPayload.contentType }};
+    }} else if (inheritedPayload) {{
+      payload = {{
+        bodyNull: inheritedPayload.bodyNull,
+        bytes: inheritedPayload.bytes.slice(),
+        stream: null,
+        contentType: inheritedPayload.contentType,
+      }};
+    }} else {{
+      payload = nativeRequestBodyPayload(settings);
+    }}
     const method = settings.method === undefined ? "GET" : String(settings.method).toUpperCase();
     if (!nativeRequestMethods.includes(method)) throw new TypeError("native Request method is unsupported");
     if (nativeBodylessMethods.includes(method) && settings.body !== undefined && settings.body !== null)
@@ -7732,7 +7746,7 @@ fn document_bootstrap(
     Object.defineProperty(this, "__glassRequest", {{ value: true }});
     Object.defineProperty(this, "_settings", {{ value: settings }});
     Object.defineProperty(this, "__glassRequestBodyPayload", {{ value: payload }});
-    Object.defineProperty(this, "__glassRequestBodyState", {{ value: {{ used: false }} }});
+    Object.defineProperty(this, "__glassRequestBodyState", {{ value: {{ used: false, stream: null }} }});
     this.method = method;
     this.url = href;
     this.headers = headers;
@@ -7740,9 +7754,15 @@ fn document_bootstrap(
     this.redirect = redirect;
     this.credentials = settings.credentials === undefined ? "same-origin" : String(settings.credentials);
     this.signal = settings.signal === undefined ? null : settings.signal;
-    this.body = payload.bodyNull
+    const requestBodyState = this.__glassRequestBodyState;
+    requestBodyState.stream = payload.bodyNull
       ? null
-      : new ReadableStreamNative(payload.bytes, null, () => {{ this.__glassRequestBodyState.used = true; }});
+      : payload.stream || new ReadableStreamNative(payload.bytes, null, () => {{ requestBodyState.used = true; }});
+    Object.defineProperty(this, "body", {{
+      configurable: true,
+      enumerable: true,
+      get() {{ return requestBodyState.stream; }},
+    }});
     Object.defineProperty(this, "bodyUsed", {{
       configurable: true,
       get() {{ return nativeRequestBodyIsUsed(this); }},
@@ -7865,15 +7885,20 @@ fn document_bootstrap(
   const clearFetchAbortListener = (pending) => {{
     if (pending.signal && pending.abortListener) pending.signal.removeEventListener("abort", pending.abortListener);
   }};
-  const fetchNative = (input, options) => {{
+  const fetchNativeDispatch = (input, options, streamedBodyBytes) => {{
     const sourceRequest = input && input.__glassRequest === true ? input : null;
     const sourceUrl = input && input.__glassUrl === true ? input : null;
     if (typeof input !== "string" && !sourceRequest && !sourceUrl) throw new TypeError("native fetch requires a URL string, URL, or Request");
     const href = sourceRequest ? sourceRequest.url : sourceUrl ? sourceUrl.href : input;
     const hasBodyOverride = options && typeof options === "object" && Object.prototype.hasOwnProperty.call(options, "body");
-    const sourceBodyPayload = sourceRequest && !hasBodyOverride && sourceRequest.body !== null
-      ? sourceRequest.__glassRequestBodyPayload
-      : null;
+    const sourceBodyPayload = (() => {{
+      const payload = sourceRequest && !hasBodyOverride && sourceRequest.body !== null
+        ? sourceRequest.__glassRequestBodyPayload
+        : null;
+      if (payload && payload.stream && streamedBodyBytes !== undefined)
+        return Object.assign({{}}, payload, {{ bytes: streamedBodyBytes, stream: null }});
+      return payload;
+    }})();
     const settings = Object.assign(
       {{}},
       sourceRequest ? sourceRequest._settings : {{}},
@@ -7896,12 +7921,14 @@ fn document_bootstrap(
       : null;
     const binaryBody = sourceBodyPayload
       ? null
+      : streamedBodyBytes !== undefined
+      ? streamedBodyBytes
       : settings.body instanceof ArrayBuffer
       ? Array.from(new Uint8Array(settings.body))
       : typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(settings.body)
         ? Array.from(new Uint8Array(settings.body.buffer, settings.body.byteOffset, settings.body.byteLength))
         : null;
-    const rawBody = sourceBodyPayload || settings.body === undefined || settings.body === null || blobBody || binaryBody !== null
+    const rawBody = sourceBodyPayload || streamedBodyBytes !== undefined || settings.body === undefined || settings.body === null || blobBody || binaryBody !== null
       ? null
       : String(settings.body);
     const formData = sourceBodyPayload
@@ -7923,6 +7950,8 @@ fn document_bootstrap(
         : rawBody;
     let bodyBase64 = sourceBodyPayload
       ? encodeBase64(sourceBodyPayload.bytes, nativeFormBodyLimit)
+      : streamedBodyBytes !== undefined
+      ? encodeBase64(streamedBodyBytes, nativeFormBodyLimit)
       : blobBody && Array.isArray(blobBody._bytes)
       ? encodeBase64(blobBody._bytes, nativeFormBodyLimit)
       : binaryBody !== null
@@ -7932,7 +7961,7 @@ fn document_bootstrap(
       return Promise.reject(new TypeError("native fetch method is unsupported"));
     }}
     const usesSourceBody = sourceBodyPayload !== null;
-    if (usesSourceBody) {{
+    if (usesSourceBody && streamedBodyBytes === undefined) {{
       if (!nativeRequestBodyUse(sourceRequest)) return Promise.reject(new TypeError("native Request body is unusable"));
     }}
     const requestHeaderName = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
@@ -8174,6 +8203,7 @@ fn document_bootstrap(
   const enqueueReadableStreamSource = (state, value) => {{
     if (state.done || state.cancelled || state.error !== null)
       throw new TypeError("native ReadableStream controller is closed");
+    state.sourceProduced = true;
     const size = value instanceof ArrayBuffer
       ? value.byteLength
       : typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(value)
@@ -8197,6 +8227,7 @@ fn document_bootstrap(
     if (!source || state.sourceStarting || state.sourcePulling || state.done || state.cancelled || state.error !== null)
       return;
     if (typeof source.pull !== "function") return;
+    state.sourceProduced = false;
     state.sourcePulling = true;
     let result;
     try {{
@@ -8207,7 +8238,13 @@ fn document_bootstrap(
       return;
     }}
     Promise.resolve(result).then(
-      () => {{ state.sourcePulling = false; }},
+      () => {{
+        const produced = state.sourceProduced;
+        state.sourceProduced = false;
+        state.sourcePulling = false;
+        if (produced && state.pendingRead && !state.done && !state.cancelled && state.error === null)
+          pullReadableStreamSource(state);
+      }},
       error => {{ state.sourcePulling = false; failReadableStreamSource(state, error); }},
     );
   }};
@@ -8300,11 +8337,13 @@ fn document_bootstrap(
       sourceController: null,
       sourceStarting: Boolean(underlyingSource && typeof underlyingSource.start === "function"),
       sourcePulling: false,
+      sourceProduced: false,
       locked: false,
       cancelled: false,
       disturbed: false,
       consumedByResponse: false,
       consumedByRequest: false,
+      consumingRequestBody: false,
       done: underlyingSource ? false : group ? group.done : true,
       error: group ? group.error : null,
       streamId: hostId,
@@ -8362,7 +8401,7 @@ fn document_bootstrap(
     }};
     const read = () => {{
       if (state.consumedByResponse) return responseBodyUnusable();
-      if (state.consumedByRequest) return Promise.reject(new TypeError("native Request body is unusable"));
+      if (state.consumedByRequest && !state.consumingRequestBody) return Promise.reject(new TypeError("native Request body is unusable"));
       markReadableStreamDisturbed(state);
       const queued = readQueued();
       if (queued) {{
@@ -8608,27 +8647,30 @@ fn document_bootstrap(
   }};
   const nativeRequestBodyPayload = (settings) => {{
     const input = settings.body;
-    if (input === undefined || input === null) return {{ bodyNull: true, bytes: [], contentType: null }};
-    if (input.__glassReadableStream === true)
-      throw new TypeError("native Request stream bodies are unsupported");
+    if (input === undefined || input === null) return {{ bodyNull: true, bytes: [], stream: null, contentType: null }};
+    if (input.__glassReadableStream === true) {{
+      const state = readableStreamState(input);
+      if (state.locked || state.disturbed) throw new TypeError("native Request body stream is unusable");
+      return {{ bodyNull: false, bytes: null, stream: input, contentType: null }};
+    }}
     if (input.__glassFormData === true) {{
       const serialized = serializeFormData(input, nextFetchRequestId);
       const bytes = serialized.bodyBase64 === null
         ? blobUtf8Bytes(serialized.body)
         : decodeBase64(serialized.bodyBase64, nativeFormBodyLimit);
-      return {{ bodyNull: false, bytes, contentType: serialized.contentType }};
+      return {{ bodyNull: false, bytes, stream: null, contentType: serialized.contentType }};
     }}
     if (input.__glassUrlSearchParams === true) {{
       const text = input.toString();
-      return {{ bodyNull: false, bytes: blobUtf8Bytes(text), contentType: "application/x-www-form-urlencoded;charset=UTF-8" }};
+      return {{ bodyNull: false, bytes: blobUtf8Bytes(text), stream: null, contentType: "application/x-www-form-urlencoded;charset=UTF-8" }};
     }}
     if (input.__glassNativeBlob === true)
-      return {{ bodyNull: false, bytes: blobBytes(input), contentType: input.type || null }};
+      return {{ bodyNull: false, bytes: blobBytes(input), stream: null, contentType: input.type || null }};
     if (input instanceof ArrayBuffer)
-      return {{ bodyNull: false, bytes: Array.from(new Uint8Array(input)), contentType: null }};
+      return {{ bodyNull: false, bytes: Array.from(new Uint8Array(input)), stream: null, contentType: null }};
     if (typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(input))
-      return {{ bodyNull: false, bytes: Array.from(new Uint8Array(input.buffer, input.byteOffset, input.byteLength)), contentType: null }};
-    return {{ bodyNull: false, bytes: blobUtf8Bytes(String(input)), contentType: null }};
+      return {{ bodyNull: false, bytes: Array.from(new Uint8Array(input.buffer, input.byteOffset, input.byteLength)), stream: null, contentType: null }};
+    return {{ bodyNull: false, bytes: blobUtf8Bytes(String(input)), stream: null, contentType: null }};
   }};
   const nativeMultipartParameter = (value, parameter) => {{
     for (const piece of String(value).split(";")) {{
@@ -8722,11 +8764,86 @@ fn document_bootstrap(
   const nativeRequestBodyUnusable = () => Promise.reject(new TypeError("native Request body is unusable"));
   const nativeRequestBodyPromise = (request, transform) => {{
     if (!nativeRequestBodyUse(request)) return nativeRequestBodyUnusable();
+    const payload = request.__glassRequestBodyPayload;
+    if (payload.stream)
+      return nativeDrainReadableStream(payload.stream, true).then(bytes => transform(bytes, payload));
     try {{
-      return Promise.resolve(transform(request.__glassRequestBodyPayload.bytes.slice(), request.__glassRequestBodyPayload));
+      return Promise.resolve(transform(payload.bytes.slice(), payload));
     }} catch (error) {{
       return Promise.reject(error);
     }}
+  }};
+  const nativeReadableStreamChunkBytes = (value) => {{
+    if (typeof value === "string") return blobUtf8Bytes(value);
+    if (value instanceof ArrayBuffer) return Array.from(new Uint8Array(value));
+    if (typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(value))
+      return Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
+    throw new TypeError("native Request stream chunks must be byte data");
+  }};
+  const nativeDrainReadableStream = (stream, claimed) => {{
+    const state = readableStreamState(stream);
+    if (!claimed && (state.locked || state.disturbed))
+      return Promise.reject(new TypeError("native Request body stream is unusable"));
+    state.consumedByRequest = true;
+    state.consumingRequestBody = true;
+    if (!claimed) markReadableStreamDisturbed(state);
+    let reader;
+    try {{ reader = stream.getReader(); }}
+    catch (error) {{
+      state.consumingRequestBody = false;
+      return Promise.reject(error);
+    }}
+    const chunks = [];
+    let totalBytes = 0;
+    const release = () => {{
+      state.consumingRequestBody = false;
+      reader.releaseLock();
+    }};
+    const readNext = () => reader.read().then(
+      result => {{
+        if (result.done) {{
+          release();
+          const bytes = [];
+          for (const chunk of chunks) bytes.push(...chunk);
+          return bytes;
+        }}
+        let bytes;
+        try {{ bytes = nativeReadableStreamChunkBytes(result.value); }}
+        catch (error) {{ release(); throw error; }}
+        totalBytes += bytes.length;
+        if (totalBytes > nativeFormBodyLimit) {{
+          release();
+          throw new RangeError("native Request stream body exceeds its limit");
+        }}
+        chunks.push(bytes);
+        return readNext();
+      }},
+      error => {{ release(); throw error; }},
+    );
+    return readNext();
+  }};
+  const fetchNative = (input, options) => {{
+    const sourceRequest = input && input.__glassRequest === true ? input : null;
+    const sourceUrl = input && input.__glassUrl === true ? input : null;
+    if (typeof input !== "string" && !sourceRequest && !sourceUrl)
+      throw new TypeError("native fetch requires a URL string, URL, or Request");
+    const hasBodyOverride = options && typeof options === "object" && Object.prototype.hasOwnProperty.call(options, "body");
+    const sourceBody = sourceRequest && !hasBodyOverride ? sourceRequest.body : null;
+    if (sourceBody && sourceBody.__glassReadableStream === true) {{
+      if (!nativeRequestBodyUse(sourceRequest)) return Promise.reject(new TypeError("native Request body is unusable"));
+      return nativeDrainReadableStream(sourceBody, true)
+        .then(bytes => fetchNativeDispatch(input, options, bytes));
+    }}
+    const settings = Object.assign(
+      {{}},
+      sourceRequest ? sourceRequest._settings : {{}},
+      options && typeof options === "object" ? options : {{}},
+    );
+    const body = settings.body;
+    if (body && body.__glassReadableStream === true)
+      return nativeDrainReadableStream(body, false)
+        .then(bytes => fetchNativeDispatch(input, options, bytes));
+    return fetchNativeDispatch(input, options);
   }};
   RequestNative.prototype.text = function() {{
     return nativeRequestBodyPromise(this, bytes => utf8TextFromBytes(bytes));

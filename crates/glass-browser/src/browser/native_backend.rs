@@ -9,8 +9,8 @@ use super::native_engine::{
     NativeEngineError, NativeEventKind, NativeFrameScriptBinding, NativeFrameScriptContext,
     NativeFrameScriptRequest, NativeFrameScriptWindow, NativeHistoryDirection,
     NativeInspectionSnapshot, NativeOrigin, NativePopupRequest, NativePostMessageRequest,
-    NativePreflightAction, NativeScriptCommand, NativeTargetPreflight, NativeWindowCloseRequest,
-    NativeWindowNavigationRequest, NativeWindowProxyUpdate,
+    NativePreflightAction, NativeScriptCommand, NativeSurface, NativeTargetPreflight,
+    NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
 };
 use crate::browser::session::{
     FrameInfo, NavigationControlOutcome, PageTargetInfo, redact_diagnostic_text,
@@ -215,9 +215,24 @@ impl NativeEngineBackend {
 
     /// Capture the current logical native surface as PNG bytes.
     pub fn capture_png(&self) -> Result<Vec<u8>, BrowserBackendError> {
-        self.lock_engine(BackendOperation::Capture)?
-            .capture_png()
-            .map_err(native_error)
+        let targets = self.lock_targets(BackendOperation::Capture)?;
+        let engine = self.lock_engine_raw(BackendOperation::Capture)?;
+        let frame_id = targets.active_frames.active_frame_id.clone();
+        capture_native_frame_surface(&engine, &targets.active_frames, &frame_id)
+            .and_then(|surface| surface.to_png().map_err(native_error))
+    }
+
+    /// Discover current child browsing contexts and capture the selected
+    /// frame with every visible descendant frame composited into its owner.
+    /// The asynchronous form is used by normal Glass operations so a caller
+    /// does not need to discover frames before requesting a screenshot.
+    pub async fn capture_png_async(&self) -> Result<Vec<u8>, BrowserBackendError> {
+        let mut targets = self.lock_targets(BackendOperation::Capture)?;
+        let engine = self.lock_engine_raw(BackendOperation::Capture)?;
+        let frame_id = targets.active_frames.active_frame_id.clone();
+        reconcile_native_frames(&mut targets.active_frames, &engine).await?;
+        capture_native_frame_surface(&engine, &targets.active_frames, &frame_id)
+            .and_then(|surface| surface.to_png().map_err(native_error))
     }
 
     /// Return a side-effect-free, revision-bound target preflight result.
@@ -2147,7 +2162,7 @@ impl NativeEngineBackend {
                 }
                 BrowserCapability::Action => {
                     vec![
-                        "bounded click/type/key-down/key-up/shortcut/key-press/clear/check/uncheck/select/scroll, single/multi-select, form defaults, root scrolling, and native point targets; advanced selection geometry, IME, and nested scrolling remain open".into(),
+                        "bounded click/type/key/shortcut/clear/check/select/scroll, form defaults, root and nested scrolling with history restoration, and point targets; advanced selection geometry and IME remain open".into(),
                     ]
                 }
                 BrowserCapability::Effects => {
@@ -2168,7 +2183,7 @@ impl NativeEngineBackend {
                     "up to 32 independent native page targets with one explicitly selected active context".into(),
                 ],
                 BrowserCapability::Storage => vec![
-                    "origin-keyed page local/session Web Storage; opt-in revisioned localStorage and cookie profiles; profile-journal events; IndexedDB remains open".into(),
+                    "bounded origin-keyed Web Storage/cookies, IndexedDB stores/transactions/indexes/cursors, and profile persistence; full browser storage parity remains open".into(),
                 ],
                 BrowserCapability::Prompts => vec![
                     "bounded alert, confirm, and prompt metadata is surfaced and can be accepted or dismissed; modal JavaScript continuation remains a separate browser-loop gate".into(),
@@ -2207,8 +2222,8 @@ impl NativeEngineBackend {
                     limitations: vec![
                         "network navigation and scripting are bounded web-platform slices, not browser parity".into(),
                         "in-process local execution is not a security boundary for hostile content; external documents use the sandboxed content worker".into(),
-                        "bounded page Web Storage and session document.cookie; opt-in revisioned localStorage/cookie profiles; per-context sessionStorage; profile-journal events; IndexedDB unavailable".into(),
-                        "actions are limited to bounded click/type/key-down/key-up/shortcut/key-press/clear/check/uncheck/select/scroll, select controls, form defaults, root scrolling, and native point targets".into(),
+                        "bounded Web Storage, cookies, IndexedDB databases/stores/transactions/indexes/cursors/structured values, and profile persistence; full browser storage parity remains open".into(),
+                        "actions are limited to bounded click/type/key/shortcut/clear/check/select/scroll, form defaults, root/nested scrolling with history restoration, and point targets".into(),
                         "JavaScript alert, confirm, and prompt calls are surfaced through the native prompt lifecycle".into(),
                         "download links use a bounded parent-owned transfer queue and authorized destination; popup, chooser, and general download API parity remain open".into(),
                     ],
@@ -2507,7 +2522,8 @@ impl BrowserBackend for NativeEngineBackend {
                             reason: "native engine supports only bounded PNG capture".into(),
                         });
                     }
-                    let bytes = engine.capture_png().map_err(native_error)?;
+                    drop(engine);
+                    let bytes = self.capture_png_async().await?;
                     Ok(BackendResponse::Capture(CaptureResult {
                         format: CaptureFormat::Png,
                         bytes,
@@ -2579,6 +2595,62 @@ fn project_native_target(
         opener_id,
         active,
     })
+}
+
+fn capture_native_frame_surface(
+    engine: &NativeEngine,
+    frames: &NativeFrameState,
+    frame_id: &str,
+) -> Result<NativeSurface, BrowserBackendError> {
+    capture_native_frame_surface_at_depth(engine, frames, frame_id, 0)
+}
+
+fn capture_native_frame_surface_at_depth(
+    engine: &NativeEngine,
+    frames: &NativeFrameState,
+    frame_id: &str,
+    depth: usize,
+) -> Result<NativeSurface, BrowserBackendError> {
+    if depth >= NATIVE_MAX_FRAMES {
+        return Err(BrowserBackendError::SelectionFailed {
+            reason: "native frame surface composition exceeded its bounded depth".into(),
+        });
+    }
+    let mut surface = engine.rasterize().map_err(native_error)?;
+    let layout = engine.layout().map_err(native_error)?;
+    let mut children = frames
+        .parked
+        .iter()
+        .filter(|(_, frame)| frame.parent_id.as_deref() == Some(frame_id))
+        .filter_map(|(child_id, frame)| {
+            let owner_node_index = frame.owner_node_index?;
+            let (box_order, owner_node_id) = layout
+                .boxes
+                .iter()
+                .enumerate()
+                .find(|(_, layout_box)| layout_box.node_id.index() == owner_node_index)
+                .map(|(order, layout_box)| (order, layout_box.node_id))?;
+            let destination = layout.viewport_rect_for(owner_node_id)?;
+            Some((box_order, child_id.clone(), destination))
+        })
+        .collect::<Vec<_>>();
+    children.sort_by_key(|(box_order, child_id, _)| (*box_order, child_id.clone()));
+
+    for (_, child_id, destination) in children {
+        let Some(child) = frames.parked.get(&child_id) else {
+            continue;
+        };
+        let child_surface = capture_native_frame_surface_at_depth(
+            &child.engine,
+            frames,
+            &child_id,
+            depth.saturating_add(1),
+        )?;
+        surface
+            .composite_child(&child_surface, destination)
+            .map_err(native_error)?;
+    }
+    Ok(surface)
 }
 
 fn native_window_name(name: &str) -> Option<String> {

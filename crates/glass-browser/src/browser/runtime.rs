@@ -487,6 +487,17 @@ impl BrowserRuntimeSession {
         }
     }
 
+    /// Capture a native logical software surface after discovering and
+    /// compositing the selected frame's live child browsing contexts.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_capture_png_async(&self) -> BrowserResult<Vec<u8>> {
+        let _operation = self.operation_lock.lock().await;
+        match &self.backend {
+            BackendStartup::Native(backend) => Ok(backend.capture_png_async().await?),
+            _ => Err("native PNG capture is only available on the native runtime".into()),
+        }
+    }
+
     /// Run a side-effect-free native target preflight under the session's
     /// operation lock.
     #[cfg(feature = "native-engine")]

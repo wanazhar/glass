@@ -427,6 +427,132 @@ impl NativeSurface {
         &self.rgba
     }
 
+    /// Composite one opaque child browsing-context surface into this surface.
+    ///
+    /// The child surface is sampled from its top-left corner and clipped to
+    /// the destination rectangle and this surface's bounds. Browsing-context
+    /// layout resolves the destination in the parent viewport; the raster
+    /// owner remains the only mutable pixel owner.
+    pub(crate) fn composite_child(
+        &mut self,
+        child: &Self,
+        destination: NativeRect,
+    ) -> Result<(), NativeEngineError> {
+        destination
+            .x
+            .checked_add(destination.width)
+            .ok_or_else(|| {
+                NativeEngineError::invalid(
+                    "native child surface",
+                    "destination horizontal bounds exceed integer limits",
+                )
+            })?;
+        destination
+            .y
+            .checked_add(destination.height)
+            .ok_or_else(|| {
+                NativeEngineError::invalid(
+                    "native child surface",
+                    "destination vertical bounds exceed integer limits",
+                )
+            })?;
+        let copy_width = destination
+            .width
+            .min(child.width())
+            .min(self.width.saturating_sub(destination.x.min(self.width)));
+        let copy_height = destination
+            .height
+            .min(child.height())
+            .min(self.height.saturating_sub(destination.y.min(self.height)));
+        if copy_width == 0
+            || copy_height == 0
+            || destination.x >= self.width
+            || destination.y >= self.height
+        {
+            return Ok(());
+        }
+        let source_stride = usize::try_from(child.width())
+            .ok()
+            .and_then(|width| width.checked_mul(4))
+            .ok_or_else(|| {
+                NativeEngineError::invalid(
+                    "native child surface",
+                    "source stride exceeds host bounds",
+                )
+            })?;
+        let destination_stride = usize::try_from(self.width)
+            .ok()
+            .and_then(|width| width.checked_mul(4))
+            .ok_or_else(|| {
+                NativeEngineError::invalid(
+                    "native child surface",
+                    "destination stride exceeds host bounds",
+                )
+            })?;
+        let row_bytes = usize::try_from(copy_width)
+            .ok()
+            .and_then(|width| width.checked_mul(4))
+            .ok_or_else(|| {
+                NativeEngineError::invalid(
+                    "native child surface",
+                    "child row size exceeds host bounds",
+                )
+            })?;
+        let destination_x = usize::try_from(destination.x).map_err(|_| {
+            NativeEngineError::invalid("native child surface", "destination x exceeds host bounds")
+        })?;
+        let destination_y = usize::try_from(destination.y).map_err(|_| {
+            NativeEngineError::invalid("native child surface", "destination y exceeds host bounds")
+        })?;
+        let copy_height = usize::try_from(copy_height).map_err(|_| {
+            NativeEngineError::invalid("native child surface", "child height exceeds host bounds")
+        })?;
+        for row in 0..copy_height {
+            let source_start = row.checked_mul(source_stride).ok_or_else(|| {
+                NativeEngineError::invalid(
+                    "native child surface",
+                    "source row offset exceeds host bounds",
+                )
+            })?;
+            let destination_start = destination_y
+                .checked_add(row)
+                .and_then(|value| value.checked_mul(destination_stride))
+                .and_then(|value| value.checked_add(destination_x.checked_mul(4)?))
+                .ok_or_else(|| {
+                    NativeEngineError::invalid(
+                        "native child surface",
+                        "destination row offset exceeds host bounds",
+                    )
+                })?;
+            let source_end = source_start.checked_add(row_bytes).ok_or_else(|| {
+                NativeEngineError::invalid(
+                    "native child surface",
+                    "source row end exceeds host bounds",
+                )
+            })?;
+            let destination_end = destination_start.checked_add(row_bytes).ok_or_else(|| {
+                NativeEngineError::invalid(
+                    "native child surface",
+                    "destination row end exceeds host bounds",
+                )
+            })?;
+            let source_row = child.rgba.get(source_start..source_end).ok_or_else(|| {
+                NativeEngineError::invalid("native child surface", "source pixels are truncated")
+            })?;
+            let destination_row = self
+                .rgba
+                .get_mut(destination_start..destination_end)
+                .ok_or_else(|| {
+                    NativeEngineError::invalid(
+                        "native child surface",
+                        "destination pixels are truncated",
+                    )
+                })?;
+            destination_row.copy_from_slice(source_row);
+        }
+        Ok(())
+    }
+
     fn translate_rect(rect: NativeRect, scroll_offset: NativePoint) -> Option<NativeRect> {
         let left = rect.x.saturating_sub(scroll_offset.x);
         let top = rect.y.saturating_sub(scroll_offset.y);

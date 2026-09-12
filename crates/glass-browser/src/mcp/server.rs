@@ -3680,7 +3680,7 @@ async fn call_native_tool(
                 .then(|| session.native_semantic_nodes())
                 .transpose()?;
             let screenshot = if include_screenshot {
-                Some(session.native_capture_png()?)
+                Some(session.native_capture_png_async().await?)
             } else {
                 None
             };
@@ -3737,7 +3737,7 @@ async fn call_native_tool(
                         .into(),
                 );
             }
-            let bytes = session.native_capture_png()?;
+            let bytes = session.native_capture_png_async().await?;
             Ok(json!({
                 "content": [{
                     "type": "image",

@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-266` slice; the bounded foundation below remains
+`native-engine-browser-267` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -29,6 +29,7 @@ bounded-readable-stream-reader-lifecycle/
 bounded-readable-stream-tee/
 bounded-stream-request-bodies/
 bounded-stream-response-bodies/
+bounded-writable-streams-and-piping/
 bounded-native-frame-sequential-focus-traversal/
 bounded-native-frame-locator-routing/
 bounded-min-max-dimensions/bounded-opacity-groups/bounded-text-alignment/
@@ -5857,6 +5858,15 @@ collector while preserving `bodyUsed` and lock semantics. Fetch-created
 responses retain their existing transport owner; full Streams/Web IDL parity
 remains open. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-266.md`.
+
+The completed native-engine-browser-267 slice adds a bounded writable stream
+owner and readable-to-writable pipelines. `WritableStream` serializes sink
+`write()` calls behind one writer lock, exposes close/abort lifecycle state and
+finite queue demand, and `ReadableStream.pipeTo()`/`pipeThrough()` transfer
+values with normal close, source cancellation, sink abort, and optional
+prevention flags. The owner remains distinct from the Fetch transport path;
+full WritableStream/TransformStream/Web IDL parity remains open. Exact
+evidence is recorded in `docs/plan/tasks/native-engine-browser-267.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

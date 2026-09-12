@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-242` slice; the bounded foundation below remains
+`native-engine-browser-243` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -17,6 +17,7 @@ bounded-nested-scrolling-and-scroll-events/bounded-history-nested-scroll-restora
 bounded-native-frame-point-routing/
 bounded-native-frame-focus-routing/
 bounded-native-frame-viewport-negotiation/
+bounded-native-frame-sequential-focus-traversal/
 bounded-min-max-dimensions/bounded-opacity-groups/bounded-text-alignment/
 bounded-functional-alpha-colors/bounded-fixed-cell-text-decoration/
 bounded-inherited-text-transform/bounded-first-line-text-indent/
@@ -5607,6 +5608,13 @@ device scale. Nested frame engines therefore share the dimensions used by
 parent layout, capture, hit-testing, and local input; missing owner geometry
 retains a bounded validated base viewport. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-242.md`.
+
+The completed native-engine-browser-243 slice adds frame-local sequential
+keyboard focus traversal. `Tab` and `Shift+Tab` use the attached semantic
+control sequence with positive-`tabindex` ordering, preserve keydown
+preventDefault and blur/focus event effects, and execute through the same
+local and content-process action owners. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-243.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

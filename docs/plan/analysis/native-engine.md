@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-242`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-243`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -3790,6 +3790,14 @@ with their parent frame-owner content boxes. Each nested child now negotiates
 its own bounded dimensions before initialization, so layout, capture,
 hit-testing, and local coordinates use the same visible surface size. Exact
 evidence is in `docs/plan/tasks/native-engine-browser-242.md`.
+
+The completed native-engine-browser-243 slice adds the default `Tab` and
+`Shift+Tab` focus action to each native document. It orders positive
+`tabindex` controls before natural document order, excludes hidden/disabled/
+negative or unsupported controls, preserves keydown cancellation and
+blur/focus effects, and routes through both local and HTTP content-process
+event owners. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-243.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

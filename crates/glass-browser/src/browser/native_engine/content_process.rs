@@ -5496,7 +5496,7 @@ fn mutate_key_shortcut_with_event_bridge(
     if apply_default && !should_apply_native_key_default(key, modifiers) {
         return Err(NativeEngineError::invalid(
             "content-process shortcut default",
-            "default editing is only valid for Ctrl/Meta+A or a bounded text-editing key",
+            "default behavior is only valid for Ctrl/Meta+A, bounded text editing, or Tab focus traversal",
         ));
     }
     let node_id = NativeNodeId::from_parts(current.generation(), node_index);
@@ -5541,9 +5541,13 @@ fn mutate_key_shortcut_with_event_bridge(
     let mut events = vec![(node_id, NativeEventKind::KeyDown)];
     events.extend(next.apply_script_commands(&keydown.commands)?);
     if keydown_allowed && apply_default && next.focused_node() == node_id {
-        let input_events = next.apply_key_default(node_id, key, modifiers)?;
-        events.extend(input_events.clone());
-        for (event_node, event_kind) in input_events {
+        let default_events = if key == "Tab" {
+            next.apply_tab_focus(modifiers & 8 != 0)?
+        } else {
+            next.apply_key_default(node_id, key, modifiers)?
+        };
+        events.extend(default_events.clone());
+        for (event_node, event_kind) in default_events {
             let source = host_event_script(&[(event_node.index(), event_kind)])?;
             let Some(source) = source else {
                 continue;
@@ -5637,7 +5641,7 @@ fn should_apply_native_key_default(key: &str, modifiers: i64) -> bool {
         && (key.chars().count() == 1
             || matches!(
                 key,
-                "Backspace" | "Delete" | "ArrowLeft" | "ArrowRight" | "Home" | "End"
+                "Backspace" | "Delete" | "ArrowLeft" | "ArrowRight" | "Home" | "End" | "Tab"
             ))
 }
 

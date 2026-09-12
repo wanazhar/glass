@@ -6368,7 +6368,8 @@ async fn native_content_process_keyboard_actions_preserve_event_and_modifier_con
         let (mut stream, _) = listener.accept().await.unwrap();
         let request = read_http_request(&mut stream).await;
         assert_eq!(request.split_whitespace().nth(1), Some("/keyboard"));
-        let body = "<input id='name' type='text' value='ab'>";
+        let body =
+            "<input id='name' type='text' value='ab'><input id='next' type='text' value='next'>";
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
@@ -6442,6 +6443,36 @@ async fn native_content_process_keyboard_actions_preserve_event_and_modifier_con
         .unwrap();
     assert!(deleted.accepted);
     assert_eq!(deleted.revision, before_shortcut + 3);
+    let tabbed = engine
+        .action_async(NativeAction::Shortcut {
+            shortcut: "Tab".into(),
+        })
+        .await
+        .unwrap();
+    assert!(tabbed.accepted);
+    assert_eq!(tabbed.revision, before_shortcut + 4);
+    assert_eq!(
+        engine
+            .evaluate_async("document.activeElement.id")
+            .await
+            .unwrap(),
+        serde_json::json!("next")
+    );
+    let reverse_tabbed = engine
+        .action_async(NativeAction::Shortcut {
+            shortcut: "Shift+Tab".into(),
+        })
+        .await
+        .unwrap();
+    assert!(reverse_tabbed.accepted);
+    assert_eq!(reverse_tabbed.revision, before_shortcut + 5);
+    assert_eq!(
+        engine
+            .evaluate_async("document.activeElement.id")
+            .await
+            .unwrap(),
+        serde_json::json!("name")
+    );
     let keydown = engine
         .action_async(NativeAction::KeyDown {
             key: "Enter".into(),
@@ -6477,6 +6508,8 @@ async fn native_content_process_keyboard_actions_preserve_event_and_modifier_con
                 ["down", "Backspace", "Backspace", false, false, false, false],
                 ["input", ""],
                 ["up", "Backspace", "Backspace", false, false, false, false],
+                ["down", "Tab", "Tab", false, false, false, false],
+                ["up", "Tab", "Tab", false, false, false, false],
                 ["down", "Enter", "Enter", false, false, false, false],
                 ["up", "Enter", "Enter", false, false, false, false],
             ],
@@ -30723,7 +30756,7 @@ async fn native_backend_routes_point_clicks_into_nested_frame_content() {
         .unwrap()
         .with_fixture(
             "fixture://frame-click-grand",
-            "<input id='inside' style='display:block;width:8px;height:6px' value='before'>",
+            "<input id='inside' style='display:block;width:8px;height:2px' value='before'><input id='next' style='display:block;width:8px;height:2px' value='after'>",
         )
         .unwrap()
         .with_initial_url("fixture://frame-click-parent");
@@ -30753,6 +30786,30 @@ async fn native_backend_routes_point_clicks_into_nested_frame_content() {
     assert!(typed.accepted);
     assert_eq!(typed.revision, 3);
 
+    let tabbed = dispatcher
+        .action(ActionRequest {
+            context_id: "native-context".into(),
+            action: SemanticAction::Shortcut {
+                shortcut: "Tab".into(),
+            },
+        })
+        .await
+        .unwrap();
+    assert!(tabbed.accepted);
+    assert_eq!(tabbed.revision, 4);
+
+    let reverse_tabbed = dispatcher
+        .action(ActionRequest {
+            context_id: "native-context".into(),
+            action: SemanticAction::Shortcut {
+                shortcut: "Shift+Tab".into(),
+            },
+        })
+        .await
+        .unwrap();
+    assert!(reverse_tabbed.accepted);
+    assert_eq!(reverse_tabbed.revision, 5);
+
     let frames = backend.list_frames().await.unwrap();
     let child = frames
         .iter()
@@ -30762,11 +30819,14 @@ async fn native_backend_routes_point_clicks_into_nested_frame_content() {
     let value = dispatcher
         .script(ScriptRequest {
             context_id: "native-context".into(),
-            source: "document.getElementById('inside').value".into(),
+            source: "({ active: document.activeElement.id, value: document.getElementById('inside').value })".into(),
         })
         .await
         .unwrap();
-    assert_eq!(value.value, serde_json::json!("beforea"));
+    assert_eq!(
+        value.value,
+        serde_json::json!({"active": "inside", "value": "beforea"})
+    );
     dispatcher.close().await.unwrap();
 }
 

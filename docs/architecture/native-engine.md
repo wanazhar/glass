@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-231` slice; the bounded foundation below remains
+`native-engine-browser-232` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -21,7 +21,7 @@ bounded-inherited-word-spacing/bounded-inherited-letter-spacing/
 bounded-inherited-font-weight/bounded-inherited-font-style/
 bounded-inherited-word-break slices,
 bounded-text-overflow/bounded-vertical-align/bounded-flex-row/
-bounded-grid-track-layout/bounded-relative-positioning/
+bounded-grid-track-layout/bounded-relative-positioning/bounded-absolute-positioning/
 bounded-inline-svg-shape-paint/
 bounded-inline-svg-stroke-paint/
 bounded-svg-line-polygon-paint/
@@ -5499,6 +5499,18 @@ descendant layout range after final sizing, leaving sibling flow allocation
 unchanged. The resulting boxes drive display-list paint, scrolling, capture,
 overflow clipping, and hit testing through the existing geometry path. Exact
 evidence is in `docs/plan/tasks/native-engine-browser-231.md`.
+
+The completed native-engine-browser-232 slice adds the first out-of-flow
+positioned layout owner. `position: absolute` accepts bounded signed pixel
+insets and is omitted from normal block, flex, and grid item allocation. The
+layout builder carries the nearest positioned, flex, grid, or initial
+containing block, lays out the absolute subtree once, and translates its
+complete emitted range after its final size resolves. Later paint-order,
+overflow, scroll, capture, and hit-test owners therefore consume one source of
+truth. `position: fixed` is intentionally not accepted yet: viewport-anchored
+boxes need an explicit shared projection/lifecycle representation so scrolling
+cannot turn them into ordinary document-space boxes. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-232.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

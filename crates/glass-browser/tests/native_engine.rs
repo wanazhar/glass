@@ -30810,6 +30810,18 @@ async fn native_backend_routes_point_clicks_into_nested_frame_content() {
     assert!(reverse_tabbed.accepted);
     assert_eq!(reverse_tabbed.revision, 5);
 
+    let located = dispatcher
+        .action(ActionRequest {
+            context_id: "native-context".into(),
+            action: SemanticAction::Click {
+                target: "id=next".into(),
+            },
+        })
+        .await
+        .unwrap();
+    assert!(located.accepted);
+    assert_eq!(located.revision, 6);
+
     let frames = backend.list_frames().await.unwrap();
     let child = frames
         .iter()
@@ -30825,7 +30837,7 @@ async fn native_backend_routes_point_clicks_into_nested_frame_content() {
         .unwrap();
     assert_eq!(
         value.value,
-        serde_json::json!({"active": "inside", "value": "beforea"})
+        serde_json::json!({"active": "next", "value": "beforea"})
     );
     dispatcher.close().await.unwrap();
 }

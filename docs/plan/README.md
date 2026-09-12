@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-225` locally. The versioned
+`native-engine-browser-226` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1975,6 +1975,14 @@ now select the time-appropriate frame during display-list paint, including
 CSS background images. Frame count, decoded pixels, transfer payload, and
 delay limits remain enforced before publication. Exact evidence is recorded
 in [native-engine-browser-225](tasks/native-engine-browser-225.md).
+
+The completed native-engine-browser-226 slice adds bounded animated WebP
+playback using the existing pure-Rust decoder. Full logical-canvas frames,
+blend/disposal behavior, normalized timing, and loop metadata now flow through
+the same local data-URL, HTTP(S) content-process, image paint, and typed-wire
+owners as GIF. Frame count, canvas pixels, decoder output, and retained-frame
+bytes remain bounded before publication. Exact evidence is recorded in
+[native-engine-browser-226](tasks/native-engine-browser-226.md).
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` now returns persistent `Attr`

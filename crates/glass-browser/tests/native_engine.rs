@@ -30687,6 +30687,62 @@ async fn native_backend_composes_nested_frame_surfaces_into_capture() {
 }
 
 #[tokio::test]
+async fn native_backend_routes_point_clicks_into_nested_frame_content() {
+    let config = NativeEngineConfig::default()
+        .with_viewport(Viewport {
+            width: 24,
+            height: 12,
+            device_scale_factor_milli: 1000,
+        })
+        .with_fixture(
+            "fixture://frame-click-parent",
+            "<iframe id='child' style='display:block;width:8px;height:6px' src='fixture://frame-click-child'></iframe>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://frame-click-child",
+            "<iframe id='grand' style='display:block;width:8px;height:6px' src='fixture://frame-click-grand'></iframe>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://frame-click-grand",
+            "<button id='inside' style='display:block;width:8px;height:6px'>inside</button>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://frame-click-parent");
+    let backend = NativeEngineBackend::new(config).unwrap();
+    let dispatcher = BrowserBackendDispatcher::new(&backend);
+    dispatcher.initialize().await.unwrap();
+
+    let clicked = dispatcher
+        .action(ActionRequest {
+            context_id: "native-context".into(),
+            action: SemanticAction::Click {
+                target: "point=1,1".into(),
+            },
+        })
+        .await
+        .unwrap();
+    assert!(clicked.accepted);
+    assert_eq!(clicked.revision, 2);
+
+    let frames = backend.list_frames().await.unwrap();
+    let child = frames
+        .iter()
+        .find(|frame| frame.url == "fixture://frame-click-grand")
+        .unwrap();
+    backend.select_frame(&child.id).await.unwrap();
+    let inside = backend
+        .semantic_nodes()
+        .unwrap()
+        .into_iter()
+        .find(|node| node.name == "inside")
+        .unwrap();
+    assert!(inside.focused);
+    dispatcher.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_backend_dispatches_vertical_scroll_into_capture() {
     let config = NativeEngineConfig::default()
         .with_viewport(Viewport {

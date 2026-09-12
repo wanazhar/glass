@@ -2297,6 +2297,15 @@ impl NativeEngine {
         self.layout()?.hit_test(x, y)
     }
 
+    pub(crate) fn is_descendant_or_self(
+        &self,
+        id: super::dom::NativeNodeId,
+        ancestor: super::dom::NativeNodeId,
+    ) -> Result<bool, NativeEngineError> {
+        self.require_running("frame hit testing")?;
+        Ok(self.document.is_descendant_or_self(id, ancestor))
+    }
+
     /// Return the current document's immutable Rust display-list projection.
     pub fn display_list(&self) -> Result<NativeDisplayList, NativeEngineError> {
         self.require_running("display list")?;
@@ -6178,7 +6187,7 @@ fn validate_history_state(state: &serde_json::Value) -> Result<(), NativeEngineE
     Ok(())
 }
 
-fn parse_point_target(target: &str) -> Result<Option<(i64, i64)>, NativeEngineError> {
+pub(crate) fn parse_point_target(target: &str) -> Result<Option<(i64, i64)>, NativeEngineError> {
     let Some(value) = target.strip_prefix("point=") else {
         return Ok(None);
     };

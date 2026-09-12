@@ -46,6 +46,7 @@ pub use diagnostics::{
     NativeDiagnosticCode, NativeDiagnosticSource,
 };
 pub use dom::{NativeDocument, NativeNode, NativeNodeId, NativeNodeKind, NativeSemanticNode};
+pub(crate) use engine::parse_point_target;
 pub use engine::{
     NativeActionResult, NativeActionabilityReason, NativeDiagnosticsSnapshot,
     NativeEffectsSnapshot, NativeEngine, NativeEngineSnapshot, NativeInspectionSnapshot,

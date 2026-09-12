@@ -4616,6 +4616,17 @@ impl NativeDocument {
         None
     }
 
+    pub(crate) fn is_descendant_or_self(&self, id: NativeNodeId, ancestor: NativeNodeId) -> bool {
+        let mut current = Some(id);
+        while let Some(current_id) = current {
+            if current_id == ancestor {
+                return true;
+            }
+            current = self.node(current_id).and_then(NativeNode::parent);
+        }
+        false
+    }
+
     pub(crate) fn link_href(&self, id: NativeNodeId) -> Option<&str> {
         let node = self.node(id)?;
         (node.element_name() == Some("a") && self.semantic_role(id) == Some("link"))

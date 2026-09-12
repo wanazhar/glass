@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-273` slice; the bounded foundation below remains
+`native-engine-browser-274` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5927,6 +5927,16 @@ evaluation; an ignorable failure dispatches one non-bubbling root-element
 processing. Full window error reporting, parser-accurate timing, and complete
 script/Web IDL semantics remain issue #40 work. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-273.md`.
+
+The completed native-engine-browser-274 slice adds page-window reporting for
+ignorable script evaluation failures. The content owner serializes only
+bounded diagnostic data; the page realm constructs an `ErrorEvent` carrying
+message, filename, line/column, and the underlying `Error`, dispatches it to
+the window, and adapts `window.onerror` to its five callback arguments. The
+owning script-element `error`, failed-root suppression, and document
+continuation contracts remain unchanged. Parser-accurate timing and complete
+script/Web IDL semantics remain issue #40 work. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-274.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

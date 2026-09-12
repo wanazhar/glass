@@ -8758,7 +8758,52 @@ async fn native_local_inline_script_failure_dispatches_error_without_aborting_do
     let config = NativeEngineConfig::default()
         .with_fixture(
             "fixture://inline-script-error",
-            "<script>globalThis.inlineEvents = []; const broken = document.getElementById('broken'); broken.addEventListener('error', () => inlineEvents.push('error'));</script><script id='broken'>throw new Error('inline boom'); globalThis.inlineRan = true;</script><title>Inline error is isolated</title><p>Document committed</p>",
+            r#"
+                <script>
+                    globalThis.inlineEvents = [];
+                    globalThis.windowEvents = [];
+                    globalThis.onerrorEvents = [];
+                    window.addEventListener('error', event => windowEvents.push([
+                        event.message,
+                        event.filename,
+                        event.lineno,
+                        event.colno,
+                        event.error instanceof Error,
+                        event.target === window,
+                    ]));
+                    window.onerror = (message, filename, line, column, error) => onerrorEvents.push([
+                        message,
+                        filename,
+                        line,
+                        column,
+                        error instanceof Error,
+                    ]);
+                    const brokenClassic = document.getElementById('broken-classic');
+                    brokenClassic.addEventListener('error', event => inlineEvents.push([
+                        'classic',
+                        event.message,
+                        event.filename,
+                        event.error instanceof Error,
+                    ]));
+                    const brokenModule = document.getElementById('broken-module');
+                    brokenModule.addEventListener('error', event => inlineEvents.push([
+                        'module',
+                        event.message,
+                        event.filename,
+                        event.error instanceof Error,
+                    ]));
+                </script>
+                <script id='broken-classic'>
+                    throw new Error('inline classic boom');
+                    globalThis.inlineRan = true;
+                </script>
+                <script id='broken-module' type='module'>
+                    throw new Error('inline module boom');
+                    globalThis.moduleInlineRan = true;
+                </script>
+                <title>Inline error is isolated</title>
+                <p>Document committed</p>
+            "#,
         )
         .unwrap()
         .with_initial_url("fixture://inline-script-error");
@@ -8771,17 +8816,46 @@ async fn native_local_inline_script_failure_dispatches_error_without_aborting_do
     assert_eq!(snapshot.visible_text, "Document committed");
     assert_eq!(
         engine
-            .evaluate_async("globalThis.inlineEvents")
+            .evaluate_async(
+                "globalThis.inlineEvents.map(event => [event[0], event[1].includes(event[0] === 'classic' ? 'inline classic boom' : 'inline module boom'), event[2], event[3]])",
+            )
             .await
             .unwrap(),
-        serde_json::json!(["error"])
+        serde_json::json!([
+            ["classic", true, "fixture://inline-script-error", true],
+            ["module", true, "fixture://inline-script-error", true],
+        ])
     );
     assert_eq!(
         engine
-            .evaluate_async("Boolean(globalThis.inlineRan)")
+            .evaluate_async(
+                "globalThis.windowEvents.map(event => [event[0].includes('inline classic boom'), event[1], event[2], event[3], event[4], event[5]])",
+            )
+            .await
+        .unwrap(),
+        serde_json::json!([
+            [true, "fixture://inline-script-error", 0, 0, true, true],
+            [false, "fixture://inline-script-error", 0, 0, true, true],
+        ])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "globalThis.onerrorEvents.map(event => [event[0].includes('inline classic boom'), event[1], event[2], event[3], event[4]])",
+            )
+            .await
+        .unwrap(),
+        serde_json::json!([
+            [true, "fixture://inline-script-error", 0, 0, true],
+            [false, "fixture://inline-script-error", 0, 0, true],
+        ])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("[Boolean(globalThis.inlineRan), Boolean(globalThis.moduleInlineRan)]")
             .await
             .unwrap(),
-        serde_json::json!(false)
+        serde_json::json!([false, false])
     );
     assert_eq!(
         engine.evaluate_async("document.readyState").await.unwrap(),

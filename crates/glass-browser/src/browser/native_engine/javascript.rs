@@ -8096,6 +8096,7 @@ fn document_bootstrap(
     for (const state of group.streams) {{
       state.done = true;
       if (state.pendingRead) {{ state.pendingRead.resolve({{ value: undefined, done: true }}); state.pendingRead = null; }}
+      settleReadableStreamClosed(state);
     }}
     settleFetchStreamWaiters(group);
     pushCommand({{ kind: "fetchStreamCancel", stream_id: Number(group.id) }});
@@ -8125,6 +8126,27 @@ fn document_bootstrap(
       throw new TypeError("native ReadableStream receiver is invalid");
     return stream._state;
   }};
+  const settleReadableStreamClosed = (state) => {{
+    if (!state.closedWaiters || state.closedWaiters.length === 0) return;
+    const waiters = state.closedWaiters.splice(0);
+    if (state.error !== null) {{
+      const error = new Error(state.error);
+      for (const waiter of waiters) waiter.reject(error);
+    }} else if (readableStreamDone(state)) {{
+      for (const waiter of waiters) waiter.resolve();
+    }} else {{
+      state.closedWaiters.push(...waiters);
+    }}
+  }};
+  const watchReadableStreamClosed = (state, resolve, reject) => {{
+    if (state.error !== null) {{
+      reject(new Error(state.error));
+    }} else if (readableStreamDone(state)) {{
+      resolve();
+    }} else {{
+      state.closedWaiters.push({{ resolve, reject }});
+    }}
+  }};
   const markReadableStreamDisturbed = (state) => {{
     if (state.disturbed) return;
     state.disturbed = true;
@@ -8138,6 +8160,7 @@ fn document_bootstrap(
       state.pendingRead.reject(new Error(state.error));
       state.pendingRead = null;
     }}
+    settleReadableStreamClosed(state);
   }};
   const closeReadableStreamSource = (state) => {{
     if (state.done || state.cancelled || state.error !== null) return;
@@ -8146,6 +8169,7 @@ fn document_bootstrap(
       state.pendingRead.resolve({{ value: undefined, done: true }});
       state.pendingRead = null;
     }}
+    settleReadableStreamClosed(state);
   }};
   const enqueueReadableStreamSource = (state, value) => {{
     if (state.done || state.cancelled || state.error !== null)
@@ -8216,6 +8240,7 @@ fn document_bootstrap(
       state.pendingRead.resolve({{ value: undefined, done: true }});
       state.pendingRead = null;
     }}
+    settleReadableStreamClosed(state);
     if (!state.underlyingSource || typeof state.underlyingSource.cancel !== "function")
       return Promise.resolve(undefined);
     try {{ return Promise.resolve(state.underlyingSource.cancel(reason)); }}
@@ -8285,6 +8310,7 @@ fn document_bootstrap(
       streamId: hostId,
       group,
       pendingRead: null,
+      closedWaiters: [],
       onDisturb: typeof onDisturb === "function" ? onDisturb : null,
       byteMode: underlyingSource === null,
     }};
@@ -8311,14 +8337,13 @@ fn document_bootstrap(
     if (state.locked) throw new TypeError("native ReadableStream is already locked");
     state.locked = true;
     let released = false;
-    let closed = false;
     let resolveClosed;
-    const closedPromise = new Promise(resolve => {{ resolveClosed = resolve; }});
-    const settleClosed = () => {{
-      if (closed) return;
-      closed = true;
-      resolveClosed();
-    }};
+    let rejectClosed;
+    const closedPromise = new Promise((resolve, reject) => {{
+      resolveClosed = resolve;
+      rejectClosed = reject;
+    }});
+    watchReadableStreamClosed(state, resolveClosed, rejectClosed);
     const release = () => {{
       if (released) return;
       released = true;
@@ -8346,7 +8371,6 @@ fn document_bootstrap(
       }}
       if (state.error !== null) return Promise.reject(new Error(state.error));
       if (readableStreamDone(state)) {{
-        settleClosed();
         return Promise.resolve({{ value: undefined, done: true }});
       }}
       if (state.pendingRead) return Promise.reject(new TypeError("native ReadableStream read is already pending"));
@@ -8371,7 +8395,7 @@ fn document_bootstrap(
         state.done = true;
         state.queued = [];
         if (state.pendingRead) {{ state.pendingRead.resolve({{ value: undefined, done: true }}); state.pendingRead = null; }}
-        settleClosed();
+        settleReadableStreamClosed(state);
         maybeCancelFetchStreamGroup(state.group);
         return Promise.resolve(undefined);
       }},
@@ -8380,7 +8404,6 @@ fn document_bootstrap(
         if (released) return Promise.resolve({{ value: undefined, done: true }});
         if (state.underlyingSource) {{
           const cancellation = cancelReadableStreamSource(state);
-          settleClosed();
           release();
           return cancellation.then(() => ({{ value: undefined, done: true }}));
         }}
@@ -8389,7 +8412,7 @@ fn document_bootstrap(
         state.done = true;
         state.queued = [];
         if (state.pendingRead) {{ state.pendingRead.resolve({{ value: undefined, done: true }}); state.pendingRead = null; }}
-        settleClosed();
+        settleReadableStreamClosed(state);
         release();
         maybeCancelFetchStreamGroup(state.group);
         return Promise.resolve({{ value: undefined, done: true }});
@@ -8407,6 +8430,7 @@ fn document_bootstrap(
     markReadableStreamDisturbed(state);
     state.done = true;
     state.queued = [];
+    settleReadableStreamClosed(state);
     maybeCancelFetchStreamGroup(state.group);
     return Promise.resolve(undefined);
   }};
@@ -8454,6 +8478,7 @@ fn document_bootstrap(
       for (const state of group.streams) {{
         state.done = true;
         if (state.pendingRead) {{ state.pendingRead.resolve({{ value: undefined, done: true }}); state.pendingRead = null; }}
+        settleReadableStreamClosed(state);
       }}
       settleFetchStreamWaiters(group);
     }} else if (type === "error") {{
@@ -8463,6 +8488,7 @@ fn document_bootstrap(
         state.error = group.error;
         state.done = true;
         if (state.pendingRead) {{ state.pendingRead.reject(new Error(group.error)); state.pendingRead = null; }}
+        settleReadableStreamClosed(state);
       }}
       rejectFetchStreamWaiters(group);
     }}

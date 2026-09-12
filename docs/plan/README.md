@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-235` locally. The versioned
+`native-engine-browser-236` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -2058,6 +2058,13 @@ flow into effective layout stacking levels, stable display-list ordering, and
 hit testing, while opacity groups remain atomic at their outer stacking level.
 Exact evidence is recorded in
 [native-engine-browser-235](tasks/native-engine-browser-235.md).
+
+The completed native-engine-browser-236 slice adds inherited CSS
+`pointer-events:auto|none` to the native interaction path. Hit testing skips
+non-targetable boxes without changing their paint, while explicit descendant
+overrides remain targetable through an inherited `none` ancestor. Exact
+evidence is recorded in
+[native-engine-browser-236](tasks/native-engine-browser-236.md).
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` now returns persistent `Attr`

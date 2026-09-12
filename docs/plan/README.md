@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-258` locally. The versioned
+`native-engine-browser-259` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -90,6 +90,15 @@ owned until all clone readers cancel or finish. The focused Fetch suite and
 two-reader cancellation witness are green locally; full tee algorithms,
 BYOB/piping, trailers, and complete Fetch Streams/Web IDL parity remain open
 on issue #40.
+
+The completed Fetch Request body-ownership slice is
+[native-engine-browser-259](tasks/native-engine-browser-259.md). Native
+`Request` objects now expose bounded `bodyUsed` state, reject reuse and
+cloning after a source body is consumed, permit an explicit replacement body
+through fetch options, and preserve independent pre-consumption clones. The
+focused Request ownership witness is green locally; full Request body
+streams, body convenience methods, and complete Fetch Streams/Web IDL parity
+remain open on issue #40.
 
 The completed profile/contract task is
 [native-engine-browser-000](tasks/native-engine-browser-000.md). It freezes

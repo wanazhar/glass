@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-258`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-259`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -3953,6 +3953,15 @@ This bounds memory and makes clone backpressure observable without claiming
 the full Streams tee algorithm. Complete tee, BYOB/piping, trailers, and
 Fetch Streams/Web IDL behavior remain issue #40 work. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-258.md`.
+
+The completed native-engine-browser-259 slice adds bounded Request body
+ownership. A native Request exposes `bodyUsed`; the first fetch that uses its
+body claims it, later reuse or construction/cloning from the used Request
+rejects, an explicit fetch body override remains independent, and a clone
+created before use retains its own claim. Full Request body streams, body
+convenience methods, and complete Fetch Streams/Web IDL behavior remain issue
+#40 work. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-259.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-237`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-238`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -3754,6 +3754,14 @@ HTTP(S)-content-process publication all use that owner. Axis-aware root
 overflow and the existing clipped-layout sizing behavior remain covered by
 the prior native profile. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-237.md`.
+
+The completed native-engine-browser-238 slice closes the first history-state
+gap for that scrolling owner. Each history entry retains root and non-zero
+element offsets; same-document and full-resource activation clamps them
+against the target layout and drops stale scrollers. HTTP(S) activation sends
+the restored pair into the content process before `popstate` or later script
+evaluation, keeping local and content-process traversal behavior aligned.
+Exact evidence is in `docs/plan/tasks/native-engine-browser-238.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

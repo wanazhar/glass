@@ -61,9 +61,11 @@ This slice uses bounded integer-pixel scroll metrics and rectangular overflow
 projection. It does not add scrollbar painting, wheel physics, momentum,
 scroll snapping, smooth-scroll timing, scroll-linked animation timelines,
 visual viewport pinch zoom, or complete `body`/`document.scrollingElement`
-alias behavior. Nested scroll restoration in history entries and cross-frame
-scroll propagation remain later issue #40 work. Those features must extend the
-same scroll-container and event owners rather than adding a parallel path.
+alias behavior. Cross-frame scroll propagation remains later issue #40 work.
+History-backed restoration of root and nested offsets is covered by
+`native-engine-browser-238`; further scroll features must extend the same
+scroll-container, history, and event owners rather than adding a parallel
+path.
 
 The implementation keeps ordinary clipped-layout sizing compatible with the
 existing native profile while allowing explicit overflow content where an

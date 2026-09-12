@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-237` slice; the bounded foundation below remains
+`native-engine-browser-238` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -13,7 +13,7 @@ bounded-descendant-selectors/bounded-overflow-clip/bounded-hard-line-breaks/
 bounded-pre-line-breaks/bounded-preformatted-whitespace/
 bounded-pre-wrap-whitespace/bounded-nowrap-whitespace/bounded-inherited-line-height/
 bounded-clip-aware-root-overflow/bounded-axis-specific-overflow/
-bounded-nested-scrolling-and-scroll-events/
+bounded-nested-scrolling-and-scroll-events/bounded-history-nested-scroll-restoration/
 bounded-min-max-dimensions/bounded-opacity-groups/bounded-text-alignment/
 bounded-functional-alpha-colors/bounded-fixed-cell-text-decoration/
 bounded-inherited-text-transform/bounded-first-line-text-indent/
@@ -4166,7 +4166,7 @@ The default limits are intentionally bounded:
 | DOM nodes | 4,096 | parse fails before state commit |
 | open DOM depth | 128 | parse fails before state commit |
 | visible text | 16 KiB | evidence is marked incomplete |
-| history entries | 64 | oldest entry is evicted deterministically; each entry retains one root scroll point |
+| history entries | 64 | oldest entry is evicted deterministically; each entry retains one root point and its bounded non-zero nested scroll map |
 | queued scheduler tasks | 256 | scheduling fails explicitly |
 | registered fixtures | 32 | configuration fails explicitly |
 | retained CSS diagnostics | 256 | later diagnostics are dropped and `truncated` is set |
@@ -4955,6 +4955,8 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - fixture-relative local link resolution with same-host enforcement;
 - title and visible-text projection with hidden `head`, `script`, and `style`;
 - bounded history entries, monotonic revisions, and explicit Rust traversal;
+- root and nested element scroll restoration across same-document and full
+  resource history traversal, including content-process synchronization;
 - bounded alert/confirm/prompt metadata, content-worker forwarding, pending
   dialog inspection, `dialogOpen` verification, and native accept/dismiss
   routing;
@@ -5560,6 +5562,14 @@ scroller without bubbling, root events target the window realm, and initial
 page-script scroll commands survive local and content-process navigation
 commit. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-237.md`.
+
+The completed native-engine-browser-238 slice adds history ownership for that
+same nested scroll state. Each entry now retains root and non-zero element
+offsets; same-document and full-resource activation clamps them against the
+target layout and discards stale scrollers. The content process receives the
+restored pair before `popstate` and later script evaluation, so local and
+HTTP(S) traversal expose the same scroll state. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-238.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

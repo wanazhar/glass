@@ -41751,6 +41751,66 @@ async fn native_content_process_tracks_fetch_body_disturbance_and_clone_ownershi
 }
 
 #[tokio::test]
+async fn native_content_process_tracks_request_body_disturbance_and_clone_ownership() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for (index, expected_path) in ["/page", "/source", "/source", "/source"]
+            .into_iter()
+            .enumerate()
+        {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            if expected_path != "/page" {
+                assert_eq!(request.split_whitespace().next(), Some("POST"));
+                let body = request
+                    .split_once("\r\n\r\n")
+                    .map(|(_, body)| body)
+                    .unwrap_or_default();
+                let expected_body = if index == 2 { "override" } else { "source" };
+                assert_eq!(body, expected_body);
+            }
+            let (content_type, body) = if expected_path == "/page" {
+                ("text/html", "<body>Request body owner</body>")
+            } else {
+                ("text/plain", "ok")
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await (async () => { const request = new Request('/source', { method: 'POST', body: 'source' }); const clone = request.clone(); const initial = [request.bodyUsed, clone.bodyUsed]; const first = await fetch(request); const firstValue = await first.text(); const afterFirst = [firstValue, request.bodyUsed, clone.bodyUsed]; const reused = await fetch(request).then(() => 'readable', error => error.name); const constructedFromUsed = (() => { try { new Request(request); return 'constructable'; } catch (error) { return error.name; } })(); const overridden = await fetch(request, { body: 'override' }); const overrideValue = await overridden.text(); const cloned = await fetch(clone); const cloneValue = await cloned.text(); const cloneAfter = [cloneValue, clone.bodyUsed, (() => { try { clone.clone(); return 'cloneable'; } catch (error) { return error.name; } })()]; return { initial, afterFirst, reused, constructedFromUsed, overrideValue, cloneAfter }; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "initial": [false, false],
+            "afterFirst": ["ok", true, false],
+            "reused": "TypeError",
+            "constructedFromUsed": "TypeError",
+            "overrideValue": "ok",
+            "cloneAfter": ["ok", true, "TypeError"]
+        })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_tees_fetch_streams_until_all_readers_cancel() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

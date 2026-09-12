@@ -7704,6 +7704,7 @@ fn document_bootstrap(
   const RequestNative = function(input, init) {{
     const source = input && input.__glassRequest === true ? input : null;
     const sourceUrl = input && input.__glassUrl === true ? input : null;
+    if (source && source.bodyUsed) throw new TypeError("native Request body is unusable");
     const href = source ? source.url : sourceUrl ? sourceUrl.href : input;
     if (typeof href !== "string") throw new TypeError("native Request URL must be a string");
     const overrides = init && typeof init === "object" ? init : {{}};
@@ -7731,9 +7732,17 @@ fn document_bootstrap(
     this.credentials = settings.credentials === undefined ? "same-origin" : String(settings.credentials);
     this.signal = settings.signal === undefined ? null : settings.signal;
     this.body = settings.body === undefined || settings.body === null ? null : settings.body;
+    Object.defineProperty(this, "__glassRequestBodyState", {{ value: {{ used: false }} }});
+    Object.defineProperty(this, "bodyUsed", {{
+      configurable: true,
+      get() {{ return this.__glassRequestBodyState.used === true; }},
+    }});
     Object.freeze(this);
   }};
-  RequestNative.prototype.clone = function() {{ return new RequestNative(this); }};
+  RequestNative.prototype.clone = function() {{
+    if (this.bodyUsed) throw new TypeError("native Request body is unusable");
+    return new RequestNative(this);
+  }};
   globalThis.Request = RequestNative;
   const nativeAbortError = () => {{
     const error = new Error("The operation was aborted");
@@ -7895,6 +7904,13 @@ fn document_bootstrap(
         : null;
     if (!nativeRequestMethods.includes(method)) {{
       return Promise.reject(new TypeError("native fetch method is unsupported"));
+    }}
+    const usesSourceBody = sourceRequest
+      && !(options && typeof options === "object" && Object.prototype.hasOwnProperty.call(options, "body"))
+      && sourceRequest.body !== null;
+    if (usesSourceBody) {{
+      if (sourceRequest.bodyUsed) return Promise.reject(new TypeError("native Request body is unusable"));
+      sourceRequest.__glassRequestBodyState.used = true;
     }}
     const requestHeaderName = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
     const forbiddenRequestHeader = (name) => [

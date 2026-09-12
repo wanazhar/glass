@@ -87,6 +87,7 @@ pub(crate) const MAX_NATIVE_EVENTSOURCE_MESSAGE_BYTES: usize = MAX_NATIVE_WEBSOC
 pub(crate) const MAX_NATIVE_EVENTSOURCE_FIELD_BYTES: usize = 128;
 pub(crate) const MAX_NATIVE_FETCH_STREAM_CHUNK_BYTES: usize = 8 * 1024;
 pub(crate) const MAX_NATIVE_FETCH_STREAM_BODY_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_NATIVE_FETCH_STREAM_QUEUED_CHUNKS: usize = 32;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -8039,8 +8040,11 @@ fn document_bootstrap(
     }}
     return group;
   }};
+  const fetchStreamCanAcceptDemand = (group) => group && group.streams
+    .filter(state => !state.cancelled && !state.consumedByResponse)
+    .every(state => state.queued.length < {fetch_stream_queue_limit});
   const requestFetchStreamRead = (group) => {{
-    if (!group || group.done || group.error !== null || group.cancelRequested || group.readRequested) return;
+    if (!group || group.done || group.error !== null || group.cancelRequested || group.readRequested || !fetchStreamCanAcceptDemand(group)) return;
     group.readRequested = true;
     pushCommand({{ kind: "fetchStreamRead", stream_id: Number(group.id) }});
   }};
@@ -8057,7 +8061,7 @@ fn document_bootstrap(
   }};
   const maybeCancelFetchStreamGroup = (group) => {{
     if (!group) return;
-    if (group.streams.some(state => !state.cancelled) || group.waiters.length > 0) return;
+    if (group.streams.some(state => !state.cancelled && !state.consumedByResponse) || group.waiters.length > 0) return;
     cancelFetchStreamGroup(group);
   }};
   const flattenFetchStream = (group) => {{
@@ -8095,6 +8099,7 @@ fn document_bootstrap(
     response.__glassBodyState.used = true;
     state.disturbed = true;
     state.consumedByResponse = true;
+    state.queued = [];
     return true;
   }};
   const responseBodyUnusable = () => Promise.reject(new TypeError("native Response body is unusable"));
@@ -8263,7 +8268,7 @@ fn document_bootstrap(
       group.chunks.push(bytes.slice());
       group.totalBytes += bytes.length;
       for (const state of group.streams) {{
-        if (state.cancelled) continue;
+        if (state.cancelled || state.consumedByResponse) continue;
         state.done = false;
         if (state.pendingRead) {{
           state.pendingRead.resolve({{ value: new Uint8Array(bytes.slice()), done: false }});
@@ -16089,6 +16094,7 @@ fn document_bootstrap(
         eventsource_field_limit = MAX_NATIVE_EVENTSOURCE_FIELD_BYTES,
         fetch_stream_chunk_limit = MAX_NATIVE_FETCH_STREAM_CHUNK_BYTES,
         fetch_stream_body_limit = MAX_NATIVE_FETCH_STREAM_BODY_BYTES,
+        fetch_stream_queue_limit = MAX_NATIVE_FETCH_STREAM_QUEUED_CHUNKS,
         dialog_text_limit = MAX_NATIVE_DIALOG_TEXT_BYTES,
         post_message_bytes_limit = MAX_NATIVE_POST_MESSAGE_BYTES,
         max_frame_window_indices = MAX_NATIVE_FRAME_SCRIPT_BINDINGS,

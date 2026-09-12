@@ -33732,6 +33732,100 @@ fn native_css_sticky_position_releases_at_containing_block_end() {
 }
 
 #[test]
+fn native_css_z_index_orders_positioned_overlays_for_paint_and_hit_testing() {
+    let document = NativeDocument::parse(
+        "<button id='high' style='display:block;position:absolute;left:2px;top:2px;width:12px;height:8px;background:blue;z-index:2'>high</button><button id='low' style='display:block;position:absolute;left:2px;top:2px;width:12px;height:8px;background:red;z-index:1'>low</button>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let high = document.resolve_target("id=high").unwrap();
+    let low = document.resolve_target("id=low").unwrap();
+    let viewport = Viewport {
+        width: 24,
+        height: 16,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(layout.hit_test(3, 3).unwrap(), Some(high));
+    assert_eq!(
+        layout
+            .boxes
+            .iter()
+            .find(|layout_box| layout_box.node_id == high)
+            .map(|layout_box| layout_box.z_index),
+        Some(2)
+    );
+    assert_eq!(
+        layout
+            .boxes
+            .iter()
+            .find(|layout_box| layout_box.node_id == low)
+            .map(|layout_box| layout_box.z_index),
+        Some(1)
+    );
+
+    let list = document.display_list(viewport).unwrap();
+    let fills = list
+        .commands
+        .iter()
+        .filter_map(|command| match command {
+            NativeDisplayCommand::FillRect { node_id, .. } => Some(*node_id),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(fills, vec![low, high]);
+    assert_eq!(
+        list.rasterize().unwrap().pixel(3, 3),
+        Some([0, 0, 255, 255])
+    );
+}
+
+#[test]
+fn native_css_z_index_cascades_stylesheet_important_values() {
+    let document = NativeDocument::parse(
+        "<style>#high { position:absolute;left:2px;top:2px;width:12px;height:8px;background:blue;z-index:3 } #high { z-index:2 !important } #low { position:absolute;left:2px;top:2px;width:12px;height:8px;background:red;z-index:1 }</style><button id='high'>high</button><button id='low'>low</button>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let high = document.resolve_target("id=high").unwrap();
+    let low = document.resolve_target("id=low").unwrap();
+    let viewport = Viewport {
+        width: 24,
+        height: 16,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(layout.hit_test(3, 3).unwrap(), Some(high));
+    assert_eq!(
+        layout
+            .boxes
+            .iter()
+            .find(|layout_box| layout_box.node_id == high)
+            .map(|layout_box| layout_box.z_index),
+        Some(2)
+    );
+    assert_eq!(
+        layout
+            .boxes
+            .iter()
+            .find(|layout_box| layout_box.node_id == low)
+            .map(|layout_box| layout_box.z_index),
+        Some(1)
+    );
+    assert_eq!(
+        document
+            .display_list(viewport)
+            .unwrap()
+            .rasterize()
+            .unwrap()
+            .pixel(3, 3),
+        Some([0, 0, 255, 255])
+    );
+}
+
+#[test]
 fn native_stylesheet_background_geometry_cascades_into_paint() {
     let source = native_test_png_data_url();
     let markup = format!(

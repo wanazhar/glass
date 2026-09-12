@@ -9,6 +9,8 @@ pub(crate) const MAX_NATIVE_STYLE_RULES: usize = 512;
 pub(crate) const MAX_NATIVE_GRID_TRACKS: usize = 8;
 pub(crate) const MIN_NATIVE_FLEX_ITEM_ORDER: i32 = -1024;
 pub(crate) const MAX_NATIVE_FLEX_ITEM_ORDER: i32 = 1024;
+pub(crate) const MIN_NATIVE_Z_INDEX: i32 = -1_000_000;
+pub(crate) const MAX_NATIVE_Z_INDEX: i32 = 1_000_000;
 pub(crate) const MAX_NATIVE_FLEX_GROW: u32 = 1024;
 pub(crate) const MAX_NATIVE_FLEX_SHRINK: u32 = 1024;
 pub(crate) const MAX_NATIVE_TEXT_DECORATION_THICKNESS: u32 = 4;
@@ -603,6 +605,26 @@ pub(crate) enum NativePositionValue {
     Absolute,
     Fixed,
     Sticky,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum NativeZIndexValue {
+    #[default]
+    Auto,
+    Integer(i32),
+}
+
+impl NativeZIndexValue {
+    pub(crate) const fn is_auto(self) -> bool {
+        matches!(self, Self::Auto)
+    }
+
+    pub(crate) const fn value(self) -> i32 {
+        match self {
+            Self::Auto => 0,
+            Self::Integer(value) => value,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1267,6 +1289,7 @@ impl NativeAutoEdges {
 pub(crate) struct NativeComputedStyle {
     display: DisplayValue,
     position: NativePositionValue,
+    z_index: NativeZIndexValue,
     top: NativePositionOffset,
     right: NativePositionOffset,
     bottom: NativePositionOffset,
@@ -1345,6 +1368,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn position(self) -> NativePositionValue {
         self.position
+    }
+
+    pub(crate) const fn z_index(self) -> NativeZIndexValue {
+        self.z_index
     }
 
     pub(crate) const fn top(self) -> NativePositionOffset {
@@ -1728,6 +1755,8 @@ impl NativeStylesheet {
             MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
         let mut position: [Option<CascadeValue<LocalCascadeDeclaration<NativePositionValue>>>;
             MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
+        let mut z_index: [Option<CascadeValue<LocalCascadeDeclaration<NativeZIndexValue>>>;
+            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
         let mut top: [Option<CascadeValue<LocalCascadeDeclaration<NativePositionOffset>>>;
             MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
         let mut right: [Option<CascadeValue<LocalCascadeDeclaration<NativePositionOffset>>>;
@@ -1918,6 +1947,14 @@ impl NativeStylesheet {
                 false,
                 rule.declarations.local_importance.position,
                 &mut position,
+            );
+            apply_local_important_cascade_declaration(
+                rule.declarations.z_index,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.local_importance.z_index,
+                &mut z_index,
             );
             apply_local_important_cascade_declaration(
                 rule.declarations.top,
@@ -2467,6 +2504,14 @@ impl NativeStylesheet {
                 true,
                 declarations.local_importance.position,
                 &mut position,
+            );
+            apply_local_important_cascade_declaration(
+                declarations.z_index,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.local_importance.z_index,
+                &mut z_index,
             );
             apply_local_important_cascade_declaration(
                 declarations.top,
@@ -3109,6 +3154,7 @@ impl NativeStylesheet {
         NativeComputedStyle {
             display: resolve_local_cascade_declaration(display, DisplayValue::Auto),
             position: resolve_local_cascade_declaration(position, NativePositionValue::Static),
+            z_index: resolve_local_cascade_declaration(z_index, NativeZIndexValue::Auto),
             top: resolve_local_cascade_declaration(top, NativePositionOffset::Auto),
             right: resolve_local_cascade_declaration(right, NativePositionOffset::Auto),
             bottom: resolve_local_cascade_declaration(bottom, NativePositionOffset::Auto),
@@ -5331,6 +5377,7 @@ struct NativeFlexDeclarationImportance {
 struct NativeLocalDeclarationImportance {
     display: bool,
     position: bool,
+    z_index: bool,
     top: bool,
     right: bool,
     bottom: bool,
@@ -5392,6 +5439,7 @@ struct NativeTextDeclarationImportance {
 struct NativeDeclarations {
     display: Option<LocalCascadeDeclaration<DisplayValue>>,
     position: Option<LocalCascadeDeclaration<NativePositionValue>>,
+    z_index: Option<LocalCascadeDeclaration<NativeZIndexValue>>,
     top: Option<LocalCascadeDeclaration<NativePositionOffset>>,
     right: Option<LocalCascadeDeclaration<NativePositionOffset>>,
     bottom: Option<LocalCascadeDeclaration<NativePositionOffset>>,
@@ -5797,6 +5845,7 @@ fn parse_style_rule(
     collect_background_image_sources(&source[open + 1..close], context.background_image_sources);
     let has_supported_declaration = declarations.display.is_some()
         || declarations.position.is_some()
+        || declarations.z_index.is_some()
         || declarations.top.is_some()
         || declarations.right.is_some()
         || declarations.bottom.is_some()
@@ -6016,6 +6065,7 @@ fn parse_declarations_with_diagnostics(
         let supported = match property_name.as_str() {
             "display" => supports_display_declaration(value),
             "position" => parse_position_declaration(value).is_some(),
+            "z-index" => parse_z_index_declaration(value).is_some(),
             "top" | "right" | "bottom" | "left" => {
                 parse_position_offset_declaration(value).is_some()
             }
@@ -6198,6 +6248,7 @@ fn is_known_css_property(property: &str) -> bool {
         property,
         "display"
             | "position"
+            | "z-index"
             | "top"
             | "right"
             | "bottom"
@@ -6418,6 +6469,12 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 if let Some(parsed) = parse_position_declaration(value) {
                     declarations.position = Some(parsed);
                     declarations.local_importance.position = important;
+                }
+            }
+            "z-index" => {
+                if let Some(parsed) = parse_z_index_declaration(value) {
+                    declarations.z_index = Some(parsed);
+                    declarations.local_importance.z_index = important;
                 }
             }
             "top" => {
@@ -9131,6 +9188,24 @@ fn parse_position_declaration(value: &str) -> Option<LocalCascadeDeclaration<Nat
         return Some(LocalCascadeDeclaration::Inherit);
     }
     parse_local_reset_cascade_declaration(value, parse_position)
+}
+
+fn parse_z_index(value: &str) -> Option<NativeZIndexValue> {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("auto") {
+        return Some(NativeZIndexValue::Auto);
+    }
+    let value = value.parse::<i64>().ok()?;
+    (i64::from(MIN_NATIVE_Z_INDEX)..=i64::from(MAX_NATIVE_Z_INDEX))
+        .contains(&value)
+        .then_some(NativeZIndexValue::Integer(i32::try_from(value).ok()?))
+}
+
+fn parse_z_index_declaration(value: &str) -> Option<LocalCascadeDeclaration<NativeZIndexValue>> {
+    if is_inherit_keyword(value) {
+        return Some(LocalCascadeDeclaration::Inherit);
+    }
+    parse_local_reset_cascade_declaration(value, parse_z_index)
 }
 
 fn parse_position_offset(value: &str) -> Option<NativePositionOffset> {

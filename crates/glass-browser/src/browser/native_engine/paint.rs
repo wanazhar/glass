@@ -207,8 +207,12 @@ impl NativeDisplayList {
                 color: NativeColor::WHITE,
             },
         )?;
-        for entry in &layout.paint_order {
-            match *entry {
+        let ordered_paint_order = paint_order_indices(layout);
+        for order in 0..layout.paint_order.len() {
+            let entry_index = ordered_paint_order
+                .as_ref()
+                .map_or(order, |indices| indices[order]);
+            match layout.paint_order[entry_index] {
                 NativeLayoutPaintOrder::BeginOpacityGroup { node_id, opacity } => {
                     push_command(
                         &mut commands,
@@ -330,6 +334,69 @@ impl NativeDisplayList {
             commands,
             text_run_boundaries,
         })
+    }
+}
+
+fn paint_order_indices(layout: &NativeLayoutSnapshot) -> Option<Vec<usize>> {
+    let has_non_default_z_index = layout
+        .boxes
+        .iter()
+        .any(|layout_box| layout_box.z_index != 0)
+        || layout
+            .text_runs
+            .iter()
+            .any(|text_run| text_run.z_index != 0);
+    if !has_non_default_z_index {
+        return None;
+    }
+
+    let mut z_indices = vec![0; layout.paint_order.len()];
+    let mut opacity_depth = 0usize;
+    let mut outermost_opacity_z_index = None;
+    for (order, entry) in layout.paint_order.iter().copied().enumerate() {
+        let entry_z_index = paint_order_entry_z_index(layout, entry);
+        match entry {
+            NativeLayoutPaintOrder::BeginOpacityGroup { .. } => {
+                if opacity_depth == 0 {
+                    outermost_opacity_z_index = Some(entry_z_index);
+                }
+                opacity_depth = opacity_depth.saturating_add(1);
+                z_indices[order] = outermost_opacity_z_index.unwrap_or(entry_z_index);
+            }
+            NativeLayoutPaintOrder::EndOpacityGroup { .. } => {
+                z_indices[order] = outermost_opacity_z_index.unwrap_or(entry_z_index);
+                opacity_depth = opacity_depth.saturating_sub(1);
+                if opacity_depth == 0 {
+                    outermost_opacity_z_index = None;
+                }
+            }
+            NativeLayoutPaintOrder::Box(_) | NativeLayoutPaintOrder::Text(_) => {
+                z_indices[order] = outermost_opacity_z_index.unwrap_or(entry_z_index);
+            }
+        }
+    }
+
+    let mut indices = (0..layout.paint_order.len()).collect::<Vec<_>>();
+    indices.sort_by_key(|order| (z_indices[*order], *order));
+    Some(indices)
+}
+
+fn paint_order_entry_z_index(layout: &NativeLayoutSnapshot, entry: NativeLayoutPaintOrder) -> i32 {
+    match entry {
+        NativeLayoutPaintOrder::Box(index) => layout
+            .boxes
+            .get(index)
+            .map_or(0, |layout_box| layout_box.z_index),
+        NativeLayoutPaintOrder::Text(index) => layout
+            .text_runs
+            .get(index)
+            .map_or(0, |text_run| text_run.z_index),
+        NativeLayoutPaintOrder::BeginOpacityGroup { node_id, .. }
+        | NativeLayoutPaintOrder::EndOpacityGroup { node_id } => layout
+            .boxes
+            .iter()
+            .find(|layout_box| layout_box.node_id == node_id)
+            .map_or(0, |layout_box| layout_box.z_index),
     }
 }
 

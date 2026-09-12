@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-266` locally. The versioned
+`native-engine-browser-267` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -157,6 +157,15 @@ drains them for text/json/blob/arrayBuffer/bytes consumers. Fetch-created
 responses retain their transport stream implementation; upload progress,
 BYOB readers, piping, transfer strategies, and complete Fetch Streams/Web IDL
 parity remain open on issue #40.
+
+The completed native writable-stream and piping slice is
+[native-engine-browser-267](tasks/native-engine-browser-267.md). Native
+`WritableStream` now provides bounded serialized sink writes, writer lifecycle
+and lock state, close/abort hooks, and `ReadableStream.pipeTo()`/
+`pipeThrough()` with source cancellation and sink-abort propagation. Full
+WritableStream/Web IDL semantics, TransformStream, BYOB readers, transfer
+strategies, upload progress, and complete Fetch Streams parity remain open on
+issue #40.
 
 The completed profile/contract task is
 [native-engine-browser-000](tasks/native-engine-browser-000.md). It freezes

@@ -146,6 +146,8 @@ pub struct NativeLayoutBox {
     pub sticky: bool,
     /// The bounded effective stacking level used by paint and hit-testing.
     pub z_index: i32,
+    /// Whether pointer hit testing may target this box.
+    pub pointer_events: bool,
 }
 
 /// One bounded direct-text fragment placed by the native flow cursor.
@@ -544,6 +546,9 @@ impl NativeLayoutSnapshot {
             if let Some(clip) = self.overflow_clips.get(order).copied().flatten()
                 && !clip.contains(point)
             {
+                continue;
+            }
+            if !layout_box.pointer_events {
                 continue;
             }
             if !rounded_rect_contains(layout_box.rect, layout_box.border_radius, point) {
@@ -2309,6 +2314,7 @@ impl<'a> LayoutBuilder<'a> {
             fixed: self.fixed,
             sticky: self.sticky_root.is_some(),
             z_index: self.stacking_context,
+            pointer_events: style.pointer_events().allows_hit_testing(),
         });
         self.paint_order
             .push(NativeLayoutPaintOrder::Box(box_index));

@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-230` slice; the bounded foundation below remains
+`native-engine-browser-231` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -21,7 +21,7 @@ bounded-inherited-word-spacing/bounded-inherited-letter-spacing/
 bounded-inherited-font-weight/bounded-inherited-font-style/
 bounded-inherited-word-break slices,
 bounded-text-overflow/bounded-vertical-align/bounded-flex-row/
-bounded-grid-track-layout/
+bounded-grid-track-layout/bounded-relative-positioning/
 bounded-inline-svg-shape-paint/
 bounded-inline-svg-stroke-paint/
 bounded-svg-line-polygon-paint/
@@ -5491,6 +5491,14 @@ content-process, display-list, and raster owners. Common component order and
 `center/cover no-repeat` syntax are accepted, while omitted components retain
 their CSS initial resets and unsupported subproperties remain diagnostic.
 Exact evidence is in `docs/plan/tasks/native-engine-browser-230.md`.
+
+The completed native-engine-browser-231 slice adds the first positioned-layout
+primitive to those shared owners. `position: relative` and bounded signed
+pixel `top`/`right`/`bottom`/`left` offsets translate an element and its
+descendant layout range after final sizing, leaving sibling flow allocation
+unchanged. The resulting boxes drive display-list paint, scrolling, capture,
+overflow clipping, and hit testing through the existing geometry path. Exact
+evidence is in `docs/plan/tasks/native-engine-browser-231.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

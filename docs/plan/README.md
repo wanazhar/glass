@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-255` locally. The versioned
+`native-engine-browser-256` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -50,9 +50,9 @@ authorized response bodies from the process-backed loader as bounded
 transport chunks through a persistent `ReadableStream`, waits correctly for
 pending reads and terminal delivery, and preserves cross-turn Blob/File and
 ReadableStream constructor identity. Convenience body methods remain bounded
-full-body reads, transport cancellation and complete Fetch Streams/Web IDL
-parity remain open, and the broader native parity and production-promotion
-gates remain open on issue #40.
+full-body reads; demand-driven transport, body disturbance, and complete Fetch
+Streams/Web IDL parity remain open, and the broader native parity and
+production-promotion gates remain open on issue #40.
 
 The completed semantic action scroll-into-view slice is
 [native-engine-browser-255](tasks/native-engine-browser-255.md). Native
@@ -63,6 +63,15 @@ preflight remains side-effect-free. The focused FormData and point-dispatch
 regressions plus the ordered 533-test native integration suite are green
 locally; the broader native parity and production-promotion gates remain open
 on issue #40.
+
+The completed Fetch demand/cancellation slice is
+[native-engine-browser-256](tasks/native-engine-browser-256.md). Native
+response streams now request one bounded transport part at a time, retain
+queued parts only behind explicit reader/body demand, and propagate reader or
+stream cancellation through the content-process owner to the live HTTP body.
+The focused content-process suite and cancellation witness are green locally;
+body disturbance, tee/BYOB/piping, trailers, and complete Fetch Streams/Web IDL
+parity remain open on issue #40.
 
 The completed profile/contract task is
 [native-engine-browser-000](tasks/native-engine-browser-000.md). It freezes

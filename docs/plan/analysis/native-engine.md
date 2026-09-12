@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-255`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-256`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -3913,9 +3913,9 @@ splits that body into bounded 8 KiB chunks, keeps a terminal handshake alive
 for queued reads, and dispatches chunks/end/errors through the persistent
 QuickJS and mutation owner. Body convenience methods use the bounded retained
 history, while canonical Blob/File/ReadableStream constructors preserve
-cross-turn realm identity. Strict pull backpressure, transport cancellation,
+cross-turn realm identity. Demand-driven transport, reader/stream cancellation,
 body disturbance, and complete Fetch Streams/Web IDL semantics remain issue
-#40 work. Exact evidence is in
+#40 work at that checkpoint. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-254.md`.
 
 The completed native-engine-browser-255 slice closes the visibility gap from
@@ -3926,6 +3926,15 @@ remain usable when content follows the frame viewport. Explicit coordinate
 clicks bypass locator routing and remain unadjusted, and preflight keeps its
 side-effect-free outside-viewport result. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-255.md`.
+
+The completed native-engine-browser-256 slice closes the transport ownership
+gap for native Fetch response streams. The content worker now waits for one
+explicit reader/body demand before reading or emitting the next bounded 8 KiB
+part, and reader/stream cancellation propagates through the typed command
+boundary so the live HTTP response is dropped. Body disturbance, shared
+tee/backpressure semantics, BYOB/piping, trailers, and complete Fetch Streams
+and Web IDL behavior remain open. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-256.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

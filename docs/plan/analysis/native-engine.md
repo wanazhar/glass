@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-226`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-227`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 205
 slice carries bounded quadratic/cubic SVG path geometry through shared path
 parsing, flattening, layout, display-list, raster, clipping, and capture
@@ -3643,6 +3643,16 @@ monotonic paint clock, CSS background path, and content-process wire then
 reuse the GIF contract and enforce exact frame dimensions plus retained-byte
 limits. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-226.md`.
+
+The completed native-engine-browser-227 slice closes the APNG image gap using
+the existing `png` decoder. APNG animation metadata is validated before frame
+allocation; raw subframes are converted to RGBA, composed on a logical canvas
+with source/over blending and none/background/previous disposal, and retained
+with normalized timing plus finite/infinite loop state. `image/apng` shares
+the GIF/WebP local, HTTP(S), content-process, background-paint, and typed-wire
+owners, including bounded frame count, canvas pixels, output, and retained
+bytes. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-227.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

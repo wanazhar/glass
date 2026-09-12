@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-226` slice; the bounded foundation below remains
+`native-engine-browser-227` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5458,6 +5458,15 @@ commands sample those frames through the monotonic animation clock, while
 local and HTTP(S) content-process paths share exact dimension, frame-count,
 decoded-byte, and typed-wire validation. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-226.md`.
+
+The completed native-engine-browser-227 slice adds APNG to the animated image
+owner without a new dependency. The PNG decoder supplies bounded raw
+subframes; the native compositor applies frame offsets, source/over blending,
+none/background/previous disposal, normalized delays, and finite/infinite loop
+metadata before storing full-canvas RGBA snapshots. Local data URLs,
+HTTP(S) content-process resources, image paint, CSS background paint, and the
+typed wire share the same validation and retained-byte budget. Exact evidence
+is in `docs/plan/tasks/native-engine-browser-227.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

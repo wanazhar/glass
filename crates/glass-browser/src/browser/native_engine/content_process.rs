@@ -45,7 +45,7 @@ use super::sandbox::prepare_worker_command;
 use base64::Engine as _;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -658,7 +658,26 @@ async fn run_native_fetch_stream(
 ) {
     let mut stream = response.bytes_stream();
     let mut total_bytes = 0usize;
+    let mut pending_parts = VecDeque::new();
+    let mut read_requested = false;
     loop {
+        if !read_requested {
+            match commands.recv().await {
+                Some(NativeFetchStreamCommand::Read) => read_requested = true,
+                Some(NativeFetchStreamCommand::Cancel) | None => return,
+            }
+        }
+        if let Some(part) = pending_parts.pop_front() {
+            read_requested = false;
+            if events
+                .send(NativeFetchStreamEvent::Chunk { data: part })
+                .await
+                .is_err()
+            {
+                return;
+            }
+            continue;
+        }
         tokio::select! {
             command = commands.recv() => {
                 match command {
@@ -677,11 +696,11 @@ async fn run_native_fetch_stream(
                             return;
                         }
                         total_bytes = next_total;
-                        for part in chunk.chunks(MAX_NATIVE_FETCH_STREAM_CHUNK_BYTES) {
-                            if events.send(NativeFetchStreamEvent::Chunk { data: part.to_vec() }).await.is_err() {
-                                return;
-                            }
-                        }
+                        pending_parts.extend(
+                            chunk
+                                .chunks(MAX_NATIVE_FETCH_STREAM_CHUNK_BYTES)
+                                .map(|part| part.to_vec()),
+                        );
                     }
                     Some(Err(error)) => {
                         if events

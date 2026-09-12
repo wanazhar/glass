@@ -39266,7 +39266,7 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
     );
     engine
         .evaluate_async(
-            "fetch('/data', { headers: { 'X-Glass-Token': 'alpha' } }).then(async response => { const headerEvents = []; response.headers.forEach((value, name) => headerEvents.push(name + '=' + value)); const stream = response.body; const streamReader = stream.getReader(); const streamFirst = await streamReader.read(); const streamSecond = await streamReader.read(); const streamLocked = stream.locked; streamReader.releaseLock(); const releasedStreamRead = await streamReader.read().then(() => 'readable', error => error.name); const clonedResponse = response.clone(); const clonedText = await clonedResponse.text(); globalThis.fetchClone = [clonedText, clonedResponse.body instanceof ReadableStream, clonedResponse.body !== response.body]; globalThis.fetchStream = [response.body instanceof ReadableStream, streamLocked, stream.locked, streamFirst.done, Array.from(streamFirst.value), streamSecond.done, releasedStreamRead]; globalThis.fetchHeaders = [response.headers.get('CONTENT-TYPE'), response.headers.has('content-type'), Array.from(response.headers.entries()), Array.from(response.headers.keys()), Array.from(response.headers.values()), Array.from(response.headers), headerEvents]; return Promise.all([response.json(), response.text(), response.blob(), response.arrayBuffer(), response.bytes()]); }).then(async ([data, text, blob, buffer, bytes]) => { globalThis.fetchValue = data.value; globalThis.fetchBody = [text, blob instanceof Blob, buffer instanceof ArrayBuffer && Array.from(new Uint8Array(buffer)), Array.from(bytes), await blob.text()]; const binaryResponse = await fetch('/binary'); const binaryStream = binaryResponse.body; const binaryReader = binaryStream.getReader(); const binaryLocked = binaryStream.locked; await binaryReader.cancel(); binaryReader.releaseLock(); const canceledReader = binaryStream.getReader(); const canceledChunk = await canceledReader.read(); canceledReader.releaseLock(); globalThis.fetchStream = globalThis.fetchStream.concat([binaryResponse.body instanceof ReadableStream, binaryLocked, canceledChunk.done, binaryStream.locked]); const binaryBuffer = await binaryResponse.arrayBuffer(); const binaryBytes = await binaryResponse.bytes(); const binaryBlob = await binaryResponse.blob(); globalThis.binaryFetchBody = [Array.from(new Uint8Array(binaryBuffer)), Array.from(binaryBytes), binaryBlob.size, Array.from(await binaryBlob.slice(1, 3).bytes()), await binaryBlob.text()]; const uploadResponse = await fetch('/upload', { method: 'POST', body: binaryBlob, headers: { 'Content-Type': 'application/octet-stream' } }); globalThis.binaryUpload = await uploadResponse.text(); const payload = new Uint8Array([0, 255, 128, 65]); const constructedBlob = new Blob([payload], { type: 'application/octet-stream' }); const constructedFile = new File([payload.buffer], 'payload.bin', { type: 'application/octet-stream' }); globalThis.binaryConstruction = [constructedBlob.size, Array.from(await constructedBlob.bytes()), constructedFile.size, Array.from(await constructedFile.bytes())]; const constructedUpload = await fetch('/constructed-upload', { method: 'POST', body: constructedBlob }); const fileUpload = await fetch('/file-upload', { method: 'POST', body: constructedFile }); globalThis.binaryUploads = [await constructedUpload.text(), await fileUpload.text()]; const form = new FormData(); form.append('name', 'glass'); form.append('payload', binaryBlob, 'payload.bin'); const formUpload = await fetch('/form-upload', { method: 'POST', body: form }); globalThis.formUpload = await formUpload.text(); document.getElementById('result').value = data.value; const controller = new AbortController(); const events = []; controller.signal.addEventListener('abort', () => events.push('listener')); controller.signal.onabort = () => events.push('property'); const request = fetch('/data', { signal: controller.signal, headers: { 'X-Glass-Token': 'alpha' } }); controller.abort(); controller.abort(); request.catch(error => { globalThis.abortValue = [error.name, controller.signal.aborted, controller.signal.reason.name, events]; }); });",
+            "fetch('/data', { headers: { 'X-Glass-Token': 'alpha' } }).then(async response => { const headerEvents = []; response.headers.forEach((value, name) => headerEvents.push(name + '=' + value)); const stream = response.body; const streamReader = stream.getReader(); const streamFirst = await streamReader.read(); const streamSecond = await streamReader.read(); const streamLocked = stream.locked; streamReader.releaseLock(); const releasedStreamRead = await streamReader.read().then(() => 'readable', error => error.name); const clonedResponse = response.clone(); const clonedText = await clonedResponse.text(); globalThis.fetchClone = [clonedText, clonedResponse.body instanceof ReadableStream, clonedResponse.body !== response.body]; globalThis.fetchStream = [response.body instanceof ReadableStream, streamLocked, stream.locked, streamFirst.done, Array.from(streamFirst.value), streamSecond.done, releasedStreamRead]; globalThis.fetchHeaders = [response.headers.get('CONTENT-TYPE'), response.headers.has('content-type'), Array.from(response.headers.entries()), Array.from(response.headers.keys()), Array.from(response.headers.values()), Array.from(response.headers), headerEvents]; return Promise.all([response.json(), response.text(), response.blob(), response.arrayBuffer(), response.bytes()]); }).then(async ([data, text, blob, buffer, bytes]) => { globalThis.fetchValue = data.value; globalThis.fetchBody = [text, blob instanceof Blob, buffer instanceof ArrayBuffer && Array.from(new Uint8Array(buffer)), Array.from(bytes), await blob.text()]; const binaryResponse = await fetch('/binary'); const binaryClone = binaryResponse.clone(); const binaryStream = binaryResponse.body; const binaryReader = binaryStream.getReader(); const binaryLocked = binaryStream.locked; await binaryReader.cancel(); binaryReader.releaseLock(); const canceledReader = binaryStream.getReader(); const canceledChunk = await canceledReader.read(); canceledReader.releaseLock(); globalThis.fetchStream = globalThis.fetchStream.concat([binaryResponse.body instanceof ReadableStream, binaryLocked, canceledChunk.done, binaryStream.locked]); const binaryBuffer = await binaryClone.arrayBuffer(); const binaryBytes = await binaryClone.bytes(); const binaryBlob = await binaryClone.blob(); globalThis.binaryFetchBody = [Array.from(new Uint8Array(binaryBuffer)), Array.from(binaryBytes), binaryBlob.size, Array.from(await binaryBlob.slice(1, 3).bytes()), await binaryBlob.text()]; const uploadResponse = await fetch('/upload', { method: 'POST', body: binaryBlob, headers: { 'Content-Type': 'application/octet-stream' } }); globalThis.binaryUpload = await uploadResponse.text(); const payload = new Uint8Array([0, 255, 128, 65]); const constructedBlob = new Blob([payload], { type: 'application/octet-stream' }); const constructedFile = new File([payload.buffer], 'payload.bin', { type: 'application/octet-stream' }); globalThis.binaryConstruction = [constructedBlob.size, Array.from(await constructedBlob.bytes()), constructedFile.size, Array.from(await constructedFile.bytes())]; const constructedUpload = await fetch('/constructed-upload', { method: 'POST', body: constructedBlob }); const fileUpload = await fetch('/file-upload', { method: 'POST', body: constructedFile }); globalThis.binaryUploads = [await constructedUpload.text(), await fileUpload.text()]; const form = new FormData(); form.append('name', 'glass'); form.append('payload', binaryBlob, 'payload.bin'); const formUpload = await fetch('/form-upload', { method: 'POST', body: form }); globalThis.formUpload = await formUpload.text(); document.getElementById('result').value = data.value; const controller = new AbortController(); const events = []; controller.signal.addEventListener('abort', () => events.push('listener')); controller.signal.onabort = () => events.push('property'); const request = fetch('/data', { signal: controller.signal, headers: { 'X-Glass-Token': 'alpha' } }); controller.abort(); controller.abort(); request.catch(error => { globalThis.abortValue = [error.name, controller.signal.aborted, controller.signal.reason.name, events]; }); });",
         )
         .await
         .unwrap();
@@ -41637,6 +41637,64 @@ async fn native_content_process_streams_fetch_response_body_incrementally() {
             .unwrap(),
         serde_json::json!([200, true, [1, 2, 3], [4, 5], true])
     );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_cancels_fetch_response_stream_transport() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (cancelled_sender, cancelled_receiver) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = "<body>Fetch cancellation owner</body>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/stream-cancel"));
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        stream.write_all(b"5\r\nfirst\r\n").await.unwrap();
+        let mut probe = [0_u8; 1];
+        let closed = tokio::time::timeout(Duration::from_secs(3), stream.read(&mut probe))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(closed, 0, "cancelled response body remained connected");
+        cancelled_sender.send(()).unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await (async () => { const response = await fetch('/stream-cancel'); const reader = response.body.getReader(); const first = await reader.read(); await reader.cancel(); const after = await reader.read(); reader.releaseLock(); return [Array.from(first.value), first.done, after.done, response.body.locked]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([[102, 105, 114, 115, 116], false, true, false])
+    );
+    tokio::time::timeout(Duration::from_secs(3), cancelled_receiver)
+        .await
+        .unwrap()
+        .unwrap();
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }

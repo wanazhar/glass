@@ -2835,8 +2835,9 @@ pub(crate) fn execute_page_scripts(
             Err(error) if is_ignorable_page_script_error(&error) => {
                 if let Some(node_index) = script_node_index {
                     failed_script_nodes.insert(node_index);
+                    let message = page_script_error_message(&error);
                     if let Some(event_source) =
-                        host_event_script(&[(node_index, NativeEventKind::Error)])?
+                        host_script_error_event_script(Some(node_index), &message, document_url)?
                     {
                         let error_evaluation = runtime
                             .as_ref()
@@ -3001,6 +3002,20 @@ pub(crate) fn execute_page_scripts(
     })
 }
 
+fn page_script_error_message(error: &NativeEngineError) -> String {
+    let message = match error {
+        NativeEngineError::Worker { reason, .. } => reason
+            .strip_prefix("JavaScript evaluation failed: ")
+            .unwrap_or(reason)
+            .to_owned(),
+        _ => "JavaScript evaluation failed".to_owned(),
+    };
+    message
+        .chars()
+        .take(MAX_NATIVE_SCRIPT_BYTES.min(4096))
+        .collect()
+}
+
 fn is_ignorable_page_script_error(error: &NativeEngineError) -> bool {
     matches!(
         error,
@@ -3129,6 +3144,36 @@ pub(crate) fn host_event_script(
         .map(|(node_index, kind)| (*node_index, *kind, None))
         .collect::<Vec<_>>();
     host_event_script_with_submitters(&events)
+}
+
+/// Build the internal source used to report an uncaught page-script failure.
+/// The event metadata is serialized as data, and the host creates the
+/// `ErrorEvent` plus its bounded `Error` value inside the page realm.
+pub(crate) fn host_script_error_event_script(
+    node_index: Option<u32>,
+    message: &str,
+    filename: &str,
+) -> Result<Option<String>, NativeEngineError> {
+    let descriptor = serde_json::json!({
+        "node_index": node_index,
+        "message": message,
+        "filename": filename,
+        "lineno": 0,
+        "colno": 0,
+    });
+    let encoded = serde_json::to_string(&descriptor).map_err(|_| NativeEngineError::Worker {
+        operation: "serialize native script error event".into(),
+        reason: "native script error event metadata could not be serialized".into(),
+    })?;
+    let source = format!("globalThis.__glassDispatchScriptError({encoded})");
+    if source.len() > MAX_NATIVE_SCRIPT_BYTES {
+        return Err(NativeEngineError::limit(
+            "native script error event",
+            MAX_NATIVE_SCRIPT_BYTES,
+            source.len(),
+        ));
+    }
+    Ok(Some(source))
 }
 
 /// Build the internal source used to project events from a child browsing
@@ -4992,9 +5037,12 @@ impl NativeJavaScriptRuntime {
             }
             Module::evaluate(ctx.clone(), name, source)
                 .and_then(|promise| promise.finish::<()>())
-                .map_err(|_| NativeEngineError::Worker {
+                .map_err(|error| NativeEngineError::Worker {
                     operation: "evaluate JavaScript module".into(),
-                    reason: "JavaScript module evaluation failed".into(),
+                    reason: format!(
+                        "JavaScript module evaluation failed: {}",
+                        CaughtError::from_error(&ctx, error)
+                    ),
                 })?;
             ctx.eval::<(), _>(
                 "if (typeof globalThis.__glassQueueResizeObserverChanges === 'function') globalThis.__glassQueueResizeObserverChanges();",
@@ -10113,14 +10161,25 @@ fn document_bootstrap(
   }};
   const installEventHandlerProperty = (element, type) => {{
     let handler = null;
+    let registered = null;
     Object.defineProperty(element, "on" + type, {{
       enumerable: true,
       configurable: false,
       get() {{ return handler; }},
       set(next) {{
-        if (handler) removeListener(ownerFor(element), type, handler, false);
+        if (registered) removeListener(ownerFor(element), type, registered, false);
         handler = typeof next === "function" ? next : null;
-        if (handler) addListener(ownerFor(element), type, handler, false);
+        registered = handler && element === globalThis && type === "error"
+          ? event => handler.call(
+              element,
+              event.message || "",
+              event.filename || "",
+              Number(event.lineno) || 0,
+              Number(event.colno) || 0,
+              event.error || null,
+            )
+          : handler;
+        if (registered) addListener(ownerFor(element), type, registered, false);
       }},
     }});
   }};
@@ -14093,6 +14152,40 @@ fn document_bootstrap(
     if (event.type === "popstate" && globalThis.history) event.state = globalThis.history.state;
     return dispatchTarget(target, event);
   }});
+  globalThis.__glassDispatchScriptError = (descriptor) => {{
+    if (!descriptor || typeof descriptor !== "object") throw new TypeError("native script error is invalid");
+    const message = String(descriptor.message || "");
+    const filename = String(descriptor.filename || "");
+    const line = Number(descriptor.lineno) || 0;
+    const column = Number(descriptor.colno) || 0;
+    const error = new Error(message);
+    const createErrorEvent = () => {{
+      const constructor = globalThis.__glassErrorEventConstructor || globalThis.ErrorEvent;
+      if (typeof constructor === "function") return new constructor("error", {{
+        message,
+        filename,
+        lineno: line,
+        colno: column,
+        error,
+      }});
+      const event = createEvent("error", {{ bubbles: false, cancelable: false }});
+      event.message = message;
+      event.filename = filename;
+      event.lineno = line;
+      event.colno = column;
+      event.error = error;
+      return event;
+    }};
+    const results = [];
+    const nodeIndex = descriptor.node_index;
+    if (nodeIndex !== null && nodeIndex !== undefined) {{
+      const target = elements.find((element) => element.nodeIndex === Number(nodeIndex)) || null;
+      if (!target) throw new TypeError("native script error target is detached");
+      results.push(dispatchTarget(target, createErrorEvent()));
+    }}
+    results.push(dispatchTarget(globalThis, createErrorEvent()));
+    return results;
+  }};
   globalThis.window = globalThis;
   const dialogText = (value, field) => {{
     const text = String(value === undefined || value === null ? "" : value);
@@ -17137,15 +17230,29 @@ fn document_bootstrap(
     try {{ Object.setPrototypeOf(event, StorageEventNative.prototype); }} catch (_error) {{}}
     return event;
   }};
+  const ErrorEventNative = globalThis.__glassErrorEventConstructor || function ErrorEvent(type, options) {{
+    const event = globalThis.__glassCreateEvent(type, options);
+    const settings = options && typeof options === "object" ? options : {{}};
+    event.message = settings.message === undefined ? "" : String(settings.message);
+    event.filename = settings.filename === undefined ? "" : String(settings.filename);
+    event.lineno = Number(settings.lineno) || 0;
+    event.colno = Number(settings.colno) || 0;
+    event.error = settings.error === undefined ? null : settings.error;
+    try {{ Object.setPrototypeOf(event, ErrorEventNative.prototype); }} catch (_error) {{}}
+    return event;
+  }};
   globalThis.__glassEventConstructor = EventNative;
   globalThis.__glassCustomEventConstructor = CustomEventNative;
   globalThis.__glassStorageEventConstructor = StorageEventNative;
+  globalThis.__glassErrorEventConstructor = ErrorEventNative;
   globalThis.__glassCreateEvent = createEvent;
   globalThis.Event = EventNative;
   globalThis.CustomEvent = CustomEventNative;
   globalThis.StorageEvent = StorageEventNative;
+  globalThis.ErrorEvent = ErrorEventNative;
   try {{ Object.setPrototypeOf(CustomEventNative.prototype, EventNative.prototype); }} catch (_error) {{}}
   try {{ Object.setPrototypeOf(StorageEventNative.prototype, EventNative.prototype); }} catch (_error) {{}}
+  try {{ Object.setPrototypeOf(ErrorEventNative.prototype, EventNative.prototype); }} catch (_error) {{}}
   try {{ Object.setPrototypeOf(document, DocumentNative.prototype); }} catch (_error) {{}}
   try {{ Object.setPrototypeOf(location, LocationNative.prototype); }} catch (_error) {{}}
   for (const element of elements) {{
@@ -17184,6 +17291,7 @@ fn document_bootstrap(
   globalThis.addEventListener = (type, callback, options) => addListener("window", type, callback, options);
   globalThis.removeEventListener = (type, callback, options) => removeListener("window", type, callback, options);
   globalThis.dispatchEvent = (event) => dispatchTarget(globalThis, event);
+  if (!Object.prototype.hasOwnProperty.call(globalThis, "onerror")) installEventHandlerProperty(globalThis, "error");
   const makeStorageEvent = (descriptor) => {{
     const event = createEvent("storage");
     event.key = descriptor.key === null ? null : String(descriptor.key);

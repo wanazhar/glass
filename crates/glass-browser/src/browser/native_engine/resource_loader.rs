@@ -531,6 +531,177 @@ impl NativeResourceLoader {
         })
     }
 
+    /// Open one EventSource response through the shared URL, CSP, mixed
+    /// content, referrer, redirect, cookie, and CORS policy owner. The
+    /// response body is intentionally returned as a stream to the content
+    /// process; buffering it here would defeat Server-Sent Events semantics.
+    pub(crate) async fn open_event_source_async(
+        &mut self,
+        document_url: &str,
+        href: &str,
+        with_credentials: bool,
+        last_event_id: &str,
+    ) -> Result<(Url, reqwest::Response), NativeEngineError> {
+        validate_url_text("EventSource owner URL", document_url)?;
+        validate_url_text("EventSource URL", href)?;
+        if last_event_id.len() > 128
+            || last_event_id
+                .bytes()
+                .any(|byte| matches!(byte, b'\r' | b'\n'))
+        {
+            return Err(NativeEngineError::invalid(
+                "EventSource last event ID",
+                "must be a bounded value without line breaks",
+            ));
+        }
+        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "EventSource owner URL is not valid HTTP(S) syntax".into(),
+            }
+        })?;
+        if !is_network_url(document_url.as_str()) {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "EventSource requires an HTTP(S) document owner".into(),
+            });
+        }
+        reject_credentials(&document_url)?;
+        let Some(target_url) = resolve_subresource_url(&document_url, href)? else {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "EventSource URL must be an HTTP(S) resource".into(),
+            });
+        };
+        if !mixed_content_allowed(&document_url, &target_url) {
+            return Err(NativeEngineError::Network {
+                operation: "EventSource policy".into(),
+                reason: "HTTPS documents cannot open an HTTP EventSource".into(),
+            });
+        }
+        let policy = self
+            .network
+            .document_policies
+            .get(&cache_key(&document_url))
+            .cloned()
+            .unwrap_or_default();
+        if !policy.allows(NativeSubresourceKind::Connect, &document_url, &target_url) {
+            return Err(NativeEngineError::Network {
+                operation: "EventSource policy".into(),
+                reason: "document CSP blocked the EventSource connect target".into(),
+            });
+        }
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(NATIVE_NETWORK_TIMEOUT)
+            .build()
+            .map_err(|error| network_error("EventSource client construction", error))?;
+        let mut current_url = target_url;
+        let mut request_referrer = normalize_referrer(Some(document_url.as_str()), &current_url)?;
+        let mut redirects = 0;
+        let response = loop {
+            let mut request_url = current_url.clone();
+            request_url.set_fragment(None);
+            let mut request = client
+                .get(request_url)
+                .header(reqwest::header::ACCEPT, "text/event-stream")
+                .header(reqwest::header::CACHE_CONTROL, "no-cache");
+            if current_url.origin() != document_url.origin() {
+                request = request.header(
+                    reqwest::header::ORIGIN,
+                    document_url.origin().ascii_serialization(),
+                );
+            }
+            if let Some(referrer) = request_referrer.as_deref() {
+                request = request.header(reqwest::header::REFERER, referrer);
+            }
+            let same_origin = current_url.origin() == document_url.origin();
+            if (with_credentials || same_origin)
+                && let Some(cookie) = self.network.cookie_header(&current_url)
+            {
+                request = request.header(reqwest::header::COOKIE, cookie);
+            }
+            if !last_event_id.is_empty() {
+                request = request.header("last-event-id", last_event_id);
+            }
+            let response = request
+                .send()
+                .await
+                .map_err(|error| network_error("EventSource request", error))?;
+            if !is_http_redirect(response.status()) {
+                break response;
+            }
+            if redirects >= MAX_NATIVE_NETWORK_REDIRECTS {
+                return Err(NativeEngineError::Network {
+                    operation: "EventSource redirect".into(),
+                    reason: "EventSource redirect chain exceeded the native limit".into(),
+                });
+            }
+            let location = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| NativeEngineError::Network {
+                    operation: "EventSource redirect".into(),
+                    reason: "EventSource redirect did not provide a valid location".into(),
+                })?;
+            let next_url = current_url
+                .join(location)
+                .map_err(|_| NativeEngineError::Network {
+                    operation: "EventSource redirect".into(),
+                    reason: "EventSource redirect location is not valid URL syntax".into(),
+                })?;
+            reject_credentials(&next_url)?;
+            if !is_network_url(without_fragment(next_url.as_str()))
+                || !mixed_content_allowed(&document_url, &next_url)
+                || !policy.allows(NativeSubresourceKind::Connect, &document_url, &next_url)
+            {
+                return Err(NativeEngineError::Network {
+                    operation: "EventSource redirect policy".into(),
+                    reason: "EventSource redirect was blocked by URL, CSP, or mixed content".into(),
+                });
+            }
+            request_referrer = normalize_referrer(Some(current_url.as_str()), &next_url)?;
+            current_url = next_url;
+            redirects += 1;
+        };
+        if response.status() != reqwest::StatusCode::OK {
+            return Err(NativeEngineError::Network {
+                operation: "EventSource request".into(),
+                reason: format!("server returned HTTP {}", response.status().as_u16()),
+            });
+        }
+        if !content_type_is(
+            response.headers().get(reqwest::header::CONTENT_TYPE),
+            "text/event-stream",
+        )? {
+            return Err(NativeEngineError::Network {
+                operation: "EventSource response".into(),
+                reason: "response content type is not text/event-stream".into(),
+            });
+        }
+        if !cors_response_allowed(
+            response.headers(),
+            &document_url,
+            &current_url,
+            with_credentials,
+        ) {
+            return Err(NativeEngineError::Network {
+                operation: "EventSource CORS policy".into(),
+                reason: "EventSource response did not authorize the document origin".into(),
+            });
+        }
+        for value in response
+            .headers()
+            .get_all(reqwest::header::SET_COOKIE)
+            .iter()
+        {
+            if let Ok(cookie) = value.to_str() {
+                self.cookie_changes
+                    .extend(self.network.store_cookie(&current_url, cookie));
+            }
+        }
+        Ok((current_url, response))
+    }
+
     pub(crate) fn frame_sources_for_document(
         &self,
         document_url: &str,
@@ -633,6 +804,31 @@ impl NativeResourceLoader {
 
     pub(crate) fn take_cookie_changes(&mut self) -> Vec<NativeCookieChange> {
         std::mem::take(&mut self.cookie_changes)
+    }
+
+    pub(crate) fn apply_cookie_changes(
+        &mut self,
+        changes: &[NativeCookieChange],
+    ) -> Result<(), NativeEngineError> {
+        for change in changes {
+            match &change.cookie {
+                Some(profile) => {
+                    let Some(cookie) = NativeCookie::from_profile(profile.clone())? else {
+                        self.network
+                            .remove_cookie(&change.name, &change.domain, &change.path);
+                        self.cookie_changes.push(change.clone());
+                        continue;
+                    };
+                    self.network.set_cookie_profile(cookie)?;
+                }
+                None => {
+                    self.network
+                        .remove_cookie(&change.name, &change.domain, &change.path);
+                }
+            }
+            self.cookie_changes.push(change.clone());
+        }
+        Ok(())
     }
 
     pub(crate) fn document_cookie(&self, document_url: &str) -> Result<String, NativeEngineError> {

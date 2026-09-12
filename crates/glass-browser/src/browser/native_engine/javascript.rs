@@ -83,6 +83,8 @@ pub(crate) const MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES: usize = MAX_NATIVE_FORM_BOD
 pub(crate) const MAX_NATIVE_WEBSOCKET_PROTOCOLS: usize = 16;
 pub(crate) const MAX_NATIVE_WEBSOCKET_PROTOCOL_BYTES: usize = 128;
 pub(crate) const MAX_NATIVE_WEBSOCKET_CLOSE_REASON_BYTES: usize = 123;
+pub(crate) const MAX_NATIVE_EVENTSOURCE_MESSAGE_BYTES: usize = MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES;
+pub(crate) const MAX_NATIVE_EVENTSOURCE_FIELD_BYTES: usize = 128;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -191,6 +193,14 @@ pub(crate) enum NativeScriptCommand {
         socket_id: u32,
         code: u16,
         reason: String,
+    },
+    EventSourceOpen {
+        source_id: u32,
+        href: String,
+        with_credentials: bool,
+    },
+    EventSourceClose {
+        source_id: u32,
     },
     Dialog {
         dialog_type: String,
@@ -452,6 +462,7 @@ pub(crate) struct NativePageNavigation {
 pub(crate) struct NativePageScriptResult {
     pub(crate) pending_fetches: Vec<NativeScriptCommand>,
     pub(crate) websocket_commands: Vec<NativeScriptCommand>,
+    pub(crate) event_source_commands: Vec<NativeScriptCommand>,
     pub(crate) scroll_commands: Vec<NativeScriptCommand>,
     pub(crate) navigation: Option<NativePageNavigation>,
     pub(crate) dialogs: Vec<NativeDialog>,
@@ -2755,6 +2766,7 @@ pub(crate) fn execute_page_scripts(
         .set_module_sources(module_sources);
     let mut pending_fetches = Vec::new();
     let mut websocket_commands = Vec::new();
+    let mut event_source_commands = Vec::new();
     let mut scroll_commands = Vec::new();
     let mut navigation = None;
     let mut events = Vec::new();
@@ -2790,6 +2802,7 @@ pub(crate) fn execute_page_scripts(
             evaluation,
             &mut pending_fetches,
             &mut websocket_commands,
+            &mut event_source_commands,
             &mut scroll_commands,
             &mut navigation,
         )?;
@@ -2813,6 +2826,7 @@ pub(crate) fn execute_page_scripts(
             evaluation,
             &mut pending_fetches,
             &mut websocket_commands,
+            &mut event_source_commands,
             &mut scroll_commands,
             &mut navigation,
         )?;
@@ -2844,6 +2858,7 @@ pub(crate) fn execute_page_scripts(
             evaluation,
             &mut pending_fetches,
             &mut websocket_commands,
+            &mut event_source_commands,
             &mut scroll_commands,
             &mut navigation,
         )?;
@@ -2875,6 +2890,7 @@ pub(crate) fn execute_page_scripts(
             evaluation,
             &mut pending_fetches,
             &mut websocket_commands,
+            &mut event_source_commands,
             &mut scroll_commands,
             &mut navigation,
         )?;
@@ -2897,12 +2913,14 @@ pub(crate) fn execute_page_scripts(
         &mut scroll_commands,
         &mut pending_fetches,
         &mut websocket_commands,
+        &mut event_source_commands,
         &mut navigation,
         &mut events,
     )?;
     Ok(NativePageScriptResult {
         pending_fetches,
         websocket_commands,
+        event_source_commands,
         scroll_commands,
         navigation,
         dialogs: runtime
@@ -2927,6 +2945,7 @@ fn apply_page_script_evaluation(
     evaluation: NativeScriptEvaluation,
     pending_fetches: &mut Vec<NativeScriptCommand>,
     websocket_commands: &mut Vec<NativeScriptCommand>,
+    event_source_commands: &mut Vec<NativeScriptCommand>,
     scroll_commands: &mut Vec<NativeScriptCommand>,
     navigation: &mut Option<NativePageNavigation>,
 ) -> Result<(), NativeEngineError> {
@@ -2937,6 +2956,8 @@ fn apply_page_script_evaluation(
             command @ (NativeScriptCommand::WebSocketOpen { .. }
             | NativeScriptCommand::WebSocketSend { .. }
             | NativeScriptCommand::WebSocketClose { .. }) => websocket_commands.push(command),
+            command @ (NativeScriptCommand::EventSourceOpen { .. }
+            | NativeScriptCommand::EventSourceClose { .. }) => event_source_commands.push(command),
             NativeScriptCommand::Navigate { href, replace } => {
                 validate_url_text("page script navigation href", &href)?;
                 if navigation.is_some() {
@@ -2974,6 +2995,7 @@ fn dispatch_page_scroll_events(
     scroll_commands: &mut Vec<NativeScriptCommand>,
     pending_fetches: &mut Vec<NativeScriptCommand>,
     websocket_commands: &mut Vec<NativeScriptCommand>,
+    event_source_commands: &mut Vec<NativeScriptCommand>,
     navigation: &mut Option<NativePageNavigation>,
     events: &mut Vec<(u32, NativeEventKind)>,
 ) -> Result<(), NativeEngineError> {
@@ -2998,6 +3020,7 @@ fn dispatch_page_scroll_events(
             evaluation,
             pending_fetches,
             websocket_commands,
+            event_source_commands,
             &mut emitted_scroll_commands,
             navigation,
         )?;
@@ -4028,6 +4051,35 @@ impl NativeJavaScriptRuntime {
         if source.len() > MAX_NATIVE_SCRIPT_BYTES {
             return Err(NativeEngineError::limit(
                 "native WebSocket event",
+                MAX_NATIVE_SCRIPT_BYTES,
+                source.len(),
+            ));
+        }
+        self.evaluate(&source, document, document_url, origin, viewport)
+    }
+
+    /// Deliver one host-owned EventSource event into the persistent page
+    /// realm. The event callback runs on the same serialized QuickJS owner as
+    /// every other page task, so streamed messages cannot race a document
+    /// snapshot commit.
+    pub(crate) fn dispatch_event_source_event(
+        &self,
+        source_id: u32,
+        event: &serde_json::Value,
+        document: &NativeDocument,
+        document_url: &str,
+        origin: &NativeOrigin,
+        viewport: Viewport,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        let serialized = serde_json::to_string(event).map_err(|_| NativeEngineError::Worker {
+            operation: "serialize native EventSource event".into(),
+            reason: "native EventSource event could not be serialized".into(),
+        })?;
+        let source =
+            format!("globalThis.__glassDispatchEventSourceEvent({source_id}, {serialized});");
+        if source.len() > MAX_NATIVE_SCRIPT_BYTES {
+            return Err(NativeEngineError::limit(
+                "native EventSource event",
                 MAX_NATIVE_SCRIPT_BYTES,
                 source.len(),
             ));
@@ -8447,6 +8499,111 @@ fn document_bootstrap(
     CONNECTING: {{ value: 0 }}, OPEN: {{ value: 1 }}, CLOSING: {{ value: 2 }}, CLOSED: {{ value: 3 }},
   }});
   globalThis.WebSocket = WebSocketNative;
+  const eventSourceMessageLimit = {eventsource_message_limit};
+  const eventSourceFieldLimit = {eventsource_field_limit};
+  const eventSources = globalThis.__glassEventSources instanceof Map
+    ? globalThis.__glassEventSources
+    : new Map();
+  let nextEventSourceId = Number.isSafeInteger(globalThis.__glassNextEventSourceId)
+    ? globalThis.__glassNextEventSourceId
+    : 1;
+  const eventSourceDispatch = (source, type, event) => {{
+    const listeners = source.__glassEventSourceListeners[type]
+      ? source.__glassEventSourceListeners[type].slice()
+      : [];
+    const handler = source["on" + type];
+    if (typeof handler === "function") {{
+      try {{ handler.call(source, event); }} catch (_) {{}}
+    }}
+    for (const listener of listeners) {{
+      try {{ listener.call(source, event); }} catch (_) {{}}
+    }}
+  }};
+  globalThis.__glassEventSources = eventSources;
+  globalThis.__glassNextEventSourceId = nextEventSourceId;
+  globalThis.__glassDispatchEventSourceEvent = (sourceId, payload) => {{
+    const source = eventSources.get(Number(sourceId));
+    if (!source || !payload || typeof payload !== "object") return null;
+    const type = String(payload.type || "");
+    if (type === "open") {{
+      source.readyState = EventSourceNative.OPEN;
+      eventSourceDispatch(source, "open", {{ type: "open", target: source, currentTarget: source }});
+    }} else if (type === "message") {{
+      const data = String(payload.data || "");
+      if (data.length > eventSourceMessageLimit) return null;
+      const eventType = String(payload.event || "message");
+      if (!eventType || eventType.length > eventSourceFieldLimit) return null;
+      const event = {{
+        type: eventType,
+        data,
+        origin: String(payload.origin || ""),
+        lastEventId: String(payload.lastEventId || ""),
+        target: source,
+        currentTarget: source,
+      }};
+      eventSourceDispatch(source, eventType, event);
+    }} else if (type === "error") {{
+      source.readyState = EventSourceNative.CONNECTING;
+      eventSourceDispatch(source, "error", {{ type: "error", message: String(payload.message || ""), target: source, currentTarget: source }});
+    }} else if (type === "close") {{
+      source.readyState = EventSourceNative.CLOSED;
+      eventSourceDispatch(source, "close", {{ type: "close", target: source, currentTarget: source }});
+      eventSources.delete(Number(sourceId));
+    }}
+    return null;
+  }};
+  const EventSourceNative = function(input, options) {{
+    if (!(this instanceof EventSourceNative)) throw new TypeError("native EventSource requires new");
+    const source = input && input.__glassUrl === true ? input.href : input;
+    const resolved = new URLNative(String(source), host.url);
+    if (!["http:", "https:"].includes(resolved.protocol) || resolved.username || resolved.password || !resolved.host)
+      throw new SyntaxError("native EventSource URL must use http or https without credentials");
+    if (options !== undefined && (options === null || typeof options !== "object"))
+      throw new TypeError("native EventSource options must be an object");
+    const withCredentials = options !== undefined && options.withCredentials === true;
+    const sourceId = nextEventSourceId;
+    nextEventSourceId += 1;
+    globalThis.__glassNextEventSourceId = nextEventSourceId;
+    this.url = resolved.href;
+    this.readyState = EventSourceNative.CONNECTING;
+    this.withCredentials = withCredentials;
+    this.onopen = null;
+    this.onmessage = null;
+    this.onerror = null;
+    this.__glassSourceId = sourceId;
+    this.__glassEventSourceListeners = {{}};
+    eventSources.set(sourceId, this);
+    pushCommand({{ kind: "eventSourceOpen", source_id: sourceId, href: resolved.href, with_credentials: withCredentials }});
+  }};
+  EventSourceNative.CONNECTING = 0;
+  EventSourceNative.OPEN = 1;
+  EventSourceNative.CLOSED = 2;
+  EventSourceNative.prototype.addEventListener = function(type, listener) {{
+    const name = String(type);
+    if (!name || name.length > eventSourceFieldLimit || typeof listener !== "function") return;
+    if (!this.__glassEventSourceListeners[name]) this.__glassEventSourceListeners[name] = [];
+    if (!this.__glassEventSourceListeners[name].includes(listener)) this.__glassEventSourceListeners[name].push(listener);
+  }};
+  EventSourceNative.prototype.removeEventListener = function(type, listener) {{
+    const name = String(type);
+    if (!this.__glassEventSourceListeners[name]) return;
+    this.__glassEventSourceListeners[name] = this.__glassEventSourceListeners[name].filter(candidate => candidate !== listener);
+  }};
+  EventSourceNative.prototype.dispatchEvent = function(event) {{
+    if (!event || !event.type) throw new TypeError("native EventSource event is invalid");
+    eventSourceDispatch(this, String(event.type), event);
+    return true;
+  }};
+  EventSourceNative.prototype.close = function() {{
+    if (this.readyState === EventSourceNative.CLOSED) return;
+    this.readyState = EventSourceNative.CLOSED;
+    eventSources.delete(this.__glassSourceId);
+    pushCommand({{ kind: "eventSourceClose", source_id: this.__glassSourceId }});
+  }};
+  Object.defineProperties(EventSourceNative.prototype, {{
+    CONNECTING: {{ value: 0 }}, OPEN: {{ value: 1 }}, CLOSED: {{ value: 2 }},
+  }});
+  globalThis.EventSource = EventSourceNative;
   globalThis.__glassResolveFetch = (requestId, payload) => {{
     const pending = fetchRequests.get(Number(requestId));
     if (!pending) return;
@@ -15662,6 +15819,8 @@ fn document_bootstrap(
         websocket_protocol_limit = MAX_NATIVE_WEBSOCKET_PROTOCOL_BYTES,
         websocket_protocol_count_limit = MAX_NATIVE_WEBSOCKET_PROTOCOLS,
         websocket_close_reason_limit = MAX_NATIVE_WEBSOCKET_CLOSE_REASON_BYTES,
+        eventsource_message_limit = MAX_NATIVE_EVENTSOURCE_MESSAGE_BYTES,
+        eventsource_field_limit = MAX_NATIVE_EVENTSOURCE_FIELD_BYTES,
         dialog_text_limit = MAX_NATIVE_DIALOG_TEXT_BYTES,
         post_message_bytes_limit = MAX_NATIVE_POST_MESSAGE_BYTES,
         max_frame_window_indices = MAX_NATIVE_FRAME_SCRIPT_BINDINGS,

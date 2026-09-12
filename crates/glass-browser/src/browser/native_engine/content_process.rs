@@ -13,20 +13,21 @@ use super::interaction::{
     validate_native_edit_key, validate_native_key,
 };
 use super::javascript::{
-    MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_DIALOGS, MAX_NATIVE_HISTORY_STATE_BYTES,
+    MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_DIALOGS, MAX_NATIVE_EVENTSOURCE_FIELD_BYTES,
+    MAX_NATIVE_EVENTSOURCE_MESSAGE_BYTES, MAX_NATIVE_HISTORY_STATE_BYTES,
     MAX_NATIVE_INDEXED_DB_CHANGES, MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_SCRIPT_BYTES,
     MAX_NATIVE_WEBSOCKET_CLOSE_REASON_BYTES, MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES,
     MAX_NATIVE_WEBSOCKET_PROTOCOL_BYTES, MAX_NATIVE_WEBSOCKET_PROTOCOLS, MAX_NATIVE_XHR_TIMEOUT_MS,
-    NativeCookieProfileEntry, NativeDialog, NativeFrameScriptBinding, NativeFrameScriptContext,
-    NativeFrameScriptRequest, NativeFrameScriptWindow, NativeIndexedDbChange, NativeIndexedDbState,
-    NativeJavaScriptRuntime, NativePageScript, NativePopupRequest, NativePostMessageRequest,
-    NativeScriptCommand, NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState,
-    NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
-    diff_indexed_db_changes, execute_page_scripts, host_event_script,
-    host_hash_change_event_script, host_key_event_script, host_key_event_script_with_modifiers,
-    host_submit_event_script, literal_dynamic_module_specifiers, load_indexed_db_profile,
-    load_web_storage_profile, order_page_scripts, save_web_storage_profile,
-    static_module_specifiers, storage_key,
+    NativeCookieChange, NativeCookieProfileEntry, NativeDialog, NativeFrameScriptBinding,
+    NativeFrameScriptContext, NativeFrameScriptRequest, NativeFrameScriptWindow,
+    NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime, NativePageScript,
+    NativePopupRequest, NativePostMessageRequest, NativeScriptCommand, NativeScriptEvaluation,
+    NativeStorageEvent, NativeWebStorageState, NativeWindowCloseRequest,
+    NativeWindowNavigationRequest, NativeWindowProxyUpdate, diff_indexed_db_changes,
+    execute_page_scripts, host_event_script, host_hash_change_event_script, host_key_event_script,
+    host_key_event_script_with_modifiers, host_submit_event_script,
+    literal_dynamic_module_specifiers, load_indexed_db_profile, load_web_storage_profile,
+    order_page_scripts, save_web_storage_profile, static_module_specifiers, storage_key,
 };
 use super::layout::NativePoint;
 use super::origin::NativeOrigin;
@@ -69,6 +70,10 @@ const MAX_CONTENT_EVENT_LOOP_TURNS: usize = MAX_NATIVE_EFFECTS;
 const NATIVE_WEBSOCKET_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const NATIVE_WEBSOCKET_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const MAX_NATIVE_WEBSOCKET_EVENTS: usize = MAX_NATIVE_EFFECTS;
+const NATIVE_EVENTSOURCE_INITIAL_RETRY: Duration = Duration::from_secs(3);
+const NATIVE_EVENTSOURCE_MAX_RETRY: Duration = Duration::from_secs(30);
+const MAX_NATIVE_EVENTSOURCE_RECONNECTS: usize = MAX_NATIVE_EFFECTS;
+const MAX_NATIVE_EVENTSOURCE_CONNECTIONS: usize = MAX_NATIVE_EFFECTS;
 const MAX_CONTENT_STYLESHEETS: usize = 16;
 const MAX_CONTENT_STYLESHEET_BYTES: usize = 512 * 1024;
 const MAX_CONTENT_IMAGES: usize = 64;
@@ -128,6 +133,181 @@ enum NativeWebSocketEvent {
 struct NativeWebSocketConnection {
     commands: mpsc::Sender<NativeWebSocketCommand>,
     events: mpsc::Receiver<NativeWebSocketEvent>,
+}
+
+enum NativeEventSourceCommand {
+    Close,
+}
+
+enum NativeEventSourceEvent {
+    Open {
+        origin: String,
+        cookie_changes: Vec<NativeCookieChange>,
+    },
+    Message {
+        event: String,
+        data: String,
+        last_event_id: String,
+        origin: String,
+    },
+    Error {
+        message: String,
+    },
+    Close,
+}
+
+struct NativeEventSourceConnection {
+    commands: mpsc::Sender<NativeEventSourceCommand>,
+    events: mpsc::Receiver<NativeEventSourceEvent>,
+}
+
+#[derive(Default)]
+struct NativeEventSourceParser {
+    buffer: Vec<u8>,
+    data: String,
+    event: String,
+    last_event_id: String,
+    retry: Duration,
+    skip_lf_after_cr: bool,
+}
+
+struct NativeEventSourceMessage {
+    event: String,
+    data: String,
+    last_event_id: String,
+}
+
+fn parse_event_source_chunk(
+    parser: &mut NativeEventSourceParser,
+    chunk: &[u8],
+) -> Result<Vec<NativeEventSourceMessage>, NativeEngineError> {
+    let next_len = parser.buffer.len().saturating_add(chunk.len());
+    if next_len > MAX_NATIVE_EVENTSOURCE_MESSAGE_BYTES + MAX_NATIVE_EVENTSOURCE_FIELD_BYTES {
+        return Err(NativeEngineError::limit(
+            "native EventSource line buffer",
+            MAX_NATIVE_EVENTSOURCE_MESSAGE_BYTES + MAX_NATIVE_EVENTSOURCE_FIELD_BYTES,
+            next_len,
+        ));
+    }
+    parser.buffer.extend_from_slice(chunk);
+    let mut messages = Vec::new();
+    loop {
+        if parser.skip_lf_after_cr {
+            match parser.buffer.first() {
+                Some(b'\n') => {
+                    parser.buffer.remove(0);
+                    parser.skip_lf_after_cr = false;
+                }
+                Some(_) => parser.skip_lf_after_cr = false,
+                None => break,
+            }
+        }
+        let Some(line_end) = parser
+            .buffer
+            .iter()
+            .position(|byte| matches!(*byte, b'\r' | b'\n'))
+        else {
+            break;
+        };
+        let is_cr = parser.buffer[line_end] == b'\r';
+        let terminator_len = if is_cr && parser.buffer.get(line_end + 1) == Some(&b'\n') {
+            2
+        } else {
+            if is_cr {
+                parser.skip_lf_after_cr = true;
+            }
+            1
+        };
+        let line = parser.buffer.drain(..line_end).collect::<Vec<_>>();
+        parser.buffer.drain(..terminator_len);
+        if line.len() > MAX_NATIVE_EVENTSOURCE_MESSAGE_BYTES {
+            return Err(NativeEngineError::limit(
+                "native EventSource field",
+                MAX_NATIVE_EVENTSOURCE_MESSAGE_BYTES,
+                line.len(),
+            ));
+        }
+        let line = String::from_utf8(line).map_err(|_| NativeEngineError::Network {
+            operation: "EventSource stream".into(),
+            reason: "EventSource stream was not valid UTF-8".into(),
+        })?;
+        if line.is_empty() {
+            if !parser.data.is_empty() {
+                let data = parser
+                    .data
+                    .strip_suffix('\n')
+                    .unwrap_or(&parser.data)
+                    .to_owned();
+                messages.push(NativeEventSourceMessage {
+                    event: if parser.event.is_empty() {
+                        "message".into()
+                    } else {
+                        parser.event.clone()
+                    },
+                    data,
+                    last_event_id: parser.last_event_id.clone(),
+                });
+            }
+            parser.data.clear();
+            parser.event.clear();
+            continue;
+        }
+        if line.starts_with(':') {
+            continue;
+        }
+        let (field, value) = line
+            .split_once(':')
+            .map_or((line.as_str(), ""), |(field, value)| {
+                (field, value.strip_prefix(' ').unwrap_or(value))
+            });
+        match field {
+            "data" => {
+                let next_data = parser
+                    .data
+                    .len()
+                    .saturating_add(value.len())
+                    .saturating_add(1);
+                if next_data > MAX_NATIVE_EVENTSOURCE_MESSAGE_BYTES {
+                    return Err(NativeEngineError::limit(
+                        "native EventSource message",
+                        MAX_NATIVE_EVENTSOURCE_MESSAGE_BYTES,
+                        next_data,
+                    ));
+                }
+                parser.data.push_str(value);
+                parser.data.push('\n');
+            }
+            "event" => {
+                if value.len() > MAX_NATIVE_EVENTSOURCE_FIELD_BYTES {
+                    return Err(NativeEngineError::limit(
+                        "native EventSource event name",
+                        MAX_NATIVE_EVENTSOURCE_FIELD_BYTES,
+                        value.len(),
+                    ));
+                }
+                parser.event = value.to_owned();
+            }
+            "id" if !value.contains('\0') => {
+                if value.len() > MAX_NATIVE_EVENTSOURCE_FIELD_BYTES {
+                    return Err(NativeEngineError::limit(
+                        "native EventSource last event ID",
+                        MAX_NATIVE_EVENTSOURCE_FIELD_BYTES,
+                        value.len(),
+                    ));
+                }
+                parser.last_event_id = value.to_owned();
+            }
+            "retry" if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) => {
+                if let Ok(milliseconds) = value.parse::<u64>() {
+                    parser.retry = Duration::from_millis(
+                        milliseconds.min(NATIVE_EVENTSOURCE_MAX_RETRY.as_millis() as u64),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(messages)
 }
 
 fn bounded_websocket_text(value: impl AsRef<str>, limit: usize) -> String {
@@ -448,6 +628,179 @@ fn spawn_native_websocket(
         commands: command_sender,
         events: event_receiver,
     })
+}
+
+async fn wait_event_source_retry(
+    commands: &mut mpsc::Receiver<NativeEventSourceCommand>,
+    delay: Duration,
+) -> bool {
+    tokio::select! {
+        _ = sleep(delay) => true,
+        command = commands.recv() => !matches!(command, Some(NativeEventSourceCommand::Close) | None),
+    }
+}
+
+async fn run_native_event_source(
+    mut loader: NativeResourceLoader,
+    document_url: String,
+    href: String,
+    with_credentials: bool,
+    mut commands: mpsc::Receiver<NativeEventSourceCommand>,
+    events: mpsc::Sender<NativeEventSourceEvent>,
+) {
+    let mut last_event_id = String::new();
+    let mut retry = NATIVE_EVENTSOURCE_INITIAL_RETRY;
+    let mut reconnects = 0usize;
+    loop {
+        let response = timeout(
+            NATIVE_WEBSOCKET_CONNECT_TIMEOUT,
+            loader.open_event_source_async(&document_url, &href, with_credentials, &last_event_id),
+        )
+        .await;
+        let (url, response) = match response {
+            Ok(Ok(response)) => response,
+            Ok(Err(error)) => {
+                if !queue_event_source_event(
+                    &events,
+                    NativeEventSourceEvent::Error {
+                        message: bounded_websocket_text(error.to_string(), MAX_NATIVE_SCRIPT_BYTES),
+                    },
+                )
+                .await
+                {
+                    return;
+                }
+                reconnects = reconnects.saturating_add(1);
+                if reconnects > MAX_NATIVE_EVENTSOURCE_RECONNECTS
+                    || !wait_event_source_retry(&mut commands, retry).await
+                {
+                    let _ = queue_event_source_event(&events, NativeEventSourceEvent::Close).await;
+                    return;
+                }
+                continue;
+            }
+            Err(_) => {
+                if !queue_event_source_event(
+                    &events,
+                    NativeEventSourceEvent::Error {
+                        message: "native EventSource connection timed out".into(),
+                    },
+                )
+                .await
+                {
+                    return;
+                }
+                reconnects = reconnects.saturating_add(1);
+                if reconnects > MAX_NATIVE_EVENTSOURCE_RECONNECTS
+                    || !wait_event_source_retry(&mut commands, retry).await
+                {
+                    let _ = queue_event_source_event(&events, NativeEventSourceEvent::Close).await;
+                    return;
+                }
+                continue;
+            }
+        };
+        let cookie_changes = loader.take_cookie_changes();
+        reconnects = 0;
+        if !queue_event_source_event(
+            &events,
+            NativeEventSourceEvent::Open {
+                origin: url.origin().ascii_serialization(),
+                cookie_changes,
+            },
+        )
+        .await
+        {
+            return;
+        }
+        let mut parser = NativeEventSourceParser {
+            last_event_id: last_event_id.clone(),
+            retry,
+            ..NativeEventSourceParser::default()
+        };
+        let mut stream = response.bytes_stream();
+        loop {
+            tokio::select! {
+                command = commands.recv() => {
+                    if !matches!(command, Some(NativeEventSourceCommand::Close)) {
+                        let _ = queue_event_source_event(&events, NativeEventSourceEvent::Close).await;
+                    }
+                    return;
+                }
+                chunk = stream.next() => {
+                    match chunk {
+                        Some(Ok(chunk)) => {
+                            let messages = match parse_event_source_chunk(&mut parser, &chunk) {
+                                Ok(messages) => messages,
+                                Err(error) => {
+                                    let _ = queue_event_source_event(&events, NativeEventSourceEvent::Error {
+                                        message: bounded_websocket_text(error.to_string(), MAX_NATIVE_SCRIPT_BYTES),
+                                    }).await;
+                                    break;
+                                }
+                            };
+                            last_event_id = parser.last_event_id.clone();
+                            for message in messages {
+                                last_event_id = message.last_event_id.clone();
+                                if !queue_event_source_event(&events, NativeEventSourceEvent::Message {
+                                    event: message.event,
+                                    data: message.data,
+                                    last_event_id: message.last_event_id,
+                                    origin: url.origin().ascii_serialization(),
+                                }).await {
+                                    return;
+                                }
+                            }
+                        }
+                        Some(Err(error)) => {
+                            let _ = queue_event_source_event(&events, NativeEventSourceEvent::Error {
+                                message: bounded_websocket_text(error.to_string(), MAX_NATIVE_SCRIPT_BYTES),
+                            }).await;
+                            break;
+                        }
+                        None => break,
+                    }
+                }
+            }
+        }
+        retry = parser.retry.min(NATIVE_EVENTSOURCE_MAX_RETRY);
+        reconnects = reconnects.saturating_add(1);
+        if reconnects > MAX_NATIVE_EVENTSOURCE_RECONNECTS
+            || !wait_event_source_retry(&mut commands, retry).await
+        {
+            let _ = queue_event_source_event(&events, NativeEventSourceEvent::Close).await;
+            return;
+        }
+    }
+}
+
+async fn queue_event_source_event(
+    events: &mpsc::Sender<NativeEventSourceEvent>,
+    event: NativeEventSourceEvent,
+) -> bool {
+    events.send(event).await.is_ok()
+}
+
+fn spawn_native_event_source(
+    loader: &NativeResourceLoader,
+    document_url: &str,
+    href: &str,
+    with_credentials: bool,
+) -> NativeEventSourceConnection {
+    let (command_sender, command_receiver) = mpsc::channel(MAX_NATIVE_EVENTSOURCE_CONNECTIONS);
+    let (event_sender, event_receiver) = mpsc::channel(MAX_NATIVE_EVENTSOURCE_CONNECTIONS);
+    tokio::spawn(run_native_event_source(
+        loader.clone(),
+        document_url.to_owned(),
+        href.to_owned(),
+        with_credentials,
+        command_receiver,
+        event_sender,
+    ));
+    NativeEventSourceConnection {
+        commands: command_sender,
+        events: event_receiver,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -2884,6 +3237,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut resource_loader = None;
     let mut javascript_runtime: Option<NativeJavaScriptRuntime> = None;
     let mut websocket_connections = BTreeMap::new();
+    let mut event_source_connections = BTreeMap::new();
     let mut storage_state = NativeWebStorageState::default();
     let mut indexed_db_state = NativeIndexedDbState::default();
     let mut storage_profile_path: Option<PathBuf> = None;
@@ -3268,6 +3622,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             "load" if protocol_matches(&request) && running => {
                 frame_script_bindings.clear();
                 websocket_connections.clear();
+                event_source_connections.clear();
                 if let Some(runtime) = javascript_runtime.as_ref() {
                     storage_state = runtime.storage_state();
                 }
@@ -3343,7 +3698,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             }
                             Ok(page_scripts)
                                 if page_scripts.pending_fetches.is_empty()
-                                    && page_scripts.websocket_commands.is_empty() =>
+                                    && page_scripts.websocket_commands.is_empty()
+                                    && page_scripts.event_source_commands.is_empty() =>
                             {
                                 Ok((
                                     parsed,
@@ -3364,15 +3720,18 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                             runtime,
                                             Some(loader),
                                             &mut websocket_connections,
+                                            &mut event_source_connections,
                                             &resource.url,
                                             &resource.origin,
                                             loaded_viewport,
+                                            false,
                                             NativeScriptEvaluation {
                                                 value: Value::Null,
                                                 commands: page_scripts
                                                     .pending_fetches
                                                     .into_iter()
                                                     .chain(page_scripts.websocket_commands)
+                                                    .chain(page_scripts.event_source_commands)
                                                     .collect(),
                                                 top_level_await_pending: false,
                                             },
@@ -3582,7 +3941,11 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         value,
                         commands,
                         top_level_await_pending,
-                    }) if commands.is_empty() && !top_level_await_pending => {
+                    }) if commands.is_empty()
+                        && !top_level_await_pending
+                        && websocket_connections.is_empty()
+                        && event_source_connections.is_empty() =>
+                    {
                         let frame_scripts = runtime.take_frame_script_events();
                         json!({
                             "kind":"evaluated",
@@ -3626,19 +3989,30 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                     | NativeScriptCommand::WebSocketClose { .. }
                             )
                         });
+                        let has_event_source = commands.iter().any(|command| {
+                            matches!(
+                                command,
+                                NativeScriptCommand::EventSourceOpen { .. }
+                                    | NativeScriptCommand::EventSourceClose { .. }
+                            )
+                        });
                         let result = if has_fetch
                             || has_websocket
+                            || has_event_source
                             || top_level_await_pending
                             || !websocket_connections.is_empty()
+                            || !event_source_connections.is_empty()
                         {
                             resolve_script_fetches(
                                 current,
                                 runtime,
                                 resource_loader.as_mut(),
                                 &mut websocket_connections,
+                                &mut event_source_connections,
                                 &script_url,
                                 document_origin,
                                 viewport,
+                                top_level_await_pending || has_websocket || has_event_source,
                                 NativeScriptEvaluation {
                                     value: value.clone(),
                                     commands,
@@ -6995,6 +7369,56 @@ fn process_websocket_commands(
     Ok(retained)
 }
 
+fn process_event_source_commands(
+    commands: Vec<NativeScriptCommand>,
+    connections: &mut BTreeMap<u32, NativeEventSourceConnection>,
+    loader: Option<&NativeResourceLoader>,
+    document_url: &str,
+) -> Result<Vec<NativeScriptCommand>, NativeEngineError> {
+    let mut retained = Vec::with_capacity(commands.len());
+    for command in commands {
+        match command {
+            NativeScriptCommand::EventSourceOpen {
+                source_id,
+                href,
+                with_credentials,
+            } => {
+                if connections.contains_key(&source_id) {
+                    return Err(NativeEngineError::Network {
+                        operation: "EventSource open".into(),
+                        reason: "EventSource identifier is already active".into(),
+                    });
+                }
+                if connections.len() >= MAX_NATIVE_EVENTSOURCE_CONNECTIONS {
+                    return Err(NativeEngineError::limit(
+                        "native EventSource connections",
+                        MAX_NATIVE_EVENTSOURCE_CONNECTIONS,
+                        connections.len().saturating_add(1),
+                    ));
+                }
+                let loader = loader.ok_or_else(|| NativeEngineError::Worker {
+                    operation: "EventSource open".into(),
+                    reason: "content process has no resource loader".into(),
+                })?;
+                validate_url_text("EventSource URL", &href)?;
+                connections.insert(
+                    source_id,
+                    spawn_native_event_source(loader, document_url, &href, with_credentials),
+                );
+            }
+            NativeScriptCommand::EventSourceClose { source_id } => {
+                if let Some(connection) = connections.remove(&source_id) {
+                    let _ = connection
+                        .commands
+                        .try_send(NativeEventSourceCommand::Close);
+                }
+            }
+            command => retained.push(command),
+        }
+    }
+    Ok(retained)
+}
+
 fn take_websocket_event(
     connections: &mut BTreeMap<u32, NativeWebSocketConnection>,
 ) -> Option<(u32, NativeWebSocketEvent)> {
@@ -7008,6 +7432,25 @@ fn take_websocket_event(
             Err(mpsc::error::TryRecvError::Empty) => {}
             Err(mpsc::error::TryRecvError::Disconnected) => {
                 connections.remove(&socket_id);
+            }
+        }
+    }
+    None
+}
+
+fn take_event_source_event(
+    connections: &mut BTreeMap<u32, NativeEventSourceConnection>,
+) -> Option<(u32, NativeEventSourceEvent)> {
+    let source_ids = connections.keys().copied().collect::<Vec<_>>();
+    for source_id in source_ids {
+        let Some(connection) = connections.get_mut(&source_id) else {
+            continue;
+        };
+        match connection.events.try_recv() {
+            Ok(event) => return Some((source_id, event)),
+            Err(mpsc::error::TryRecvError::Empty) => {}
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                connections.remove(&source_id);
             }
         }
     }
@@ -7040,6 +7483,30 @@ fn websocket_event_payload(event: &NativeWebSocketEvent) -> Value {
             "reason": reason,
             "wasClean": was_clean,
         }),
+    }
+}
+
+fn event_source_event_payload(event: &NativeEventSourceEvent) -> Value {
+    match event {
+        NativeEventSourceEvent::Open { origin, .. } => {
+            json!({"type": "open", "origin": origin})
+        }
+        NativeEventSourceEvent::Message {
+            event,
+            data,
+            last_event_id,
+            origin,
+        } => json!({
+            "type": "message",
+            "event": event,
+            "data": data,
+            "lastEventId": last_event_id,
+            "origin": origin,
+        }),
+        NativeEventSourceEvent::Error { message } => {
+            json!({"type": "error", "message": message})
+        }
+        NativeEventSourceEvent::Close => json!({"type": "close"}),
     }
 }
 
@@ -7206,9 +7673,11 @@ async fn resolve_script_fetches(
     runtime: &NativeJavaScriptRuntime,
     mut loader: Option<&mut NativeResourceLoader>,
     websocket_connections: &mut BTreeMap<u32, NativeWebSocketConnection>,
+    event_source_connections: &mut BTreeMap<u32, NativeEventSourceConnection>,
     document_url: &str,
     document_origin: &NativeOrigin,
     viewport: Viewport,
+    pump_background_events: bool,
     evaluation: NativeScriptEvaluation,
 ) -> Result<(NativeDocument, NativeContentMutation, Option<Value>), NativeEngineError> {
     let NativeScriptEvaluation {
@@ -7223,6 +7692,12 @@ async fn resolve_script_fetches(
         loader.as_deref(),
         &current_url,
         document_origin,
+    )?;
+    let initial_commands = process_event_source_commands(
+        initial_commands,
+        event_source_connections,
+        loader.as_deref(),
+        &current_url,
     )?;
     let (mut next, mut mutation) = mutate_script_document(
         current,
@@ -7305,6 +7780,12 @@ async fn resolve_script_fetches(
                 &current_url,
                 document_origin,
             )?;
+            let resolved_commands = process_event_source_commands(
+                resolved_commands,
+                event_source_connections,
+                Some(&*loader),
+                &current_url,
+            )?;
             let resolved_history = extract_history_commands(&resolved_commands);
             if !resolved_history.is_empty() {
                 let mut url = Some(current_url.clone());
@@ -7361,7 +7842,9 @@ async fn resolve_script_fetches(
             resolved_value = Some(value);
             break;
         }
-        if let Some((socket_id, event)) = take_websocket_event(websocket_connections) {
+        if pump_background_events
+            && let Some((socket_id, event)) = take_websocket_event(websocket_connections)
+        {
             event_loop_turns = event_loop_turns.saturating_add(1);
             if event_loop_turns > MAX_CONTENT_EVENT_LOOP_TURNS {
                 return Err(NativeEngineError::limit(
@@ -7435,6 +7918,100 @@ async fn resolve_script_fetches(
             }
             continue;
         }
+        if pump_background_events
+            && let Some((source_id, event)) = take_event_source_event(event_source_connections)
+        {
+            event_loop_turns = event_loop_turns.saturating_add(1);
+            if event_loop_turns > MAX_CONTENT_EVENT_LOOP_TURNS {
+                return Err(NativeEngineError::limit(
+                    "content-process event-loop turns",
+                    MAX_CONTENT_EVENT_LOOP_TURNS,
+                    event_loop_turns,
+                ));
+            }
+            if let NativeEventSourceEvent::Open { cookie_changes, .. } = &event
+                && !cookie_changes.is_empty()
+            {
+                let Some(loader) = loader.as_deref_mut() else {
+                    return Err(NativeEngineError::Worker {
+                        operation: "content process EventSource cookies".into(),
+                        reason: "content process has no resource loader".into(),
+                    });
+                };
+                loader.apply_cookie_changes(cookie_changes)?;
+            }
+            let remove_after_dispatch = matches!(&event, NativeEventSourceEvent::Close);
+            let event_evaluation = runtime.dispatch_event_source_event(
+                source_id,
+                &event_source_event_payload(&event),
+                &next,
+                &current_url,
+                document_origin,
+                viewport,
+            )?;
+            let event_commands = process_websocket_commands(
+                event_evaluation.commands,
+                websocket_connections,
+                loader.as_deref(),
+                &current_url,
+                document_origin,
+            )?;
+            let event_commands = process_event_source_commands(
+                event_commands,
+                event_source_connections,
+                loader.as_deref(),
+                &current_url,
+            )?;
+            let event_history = extract_history_commands(&event_commands);
+            if !event_history.is_empty() {
+                let mut url = Some(current_url.clone());
+                apply_content_runtime_history(&event_history, &mut url, document_origin, runtime)?;
+                current_url = url.ok_or_else(|| NativeEngineError::Worker {
+                    operation: "content process EventSource history".into(),
+                    reason: "EventSource callback history lost its document URL".into(),
+                })?;
+                mutation.history.extend(event_history);
+            }
+            let (event_next, event_mutation) = mutate_script_document(
+                &next,
+                runtime,
+                &current_url,
+                document_origin,
+                viewport,
+                &event_commands,
+                loader.as_deref_mut(),
+            )
+            .await?;
+            next = event_next;
+            mutation.events.extend(event_mutation.events);
+            mutation
+                .scroll_commands
+                .extend(event_mutation.scroll_commands);
+            if !event_mutation.history.is_empty() {
+                current_url = resolve_content_history_document_url(
+                    &event_mutation.history,
+                    &current_url,
+                    document_origin,
+                )?;
+                mutation.history.extend(event_mutation.history);
+            }
+            if mutation.navigation.is_none() {
+                mutation.navigation = event_mutation.navigation;
+            } else if event_mutation.navigation.is_some() {
+                return Err(NativeEngineError::TargetNotActionable {
+                    reason: "one EventSource event batch cannot activate multiple navigations"
+                        .into(),
+                });
+            }
+            pending.extend(fetch_commands(&event_commands)?);
+            if remove_after_dispatch {
+                event_source_connections.remove(&source_id);
+            }
+            if top_level_await_pending && let Some(value) = runtime.take_top_level_await_result()? {
+                resolved_value = Some(value);
+            }
+            continue;
+        }
         if !top_level_await_pending {
             break;
         }
@@ -7448,7 +8025,9 @@ async fn resolve_script_fetches(
             .await;
             continue;
         }
-        if timer_delay.is_none() && !websocket_connections.is_empty() {
+        if timer_delay.is_none()
+            && (!websocket_connections.is_empty() || !event_source_connections.is_empty())
+        {
             sleep(NATIVE_WEBSOCKET_POLL_INTERVAL).await;
             continue;
         }
@@ -7471,7 +8050,20 @@ async fn resolve_script_fetches(
         }
         let timer_evaluation =
             runtime.run_timer_turn(&next, &current_url, document_origin, viewport)?;
-        let timer_history = extract_history_commands(&timer_evaluation.commands);
+        let timer_commands = process_websocket_commands(
+            timer_evaluation.commands,
+            websocket_connections,
+            loader.as_deref(),
+            &current_url,
+            document_origin,
+        )?;
+        let timer_commands = process_event_source_commands(
+            timer_commands,
+            event_source_connections,
+            loader.as_deref(),
+            &current_url,
+        )?;
+        let timer_history = extract_history_commands(&timer_commands);
         if !timer_history.is_empty() {
             let mut url = Some(current_url.clone());
             apply_content_runtime_history(&timer_history, &mut url, document_origin, runtime)?;
@@ -7487,7 +8079,7 @@ async fn resolve_script_fetches(
             &current_url,
             document_origin,
             viewport,
-            &timer_evaluation.commands,
+            &timer_commands,
             loader.as_deref_mut(),
         )
         .await?;
@@ -7511,7 +8103,7 @@ async fn resolve_script_fetches(
                 reason: "one script event-loop batch cannot activate multiple navigations".into(),
             });
         }
-        pending.extend(fetch_commands(&timer_evaluation.commands)?);
+        pending.extend(fetch_commands(&timer_commands)?);
     }
     if mutation.events.len() > MAX_NATIVE_EFFECTS {
         return Err(NativeEngineError::limit(

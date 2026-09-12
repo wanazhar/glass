@@ -41811,6 +41811,52 @@ async fn native_content_process_tracks_request_body_disturbance_and_clone_owners
 }
 
 #[tokio::test]
+async fn native_content_process_exposes_request_body_stream_and_methods() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = "<body>Request body surface</body>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await (async () => { const textRequest = new Request('/text', { method: 'POST', body: 'hello' }); const textInitial = [textRequest.body instanceof ReadableStream, textRequest.bodyUsed, textRequest.body.locked]; const text = await textRequest.text(); const textReader = textRequest.body.getReader(); const textAfterRead = await textReader.read().then(() => 'readable', error => error.name); textReader.releaseLock(); const textAfter = [text, textRequest.bodyUsed, textAfterRead]; const jsonRequest = new Request('/json', { method: 'POST', body: '{\"ok\":true}' }); const json = await jsonRequest.json(); const binaryRequest = new Request('/binary', { method: 'POST', body: new Uint8Array([0, 255, 128, 70]) }); const buffer = await binaryRequest.arrayBuffer(); const bytesRequest = new Request('/bytes', { method: 'POST', body: new Uint8Array([9, 8, 7]) }); const bytes = await bytesRequest.bytes(); const blobRequest = new Request('/blob', { method: 'POST', body: new Blob(['blob-body'], { type: 'text/custom' }) }); const blob = await blobRequest.blob(); const cloneSource = new Request('/clone', { method: 'POST', body: 'independent' }); const clone = cloneSource.clone(); const cloneText = await clone.text(); const cloneState = [cloneText, cloneSource.bodyUsed, clone.bodyUsed]; const streamRequest = new Request('/stream', { method: 'POST', body: 'streamed' }); const reader = streamRequest.body.getReader(); const first = await reader.read(); const end = await reader.read(); reader.releaseLock(); const streamState = [Array.from(first.value), first.done, end.value, end.done, streamRequest.bodyUsed, streamRequest.body.locked]; const lockedRequest = new Request('/locked', { method: 'POST', body: 'locked' }); const lockedReader = lockedRequest.body.getReader(); const lockedClone = (() => { try { lockedRequest.clone(); return 'cloneable'; } catch (error) { return error.name; } })(); lockedReader.releaseLock(); const emptyRequest = new Request('/empty'); const empty = await emptyRequest.text(); return { textInitial, textAfter, json, buffer: Array.from(new Uint8Array(buffer)), bytes: Array.from(bytes), blob: [blob instanceof Blob, blob.type, blob.size, await blob.text()], cloneState, streamState, lockedClone, empty: [empty, emptyRequest.bodyUsed] }; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "textInitial": [true, false, false],
+            "textAfter": ["hello", true, "TypeError"],
+            "json": {"ok": true},
+            "buffer": [0, 255, 128, 70],
+            "bytes": [9, 8, 7],
+            "blob": [true, "text/custom", 9, "blob-body"],
+            "cloneState": ["independent", false, true],
+            "streamState": [[115, 116, 114, 101, 97, 109, 101, 100], false, null, true, true, false],
+            "lockedClone": "TypeError",
+            "empty": ["", true]
+        })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_tees_fetch_streams_until_all_readers_cancel() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

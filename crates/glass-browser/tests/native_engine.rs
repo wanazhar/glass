@@ -33596,6 +33596,142 @@ fn native_css_fixed_position_stays_viewport_anchored_when_root_scrolls() {
 }
 
 #[test]
+fn native_css_sticky_position_preserves_flow_and_sticks_to_viewport() {
+    let config = NativeEngineConfig::default()
+        .with_viewport(Viewport {
+            width: 32,
+            height: 20,
+            device_scale_factor_milli: 1000,
+        })
+        .with_fixture(
+            "fixture://sticky",
+            "<div id='container' style='width:24px;height:100px'><div style='height:30px'></div><button id='sticky' style='display:block;position:sticky;top:2px;width:8px;height:4px;background:red'>S</button><button id='tail' style='display:block;width:0px;height:100px'></button></div>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://sticky");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize().unwrap();
+    let sticky = engine
+        .preflight_target("id=sticky", NativePreflightAction::Click)
+        .unwrap()
+        .node
+        .unwrap()
+        .node_id;
+    let tail = engine
+        .preflight_target("id=tail", NativePreflightAction::Click)
+        .unwrap()
+        .node
+        .unwrap()
+        .node_id;
+
+    let initial = engine.layout().unwrap();
+    assert_eq!(
+        initial.box_for(sticky),
+        Some(NativeRect {
+            x: 0,
+            y: 30,
+            width: 8,
+            height: 4,
+        })
+    );
+    assert_eq!(initial.box_for(tail).unwrap().y, 34);
+    assert!(
+        initial
+            .boxes
+            .iter()
+            .find(|layout_box| layout_box.node_id == sticky)
+            .is_some_and(|layout_box| layout_box.sticky)
+    );
+    assert!(
+        initial
+            .text_runs
+            .iter()
+            .find(|text_run| text_run.node_id == sticky)
+            .is_some_and(|text_run| text_run.sticky)
+    );
+
+    let scrolled = engine
+        .action(NativeAction::Scroll {
+            delta_x: 0,
+            delta_y: 40,
+        })
+        .unwrap();
+    assert!(scrolled.accepted);
+    let layout = engine.layout().unwrap();
+    assert_eq!(
+        layout.box_for(sticky),
+        Some(NativeRect {
+            x: 0,
+            y: 42,
+            width: 8,
+            height: 4,
+        })
+    );
+    assert_eq!(layout.viewport_rect_for(sticky).unwrap().y, 2);
+    assert_eq!(layout.box_for(tail).unwrap().y, 34);
+    assert_eq!(engine.hit_test(1, 3).unwrap(), Some(sticky));
+
+    let list = engine.display_list().unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == sticky
+                    && *rect == NativeRect { x: 0, y: 42, width: 8, height: 4 }
+                    && *color == NativeColor::RED
+        )
+    }));
+    assert_eq!(
+        engine.rasterize().unwrap().pixel(0, 2),
+        Some([255, 0, 0, 255])
+    );
+}
+
+#[test]
+fn native_css_sticky_position_releases_at_containing_block_end() {
+    let config = NativeEngineConfig::default()
+        .with_viewport(Viewport {
+            width: 32,
+            height: 20,
+            device_scale_factor_milli: 1000,
+        })
+        .with_fixture(
+            "fixture://sticky-boundary",
+            "<div id='container' style='width:24px;height:60px'><div style='height:20px'></div><button id='sticky' style='display:block;position:sticky;top:0;width:8px;height:10px;background:blue'></button><button style='display:block;height:100px'></button></div>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://sticky-boundary");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize().unwrap();
+    let sticky = engine
+        .preflight_target("id=sticky", NativePreflightAction::Click)
+        .unwrap()
+        .node
+        .unwrap()
+        .node_id;
+
+    engine
+        .action(NativeAction::Scroll {
+            delta_x: 0,
+            delta_y: 45,
+        })
+        .unwrap();
+    let near_end = engine.layout().unwrap();
+    assert_eq!(near_end.box_for(sticky).unwrap().y, 45);
+    assert_eq!(near_end.viewport_rect_for(sticky).unwrap().y, 0);
+
+    engine
+        .action(NativeAction::Scroll {
+            delta_x: 0,
+            delta_y: 15,
+        })
+        .unwrap();
+    let after_end = engine.layout().unwrap();
+    assert_eq!(after_end.box_for(sticky).unwrap().y, 50);
+    assert_eq!(after_end.viewport_rect_for(sticky), None);
+}
+
+#[test]
 fn native_stylesheet_background_geometry_cascades_into_paint() {
     let source = native_test_png_data_url();
     let markup = format!(
@@ -36612,7 +36748,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: start; text-align: match-parent; text-align-last: match-parent; justify-content: safe center; order: 1025; flex: 1.5 1 8px; flex-flow: column wrap wrap; flex-grow: 1.5; flex-shrink: 1.5; flex-basis: 1.5px; align-items: baseline; align-self: baseline; align-content: safe center; place-content: stretch stretch stretch; flex-direction: column reverse; direction: vertical-rl; flex-wrap: wrap reverse; text-decoration: blink; text-decoration-line: blink; text-decoration-style: zigzag; text-decoration-skip-ink: all; text-decoration-thickness: 5px; text-underline-offset: 5px; text-decoration-color: linear-gradient(red, blue); text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible hidden; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: start; text-align: match-parent; text-align-last: match-parent; justify-content: safe center; order: 1025; flex: 1.5 1 8px; flex-flow: column wrap wrap; flex-grow: 1.5; flex-shrink: 1.5; flex-basis: 1.5px; align-items: baseline; align-self: baseline; align-content: safe center; place-content: stretch stretch stretch; flex-direction: column reverse; direction: vertical-rl; flex-wrap: wrap reverse; text-decoration: blink; text-decoration-line: blink; text-decoration-style: zigzag; text-decoration-skip-ink: all; text-decoration-thickness: 5px; text-underline-offset: 5px; text-decoration-color: linear-gradient(red, blue); text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible hidden; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='filter: blur(1px); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();
@@ -36632,7 +36768,7 @@ fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     }));
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssProperty
-            && diagnostic.detail == "background-image"
+            && diagnostic.detail == "filter"
             && matches!(
                 diagnostic.source,
                 NativeDiagnosticSource::InlineStyle { .. }

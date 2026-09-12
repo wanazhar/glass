@@ -2272,7 +2272,7 @@ impl NativeEngine {
         self.require_running("layout")?;
         self.document
             .layout(self.config.viewport)?
-            .with_scroll_offset(self.scroll_offset)
+            .with_scroll_offset(&self.document, self.scroll_offset)
     }
 
     /// Hit test one point in the configured viewport without scrolling or

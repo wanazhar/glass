@@ -602,6 +602,7 @@ pub(crate) enum NativePositionValue {
     Relative,
     Absolute,
     Fixed,
+    Sticky,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -9120,6 +9121,7 @@ fn parse_position(value: &str) -> Option<NativePositionValue> {
         "relative" => Some(NativePositionValue::Relative),
         "absolute" => Some(NativePositionValue::Absolute),
         "fixed" => Some(NativePositionValue::Fixed),
+        "sticky" => Some(NativePositionValue::Sticky),
         _ => None,
     }
 }

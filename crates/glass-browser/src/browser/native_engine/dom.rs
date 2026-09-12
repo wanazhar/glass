@@ -2043,7 +2043,9 @@ impl NativeDocument {
         scroll_offset: NativePoint,
     ) -> Result<NativeScriptDocumentSnapshot, NativeEngineError> {
         let mut snapshot = self.script_snapshot_for_viewport(max_text_bytes, viewport);
-        let layout = self.layout(viewport)?.with_scroll_offset(scroll_offset)?;
+        let layout = self
+            .layout(viewport)?
+            .with_scroll_offset(self, scroll_offset)?;
         snapshot.geometry = layout
             .boxes
             .iter()

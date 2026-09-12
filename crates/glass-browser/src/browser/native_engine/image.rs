@@ -1,7 +1,7 @@
 use base64::Engine as _;
 use gif::{ColorOutput, DecodeOptions, DisposalMethod, MemoryLimit, Repeat};
 use image_webp::{LoopCount, WebPDecoder};
-use png::ColorType;
+use png::{BlendOp, ColorType, DisposeOp};
 use std::io::Cursor;
 use std::num::NonZeroU64;
 use std::sync::OnceLock;
@@ -36,7 +36,7 @@ pub(crate) struct NativeImage {
     pub(crate) height: u32,
     pub(crate) pixels: Vec<u8>,
     pub(crate) frames: Vec<NativeImageFrame>,
-    pub(crate) loop_count: Option<u16>,
+    pub(crate) loop_count: Option<u32>,
 }
 
 impl NativeImage {
@@ -54,7 +54,7 @@ impl NativeImage {
         width: u32,
         height: u32,
         frames: Vec<NativeImageFrame>,
-        loop_count: Option<u16>,
+        loop_count: Option<u32>,
     ) -> Option<Self> {
         if frames.is_empty()
             || frames.len() > MAX_NATIVE_IMAGE_FRAMES
@@ -156,7 +156,13 @@ pub(crate) fn decode_data_image(source: &str) -> Option<NativeImage> {
     let media_type = metadata_parts.next().unwrap_or_default();
     if !matches_ignore_ascii_case(
         media_type,
-        &["image/png", "image/jpeg", "image/webp", "image/gif"],
+        &[
+            "image/png",
+            "image/apng",
+            "image/jpeg",
+            "image/webp",
+            "image/gif",
+        ],
     ) {
         return None;
     }
@@ -198,6 +204,9 @@ pub(crate) fn decode_png_bytes(bytes: &[u8], max_decoded_bytes: usize) -> Option
     if width == 0 || height == 0 || pixel_count > max_pixels {
         return None;
     }
+    if reader.info().animation_control().is_some() {
+        return decode_apng_frames(reader, width, height, max_decoded_bytes);
+    }
     let output_size = reader.output_buffer_size();
     if output_size > max_decoded_bytes {
         return None;
@@ -208,7 +217,13 @@ pub(crate) fn decode_png_bytes(bytes: &[u8], max_decoded_bytes: usize) -> Option
         return None;
     }
     let raw = decoded.get(..output.buffer_size())?;
-    let pixels = match output.color_type {
+    let pixels = png_pixels_to_rgba(raw, output.color_type)?;
+    (pixels.len() == pixel_count.checked_mul(4)? && pixels.len() <= max_decoded_bytes)
+        .then(|| NativeImage::new(width, height, pixels))
+}
+
+fn png_pixels_to_rgba(raw: &[u8], color_type: ColorType) -> Option<Vec<u8>> {
+    Some(match color_type {
         ColorType::Rgba => raw.to_vec(),
         ColorType::Rgb => raw
             .chunks_exact(3)
@@ -223,9 +238,204 @@ pub(crate) fn decode_png_bytes(bytes: &[u8], max_decoded_bytes: usize) -> Option
             .flat_map(|value| [*value, *value, *value, u8::MAX])
             .collect(),
         ColorType::Indexed => return None,
-    };
-    (pixels.len() == pixel_count.checked_mul(4)? && pixels.len() <= max_decoded_bytes)
-        .then(|| NativeImage::new(width, height, pixels))
+    })
+}
+
+fn decode_apng_frames(
+    mut reader: png::Reader<Cursor<&[u8]>>,
+    width: u32,
+    height: u32,
+    max_decoded_bytes: usize,
+) -> Option<NativeImage> {
+    let animation = reader.info().animation_control().copied()?;
+    let frame_count = usize::try_from(animation.num_frames).ok()?;
+    if frame_count == 0 || frame_count > MAX_NATIVE_IMAGE_FRAMES {
+        return None;
+    }
+    let pixel_count = usize::try_from(width)
+        .ok()?
+        .checked_mul(usize::try_from(height).ok()?)?;
+    let max_pixels = (max_decoded_bytes / 4).min(MAX_NATIVE_IMAGE_PIXELS);
+    if width == 0 || height == 0 || pixel_count > max_pixels {
+        return None;
+    }
+    let canvas_bytes = pixel_count.checked_mul(4)?;
+    let retained_bytes = frame_count.checked_add(1)?.checked_mul(canvas_bytes)?;
+    if retained_bytes > max_decoded_bytes {
+        return None;
+    }
+    let output_size = reader.output_buffer_size();
+    if output_size > max_decoded_bytes {
+        return None;
+    }
+    let separate_default_image = reader.info().frame_control().is_none();
+    let mut decoded = vec![0; output_size];
+    if separate_default_image {
+        let output = reader.next_frame(&mut decoded).ok()?;
+        if output.width != width || output.height != height {
+            return None;
+        }
+    }
+
+    let canvas_width = usize::try_from(width).ok()?;
+    let canvas_height = usize::try_from(height).ok()?;
+    let mut canvas = vec![0; canvas_bytes];
+    let mut frames = Vec::with_capacity(frame_count);
+    for _ in 0..frame_count {
+        let output = reader.next_frame(&mut decoded).ok()?;
+        let frame_control = reader.info().frame_control().copied()?;
+        let frame_width = usize::try_from(frame_control.width).ok()?;
+        let frame_height = usize::try_from(frame_control.height).ok()?;
+        let left = usize::try_from(frame_control.x_offset).ok()?;
+        let top = usize::try_from(frame_control.y_offset).ok()?;
+        if frame_width == 0
+            || frame_height == 0
+            || left.checked_add(frame_width)? > canvas_width
+            || top.checked_add(frame_height)? > canvas_height
+            || output.width != frame_control.width
+            || output.height != frame_control.height
+        {
+            return None;
+        }
+        let raw = decoded.get(..output.buffer_size())?;
+        let frame_pixels = png_pixels_to_rgba(raw, output.color_type)?;
+        let frame_bytes = frame_width.checked_mul(frame_height)?.checked_mul(4)?;
+        if frame_pixels.len() != frame_bytes {
+            return None;
+        }
+        let previous = (frame_control.dispose_op == DisposeOp::Previous).then(|| canvas.clone());
+        composite_apng_frame(
+            &mut canvas,
+            canvas_width,
+            left,
+            top,
+            frame_width,
+            frame_height,
+            &frame_pixels,
+            frame_control.blend_op,
+        )?;
+        frames.push(NativeImageFrame {
+            delay_ms: normalized_apng_delay_ms(frame_control.delay_num, frame_control.delay_den),
+            pixels: canvas.clone(),
+        });
+        match frame_control.dispose_op {
+            DisposeOp::None => {}
+            DisposeOp::Background => {
+                clear_apng_rect(
+                    &mut canvas,
+                    canvas_width,
+                    left,
+                    top,
+                    frame_width,
+                    frame_height,
+                )?;
+            }
+            DisposeOp::Previous => {
+                canvas = previous?;
+            }
+        }
+    }
+    let loop_count = (animation.num_plays != 0).then_some(animation.num_plays);
+    let image = NativeImage::with_frames(width, height, frames, loop_count)?;
+    (image.decoded_bytes()? <= max_decoded_bytes).then_some(image)
+}
+
+fn composite_apng_frame(
+    canvas: &mut [u8],
+    canvas_width: usize,
+    left: usize,
+    top: usize,
+    frame_width: usize,
+    frame_height: usize,
+    frame_pixels: &[u8],
+    blend_op: BlendOp,
+) -> Option<()> {
+    let frame_row_bytes = frame_width.checked_mul(4)?;
+    for row in 0..frame_height {
+        let frame_start = row.checked_mul(frame_row_bytes)?;
+        let canvas_start = top
+            .checked_add(row)?
+            .checked_mul(canvas_width)?
+            .checked_add(left)?
+            .checked_mul(4)?;
+        let source_row =
+            frame_pixels.get(frame_start..frame_start.checked_add(frame_row_bytes)?)?;
+        let destination_row =
+            canvas.get_mut(canvas_start..canvas_start.checked_add(frame_row_bytes)?)?;
+        if blend_op == BlendOp::Source {
+            destination_row.copy_from_slice(source_row);
+        } else {
+            for (destination, source) in destination_row
+                .chunks_exact_mut(4)
+                .zip(source_row.chunks_exact(4))
+            {
+                blend_apng_pixel(destination, source);
+            }
+        }
+    }
+    Some(())
+}
+
+fn blend_apng_pixel(destination: &mut [u8], source: &[u8]) {
+    let source_alpha = u32::from(source[3]);
+    if source_alpha == 0 {
+        return;
+    }
+    if source_alpha == u32::from(u8::MAX) {
+        destination.copy_from_slice(source);
+        return;
+    }
+    let destination_alpha = u32::from(destination[3]);
+    let output_alpha = source_alpha
+        + (destination_alpha
+            .saturating_mul(u32::from(u8::MAX) - source_alpha)
+            .saturating_add(127)
+            / u32::from(u8::MAX));
+    if output_alpha == 0 {
+        destination.fill(0);
+        return;
+    }
+    let denominator = u64::from(output_alpha) * u64::from(u8::MAX);
+    for channel in 0..3 {
+        let source_weight = u64::from(source[channel]) * u64::from(source_alpha) * 255;
+        let destination_weight = u64::from(destination[channel])
+            * u64::from(destination_alpha)
+            * u64::from(u32::from(u8::MAX) - source_alpha);
+        destination[channel] =
+            ((source_weight + destination_weight + denominator / 2) / denominator) as u8;
+    }
+    destination[3] = u8::try_from(output_alpha).unwrap_or(u8::MAX);
+}
+
+fn normalized_apng_delay_ms(numerator: u16, denominator: u16) -> u32 {
+    let denominator = u64::from(if denominator == 0 { 100 } else { denominator });
+    let milliseconds = u64::from(numerator)
+        .saturating_mul(1000)
+        .saturating_add(denominator / 2)
+        / denominator;
+    u32::try_from(milliseconds.max(1))
+        .unwrap_or(MAX_NATIVE_IMAGE_FRAME_DELAY_MS)
+        .min(MAX_NATIVE_IMAGE_FRAME_DELAY_MS)
+}
+
+fn clear_apng_rect(
+    canvas: &mut [u8],
+    canvas_width: usize,
+    left: usize,
+    top: usize,
+    width: usize,
+    height: usize,
+) -> Option<()> {
+    for row in top..top.checked_add(height)? {
+        let start = row
+            .checked_mul(canvas_width)?
+            .checked_add(left)?
+            .checked_mul(4)?;
+        canvas
+            .get_mut(start..start.checked_add(width.checked_mul(4)?)?)?
+            .fill(0);
+    }
+    Some(())
 }
 
 pub(crate) fn decode_image_bytes(
@@ -233,7 +443,8 @@ pub(crate) fn decode_image_bytes(
     media_type: &str,
     max_decoded_bytes: usize,
 ) -> Option<NativeImage> {
-    if media_type.eq_ignore_ascii_case("image/png") {
+    if media_type.eq_ignore_ascii_case("image/png") || media_type.eq_ignore_ascii_case("image/apng")
+    {
         return decode_png_bytes(bytes, max_decoded_bytes);
     }
     if media_type.eq_ignore_ascii_case("image/jpeg") {
@@ -347,7 +558,7 @@ fn decode_animated_webp(
     let has_alpha = decoder.has_alpha();
     let loop_count = match decoder.loop_count() {
         LoopCount::Forever => None,
-        LoopCount::Times(repeats) => Some(repeats.get()),
+        LoopCount::Times(repeats) => Some(u32::from(repeats.get())),
     };
     let mut decoded = vec![0; output_size];
     let mut frames = Vec::with_capacity(frame_count);
@@ -399,7 +610,7 @@ fn decode_gif_bytes(bytes: &[u8], max_decoded_bytes: usize) -> Option<NativeImag
     let repeat = decoder.repeat();
     let loop_count = match repeat {
         Repeat::Infinite => None,
-        Repeat::Finite(repeats) => Some(repeats),
+        Repeat::Finite(repeats) => Some(u32::from(repeats)),
     };
     let canvas_bytes = pixel_count.checked_mul(4)?;
     let decoder_width = decoder.width();

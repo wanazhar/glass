@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-260` locally. The versioned
+`native-engine-browser-261` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -108,6 +108,13 @@ disturbance and locking participate in `bodyUsed` and clone ownership, and
 Fetch dispatches the captured body bytes. Caller-supplied streaming uploads,
 `Request.formData()`, and complete Fetch Streams/Web IDL parity remain open on
 issue #40.
+
+The completed Fetch Request FormData slice is
+[native-engine-browser-261](tasks/native-engine-browser-261.md). Native
+`Request.formData()` now parses bounded URL-encoded fields and multipart
+fields/files with byte-preserving File payloads, while unsupported body media
+types reject explicitly. Streaming upload sources and complete Fetch
+Streams/Web IDL parity remain open on issue #40.
 
 The completed profile/contract task is
 [native-engine-browser-000](tasks/native-engine-browser-000.md). It freezes

@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-269`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-270`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -4043,6 +4043,17 @@ Fetch transport delivery and tee branches. Ordinary object streams reject
 BYOB readers. Full Web IDL descriptors, transfer strategies, upload progress,
 and complete Fetch Streams semantics remain issue #40 work. Exact evidence is
 in `docs/plan/tasks/native-engine-browser-269.md`.
+
+The completed native-engine-browser-270 slice hardens optional resource
+failure handling and navigation event metadata. HTTP(S) stylesheet and
+external-script fetch failures now become owning-element `error` events while
+the main document continues through commit and its normal ready/load phases;
+successful resources retain `load` events. Normal replacement and child-frame
+`pagehide`/`pageshow` dispatch now carries `persisted: false` because the
+native path does not restore a BFCache entry. Static module dependency failure
+policy, resource scheduling/timing, BFCache restoration, and complete
+lifecycle/Web IDL semantics remain issue #40 work. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-270.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

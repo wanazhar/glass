@@ -5530,34 +5530,31 @@ async fn load_content_resource(
         .take(MAX_CONTENT_STYLESHEETS)
     {
         let (node_index, href) = href;
-        if let Some(stylesheet) = loader.load_stylesheet_async(&resource.url, &href).await? {
-            let next_len = external_stylesheets
-                .iter()
-                .map(String::len)
-                .sum::<usize>()
-                .saturating_add(stylesheet.len());
-            if next_len > MAX_CONTENT_STYLESHEET_BYTES {
-                return Err(NativeEngineError::limit(
-                    "CSS subresources",
-                    MAX_CONTENT_STYLESHEET_BYTES,
-                    next_len,
-                ));
+        let event_kind = match loader.load_stylesheet_async(&resource.url, &href).await {
+            Ok(Some(stylesheet)) => {
+                let next_len = external_stylesheets
+                    .iter()
+                    .map(String::len)
+                    .sum::<usize>()
+                    .saturating_add(stylesheet.len());
+                if next_len <= MAX_CONTENT_STYLESHEET_BYTES {
+                    external_stylesheets.push(stylesheet);
+                    NativeEventKind::Load
+                } else {
+                    NativeEventKind::Error
+                }
             }
-            external_stylesheets.push(stylesheet);
-            resource_events.push((node_index, NativeEventKind::Load));
-        }
+            Ok(None) | Err(_) => NativeEventKind::Error,
+        };
+        resource_events.push((node_index, event_kind));
     }
     let mut document =
         NativeDocument::parse_with_stylesheets(&resource.body, &limits, &external_stylesheets, 1)?;
     resource_events
         .extend(load_external_images(&mut document, loader, &resource.url, viewport).await?);
-    let (script_sources, mut script_resource_nodes) =
+    let (script_sources, script_resource_events) =
         load_page_script_sources(&document, loader, &resource.url).await?;
-    resource_events.extend(
-        script_resource_nodes
-            .drain(..)
-            .map(|node_index| (node_index, NativeEventKind::Load)),
-    );
+    resource_events.extend(script_resource_events);
     resource_events.sort_unstable_by_key(|(node_index, _)| *node_index);
     resource_events.dedup();
     let wire = document.to_content_wire();
@@ -5644,9 +5641,9 @@ async fn load_page_script_sources(
     document: &NativeDocument,
     loader: &mut NativeResourceLoader,
     document_url: &str,
-) -> Result<(Vec<NativePageScript>, Vec<u32>), NativeEngineError> {
+) -> Result<(Vec<NativePageScript>, Vec<(u32, NativeEventKind)>), NativeEngineError> {
     let mut sources = Vec::new();
-    let mut resource_load_nodes = Vec::new();
+    let mut resource_events = Vec::new();
     for (index, script) in document
         .page_script_sources(
             super::javascript::MAX_NATIVE_INLINE_SCRIPTS,
@@ -5688,17 +5685,23 @@ async fn load_page_script_sources(
                 timing,
                 node_index,
             } => {
-                if let Some(resource) = loader
+                match loader
                     .load_script_async(document_url, &href, MAX_NATIVE_SCRIPT_BYTES)
-                    .await?
+                    .await
                 {
-                    resource_load_nodes.push(node_index);
-                    sources.push((
-                        timing,
-                        NativePageScript::Classic {
-                            source: resource.body,
-                        },
-                    ));
+                    Ok(resource) => match resource {
+                        Some(resource) => {
+                            resource_events.push((node_index, NativeEventKind::Load));
+                            sources.push((
+                                timing,
+                                NativePageScript::Classic {
+                                    source: resource.body,
+                                },
+                            ));
+                        }
+                        None => resource_events.push((node_index, NativeEventKind::Error)),
+                    },
+                    Err(_) => resource_events.push((node_index, NativeEventKind::Error)),
                 }
             }
             NativePageScriptSource::ModuleExternal {
@@ -5706,39 +5709,45 @@ async fn load_page_script_sources(
                 timing,
                 node_index,
             } => {
-                if let Some(resource) = loader
+                match loader
                     .load_script_async(document_url, &href, MAX_NATIVE_SCRIPT_BYTES)
-                    .await?
+                    .await
                 {
-                    resource_load_nodes.push(node_index);
-                    let name = resource.url;
-                    let source = resource.body;
-                    let mut seen = BTreeSet::new();
-                    seen.insert(name.clone());
-                    let mut total_bytes = source.len();
-                    sources.push((
-                        timing,
-                        NativePageScript::Module {
-                            name: name.clone(),
-                            source: source.clone(),
-                        },
-                    ));
-                    load_module_dependencies(
-                        document_url,
-                        &name,
-                        &source,
-                        timing,
-                        loader,
-                        &mut sources,
-                        &mut seen,
-                        &mut total_bytes,
-                    )
-                    .await?;
+                    Ok(resource) => match resource {
+                        Some(resource) => {
+                            resource_events.push((node_index, NativeEventKind::Load));
+                            let name = resource.url;
+                            let source = resource.body;
+                            let mut seen = BTreeSet::new();
+                            seen.insert(name.clone());
+                            let mut total_bytes = source.len();
+                            sources.push((
+                                timing,
+                                NativePageScript::Module {
+                                    name: name.clone(),
+                                    source: source.clone(),
+                                },
+                            ));
+                            load_module_dependencies(
+                                document_url,
+                                &name,
+                                &source,
+                                timing,
+                                loader,
+                                &mut sources,
+                                &mut seen,
+                                &mut total_bytes,
+                            )
+                            .await?;
+                        }
+                        None => resource_events.push((node_index, NativeEventKind::Error)),
+                    },
+                    Err(_) => resource_events.push((node_index, NativeEventKind::Error)),
                 }
             }
         }
     }
-    Ok((order_page_scripts(sources), resource_load_nodes))
+    Ok((order_page_scripts(sources), resource_events))
 }
 
 async fn load_module_dependencies(

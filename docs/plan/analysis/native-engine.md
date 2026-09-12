@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-253`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-254`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -3902,6 +3902,18 @@ handoff, and explicit close are covered by the serialized event/mutation loop.
 Passive evaluations do not drain background events unless the evaluation is
 waiting for them. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-253.md`.
+
+The completed native-engine-browser-254 slice moves authorized Fetch response
+bodies onto a process-backed incremental stream. The resource loader returns
+validated response metadata and a live body separately; the content worker
+splits that body into bounded 8 KiB chunks, keeps a terminal handshake alive
+for queued reads, and dispatches chunks/end/errors through the persistent
+QuickJS and mutation owner. Body convenience methods use the bounded retained
+history, while canonical Blob/File/ReadableStream constructors preserve
+cross-turn realm identity. Strict pull backpressure, transport cancellation,
+body disturbance, and complete Fetch Streams/Web IDL semantics remain issue
+#40 work. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-254.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

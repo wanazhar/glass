@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-248` slice; the bounded foundation below remains
+`native-engine-browser-250` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5672,6 +5672,16 @@ method and body. The content-worker wire, reqwest transport, and JavaScript
 surface use one typed method owner, with server-observed coverage for all five
 new methods. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-249.md`.
+
+The completed native-engine-browser-250 slice makes top-level JavaScript
+`await` compatible with the content-process fetch owner. A pending QuickJS
+evaluation promise now returns its fetch commands to the worker instead of
+blocking the worker on an unresolved promise; the worker resolves those
+requests, drains continuation jobs, and returns the settled value or a typed
+script error. The same path retains the existing synchronous completion
+behavior for already-settled promises and does not add a thread-unsafe
+cross-backend handle. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-250.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

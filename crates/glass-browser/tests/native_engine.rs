@@ -7326,6 +7326,15 @@ async fn native_content_process_evaluates_persistent_script_realm() {
             .unwrap(),
         serde_json::json!(42)
     );
+    let pending_error = engine
+        .evaluate_async("await new Promise(() => {})")
+        .await
+        .unwrap_err();
+    assert!(
+        pending_error
+            .to_string()
+            .contains("top-level await remained pending")
+    );
     assert_eq!(
         engine
             .evaluate_async("globalThis.answer = (globalThis.answer || 0) + 1; answer")
@@ -38797,18 +38806,15 @@ async fn native_content_process_fetches_common_http_methods_with_cors_preflight(
         } else {
             format!("'{method}'")
         };
-        engine
+        let result = engine
             .evaluate_async(&format!(
-                "fetch('http://{api_address}/methods', {{ method: '{method}', credentials: 'omit', body: {body} }}).then(response => {{ globalThis.commonFetchMethod = [response.status, response.url]; }});"
+                "await (async () => {{ const response = await fetch('http://{api_address}/methods', {{ method: '{method}', credentials: 'omit', body: {body} }}); return [response.status, await response.text()]; }})()"
             ))
             .await
             .unwrap();
         assert_eq!(
-            engine
-                .evaluate_async("globalThis.commonFetchMethod")
-                .await
-                .unwrap(),
-            serde_json::json!([200, format!("http://{api_address}/methods")])
+            result,
+            serde_json::json!([200, if method == "HEAD" { "" } else { method }])
         );
     }
     engine.close_async().await.unwrap();

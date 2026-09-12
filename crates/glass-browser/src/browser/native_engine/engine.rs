@@ -1494,6 +1494,12 @@ impl NativeEngine {
                 &self.origin,
                 self.config.viewport,
             )?;
+        if evaluation.top_level_await_pending {
+            return Err(NativeEngineError::Worker {
+                operation: "evaluate JavaScript".into(),
+                reason: "top-level await remained pending without a native host operation".into(),
+            });
+        }
         self.drain_local_popups()?;
         let navigation = self.apply_local_script_commands(&evaluation.commands, true)?;
         let frame_scripts = self

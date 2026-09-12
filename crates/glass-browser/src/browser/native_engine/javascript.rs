@@ -20,8 +20,9 @@ use super::interaction::{
 use super::layout::NativePoint;
 use super::origin::NativeOrigin;
 use fs2::FileExt;
+use rquickjs::function::This;
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
-use rquickjs::{CaughtError, Context, Error, Module, Runtime, Value};
+use rquickjs::{CaughtError, Context, Error, Function, Module, Runtime, Value};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
@@ -298,6 +299,7 @@ pub(crate) enum NativeScriptCommand {
 pub(crate) struct NativeScriptEvaluation {
     pub(crate) value: serde_json::Value,
     pub(crate) commands: Vec<NativeScriptCommand>,
+    pub(crate) top_level_await_pending: bool,
 }
 
 /// A same-origin DOM operation emitted by one page realm for a different
@@ -4322,20 +4324,90 @@ impl NativeJavaScriptRuntime {
                         reason: "native WindowProxy state could not be synchronized".into(),
                     })?;
             }
+            let mut top_level_await_pending = false;
             let (value, async_evaluation): (Value, bool) = match ctx.eval::<Value, _>(source) {
                 Ok(value) => (value, false),
-                Err(_) if contains_await_token(source) => (
-                    ctx.eval_promise(source)
-                        .and_then(|promise| promise.finish::<Value>())
-                        .map_err(|error| NativeEngineError::Worker {
+                Err(_) if contains_await_token(source) => {
+                    let promise = ctx.eval_promise(source).map_err(|error| {
+                        NativeEngineError::Worker {
                             operation: "evaluate JavaScript".into(),
                             reason: format!(
                                 "JavaScript evaluation failed: {}",
                                 CaughtError::from_error(&ctx, error)
                             ),
-                        })?,
-                    true,
-                ),
+                        }
+                    })?;
+                    ctx.eval::<(), _>(
+                        "globalThis.__glassTopLevelAwaitState = { state: 'pending' };",
+                    )
+                    .map_err(|error| NativeEngineError::Worker {
+                        operation: "prepare JavaScript evaluation promise".into(),
+                        reason: format!(
+                            "JavaScript evaluation failed: {}",
+                            CaughtError::from_error(&ctx, error)
+                        ),
+                    })?;
+                    let on_fulfilled: Function = ctx
+                        .eval("value => { globalThis.__glassTopLevelAwaitState = { state: 'fulfilled', value: value === undefined ? null : value }; }")
+                        .map_err(|error| NativeEngineError::Worker {
+                            operation: "prepare JavaScript evaluation promise".into(),
+                            reason: format!(
+                                "JavaScript evaluation failed: {}",
+                                CaughtError::from_error(&ctx, error)
+                            ),
+                        })?;
+                    let on_rejected: Function = ctx
+                        .eval("error => { globalThis.__glassTopLevelAwaitState = { state: 'rejected', error: String(error) }; }")
+                        .map_err(|error| NativeEngineError::Worker {
+                            operation: "prepare JavaScript evaluation promise".into(),
+                            reason: format!(
+                                "JavaScript evaluation failed: {}",
+                                CaughtError::from_error(&ctx, error)
+                            ),
+                        })?;
+                    promise
+                        .then()
+                        .and_then(|then| {
+                            then.call::<_, ()>((
+                                This(promise.clone()),
+                                on_fulfilled,
+                                on_rejected,
+                            ))
+                        })
+                        .map_err(|error| NativeEngineError::Worker {
+                            operation: "prepare JavaScript evaluation promise".into(),
+                            reason: format!(
+                                "JavaScript evaluation failed: {}",
+                                CaughtError::from_error(&ctx, error)
+                            ),
+                        })?;
+                    match promise.finish::<Value>() {
+                        Ok(value) => (value, true),
+                        Err(Error::WouldBlock) => {
+                            top_level_await_pending = true;
+                            let value =
+                                ctx.eval::<Value, _>("undefined").map_err(|error| {
+                                    NativeEngineError::Worker {
+                                        operation: "evaluate JavaScript".into(),
+                                        reason: format!(
+                                            "JavaScript evaluation failed: {}",
+                                            CaughtError::from_error(&ctx, error)
+                                        ),
+                                    }
+                                })?;
+                            (value, true)
+                        }
+                        Err(error) => {
+                            return Err(NativeEngineError::Worker {
+                                operation: "evaluate JavaScript".into(),
+                                reason: format!(
+                                    "JavaScript evaluation failed: {}",
+                                    CaughtError::from_error(&ctx, error)
+                                ),
+                            });
+                        }
+                    }
+                }
                 Err(error) => {
                     return Err(NativeEngineError::Worker {
                         operation: "evaluate JavaScript".into(),
@@ -4416,6 +4488,7 @@ impl NativeJavaScriptRuntime {
                 return Ok(NativeScriptEvaluation {
                     value: serde_json::Value::Null,
                     commands,
+                    top_level_await_pending,
                 });
             };
             let json = json.to_string().map_err(|_| NativeEngineError::Worker {
@@ -4444,6 +4517,7 @@ impl NativeJavaScriptRuntime {
             Ok(NativeScriptEvaluation {
                 value: result,
                 commands,
+                top_level_await_pending,
             })
         });
         if let Ok(mut current) = self.deadline.lock() {
@@ -4483,6 +4557,81 @@ impl NativeJavaScriptRuntime {
             origin,
             viewport,
         )
+    }
+
+    pub(crate) fn take_top_level_await_result(
+        &self,
+    ) -> Result<Option<serde_json::Value>, NativeEngineError> {
+        self.context.with(|ctx| {
+            let json: String = ctx
+                .eval("JSON.stringify(globalThis.__glassTopLevelAwaitState || { state: 'none' })")
+                .map_err(|error| NativeEngineError::Worker {
+                    operation: "read JavaScript evaluation promise".into(),
+                    reason: format!(
+                        "JavaScript evaluation state could not be read: {}",
+                        CaughtError::from_error(&ctx, error)
+                    ),
+                })?;
+            if json.len() > MAX_NATIVE_SCRIPT_RESULT_BYTES {
+                return Err(NativeEngineError::limit(
+                    "script result",
+                    MAX_NATIVE_SCRIPT_RESULT_BYTES,
+                    json.len(),
+                ));
+            }
+            let state: serde_json::Value =
+                serde_json::from_str(&json).map_err(|_| NativeEngineError::Worker {
+                    operation: "decode JavaScript evaluation promise".into(),
+                    reason: "JavaScript evaluation state was not valid JSON".into(),
+                })?;
+            match state.get("state").and_then(serde_json::Value::as_str) {
+                Some("none") | Some("pending") => Ok(None),
+                Some("fulfilled") => {
+                    ctx.eval::<(), _>("globalThis.__glassTopLevelAwaitState = null;")
+                        .map_err(|error| NativeEngineError::Worker {
+                            operation: "clear JavaScript evaluation promise".into(),
+                            reason: format!(
+                                "JavaScript evaluation state could not be cleared: {}",
+                                CaughtError::from_error(&ctx, error)
+                            ),
+                        })?;
+                    let mut value = state
+                        .get("value")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null);
+                    if let Some(object) = value.as_object_mut()
+                        && object.len() == 1
+                        && let Some(enveloped) = object.remove("value")
+                    {
+                        value = enveloped;
+                    }
+                    Ok(Some(value))
+                }
+                Some("rejected") => {
+                    let reason = state
+                        .get("error")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("unknown JavaScript evaluation error")
+                        .to_owned();
+                    ctx.eval::<(), _>("globalThis.__glassTopLevelAwaitState = null;")
+                        .map_err(|error| NativeEngineError::Worker {
+                            operation: "clear JavaScript evaluation promise".into(),
+                            reason: format!(
+                                "JavaScript evaluation state could not be cleared: {}",
+                                CaughtError::from_error(&ctx, error)
+                            ),
+                        })?;
+                    Err(NativeEngineError::Worker {
+                        operation: "resolve JavaScript evaluation promise".into(),
+                        reason,
+                    })
+                }
+                _ => Err(NativeEngineError::Worker {
+                    operation: "decode JavaScript evaluation promise".into(),
+                    reason: "JavaScript evaluation state had an unknown status".into(),
+                }),
+            }
+        })
     }
 
     pub(crate) fn evaluate_module(
@@ -4628,6 +4777,7 @@ impl NativeJavaScriptRuntime {
             Ok(NativeScriptEvaluation {
                 value: serde_json::Value::Null,
                 commands: document_commands,
+                top_level_await_pending: false,
             })
         });
         if let Ok(mut current) = self.deadline.lock() {

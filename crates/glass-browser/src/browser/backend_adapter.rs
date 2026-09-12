@@ -421,6 +421,21 @@ async fn execute_action(
             .click(target)
             .await
             .map_err(|error| translate_error("action", error.as_ref()))?,
+        SemanticAction::DoubleClick { target } => session
+            .double_click(target)
+            .await
+            .map_err(|error| translate_error("action", error.as_ref()))?,
+        SemanticAction::Hover { target } => session
+            .hover(target)
+            .await
+            .map_err(|error| translate_error("action", error.as_ref()))?,
+        SemanticAction::Drag {
+            source,
+            destination,
+        } => session
+            .drag(source, destination)
+            .await
+            .map_err(|error| translate_error("action", error.as_ref()))?,
         SemanticAction::Type { target, text } => session
             .type_text(text, Some(target))
             .await

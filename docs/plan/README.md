@@ -2131,6 +2131,14 @@ attached frame tree, unique preflight records the owning frame, and semantic
 actions plus popup clicks dispatch through that exact route. Exact evidence is
 recorded in [native-engine-browser-245](tasks/native-engine-browser-245.md).
 
+The completed native-engine-browser-246 slice wires the existing pointer
+commands into the native action owner. Local and HTTP(S) documents now execute
+double-click, hover, and source-to-destination drag with bounded DOM event
+ordering; child-frame locators resolve both drag endpoints within one frame;
+and CLI/MCP dispatches use the shared semantic action contract. Exact evidence
+is recorded in
+[native-engine-browser-246](tasks/native-engine-browser-246.md).
+
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` now returns persistent `Attr`
 objects with value/node-value accessors and ownership; element attribute-node

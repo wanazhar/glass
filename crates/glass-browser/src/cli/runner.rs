@@ -540,6 +540,9 @@ fn validate_alternative_runtime_command(
         Commands::Preflight { .. } if native => Ok(()),
         Commands::InspectPage | Commands::FindTarget { .. } if native => Ok(()),
         Commands::ClickExpectPopup { .. } if native => Ok(()),
+        Commands::DoubleClick { .. } | Commands::Hover { .. } | Commands::Drag { .. } if native => {
+            Ok(())
+        }
         Commands::Verify { .. } | Commands::Wait { .. } if native => Ok(()),
         Commands::ActAndVerify { .. } if native => Ok(()),
         Commands::Cookies | Commands::ExportCookies { .. } | Commands::ImportCookies { .. }
@@ -587,7 +590,7 @@ fn validate_alternative_runtime_command(
         | Commands::Targets => Ok(()),
         Commands::Evaluate { .. } => Ok(()),
         _ => Err(if native {
-            "this native runtime slice supports navigate, click, type, clear, check, uncheck, select, text, observe, and targets; use Chromium for the remaining full session command set".into()
+            "this native runtime does not implement the requested command in this build".into()
         } else {
             "this Firefox/Safari runtime slice supports navigate, click, type, text, observe, targets, and evaluate; use Chromium for the full session command set".into()
         }),
@@ -642,6 +645,47 @@ async fn run_alternative_runtime_command(
                 session,
                 SemanticAction::Click {
                     target: target.clone(),
+                },
+                *expected_revision,
+            )
+            .await?,
+            response_mode,
+        ),
+        Commands::DoubleClick {
+            target,
+            expected_revision,
+        } if session.runtime().is_native() => print_json_mode(
+            &native_or_portable_action(
+                session,
+                SemanticAction::DoubleClick {
+                    target: target.clone(),
+                },
+                *expected_revision,
+            )
+            .await?,
+            response_mode,
+        ),
+        Commands::Hover { target } if session.runtime().is_native() => print_json_mode(
+            &native_or_portable_action(
+                session,
+                SemanticAction::Hover {
+                    target: target.clone(),
+                },
+                None,
+            )
+            .await?,
+            response_mode,
+        ),
+        Commands::Drag {
+            source,
+            destination,
+            expected_revision,
+        } if session.runtime().is_native() => print_json_mode(
+            &native_or_portable_action(
+                session,
+                SemanticAction::Drag {
+                    source: source.clone(),
+                    destination: destination.clone(),
                 },
                 *expected_revision,
             )

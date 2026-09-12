@@ -211,9 +211,7 @@ fn native_action_supported(
             node.role.as_str(),
             "button" | "link" | "checkbox" | "radio" | "textbox" | "combobox" | "option"
         ),
-        // Hover is deliberately reported as unavailable until the native
-        // event/input layer owns pointer hover state and dispatch semantics.
-        NativePreflightAction::Hover => false,
+        NativePreflightAction::Hover => !node.hidden,
         NativePreflightAction::Type => {
             node.role == "textbox" && matches!(node.tag_name.as_str(), "input" | "textarea")
         }
@@ -2344,7 +2342,16 @@ impl NativeEngine {
         action: NativeAction,
     ) -> Result<NativeActionResult, NativeEngineError> {
         self.require_running("action")?;
+        if let NativeAction::DoubleClick { target } = action {
+            self.action(NativeAction::Click {
+                target: target.clone(),
+            })?;
+            return self.action(NativeAction::Click { target });
+        }
         let (events, accepted) = match action {
+            NativeAction::DoubleClick { .. } => {
+                unreachable!("double-click is handled before the native action match")
+            }
             NativeAction::Click { target } => {
                 let id = self.resolve_click_target(&target)?;
                 self.require_layout_actionable(id)?;
@@ -2366,6 +2373,33 @@ impl NativeEngine {
                     return self.action_local_click_with_event_preflight(id);
                 }
                 (self.document.apply_click(id)?, true)
+            }
+            NativeAction::Hover { target } => {
+                let id = self.document.resolve_target(&target)?;
+                self.require_layout_actionable(id)?;
+                if self.javascript.is_some() {
+                    return self.action_local_form_with_event_transaction(
+                        |document| document.apply_hover(id),
+                        "native hover event effects",
+                    );
+                }
+                (self.document.apply_hover(id)?, true)
+            }
+            NativeAction::Drag {
+                source,
+                destination,
+            } => {
+                let source_id = self.document.resolve_target(&source)?;
+                let destination_id = self.document.resolve_target(&destination)?;
+                self.require_layout_actionable(source_id)?;
+                self.require_layout_actionable(destination_id)?;
+                if self.javascript.is_some() {
+                    return self.action_local_form_with_event_transaction(
+                        |document| document.apply_drag(source_id, destination_id),
+                        "native drag event effects",
+                    );
+                }
+                (self.document.apply_drag(source_id, destination_id)?, true)
             }
             NativeAction::Type { target, text } => {
                 let id = self.document.resolve_target(&target)?;
@@ -2463,6 +2497,13 @@ impl NativeEngine {
         action: NativeAction,
     ) -> Result<NativeActionResult, NativeEngineError> {
         self.require_running("action")?;
+        if let NativeAction::DoubleClick { target } = action {
+            Box::pin(self.action_async(NativeAction::Click {
+                target: target.clone(),
+            }))
+            .await?;
+            return Box::pin(self.action_async(NativeAction::Click { target })).await;
+        }
         self.sync_external_storage_events()?;
         if self.content_process.is_some() {
             self.deliver_pending_external_storage_events().await?;
@@ -2490,6 +2531,9 @@ impl NativeEngine {
             .sync_nested_scroll_offsets(&self.nested_scroll_offsets)
             .await?;
         match action {
+            NativeAction::DoubleClick { .. } => {
+                unreachable!("double-click is handled before the native async action match")
+            }
             NativeAction::Check { target } => {
                 self.action_checked_async_with_click(target, true).await
             }
@@ -2580,6 +2624,60 @@ impl NativeEngine {
                     });
                 }
                 Ok(outcome)
+            }
+            NativeAction::Hover { target } => {
+                let id = self.document.resolve_target(&target)?;
+                self.require_layout_actionable(id)?;
+                let preview = self.document.clone();
+                preview.apply_hover(id)?;
+                let mutation = {
+                    let process =
+                        self.content_process
+                            .as_mut()
+                            .ok_or_else(|| NativeEngineError::Worker {
+                                operation: "content process hover event bridge".into(),
+                                reason: "native content process is not running".into(),
+                            })?;
+                    process
+                        .mutate_form_action_with_event_bridge(serde_json::json!({
+                            "kind": "hover",
+                            "node_index": id.index(),
+                        }))
+                        .await?
+                };
+                let next_revision = self.next_revision()?;
+                self.apply_content_process_mutation_async_at(next_revision, mutation)
+                    .await
+            }
+            NativeAction::Drag {
+                source,
+                destination,
+            } => {
+                let source_id = self.document.resolve_target(&source)?;
+                let destination_id = self.document.resolve_target(&destination)?;
+                self.require_layout_actionable(source_id)?;
+                self.require_layout_actionable(destination_id)?;
+                let preview = self.document.clone();
+                preview.apply_drag(source_id, destination_id)?;
+                let mutation = {
+                    let process =
+                        self.content_process
+                            .as_mut()
+                            .ok_or_else(|| NativeEngineError::Worker {
+                                operation: "content process drag event bridge".into(),
+                                reason: "native content process is not running".into(),
+                            })?;
+                    process
+                        .mutate_form_action_with_event_bridge(serde_json::json!({
+                            "kind": "drag",
+                            "node_index": source_id.index(),
+                            "destination_node_index": destination_id.index(),
+                        }))
+                        .await?
+                };
+                let next_revision = self.next_revision()?;
+                self.apply_content_process_mutation_async_at(next_revision, mutation)
+                    .await
             }
             NativeAction::Type { target, text } => {
                 let id = self.document.resolve_target(&target)?;

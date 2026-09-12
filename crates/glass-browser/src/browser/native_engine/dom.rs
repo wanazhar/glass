@@ -2430,6 +2430,82 @@ impl NativeDocument {
         Ok(events)
     }
 
+    /// Deliver the pointer-enter events for one visible element.
+    ///
+    /// Pointer movement is represented as a semantic action rather than raw
+    /// coordinates here. Layout hit testing and target routing are performed
+    /// by the engine/backend; the document owns the DOM event order.
+    pub(crate) fn apply_hover(
+        &self,
+        id: NativeNodeId,
+    ) -> Result<Vec<(NativeNodeId, NativeEventKind)>, NativeEngineError> {
+        let node = self.node(id).ok_or(NativeEngineError::DetachedTarget)?;
+        if node.element_name().is_none() {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "hover requires an element target".into(),
+            });
+        }
+        if self.is_hidden(id) {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "hidden targets are not actionable".into(),
+            });
+        }
+        if !self
+            .computed_style_for_layout(id)
+            .pointer_events()
+            .allows_hit_testing()
+        {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "target does not accept pointer events".into(),
+            });
+        }
+        Ok(vec![
+            (id, NativeEventKind::MouseOver),
+            (id, NativeEventKind::MouseEnter),
+        ])
+    }
+
+    /// Deliver the DOM drag event sequence for one visible source and target.
+    ///
+    /// The current native action is semantic, so it intentionally does not
+    /// synthesize coordinates or a `DataTransfer` object. It does preserve the
+    /// browser-visible event ordering and bubbling/cancellation metadata.
+    pub(crate) fn apply_drag(
+        &self,
+        source: NativeNodeId,
+        destination: NativeNodeId,
+    ) -> Result<Vec<(NativeNodeId, NativeEventKind)>, NativeEngineError> {
+        for (label, id) in [("drag source", source), ("drag destination", destination)] {
+            let node = self.node(id).ok_or(NativeEngineError::DetachedTarget)?;
+            if node.element_name().is_none() {
+                return Err(NativeEngineError::TargetNotActionable {
+                    reason: format!("{label} requires an element target"),
+                });
+            }
+            if self.is_hidden(id) {
+                return Err(NativeEngineError::TargetNotActionable {
+                    reason: format!("hidden {label} is not actionable"),
+                });
+            }
+            if !self
+                .computed_style_for_layout(id)
+                .pointer_events()
+                .allows_hit_testing()
+            {
+                return Err(NativeEngineError::TargetNotActionable {
+                    reason: format!("{label} does not accept pointer events"),
+                });
+            }
+        }
+        Ok(vec![
+            (source, NativeEventKind::DragStart),
+            (destination, NativeEventKind::DragEnter),
+            (destination, NativeEventKind::DragOver),
+            (destination, NativeEventKind::Drop),
+            (source, NativeEventKind::DragEnd),
+        ])
+    }
+
     /// Replace a supported text control's value with bounded input text.
     /// The value itself stays private; semantic projections expose only state.
     pub(crate) fn apply_type(

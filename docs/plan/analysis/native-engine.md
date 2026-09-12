@@ -3815,6 +3815,14 @@ and popup clicks then use that frame route; wrong-frame reference collisions
 are represented as stale preflight results so the subtree walk can continue.
 Exact evidence is in `docs/plan/tasks/native-engine-browser-245.md`.
 
+The completed native-engine-browser-246 slice extends the shared action
+contract through native pointer operations. Double-click, hover, and drag are
+available in local and HTTP(S) documents, their DOM event metadata is bridged
+through the content worker, and frame-aware routing requires both drag
+endpoints to belong to one attached frame. CLI and MCP now reach these native
+actions through the same semantic backend request. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-246.md`.
+
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame
 realms. `document.createAttribute()` creates persistent `Attr` objects;

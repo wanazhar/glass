@@ -8,6 +8,9 @@ pub(crate) const MAX_NATIVE_KEY_BYTES: usize = 64;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativeAction {
     Click { target: String },
+    DoubleClick { target: String },
+    Hover { target: String },
+    Drag { source: String, destination: String },
     Type { target: String, text: String },
     Clear { target: String },
     Check { target: String },
@@ -40,6 +43,13 @@ pub enum NativeEventKind {
     KeyUp,
     Submit,
     Click,
+    MouseOver,
+    MouseEnter,
+    DragStart,
+    DragEnter,
+    DragOver,
+    Drop,
+    DragEnd,
     Input,
     Change,
     Scroll,

@@ -142,6 +142,8 @@ pub struct NativeLayoutBox {
     pub depth: usize,
     /// Whether this box belongs to a viewport-anchored fixed subtree.
     pub fixed: bool,
+    /// Whether this box belongs to a flow-preserving sticky subtree.
+    pub sticky: bool,
 }
 
 /// One bounded direct-text fragment placed by the native flow cursor.
@@ -165,6 +167,8 @@ pub struct NativeTextLayout {
     pub justify_spacing: u32,
     /// Whether this text run belongs to a viewport-anchored fixed subtree.
     pub fixed: bool,
+    /// Whether this text run belongs to a flow-preserving sticky subtree.
+    pub sticky: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,6 +177,32 @@ pub(crate) enum NativeLayoutPaintOrder {
     Box(usize),
     Text(usize),
     EndOpacityGroup { node_id: NativeNodeId },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NativeStickyProjection {
+    box_start: usize,
+    box_end: usize,
+    text_start: usize,
+    text_end: usize,
+    normal_rect: NativeRect,
+    containing_block: NativeRect,
+    top: NativePositionOffset,
+    right: NativePositionOffset,
+    bottom: NativePositionOffset,
+    left: NativePositionOffset,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NativeStickyRange {
+    root_box: usize,
+    box_end: usize,
+    text_start: usize,
+    text_end: usize,
+    top: NativePositionOffset,
+    right: NativePositionOffset,
+    bottom: NativePositionOffset,
+    left: NativePositionOffset,
 }
 
 /// Deterministic layout derived from one current native document revision.
@@ -190,6 +220,7 @@ pub struct NativeLayoutSnapshot {
     pub text_runs: Vec<NativeTextLayout>,
     pub(crate) paint_order: Vec<NativeLayoutPaintOrder>,
     overflow_clips: Vec<Option<NativeRect>>,
+    sticky_projections: Vec<NativeStickyProjection>,
 }
 
 impl NativeLayoutSnapshot {
@@ -203,6 +234,7 @@ impl NativeLayoutSnapshot {
             boxes: Vec::new(),
             text_runs: Vec::new(),
             paint_order: Vec::new(),
+            sticky_ranges: Vec::new(),
             initial_containing_block: PositionedContainingBlock {
                 x: 0,
                 y: 0,
@@ -210,6 +242,7 @@ impl NativeLayoutSnapshot {
                 height: viewport.height,
             },
             fixed: false,
+            sticky_root: None,
             containing_block: PositionedContainingBlock {
                 x: 0,
                 y: 0,
@@ -263,20 +296,51 @@ impl NativeLayoutSnapshot {
             .iter()
             .map(|layout_box| overflow_clip_for(document, &builder.boxes, layout_box.node_id))
             .collect();
+        let content_height = viewport.height.max(flow.height).max(max_box_bottom);
+        let content_width = viewport
+            .width
+            .max(flow.width)
+            .max(max_box_right)
+            .max(max_text_right);
+        let sticky_projections = builder
+            .sticky_ranges
+            .iter()
+            .filter_map(|range| {
+                let root = builder.boxes.get(range.root_box)?;
+                let containing_block =
+                    nearest_layout_ancestor_rect(document, &builder.boxes, root.node_id).unwrap_or(
+                        NativeRect {
+                            x: 0,
+                            y: 0,
+                            width: content_width,
+                            height: content_height,
+                        },
+                    );
+                Some(NativeStickyProjection {
+                    box_start: range.root_box,
+                    box_end: range.box_end,
+                    text_start: range.text_start,
+                    text_end: range.text_end,
+                    normal_rect: root.rect,
+                    containing_block,
+                    top: range.top,
+                    right: range.right,
+                    bottom: range.bottom,
+                    left: range.left,
+                })
+            })
+            .collect();
         Ok(Self {
             revision: document.revision(),
             viewport,
             scroll_offset: NativePoint { x: 0, y: 0 },
-            content_height: viewport.height.max(flow.height).max(max_box_bottom),
-            content_width: viewport
-                .width
-                .max(flow.width)
-                .max(max_box_right)
-                .max(max_text_right),
+            content_height,
+            content_width,
             boxes: builder.boxes,
             text_runs: builder.text_runs,
             paint_order: builder.paint_order,
             overflow_clips,
+            sticky_projections,
         })
     }
 
@@ -342,6 +406,7 @@ impl NativeLayoutSnapshot {
 
     pub(crate) fn with_scroll_offset(
         mut self,
+        document: &NativeDocument,
         scroll_offset: NativePoint,
     ) -> Result<Self, NativeEngineError> {
         let max_scroll = self.max_scroll_offset();
@@ -373,15 +438,53 @@ impl NativeLayoutSnapshot {
             text_run.origin.x = text_run.origin.x.saturating_add(scroll_offset.x);
             text_run.origin.y = text_run.origin.y.saturating_add(scroll_offset.y);
         }
-        for (layout_box, clip) in self.boxes.iter().zip(&mut self.overflow_clips) {
-            if !layout_box.fixed {
-                continue;
+        for projection in &self.sticky_projections {
+            let delta_x = sticky_axis_delta(
+                projection.normal_rect.x,
+                projection.normal_rect.width,
+                projection.containing_block.x,
+                projection.containing_block.width,
+                scroll_offset.x,
+                self.viewport.width,
+                projection.left,
+                projection.right,
+            );
+            let delta_y = sticky_axis_delta(
+                projection.normal_rect.y,
+                projection.normal_rect.height,
+                projection.containing_block.y,
+                projection.containing_block.height,
+                scroll_offset.y,
+                self.viewport.height,
+                projection.top,
+                projection.bottom,
+            );
+            let box_end = projection.box_end.min(self.boxes.len());
+            let box_start = projection.box_start.min(box_end);
+            for layout_box in &mut self.boxes[box_start..box_end] {
+                if layout_box.fixed {
+                    continue;
+                }
+                layout_box.rect.x = shift_coordinate(layout_box.rect.x, delta_x);
+                layout_box.rect.y = shift_coordinate(layout_box.rect.y, delta_y);
+                layout_box.content_rect.x = shift_coordinate(layout_box.content_rect.x, delta_x);
+                layout_box.content_rect.y = shift_coordinate(layout_box.content_rect.y, delta_y);
             }
-            if let Some(clip) = clip {
-                clip.x = clip.x.saturating_add(scroll_offset.x);
-                clip.y = clip.y.saturating_add(scroll_offset.y);
+            let text_end = projection.text_end.min(self.text_runs.len());
+            let text_start = projection.text_start.min(text_end);
+            for text_run in &mut self.text_runs[text_start..text_end] {
+                if text_run.fixed {
+                    continue;
+                }
+                text_run.origin.x = shift_coordinate(text_run.origin.x, delta_x);
+                text_run.origin.y = shift_coordinate(text_run.origin.y, delta_y);
             }
         }
+        self.overflow_clips = self
+            .boxes
+            .iter()
+            .map(|layout_box| overflow_clip_for(document, &self.boxes, layout_box.node_id))
+            .collect();
         self.scroll_offset = scroll_offset;
         Ok(self)
     }
@@ -581,6 +684,67 @@ fn shift_coordinate(value: u32, offset: i64) -> u32 {
     }
 }
 
+fn sticky_axis_delta(
+    normal_start: u32,
+    size: u32,
+    containing_start: u32,
+    containing_extent: u32,
+    scroll_start: u32,
+    viewport_extent: u32,
+    leading: NativePositionOffset,
+    trailing: NativePositionOffset,
+) -> i64 {
+    let normal_start = i64::from(normal_start);
+    let size = i64::from(size);
+    let containing_start = i64::from(containing_start);
+    let containing_end = containing_start.saturating_add(i64::from(containing_extent));
+    let scroll_start = i64::from(scroll_start);
+    let viewport_end = scroll_start.saturating_add(i64::from(viewport_extent));
+    let mut lower = containing_start.saturating_sub(normal_start);
+    let mut upper = containing_end
+        .saturating_sub(size)
+        .saturating_sub(normal_start);
+    if let Some(offset) = leading.length() {
+        lower = lower.max(
+            scroll_start
+                .saturating_add(i64::from(offset))
+                .saturating_sub(normal_start),
+        );
+    }
+    if let Some(offset) = trailing.length() {
+        upper = upper.min(
+            viewport_end
+                .saturating_sub(i64::from(offset))
+                .saturating_sub(size)
+                .saturating_sub(normal_start),
+        );
+    }
+    if lower > upper {
+        upper
+    } else {
+        0i64.clamp(lower, upper)
+    }
+}
+
+fn nearest_layout_ancestor_rect(
+    document: &NativeDocument,
+    boxes: &[NativeLayoutBox],
+    node_id: NativeNodeId,
+) -> Option<NativeRect> {
+    let mut current = document.node(node_id).and_then(|node| node.parent());
+    for _ in 0..=MAX_NATIVE_DOM_DEPTH {
+        let current_id = current?;
+        if let Some(layout_box) = boxes
+            .iter()
+            .find(|layout_box| layout_box.node_id == current_id)
+        {
+            return Some(layout_box.rect);
+        }
+        current = document.node(current_id).and_then(|node| node.parent());
+    }
+    None
+}
+
 fn relative_offset(primary: NativePositionOffset, opposite: NativePositionOffset) -> i64 {
     primary
         .length()
@@ -742,9 +906,11 @@ struct LayoutBuilder<'a> {
     boxes: Vec<NativeLayoutBox>,
     text_runs: Vec<NativeTextLayout>,
     paint_order: Vec<NativeLayoutPaintOrder>,
+    sticky_ranges: Vec<NativeStickyRange>,
     initial_containing_block: PositionedContainingBlock,
     containing_block: PositionedContainingBlock,
     fixed: bool,
+    sticky_root: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2052,6 +2218,15 @@ impl<'a> LayoutBuilder<'a> {
             return result;
         }
 
+        let previous_sticky_root = self.sticky_root;
+        let sticky_root =
+            if style.position() == NativePositionValue::Sticky && previous_sticky_root.is_none() {
+                Some(self.boxes.len())
+            } else {
+                previous_sticky_root
+            };
+        self.sticky_root = sticky_root;
+
         let is_block = matches!(
             display,
             DisplayValue::Block | DisplayValue::Flex | DisplayValue::Grid
@@ -2113,6 +2288,7 @@ impl<'a> LayoutBuilder<'a> {
             border_radius: style.border_radius(),
             depth,
             fixed: self.fixed,
+            sticky: self.sticky_root.is_some(),
         });
         self.paint_order
             .push(NativeLayoutPaintOrder::Box(box_index));
@@ -2195,6 +2371,22 @@ impl<'a> LayoutBuilder<'a> {
                 relative_offset(style.top(), style.bottom()),
             );
         }
+        if let Some(root_box) = sticky_root
+            && previous_sticky_root.is_none()
+            && style.position() == NativePositionValue::Sticky
+        {
+            self.sticky_ranges.push(NativeStickyRange {
+                root_box,
+                box_end: self.boxes.len(),
+                text_start,
+                text_end: self.text_runs.len(),
+                top: style.top(),
+                right: style.right(),
+                bottom: style.bottom(),
+                left: style.left(),
+            });
+        }
+        self.sticky_root = previous_sticky_root;
         if grouped {
             self.paint_order
                 .push(NativeLayoutPaintOrder::EndOpacityGroup { node_id: id });
@@ -4679,6 +4871,7 @@ impl<'a> LayoutBuilder<'a> {
             ends_line: false,
             justify_spacing: 0,
             fixed: self.fixed,
+            sticky: self.sticky_root.is_some(),
         });
         self.paint_order
             .push(NativeLayoutPaintOrder::Text(text_index));
@@ -5031,6 +5224,7 @@ impl<'a> LayoutBuilder<'a> {
             ends_line: false,
             justify_spacing: 0,
             fixed: self.fixed,
+            sticky: self.sticky_root.is_some(),
         });
         self.paint_order
             .push(NativeLayoutPaintOrder::Text(text_index));

@@ -14,28 +14,30 @@ use super::interaction::{
 };
 use super::javascript::{
     MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_DIALOGS, MAX_NATIVE_EVENTSOURCE_FIELD_BYTES,
-    MAX_NATIVE_EVENTSOURCE_MESSAGE_BYTES, MAX_NATIVE_HISTORY_STATE_BYTES,
-    MAX_NATIVE_INDEXED_DB_CHANGES, MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_SCRIPT_BYTES,
-    MAX_NATIVE_WEBSOCKET_CLOSE_REASON_BYTES, MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES,
-    MAX_NATIVE_WEBSOCKET_PROTOCOL_BYTES, MAX_NATIVE_WEBSOCKET_PROTOCOLS, MAX_NATIVE_XHR_TIMEOUT_MS,
-    NativeCookieChange, NativeCookieProfileEntry, NativeDialog, NativeFrameScriptBinding,
-    NativeFrameScriptContext, NativeFrameScriptRequest, NativeFrameScriptWindow,
-    NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime, NativePageScript,
-    NativePopupRequest, NativePostMessageRequest, NativeScriptCommand, NativeScriptEvaluation,
-    NativeStorageEvent, NativeWebStorageState, NativeWindowCloseRequest,
-    NativeWindowNavigationRequest, NativeWindowProxyUpdate, diff_indexed_db_changes,
-    execute_page_scripts, host_event_script, host_hash_change_event_script, host_key_event_script,
-    host_key_event_script_with_modifiers, host_submit_event_script,
-    literal_dynamic_module_specifiers, load_indexed_db_profile, load_web_storage_profile,
-    order_page_scripts, save_web_storage_profile, static_module_specifiers, storage_key,
+    MAX_NATIVE_EVENTSOURCE_MESSAGE_BYTES, MAX_NATIVE_FETCH_STREAM_CHUNK_BYTES,
+    MAX_NATIVE_HISTORY_STATE_BYTES, MAX_NATIVE_INDEXED_DB_CHANGES, MAX_NATIVE_MODULE_IMPORTS,
+    MAX_NATIVE_SCRIPT_BYTES, MAX_NATIVE_WEBSOCKET_CLOSE_REASON_BYTES,
+    MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES, MAX_NATIVE_WEBSOCKET_PROTOCOL_BYTES,
+    MAX_NATIVE_WEBSOCKET_PROTOCOLS, MAX_NATIVE_XHR_TIMEOUT_MS, NativeCookieChange,
+    NativeCookieProfileEntry, NativeDialog, NativeFrameScriptBinding, NativeFrameScriptContext,
+    NativeFrameScriptRequest, NativeFrameScriptWindow, NativeIndexedDbChange, NativeIndexedDbState,
+    NativeJavaScriptRuntime, NativePageScript, NativePopupRequest, NativePostMessageRequest,
+    NativeScriptCommand, NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState,
+    NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
+    diff_indexed_db_changes, execute_page_scripts, host_event_script,
+    host_hash_change_event_script, host_key_event_script, host_key_event_script_with_modifiers,
+    host_submit_event_script, literal_dynamic_module_specifiers, load_indexed_db_profile,
+    load_web_storage_profile, order_page_scripts, save_web_storage_profile,
+    static_module_specifiers, storage_key,
 };
 use super::layout::NativePoint;
 use super::origin::NativeOrigin;
 use super::resource_loader::{
     MAX_NATIVE_RESPONSE_HEADER_BYTES, MAX_NATIVE_RESPONSE_HEADER_NAME_BYTES,
     MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES, MAX_NATIVE_RESPONSE_HEADERS, NativeCorsMode,
-    NativeFetchRedirectMode, NativeFetchRequest, NativeFetchResponse, NativeNavigationMethod,
-    NativeNavigationRequest, NativeRequestBody, NativeResourceLoader, NativeWebSocketTarget,
+    NativeFetchRedirectMode, NativeFetchRequest, NativeFetchResponse, NativeFetchResponseStream,
+    NativeNavigationMethod, NativeNavigationRequest, NativeRequestBody, NativeResourceLoader,
+    NativeWebSocketTarget,
 };
 #[cfg(windows)]
 use super::sandbox::NativeContentSandbox;
@@ -74,6 +76,7 @@ const NATIVE_EVENTSOURCE_INITIAL_RETRY: Duration = Duration::from_secs(3);
 const NATIVE_EVENTSOURCE_MAX_RETRY: Duration = Duration::from_secs(30);
 const MAX_NATIVE_EVENTSOURCE_RECONNECTS: usize = MAX_NATIVE_EFFECTS;
 const MAX_NATIVE_EVENTSOURCE_CONNECTIONS: usize = MAX_NATIVE_EFFECTS;
+const MAX_NATIVE_FETCH_STREAM_CONNECTIONS: usize = MAX_NATIVE_EFFECTS;
 const MAX_CONTENT_STYLESHEETS: usize = 16;
 const MAX_CONTENT_STYLESHEET_BYTES: usize = 512 * 1024;
 const MAX_CONTENT_IMAGES: usize = 64;
@@ -133,6 +136,23 @@ enum NativeWebSocketEvent {
 struct NativeWebSocketConnection {
     commands: mpsc::Sender<NativeWebSocketCommand>,
     events: mpsc::Receiver<NativeWebSocketEvent>,
+}
+
+enum NativeFetchStreamCommand {
+    Read,
+    Cancel,
+}
+
+enum NativeFetchStreamEvent {
+    Chunk { data: Vec<u8> },
+    End,
+    Error { message: String },
+}
+
+struct NativeFetchStreamConnection {
+    commands: mpsc::Sender<NativeFetchStreamCommand>,
+    events: mpsc::Receiver<NativeFetchStreamEvent>,
+    read_pending: bool,
 }
 
 enum NativeEventSourceCommand {
@@ -628,6 +648,95 @@ fn spawn_native_websocket(
         commands: command_sender,
         events: event_receiver,
     })
+}
+
+async fn run_native_fetch_stream(
+    response: reqwest::Response,
+    max_response_bytes: usize,
+    mut commands: mpsc::Receiver<NativeFetchStreamCommand>,
+    events: mpsc::Sender<NativeFetchStreamEvent>,
+) {
+    let mut stream = response.bytes_stream();
+    let mut total_bytes = 0usize;
+    loop {
+        tokio::select! {
+            command = commands.recv() => {
+                match command {
+                    Some(NativeFetchStreamCommand::Read) => {}
+                    Some(NativeFetchStreamCommand::Cancel) | None => return,
+                }
+            }
+            chunk = stream.next() => {
+                match chunk {
+                    Some(Ok(chunk)) => {
+                        let next_total = total_bytes.saturating_add(chunk.len());
+                        if next_total > max_response_bytes {
+                            let _ = events.send(NativeFetchStreamEvent::Error {
+                                message: "native fetch response stream exceeds its limit".into(),
+                            }).await;
+                            return;
+                        }
+                        total_bytes = next_total;
+                        for part in chunk.chunks(MAX_NATIVE_FETCH_STREAM_CHUNK_BYTES) {
+                            if events.send(NativeFetchStreamEvent::Chunk { data: part.to_vec() }).await.is_err() {
+                                return;
+                            }
+                        }
+                    }
+                    Some(Err(error)) => {
+                        if events
+                            .send(NativeFetchStreamEvent::Error {
+                                message: bounded_websocket_text(
+                                    error.to_string(),
+                                    MAX_NATIVE_SCRIPT_BYTES,
+                                ),
+                            })
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                        while let Some(command) = commands.recv().await {
+                            if matches!(command, NativeFetchStreamCommand::Cancel) {
+                                return;
+                            }
+                        }
+                        return;
+                    }
+                    None => {
+                        if events.send(NativeFetchStreamEvent::End).await.is_err() {
+                            return;
+                        }
+                        while let Some(command) = commands.recv().await {
+                            if matches!(command, NativeFetchStreamCommand::Cancel) {
+                                return;
+                            }
+                        }
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn spawn_native_fetch_stream(
+    response: reqwest::Response,
+    max_response_bytes: usize,
+) -> NativeFetchStreamConnection {
+    let (command_sender, command_receiver) = mpsc::channel(MAX_NATIVE_FETCH_STREAM_CONNECTIONS);
+    let (event_sender, event_receiver) = mpsc::channel(MAX_NATIVE_FETCH_STREAM_CONNECTIONS);
+    tokio::spawn(run_native_fetch_stream(
+        response,
+        max_response_bytes,
+        command_receiver,
+        event_sender,
+    ));
+    NativeFetchStreamConnection {
+        commands: command_sender,
+        events: event_receiver,
+        read_pending: false,
+    }
 }
 
 async fn wait_event_source_retry(
@@ -3237,6 +3346,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut resource_loader = None;
     let mut javascript_runtime: Option<NativeJavaScriptRuntime> = None;
     let mut websocket_connections = BTreeMap::new();
+    let mut fetch_stream_connections = BTreeMap::new();
     let mut event_source_connections = BTreeMap::new();
     let mut storage_state = NativeWebStorageState::default();
     let mut indexed_db_state = NativeIndexedDbState::default();
@@ -3622,6 +3732,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             "load" if protocol_matches(&request) && running => {
                 frame_script_bindings.clear();
                 websocket_connections.clear();
+                fetch_stream_connections.clear();
                 event_source_connections.clear();
                 if let Some(runtime) = javascript_runtime.as_ref() {
                     storage_state = runtime.storage_state();
@@ -3720,6 +3831,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                             runtime,
                                             Some(loader),
                                             &mut websocket_connections,
+                                            &mut fetch_stream_connections,
                                             &mut event_source_connections,
                                             &resource.url,
                                             &resource.origin,
@@ -4008,6 +4120,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 runtime,
                                 resource_loader.as_mut(),
                                 &mut websocket_connections,
+                                &mut fetch_stream_connections,
                                 &mut event_source_connections,
                                 &script_url,
                                 document_origin,
@@ -7369,6 +7482,42 @@ fn process_websocket_commands(
     Ok(retained)
 }
 
+fn process_fetch_stream_commands(
+    commands: Vec<NativeScriptCommand>,
+    connections: &mut BTreeMap<u32, NativeFetchStreamConnection>,
+) -> Result<Vec<NativeScriptCommand>, NativeEngineError> {
+    let mut retained = Vec::with_capacity(commands.len());
+    for command in commands {
+        match command {
+            NativeScriptCommand::FetchStreamRead { stream_id } => {
+                let Some(connection) = connections.get_mut(&stream_id) else {
+                    return Err(NativeEngineError::Network {
+                        operation: "fetch response stream read".into(),
+                        reason: "fetch response stream identifier is not active".into(),
+                    });
+                };
+                connection.read_pending = true;
+                connection
+                    .commands
+                    .try_send(NativeFetchStreamCommand::Read)
+                    .map_err(|_| NativeEngineError::Network {
+                        operation: "fetch response stream read".into(),
+                        reason: "fetch response stream task is unavailable".into(),
+                    })?;
+            }
+            NativeScriptCommand::FetchStreamCancel { stream_id } => {
+                if let Some(connection) = connections.remove(&stream_id) {
+                    let _ = connection
+                        .commands
+                        .try_send(NativeFetchStreamCommand::Cancel);
+                }
+            }
+            command => retained.push(command),
+        }
+    }
+    Ok(retained)
+}
+
 fn process_event_source_commands(
     commands: Vec<NativeScriptCommand>,
     connections: &mut BTreeMap<u32, NativeEventSourceConnection>,
@@ -7457,6 +7606,28 @@ fn take_event_source_event(
     None
 }
 
+fn take_fetch_stream_event(
+    connections: &mut BTreeMap<u32, NativeFetchStreamConnection>,
+) -> Option<(u32, NativeFetchStreamEvent)> {
+    let stream_ids = connections.keys().copied().collect::<Vec<_>>();
+    for stream_id in stream_ids {
+        let Some(connection) = connections.get_mut(&stream_id) else {
+            continue;
+        };
+        match connection.events.try_recv() {
+            Ok(event) => {
+                connection.read_pending = false;
+                return Some((stream_id, event));
+            }
+            Err(mpsc::error::TryRecvError::Empty) => {}
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                connections.remove(&stream_id);
+            }
+        }
+    }
+    None
+}
+
 fn websocket_event_payload(event: &NativeWebSocketEvent) -> Value {
     match event {
         NativeWebSocketEvent::Open { protocol } => {
@@ -7507,6 +7678,19 @@ fn event_source_event_payload(event: &NativeEventSourceEvent) -> Value {
             json!({"type": "error", "message": message})
         }
         NativeEventSourceEvent::Close => json!({"type": "close"}),
+    }
+}
+
+fn fetch_stream_event_payload(event: &NativeFetchStreamEvent) -> Value {
+    match event {
+        NativeFetchStreamEvent::Chunk { data } => json!({
+            "type": "chunk",
+            "dataBase64": base64::engine::general_purpose::STANDARD.encode(data),
+        }),
+        NativeFetchStreamEvent::End => json!({"type": "end"}),
+        NativeFetchStreamEvent::Error { message } => {
+            json!({"type": "error", "message": message})
+        }
     }
 }
 
@@ -7668,11 +7852,45 @@ fn fetch_response_payload(result: Result<NativeFetchResponse, NativeEngineError>
     }
 }
 
+fn fetch_stream_response_payload(response: NativeFetchResponse, stream_id: u32) -> Value {
+    let mut payload = fetch_response_payload(Ok(response));
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("bodyStreamId".into(), Value::from(stream_id));
+    }
+    payload
+}
+
+async fn collect_native_fetch_response(
+    opened: NativeFetchResponseStream,
+) -> Result<NativeFetchResponse, NativeEngineError> {
+    let mut stream = opened.body.bytes_stream();
+    let mut body = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| NativeEngineError::Network {
+            operation: "fetch response body".into(),
+            reason: error.to_string(),
+        })?;
+        let next_len = body.len().saturating_add(chunk.len());
+        if next_len > opened.max_response_bytes {
+            return Err(NativeEngineError::limit(
+                "fetch response",
+                opened.max_response_bytes,
+                next_len,
+            ));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    let mut response = opened.response;
+    response.body = body;
+    Ok(response)
+}
+
 async fn resolve_script_fetches(
     current: &NativeDocument,
     runtime: &NativeJavaScriptRuntime,
     mut loader: Option<&mut NativeResourceLoader>,
     websocket_connections: &mut BTreeMap<u32, NativeWebSocketConnection>,
+    fetch_stream_connections: &mut BTreeMap<u32, NativeFetchStreamConnection>,
     event_source_connections: &mut BTreeMap<u32, NativeEventSourceConnection>,
     document_url: &str,
     document_origin: &NativeOrigin,
@@ -7699,6 +7917,8 @@ async fn resolve_script_fetches(
         loader.as_deref(),
         &current_url,
     )?;
+    let initial_commands =
+        process_fetch_stream_commands(initial_commands, fetch_stream_connections)?;
     let (mut next, mut mutation) = mutate_script_document(
         current,
         runtime,
@@ -7745,23 +7965,39 @@ async fn resolve_script_fetches(
                     reason: "content process has no resource loader".into(),
                 });
             };
-            let payload = fetch_response_payload(
-                loader
-                    .fetch_request_with_headers_async(NativeFetchRequest {
-                        document_url: &current_url,
-                        href: &href,
-                        method,
-                        body,
-                        content_type,
-                        request_headers: headers,
-                        cors_mode,
-                        redirect_mode,
-                        timeout,
-                        credentials,
-                        max_response_bytes: None,
-                    })
-                    .await,
-            );
+            let opened = loader
+                .open_fetch_response_stream_async(NativeFetchRequest {
+                    document_url: &current_url,
+                    href: &href,
+                    method,
+                    body,
+                    content_type,
+                    request_headers: headers,
+                    cors_mode,
+                    redirect_mode,
+                    timeout,
+                    credentials,
+                    max_response_bytes: None,
+                })
+                .await;
+            let payload = match opened {
+                Ok(opened) if !opened.response.opaque && !opened.response.opaque_redirect => {
+                    if fetch_stream_connections.contains_key(&request_id) {
+                        fetch_response_payload(Err(NativeEngineError::Network {
+                            operation: "fetch response stream".into(),
+                            reason: "fetch response stream identifier is already active".into(),
+                        }))
+                    } else {
+                        let response = opened.response;
+                        let stream =
+                            spawn_native_fetch_stream(opened.body, opened.max_response_bytes);
+                        fetch_stream_connections.insert(request_id, stream);
+                        fetch_stream_response_payload(response, request_id)
+                    }
+                }
+                Ok(opened) => fetch_response_payload(collect_native_fetch_response(opened).await),
+                Err(error) => fetch_response_payload(Err(error)),
+            };
             let resolved = runtime.resolve_fetch(
                 request_id,
                 &payload,
@@ -7786,6 +8022,8 @@ async fn resolve_script_fetches(
                 Some(&*loader),
                 &current_url,
             )?;
+            let resolved_commands =
+                process_fetch_stream_commands(resolved_commands, fetch_stream_connections)?;
             let resolved_history = extract_history_commands(&resolved_commands);
             if !resolved_history.is_empty() {
                 let mut url = Some(current_url.clone());
@@ -7842,6 +8080,10 @@ async fn resolve_script_fetches(
             resolved_value = Some(value);
             break;
         }
+        let pump_fetch_streams = pump_background_events
+            || fetch_stream_connections
+                .values()
+                .any(|connection| connection.read_pending);
         if pump_background_events
             && let Some((socket_id, event)) = take_websocket_event(websocket_connections)
         {
@@ -7869,6 +8111,8 @@ async fn resolve_script_fetches(
                 &current_url,
                 document_origin,
             )?;
+            let event_commands =
+                process_fetch_stream_commands(event_commands, fetch_stream_connections)?;
             let event_history = extract_history_commands(&event_commands);
             if !event_history.is_empty() {
                 let mut url = Some(current_url.clone());
@@ -7918,6 +8162,101 @@ async fn resolve_script_fetches(
             }
             continue;
         }
+        if pump_fetch_streams
+            && let Some((stream_id, event)) = take_fetch_stream_event(fetch_stream_connections)
+        {
+            event_loop_turns = event_loop_turns.saturating_add(1);
+            if event_loop_turns > MAX_CONTENT_EVENT_LOOP_TURNS {
+                return Err(NativeEngineError::limit(
+                    "content-process event-loop turns",
+                    MAX_CONTENT_EVENT_LOOP_TURNS,
+                    event_loop_turns,
+                ));
+            }
+            let remove_after_dispatch = matches!(
+                &event,
+                NativeFetchStreamEvent::End | NativeFetchStreamEvent::Error { .. }
+            );
+            let event_evaluation = runtime.dispatch_fetch_stream_event(
+                stream_id,
+                &fetch_stream_event_payload(&event),
+                &next,
+                &current_url,
+                document_origin,
+                viewport,
+            )?;
+            let event_commands = process_websocket_commands(
+                event_evaluation.commands,
+                websocket_connections,
+                loader.as_deref(),
+                &current_url,
+                document_origin,
+            )?;
+            let event_commands = process_event_source_commands(
+                event_commands,
+                event_source_connections,
+                loader.as_deref(),
+                &current_url,
+            )?;
+            let event_commands =
+                process_fetch_stream_commands(event_commands, fetch_stream_connections)?;
+            let event_history = extract_history_commands(&event_commands);
+            if !event_history.is_empty() {
+                let mut url = Some(current_url.clone());
+                apply_content_runtime_history(&event_history, &mut url, document_origin, runtime)?;
+                current_url = url.ok_or_else(|| NativeEngineError::Worker {
+                    operation: "content process fetch stream history".into(),
+                    reason: "fetch stream callback history lost its document URL".into(),
+                })?;
+                mutation.history.extend(event_history);
+            }
+            let (event_next, event_mutation) = mutate_script_document(
+                &next,
+                runtime,
+                &current_url,
+                document_origin,
+                viewport,
+                &event_commands,
+                loader.as_deref_mut(),
+            )
+            .await?;
+            next = event_next;
+            mutation.events.extend(event_mutation.events);
+            mutation
+                .scroll_commands
+                .extend(event_mutation.scroll_commands);
+            if !event_mutation.history.is_empty() {
+                current_url = resolve_content_history_document_url(
+                    &event_mutation.history,
+                    &current_url,
+                    document_origin,
+                )?;
+                mutation.history.extend(event_mutation.history);
+            }
+            if mutation.navigation.is_none() {
+                mutation.navigation = event_mutation.navigation;
+            } else if event_mutation.navigation.is_some() {
+                return Err(NativeEngineError::TargetNotActionable {
+                    reason: "one fetch stream event batch cannot activate multiple navigations"
+                        .into(),
+                });
+            }
+            pending.extend(fetch_commands(&event_commands)?);
+            if remove_after_dispatch {
+                fetch_stream_connections.remove(&stream_id);
+            }
+            if top_level_await_pending && let Some(value) = runtime.take_top_level_await_result()? {
+                resolved_value = Some(value);
+            }
+            continue;
+        }
+        if fetch_stream_connections
+            .values()
+            .any(|connection| connection.read_pending)
+        {
+            sleep(NATIVE_WEBSOCKET_POLL_INTERVAL).await;
+            continue;
+        }
         if pump_background_events
             && let Some((source_id, event)) = take_event_source_event(event_source_connections)
         {
@@ -7962,6 +8301,8 @@ async fn resolve_script_fetches(
                 loader.as_deref(),
                 &current_url,
             )?;
+            let event_commands =
+                process_fetch_stream_commands(event_commands, fetch_stream_connections)?;
             let event_history = extract_history_commands(&event_commands);
             if !event_history.is_empty() {
                 let mut url = Some(current_url.clone());
@@ -8063,6 +8404,8 @@ async fn resolve_script_fetches(
             loader.as_deref(),
             &current_url,
         )?;
+        let timer_commands =
+            process_fetch_stream_commands(timer_commands, fetch_stream_connections)?;
         let timer_history = extract_history_commands(&timer_commands);
         if !timer_history.is_empty() {
             let mut url = Some(current_url.clone());

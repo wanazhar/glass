@@ -3182,7 +3182,9 @@ impl NativeDocument {
                 | NativeScriptCommand::WebSocketSend { .. }
                 | NativeScriptCommand::WebSocketClose { .. }
                 | NativeScriptCommand::EventSourceOpen { .. }
-                | NativeScriptCommand::EventSourceClose { .. } => {}
+                | NativeScriptCommand::EventSourceClose { .. }
+                | NativeScriptCommand::FetchStreamRead { .. }
+                | NativeScriptCommand::FetchStreamCancel { .. } => {}
                 NativeScriptCommand::Navigate { .. } => {
                     if !allow_script_navigation {
                         return Err(NativeEngineError::TargetNotActionable {

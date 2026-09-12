@@ -85,6 +85,8 @@ pub(crate) const MAX_NATIVE_WEBSOCKET_PROTOCOL_BYTES: usize = 128;
 pub(crate) const MAX_NATIVE_WEBSOCKET_CLOSE_REASON_BYTES: usize = 123;
 pub(crate) const MAX_NATIVE_EVENTSOURCE_MESSAGE_BYTES: usize = MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES;
 pub(crate) const MAX_NATIVE_EVENTSOURCE_FIELD_BYTES: usize = 128;
+pub(crate) const MAX_NATIVE_FETCH_STREAM_CHUNK_BYTES: usize = 8 * 1024;
+pub(crate) const MAX_NATIVE_FETCH_STREAM_BODY_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -201,6 +203,12 @@ pub(crate) enum NativeScriptCommand {
     },
     EventSourceClose {
         source_id: u32,
+    },
+    FetchStreamRead {
+        stream_id: u32,
+    },
+    FetchStreamCancel {
+        stream_id: u32,
     },
     Dialog {
         dialog_type: String,
@@ -4087,6 +4095,34 @@ impl NativeJavaScriptRuntime {
         self.evaluate(&source, document, document_url, origin, viewport)
     }
 
+    /// Deliver one host-owned Fetch response-stream event into the persistent
+    /// page realm. Body chunks and terminal state use the same serialized
+    /// owner as response continuations and other host events.
+    pub(crate) fn dispatch_fetch_stream_event(
+        &self,
+        stream_id: u32,
+        event: &serde_json::Value,
+        document: &NativeDocument,
+        document_url: &str,
+        origin: &NativeOrigin,
+        viewport: Viewport,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        let serialized = serde_json::to_string(event).map_err(|_| NativeEngineError::Worker {
+            operation: "serialize native fetch response stream event".into(),
+            reason: "native fetch response stream event could not be serialized".into(),
+        })?;
+        let source =
+            format!("globalThis.__glassDispatchFetchStreamEvent({stream_id}, {serialized});");
+        if source.len() > MAX_NATIVE_SCRIPT_BYTES {
+            return Err(NativeEngineError::limit(
+                "native fetch response stream event",
+                MAX_NATIVE_SCRIPT_BYTES,
+                source.len(),
+            ));
+        }
+        self.evaluate(&source, document, document_url, origin, viewport)
+    }
+
     pub(crate) fn reset_timer_clock(&mut self) {
         self.clock_origin = Instant::now();
     }
@@ -6800,7 +6836,9 @@ fn document_bootstrap(
       : "";
     return /^[\x20-\x7e]*$/.test(type) ? type : "";
   }};
-  const BlobNative = function(parts, options) {{
+  const BlobNative = typeof globalThis.__glassBlobConstructor === "function"
+    ? globalThis.__glassBlobConstructor
+    : function(parts, options) {{
     this.__glassNativeBlob = true;
     const payload = boundedBlobParts(parts);
     this._text = payload.text;
@@ -6987,7 +7025,9 @@ fn document_bootstrap(
     }}
     return new BlobNative([begin > finish ? "" : this._text.slice(begin, finish)], {{ type: contentType }});
   }};
-  const FileNative = function(parts, name, options) {{
+  const FileNative = typeof globalThis.__glassFileConstructor === "function"
+    ? globalThis.__glassFileConstructor
+    : function(parts, name, options) {{
     if (name === undefined) throw new TypeError("native File requires a name");
     BlobNative.call(this, parts, options);
     this.__glassNativeFile = true;
@@ -6997,8 +7037,12 @@ fn document_bootstrap(
       : 0;
     this.lastModified = Math.max(0, modified);
   }};
-  FileNative.prototype = Object.create(BlobNative.prototype);
-  FileNative.prototype.constructor = FileNative;
+  if (typeof globalThis.__glassFileConstructor !== "function") {{
+    FileNative.prototype = Object.create(BlobNative.prototype);
+    FileNative.prototype.constructor = FileNative;
+  }}
+  globalThis.__glassBlobConstructor = BlobNative;
+  globalThis.__glassFileConstructor = FileNative;
   globalThis.Blob = BlobNative;
   globalThis.File = FileNative;
   const FileListNative = function(entries) {{
@@ -7982,26 +8026,72 @@ fn document_bootstrap(
     }});
     return Object.freeze(headers);
   }};
+  const fetchStreamGroups = globalThis.__glassFetchStreamGroups instanceof Map
+    ? globalThis.__glassFetchStreamGroups
+    : new Map();
+  const fetchStreamGroup = (streamId) => {{
+    const id = Number(streamId);
+    if (!Number.isSafeInteger(id) || id <= 0) throw new TypeError("native fetch stream identifier is invalid");
+    let group = fetchStreamGroups.get(id);
+    if (!group) {{
+      group = {{ id, chunks: [], totalBytes: 0, done: false, error: null, streams: [], waiters: [], started: false }};
+      fetchStreamGroups.set(id, group);
+    }}
+    return group;
+  }};
+  const flattenFetchStream = (group) => {{
+    const bytes = [];
+    for (const chunk of group.chunks) bytes.push(...chunk);
+    return bytes;
+  }};
+  const settleFetchStreamWaiters = (group) => {{
+    const waiters = group.waiters.splice(0);
+    const bytes = flattenFetchStream(group);
+    for (const waiter of waiters) waiter.resolve(bytes.slice());
+  }};
+  const rejectFetchStreamWaiters = (group) => {{
+    const waiters = group.waiters.splice(0);
+    const error = new Error(group.error || "native fetch response stream failed");
+    for (const waiter of waiters) waiter.reject(error);
+  }};
   const readableStreamState = (stream) => {{
     if (!stream || stream.__glassReadableStream !== true || !stream._state)
       throw new TypeError("native ReadableStream receiver is invalid");
     return stream._state;
   }};
-  const ReadableStreamNative = function(bytes) {{
+  const readableStreamDone = (state) => state.cancelled || state.done || state.error !== null;
+  const ReadableStreamNative = typeof globalThis.__glassReadableStreamConstructor === "function"
+    ? globalThis.__glassReadableStreamConstructor
+    : function(bytes, streamId) {{
     if (!(this instanceof ReadableStreamNative)) throw new TypeError("native ReadableStream requires new");
-    const values = Array.isArray(bytes) ? bytes.slice() : [];
+    const hostId = streamId === undefined || streamId === null ? null : Number(streamId);
+    const values = hostId === null && Array.isArray(bytes) ? bytes.slice() : [];
     if (values.length > storageValueLimit) throw new RangeError("native ReadableStream body limit exceeded");
     for (const value of values) {{
       if (!Number.isInteger(value) || value < 0 || value > 255)
         throw new TypeError("native ReadableStream bytes are invalid");
     }}
+    const group = hostId === null ? null : fetchStreamGroup(hostId);
+    const queued = group ? group.chunks.map(chunk => chunk.slice()) : [];
+    const state = {{
+      bytes: values,
+      offset: 0,
+      queued,
+      locked: false,
+      cancelled: false,
+      done: group ? group.done : true,
+      error: group ? group.error : null,
+      streamId: hostId,
+      group,
+      pendingRead: null,
+    }};
+    if (group) group.streams.push(state);
     Object.defineProperty(this, "__glassReadableStream", {{ value: true }});
-    Object.defineProperty(this, "_state", {{
-      value: {{ bytes: values, offset: 0, locked: false, cancelled: false }},
-    }});
+    Object.defineProperty(this, "_state", {{ value: state }});
     Object.freeze(this);
   }};
   Object.defineProperty(ReadableStreamNative.prototype, "locked", {{
+    configurable: true,
     get() {{ return readableStreamState(this).locked; }},
   }});
   ReadableStreamNative.prototype.getReader = function(_options) {{
@@ -8022,21 +8112,37 @@ fn document_bootstrap(
       released = true;
       state.locked = false;
     }};
+    const readQueued = () => {{
+      if (state.streamId === null) {{
+        if (state.offset >= state.bytes.length) return null;
+        const value = new Uint8Array(state.bytes.slice(state.offset));
+        state.offset = state.bytes.length;
+        return {{ value, done: false }};
+      }}
+      if (state.queued.length === 0) return null;
+      return {{ value: new Uint8Array(state.queued.shift()), done: false }};
+    }};
+    const read = () => {{
+      const queued = readQueued();
+      if (queued) return Promise.resolve(queued);
+      if (state.error !== null) return Promise.reject(new Error(state.error));
+      if (readableStreamDone(state)) {{
+        settleClosed();
+        return Promise.resolve({{ value: undefined, done: true }});
+      }}
+      if (state.pendingRead) return Promise.reject(new TypeError("native ReadableStream read is already pending"));
+      return new Promise((resolve, reject) => {{ state.pendingRead = {{ resolve, reject }}; }});
+    }};
     const reader = {{
       read() {{
         if (released) return Promise.reject(new TypeError("native ReadableStream reader is released"));
-        if (state.cancelled || state.offset >= state.bytes.length) {{
-          settleClosed();
-          return Promise.resolve({{ value: undefined, done: true }});
-        }}
-        const value = new Uint8Array(state.bytes.slice(state.offset));
-        state.offset = state.bytes.length;
-        return Promise.resolve({{ value, done: false }});
+        return read();
       }},
       cancel() {{
         if (released) return Promise.reject(new TypeError("native ReadableStream reader is released"));
         state.cancelled = true;
-        state.offset = state.bytes.length;
+        state.queued = [];
+        if (state.pendingRead) {{ state.pendingRead.resolve({{ value: undefined, done: true }}); state.pendingRead = null; }}
         settleClosed();
         return Promise.resolve(undefined);
       }},
@@ -8044,7 +8150,8 @@ fn document_bootstrap(
       return() {{
         if (released) return Promise.resolve({{ value: undefined, done: true }});
         state.cancelled = true;
-        state.offset = state.bytes.length;
+        state.queued = [];
+        if (state.pendingRead) {{ state.pendingRead.resolve({{ value: undefined, done: true }}); state.pendingRead = null; }}
         settleClosed();
         release();
         return Promise.resolve({{ value: undefined, done: true }});
@@ -8058,7 +8165,7 @@ fn document_bootstrap(
     const state = readableStreamState(this);
     if (state.locked) return Promise.reject(new TypeError("native ReadableStream is locked"));
     state.cancelled = true;
-    state.offset = state.bytes.length;
+    state.queued = [];
     return Promise.resolve(undefined);
   }};
   ReadableStreamNative.prototype[Symbol.asyncIterator] = function() {{
@@ -8069,6 +8176,57 @@ fn document_bootstrap(
       [Symbol.asyncIterator]() {{ return this; }},
     }});
   }};
+  globalThis.__glassDispatchFetchStreamEvent = (streamId, payload) => {{
+    const group = fetchStreamGroup(streamId);
+    if (!payload || typeof payload !== "object" || group.done) return null;
+    const type = String(payload.type || "");
+    if (type === "chunk") {{
+      let bytes;
+      try {{ bytes = decodeBase64(String(payload.dataBase64 || ""), {fetch_stream_chunk_limit}); }}
+      catch (_) {{ group.error = "native fetch response stream chunk is invalid"; group.done = true; rejectFetchStreamWaiters(group); return null; }}
+      if (group.totalBytes + bytes.length > {fetch_stream_body_limit}) {{
+        group.error = "native fetch response stream exceeds its limit";
+        group.done = true;
+        for (const state of group.streams) {{
+          state.error = group.error;
+          state.done = true;
+          if (state.pendingRead) {{ state.pendingRead.reject(new Error(group.error)); state.pendingRead = null; }}
+        }}
+        rejectFetchStreamWaiters(group);
+        return null;
+      }}
+      group.chunks.push(bytes.slice());
+      group.totalBytes += bytes.length;
+      for (const state of group.streams) {{
+        if (state.cancelled) continue;
+        state.done = false;
+        if (state.pendingRead) {{
+          state.pendingRead.resolve({{ value: new Uint8Array(bytes.slice()), done: false }});
+          state.pendingRead = null;
+        }} else state.queued.push(bytes.slice());
+      }}
+      pushCommand({{ kind: "fetchStreamRead", stream_id: Number(streamId) }});
+    }} else if (type === "end") {{
+      group.done = true;
+      for (const state of group.streams) {{
+        state.done = true;
+        if (state.pendingRead) {{ state.pendingRead.resolve({{ value: undefined, done: true }}); state.pendingRead = null; }}
+      }}
+      settleFetchStreamWaiters(group);
+    }} else if (type === "error") {{
+      group.error = String(payload.message || "native fetch response stream failed");
+      group.done = true;
+      for (const state of group.streams) {{
+        state.error = group.error;
+        state.done = true;
+        if (state.pendingRead) {{ state.pendingRead.reject(new Error(group.error)); state.pendingRead = null; }}
+      }}
+      rejectFetchStreamWaiters(group);
+    }}
+    return null;
+  }};
+  globalThis.__glassFetchStreamGroups = fetchStreamGroups;
+  globalThis.__glassReadableStreamConstructor = ReadableStreamNative;
   globalThis.ReadableStream = ReadableStreamNative;
   const responseBodyBytes = (payload) => typeof payload.bodyBase64 === "string"
     ? decodeBase64(payload.bodyBase64)
@@ -8079,6 +8237,13 @@ fn document_bootstrap(
     blob._text = payload.body === undefined
       ? utf8TextFromBytes(blob._bytes)
       : String(payload.body);
+    blob.size = blob._bytes.length;
+    return blob;
+  }};
+  const responseBodyBlobFromBytes = (bytes, contentType) => {{
+    const blob = new BlobNative([], {{ type: contentType || "" }});
+    blob._bytes = bytes.slice();
+    blob._text = utf8TextFromBytes(blob._bytes);
     blob.size = blob._bytes.length;
     return blob;
   }};
@@ -8181,7 +8346,18 @@ fn document_bootstrap(
     const error = payload && payload.error === true;
     const filtered = opaque || opaqueRedirect || error;
     const bodyNull = payload && payload.bodyNull === true;
+    const streamId = payload && Number.isSafeInteger(Number(payload.bodyStreamId))
+      ? Number(payload.bodyStreamId)
+      : null;
     const opaqueBody = () => Promise.reject(nativeOpaqueResponseError());
+    const responseBodyPromise = (response) => {{
+      if (response.__glassFetchStreamId === null)
+        return Promise.resolve(responseBodyBytes(response.__glassPayload));
+      const group = fetchStreamGroup(response.__glassFetchStreamId);
+      if (group.error !== null) return Promise.reject(new Error(group.error));
+      if (group.done) return Promise.resolve(flattenFetchStream(group));
+      return new Promise((resolve, reject) => {{ group.waiters.push({{ resolve, reject }}); }});
+    }};
     const response = Object.create(ResponseNative.prototype);
     Object.assign(response, {{
       type: error ? "error" : opaqueRedirect ? "opaqueredirect" : (opaque ? "opaque" : "basic"),
@@ -8191,14 +8367,27 @@ fn document_bootstrap(
       url: filtered ? "" : payload.url,
       redirected: opaqueRedirect ? false : payload.redirected === true,
       headers: filtered ? responseHeaders([], null) : responseHeaders(payload.headers, payload.contentType),
-      body: filtered || bodyNull ? null : new ReadableStreamNative(responseBodyBytes(payload)),
+      body: filtered || bodyNull
+        ? null
+        : streamId === null
+          ? new ReadableStreamNative(responseBodyBytes(payload))
+          : new ReadableStreamNative([], streamId),
+      __glassPayload: payload,
+      __glassFetchStreamId: streamId,
       clone() {{ return responseFromFetch(payload); }},
-      text() {{ return filtered ? opaqueBody() : Promise.resolve(bodyNull ? "" : payload.body); }},
-      json() {{ return filtered ? opaqueBody() : Promise.resolve(JSON.parse(bodyNull ? "" : payload.body)); }},
-      blob() {{ return filtered ? opaqueBody() : Promise.resolve(responseBodyBlob(payload)); }},
-      arrayBuffer() {{ return filtered ? opaqueBody() : responseBodyBlob(payload).arrayBuffer(); }},
-      bytes() {{ return filtered ? opaqueBody() : responseBodyBlob(payload).bytes(); }},
+      text() {{ return filtered ? opaqueBody() : responseBodyPromise(this).then(bytes => utf8TextFromBytes(bytes)); }},
+      json() {{ return filtered ? opaqueBody() : responseBodyPromise(this).then(bytes => JSON.parse(utf8TextFromBytes(bytes))); }},
+      blob() {{ return filtered ? opaqueBody() : responseBodyPromise(this).then(bytes => responseBodyBlobFromBytes(bytes, payload.contentType)); }},
+      arrayBuffer() {{ return filtered ? opaqueBody() : responseBodyPromise(this).then(bytes => responseBodyBlobFromBytes(bytes, payload.contentType).arrayBuffer()); }},
+      bytes() {{ return filtered ? opaqueBody() : responseBodyPromise(this).then(bytes => new Uint8Array(bytes)); }},
     }});
+    if (streamId !== null && !filtered && !bodyNull) {{
+      const group = fetchStreamGroup(streamId);
+      if (!group.started) {{
+        group.started = true;
+        pushCommand({{ kind: "fetchStreamRead", stream_id: streamId }});
+      }}
+    }}
     return Object.freeze(response);
   }};
   const XMLHttpRequestNative = function() {{
@@ -15821,6 +16010,8 @@ fn document_bootstrap(
         websocket_close_reason_limit = MAX_NATIVE_WEBSOCKET_CLOSE_REASON_BYTES,
         eventsource_message_limit = MAX_NATIVE_EVENTSOURCE_MESSAGE_BYTES,
         eventsource_field_limit = MAX_NATIVE_EVENTSOURCE_FIELD_BYTES,
+        fetch_stream_chunk_limit = MAX_NATIVE_FETCH_STREAM_CHUNK_BYTES,
+        fetch_stream_body_limit = MAX_NATIVE_FETCH_STREAM_BODY_BYTES,
         dialog_text_limit = MAX_NATIVE_DIALOG_TEXT_BYTES,
         post_message_bytes_limit = MAX_NATIVE_POST_MESSAGE_BYTES,
         max_frame_window_indices = MAX_NATIVE_FRAME_SCRIPT_BINDINGS,

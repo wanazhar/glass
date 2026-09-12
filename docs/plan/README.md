@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-263` locally. The versioned
+`native-engine-browser-264` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -130,6 +130,15 @@ including readers released before close, and rejects it consistently when a
 source errors; reader cancellation shares the same terminal notification path.
 BYOB readers, piping, transfer strategies, and complete Streams/Web IDL parity
 remain open on issue #40.
+
+The completed native ReadableStream tee slice is
+[native-engine-browser-264](tasks/native-engine-browser-264.md). Native
+`ReadableStream.prototype.tee()` now shares one upstream reader across two
+bounded branches, propagates values and terminal errors/close, applies the
+existing queue bound as backpressure, and cancels the upstream only after both
+branches cancel. Page-created stream tee algorithms, BYOB readers, piping,
+transfer strategies, and complete Streams/Web IDL parity remain open on issue
+#40.
 
 The completed profile/contract task is
 [native-engine-browser-000](tasks/native-engine-browser-000.md). It freezes

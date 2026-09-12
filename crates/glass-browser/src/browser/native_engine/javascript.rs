@@ -8298,7 +8298,7 @@ fn document_bootstrap(
     response.__glassBodyState.used = true;
     markReadableStreamDisturbed(state);
     state.consumedByResponse = true;
-    state.queued = [];
+    if (!response.__glassResponseStreamBody) state.queued = [];
     return true;
   }};
   const responseBodyUnusable = () => Promise.reject(new TypeError("native Response body is unusable"));
@@ -8342,6 +8342,7 @@ fn document_bootstrap(
       cancelled: false,
       disturbed: false,
       consumedByResponse: false,
+      consumingResponseBody: false,
       consumedByRequest: false,
       consumingRequestBody: false,
       done: underlyingSource ? false : group ? group.done : true,
@@ -8400,7 +8401,7 @@ fn document_bootstrap(
       return {{ value: state.byteMode ? new Uint8Array(value) : value, done: false }};
     }};
     const read = () => {{
-      if (state.consumedByResponse) return responseBodyUnusable();
+      if (state.consumedByResponse && !state.consumingResponseBody) return responseBodyUnusable();
       if (state.consumedByRequest && !state.consumingRequestBody) return Promise.reject(new TypeError("native Request body is unusable"));
       markReadableStreamDisturbed(state);
       const queued = readQueued();
@@ -8780,12 +8781,17 @@ fn document_bootstrap(
       return Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
     throw new TypeError("native Request stream chunks must be byte data");
   }};
-  const nativeDrainReadableStream = (stream, claimed) => {{
+  const nativeDrainReadableStream = (stream, claimed, responseBody) => {{
     const state = readableStreamState(stream);
     if (!claimed && (state.locked || state.disturbed))
       return Promise.reject(new TypeError("native Request body stream is unusable"));
-    state.consumedByRequest = true;
-    state.consumingRequestBody = true;
+    if (responseBody) {{
+      state.consumedByResponse = true;
+      state.consumingResponseBody = true;
+    }} else {{
+      state.consumedByRequest = true;
+      state.consumingRequestBody = true;
+    }}
     if (!claimed) markReadableStreamDisturbed(state);
     let reader;
     try {{ reader = stream.getReader(); }}
@@ -8796,7 +8802,8 @@ fn document_bootstrap(
     const chunks = [];
     let totalBytes = 0;
     const release = () => {{
-      state.consumingRequestBody = false;
+      if (responseBody) state.consumingResponseBody = false;
+      else state.consumingRequestBody = false;
       reader.releaseLock();
     }};
     const readNext = () => reader.read().then(
@@ -8881,6 +8888,8 @@ fn document_bootstrap(
     const bodyNull = body === undefined || body === null;
     const bodyPayload = bodyNull
       ? {{ body: "", bodyBase64: encodeBase64([]), contentType: null }}
+      : body && body.__glassReadableStream === true
+        ? {{ body: "", bodyBase64: null, contentType: null, bodyStream: body }}
       : body && body.__glassNativeBlob === true
         ? {{ body: body._text, bodyBase64: encodeBase64(blobBytes(body)), contentType: body.type || null }}
         : body && body.__glassUrlSearchParams === true
@@ -8901,6 +8910,7 @@ fn document_bootstrap(
       contentType: bodyPayload.contentType,
       body: bodyPayload.body,
       bodyBase64: bodyPayload.bodyBase64,
+      bodyStream: bodyPayload.bodyStream || null,
       bodyNull,
       redirected: false,
       opaque: false,
@@ -8909,7 +8919,10 @@ fn document_bootstrap(
   }};
   const ResponseNative = function(body, options) {{
     if (!(this instanceof ResponseNative)) throw new TypeError("native Response requires new");
-    if (body && body.__glassReadableStream === true) throw new TypeError("native Response stream bodies are unsupported");
+    if (body && body.__glassReadableStream === true) {{
+      const state = readableStreamState(body);
+      if (state.locked || state.disturbed) throw new TypeError("native Response body stream is unusable");
+    }}
     return responseFromFetch(responseConstructorPayload(body, options));
   }};
   ResponseNative.prototype.constructor = ResponseNative;
@@ -8966,12 +8979,17 @@ fn document_bootstrap(
     const error = payload && payload.error === true;
     const filtered = opaque || opaqueRedirect || error;
     const bodyNull = payload && payload.bodyNull === true;
+    const bodyStream = payload && payload.bodyStream && payload.bodyStream.__glassReadableStream === true
+      ? payload.bodyStream
+      : null;
     const streamId = payload && Number.isSafeInteger(Number(payload.bodyStreamId))
       ? Number(payload.bodyStreamId)
       : null;
     const opaqueBody = () => Promise.reject(nativeOpaqueResponseError());
     const responseBodyPromise = (response) => {{
       if (!responseBodyUse(response)) return responseBodyUnusable();
+      if (response.__glassResponseStreamBody)
+        return nativeDrainReadableStream(response.body, true, true);
       if (response.__glassFetchStreamId === null)
         return Promise.resolve(responseBodyBytes(response.__glassPayload));
       const group = fetchStreamGroup(response.__glassFetchStreamId);
@@ -8994,15 +9012,24 @@ fn document_bootstrap(
       headers: filtered ? responseHeaders([], null) : responseHeaders(payload.headers, payload.contentType),
       body: filtered || bodyNull
         ? null
+        : bodyStream
+          ? bodyStream
         : streamId === null
           ? new ReadableStreamNative(responseBodyBytes(payload))
           : new ReadableStreamNative([], streamId),
       __glassPayload: payload,
       __glassFetchStreamId: streamId,
+      __glassResponseStreamBody: bodyStream !== null,
       clone() {{
         const body = this.body;
         if (body && (responseBodyIsUsed(this) || readableStreamState(body).locked))
           throw new TypeError("native Response body is unusable");
+        if (this.__glassResponseStreamBody) {{
+          const [sourceBody, cloneBody] = body.tee();
+          this.__glassPayload.bodyStream = sourceBody;
+          this.__glassResponseBodyState.stream = sourceBody;
+          return responseFromFetch(Object.assign({{}}, this.__glassPayload, {{ bodyStream: cloneBody }}));
+        }}
         return responseFromFetch(payload);
       }},
       text() {{ return filtered ? opaqueBody() : responseBodyPromise(this).then(bytes => utf8TextFromBytes(bytes)); }},
@@ -9011,6 +9038,15 @@ fn document_bootstrap(
       arrayBuffer() {{ return filtered ? opaqueBody() : responseBodyPromise(this).then(bytes => responseBodyBlobFromBytes(bytes, payload.contentType).arrayBuffer()); }},
       bytes() {{ return filtered ? opaqueBody() : responseBodyPromise(this).then(bytes => new Uint8Array(bytes)); }},
     }});
+    if (bodyStream) {{
+      const responseBodyState = {{ stream: bodyStream }};
+      Object.defineProperty(response, "__glassResponseBodyState", {{ value: responseBodyState }});
+      Object.defineProperty(response, "body", {{
+        configurable: true,
+        enumerable: true,
+        get() {{ return responseBodyState.stream; }},
+      }});
+    }}
     defineResponseBodyState(response);
     if (streamId !== null && !filtered && !bodyNull) {{
       const group = fetchStreamGroup(streamId);

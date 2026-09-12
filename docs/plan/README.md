@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-240` locally. The versioned
+`native-engine-browser-241` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -2097,6 +2097,12 @@ owner and preserving child event/effect ownership. Capture and input now share
 the same clipped source offset, so parent scrolling keeps pixels and pointer
 coordinates aligned. Exact evidence is recorded in
 [native-engine-browser-240](tasks/native-engine-browser-240.md).
+
+The completed native-engine-browser-241 slice preserves focused input across
+native frame boundaries. Successful nested point clicks establish a target-
+local focused frame, later key actions route to that child engine, and frame
+rebuilds clear stale focus identities. Exact evidence is recorded in
+[native-engine-browser-241](tasks/native-engine-browser-241.md).
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` now returns persistent `Attr`

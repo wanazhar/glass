@@ -48,9 +48,9 @@ an element layered above it.
 Point routing remains integer-pixel and uses the existing bounded frame-tree
 limit. It does not add a second event model or select a child frame as the
 public active browsing context; explicit frame selection remains the route
-control for DOM/script operations. Automatic focus-context routing for later
-keyboard actions, frame-sized viewport negotiation, and complete compositor
-transforms remain subsequent Issue #40 work.
+control for DOM/script operations. Frame-sized viewport negotiation and
+complete compositor transforms remain subsequent Issue #40 work. Focused key
+ownership is recorded in the following 241 slice.
 
 ## Verification
 

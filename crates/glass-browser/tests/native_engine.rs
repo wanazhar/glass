@@ -30706,7 +30706,7 @@ async fn native_backend_routes_point_clicks_into_nested_frame_content() {
         .unwrap()
         .with_fixture(
             "fixture://frame-click-grand",
-            "<button id='inside' style='display:block;width:8px;height:6px'>inside</button>",
+            "<input id='inside' style='display:block;width:8px;height:6px' value='before'>",
         )
         .unwrap()
         .with_initial_url("fixture://frame-click-parent");
@@ -30726,19 +30726,30 @@ async fn native_backend_routes_point_clicks_into_nested_frame_content() {
     assert!(clicked.accepted);
     assert_eq!(clicked.revision, 2);
 
+    let typed = dispatcher
+        .action(ActionRequest {
+            context_id: "native-context".into(),
+            action: SemanticAction::KeyPress { key: "a".into() },
+        })
+        .await
+        .unwrap();
+    assert!(typed.accepted);
+    assert_eq!(typed.revision, 3);
+
     let frames = backend.list_frames().await.unwrap();
     let child = frames
         .iter()
         .find(|frame| frame.url == "fixture://frame-click-grand")
         .unwrap();
     backend.select_frame(&child.id).await.unwrap();
-    let inside = backend
-        .semantic_nodes()
-        .unwrap()
-        .into_iter()
-        .find(|node| node.name == "inside")
+    let value = dispatcher
+        .script(ScriptRequest {
+            context_id: "native-context".into(),
+            source: "document.getElementById('inside').value".into(),
+        })
+        .await
         .unwrap();
-    assert!(inside.focused);
+    assert_eq!(value.value, serde_json::json!("beforea"));
     dispatcher.close().await.unwrap();
 }
 

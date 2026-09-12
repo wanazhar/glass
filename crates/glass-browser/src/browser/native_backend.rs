@@ -54,6 +54,7 @@ struct NativeFrameState {
     active_frame_id: String,
     active_parent_id: Option<String>,
     active_owner_node_index: Option<u32>,
+    focused_frame_id: Option<String>,
     parked: BTreeMap<String, NativeParkedFrame>,
     next_frame_number: u64,
     discovered_generation: Option<u32>,
@@ -65,6 +66,7 @@ impl NativeFrameState {
             active_frame_id: native_main_frame_id(target_id),
             active_parent_id: None,
             active_owner_node_index: None,
+            focused_frame_id: None,
             parked: BTreeMap::new(),
             next_frame_number: 1,
             discovered_generation: None,
@@ -76,6 +78,7 @@ impl NativeFrameState {
             active_frame_id: String::new(),
             active_parent_id: None,
             active_owner_node_index: None,
+            focused_frame_id: None,
             parked: BTreeMap::new(),
             next_frame_number: 1,
             discovered_generation: None,
@@ -281,6 +284,9 @@ impl NativeEngineBackend {
             .apply_action_to_native_frame(route, &frame_id, action, &proxy_updates)
             .await?;
         self.sync_target_name(&owner_id, &runtime_effects.window_name)?;
+        if accepted {
+            self.set_active_frame_focus(&frame_id)?;
+        }
         self.process_selected_frame_events(&frame_id, runtime_effects.events)
             .await?;
         self.process_pending_frame_scripts(runtime_effects.frame_scripts)
@@ -403,6 +409,78 @@ impl NativeEngineBackend {
                 Ok((outcome.revision, outcome.accepted, runtime, target_id))
             }
         }
+    }
+
+    async fn dispatch_focused_frame_action(
+        &self,
+        context_id: &str,
+        action: NativeAction,
+    ) -> Result<Option<BackendResponse>, BrowserBackendError> {
+        let frame_id =
+            {
+                let mut targets = self.lock_targets(BackendOperation::Action)?;
+                let active_context_id = targets.active_target_id.clone().ok_or_else(|| {
+                    BrowserBackendError::Lifecycle {
+                        operation: "action".into(),
+                        state: "no-target-selected".into(),
+                        reason: "select an available native page target before key input".into(),
+                    }
+                })?;
+                require_context_id(context_id, &active_context_id)?;
+                let engine = self.lock_engine_raw(BackendOperation::Action)?;
+                let root_frame_id = targets.active_frames.active_frame_id.clone();
+                reconcile_native_frames(&mut targets.active_frames, &engine).await?;
+                let Some(focused_frame_id) = targets.active_frames.focused_frame_id.clone() else {
+                    return Ok(None);
+                };
+                if focused_frame_id == root_frame_id
+                    || !targets.active_frames.parked.contains_key(&focused_frame_id)
+                {
+                    return Ok(None);
+                }
+                focused_frame_id
+            };
+        let route =
+            self.frame_route(&frame_id)?
+                .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                    reason: "native focused frame disappeared before key dispatch".into(),
+                })?;
+        let proxy_updates = self.window_proxy_updates(&frame_id)?;
+        let (revision, accepted, runtime_effects, owner_id) = self
+            .apply_action_to_native_frame(route, &frame_id, action, &proxy_updates)
+            .await?;
+        self.sync_target_name(&owner_id, &runtime_effects.window_name)?;
+        self.process_selected_frame_events(&frame_id, runtime_effects.events)
+            .await?;
+        self.process_pending_frame_scripts(runtime_effects.frame_scripts)
+            .await?;
+        self.process_pending_browser_effects(
+            runtime_effects.browser.0,
+            runtime_effects.browser.1,
+            runtime_effects.browser.2,
+            runtime_effects.browser.3,
+        )
+        .await?;
+        Ok(Some(BackendResponse::Action(ActionResult {
+            context_id: context_id.to_owned(),
+            revision,
+            accepted,
+        })))
+    }
+
+    fn set_active_frame_focus(&self, frame_id: &str) -> Result<(), BrowserBackendError> {
+        validate_native_topology_id(frame_id)?;
+        let mut targets = self.lock_targets(BackendOperation::Action)?;
+        if targets.active_target_id.is_none()
+            || (targets.active_frames.active_frame_id != frame_id
+                && !targets.active_frames.parked.contains_key(frame_id))
+        {
+            return Err(BrowserBackendError::SelectionFailed {
+                reason: "native focus frame is no longer attached".into(),
+            });
+        }
+        targets.active_frames.focused_frame_id = Some(frame_id.to_owned());
+        Ok(())
     }
 
     /// Return a side-effect-free, revision-bound target preflight result.
@@ -2219,6 +2297,7 @@ impl NativeEngineBackend {
             })?;
         let mut targets = self.lock_targets(BackendOperation::Contexts)?;
         if targets.active_frames.active_frame_id == frame_id {
+            targets.active_frames.focused_frame_id = Some(frame_id.to_owned());
             let engine = self.lock_engine_raw(BackendOperation::Contexts)?;
             return project_native_frame(
                 &engine,
@@ -2249,6 +2328,7 @@ impl NativeEngineBackend {
             &mut targets.active_frames.active_owner_node_index,
             owner_node_index,
         );
+        targets.active_frames.focused_frame_id = Some(frame_id.to_owned());
         targets.active_frames.discovered_generation =
             Some(active_engine.document_generation().map_err(native_error)?);
         targets.active_frames.parked.insert(
@@ -2499,6 +2579,30 @@ impl BrowserBackend for NativeEngineBackend {
             {
                 return Ok(response);
             }
+            if let (BackendOperation::Action, BackendRequest::Action(action_request)) =
+                (&operation, &request)
+            {
+                let focused_action = match &action_request.action {
+                    SemanticAction::KeyDown { key } => {
+                        Some(NativeAction::KeyDown { key: key.clone() })
+                    }
+                    SemanticAction::KeyUp { key } => Some(NativeAction::KeyUp { key: key.clone() }),
+                    SemanticAction::Shortcut { shortcut } => Some(NativeAction::Shortcut {
+                        shortcut: shortcut.clone(),
+                    }),
+                    SemanticAction::KeyPress { key } => {
+                        Some(NativeAction::KeyPress { key: key.clone() })
+                    }
+                    _ => None,
+                };
+                if let Some(focused_action) = focused_action
+                    && let Some(response) = self
+                        .dispatch_focused_frame_action(&action_request.context_id, focused_action)
+                        .await?
+                {
+                    return Ok(response);
+                }
+            }
             let mut engine = self.lock_engine(operation)?;
             if let Some(proxy_updates) = proxy_updates.as_deref() {
                 engine
@@ -2598,6 +2702,19 @@ impl BrowserBackend for NativeEngineBackend {
                 }
                 (BackendOperation::Action, BackendRequest::Action(request)) => {
                     require_context_id(&request.context_id, &active_context_id)?;
+                    let updates_focus = matches!(
+                        &request.action,
+                        SemanticAction::Click { .. }
+                            | SemanticAction::Type { .. }
+                            | SemanticAction::Clear { .. }
+                            | SemanticAction::Check { .. }
+                            | SemanticAction::Uncheck { .. }
+                            | SemanticAction::Select { .. }
+                            | SemanticAction::KeyDown { .. }
+                            | SemanticAction::KeyUp { .. }
+                            | SemanticAction::Shortcut { .. }
+                            | SemanticAction::KeyPress { .. }
+                    );
                     let action = match request.action {
                         SemanticAction::Click { target } => NativeAction::Click { target },
                         SemanticAction::Type { target, text } => {
@@ -2632,6 +2749,9 @@ impl BrowserBackend for NativeEngineBackend {
                     let window_name = engine.config().window_name.clone();
                     drop(engine);
                     self.sync_target_name(&active_context_id, &window_name)?;
+                    if updates_focus && let Some(frame_id) = selected_frame_id.as_deref() {
+                        self.set_active_frame_focus(frame_id)?;
+                    }
                     if let Some(frame_id) = selected_frame_id.as_deref() {
                         self.process_selected_frame_events(frame_id, event_effects)
                             .await?;
@@ -3369,6 +3489,13 @@ async fn reconcile_native_frames(
         }
     }
     frames.parked.extend(created);
+    if frames
+        .focused_frame_id
+        .as_deref()
+        .is_some_and(|focused| focused != active_frame_id && !frames.parked.contains_key(focused))
+    {
+        frames.focused_frame_id = Some(active_frame_id.clone());
+    }
     frames.discovered_generation = Some(generation);
     Ok(())
 }

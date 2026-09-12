@@ -348,7 +348,7 @@ fn image_paint_command(
         rect: bounds,
         source_width: image.width,
         source_height: image.height,
-        pixels: image.pixels,
+        pixels: image.current_pixels().to_vec(),
         clip,
     })
 }
@@ -372,7 +372,7 @@ fn background_image_paint_command(
         rect: bounds,
         source_width: image.width,
         source_height: image.height,
-        pixels: image.pixels,
+        pixels: image.current_pixels().to_vec(),
         clip,
     })
 }

@@ -3,8 +3,8 @@ use super::css::{NativeStylesheet, collect_background_image_sources};
 use super::diagnostics::{NativeDiagnostic, NativeDiagnosticSink, NativeDiagnosticSource};
 use super::error::NativeEngineError;
 use super::image::{
-    MAX_NATIVE_IMAGE_TRANSFER_BYTES, MAX_NATIVE_IMAGE_TRANSFER_PIXELS, NativeImage,
-    NativeImageResource, decode_data_image,
+    MAX_NATIVE_IMAGE_FRAMES, MAX_NATIVE_IMAGE_TRANSFER_BYTES, MAX_NATIVE_IMAGE_TRANSFER_PIXELS,
+    NativeImage, NativeImageFrame, NativeImageResource, decode_data_image,
 };
 use super::interaction::{NativeEventKind, validate_native_edit_key, validate_native_key};
 use super::javascript::NativeScriptCommand;
@@ -181,6 +181,16 @@ pub(crate) struct NativeImageResourceWire {
     pub(crate) source: String,
     pub(crate) width: u32,
     pub(crate) height: u32,
+    pub(crate) pixels_base64: String,
+    #[serde(default)]
+    pub(crate) frames: Vec<NativeImageFrameWire>,
+    #[serde(default)]
+    pub(crate) loop_count: Option<u16>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct NativeImageFrameWire {
+    pub(crate) delay_ms: u32,
     pub(crate) pixels_base64: String,
 }
 
@@ -478,6 +488,132 @@ pub struct NativeDocument {
     image_loads: BTreeMap<u32, String>,
     background_image_sources: BTreeMap<u32, String>,
     background_image_resources: BTreeMap<u32, NativeImageResource>,
+}
+
+fn image_from_wire(
+    resource: &NativeImageResourceWire,
+    max_encoded_bytes: usize,
+) -> Result<NativeImage, NativeEngineError> {
+    let expected_bytes = usize::try_from(resource.width)
+        .ok()
+        .and_then(|width| width.checked_mul(usize::try_from(resource.height).ok()?))
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| NativeEngineError::limit("content-process image pixels", 0, usize::MAX))?;
+    if resource.width == 0
+        || resource.height == 0
+        || expected_bytes > MAX_NATIVE_IMAGE_TRANSFER_BYTES
+        || expected_bytes / 4 > MAX_NATIVE_IMAGE_TRANSFER_PIXELS
+    {
+        return Err(NativeEngineError::limit(
+            "content-process image pixels",
+            MAX_NATIVE_IMAGE_TRANSFER_BYTES,
+            expected_bytes,
+        ));
+    }
+    let encoded_bytes = resource
+        .frames
+        .iter()
+        .try_fold(resource.pixels_base64.len(), |total, frame| {
+            total.checked_add(frame.pixels_base64.len())
+        })
+        .ok_or_else(|| NativeEngineError::limit("content-process image payload", 0, usize::MAX))?;
+    if encoded_bytes > max_encoded_bytes {
+        return Err(NativeEngineError::limit(
+            "content-process image payload",
+            max_encoded_bytes,
+            encoded_bytes,
+        ));
+    }
+    if resource.frames.len() > MAX_NATIVE_IMAGE_FRAMES {
+        return Err(NativeEngineError::limit(
+            "content-process image frames",
+            MAX_NATIVE_IMAGE_FRAMES,
+            resource.frames.len(),
+        ));
+    }
+    let pixels = base64::engine::general_purpose::STANDARD
+        .decode(&resource.pixels_base64)
+        .map_err(|_| NativeEngineError::Parse {
+            offset: 0,
+            reason: "content process returned invalid image pixels".into(),
+        })?;
+    if pixels.len() != expected_bytes {
+        return Err(NativeEngineError::Parse {
+            offset: 0,
+            reason: "content process returned image pixels with the wrong dimensions".into(),
+        });
+    }
+    if resource.frames.is_empty() {
+        if resource.loop_count.is_some() {
+            return Err(NativeEngineError::Parse {
+                offset: 0,
+                reason: "content process returned loop metadata without image frames".into(),
+            });
+        }
+        return Ok(NativeImage::new(resource.width, resource.height, pixels));
+    }
+    let mut frames = Vec::with_capacity(resource.frames.len());
+    for frame in &resource.frames {
+        if frame.delay_ms == 0 || frame.delay_ms > super::image::MAX_NATIVE_IMAGE_FRAME_DELAY_MS {
+            return Err(NativeEngineError::Parse {
+                offset: 0,
+                reason: "content process returned an invalid image frame delay".into(),
+            });
+        }
+        let frame_pixels = base64::engine::general_purpose::STANDARD
+            .decode(&frame.pixels_base64)
+            .map_err(|_| NativeEngineError::Parse {
+                offset: 0,
+                reason: "content process returned invalid image frame pixels".into(),
+            })?;
+        if frame_pixels.len() != expected_bytes {
+            return Err(NativeEngineError::Parse {
+                offset: 0,
+                reason: "content process returned image frame pixels with the wrong dimensions"
+                    .into(),
+            });
+        }
+        frames.push(NativeImageFrame {
+            delay_ms: frame.delay_ms,
+            pixels: frame_pixels,
+        });
+    }
+    let decoded_frame_bytes = frames
+        .iter()
+        .try_fold(0_usize, |total, frame| {
+            total.checked_add(frame.pixels.len())
+        })
+        .ok_or_else(|| NativeEngineError::limit("content-process image frames", 0, usize::MAX))?;
+    if decoded_frame_bytes > MAX_NATIVE_IMAGE_TRANSFER_BYTES {
+        return Err(NativeEngineError::limit(
+            "content-process image frames",
+            MAX_NATIVE_IMAGE_TRANSFER_BYTES,
+            decoded_frame_bytes,
+        ));
+    }
+    if frames.first().is_none_or(|frame| frame.pixels != pixels) {
+        return Err(NativeEngineError::Parse {
+            offset: 0,
+            reason: "content process returned a current image frame mismatch".into(),
+        });
+    }
+    let image =
+        NativeImage::with_frames(resource.width, resource.height, frames, resource.loop_count)
+            .ok_or_else(|| NativeEngineError::Parse {
+                offset: 0,
+                reason: "content process returned invalid image animation metadata".into(),
+            })?;
+    if image
+        .decoded_bytes()
+        .is_none_or(|decoded_bytes| decoded_bytes > MAX_NATIVE_IMAGE_TRANSFER_BYTES)
+    {
+        return Err(NativeEngineError::limit(
+            "content-process image frames",
+            MAX_NATIVE_IMAGE_TRANSFER_BYTES,
+            image.decoded_bytes().unwrap_or(usize::MAX),
+        ));
+    }
+    Ok(image)
 }
 
 impl NativeDocument {
@@ -922,16 +1058,19 @@ impl NativeDocument {
             .and_then(|width| width.checked_mul(usize::try_from(image.height).ok()?))
             .and_then(|pixels| pixels.checked_mul(4))
             .ok_or_else(|| NativeEngineError::limit("external image pixels", 0, usize::MAX))?;
+        let decoded_bytes = image
+            .decoded_bytes()
+            .ok_or_else(|| NativeEngineError::limit("external image frames", 0, usize::MAX))?;
         if image.width == 0
             || image.height == 0
             || expected_bytes != image.pixels.len()
-            || expected_bytes > MAX_NATIVE_IMAGE_TRANSFER_BYTES
+            || decoded_bytes > MAX_NATIVE_IMAGE_TRANSFER_BYTES
             || expected_bytes / 4 > MAX_NATIVE_IMAGE_TRANSFER_PIXELS
         {
             return Err(NativeEngineError::limit(
                 "external image pixels",
                 MAX_NATIVE_IMAGE_TRANSFER_BYTES,
-                expected_bytes,
+                decoded_bytes,
             ));
         }
         let node_id = NativeNodeId::from_parts(self.generation, node_index);
@@ -978,16 +1117,19 @@ impl NativeDocument {
             .and_then(|width| width.checked_mul(usize::try_from(image.height).ok()?))
             .and_then(|pixels| pixels.checked_mul(4))
             .ok_or_else(|| NativeEngineError::limit("background image pixels", 0, usize::MAX))?;
+        let decoded_bytes = image
+            .decoded_bytes()
+            .ok_or_else(|| NativeEngineError::limit("background image frames", 0, usize::MAX))?;
         if image.width == 0
             || image.height == 0
             || expected_bytes != image.pixels.len()
-            || expected_bytes > MAX_NATIVE_IMAGE_TRANSFER_BYTES
+            || decoded_bytes > MAX_NATIVE_IMAGE_TRANSFER_BYTES
             || expected_bytes / 4 > MAX_NATIVE_IMAGE_TRANSFER_PIXELS
         {
             return Err(NativeEngineError::limit(
                 "background image pixels",
                 MAX_NATIVE_IMAGE_TRANSFER_BYTES,
-                expected_bytes,
+                decoded_bytes,
             ));
         }
         let node_id = NativeNodeId::from_parts(self.generation, node_index);
@@ -1089,6 +1231,17 @@ impl NativeDocument {
                     height: resource.image.height,
                     pixels_base64: base64::engine::general_purpose::STANDARD
                         .encode(&resource.image.pixels),
+                    frames: resource
+                        .image
+                        .frames
+                        .iter()
+                        .map(|frame| NativeImageFrameWire {
+                            delay_ms: frame.delay_ms,
+                            pixels_base64: base64::engine::general_purpose::STANDARD
+                                .encode(&frame.pixels),
+                        })
+                        .collect(),
+                    loop_count: resource.image.loop_count,
                 })
             })
             .collect();
@@ -1124,6 +1277,17 @@ impl NativeDocument {
                         height: resource.image.height,
                         pixels_base64: base64::engine::general_purpose::STANDARD
                             .encode(&resource.image.pixels),
+                        frames: resource
+                            .image
+                            .frames
+                            .iter()
+                            .map(|frame| NativeImageFrameWire {
+                                delay_ms: frame.delay_ms,
+                                pixels_base64: base64::engine::general_purpose::STANDARD
+                                    .encode(&frame.pixels),
+                            })
+                            .collect(),
+                        loop_count: resource.image.loop_count,
                     })
             })
             .collect();
@@ -1386,47 +1550,13 @@ impl NativeDocument {
                         .into(),
                 });
             }
-            let expected_bytes = usize::try_from(resource.width)
-                .ok()
-                .and_then(|width| width.checked_mul(usize::try_from(resource.height).ok()?))
-                .and_then(|pixels| pixels.checked_mul(4))
-                .ok_or_else(|| {
-                    NativeEngineError::limit("content-process image pixels", 0, usize::MAX)
-                })?;
-            if resource.width == 0
-                || resource.height == 0
-                || expected_bytes > MAX_NATIVE_IMAGE_TRANSFER_BYTES
-                || expected_bytes / 4 > MAX_NATIVE_IMAGE_TRANSFER_PIXELS
-            {
-                return Err(NativeEngineError::limit(
-                    "content-process image pixels",
-                    MAX_NATIVE_IMAGE_TRANSFER_BYTES,
-                    expected_bytes,
-                ));
-            }
-            let pixels = base64::engine::general_purpose::STANDARD
-                .decode(resource.pixels_base64)
-                .map_err(|_| NativeEngineError::Parse {
-                    offset: 0,
-                    reason: "content process returned invalid image pixels".into(),
-                })?;
-            if pixels.len() != expected_bytes {
-                return Err(NativeEngineError::Parse {
-                    offset: 0,
-                    reason: "content process returned image pixels with the wrong dimensions"
-                        .into(),
-                });
-            }
+            let image = image_from_wire(&resource, max_encoded_pixels)?;
             if image_resources
                 .insert(
                     resource.node_index,
                     NativeImageResource {
                         source: resource.source,
-                        image: NativeImage {
-                            width: resource.width,
-                            height: resource.height,
-                            pixels,
-                        },
+                        image,
                     },
                 )
                 .is_some()
@@ -1501,52 +1631,13 @@ impl NativeDocument {
                             .into(),
                 });
             }
-            let expected_bytes = usize::try_from(resource.width)
-                .ok()
-                .and_then(|width| width.checked_mul(usize::try_from(resource.height).ok()?))
-                .and_then(|pixels| pixels.checked_mul(4))
-                .ok_or_else(|| {
-                    NativeEngineError::limit(
-                        "content-process background image pixels",
-                        0,
-                        usize::MAX,
-                    )
-                })?;
-            if resource.width == 0
-                || resource.height == 0
-                || expected_bytes > MAX_NATIVE_IMAGE_TRANSFER_BYTES
-                || expected_bytes / 4 > MAX_NATIVE_IMAGE_TRANSFER_PIXELS
-            {
-                return Err(NativeEngineError::limit(
-                    "content-process background image pixels",
-                    MAX_NATIVE_IMAGE_TRANSFER_BYTES,
-                    expected_bytes,
-                ));
-            }
-            let pixels = base64::engine::general_purpose::STANDARD
-                .decode(resource.pixels_base64)
-                .map_err(|_| NativeEngineError::Parse {
-                    offset: 0,
-                    reason: "content process returned invalid background image pixels".into(),
-                })?;
-            if pixels.len() != expected_bytes {
-                return Err(NativeEngineError::Parse {
-                    offset: 0,
-                    reason:
-                        "content process returned background image pixels with the wrong dimensions"
-                            .into(),
-                });
-            }
+            let image = image_from_wire(&resource, max_encoded_pixels)?;
             if background_image_resources
                 .insert(
                     resource.node_index,
                     NativeImageResource {
                         source: resource.source,
-                        image: NativeImage {
-                            width: resource.width,
-                            height: resource.height,
-                            pixels,
-                        },
+                        image,
                     },
                 )
                 .is_some()

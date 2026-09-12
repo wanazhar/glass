@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-233` slice; the bounded foundation below remains
+`native-engine-browser-234` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -21,7 +21,7 @@ bounded-inherited-word-spacing/bounded-inherited-letter-spacing/
 bounded-inherited-font-weight/bounded-inherited-font-style/
 bounded-inherited-word-break slices,
 bounded-text-overflow/bounded-vertical-align/bounded-flex-row/
-bounded-grid-track-layout/bounded-relative-positioning/bounded-absolute-positioning/bounded-fixed-positioning/
+bounded-grid-track-layout/bounded-relative-positioning/bounded-absolute-positioning/bounded-fixed-positioning/bounded-sticky-positioning/
 bounded-inline-svg-shape-paint/
 bounded-inline-svg-stroke-paint/
 bounded-svg-line-polygon-paint/
@@ -5522,6 +5522,17 @@ viewport subtraction; fixed roots also stop ordinary ancestor overflow clips.
 This keeps paint, raster, capture, script geometry, and hit testing anchored at
 the viewport without a second rendering path. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-233.md`.
+
+The completed native-engine-browser-234 slice adds the first scroll-anchored
+flow projection for `position: sticky`. Sticky roots remain in normal block,
+flex, and grid allocation while a root-scroll snapshot applies one bounded
+signed translation to the complete emitted subtree. The translation is clamped
+by the root scrollport and nearest layout ancestor, and aggregate overflow
+clips are rebuilt from the projected boxes so sticky-owned clips move with the
+subtree while ancestor clips do not. The existing display-list, software
+raster, capture, script-geometry, and hit-test owners consume the same output;
+no second renderer or process boundary is introduced. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-234.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

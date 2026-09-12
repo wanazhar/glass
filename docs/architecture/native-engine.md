@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-235` slice; the bounded foundation below remains
+`native-engine-browser-236` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5541,6 +5541,14 @@ list stably orders those levels, opacity groups stay atomic at their outer
 level, and hit testing applies the same level/depth/source-order precedence.
 Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-235.md`.
+
+The completed native-engine-browser-236 slice adds inherited
+`pointer-events:auto|none` to the shared CSS and hit-test contract. Resolved
+targetability is carried by layout boxes, so a visual overlay can remain
+painted while pointer targeting passes through it; an explicit `auto`
+descendant can still receive the target through an inherited `none` ancestor.
+Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-236.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

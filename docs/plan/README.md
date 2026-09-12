@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-226` locally. The versioned
+`native-engine-browser-227` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1983,6 +1983,14 @@ the same local data-URL, HTTP(S) content-process, image paint, and typed-wire
 owners as GIF. Frame count, canvas pixels, decoder output, and retained-frame
 bytes remain bounded before publication. Exact evidence is recorded in
 [native-engine-browser-226](tasks/native-engine-browser-226.md).
+
+The completed native-engine-browser-227 slice adds bounded APNG playback
+through the existing PNG decoder. APNG subframes now honor logical-canvas
+offsets, source/over blending, none/background/previous disposal, normalized
+delays, and finite/infinite loop metadata across local data URLs and HTTP(S)
+content-process image resources. `image/apng` is accepted by source selection
+and the typed transfer path under the same frame and memory limits. Exact
+evidence is recorded in [native-engine-browser-227](tasks/native-engine-browser-227.md).
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` now returns persistent `Attr`

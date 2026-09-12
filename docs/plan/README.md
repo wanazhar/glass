@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-238` locally. The versioned
+`native-engine-browser-239` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -2083,6 +2083,13 @@ scrollers, and restore valid nested positions; HTTP(S) traversal synchronizes
 the restored pair into the content process before lifecycle events. Exact
 evidence is recorded in
 [native-engine-browser-238](tasks/native-engine-browser-238.md).
+
+The completed native-engine-browser-239 slice composes live child-frame native
+surfaces into the visible parent capture, recursively through nested frames.
+Async backend/runtime, CLI, and MCP capture paths discover frames before
+rasterization, and the public capability profile now reflects the completed
+nested-scroll and IndexedDB owners. Exact evidence is recorded in
+[native-engine-browser-239](tasks/native-engine-browser-239.md).
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` now returns persistent `Attr`

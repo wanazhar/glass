@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-238` slice; the bounded foundation below remains
+`native-engine-browser-239` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -13,7 +13,7 @@ bounded-descendant-selectors/bounded-overflow-clip/bounded-hard-line-breaks/
 bounded-pre-line-breaks/bounded-preformatted-whitespace/
 bounded-pre-wrap-whitespace/bounded-nowrap-whitespace/bounded-inherited-line-height/
 bounded-clip-aware-root-overflow/bounded-axis-specific-overflow/
-bounded-nested-scrolling-and-scroll-events/bounded-history-nested-scroll-restoration/
+bounded-nested-scrolling-and-scroll-events/bounded-history-nested-scroll-restoration/bounded-native-frame-surface-composition/
 bounded-min-max-dimensions/bounded-opacity-groups/bounded-text-alignment/
 bounded-functional-alpha-colors/bounded-fixed-cell-text-decoration/
 bounded-inherited-text-transform/bounded-first-line-text-indent/
@@ -5570,6 +5570,16 @@ target layout and discards stale scrollers. The content process receives the
 restored pair before `popstate` and later script evaluation, so local and
 HTTP(S) traversal expose the same scroll state. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-238.md`.
+
+The completed native-engine-browser-239 slice connects the existing live frame
+owners to capture. Async native capture reconciles the selected frame tree,
+rasterizes each child with its own native engine, and clips nested child
+surfaces into the parent iframe/frame layout box. Runtime, CLI, MCP, and backend
+capture routes use the same discovery/composition owner, and the public
+capability profile no longer claims nested scrolling or IndexedDB are absent.
+Integer-pixel scaling, transforms, parent-overlay stacking, and full browser
+frame paint ordering remain later promotion work. Exact evidence is recorded
+in `docs/plan/tasks/native-engine-browser-239.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

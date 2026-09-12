@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-234`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-235`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -3727,6 +3727,14 @@ clips so sticky-owned clips move with the subtree while ancestor clips remain
 stationary. Paint, raster, capture, script geometry, and hit testing consume
 that one projected geometry. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-234.md`.
+
+The completed native-engine-browser-235 slice closes the first explicit
+stacking-order gap. The typed CSS cascade accepts bounded integer or `auto`
+`z-index` values; positioned elements and direct flex/grid items carry an
+effective stacking level into layout boxes and text runs. Paint order stably
+sorts those levels while preserving opacity groups as atomic outer contexts,
+and point hit testing uses the same level/depth/source-order tuple. Exact
+evidence is in `docs/plan/tasks/native-engine-browser-235.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

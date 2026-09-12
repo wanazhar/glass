@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-234` slice; the bounded foundation below remains
+`native-engine-browser-235` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -21,7 +21,7 @@ bounded-inherited-word-spacing/bounded-inherited-letter-spacing/
 bounded-inherited-font-weight/bounded-inherited-font-style/
 bounded-inherited-word-break slices,
 bounded-text-overflow/bounded-vertical-align/bounded-flex-row/
-bounded-grid-track-layout/bounded-relative-positioning/bounded-absolute-positioning/bounded-fixed-positioning/bounded-sticky-positioning/
+bounded-grid-track-layout/bounded-relative-positioning/bounded-absolute-positioning/bounded-fixed-positioning/bounded-sticky-positioning/bounded-stacking-order/
 bounded-inline-svg-shape-paint/
 bounded-inline-svg-stroke-paint/
 bounded-svg-line-polygon-paint/
@@ -5533,6 +5533,14 @@ subtree while ancestor clips do not. The existing display-list, software
 raster, capture, script-geometry, and hit-test owners consume the same output;
 no second renderer or process boundary is introduced. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-234.md`.
+
+The completed native-engine-browser-235 slice adds the first explicit stacking
+order owner. Bounded integer/`auto` `z-index` values cascade into effective
+layout levels for positioned elements and direct flex/grid items; the display
+list stably orders those levels, opacity groups stay atomic at their outer
+level, and hit testing applies the same level/depth/source-order precedence.
+Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-235.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

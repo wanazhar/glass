@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-271`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-272`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -4063,6 +4063,15 @@ and lets the document continue to commit and complete its ready/load phases.
 Inline-module element identity for the error event, resource scheduling, BFCache
 restoration, and complete module/Web IDL semantics remain issue #40 work. Exact
 evidence is in `docs/plan/tasks/native-engine-browser-271.md`.
+
+The completed native-engine-browser-272 slice closes the external script
+evaluation-failure transition. External classic and module roots now retain
+their owning element identity through staging and QuickJS evaluation; an
+ignorable failure emits one root-element `error` event, suppresses the
+provisional `load`, and leaves the committed document free to finish its
+ready-state/lifecycle sequence. Full window error reporting and inline-script
+element identity remain issue #40 work. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-272.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

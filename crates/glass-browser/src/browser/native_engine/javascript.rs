@@ -2598,9 +2598,19 @@ struct NativeWebStorageView {
 
 #[derive(Debug, Clone)]
 pub(crate) enum NativePageScript {
-    Classic { source: String },
-    Module { name: String, source: String },
-    ModuleDependency { name: String, source: String },
+    Classic {
+        source: String,
+        node_index: Option<u32>,
+    },
+    Module {
+        name: String,
+        source: String,
+        node_index: Option<u32>,
+    },
+    ModuleDependency {
+        name: String,
+        source: String,
+    },
 }
 
 struct NativeModuleResolver;
@@ -2693,14 +2703,19 @@ pub(crate) fn execute_inline_scripts(
         .into_iter()
         .enumerate()
         .filter_map(|(index, source)| match source {
-            NativePageScriptSource::Inline { source, timing } => {
-                Some((timing, NativePageScript::Classic { source }))
-            }
+            NativePageScriptSource::Inline { source, timing } => Some((
+                timing,
+                NativePageScript::Classic {
+                    source,
+                    node_index: None,
+                },
+            )),
             NativePageScriptSource::ModuleInline { source, timing } => Some((
                 timing,
                 NativePageScript::Module {
                     name: format!("{document_url}#glass-inline-module-{index}"),
                     source,
+                    node_index: None,
                 },
             )),
             NativePageScriptSource::External { .. }
@@ -2762,7 +2777,7 @@ pub(crate) fn execute_page_scripts(
     let module_sources = sources
         .iter()
         .filter_map(|source| match source {
-            NativePageScript::Module { name, source }
+            NativePageScript::Module { name, source, .. }
             | NativePageScript::ModuleDependency { name, source } => {
                 Some((name.clone(), source.clone()))
             }
@@ -2779,18 +2794,24 @@ pub(crate) fn execute_page_scripts(
     let mut scroll_commands = Vec::new();
     let mut navigation = None;
     let mut events = Vec::new();
+    let mut failed_script_nodes = BTreeSet::new();
     for source in sources {
+        let script_node_index = match source {
+            NativePageScript::Classic { node_index, .. }
+            | NativePageScript::Module { node_index, .. } => *node_index,
+            NativePageScript::ModuleDependency { .. } => None,
+        };
         let evaluation = {
             let script_runtime = runtime.as_ref().expect("page script runtime initialized");
             match source {
-                NativePageScript::Classic { source } => script_runtime.evaluate(
+                NativePageScript::Classic { source, .. } => script_runtime.evaluate(
                     source,
                     document,
                     document_url,
                     document_origin,
                     viewport,
                 ),
-                NativePageScript::Module { name, source } => script_runtime.evaluate_module(
+                NativePageScript::Module { name, source, .. } => script_runtime.evaluate_module(
                     name,
                     source,
                     document,
@@ -2803,7 +2824,36 @@ pub(crate) fn execute_page_scripts(
         };
         let evaluation = match evaluation {
             Ok(evaluation) => evaluation,
-            Err(error) if is_ignorable_page_script_error(&error) => continue,
+            Err(error) if is_ignorable_page_script_error(&error) => {
+                if let Some(node_index) = script_node_index {
+                    failed_script_nodes.insert(node_index);
+                    if let Some(event_source) =
+                        host_event_script(&[(node_index, NativeEventKind::Error)])?
+                    {
+                        let error_evaluation = runtime
+                            .as_ref()
+                            .expect("page script runtime initialized")
+                            .evaluate(
+                                &event_source,
+                                document,
+                                document_url,
+                                document_origin,
+                                viewport,
+                            )?;
+                        apply_page_script_evaluation(
+                            document,
+                            error_evaluation,
+                            &mut pending_fetches,
+                            &mut websocket_commands,
+                            &mut event_source_commands,
+                            &mut scroll_commands,
+                            &mut navigation,
+                        )?;
+                        events.push((node_index, NativeEventKind::Error));
+                    }
+                }
+                continue;
+            }
             Err(error) => return Err(error),
         };
         apply_page_script_evaluation(
@@ -2817,6 +2867,9 @@ pub(crate) fn execute_page_scripts(
         )?;
     }
     for (node_index, event_kind) in resource_events {
+        if *event_kind == NativeEventKind::Load && failed_script_nodes.contains(node_index) {
+            continue;
+        }
         let Some(event_source) = host_event_script(&[(*node_index, *event_kind)])? else {
             continue;
         };

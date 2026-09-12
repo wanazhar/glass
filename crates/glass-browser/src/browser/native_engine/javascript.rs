@@ -79,6 +79,10 @@ const MAX_NATIVE_FETCH_HEADER_NAME_BYTES: usize = 128;
 const MAX_NATIVE_FETCH_HEADER_VALUE_BYTES: usize = 64 * 1024;
 const MAX_NATIVE_FETCH_HEADER_BYTES: usize = 128 * 1024;
 pub(crate) const MAX_NATIVE_XHR_TIMEOUT_MS: u32 = 4_000;
+pub(crate) const MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES: usize = MAX_NATIVE_FORM_BODY_BYTES;
+pub(crate) const MAX_NATIVE_WEBSOCKET_PROTOCOLS: usize = 16;
+pub(crate) const MAX_NATIVE_WEBSOCKET_PROTOCOL_BYTES: usize = 128;
+pub(crate) const MAX_NATIVE_WEBSOCKET_CLOSE_REASON_BYTES: usize = 123;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -169,6 +173,24 @@ pub(crate) enum NativeScriptCommand {
         redirect: Option<String>,
         #[serde(default)]
         timeout_ms: Option<u32>,
+    },
+    WebSocketOpen {
+        socket_id: u32,
+        href: String,
+        #[serde(default)]
+        protocols: Vec<String>,
+    },
+    WebSocketSend {
+        socket_id: u32,
+        #[serde(default)]
+        data: Option<String>,
+        #[serde(default)]
+        data_base64: Option<String>,
+    },
+    WebSocketClose {
+        socket_id: u32,
+        code: u16,
+        reason: String,
     },
     Dialog {
         dialog_type: String,
@@ -429,6 +451,7 @@ pub(crate) struct NativePageNavigation {
 
 pub(crate) struct NativePageScriptResult {
     pub(crate) pending_fetches: Vec<NativeScriptCommand>,
+    pub(crate) websocket_commands: Vec<NativeScriptCommand>,
     pub(crate) scroll_commands: Vec<NativeScriptCommand>,
     pub(crate) navigation: Option<NativePageNavigation>,
     pub(crate) dialogs: Vec<NativeDialog>,
@@ -2731,6 +2754,7 @@ pub(crate) fn execute_page_scripts(
         .expect("page script runtime initialized")
         .set_module_sources(module_sources);
     let mut pending_fetches = Vec::new();
+    let mut websocket_commands = Vec::new();
     let mut scroll_commands = Vec::new();
     let mut navigation = None;
     let mut events = Vec::new();
@@ -2765,6 +2789,7 @@ pub(crate) fn execute_page_scripts(
             document,
             evaluation,
             &mut pending_fetches,
+            &mut websocket_commands,
             &mut scroll_commands,
             &mut navigation,
         )?;
@@ -2787,6 +2812,7 @@ pub(crate) fn execute_page_scripts(
             document,
             evaluation,
             &mut pending_fetches,
+            &mut websocket_commands,
             &mut scroll_commands,
             &mut navigation,
         )?;
@@ -2817,6 +2843,7 @@ pub(crate) fn execute_page_scripts(
             document,
             evaluation,
             &mut pending_fetches,
+            &mut websocket_commands,
             &mut scroll_commands,
             &mut navigation,
         )?;
@@ -2847,6 +2874,7 @@ pub(crate) fn execute_page_scripts(
             document,
             evaluation,
             &mut pending_fetches,
+            &mut websocket_commands,
             &mut scroll_commands,
             &mut navigation,
         )?;
@@ -2868,11 +2896,13 @@ pub(crate) fn execute_page_scripts(
         viewport,
         &mut scroll_commands,
         &mut pending_fetches,
+        &mut websocket_commands,
         &mut navigation,
         &mut events,
     )?;
     Ok(NativePageScriptResult {
         pending_fetches,
+        websocket_commands,
         scroll_commands,
         navigation,
         dialogs: runtime
@@ -2896,6 +2926,7 @@ fn apply_page_script_evaluation(
     document: &mut NativeDocument,
     evaluation: NativeScriptEvaluation,
     pending_fetches: &mut Vec<NativeScriptCommand>,
+    websocket_commands: &mut Vec<NativeScriptCommand>,
     scroll_commands: &mut Vec<NativeScriptCommand>,
     navigation: &mut Option<NativePageNavigation>,
 ) -> Result<(), NativeEngineError> {
@@ -2903,6 +2934,9 @@ fn apply_page_script_evaluation(
     for command in evaluation.commands {
         match command {
             command @ NativeScriptCommand::Fetch { .. } => pending_fetches.push(command),
+            command @ (NativeScriptCommand::WebSocketOpen { .. }
+            | NativeScriptCommand::WebSocketSend { .. }
+            | NativeScriptCommand::WebSocketClose { .. }) => websocket_commands.push(command),
             NativeScriptCommand::Navigate { href, replace } => {
                 validate_url_text("page script navigation href", &href)?;
                 if navigation.is_some() {
@@ -2939,6 +2973,7 @@ fn dispatch_page_scroll_events(
     viewport: Viewport,
     scroll_commands: &mut Vec<NativeScriptCommand>,
     pending_fetches: &mut Vec<NativeScriptCommand>,
+    websocket_commands: &mut Vec<NativeScriptCommand>,
     navigation: &mut Option<NativePageNavigation>,
     events: &mut Vec<(u32, NativeEventKind)>,
 ) -> Result<(), NativeEngineError> {
@@ -2962,6 +2997,7 @@ fn dispatch_page_scroll_events(
             document,
             evaluation,
             pending_fetches,
+            websocket_commands,
             &mut emitted_scroll_commands,
             navigation,
         )?;
@@ -3968,6 +4004,35 @@ impl NativeJavaScriptRuntime {
         );
         self.set_timer_pump_enabled(previous);
         result
+    }
+
+    /// Deliver one host-owned WebSocket event into the persistent page realm.
+    /// The event callback runs on the same serialized QuickJS owner as every
+    /// other page task, so DOM mutations and follow-up fetches cannot race the
+    /// content snapshot commit.
+    pub(crate) fn dispatch_websocket_event(
+        &self,
+        socket_id: u32,
+        event: &serde_json::Value,
+        document: &NativeDocument,
+        document_url: &str,
+        origin: &NativeOrigin,
+        viewport: Viewport,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        let serialized = serde_json::to_string(event).map_err(|_| NativeEngineError::Worker {
+            operation: "serialize native WebSocket event".into(),
+            reason: "native WebSocket event could not be serialized".into(),
+        })?;
+        let source =
+            format!("globalThis.__glassDispatchWebSocketEvent({socket_id}, {serialized});");
+        if source.len() > MAX_NATIVE_SCRIPT_BYTES {
+            return Err(NativeEngineError::limit(
+                "native WebSocket event",
+                MAX_NATIVE_SCRIPT_BYTES,
+                source.len(),
+            ));
+        }
+        self.evaluate(&source, document, document_url, origin, viewport)
     }
 
     pub(crate) fn reset_timer_clock(&mut self) {
@@ -8227,6 +8292,161 @@ fn document_bootstrap(
   globalThis.__glassFetchRequests = fetchRequests;
   globalThis.__glassNextFetchRequestId = nextFetchRequestId;
   globalThis.fetch = fetchNative;
+  const websocketMessageLimit = {websocket_message_limit};
+  const websocketProtocolLimit = {websocket_protocol_limit};
+  const websocketProtocolCountLimit = {websocket_protocol_count_limit};
+  const websocketCloseReasonLimit = {websocket_close_reason_limit};
+  const websocketSockets = globalThis.__glassWebSocketSockets instanceof Map
+    ? globalThis.__glassWebSocketSockets
+    : new Map();
+  let nextWebSocketId = Number.isSafeInteger(globalThis.__glassNextWebSocketId)
+    ? globalThis.__glassNextWebSocketId
+    : 1;
+  const websocketProtocolToken = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+  const normalizeWebSocketProtocols = (value) => {{
+    if (value === undefined) return [];
+    const values = typeof value === "string"
+      ? [value]
+      : value && typeof value[Symbol.iterator] === "function"
+        ? Array.from(value)
+        : (() => {{ throw new TypeError("native WebSocket protocols must be a string or iterable"); }})();
+    if (values.length > websocketProtocolCountLimit)
+      throw new RangeError("native WebSocket protocol count limit exceeded");
+    const seen = new Set();
+    return values.map((protocol) => {{
+      const text = String(protocol);
+      if (!text || text.length > websocketProtocolLimit || !websocketProtocolToken.test(text) || seen.has(text))
+        throw new SyntaxError("native WebSocket protocol is invalid or duplicated");
+      seen.add(text);
+      return text;
+    }});
+  }};
+  const websocketDispatch = (socket, type, event) => {{
+    const listeners = socket.__glassWebSocketListeners[type]
+      ? socket.__glassWebSocketListeners[type].slice()
+      : [];
+    if (typeof socket["on" + type] === "function") {{
+      try {{ socket["on" + type].call(socket, event); }} catch (_) {{}}
+    }}
+    for (const listener of listeners) {{
+      try {{ listener.call(socket, event); }} catch (_) {{}}
+    }}
+  }};
+  globalThis.__glassWebSocketSockets = websocketSockets;
+  globalThis.__glassNextWebSocketId = nextWebSocketId;
+  globalThis.__glassDispatchWebSocketEvent = (socketId, payload) => {{
+    const socket = websocketSockets.get(Number(socketId));
+    if (!socket || !payload || typeof payload !== "object") return null;
+    const type = String(payload.type || "");
+    if (!["open", "message", "error", "close"].includes(type)) return null;
+    if (type === "open") {{
+      socket.readyState = WebSocketNative.OPEN;
+      socket.protocol = String(payload.protocol || "");
+      websocketDispatch(socket, "open", {{ type: "open", target: socket, currentTarget: socket }});
+    }} else if (type === "message") {{
+      let data = String(payload.data || "");
+      if (payload.binary === true) {{
+        const bytes = decodeBase64(String(payload.dataBase64 || ""), websocketMessageLimit);
+        if (socket.binaryType === "arraybuffer") data = new Uint8Array(bytes).buffer;
+        else {{
+          const blob = new BlobNative([], {{ type: "application/octet-stream" }});
+          blob._bytes = bytes;
+          blob._text = utf8TextFromBytes(bytes);
+          blob.size = bytes.length;
+          data = blob;
+        }}
+      }}
+      websocketDispatch(socket, "message", {{ type: "message", data, origin: String(payload.origin || ""), target: socket, currentTarget: socket }});
+    }} else if (type === "error") {{
+      websocketDispatch(socket, "error", {{ type: "error", message: String(payload.message || ""), target: socket, currentTarget: socket }});
+    }} else {{
+      socket.readyState = WebSocketNative.CLOSED;
+      websocketDispatch(socket, "close", {{
+        type: "close",
+        code: Number(payload.code) || 1006,
+        reason: String(payload.reason || ""),
+        wasClean: payload.wasClean === true,
+        target: socket,
+        currentTarget: socket,
+      }});
+      websocketSockets.delete(Number(socketId));
+    }}
+    return null;
+  }};
+  const WebSocketNative = function(input, protocols) {{
+    if (!(this instanceof WebSocketNative)) throw new TypeError("native WebSocket requires new");
+    const source = input && input.__glassUrl === true ? input.href : input;
+    const resolved = new URLNative(String(source), host.url);
+    if (!["ws:", "wss:"].includes(resolved.protocol) || resolved.username || resolved.password || !resolved.host)
+      throw new SyntaxError("native WebSocket URL must use ws or wss without credentials");
+    const normalizedProtocols = normalizeWebSocketProtocols(protocols);
+    const socketId = nextWebSocketId;
+    nextWebSocketId += 1;
+    globalThis.__glassNextWebSocketId = nextWebSocketId;
+    this.url = resolved.href;
+    this.readyState = WebSocketNative.CONNECTING;
+    this.bufferedAmount = 0;
+    this.extensions = "";
+    this.protocol = "";
+    this.binaryType = "blob";
+    this.onopen = null;
+    this.onmessage = null;
+    this.onerror = null;
+    this.onclose = null;
+    this.__glassSocketId = socketId;
+    this.__glassWebSocketListeners = {{ open: [], message: [], error: [], close: [] }};
+    websocketSockets.set(socketId, this);
+    pushCommand({{ kind: "webSocketOpen", socket_id: socketId, href: resolved.href, protocols: normalizedProtocols }});
+  }};
+  WebSocketNative.CONNECTING = 0;
+  WebSocketNative.OPEN = 1;
+  WebSocketNative.CLOSING = 2;
+  WebSocketNative.CLOSED = 3;
+  WebSocketNative.prototype.addEventListener = function(type, listener) {{
+    const name = String(type);
+    if (!this.__glassWebSocketListeners[name] || typeof listener !== "function") return;
+    if (!this.__glassWebSocketListeners[name].includes(listener)) this.__glassWebSocketListeners[name].push(listener);
+  }};
+  WebSocketNative.prototype.removeEventListener = function(type, listener) {{
+    const name = String(type);
+    if (!this.__glassWebSocketListeners[name]) return;
+    this.__glassWebSocketListeners[name] = this.__glassWebSocketListeners[name].filter(candidate => candidate !== listener);
+  }};
+  WebSocketNative.prototype.dispatchEvent = function(event) {{
+    if (!event || !event.type) throw new TypeError("native WebSocket event is invalid");
+    websocketDispatch(this, String(event.type), event);
+    return true;
+  }};
+  WebSocketNative.prototype.send = function(data) {{
+    if (this.readyState !== WebSocketNative.OPEN) throw new Error("native WebSocket is not open");
+    if (typeof data === "string") {{
+      if (data.length > websocketMessageLimit) throw new RangeError("native WebSocket message exceeds its limit");
+      pushCommand({{ kind: "webSocketSend", socket_id: this.__glassSocketId, data, data_base64: null }});
+      return;
+    }}
+    let bytes = null;
+    if (data && data.__glassNativeBlob === true) bytes = blobBytes(data);
+    else if (data instanceof ArrayBuffer) bytes = Array.from(new Uint8Array(data));
+    else if (typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(data))
+      bytes = Array.from(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+    if (!bytes) throw new TypeError("native WebSocket data must be text, Blob, or an ArrayBuffer view");
+    pushCommand({{ kind: "webSocketSend", socket_id: this.__glassSocketId, data: null, data_base64: encodeBase64(bytes, websocketMessageLimit) }});
+  }};
+  WebSocketNative.prototype.close = function(code, reason) {{
+    if (this.readyState === WebSocketNative.CLOSING || this.readyState === WebSocketNative.CLOSED) return;
+    const normalizedCode = code === undefined ? 1000 : Number(code);
+    if (!Number.isInteger(normalizedCode) || (normalizedCode !== 1000 && (normalizedCode < 3000 || normalizedCode > 4999)))
+      throw new RangeError("native WebSocket close code is invalid");
+    const normalizedReason = reason === undefined ? "" : String(reason);
+    if (normalizedReason.length > websocketCloseReasonLimit)
+      throw new SyntaxError("native WebSocket close reason exceeds its limit");
+    this.readyState = WebSocketNative.CLOSING;
+    pushCommand({{ kind: "webSocketClose", socket_id: this.__glassSocketId, code: normalizedCode, reason: normalizedReason }});
+  }};
+  Object.defineProperties(WebSocketNative.prototype, {{
+    CONNECTING: {{ value: 0 }}, OPEN: {{ value: 1 }}, CLOSING: {{ value: 2 }}, CLOSED: {{ value: 3 }},
+  }});
+  globalThis.WebSocket = WebSocketNative;
   globalThis.__glassResolveFetch = (requestId, payload) => {{
     const pending = fetchRequests.get(Number(requestId));
     if (!pending) return;
@@ -15438,6 +15658,10 @@ fn document_bootstrap(
         fetch_header_value_limit = MAX_NATIVE_FETCH_HEADER_VALUE_BYTES,
         fetch_header_bytes_limit = MAX_NATIVE_FETCH_HEADER_BYTES,
         max_native_xhr_timeout_ms = MAX_NATIVE_XHR_TIMEOUT_MS,
+        websocket_message_limit = MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES,
+        websocket_protocol_limit = MAX_NATIVE_WEBSOCKET_PROTOCOL_BYTES,
+        websocket_protocol_count_limit = MAX_NATIVE_WEBSOCKET_PROTOCOLS,
+        websocket_close_reason_limit = MAX_NATIVE_WEBSOCKET_CLOSE_REASON_BYTES,
         dialog_text_limit = MAX_NATIVE_DIALOG_TEXT_BYTES,
         post_message_bytes_limit = MAX_NATIVE_POST_MESSAGE_BYTES,
         max_frame_window_indices = MAX_NATIVE_FRAME_SCRIPT_BINDINGS,

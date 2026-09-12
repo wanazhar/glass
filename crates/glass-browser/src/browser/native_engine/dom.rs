@@ -3178,6 +3178,9 @@ impl NativeDocument {
                     }
                 }
                 NativeScriptCommand::Fetch { .. } => {}
+                NativeScriptCommand::WebSocketOpen { .. }
+                | NativeScriptCommand::WebSocketSend { .. }
+                | NativeScriptCommand::WebSocketClose { .. } => {}
                 NativeScriptCommand::Navigate { .. } => {
                     if !allow_script_navigation {
                         return Err(NativeEngineError::TargetNotActionable {

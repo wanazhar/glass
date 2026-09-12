@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-251` slice; the bounded foundation below remains
+`native-engine-browser-252` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5695,6 +5695,17 @@ retains the existing script timeout; workers, WebSocket/EventSource,
 background-page scheduling, and full browser event-loop conformance remain
 issue #40 promotion work. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-251.md`.
+
+The completed native-engine-browser-252 slice adds persistent WebSocket
+transport to the process-backed page realm. Page `WebSocket` objects now emit
+bounded open/send/close commands, while the content worker owns real `ws:` or
+`wss:` handshakes, document-origin and session-cookie headers, subprotocol
+validation, bounded text/binary frames, Ping/Pong handling, and typed error or
+close events. The existing connect-src/default-src and mixed-content policy is
+shared with the loader, and event callbacks run through the serialized
+JavaScript/mutation owner; later ordinary evaluations drain already-queued
+socket events as well. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-252.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

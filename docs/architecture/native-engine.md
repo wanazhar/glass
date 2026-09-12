@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-229` slice; the bounded foundation below remains
+`native-engine-browser-230` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5484,6 +5484,13 @@ rectangles are resolved in the shared computed-style and display-list owners.
 The software rasterizer validates those source rectangles and shares decoded
 RGBA storage between repeated commands. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-229.md`.
+
+The completed native-engine-browser-230 slice adds a one-layer CSS background
+shorthand expansion over the shared computed-style, source-registry,
+content-process, display-list, and raster owners. Common component order and
+`center/cover no-repeat` syntax are accepted, while omitted components retain
+their CSS initial resets and unsupported subproperties remain diagnostic.
+Exact evidence is in `docs/plan/tasks/native-engine-browser-230.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

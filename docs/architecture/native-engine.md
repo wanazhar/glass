@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-225` slice; the bounded foundation below remains
+`native-engine-browser-226` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5449,6 +5449,15 @@ content-process resources; the typed wire validates every frame before
 publication. Frame count, decoded-byte, encoded-transfer, and delay limits
 fail closed without creating an unbounded animation allocation. Exact evidence
 is in `docs/plan/tasks/native-engine-browser-225.md`.
+
+The completed native-engine-browser-226 slice extends the same owner to
+animated WebP. The existing pure-Rust WebP decoder yields bounded
+full-canvas RGBA snapshots with blend/disposal handling, normalized non-zero
+delays, and finite/infinite loop metadata. Image and CSS background display
+commands sample those frames through the monotonic animation clock, while
+local and HTTP(S) content-process paths share exact dimension, frame-count,
+decoded-byte, and typed-wire validation. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-226.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

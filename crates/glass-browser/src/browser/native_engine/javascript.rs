@@ -8034,10 +8034,31 @@ fn document_bootstrap(
     if (!Number.isSafeInteger(id) || id <= 0) throw new TypeError("native fetch stream identifier is invalid");
     let group = fetchStreamGroups.get(id);
     if (!group) {{
-      group = {{ id, chunks: [], totalBytes: 0, done: false, error: null, streams: [], waiters: [], started: false }};
+      group = {{ id, chunks: [], totalBytes: 0, done: false, error: null, streams: [], waiters: [], started: false, readRequested: false, cancelRequested: false }};
       fetchStreamGroups.set(id, group);
     }}
     return group;
+  }};
+  const requestFetchStreamRead = (group) => {{
+    if (!group || group.done || group.error !== null || group.cancelRequested || group.readRequested) return;
+    group.readRequested = true;
+    pushCommand({{ kind: "fetchStreamRead", stream_id: Number(group.id) }});
+  }};
+  const cancelFetchStreamGroup = (group) => {{
+    if (group.done || group.cancelRequested) return;
+    group.cancelRequested = true;
+    group.done = true;
+    for (const state of group.streams) {{
+      state.done = true;
+      if (state.pendingRead) {{ state.pendingRead.resolve({{ value: undefined, done: true }}); state.pendingRead = null; }}
+    }}
+    settleFetchStreamWaiters(group);
+    pushCommand({{ kind: "fetchStreamCancel", stream_id: Number(group.id) }});
+  }};
+  const maybeCancelFetchStreamGroup = (group) => {{
+    if (!group) return;
+    if (group.streams.some(state => !state.cancelled) || group.waiters.length > 0) return;
+    cancelFetchStreamGroup(group);
   }};
   const flattenFetchStream = (group) => {{
     const bytes = [];
@@ -8124,14 +8145,20 @@ fn document_bootstrap(
     }};
     const read = () => {{
       const queued = readQueued();
-      if (queued) return Promise.resolve(queued);
+      if (queued) {{
+        requestFetchStreamRead(state.group);
+        return Promise.resolve(queued);
+      }}
       if (state.error !== null) return Promise.reject(new Error(state.error));
       if (readableStreamDone(state)) {{
         settleClosed();
         return Promise.resolve({{ value: undefined, done: true }});
       }}
       if (state.pendingRead) return Promise.reject(new TypeError("native ReadableStream read is already pending"));
-      return new Promise((resolve, reject) => {{ state.pendingRead = {{ resolve, reject }}; }});
+      const promise = new Promise((resolve, reject) => {{ state.pendingRead = {{ resolve, reject }}; }});
+      try {{ requestFetchStreamRead(state.group); }}
+      catch (error) {{ state.pendingRead = null; return Promise.reject(error); }}
+      return promise;
     }};
     const reader = {{
       read() {{
@@ -8141,19 +8168,23 @@ fn document_bootstrap(
       cancel() {{
         if (released) return Promise.reject(new TypeError("native ReadableStream reader is released"));
         state.cancelled = true;
+        state.done = true;
         state.queued = [];
         if (state.pendingRead) {{ state.pendingRead.resolve({{ value: undefined, done: true }}); state.pendingRead = null; }}
         settleClosed();
+        maybeCancelFetchStreamGroup(state.group);
         return Promise.resolve(undefined);
       }},
       releaseLock() {{ release(); }},
       return() {{
         if (released) return Promise.resolve({{ value: undefined, done: true }});
         state.cancelled = true;
+        state.done = true;
         state.queued = [];
         if (state.pendingRead) {{ state.pendingRead.resolve({{ value: undefined, done: true }}); state.pendingRead = null; }}
         settleClosed();
         release();
+        maybeCancelFetchStreamGroup(state.group);
         return Promise.resolve({{ value: undefined, done: true }});
       }},
       [Symbol.asyncIterator]() {{ return this; }},
@@ -8165,7 +8196,9 @@ fn document_bootstrap(
     const state = readableStreamState(this);
     if (state.locked) return Promise.reject(new TypeError("native ReadableStream is locked"));
     state.cancelled = true;
+    state.done = true;
     state.queued = [];
+    maybeCancelFetchStreamGroup(state.group);
     return Promise.resolve(undefined);
   }};
   ReadableStreamNative.prototype[Symbol.asyncIterator] = function() {{
@@ -8180,6 +8213,7 @@ fn document_bootstrap(
     const group = fetchStreamGroup(streamId);
     if (!payload || typeof payload !== "object" || group.done) return null;
     const type = String(payload.type || "");
+    group.readRequested = false;
     if (type === "chunk") {{
       let bytes;
       try {{ bytes = decodeBase64(String(payload.dataBase64 || ""), {fetch_stream_chunk_limit}); }}
@@ -8205,7 +8239,7 @@ fn document_bootstrap(
           state.pendingRead = null;
         }} else state.queued.push(bytes.slice());
       }}
-      pushCommand({{ kind: "fetchStreamRead", stream_id: Number(streamId) }});
+      if (group.waiters.length > 0) requestFetchStreamRead(group);
     }} else if (type === "end") {{
       group.done = true;
       for (const state of group.streams) {{
@@ -8356,7 +8390,11 @@ fn document_bootstrap(
       const group = fetchStreamGroup(response.__glassFetchStreamId);
       if (group.error !== null) return Promise.reject(new Error(group.error));
       if (group.done) return Promise.resolve(flattenFetchStream(group));
-      return new Promise((resolve, reject) => {{ group.waiters.push({{ resolve, reject }}); }});
+      return new Promise((resolve, reject) => {{
+        group.waiters.push({{ resolve, reject }});
+        try {{ requestFetchStreamRead(group); }}
+        catch (error) {{ group.waiters.pop(); reject(error); }}
+      }});
     }};
     const response = Object.create(ResponseNative.prototype);
     Object.assign(response, {{
@@ -8385,7 +8423,7 @@ fn document_bootstrap(
       const group = fetchStreamGroup(streamId);
       if (!group.started) {{
         group.started = true;
-        pushCommand({{ kind: "fetchStreamRead", stream_id: streamId }});
+        requestFetchStreamRead(group);
       }}
     }}
     return Object.freeze(response);

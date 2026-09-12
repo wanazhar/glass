@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-267`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-268`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -4025,6 +4025,14 @@ state are observable, and `ReadableStream.pipeTo()`/`pipeThrough()` propagate
 normal close, source cancellation, sink abort, and prevention flags. Full
 WritableStream/TransformStream/Web IDL semantics remain issue #40 work. Exact
 evidence is in `docs/plan/tasks/native-engine-browser-267.md`.
+
+The completed native-engine-browser-268 slice adds a connected bounded
+`TransformStream`. Transformer `start`, `transform`, and `flush` hooks feed a
+native readable controller through a writable side, with bounded enqueue,
+desired-size, error, and terminate behavior. The existing `pipeThrough()`
+owner now processes ordinary transforms; full strategy/controller and Web IDL
+semantics remain issue #40 work. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-268.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

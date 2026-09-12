@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-267` slice; the bounded foundation below remains
+`native-engine-browser-268` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -30,6 +30,7 @@ bounded-readable-stream-tee/
 bounded-stream-request-bodies/
 bounded-stream-response-bodies/
 bounded-writable-streams-and-piping/
+bounded-transform-streams/
 bounded-native-frame-sequential-focus-traversal/
 bounded-native-frame-locator-routing/
 bounded-min-max-dimensions/bounded-opacity-groups/bounded-text-alignment/
@@ -5867,6 +5868,15 @@ values with normal close, source cancellation, sink abort, and optional
 prevention flags. The owner remains distinct from the Fetch transport path;
 full WritableStream/TransformStream/Web IDL parity remains open. Exact
 evidence is recorded in `docs/plan/tasks/native-engine-browser-267.md`.
+
+The completed native-engine-browser-268 slice adds a connected bounded
+`TransformStream` primitive. Its writable side invokes transformer
+`start`/`transform`/`flush` hooks, its controller exposes output enqueue,
+error, terminate, and desired-size state, and its readable side is consumed by
+the existing pipeline owner. This makes ordinary `pipeThrough()` transforms
+usable while full strategy/controller/Web IDL parity remains open. Exact
+evidence is recorded in
+`docs/plan/tasks/native-engine-browser-268.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

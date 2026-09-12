@@ -39266,7 +39266,7 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
     );
     engine
         .evaluate_async(
-            "fetch('/data', { headers: { 'X-Glass-Token': 'alpha' } }).then(async response => { const headerEvents = []; response.headers.forEach((value, name) => headerEvents.push(name + '=' + value)); const stream = response.body; const streamReader = stream.getReader(); const streamFirst = await streamReader.read(); const streamSecond = await streamReader.read(); const streamLocked = stream.locked; streamReader.releaseLock(); const releasedStreamRead = await streamReader.read().then(() => 'readable', error => error.name); const clonedResponse = response.clone(); const clonedText = await clonedResponse.text(); globalThis.fetchClone = [clonedText, clonedResponse.body instanceof ReadableStream, clonedResponse.body !== response.body]; globalThis.fetchStream = [response.body instanceof ReadableStream, streamLocked, stream.locked, streamFirst.done, Array.from(streamFirst.value), streamSecond.done, releasedStreamRead]; globalThis.fetchHeaders = [response.headers.get('CONTENT-TYPE'), response.headers.has('content-type'), Array.from(response.headers.entries()), Array.from(response.headers.keys()), Array.from(response.headers.values()), Array.from(response.headers), headerEvents]; return Promise.all([response.json(), response.text(), response.blob(), response.arrayBuffer(), response.bytes()]); }).then(async ([data, text, blob, buffer, bytes]) => { globalThis.fetchValue = data.value; globalThis.fetchBody = [text, blob instanceof Blob, buffer instanceof ArrayBuffer && Array.from(new Uint8Array(buffer)), Array.from(bytes), await blob.text()]; const binaryResponse = await fetch('/binary'); const binaryClone = binaryResponse.clone(); const binaryStream = binaryResponse.body; const binaryReader = binaryStream.getReader(); const binaryLocked = binaryStream.locked; await binaryReader.cancel(); binaryReader.releaseLock(); const canceledReader = binaryStream.getReader(); const canceledChunk = await canceledReader.read(); canceledReader.releaseLock(); globalThis.fetchStream = globalThis.fetchStream.concat([binaryResponse.body instanceof ReadableStream, binaryLocked, canceledChunk.done, binaryStream.locked]); const binaryBuffer = await binaryClone.arrayBuffer(); const binaryBytes = await binaryClone.bytes(); const binaryBlob = await binaryClone.blob(); globalThis.binaryFetchBody = [Array.from(new Uint8Array(binaryBuffer)), Array.from(binaryBytes), binaryBlob.size, Array.from(await binaryBlob.slice(1, 3).bytes()), await binaryBlob.text()]; const uploadResponse = await fetch('/upload', { method: 'POST', body: binaryBlob, headers: { 'Content-Type': 'application/octet-stream' } }); globalThis.binaryUpload = await uploadResponse.text(); const payload = new Uint8Array([0, 255, 128, 65]); const constructedBlob = new Blob([payload], { type: 'application/octet-stream' }); const constructedFile = new File([payload.buffer], 'payload.bin', { type: 'application/octet-stream' }); globalThis.binaryConstruction = [constructedBlob.size, Array.from(await constructedBlob.bytes()), constructedFile.size, Array.from(await constructedFile.bytes())]; const constructedUpload = await fetch('/constructed-upload', { method: 'POST', body: constructedBlob }); const fileUpload = await fetch('/file-upload', { method: 'POST', body: constructedFile }); globalThis.binaryUploads = [await constructedUpload.text(), await fileUpload.text()]; const form = new FormData(); form.append('name', 'glass'); form.append('payload', binaryBlob, 'payload.bin'); const formUpload = await fetch('/form-upload', { method: 'POST', body: form }); globalThis.formUpload = await formUpload.text(); document.getElementById('result').value = data.value; const controller = new AbortController(); const events = []; controller.signal.addEventListener('abort', () => events.push('listener')); controller.signal.onabort = () => events.push('property'); const request = fetch('/data', { signal: controller.signal, headers: { 'X-Glass-Token': 'alpha' } }); controller.abort(); controller.abort(); request.catch(error => { globalThis.abortValue = [error.name, controller.signal.aborted, controller.signal.reason.name, events]; }); });",
+            "fetch('/data', { headers: { 'X-Glass-Token': 'alpha' } }).then(async response => { const headerEvents = []; response.headers.forEach((value, name) => headerEvents.push(name + '=' + value)); const clonedResponse = response.clone(); const jsonResponse = response.clone(); const textResponse = response.clone(); const blobResponse = response.clone(); const bufferResponse = response.clone(); const bytesResponse = response.clone(); const stream = response.body; const streamReader = stream.getReader(); const streamFirst = await streamReader.read(); const streamSecond = await streamReader.read(); const streamLocked = stream.locked; streamReader.releaseLock(); const releasedStreamRead = await streamReader.read().then(() => 'readable', error => error.name); const clonedText = await clonedResponse.text(); globalThis.fetchClone = [clonedText, clonedResponse.body instanceof ReadableStream, clonedResponse.body !== response.body]; globalThis.fetchStream = [response.body instanceof ReadableStream, streamLocked, stream.locked, streamFirst.done, Array.from(streamFirst.value), streamSecond.done, releasedStreamRead]; globalThis.fetchHeaders = [response.headers.get('CONTENT-TYPE'), response.headers.has('content-type'), Array.from(response.headers.entries()), Array.from(response.headers.keys()), Array.from(response.headers.values()), Array.from(response.headers), headerEvents]; return Promise.all([jsonResponse.json(), textResponse.text(), blobResponse.blob(), bufferResponse.arrayBuffer(), bytesResponse.bytes()]); }).then(async ([data, text, blob, buffer, bytes]) => { globalThis.fetchValue = data.value; globalThis.fetchBody = [text, blob instanceof Blob, buffer instanceof ArrayBuffer && Array.from(new Uint8Array(buffer)), Array.from(bytes), await blob.text()]; const binaryResponse = await fetch('/binary'); const binaryBufferResponse = binaryResponse.clone(); const binaryBytesResponse = binaryResponse.clone(); const binaryBlobResponse = binaryResponse.clone(); const binaryStream = binaryResponse.body; const binaryReader = binaryStream.getReader(); const binaryLocked = binaryStream.locked; await binaryReader.cancel(); binaryReader.releaseLock(); const canceledReader = binaryStream.getReader(); const canceledChunk = await canceledReader.read(); canceledReader.releaseLock(); globalThis.fetchStream = globalThis.fetchStream.concat([binaryResponse.body instanceof ReadableStream, binaryLocked, canceledChunk.done, binaryStream.locked]); const binaryBuffer = await binaryBufferResponse.arrayBuffer(); const binaryBytes = await binaryBytesResponse.bytes(); const binaryBlob = await binaryBlobResponse.blob(); globalThis.binaryFetchBody = [Array.from(new Uint8Array(binaryBuffer)), Array.from(binaryBytes), binaryBlob.size, Array.from(await binaryBlob.slice(1, 3).bytes()), await binaryBlob.text()]; const uploadResponse = await fetch('/upload', { method: 'POST', body: binaryBlob, headers: { 'Content-Type': 'application/octet-stream' } }); globalThis.binaryUpload = await uploadResponse.text(); const payload = new Uint8Array([0, 255, 128, 65]); const constructedBlob = new Blob([payload], { type: 'application/octet-stream' }); const constructedFile = new File([payload.buffer], 'payload.bin', { type: 'application/octet-stream' }); globalThis.binaryConstruction = [constructedBlob.size, Array.from(await constructedBlob.bytes()), constructedFile.size, Array.from(await constructedFile.bytes())]; const constructedUpload = await fetch('/constructed-upload', { method: 'POST', body: constructedBlob }); const fileUpload = await fetch('/file-upload', { method: 'POST', body: constructedFile }); globalThis.binaryUploads = [await constructedUpload.text(), await fileUpload.text()]; const form = new FormData(); form.append('name', 'glass'); form.append('payload', binaryBlob, 'payload.bin'); const formUpload = await fetch('/form-upload', { method: 'POST', body: form }); globalThis.formUpload = await formUpload.text(); document.getElementById('result').value = data.value; const controller = new AbortController(); const events = []; controller.signal.addEventListener('abort', () => events.push('listener')); controller.signal.onabort = () => events.push('property'); const request = fetch('/data', { signal: controller.signal, headers: { 'X-Glass-Token': 'alpha' } }); controller.abort(); controller.abort(); request.catch(error => { globalThis.abortValue = [error.name, controller.signal.aborted, controller.signal.reason.name, events]; }); });",
         )
         .await
         .unwrap();
@@ -41695,6 +41695,57 @@ async fn native_content_process_cancels_fetch_response_stream_transport() {
         .await
         .unwrap()
         .unwrap();
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_tracks_fetch_body_disturbance_and_clone_ownership() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/body", "/body"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let (content_type, body) = if expected_path == "/page" {
+                ("text/html", "<body>Fetch body owner</body>")
+            } else {
+                ("text/plain", "body-used")
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await (async () => { const response = await fetch('/body'); const clone = response.clone(); const initial = [response.bodyUsed, clone.bodyUsed]; const text = await response.text(); const responseAfter = [response.bodyUsed, await response.text().then(() => 'readable', error => error.name), (() => { try { response.clone(); return 'cloneable'; } catch (error) { return error.name; } })()]; const cloneText = await clone.text(); const cloneAfter = [clone.bodyUsed, await clone.text().then(() => 'readable', error => error.name), (() => { try { clone.clone(); return 'cloneable'; } catch (error) { return error.name; } })()]; const locked = await fetch('/body'); const reader = locked.body.getReader(); const lockState = [locked.bodyUsed, (() => { try { locked.clone(); return 'cloneable'; } catch (error) { return error.name; } })()]; const first = await reader.read(); const disturbed = locked.bodyUsed; await reader.cancel(); reader.releaseLock(); const canceled = [locked.bodyUsed, (() => { try { locked.clone(); return 'cloneable'; } catch (error) { return error.name; } })()]; return { initial, text, responseAfter, cloneText, cloneAfter, lockState, first: [Array.from(first.value), first.done], disturbed, canceled }; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "initial": [false, false],
+            "text": "body-used",
+            "responseAfter": [true, "TypeError", "TypeError"],
+            "cloneText": "body-used",
+            "cloneAfter": [true, "TypeError", "TypeError"],
+            "lockState": [false, "TypeError"],
+            "first": [[98, 111, 100, 121, 45, 117, 115, 101, 100], false],
+            "disturbed": true,
+            "canceled": [true, "TypeError"]
+        })
+    );
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }

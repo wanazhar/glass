@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-269` locally. The versioned
+`native-engine-browser-270` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -184,6 +184,16 @@ The completed native byte-stream slice is
 through Fetch delivery and tee branches. Full Web IDL descriptors, transfer
 strategies, upload progress, and complete Fetch Streams parity remain open on
 issue #40.
+
+The completed native resource/lifecycle resilience slice is
+[native-engine-browser-270](tasks/native-engine-browser-270.md). Failed
+optional HTTP(S) stylesheet and external-script loads now leave the main
+document committed and dispatch a bounded element `error` event; successful
+resource loading remains a `load` event. Normal replacement and child-frame
+`pagehide`/`pageshow` events now expose `persisted: false`, matching the
+non-BFCache navigation path. Static module dependency failure policy,
+resource timing/concurrency, BFCache restoration, and complete lifecycle/Web
+IDL parity remain open on issue #40.
 
 The completed profile/contract task is
 [native-engine-browser-000](tasks/native-engine-browser-000.md). It freezes

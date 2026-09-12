@@ -3666,7 +3666,7 @@ async fn native_local_full_navigation_orders_page_lifecycle_events() {
         .unwrap()
         .with_fixture(
             "fixture://lifecycle-next",
-            "<script>globalThis.lifecycle = []; addEventListener('pageshow', () => lifecycle.push(document.readyState));</script><p>Next</p>",
+            "<script>globalThis.lifecycle = []; addEventListener('pageshow', event => lifecycle.push([document.readyState, event.persisted]));</script><p>Next</p>",
         )
         .unwrap()
         .with_initial_url("fixture://lifecycle-old");
@@ -3679,7 +3679,7 @@ async fn native_local_full_navigation_orders_page_lifecycle_events() {
         .unwrap();
     assert_eq!(
         engine.evaluate_async("globalThis.lifecycle").await.unwrap(),
-        serde_json::json!(["complete"])
+        serde_json::json!([["complete", false]])
     );
     let lifecycle_effects = engine
         .effects_since(before_navigation)
@@ -8004,7 +8004,7 @@ async fn native_content_process_orders_navigation_lifecycle_events() {
             let body = if expected_path == "/old" {
                 "<script>addEventListener('pagehide', () => globalThis.oldPagehide = true); addEventListener('unload', () => globalThis.oldUnload = true);</script><p>Old</p>"
             } else {
-                "<script>globalThis.lifecycle = []; addEventListener('pageshow', () => lifecycle.push(document.readyState));</script><p>Next</p>"
+                "<script>globalThis.lifecycle = []; addEventListener('pageshow', event => lifecycle.push([document.readyState, event.persisted]));</script><p>Next</p>"
             };
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -8026,7 +8026,7 @@ async fn native_content_process_orders_navigation_lifecycle_events() {
         .unwrap();
     assert_eq!(
         engine.evaluate_async("globalThis.lifecycle").await.unwrap(),
-        serde_json::json!(["complete"])
+        serde_json::json!([["complete", false]])
     );
     let lifecycle_effects = engine
         .effects_since(before_navigation)
@@ -8418,6 +8418,60 @@ async fn native_content_process_dispatches_resource_load_events_before_dom_conte
             "appLoaded": true,
             "events": ["style:loading", "script:loading", "dom:interactive"]
         })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_keeps_document_alive_when_optional_resources_fail() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/missing.css", "/missing.js"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            if expected_path == "/page" {
+                let body = "<link id='missing-style' rel='stylesheet' href='/missing.css'><script id='missing-script' src='/missing.js'></script><title>Still loaded</title><p id='content'>The document survives optional resource errors.</p>";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            } else {
+                stream
+                    .write_all(
+                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await
+                    .unwrap();
+            }
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let snapshot = engine.snapshot().unwrap();
+    assert_eq!(snapshot.url, format!("http://{address}/page"));
+    assert_eq!(snapshot.title, "Still loaded");
+    assert_eq!(
+        snapshot.visible_text,
+        "The document survives optional resource errors."
+    );
+    assert_eq!(
+        engine
+            .effects_since(0)
+            .unwrap()
+            .effects
+            .iter()
+            .filter(|effect| effect.kind == NativeEventKind::Error)
+            .count(),
+        2
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

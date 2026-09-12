@@ -3127,6 +3127,7 @@ pub(crate) fn frame_event_script(
                 "type": event_type,
                 "bubbles": bubbles,
                 "cancelable": cancelable,
+                "persisted": false,
             })
         })
         .collect::<Vec<_>>();
@@ -3268,6 +3269,7 @@ fn host_event_script_with_submitters(
                 "type": event_type,
                 "bubbles": bubbles,
                 "cancelable": cancelable,
+                "persisted": false,
                 "submitter_node_index": submitter_index,
             })
         })
@@ -10078,6 +10080,7 @@ fn document_bootstrap(
       eventPhase: 0,
       defaultPrevented: false,
       returnValue: "",
+      persisted: Boolean(settings.persisted),
       submitter: settings.submitter === undefined ? null : settings.submitter,
       state: settings.state === undefined ? null : settings.state,
       oldURL: settings.oldURL === undefined ? "" : String(settings.oldURL),
@@ -14013,6 +14016,7 @@ fn document_bootstrap(
     const event = createEvent(descriptor.type, {{
       bubbles: Boolean(descriptor.bubbles),
       cancelable: Boolean(descriptor.cancelable),
+      persisted: Boolean(descriptor.persisted),
       key: descriptor.key,
       code: descriptor.code,
       altKey: Boolean(descriptor.alt_key),

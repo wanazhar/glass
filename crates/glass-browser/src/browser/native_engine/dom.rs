@@ -19,9 +19,10 @@ use super::{
         FlexDirectionValue, FlexWrapValue, FontStyleValue, FontWeightValue, JustifyContentValue,
         NativeBorderRadius, NativeBorderStyleValue, NativeBoxSizing, NativeColor,
         NativeComputedStyle, NativeInheritedStyle, NativeMarginValue, NativeOrderValue,
-        NativeTextDecorationSkipInk, NativeTextDecorationSkipSpaces, NativeTextDecorationStyle,
-        OverflowValue, TextAlignLastValue, TextAlignValue, TextDecorationValue, TextJustifyValue,
-        TextOverflowValue, TextTransformValue, VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
+        NativePointerEventsValue, NativeTextDecorationSkipInk, NativeTextDecorationSkipSpaces,
+        NativeTextDecorationStyle, OverflowValue, TextAlignLastValue, TextAlignValue,
+        TextDecorationValue, TextJustifyValue, TextOverflowValue, TextTransformValue,
+        VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
     },
 };
 use base64::Engine as _;
@@ -4351,6 +4352,7 @@ impl NativeDocument {
         let mut inherited_text_indent = 0;
         let mut inherited_word_spacing = 0;
         let mut inherited_letter_spacing = 0;
+        let mut inherited_pointer_events = NativePointerEventsValue::Auto;
         for current_id in chain.into_iter().rev() {
             let Some(_) = self.node(current_id) else {
                 continue;
@@ -4410,6 +4412,7 @@ impl NativeDocument {
                     text_indent: inherited_text_indent,
                     word_spacing: inherited_word_spacing,
                     letter_spacing: inherited_letter_spacing,
+                    pointer_events: inherited_pointer_events,
                 },
             );
             inherited_color = style.color().or(inherited_color);
@@ -4478,6 +4481,7 @@ impl NativeDocument {
             inherited_text_indent = style.text_indent();
             inherited_word_spacing = style.word_spacing();
             inherited_letter_spacing = style.letter_spacing();
+            inherited_pointer_events = style.pointer_events();
             if current_id == id {
                 return style;
             }

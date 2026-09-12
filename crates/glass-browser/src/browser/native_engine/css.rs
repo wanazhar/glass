@@ -628,6 +628,19 @@ impl NativeZIndexValue {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum NativePointerEventsValue {
+    #[default]
+    Auto,
+    None,
+}
+
+impl NativePointerEventsValue {
+    pub(crate) const fn allows_hit_testing(self) -> bool {
+        matches!(self, Self::Auto)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum NativePositionOffset {
     #[default]
     Auto,
@@ -1121,6 +1134,7 @@ pub(crate) struct NativeInheritedStyle {
     pub(crate) text_indent: u32,
     pub(crate) word_spacing: u32,
     pub(crate) letter_spacing: u32,
+    pub(crate) pointer_events: NativePointerEventsValue,
 }
 
 impl Default for NativeInheritedStyle {
@@ -1177,6 +1191,7 @@ impl Default for NativeInheritedStyle {
             text_indent: 0,
             word_spacing: 0,
             letter_spacing: 0,
+            pointer_events: NativePointerEventsValue::Auto,
         }
     }
 }
@@ -1290,6 +1305,7 @@ pub(crate) struct NativeComputedStyle {
     display: DisplayValue,
     position: NativePositionValue,
     z_index: NativeZIndexValue,
+    pointer_events: NativePointerEventsValue,
     top: NativePositionOffset,
     right: NativePositionOffset,
     bottom: NativePositionOffset,
@@ -1372,6 +1388,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn z_index(self) -> NativeZIndexValue {
         self.z_index
+    }
+
+    pub(crate) const fn pointer_events(self) -> NativePointerEventsValue {
+        self.pointer_events
     }
 
     pub(crate) const fn top(self) -> NativePositionOffset {
@@ -1757,6 +1777,9 @@ impl NativeStylesheet {
             MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
         let mut z_index: [Option<CascadeValue<LocalCascadeDeclaration<NativeZIndexValue>>>;
             MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
+        let mut pointer_events: [Option<
+            CascadeValue<InheritedTextDeclaration<NativePointerEventsValue>>,
+        >; MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
         let mut top: [Option<CascadeValue<LocalCascadeDeclaration<NativePositionOffset>>>;
             MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
         let mut right: [Option<CascadeValue<LocalCascadeDeclaration<NativePositionOffset>>>;
@@ -1955,6 +1978,14 @@ impl NativeStylesheet {
                 false,
                 rule.declarations.local_importance.z_index,
                 &mut z_index,
+            );
+            apply_text_cascade_declaration(
+                rule.declarations.pointer_events,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.text_importance.pointer_events,
+                &mut pointer_events,
             );
             apply_local_important_cascade_declaration(
                 rule.declarations.top,
@@ -2512,6 +2543,14 @@ impl NativeStylesheet {
                 true,
                 declarations.local_importance.z_index,
                 &mut z_index,
+            );
+            apply_text_cascade_declaration(
+                declarations.pointer_events,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.text_importance.pointer_events,
+                &mut pointer_events,
             );
             apply_local_important_cascade_declaration(
                 declarations.top,
@@ -3155,6 +3194,11 @@ impl NativeStylesheet {
             display: resolve_local_cascade_declaration(display, DisplayValue::Auto),
             position: resolve_local_cascade_declaration(position, NativePositionValue::Static),
             z_index: resolve_local_cascade_declaration(z_index, NativeZIndexValue::Auto),
+            pointer_events: resolve_inherited_text_declaration(
+                pointer_events,
+                inherited.pointer_events,
+                NativePointerEventsValue::Auto,
+            ),
             top: resolve_local_cascade_declaration(top, NativePositionOffset::Auto),
             right: resolve_local_cascade_declaration(right, NativePositionOffset::Auto),
             bottom: resolve_local_cascade_declaration(bottom, NativePositionOffset::Auto),
@@ -5413,6 +5457,7 @@ struct NativeOverflowDeclarationImportance {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct NativeTextDeclarationImportance {
     white_space: bool,
+    pointer_events: bool,
     text_align: bool,
     text_align_last: bool,
     text_justify: bool,
@@ -5440,6 +5485,7 @@ struct NativeDeclarations {
     display: Option<LocalCascadeDeclaration<DisplayValue>>,
     position: Option<LocalCascadeDeclaration<NativePositionValue>>,
     z_index: Option<LocalCascadeDeclaration<NativeZIndexValue>>,
+    pointer_events: Option<InheritedTextDeclaration<NativePointerEventsValue>>,
     top: Option<LocalCascadeDeclaration<NativePositionOffset>>,
     right: Option<LocalCascadeDeclaration<NativePositionOffset>>,
     bottom: Option<LocalCascadeDeclaration<NativePositionOffset>>,
@@ -5846,6 +5892,7 @@ fn parse_style_rule(
     let has_supported_declaration = declarations.display.is_some()
         || declarations.position.is_some()
         || declarations.z_index.is_some()
+        || declarations.pointer_events.is_some()
         || declarations.top.is_some()
         || declarations.right.is_some()
         || declarations.bottom.is_some()
@@ -6066,6 +6113,7 @@ fn parse_declarations_with_diagnostics(
             "display" => supports_display_declaration(value),
             "position" => parse_position_declaration(value).is_some(),
             "z-index" => parse_z_index_declaration(value).is_some(),
+            "pointer-events" => parse_pointer_events_declaration(value).is_some(),
             "top" | "right" | "bottom" | "left" => {
                 parse_position_offset_declaration(value).is_some()
             }
@@ -6249,6 +6297,7 @@ fn is_known_css_property(property: &str) -> bool {
         "display"
             | "position"
             | "z-index"
+            | "pointer-events"
             | "top"
             | "right"
             | "bottom"
@@ -6475,6 +6524,12 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 if let Some(parsed) = parse_z_index_declaration(value) {
                     declarations.z_index = Some(parsed);
                     declarations.local_importance.z_index = important;
+                }
+            }
+            "pointer-events" => {
+                if let Some(parsed) = parse_pointer_events_declaration(value) {
+                    declarations.pointer_events = Some(parsed);
+                    declarations.text_importance.pointer_events = important;
                 }
             }
             "top" => {
@@ -9206,6 +9261,20 @@ fn parse_z_index_declaration(value: &str) -> Option<LocalCascadeDeclaration<Nati
         return Some(LocalCascadeDeclaration::Inherit);
     }
     parse_local_reset_cascade_declaration(value, parse_z_index)
+}
+
+fn parse_pointer_events(value: &str) -> Option<NativePointerEventsValue> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "auto" => Some(NativePointerEventsValue::Auto),
+        "none" => Some(NativePointerEventsValue::None),
+        _ => None,
+    }
+}
+
+fn parse_pointer_events_declaration(
+    value: &str,
+) -> Option<InheritedTextDeclaration<NativePointerEventsValue>> {
+    parse_inherited_text_declaration(value, parse_pointer_events)
 }
 
 fn parse_position_offset(value: &str) -> Option<NativePositionOffset> {

@@ -33826,6 +33826,82 @@ fn native_css_z_index_cascades_stylesheet_important_values() {
 }
 
 #[test]
+fn native_css_pointer_events_none_skips_visual_overlay_in_hit_testing() {
+    let document = NativeDocument::parse(
+        "<button id='under' style='display:block;position:absolute;left:2px;top:2px;width:12px;height:8px;background:red;z-index:1'>under</button><button id='overlay' style='display:block;position:absolute;left:2px;top:2px;width:12px;height:8px;background:blue;z-index:2;pointer-events:none'>overlay</button>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let under = document.resolve_target("id=under").unwrap();
+    let overlay = document.resolve_target("id=overlay").unwrap();
+    let viewport = Viewport {
+        width: 24,
+        height: 16,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(layout.hit_test(3, 3).unwrap(), Some(under));
+    assert!(
+        layout
+            .boxes
+            .iter()
+            .find(|layout_box| layout_box.node_id == under)
+            .is_some_and(|layout_box| layout_box.pointer_events)
+    );
+    assert!(
+        layout
+            .boxes
+            .iter()
+            .find(|layout_box| layout_box.node_id == overlay)
+            .is_some_and(|layout_box| !layout_box.pointer_events)
+    );
+    assert_eq!(
+        document
+            .display_list(viewport)
+            .unwrap()
+            .rasterize()
+            .unwrap()
+            .pixel(3, 3),
+        Some([0, 0, 255, 255])
+    );
+}
+
+#[test]
+fn native_css_pointer_events_inheritance_allows_explicit_descendant_target() {
+    let document = NativeDocument::parse(
+        "<button id='under' style='display:block;position:absolute;left:2px;top:2px;width:12px;height:8px;background:red;z-index:1'>under</button><div id='overlay' style='display:block;position:absolute;left:2px;top:2px;width:12px;height:8px;z-index:2;pointer-events:none'><button id='child' style='display:block;position:absolute;left:0;top:0;width:12px;height:8px;background:green;pointer-events:auto'>child</button></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let overlay = document.resolve_target("id=overlay").unwrap();
+    let child = document.resolve_target("id=child").unwrap();
+    let layout = document
+        .layout(Viewport {
+            width: 24,
+            height: 16,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+
+    assert_eq!(layout.hit_test(3, 3).unwrap(), Some(child));
+    assert!(
+        layout
+            .boxes
+            .iter()
+            .find(|layout_box| layout_box.node_id == overlay)
+            .is_some_and(|layout_box| !layout_box.pointer_events)
+    );
+    assert!(
+        layout
+            .boxes
+            .iter()
+            .find(|layout_box| layout_box.node_id == child)
+            .is_some_and(|layout_box| layout_box.pointer_events)
+    );
+}
+
+#[test]
 fn native_stylesheet_background_geometry_cascades_into_paint() {
     let source = native_test_png_data_url();
     let markup = format!(

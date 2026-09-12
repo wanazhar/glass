@@ -41857,6 +41857,67 @@ async fn native_content_process_exposes_request_body_stream_and_methods() {
 }
 
 #[tokio::test]
+async fn native_content_process_fetches_stream_request_bodies_and_clones_them() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/upload", "/upload", "/options-upload"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            if expected_path != "/page" {
+                assert_eq!(request.split_whitespace().next(), Some("POST"));
+                let body = request
+                    .split_once("\r\n\r\n")
+                    .map(|(_, body)| body)
+                    .unwrap_or_default();
+                assert_eq!(body, "stream-body");
+            }
+            let content_type = if expected_path == "/page" {
+                "text/html"
+            } else {
+                "text/plain"
+            };
+            let body = if expected_path == "/page" {
+                "<body>Stream request body</body>"
+            } else {
+                "ok"
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await (async () => { const makeStream = () => new ReadableStream({ start(controller) { controller.enqueue('stream-'); controller.enqueue('body'); controller.close(); } }); const textRequest = new Request('/text', { method: 'POST', body: makeStream(), headers: { 'Content-Type': 'text/plain' } }); const text = await textRequest.text(); const textState = [text, textRequest.bodyUsed, textRequest.body.locked]; const request = new Request('/upload', { method: 'POST', body: makeStream(), headers: { 'Content-Type': 'text/plain' } }); const clone = request.clone(); const initial = [request.bodyUsed, clone.bodyUsed]; const first = await fetch(request); const firstText = await first.text(); const second = await fetch(clone); const secondText = await second.text(); const afterClone = [request.bodyUsed, clone.bodyUsed]; const optionsResponse = await fetch('/options-upload', { method: 'POST', body: makeStream(), headers: { 'Content-Type': 'text/plain' } }); return { textState, initial, firstText, secondText, afterClone, options: await optionsResponse.text() }; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "textState": ["stream-body", true, false],
+            "initial": [false, false],
+            "firstText": "ok",
+            "secondText": "ok",
+            "afterClone": [true, true],
+            "options": "ok"
+        })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_parses_request_form_data() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

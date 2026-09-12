@@ -4775,7 +4775,7 @@ impl<'a> LayoutBuilder<'a> {
             Some("input" | "textarea" | "select") => DEFAULT_CONTROL_WIDTH,
             Some("svg") => node
                 .attribute("width")
-                .and_then(|value| value.trim().parse::<u32>().ok())
+                .and_then(svg_length)
                 .unwrap_or(DEFAULT_SVG_WIDTH),
             Some("img") => self
                 .image_dimensions(id)
@@ -4837,7 +4837,7 @@ impl<'a> LayoutBuilder<'a> {
                 .document
                 .node(id)
                 .and_then(|node| node.attribute("height"))
-                .and_then(|value| value.trim().parse::<u32>().ok())
+                .and_then(svg_length)
                 .unwrap_or(DEFAULT_SVG_HEIGHT),
             Some("img") => self
                 .image_dimensions(id)
@@ -5051,11 +5051,13 @@ fn svg_viewbox_transform(node: &NativeNode, value: &str) -> Option<NativeSvgTran
     }
     let viewport_width = node
         .attribute("width")
-        .and_then(|value| value.trim().parse::<f64>().ok())
+        .and_then(svg_length)
+        .map(f64::from)
         .unwrap_or(f64::from(DEFAULT_SVG_WIDTH));
     let viewport_height = node
         .attribute("height")
-        .and_then(|value| value.trim().parse::<f64>().ok())
+        .and_then(svg_length)
+        .map(f64::from)
         .unwrap_or(f64::from(DEFAULT_SVG_HEIGHT));
     if !viewport_width.is_finite()
         || viewport_width <= 0.0
@@ -5102,6 +5104,21 @@ fn svg_viewbox_transform(node: &NativeNode, value: &str) -> Option<NativeSvgTran
     .iter()
     .all(|value| value.is_finite())
     .then_some(transform)
+}
+
+fn svg_length(value: &str) -> Option<u32> {
+    let value = value.trim();
+    let value = value.strip_suffix("px").map(str::trim).unwrap_or(value);
+    if value.is_empty() || value.ends_with('%') {
+        return None;
+    }
+    let value = value.parse::<f64>().ok()?;
+    if !value.is_finite() || value <= 0.0 {
+        return None;
+    }
+    u32::try_from(value.ceil() as u64)
+        .ok()
+        .filter(|value| *value > 0)
 }
 
 fn svg_preserve_aspect_ratio(node: &NativeNode) -> Option<(Option<f64>, Option<f64>, bool)> {

@@ -619,7 +619,10 @@ fn action_source(action: &SemanticAction) -> Result<String, BrowserBackendError>
             css_selector_literal(target)?,
             serde_json::to_string(text).unwrap_or_else(|_| "\"\"".into())
         )),
-        SemanticAction::Clear { .. }
+        SemanticAction::DoubleClick { .. }
+        | SemanticAction::Hover { .. }
+        | SemanticAction::Drag { .. }
+        | SemanticAction::Clear { .. }
         | SemanticAction::Check { .. }
         | SemanticAction::Uncheck { .. }
         | SemanticAction::Select { .. }

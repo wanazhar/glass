@@ -3549,7 +3549,12 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             "must be a uint32",
                         )
                     })?;
-                let form_action = match action.get("kind").and_then(Value::as_str) {
+                let action_kind = action.get("kind").and_then(Value::as_str);
+                let destination_node_index = action
+                    .get("destination_node_index")
+                    .and_then(Value::as_u64)
+                    .and_then(|value| u32::try_from(value).ok());
+                let form_action = match action_kind {
                     Some("clear") => NativeFormAction::Clear,
                     Some("select") => NativeFormAction::Select(
                         action
@@ -3563,12 +3568,21 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             })?
                             .to_owned(),
                     ),
+                    Some("hover") => NativeFormAction::Hover,
+                    Some("drag") => NativeFormAction::Drag {
+                        destination_node_index: destination_node_index.ok_or_else(|| {
+                            NativeEngineError::invalid(
+                                "content-process drag destination",
+                                "must be a uint32",
+                            )
+                        })?,
+                    },
                     _ => {
                         let response = content_error_response(
                             id,
                             NativeEngineError::invalid(
                                 "content-process form action",
-                                "kind must be clear or select",
+                                "kind must be clear, select, hover, or drag",
                             ),
                         );
                         write_value_frame(&mut stdout, &response).await?;
@@ -5166,6 +5180,8 @@ fn mutate_type_with_event_bridge(
 enum NativeFormAction {
     Clear,
     Select(String),
+    Hover,
+    Drag { destination_node_index: u32 },
 }
 
 fn mutate_form_action_with_event_bridge(
@@ -5184,6 +5200,13 @@ fn mutate_form_action_with_event_bridge(
     let mut events = match action {
         NativeFormAction::Clear => next.apply_clear(node_id)?,
         NativeFormAction::Select(value) => next.apply_select(node_id, &value)?,
+        NativeFormAction::Hover => next.apply_hover(node_id)?,
+        NativeFormAction::Drag {
+            destination_node_index,
+        } => next.apply_drag(
+            node_id,
+            NativeNodeId::from_parts(current.generation(), destination_node_index),
+        )?,
     };
     let default_events = events.clone();
     for (event_node, event_kind) in default_events {
@@ -6793,6 +6816,13 @@ fn event_kind_text(kind: NativeEventKind) -> &'static str {
         NativeEventKind::KeyUp => "keyup",
         NativeEventKind::Submit => "submit",
         NativeEventKind::Click => "click",
+        NativeEventKind::MouseOver => "mouseover",
+        NativeEventKind::MouseEnter => "mouseenter",
+        NativeEventKind::DragStart => "dragstart",
+        NativeEventKind::DragEnter => "dragenter",
+        NativeEventKind::DragOver => "dragover",
+        NativeEventKind::Drop => "drop",
+        NativeEventKind::DragEnd => "dragend",
         NativeEventKind::Input => "input",
         NativeEventKind::Change => "change",
         NativeEventKind::Scroll => "scroll",
@@ -6818,6 +6848,13 @@ fn parse_event_kind(value: &str) -> Option<NativeEventKind> {
         "keyup" => Some(NativeEventKind::KeyUp),
         "submit" => Some(NativeEventKind::Submit),
         "click" => Some(NativeEventKind::Click),
+        "mouseover" => Some(NativeEventKind::MouseOver),
+        "mouseenter" => Some(NativeEventKind::MouseEnter),
+        "dragstart" => Some(NativeEventKind::DragStart),
+        "dragenter" => Some(NativeEventKind::DragEnter),
+        "dragover" => Some(NativeEventKind::DragOver),
+        "drop" => Some(NativeEventKind::Drop),
+        "dragend" => Some(NativeEventKind::DragEnd),
         "input" => Some(NativeEventKind::Input),
         "change" => Some(NativeEventKind::Change),
         "scroll" => Some(NativeEventKind::Scroll),

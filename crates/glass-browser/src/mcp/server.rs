@@ -3452,6 +3452,50 @@ async fn call_native_tool(
             )
             .await
         }
+        ToolInvocation::DoubleClick {
+            target,
+            expected_revision,
+        } => {
+            native_action_result(
+                session,
+                crate::browser_backend::SemanticAction::DoubleClick {
+                    target: target.into_owned(),
+                },
+                expected_revision,
+                response_mode,
+            )
+            .await
+        }
+        ToolInvocation::Hover {
+            target,
+            expected_revision,
+        } => {
+            native_action_result(
+                session,
+                crate::browser_backend::SemanticAction::Hover {
+                    target: target.into_owned(),
+                },
+                expected_revision,
+                response_mode,
+            )
+            .await
+        }
+        ToolInvocation::Drag {
+            source,
+            destination,
+            expected_revision,
+        } => {
+            native_action_result(
+                session,
+                crate::browser_backend::SemanticAction::Drag {
+                    source: source.into_owned(),
+                    destination: destination.into_owned(),
+                },
+                expected_revision,
+                response_mode,
+            )
+            .await
+        }
         ToolInvocation::ClickExpectPopup {
             target,
             expected_revision,

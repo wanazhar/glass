@@ -5632,6 +5632,14 @@ use the same ownership, and wrong-frame revision references become structured
 stale results during subtree search. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-245.md`.
 
+The completed native-engine-browser-246 slice carries the shared pointer
+action contract through the native owner. Double-click reuses two existing
+click transactions; hover emits `mouseover`/`mouseenter`; and drag emits the
+bounded `dragstart`/`dragenter`/`dragover`/`drop`/`dragend` sequence. Local and
+HTTP(S) content-worker listeners receive the same event metadata, and child
+frame actions resolve both drag endpoints within one owner frame. Exact
+evidence is recorded in `docs/plan/tasks/native-engine-browser-246.md`.
+
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`
 objects, element attribute-node methods preserve ownership and replacement

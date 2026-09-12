@@ -227,6 +227,9 @@ impl ProofBackend {
                         return Err(invalid_action("unknown proof target"));
                     }
                     SemanticAction::Clear { .. }
+                    | SemanticAction::DoubleClick { .. }
+                    | SemanticAction::Hover { .. }
+                    | SemanticAction::Drag { .. }
                     | SemanticAction::Check { .. }
                     | SemanticAction::Uncheck { .. }
                     | SemanticAction::Select { .. }

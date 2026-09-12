@@ -1765,6 +1765,20 @@ pub enum SemanticAction {
         #[serde(deserialize_with = "deserialize_bounded_string")]
         target: String,
     },
+    DoubleClick {
+        #[serde(deserialize_with = "deserialize_bounded_string")]
+        target: String,
+    },
+    Hover {
+        #[serde(deserialize_with = "deserialize_bounded_string")]
+        target: String,
+    },
+    Drag {
+        #[serde(deserialize_with = "deserialize_bounded_string")]
+        source: String,
+        #[serde(deserialize_with = "deserialize_bounded_string")]
+        destination: String,
+    },
     Type {
         #[serde(deserialize_with = "deserialize_bounded_string")]
         target: String,
@@ -2002,7 +2016,16 @@ impl BackendContract for EvidenceResult {
 impl BackendContract for SemanticAction {
     fn validate(&self) -> Result<(), BrowserBackendError> {
         match self {
-            Self::Click { target } => validate_text("action target", target, MAX_TEXT_BYTES),
+            Self::Click { target } | Self::DoubleClick { target } | Self::Hover { target } => {
+                validate_text("action target", target, MAX_TEXT_BYTES)
+            }
+            Self::Drag {
+                source,
+                destination,
+            } => {
+                validate_text("drag source", source, MAX_TEXT_BYTES)?;
+                validate_text("drag destination", destination, MAX_TEXT_BYTES)
+            }
             Self::Type { target, text } => {
                 validate_text("action target", target, MAX_TEXT_BYTES)?;
                 validate_text("action text", text, MAX_TEXT_BYTES)

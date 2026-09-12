@@ -5525,6 +5525,84 @@ async fn native_local_script_owns_event_listeners_and_focus_order() {
 }
 
 #[tokio::test]
+async fn native_local_pointer_actions_dispatch_browser_event_order() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://pointer-actions",
+            "<button id='button' style='width:100px;height:24px'>Button</button><div id='source' draggable='true' style='width:100px;height:24px'>Source</div><div id='destination' style='width:100px;height:24px'>Destination</div>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://pointer-actions");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    engine
+        .evaluate_async(
+            "(() => { const button = document.getElementById('button'); const source = document.getElementById('source'); const destination = document.getElementById('destination'); globalThis.pointerEvents = []; globalThis.doubleClicks = 0; button.addEventListener('click', () => globalThis.doubleClicks += 1); button.addEventListener('mouseover', event => pointerEvents.push(event.type + ':' + event.target.id + ':' + event.bubbles + ':' + event.cancelable)); button.addEventListener('mouseenter', event => pointerEvents.push(event.type + ':' + event.target.id + ':' + event.bubbles + ':' + event.cancelable)); source.addEventListener('dragstart', event => pointerEvents.push(event.type + ':' + event.target.id + ':' + event.bubbles + ':' + event.cancelable)); destination.addEventListener('dragenter', event => pointerEvents.push(event.type + ':' + event.target.id + ':' + event.bubbles + ':' + event.cancelable)); destination.addEventListener('dragover', event => pointerEvents.push(event.type + ':' + event.target.id + ':' + event.bubbles + ':' + event.cancelable)); destination.addEventListener('drop', event => pointerEvents.push(event.type + ':' + event.target.id + ':' + event.bubbles + ':' + event.cancelable)); source.addEventListener('dragend', event => pointerEvents.push(event.type + ':' + event.target.id + ':' + event.bubbles + ':' + event.cancelable)); })()",
+        )
+        .await
+        .unwrap();
+
+    let double_clicked = engine
+        .action(NativeAction::DoubleClick {
+            target: "id=button".into(),
+        })
+        .unwrap();
+    assert!(double_clicked.accepted);
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.doubleClicks")
+            .await
+            .unwrap(),
+        serde_json::json!(2)
+    );
+
+    let hovered = engine
+        .action(NativeAction::Hover {
+            target: "id=button".into(),
+        })
+        .unwrap();
+    assert!(hovered.accepted);
+
+    let dragged = engine
+        .action(NativeAction::Drag {
+            source: "id=source".into(),
+            destination: "id=destination".into(),
+        })
+        .unwrap();
+    assert!(dragged.accepted);
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.pointerEvents")
+            .await
+            .unwrap(),
+        serde_json::json!([
+            "mouseover:button:true:true",
+            "mouseenter:button:false:false",
+            "dragstart:source:true:true",
+            "dragenter:destination:true:true",
+            "dragover:destination:true:true",
+            "drop:destination:true:true",
+            "dragend:source:true:false",
+        ])
+    );
+    let effects = engine.effects_since(0).unwrap();
+    assert!(
+        effects
+            .effects
+            .iter()
+            .any(|effect| effect.kind == NativeEventKind::MouseOver)
+    );
+    assert!(
+        effects
+            .effects
+            .iter()
+            .any(|effect| effect.kind == NativeEventKind::DragEnd)
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_keypress_edits_focused_text_and_honors_keydown_cancel() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -9679,6 +9757,74 @@ async fn native_content_process_owns_clear_and_select_form_actions() {
         })
     );
 
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_pointer_actions_bridge_dom_events() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let _ = read_http_request(&mut stream).await;
+        let body = "<button id='button' style='width:100px;height:24px'>Button</button><div id='source' draggable='true' style='width:100px;height:24px'>Source</div><div id='destination' style='width:100px;height:24px'>Destination</div><script>globalThis.pointerEvents = []; globalThis.doubleClicks = 0; const button = document.getElementById('button'); const source = document.getElementById('source'); const destination = document.getElementById('destination'); button.addEventListener('click', () => globalThis.doubleClicks += 1); button.addEventListener('mouseover', event => pointerEvents.push(event.type + ':' + event.target.id)); button.addEventListener('mouseenter', event => pointerEvents.push(event.type + ':' + event.target.id)); source.addEventListener('dragstart', event => pointerEvents.push(event.type + ':' + event.target.id)); destination.addEventListener('dragenter', event => pointerEvents.push(event.type + ':' + event.target.id)); destination.addEventListener('dragover', event => pointerEvents.push(event.type + ':' + event.target.id)); destination.addEventListener('drop', event => pointerEvents.push(event.type + ':' + event.target.id)); source.addEventListener('dragend', event => pointerEvents.push(event.type + ':' + event.target.id));</script>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/pointer-actions")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+
+    let double_clicked = engine
+        .action_async(NativeAction::DoubleClick {
+            target: "id=button".into(),
+        })
+        .await
+        .unwrap();
+    assert!(double_clicked.accepted);
+    let hovered = engine
+        .action_async(NativeAction::Hover {
+            target: "id=button".into(),
+        })
+        .await
+        .unwrap();
+    assert!(hovered.accepted);
+    let dragged = engine
+        .action_async(NativeAction::Drag {
+            source: "id=source".into(),
+            destination: "id=destination".into(),
+        })
+        .await
+        .unwrap();
+    assert!(dragged.accepted);
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({ clicks: globalThis.doubleClicks, events: globalThis.pointerEvents })"
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "clicks": 2,
+            "events": [
+                "mouseover:button",
+                "mouseenter:button",
+                "dragstart:source",
+                "dragenter:destination",
+                "dragover:destination",
+                "drop:destination",
+                "dragend:source",
+            ],
+        })
+    );
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }

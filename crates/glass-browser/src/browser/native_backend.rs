@@ -328,6 +328,19 @@ impl NativeEngineBackend {
             SemanticAction::Click { target } => NativeAction::Click {
                 target: target.clone(),
             },
+            SemanticAction::DoubleClick { target } => NativeAction::DoubleClick {
+                target: target.clone(),
+            },
+            SemanticAction::Hover { target } => NativeAction::Hover {
+                target: target.clone(),
+            },
+            SemanticAction::Drag {
+                source,
+                destination,
+            } => NativeAction::Drag {
+                source: source.clone(),
+                destination: destination.clone(),
+            },
             SemanticAction::Type { target, text } => NativeAction::Type {
                 target: target.clone(),
                 text: text.clone(),
@@ -347,13 +360,19 @@ impl NativeEngineBackend {
             },
             _ => return Ok(None),
         };
-        let target = match action {
+        let locator_targets = match action {
             SemanticAction::Click { target }
+            | SemanticAction::DoubleClick { target }
+            | SemanticAction::Hover { target }
             | SemanticAction::Type { target, .. }
             | SemanticAction::Clear { target }
             | SemanticAction::Check { target }
             | SemanticAction::Uncheck { target }
-            | SemanticAction::Select { target, .. } => target,
+            | SemanticAction::Select { target, .. } => vec![target.as_str()],
+            SemanticAction::Drag {
+                source,
+                destination,
+            } => vec![source.as_str(), destination.as_str()],
             _ => return Ok(None),
         };
         let frame_id = {
@@ -378,14 +397,20 @@ impl NativeEngineBackend {
             let mut first_error = None;
             for candidate_id in candidate_frame_ids {
                 let result = if candidate_id == root_frame_id {
-                    engine.resolve_target(target)
+                    locator_targets
+                        .iter()
+                        .try_for_each(|target| engine.resolve_target(target).map(|_| ()))
                 } else {
                     targets
                         .active_frames
                         .parked
                         .get(&candidate_id)
                         .ok_or(NativeEngineError::DetachedTarget)
-                        .and_then(|frame| frame.engine.resolve_target(target))
+                        .and_then(|frame| {
+                            locator_targets.iter().try_for_each(|target| {
+                                frame.engine.resolve_target(target).map(|_| ())
+                            })
+                        })
                 };
                 match result {
                     Ok(_) => matches.push(candidate_id),
@@ -458,6 +483,15 @@ impl NativeEngineBackend {
     ) -> Result<ActionResult, BrowserBackendError> {
         let native_action = match action {
             SemanticAction::Click { target } => NativeAction::Click { target },
+            SemanticAction::DoubleClick { target } => NativeAction::DoubleClick { target },
+            SemanticAction::Hover { target } => NativeAction::Hover { target },
+            SemanticAction::Drag {
+                source,
+                destination,
+            } => NativeAction::Drag {
+                source,
+                destination,
+            },
             SemanticAction::Type { target, text } => NativeAction::Type { target, text },
             SemanticAction::Clear { target } => NativeAction::Clear { target },
             SemanticAction::Check { target } => NativeAction::Check { target },
@@ -3074,6 +3108,8 @@ impl BrowserBackend for NativeEngineBackend {
                     let updates_focus = matches!(
                         &request.action,
                         SemanticAction::Click { .. }
+                            | SemanticAction::DoubleClick { .. }
+                            | SemanticAction::Drag { .. }
                             | SemanticAction::Type { .. }
                             | SemanticAction::Clear { .. }
                             | SemanticAction::Check { .. }
@@ -3086,6 +3122,17 @@ impl BrowserBackend for NativeEngineBackend {
                     );
                     let action = match request.action {
                         SemanticAction::Click { target } => NativeAction::Click { target },
+                        SemanticAction::DoubleClick { target } => {
+                            NativeAction::DoubleClick { target }
+                        }
+                        SemanticAction::Hover { target } => NativeAction::Hover { target },
+                        SemanticAction::Drag {
+                            source,
+                            destination,
+                        } => NativeAction::Drag {
+                            source,
+                            destination,
+                        },
                         SemanticAction::Type { target, text } => {
                             NativeAction::Type { target, text }
                         }

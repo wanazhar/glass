@@ -191,6 +191,16 @@ pub struct NativeEngineBackend {
     targets: Mutex<NativeTargetState>,
 }
 
+/// One atomic semantic/layout snapshot together with the frame that owns it.
+/// The root frame is returned first, followed by attached descendants in
+/// deterministic tree order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeFrameInspectionSnapshot {
+    pub frame_id: String,
+    pub parent_id: Option<String>,
+    pub inspection: NativeInspectionSnapshot,
+}
+
 impl NativeEngineBackend {
     pub fn new(config: NativeEngineConfig) -> Result<Self, BrowserBackendError> {
         let profile = Self::profile_for(env!("CARGO_PKG_VERSION"))?;
@@ -437,6 +447,83 @@ impl NativeEngineBackend {
         })))
     }
 
+    /// Dispatch a semantic action to the frame selected by a fresh semantic
+    /// candidate. This preserves local revisioned node references while
+    /// preventing an identical reference in another frame from being chosen.
+    pub async fn action_in_frame(
+        &self,
+        context_id: &str,
+        frame_id: &str,
+        action: SemanticAction,
+    ) -> Result<ActionResult, BrowserBackendError> {
+        let native_action = match action {
+            SemanticAction::Click { target } => NativeAction::Click { target },
+            SemanticAction::Type { target, text } => NativeAction::Type { target, text },
+            SemanticAction::Clear { target } => NativeAction::Clear { target },
+            SemanticAction::Check { target } => NativeAction::Check { target },
+            SemanticAction::Uncheck { target } => NativeAction::Uncheck { target },
+            SemanticAction::Select { target, value } => NativeAction::Select { target, value },
+            SemanticAction::KeyDown { key } => NativeAction::KeyDown { key },
+            SemanticAction::KeyUp { key } => NativeAction::KeyUp { key },
+            SemanticAction::Shortcut { shortcut } => NativeAction::Shortcut { shortcut },
+            SemanticAction::KeyPress { key } => NativeAction::KeyPress { key },
+            SemanticAction::Scroll { delta_x, delta_y } => {
+                NativeAction::Scroll { delta_x, delta_y }
+            }
+        };
+        {
+            let mut targets = self.lock_targets(BackendOperation::Action)?;
+            let active_context_id =
+                targets
+                    .active_target_id
+                    .clone()
+                    .ok_or_else(|| BrowserBackendError::Lifecycle {
+                        operation: "action".into(),
+                        state: "no-target-selected".into(),
+                        reason: "select an available native page target before acting".into(),
+                    })?;
+            require_context_id(context_id, &active_context_id)?;
+            validate_native_topology_id(frame_id)?;
+            let engine = self.lock_engine_raw(BackendOperation::Action)?;
+            let root_frame_id = targets.active_frames.active_frame_id.clone();
+            reconcile_native_frames(&mut targets.active_frames, &engine).await?;
+            if frame_id != root_frame_id && !targets.active_frames.parked.contains_key(frame_id) {
+                return Err(BrowserBackendError::SelectionFailed {
+                    reason: "native semantic frame is no longer attached; inspect again".into(),
+                });
+            }
+        }
+        let route =
+            self.frame_route(frame_id)?
+                .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                    reason: "native semantic frame disappeared before action dispatch".into(),
+                })?;
+        let proxy_updates = self.window_proxy_updates(frame_id)?;
+        let (revision, accepted, runtime_effects, owner_id) = self
+            .apply_action_to_native_frame(route, frame_id, native_action, &proxy_updates)
+            .await?;
+        self.sync_target_name(&owner_id, &runtime_effects.window_name)?;
+        if accepted {
+            self.set_active_frame_focus(frame_id)?;
+        }
+        self.process_selected_frame_events(frame_id, runtime_effects.events)
+            .await?;
+        self.process_pending_frame_scripts(runtime_effects.frame_scripts)
+            .await?;
+        self.process_pending_browser_effects(
+            runtime_effects.browser.0,
+            runtime_effects.browser.1,
+            runtime_effects.browser.2,
+            runtime_effects.browser.3,
+        )
+        .await?;
+        Ok(ActionResult {
+            context_id: context_id.to_owned(),
+            revision,
+            accepted,
+        })
+    }
+
     async fn apply_action_to_native_frame(
         &self,
         route: NativeFrameRoute,
@@ -616,14 +703,89 @@ impl NativeEngineBackend {
     }
 
     /// Return a side-effect-free, revision-bound target preflight result.
-    pub fn preflight_target(
+    /// Locators are resolved across the selected frame subtree and the
+    /// winning result records the owning frame for later exact dispatch.
+    pub async fn preflight_target(
         &self,
         target: &str,
         action: NativePreflightAction,
     ) -> Result<NativeTargetPreflight, BrowserBackendError> {
-        self.lock_engine(BackendOperation::Evidence)?
-            .preflight_target(target, action)
-            .map_err(native_error)
+        let mut targets = self.lock_targets(BackendOperation::Evidence)?;
+        if targets.active_target_id.is_none() {
+            return Err(BrowserBackendError::Lifecycle {
+                operation: "evidence".into(),
+                state: "no-target-selected".into(),
+                reason: "select an available native page target before target preflight".into(),
+            });
+        }
+        let engine = self.lock_engine_raw(BackendOperation::Evidence)?;
+        let root_frame_id = targets.active_frames.active_frame_id.clone();
+        reconcile_native_frames(&mut targets.active_frames, &engine).await?;
+        let frame_ids = std::iter::once(root_frame_id.clone())
+            .chain(targets.active_frames.descendant_ids(&root_frame_id))
+            .collect::<Vec<_>>();
+        let mut matches = Vec::new();
+        let mut fallback = None;
+        for frame_id in frame_ids {
+            let result = if frame_id == root_frame_id {
+                engine
+                    .preflight_target(target, action)
+                    .map_err(native_error)?
+            } else {
+                let frame = targets.active_frames.parked.get(&frame_id).ok_or_else(|| {
+                    BrowserBackendError::SelectionFailed {
+                        reason: "native frame disappeared during target preflight".into(),
+                    }
+                })?;
+                frame
+                    .engine
+                    .preflight_target(target, action)
+                    .map_err(native_error)?
+            };
+            if result.unique {
+                matches.push((frame_id, result));
+            } else if result.error_kind
+                != Some(super::native_engine::NativeTargetErrorKind::NotFound)
+            {
+                fallback.get_or_insert(result);
+            }
+        }
+
+        if matches.len() > 1 {
+            let revision = engine.revision();
+            return Ok(NativeTargetPreflight {
+                action,
+                unique: false,
+                node: None,
+                actionable: None,
+                actionability_reason: None,
+                error_kind: Some(super::native_engine::NativeTargetErrorKind::Ambiguous),
+                revision,
+                frame_id: None,
+                geometry: None,
+                likely_navigation: false,
+                likely_popup: false,
+                likely_form_submit: false,
+            });
+        }
+        if let Some((frame_id, mut result)) = matches.pop() {
+            result.frame_id = Some(frame_id);
+            return Ok(result);
+        }
+        Ok(fallback.unwrap_or_else(|| NativeTargetPreflight {
+            action,
+            unique: false,
+            node: None,
+            actionable: None,
+            actionability_reason: None,
+            error_kind: Some(super::native_engine::NativeTargetErrorKind::NotFound),
+            revision: engine.revision(),
+            frame_id: None,
+            geometry: None,
+            likely_navigation: false,
+            likely_popup: false,
+            likely_form_submit: false,
+        }))
     }
 
     /// Return one atomic page/semantic/layout snapshot for agent discovery.
@@ -631,6 +793,50 @@ impl NativeEngineBackend {
         self.lock_engine(BackendOperation::Evidence)?
             .inspection_snapshot()
             .map_err(native_error)
+    }
+
+    /// Discover and snapshot the selected frame subtree under one registry
+    /// lock. Each child remains an independent native document, but callers
+    /// receive its owning frame identity alongside its revision-bound handles.
+    pub async fn inspection_snapshots(
+        &self,
+    ) -> Result<Vec<NativeFrameInspectionSnapshot>, BrowserBackendError> {
+        let mut targets = self.lock_targets(BackendOperation::Evidence)?;
+        if targets.active_target_id.is_none() {
+            return Err(BrowserBackendError::Lifecycle {
+                operation: "evidence".into(),
+                state: "no-target-selected".into(),
+                reason: "select an available native page target before semantic inspection".into(),
+            });
+        }
+        let engine = self.lock_engine_raw(BackendOperation::Evidence)?;
+        let root_frame_id = targets.active_frames.active_frame_id.clone();
+        reconcile_native_frames(&mut targets.active_frames, &engine).await?;
+        let frame_ids = std::iter::once(root_frame_id.clone())
+            .chain(targets.active_frames.descendant_ids(&root_frame_id))
+            .collect::<Vec<_>>();
+        let mut snapshots = Vec::with_capacity(frame_ids.len());
+        for frame_id in frame_ids {
+            if frame_id == root_frame_id {
+                snapshots.push(NativeFrameInspectionSnapshot {
+                    frame_id,
+                    parent_id: targets.active_frames.active_parent_id.clone(),
+                    inspection: engine.inspection_snapshot().map_err(native_error)?,
+                });
+                continue;
+            }
+            let frame = targets.active_frames.parked.get(&frame_id).ok_or_else(|| {
+                BrowserBackendError::SelectionFailed {
+                    reason: "native frame disappeared during semantic inspection".into(),
+                }
+            })?;
+            snapshots.push(NativeFrameInspectionSnapshot {
+                frame_id,
+                parent_id: frame.parent_id.clone(),
+                inspection: frame.engine.inspection_snapshot().map_err(native_error)?,
+            });
+        }
+        Ok(snapshots)
     }
 
     pub async fn cookies(
@@ -1532,46 +1738,69 @@ impl NativeEngineBackend {
         &self,
         target: &str,
     ) -> Result<(ActionResult, PageTargetInfo), BrowserBackendError> {
-        let proxy_updates = self.active_window_proxy_updates()?;
-        let mut engine = self.lock_engine(BackendOperation::Action)?;
-        engine
-            .sync_window_proxies(&proxy_updates)
+        let preflight = self
+            .preflight_target(target, NativePreflightAction::Click)
+            .await?;
+        self.click_expect_popup_in_frame(target, preflight.frame_id.as_deref())
             .await
-            .map_err(native_error)?;
-        let active_context_id = engine.config().context_id.clone();
-        let outcome = engine
-            .action_async(NativeAction::Click {
-                target: target.to_owned(),
-            })
-            .await
-            .map_err(native_error)?;
-        let popup_requests = engine.take_pending_popups();
-        let post_messages = engine.take_pending_post_messages();
-        let window_closes = engine.take_pending_window_closes();
-        let window_navigations = engine.take_pending_window_navigations();
-        let window_name = engine.config().window_name.clone();
-        drop(engine);
-        self.sync_target_name(&active_context_id, &window_name)?;
+    }
 
-        if popup_requests.len() != 1 {
+    /// Click one exact frame-local target and require exactly one popup. The
+    /// frame ID normally comes from the same fresh preflight used by the
+    /// caller, so a child-frame target cannot be accidentally sent to the
+    /// active root document.
+    pub async fn click_expect_popup_in_frame(
+        &self,
+        target: &str,
+        frame_id: Option<&str>,
+    ) -> Result<(ActionResult, PageTargetInfo), BrowserBackendError> {
+        let frame_id = frame_id.ok_or_else(|| BrowserBackendError::UnsupportedOperation {
+            operation: "clickExpectPopup".into(),
+            reason: "popup click target did not resolve to one native frame".into(),
+        })?;
+        let route =
+            self.frame_route(frame_id)?
+                .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                    reason: "native popup click frame disappeared before dispatch".into(),
+                })?;
+        let proxy_updates = self.window_proxy_updates(frame_id)?;
+        let (revision, accepted, runtime_effects, owner_id) = self
+            .apply_action_to_native_frame(
+                route,
+                frame_id,
+                NativeAction::Click {
+                    target: target.to_owned(),
+                },
+                &proxy_updates,
+            )
+            .await?;
+        let popup_count = runtime_effects.browser.0.len();
+        if popup_count != 1 {
             return Err(BrowserBackendError::UnsupportedOperation {
                 operation: "clickExpectPopup".into(),
-                reason: if popup_requests.is_empty() {
+                reason: if popup_count == 0 {
                     "click did not create a new native page target".into()
                 } else {
                     format!(
-                        "click created {} native page targets; exactly one is required",
-                        popup_requests.len()
+                        "click created {popup_count} native page targets; exactly one is required"
                     )
                 },
             });
         }
+        self.sync_target_name(&owner_id, &runtime_effects.window_name)?;
+        if accepted {
+            self.set_active_frame_focus(frame_id)?;
+        }
+        self.process_selected_frame_events(frame_id, runtime_effects.events)
+            .await?;
+        self.process_pending_frame_scripts(runtime_effects.frame_scripts)
+            .await?;
         let mut created = self
             .process_pending_browser_effects(
-                popup_requests,
-                post_messages,
-                window_closes,
-                window_navigations,
+                runtime_effects.browser.0,
+                runtime_effects.browser.1,
+                runtime_effects.browser.2,
+                runtime_effects.browser.3,
             )
             .await?;
         let popup = created
@@ -1579,9 +1808,9 @@ impl NativeEngineBackend {
             .expect("popup URL count was validated before materialization");
         Ok((
             ActionResult {
-                context_id: active_context_id,
-                revision: outcome.revision,
-                accepted: outcome.accepted,
+                context_id: owner_id,
+                revision,
+                accepted,
             },
             popup,
         ))

@@ -306,6 +306,10 @@ pub struct NativeTargetPreflight {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_kind: Option<NativeTargetErrorKind>,
     pub revision: u64,
+    /// Owning frame for a backend-level preflight. The engine-level API does
+    /// not select among frames and therefore leaves this unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frame_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub geometry: Option<NativeRect>,
     pub likely_navigation: bool,
@@ -2221,6 +2225,7 @@ impl NativeEngine {
             actionability_reason: None,
             error_kind: Some(error_kind),
             revision: self.revision,
+            frame_id: None,
             geometry: None,
             likely_navigation: false,
             likely_popup: false,
@@ -2239,12 +2244,14 @@ impl NativeEngine {
             }
             Err(error) => return Err(error),
         };
-        let node = self
+        let Some(node) = self
             .document
             .semantic_nodes()
             .into_iter()
             .find(|node| node.node_id == id)
-            .ok_or(NativeEngineError::DetachedTarget)?;
+        else {
+            return Ok(unresolved(NativeTargetErrorKind::StaleReference));
+        };
         let geometry = self.layout()?.viewport_rect_for(id);
         let actionability_reason = if node.hidden {
             Some(NativeActionabilityReason::NotVisible)
@@ -2270,6 +2277,7 @@ impl NativeEngine {
             actionability_reason,
             error_kind: None,
             revision: self.revision,
+            frame_id: None,
             geometry,
         })
     }

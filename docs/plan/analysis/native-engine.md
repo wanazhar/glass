@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-244`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-245`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -3805,6 +3805,15 @@ subtree, requires one unique match across its live documents, and routes
 targeted click/type/form actions through the child engine's existing event,
 navigation, popup, script, and browser-effect pipeline. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-244.md`.
+
+The completed native-engine-browser-245 slice extends that ownership through
+the observation and execution contract. The runtime snapshots every attached
+frame under one reconciliation boundary, bounds the aggregate semantic
+payload and revision, carries `frameId` through target and intent-candidate
+schemas, and makes preflight return the exact winning frame. Semantic actions
+and popup clicks then use that frame route; wrong-frame reference collisions
+are represented as stale preflight results so the subtree walk can continue.
+Exact evidence is in `docs/plan/tasks/native-engine-browser-245.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

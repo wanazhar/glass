@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-250`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-251`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -3869,6 +3869,18 @@ would violate. Timer-only promises and full async event-loop scheduling remain
 separate work; this slice closes the fetch-driven await path used by ordinary
 applications. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-250.md`.
+
+The completed native-engine-browser-251 slice gives that pending evaluation a
+bounded host event-loop owner. The content process reads the persistent
+QuickJS timer/frame schedule, waits for the next due deadline, executes one
+timer turn with the bootstrap pump disabled, drains pending promise jobs, and
+applies the resulting DOM/history/fetch work before publishing the outer
+value. Timer callbacks can therefore start same-origin fetches and settle
+their enclosing top-level await. Turn count, request count, script timeout,
+and existing document/effect limits remain enforced. This is a real async
+host-progress slice, not a claim of complete workers, WebSocket/EventSource,
+background-page scheduling, or browser-wide event-loop conformance. Exact
+evidence is in `docs/plan/tasks/native-engine-browser-251.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

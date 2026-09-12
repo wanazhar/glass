@@ -3909,6 +3909,67 @@ impl NativeJavaScriptRuntime {
             .min(u128::from(u64::MAX)) as u64
     }
 
+    /// Return the delay until the next page-owned timer or animation frame.
+    ///
+    /// Timer callbacks live inside the persistent QuickJS realm, so the host
+    /// must inspect their bounded schedule before deciding whether an async
+    /// evaluation can make progress. The result is relative to this realm's
+    /// monotonic clock and never exposes callback objects or page data.
+    pub(crate) fn next_timer_delay_ms(&self) -> Result<Option<u64>, NativeEngineError> {
+        let now_ms = self.now_ms();
+        let source = format!(
+            "JSON.stringify((() => {{ let next = null; const consider = values => {{ for (const timer of values) {{ const dueAt = Number(timer && timer.dueAt); if (!Number.isFinite(dueAt)) continue; const delay = Math.max(0, Math.ceil(dueAt - {now_ms})); if (next === null || delay < next) next = delay; }} }}; consider(globalThis.__glassTimers instanceof Map ? globalThis.__glassTimers.values() : []); consider(globalThis.__glassAnimationFrames instanceof Map ? globalThis.__glassAnimationFrames.values() : []); return next; }})())"
+        );
+        self.context.with(|ctx| {
+            let json: String =
+                ctx.eval(source.as_str())
+                    .map_err(|error| NativeEngineError::Worker {
+                        operation: "inspect native timer queue".into(),
+                        reason: format!(
+                            "native timer queue could not be inspected: {}",
+                            CaughtError::from_error(&ctx, error)
+                        ),
+                    })?;
+            if json.len() > MAX_NATIVE_SCRIPT_RESULT_BYTES {
+                return Err(NativeEngineError::limit(
+                    "native timer queue",
+                    MAX_NATIVE_SCRIPT_RESULT_BYTES,
+                    json.len(),
+                ));
+            }
+            serde_json::from_str(&json).map_err(|_| NativeEngineError::Worker {
+                operation: "decode native timer queue".into(),
+                reason: "native timer queue returned an invalid delay".into(),
+            })
+        })
+    }
+
+    /// Execute one host event-loop turn for page timers and animation frames.
+    ///
+    /// The bootstrap timer pump is disabled for this call so each turn runs
+    /// the queue exactly once. QuickJS then drains its pending promise jobs,
+    /// allowing timer callbacks to settle top-level await or emit the same
+    /// bounded DOM/network commands as ordinary script evaluation.
+    pub(crate) fn run_timer_turn(
+        &self,
+        document: &NativeDocument,
+        document_url: &str,
+        origin: &NativeOrigin,
+        viewport: Viewport,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        let previous = self.timer_pump_enabled();
+        self.set_timer_pump_enabled(false);
+        let result = self.evaluate(
+            "globalThis.__glassRunTimers(performance.now());",
+            document,
+            document_url,
+            origin,
+            viewport,
+        );
+        self.set_timer_pump_enabled(previous);
+        result
+    }
+
     pub(crate) fn reset_timer_clock(&mut self) {
         self.clock_origin = Instant::now();
     }

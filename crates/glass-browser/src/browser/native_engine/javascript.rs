@@ -112,6 +112,11 @@ pub(crate) enum NativeScriptCommand {
     HistoryGo {
         delta: i32,
     },
+    ScrollTo {
+        node_index: u32,
+        left: i64,
+        top: i64,
+    },
     OpenWindow {
         href: String,
         target: String,
@@ -416,6 +421,7 @@ pub(crate) struct NativePageNavigation {
 
 pub(crate) struct NativePageScriptResult {
     pub(crate) pending_fetches: Vec<NativeScriptCommand>,
+    pub(crate) scroll_commands: Vec<NativeScriptCommand>,
     pub(crate) navigation: Option<NativePageNavigation>,
     pub(crate) dialogs: Vec<NativeDialog>,
     pub(crate) events: Vec<(u32, NativeEventKind)>,
@@ -2717,6 +2723,7 @@ pub(crate) fn execute_page_scripts(
         .expect("page script runtime initialized")
         .set_module_sources(module_sources);
     let mut pending_fetches = Vec::new();
+    let mut scroll_commands = Vec::new();
     let mut navigation = None;
     let mut events = Vec::new();
     for source in sources {
@@ -2746,7 +2753,13 @@ pub(crate) fn execute_page_scripts(
             Err(error) if is_ignorable_page_script_error(&error) => continue,
             Err(error) => return Err(error),
         };
-        apply_page_script_evaluation(document, evaluation, &mut pending_fetches, &mut navigation)?;
+        apply_page_script_evaluation(
+            document,
+            evaluation,
+            &mut pending_fetches,
+            &mut scroll_commands,
+            &mut navigation,
+        )?;
     }
     for (node_index, event_kind) in resource_events {
         let Some(event_source) = host_event_script(&[(*node_index, *event_kind)])? else {
@@ -2762,7 +2775,13 @@ pub(crate) fn execute_page_scripts(
                 document_origin,
                 viewport,
             )?;
-        apply_page_script_evaluation(document, evaluation, &mut pending_fetches, &mut navigation)?;
+        apply_page_script_evaluation(
+            document,
+            evaluation,
+            &mut pending_fetches,
+            &mut scroll_commands,
+            &mut navigation,
+        )?;
         events.push((*node_index, *event_kind));
     }
     runtime
@@ -2786,7 +2805,13 @@ pub(crate) fn execute_page_scripts(
                 document_origin,
                 viewport,
             )?;
-        apply_page_script_evaluation(document, evaluation, &mut pending_fetches, &mut navigation)?;
+        apply_page_script_evaluation(
+            document,
+            evaluation,
+            &mut pending_fetches,
+            &mut scroll_commands,
+            &mut navigation,
+        )?;
         events.push((target, kind));
     }
     runtime
@@ -2810,7 +2835,13 @@ pub(crate) fn execute_page_scripts(
                 document_origin,
                 viewport,
             )?;
-        apply_page_script_evaluation(document, evaluation, &mut pending_fetches, &mut navigation)?;
+        apply_page_script_evaluation(
+            document,
+            evaluation,
+            &mut pending_fetches,
+            &mut scroll_commands,
+            &mut navigation,
+        )?;
         events.push((target, kind));
     }
     runtime
@@ -2821,8 +2852,20 @@ pub(crate) fn execute_page_scripts(
         .as_mut()
         .expect("page script runtime initialized")
         .reset_timer_clock();
+    dispatch_page_scroll_events(
+        document,
+        runtime.as_ref().expect("page script runtime initialized"),
+        document_url,
+        document_origin,
+        viewport,
+        &mut scroll_commands,
+        &mut pending_fetches,
+        &mut navigation,
+        &mut events,
+    )?;
     Ok(NativePageScriptResult {
         pending_fetches,
+        scroll_commands,
         navigation,
         dialogs: runtime
             .as_ref()
@@ -2845,6 +2888,7 @@ fn apply_page_script_evaluation(
     document: &mut NativeDocument,
     evaluation: NativeScriptEvaluation,
     pending_fetches: &mut Vec<NativeScriptCommand>,
+    scroll_commands: &mut Vec<NativeScriptCommand>,
     navigation: &mut Option<NativePageNavigation>,
 ) -> Result<(), NativeEngineError> {
     let mut commands = Vec::new();
@@ -2863,6 +2907,10 @@ fn apply_page_script_evaluation(
                     replace_history: replace,
                 });
             }
+            command @ NativeScriptCommand::ScrollTo { .. } => {
+                scroll_commands.push(command.clone());
+                commands.push(command);
+            }
             command => commands.push(command),
         }
     }
@@ -2872,6 +2920,64 @@ fn apply_page_script_evaluation(
     let mut next = document.clone();
     next.apply_script_commands(&commands)?;
     *document = next;
+    Ok(())
+}
+
+fn dispatch_page_scroll_events(
+    document: &mut NativeDocument,
+    runtime: &NativeJavaScriptRuntime,
+    document_url: &str,
+    document_origin: &NativeOrigin,
+    viewport: Viewport,
+    scroll_commands: &mut Vec<NativeScriptCommand>,
+    pending_fetches: &mut Vec<NativeScriptCommand>,
+    navigation: &mut Option<NativePageNavigation>,
+    events: &mut Vec<(u32, NativeEventKind)>,
+) -> Result<(), NativeEngineError> {
+    let mut pending = std::mem::take(scroll_commands);
+    let mut cursor = 0;
+    while cursor < pending.len() {
+        let NativeScriptCommand::ScrollTo { node_index, .. } = pending[cursor] else {
+            cursor += 1;
+            continue;
+        };
+        let event_node_index = (node_index != 0).then_some(node_index).unwrap_or(u32::MAX);
+        let source = host_event_script(&[(event_node_index, NativeEventKind::Scroll)])?
+            .ok_or_else(|| NativeEngineError::Worker {
+                operation: "native page scroll event".into(),
+                reason: "native page scroll event source was empty".into(),
+            })?;
+        let evaluation =
+            runtime.evaluate(&source, document, document_url, document_origin, viewport)?;
+        let mut emitted_scroll_commands = Vec::new();
+        apply_page_script_evaluation(
+            document,
+            evaluation,
+            pending_fetches,
+            &mut emitted_scroll_commands,
+            navigation,
+        )?;
+        if pending.len().saturating_add(emitted_scroll_commands.len())
+            > super::interaction::MAX_NATIVE_EFFECTS
+        {
+            return Err(NativeEngineError::limit(
+                "native page scroll event commands",
+                super::interaction::MAX_NATIVE_EFFECTS,
+                pending.len().saturating_add(emitted_scroll_commands.len()),
+            ));
+        }
+        events.push((event_node_index, NativeEventKind::Scroll));
+        pending.extend(emitted_scroll_commands);
+        if events.len() > super::interaction::MAX_NATIVE_EFFECTS {
+            return Err(NativeEngineError::limit(
+                "native page scroll event effects",
+                super::interaction::MAX_NATIVE_EFFECTS,
+                events.len(),
+            ));
+        }
+        cursor += 1;
+    }
+    *scroll_commands = pending;
     Ok(())
 }
 
@@ -2930,7 +3036,7 @@ pub(crate) fn frame_event_script(
                 NativeEventKind::Click => ("click", true, true),
                 NativeEventKind::Input => ("input", true, false),
                 NativeEventKind::Change => ("change", true, false),
-                NativeEventKind::Scroll => ("scroll", true, false),
+                NativeEventKind::Scroll => ("scroll", false, false),
             };
             serde_json::json!({
                 "node_index": node_index,
@@ -3065,7 +3171,7 @@ fn host_event_script_with_submitters(
                 NativeEventKind::Click => ("click", true, true),
                 NativeEventKind::Input => ("input", true, false),
                 NativeEventKind::Change => ("change", true, false),
-                NativeEventKind::Scroll => ("scroll", true, false),
+                NativeEventKind::Scroll => ("scroll", false, false),
             };
             serde_json::json!({
                 "node_index": node_index,
@@ -3184,6 +3290,7 @@ pub(crate) struct NativeJavaScriptRuntime {
     frame_script_context: Arc<Mutex<Option<NativeFrameScriptContext>>>,
     frame_id: Arc<Mutex<String>>,
     scroll_offset: Arc<Mutex<NativePoint>>,
+    nested_scroll_offsets: Arc<Mutex<BTreeMap<u32, NativePoint>>>,
     history_state: Arc<Mutex<serde_json::Value>>,
     history_length: Arc<Mutex<usize>>,
     window_name: Arc<Mutex<String>>,
@@ -3271,6 +3378,7 @@ impl NativeJavaScriptRuntime {
             frame_script_context: Arc::new(Mutex::new(None)),
             frame_id: Arc::new(Mutex::new(context_id.clone())),
             scroll_offset: Arc::new(Mutex::new(NativePoint { x: 0, y: 0 })),
+            nested_scroll_offsets: Arc::new(Mutex::new(BTreeMap::new())),
             history_state: Arc::new(Mutex::new(serde_json::Value::Null)),
             history_length: Arc::new(Mutex::new(1)),
             window_name: Arc::new(Mutex::new(window_name)),
@@ -3485,6 +3593,19 @@ impl NativeJavaScriptRuntime {
             .lock()
             .map(|offset| *offset)
             .unwrap_or(NativePoint { x: 0, y: 0 })
+    }
+
+    pub(crate) fn set_nested_scroll_offsets(&self, offsets: BTreeMap<u32, NativePoint>) {
+        if let Ok(mut current) = self.nested_scroll_offsets.lock() {
+            *current = offsets;
+        }
+    }
+
+    fn nested_scroll_offsets(&self) -> BTreeMap<u32, NativePoint> {
+        self.nested_scroll_offsets
+            .lock()
+            .map(|offsets| offsets.clone())
+            .unwrap_or_default()
     }
 
     pub(crate) fn set_history_state(&self, state: serde_json::Value) {
@@ -4137,6 +4258,7 @@ impl NativeJavaScriptRuntime {
         let opener_window_name = self.opener_window_name();
         let frame_id = self.frame_id();
         let scroll_offset = self.scroll_offset();
+        let nested_scroll_offsets = self.nested_scroll_offsets();
         let history_state = self.history_state();
         let history_length = self.history_length();
         let bootstrap = document_bootstrap(
@@ -4150,6 +4272,7 @@ impl NativeJavaScriptRuntime {
             origin,
             viewport,
             scroll_offset,
+            &nested_scroll_offsets,
             &history_state,
             history_length,
             &self.ready_state,
@@ -4376,6 +4499,7 @@ impl NativeJavaScriptRuntime {
         let opener_window_name = self.opener_window_name();
         let frame_id = self.frame_id();
         let scroll_offset = self.scroll_offset();
+        let nested_scroll_offsets = self.nested_scroll_offsets();
         let history_state = self.history_state();
         let history_length = self.history_length();
         let bootstrap = document_bootstrap(
@@ -4389,6 +4513,7 @@ impl NativeJavaScriptRuntime {
             origin,
             viewport,
             scroll_offset,
+            &nested_scroll_offsets,
             &history_state,
             history_length,
             &self.ready_state,
@@ -4863,6 +4988,7 @@ fn document_bootstrap(
     origin: &NativeOrigin,
     viewport: Viewport,
     scroll_offset: NativePoint,
+    nested_scroll_offsets: &BTreeMap<u32, NativePoint>,
     history_state: &serde_json::Value,
     history_length: usize,
     ready_state: &str,
@@ -4879,6 +5005,7 @@ fn document_bootstrap(
         crate::browser_backend::MAX_TEXT_BYTES,
         viewport,
         scroll_offset,
+        nested_scroll_offsets,
     )?;
     let serialized = serde_json::to_string(&serde_json::json!({
         "url": document_url,
@@ -4932,6 +5059,12 @@ fn document_bootstrap(
     contentY: 0,
     contentWidth: 0,
     contentHeight: 0,
+    scrollX: 0,
+    scrollY: 0,
+    scrollWidth: 0,
+    scrollHeight: 0,
+    clientWidth: 0,
+    clientHeight: 0,
   }});
   const geometryForNode = (node) => {{
     if (node && typeof node.__glassGeometrySource === "function") {{
@@ -9131,6 +9264,8 @@ fn document_bootstrap(
     let imageNaturalWidth = Number(entry.imageNaturalWidth) || 0;
     let imageNaturalHeight = Number(entry.imageNaturalHeight) || 0;
     let imageCurrentSrc = String(entry.imageCurrentSrc || "");
+    let scrollLeft = Number(entry.scrollX) || 0;
+    let scrollTop = Number(entry.scrollY) || 0;
     const resetImageState = (complete = false) => {{
       imageComplete = complete;
       imageNaturalWidth = 0;
@@ -9209,6 +9344,52 @@ fn document_bootstrap(
       selectionDirection = normalizedDirection;
       pushCommand({{ kind: "setSelection", node_index: entry.nodeIndex, start: selectionStart, end: selectionEnd, direction: selectionDirection }});
     }};
+    const scrollCoordinate = (candidate) => {{
+      const numeric = Number(candidate);
+      return Number.isFinite(numeric) ? Math.trunc(numeric) : 0;
+    }};
+    const applyScroll = (leftCandidate, topCandidate) => {{
+      const isRoot = entry.tagName.toLowerCase() === "html";
+      const geometry = geometryForNode(element);
+      const clientWidth = isRoot
+        ? Number(globalThis.innerWidth) || Number(geometry.clientWidth) || Number(geometry.width) || 0
+        : Number(geometry.clientWidth) || Number(geometry.width) || 0;
+      const clientHeight = isRoot
+        ? Number(globalThis.innerHeight) || Number(geometry.clientHeight) || Number(geometry.height) || 0
+        : Number(geometry.clientHeight) || Number(geometry.height) || 0;
+      const scrollWidth = isRoot
+        ? Number(state.scrollWidth) || clientWidth
+        : Number(geometry.scrollWidth) || clientWidth;
+      const scrollHeight = isRoot
+        ? Number(state.scrollHeight) || clientHeight
+        : Number(geometry.scrollHeight) || clientHeight;
+      const currentLeft = isRoot ? Number(state.scrollX) || 0 : scrollLeft;
+      const currentTop = isRoot ? Number(state.scrollY) || 0 : scrollTop;
+      const left = Math.max(0, Math.min(
+        Math.max(0, scrollWidth - clientWidth),
+        scrollCoordinate(leftCandidate === undefined ? currentLeft : leftCandidate),
+      ));
+      const top = Math.max(0, Math.min(
+        Math.max(0, scrollHeight - clientHeight),
+        scrollCoordinate(topCandidate === undefined ? currentTop : topCandidate),
+      ));
+      if (isRoot) {{
+        state.scrollX = left;
+        state.scrollY = top;
+        if (typeof globalThis.scrollX === "number") globalThis.scrollX = left;
+        if (typeof globalThis.scrollY === "number") globalThis.scrollY = top;
+        if (typeof globalThis.pageXOffset === "number") globalThis.pageXOffset = left;
+        if (typeof globalThis.pageYOffset === "number") globalThis.pageYOffset = top;
+        if (typeof element.__glassSetScrollState === "function") element.__glassSetScrollState(left, top);
+      }} else {{
+        scrollLeft = left;
+        scrollTop = top;
+      }}
+      if (left !== currentLeft || top !== currentTop) {{
+        pushCommand({{ kind: "scrollTo", node_index: isRoot ? 0 : entry.nodeIndex, left, top }});
+      }}
+      return undefined;
+    }};
     const element = {{
       nodeIndex: entry.nodeIndex,
       parentIndex: entry.parentIndex,
@@ -9246,12 +9427,28 @@ fn document_bootstrap(
           ? asNodeList([makeDomRect(geometry)])
           : asNodeList([]);
       }},
-      get clientWidth() {{ return Number(geometryForNode(element).width) || 0; }},
-      get clientHeight() {{ return Number(geometryForNode(element).height) || 0; }},
+      get clientWidth() {{
+        const geometry = geometryForNode(element);
+        return Number(geometry.clientWidth) || Number(geometry.width) || 0;
+      }},
+      get clientHeight() {{
+        const geometry = geometryForNode(element);
+        return Number(geometry.clientHeight) || Number(geometry.height) || 0;
+      }},
       get offsetWidth() {{ return Number(geometryForNode(element).width) || 0; }},
       get offsetHeight() {{ return Number(geometryForNode(element).height) || 0; }},
-      get scrollWidth() {{ return Number(geometryForNode(element).width) || 0; }},
-      get scrollHeight() {{ return Number(geometryForNode(element).height) || 0; }},
+      get scrollLeft() {{ return scrollLeft; }},
+      set scrollLeft(value) {{ applyScroll(value, scrollTop); }},
+      get scrollTop() {{ return scrollTop; }},
+      set scrollTop(value) {{ applyScroll(scrollLeft, value); }},
+      get scrollWidth() {{
+        const geometry = geometryForNode(element);
+        return Number(geometry.scrollWidth) || Number(geometry.width) || 0;
+      }},
+      get scrollHeight() {{
+        const geometry = geometryForNode(element);
+        return Number(geometry.scrollHeight) || Number(geometry.height) || 0;
+      }},
       getAttribute(name) {{
         const key = String(name).toLowerCase();
         for (const attr of Object.keys(entry.attributes)) {{
@@ -9310,6 +9507,21 @@ fn document_bootstrap(
         pushCommand({{ kind: "blur", node_index: entry.nodeIndex }});
         dispatchTarget(this, createEvent("blur"));
       }},
+      scrollTo(leftOrOptions = 0, top = 0) {{
+        if (leftOrOptions && typeof leftOrOptions === "object") {{
+          applyScroll(leftOrOptions.left, leftOrOptions.top);
+        }} else {{
+          applyScroll(leftOrOptions, top);
+        }}
+      }},
+      scrollBy(leftOrOptions = 0, top = 0) {{
+        if (leftOrOptions && typeof leftOrOptions === "object") {{
+          applyScroll(scrollLeft + scrollCoordinate(leftOrOptions.left), scrollTop + scrollCoordinate(leftOrOptions.top));
+        }} else {{
+          applyScroll(scrollLeft + scrollCoordinate(leftOrOptions), scrollTop + scrollCoordinate(top));
+        }}
+      }},
+      scroll(leftOrOptions = 0, top = 0) {{ return this.scrollTo(leftOrOptions, top); }},
       setSelectionRange(start, end, direction = "none") {{
         applySelection(start, end, direction);
       }},
@@ -9755,6 +9967,14 @@ fn document_bootstrap(
         pushCommand({{ kind: "setSelected", node_index: entry.nodeIndex, selected }});
       }}
     }});
+    Object.defineProperty(element, "__glassSetScrollState", {{
+      enumerable: false,
+      configurable: false,
+      value(nextLeft, nextTop) {{
+        scrollLeft = Number(nextLeft) || 0;
+        scrollTop = Number(nextTop) || 0;
+      }},
+    }});
     Object.defineProperty(element, "__glassRefresh", {{
       enumerable: false,
       configurable: false,
@@ -9788,6 +10008,8 @@ fn document_bootstrap(
         imageNaturalWidth = Number(nextEntry.imageNaturalWidth) || 0;
         imageNaturalHeight = Number(nextEntry.imageNaturalHeight) || 0;
         imageCurrentSrc = String(nextEntry.imageCurrentSrc || "");
+        scrollLeft = Number(nextEntry.scrollX) || 0;
+        scrollTop = Number(nextEntry.scrollY) || 0;
         if (typeof element.__glassSyncAttributeNodes === "function") element.__glassSyncAttributeNodes();
       }}
     }});
@@ -12177,6 +12399,50 @@ fn document_bootstrap(
   globalThis.scrollY = Number(state.scrollY || 0);
   globalThis.pageXOffset = globalThis.scrollX;
   globalThis.pageYOffset = globalThis.scrollY;
+  const applyWindowScroll = (leftCandidate, topCandidate) => {{
+    const leftValue = Number(leftCandidate);
+    const topValue = Number(topCandidate);
+    const left = leftCandidate === undefined
+      ? (Number(globalThis.scrollX) || 0)
+      : (Number.isFinite(leftValue) ? Math.trunc(leftValue) : 0);
+    const top = topCandidate === undefined
+      ? (Number(globalThis.scrollY) || 0)
+      : (Number.isFinite(topValue) ? Math.trunc(topValue) : 0);
+    const nextLeft = Math.max(0, Math.min(
+      Math.max(0, (Number(state.scrollWidth) || globalThis.innerWidth) - globalThis.innerWidth),
+      left,
+    ));
+    const nextTop = Math.max(0, Math.min(
+      Math.max(0, (Number(state.scrollHeight) || globalThis.innerHeight) - globalThis.innerHeight),
+      top,
+    ));
+    const changed = nextLeft !== globalThis.scrollX || nextTop !== globalThis.scrollY;
+    globalThis.scrollX = nextLeft;
+    globalThis.scrollY = nextTop;
+    globalThis.pageXOffset = nextLeft;
+    globalThis.pageYOffset = nextTop;
+    state.scrollX = nextLeft;
+    state.scrollY = nextTop;
+    if (documentElement && typeof documentElement.__glassSetScrollState === "function") {{
+      documentElement.__glassSetScrollState(nextLeft, nextTop);
+    }}
+    if (changed) pushCommand({{ kind: "scrollTo", node_index: 0, left: nextLeft, top: nextTop }});
+  }};
+  globalThis.scrollTo = (leftOrOptions = 0, top = 0) => {{
+    if (leftOrOptions && typeof leftOrOptions === "object") {{
+      applyWindowScroll(leftOrOptions.left, leftOrOptions.top);
+    }} else {{
+      applyWindowScroll(leftOrOptions, top);
+    }}
+  }};
+  globalThis.scrollBy = (leftOrOptions = 0, top = 0) => {{
+    if (leftOrOptions && typeof leftOrOptions === "object") {{
+      applyWindowScroll(globalThis.scrollX + (Number(leftOrOptions.left) || 0), globalThis.scrollY + (Number(leftOrOptions.top) || 0));
+    }} else {{
+      applyWindowScroll(globalThis.scrollX + (Number(leftOrOptions) || 0), globalThis.scrollY + (Number(top) || 0));
+    }}
+  }};
+  globalThis.scroll = globalThis.scrollTo;
   globalThis.navigator = globalThis.navigator || {{ userAgent: "GlassNative" }};
   const nativeStorageUsage = () => {{
     const encoded = (value) => {{

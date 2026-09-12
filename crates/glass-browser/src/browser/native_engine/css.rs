@@ -1369,6 +1369,8 @@ pub(crate) struct NativeComputedStyle {
     margin_auto: NativeAutoEdges,
     box_sizing: NativeBoxSizing,
     color: Option<NativeColor>,
+    overflow_x: OverflowValue,
+    overflow_y: OverflowValue,
     overflow_clip_x: bool,
     overflow_clip_y: bool,
 }
@@ -1683,6 +1685,14 @@ impl NativeComputedStyle {
 
     pub(crate) const fn overflow_clip_y(self) -> bool {
         self.overflow_clip_y
+    }
+
+    pub(crate) const fn overflow_x(self) -> OverflowValue {
+        self.overflow_x
+    }
+
+    pub(crate) const fn overflow_y(self) -> OverflowValue {
+        self.overflow_y
     }
 }
 
@@ -3190,6 +3200,8 @@ impl NativeStylesheet {
 
         let resolved_box_sizing =
             resolve_local_inherited_cascade_declaration(box_sizing, inherited.box_sizing);
+        let resolved_overflow_x = resolve_overflow_axis(overflow_x, inherited.overflow_x);
+        let resolved_overflow_y = resolve_overflow_axis(overflow_y, inherited.overflow_y);
         NativeComputedStyle {
             display: resolve_local_cascade_declaration(display, DisplayValue::Auto),
             position: resolve_local_cascade_declaration(position, NativePositionValue::Static),
@@ -3333,14 +3345,10 @@ impl NativeStylesheet {
             margin_auto: NativeAutoEdges::from_values(resolved_margin),
             box_sizing: resolved_box_sizing,
             color: resolved_color,
-            overflow_clip_x: matches!(
-                resolve_overflow_axis(overflow_x, inherited.overflow_x),
-                OverflowValue::Hidden | OverflowValue::Clip
-            ),
-            overflow_clip_y: matches!(
-                resolve_overflow_axis(overflow_y, inherited.overflow_y),
-                OverflowValue::Hidden | OverflowValue::Clip
-            ),
+            overflow_x: resolved_overflow_x,
+            overflow_y: resolved_overflow_y,
+            overflow_clip_x: !matches!(resolved_overflow_x, OverflowValue::Other),
+            overflow_clip_y: !matches!(resolved_overflow_y, OverflowValue::Other),
         }
     }
 }
@@ -3351,10 +3359,13 @@ enum VisibilityValue {
     Other,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum OverflowValue {
     Hidden,
     Clip,
+    Auto,
+    Scroll,
+    #[default]
     Other,
 }
 
@@ -6255,7 +6266,11 @@ fn parse_declarations_with_diagnostics(
                             | LocalCascadeDeclaration::Reset
                             | LocalCascadeDeclaration::RevertLayer
                             | LocalCascadeDeclaration::Value(
-                                OverflowValue::Hidden | OverflowValue::Clip | OverflowValue::Other
+                                OverflowValue::Hidden
+                                    | OverflowValue::Clip
+                                    | OverflowValue::Auto
+                                    | OverflowValue::Scroll
+                                    | OverflowValue::Other
                             )
                     )
                 }),
@@ -10251,7 +10266,9 @@ fn parse_overflow(value: &str) -> Option<OverflowValue> {
     match value.to_ascii_lowercase().as_str() {
         "hidden" => Some(OverflowValue::Hidden),
         "clip" => Some(OverflowValue::Clip),
-        "visible" | "auto" | "scroll" => Some(OverflowValue::Other),
+        "visible" => Some(OverflowValue::Other),
+        "auto" => Some(OverflowValue::Auto),
+        "scroll" => Some(OverflowValue::Scroll),
         _ => None,
     }
 }
@@ -10835,9 +10852,9 @@ mod tests {
         assert_eq!(parse_display("flex"), Some(DisplayValue::Flex));
         assert_eq!(parse_display("FLEX"), Some(DisplayValue::Flex));
         assert_eq!(parse_display("grid"), Some(DisplayValue::Grid));
-        assert_eq!(parse_overflow("scroll"), Some(OverflowValue::Other));
+        assert_eq!(parse_overflow("scroll"), Some(OverflowValue::Scroll));
         assert_eq!(parse_overflow("visible"), Some(OverflowValue::Other));
-        assert_eq!(parse_overflow("auto"), Some(OverflowValue::Other));
+        assert_eq!(parse_overflow("auto"), Some(OverflowValue::Auto));
         assert_eq!(parse_overflow("clip"), Some(OverflowValue::Clip));
         assert_eq!(
             parse_border("1px dashed red"),
@@ -13910,7 +13927,7 @@ mod tests {
     }
 
     #[test]
-    fn overflow_no_clip_keywords_are_supported_without_diagnostics() {
+    fn overflow_scroll_keywords_are_supported_without_diagnostics() {
         let stylesheet = NativeStylesheet::from_sources(vec![
             "#visible { overflow: ViSiBlE; } #auto { overflow-x: AUTO; overflow-y: hidden; } #scroll { overflow-x: clip; overflow-y: ScRoLl; }"
                 .into(),
@@ -13925,12 +13942,16 @@ mod tests {
         };
 
         assert_eq!(clips(&visible), (false, false));
-        assert_eq!(clips(&auto), (false, true));
-        assert_eq!(clips(&scroll), (true, false));
+        assert_eq!(clips(&auto), (true, true));
+        assert_eq!(clips(&scroll), (true, true));
         for keyword in ["visible", "AUTO", "ScRoLl"] {
             assert_eq!(
                 parse_overflow_declaration(keyword),
-                Some(LocalCascadeDeclaration::Value(OverflowValue::Other)),
+                Some(LocalCascadeDeclaration::Value(match keyword {
+                    "AUTO" => OverflowValue::Auto,
+                    "ScRoLl" => OverflowValue::Scroll,
+                    _ => OverflowValue::Other,
+                })),
                 "overflow {keyword}"
             );
         }

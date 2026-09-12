@@ -324,6 +324,14 @@ impl NativeEngineBackend {
         context_id: &str,
         action: &SemanticAction,
     ) -> Result<Option<BackendResponse>, BrowserBackendError> {
+        // `point=` is a click coordinate, not a semantic locator. Child-frame
+        // routing gets the first chance to claim it in `dispatch_point_click`;
+        // when the point belongs to the selected document (or misses the
+        // viewport), leave it for the ordinary native action path so the
+        // engine can perform hit testing and return a typed action error.
+        if matches!(action, SemanticAction::Click { target } if target.starts_with("point=")) {
+            return Ok(None);
+        }
         let native_action = match action {
             SemanticAction::Click { target } => NativeAction::Click {
                 target: target.clone(),

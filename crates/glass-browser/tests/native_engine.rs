@@ -1473,6 +1473,14 @@ async fn native_runtime_session_owns_and_routes_child_frames() {
         .await
         .unwrap();
     assert!(action.accepted);
+    let child_viewport = session
+        .native_inspect_page()
+        .await
+        .unwrap()
+        .limits
+        .viewport
+        .unwrap();
+    assert!(child_viewport.scroll_y > 0.0);
     let child_frames = session.native_list_frames().await.unwrap();
     assert_eq!(child_frames.len(), 3);
     assert!(child_frames.iter().any(|frame| {
@@ -6473,7 +6481,7 @@ async fn native_local_form_validation_api_exposes_validity_and_custom_errors() {
 }
 
 #[tokio::test]
-async fn native_local_form_data_constructor_collects_text_controls() {
+async fn native_local_form_data_constructor_collects_form_controls() {
     let config = NativeEngineConfig::default()
         .with_fixture(
             "fixture://form-data-constructor",
@@ -6486,7 +6494,7 @@ async fn native_local_form_data_constructor_collects_text_controls() {
     assert_eq!(
         engine
             .evaluate_async(
-                "(() => { const data = new FormData(document.getElementById('search')); data.append('extra', 'three'); const fileRejected = (() => { try { new FormData(document.getElementById('files')); return false; } catch (error) { return error instanceof TypeError && String(error).includes('file controls are unsupported'); } })(); return { entries: Array.from(data.entries()), first: data.get('first'), checked: data.get('checked'), unchecked: data.has('unchecked'), outside: data.get('outside'), extra: data.get('extra'), fileRejected }; })()",
+                "(() => { const data = new FormData(document.getElementById('search')); data.append('extra', 'three'); const file = new FormData(document.getElementById('files')).get('upload'); return { entries: Array.from(data.entries()), first: data.get('first'), checked: data.get('checked'), unchecked: data.has('unchecked'), outside: data.get('outside'), extra: data.get('extra'), emptyFile: [file instanceof File, file.name, file.size, file.type] }; })()",
             )
             .await
             .unwrap(),
@@ -6497,7 +6505,7 @@ async fn native_local_form_data_constructor_collects_text_controls() {
             "unchecked": false,
             "outside": "two",
             "extra": "three",
-            "fileRejected": true,
+            "emptyFile": [true, "", 0, ""],
         })
     );
     engine.close_async().await.unwrap();

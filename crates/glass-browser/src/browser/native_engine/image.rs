@@ -1,6 +1,6 @@
 use base64::Engine as _;
 use gif::{ColorOutput, DecodeOptions, DisposalMethod, MemoryLimit, Repeat};
-use image_webp::WebPDecoder;
+use image_webp::{LoopCount, WebPDecoder};
 use png::ColorType;
 use std::io::Cursor;
 use std::num::NonZeroU64;
@@ -291,7 +291,7 @@ fn decode_webp_bytes(bytes: &[u8], max_decoded_bytes: usize) -> Option<NativeIma
     let mut decoder = WebPDecoder::new(Cursor::new(bytes)).ok()?;
     decoder.set_memory_limit(max_decoded_bytes);
     if decoder.is_animated() {
-        return None;
+        return decode_animated_webp(decoder, max_decoded_bytes);
     }
     let (width, height) = decoder.dimensions();
     let pixel_count = usize::try_from(width)
@@ -317,6 +317,64 @@ fn decode_webp_bytes(bytes: &[u8], max_decoded_bytes: usize) -> Option<NativeIma
     };
     (pixels.len() == pixel_count.checked_mul(4)? && pixels.len() <= max_decoded_bytes)
         .then(|| NativeImage::new(width, height, pixels))
+}
+
+fn decode_animated_webp(
+    mut decoder: WebPDecoder<Cursor<&[u8]>>,
+    max_decoded_bytes: usize,
+) -> Option<NativeImage> {
+    let (width, height) = decoder.dimensions();
+    let pixel_count = usize::try_from(width)
+        .ok()?
+        .checked_mul(usize::try_from(height).ok()?)?;
+    let max_pixels = (max_decoded_bytes / 4).min(MAX_NATIVE_IMAGE_BYTES / 4);
+    if width == 0 || height == 0 || pixel_count > max_pixels {
+        return None;
+    }
+    let frame_count = usize::try_from(decoder.num_frames()).ok()?;
+    if frame_count == 0 || frame_count > MAX_NATIVE_IMAGE_FRAMES {
+        return None;
+    }
+    let canvas_bytes = pixel_count.checked_mul(4)?;
+    let retained_bytes = frame_count.checked_add(1)?.checked_mul(canvas_bytes)?;
+    if retained_bytes > max_decoded_bytes {
+        return None;
+    }
+    let output_size = decoder.output_buffer_size()?;
+    if output_size > max_decoded_bytes {
+        return None;
+    }
+    let has_alpha = decoder.has_alpha();
+    let loop_count = match decoder.loop_count() {
+        LoopCount::Forever => None,
+        LoopCount::Times(repeats) => Some(repeats.get()),
+    };
+    let mut decoded = vec![0; output_size];
+    let mut frames = Vec::with_capacity(frame_count);
+    for _ in 0..frame_count {
+        let delay_ms = decoder.read_frame(&mut decoded).ok()?;
+        let pixels = if has_alpha {
+            decoded.clone()
+        } else {
+            decoded
+                .chunks_exact(3)
+                .flat_map(|pixel| [pixel[0], pixel[1], pixel[2], u8::MAX])
+                .collect()
+        };
+        if pixels.len() != canvas_bytes {
+            return None;
+        }
+        frames.push(NativeImageFrame {
+            delay_ms: normalized_webp_delay_ms(delay_ms),
+            pixels,
+        });
+    }
+    let image = NativeImage::with_frames(width, height, frames, loop_count)?;
+    (image.decoded_bytes()? <= max_decoded_bytes).then_some(image)
+}
+
+fn normalized_webp_delay_ms(delay_ms: u32) -> u32 {
+    delay_ms.max(1).min(MAX_NATIVE_IMAGE_FRAME_DELAY_MS)
 }
 
 fn decode_gif_bytes(bytes: &[u8], max_decoded_bytes: usize) -> Option<NativeImage> {

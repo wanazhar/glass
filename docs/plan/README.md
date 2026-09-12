@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-254` locally. The versioned
+`native-engine-browser-255` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -53,6 +53,16 @@ ReadableStream constructor identity. Convenience body methods remain bounded
 full-body reads, transport cancellation and complete Fetch Streams/Web IDL
 parity remain open, and the broader native parity and production-promotion
 gates remain open on issue #40.
+
+The completed semantic action scroll-into-view slice is
+[native-engine-browser-255](tasks/native-engine-browser-255.md). Native
+semantic element actions now perform a bounded nearest root scroll when a
+resolved target is outside the active viewport, including selected child
+frames, while explicit `point=` clicks remain coordinate-stable and native
+preflight remains side-effect-free. The focused FormData and point-dispatch
+regressions plus the ordered 533-test native integration suite are green
+locally; the broader native parity and production-promotion gates remain open
+on issue #40.
 
 The completed profile/contract task is
 [native-engine-browser-000](tasks/native-engine-browser-000.md). It freezes
@@ -589,13 +599,14 @@ existing ordered `invalid` events; and `setCustomValidity()` persists through
 the typed owner boundary. Pattern/file validation, picker/UI behavior, and
 full live `ValidityState` Web IDL identity remain open.
 
-The completed bounded FormData-constructor slice is
-[native-engine-browser-060](tasks/native-engine-browser-060.md). Local and
-child-owned `new FormData(form)` now collect named, enabled text controls in
-document order, including controls associated through an external `form`
-attribute, while submitter-only controls and unchecked checkbox/radio controls
-are excluded. File controls fail closed with a `TypeError`; File/Blob parts,
-picker/upload behavior, and full FormData Web IDL identity remain open.
+The completed bounded FormData-constructor slice is a historical checkpoint
+recorded in [native-engine-browser-060](tasks/native-engine-browser-060.md).
+At that checkpoint, local and child-owned `new FormData(form)` collected
+named, enabled text controls in document order, including controls associated
+through an external `form` attribute, while submitter-only controls and
+unchecked checkbox/radio controls were excluded. Its file-control rejection
+boundary was superseded by the later 247 File/FileList and file-valued
+FormData slice; full FormData Web IDL identity remains open.
 
 The completed bounded pattern-validation slice is
 [native-engine-browser-061](tasks/native-engine-browser-061.md). Local and

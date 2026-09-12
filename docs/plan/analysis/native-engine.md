@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-254`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-255`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -2253,13 +2253,16 @@ existing ordered `invalid` events; and `setCustomValidity()` persists through
 the typed owner boundary. Pattern/file validation, picker/UI behavior, and
 full live `ValidityState` Web IDL identity remain open.
 
-The completed bounded FormData-constructor follow-up is
-[native-engine-browser-060](../tasks/native-engine-browser-060.md). Local and
+The completed bounded FormData-constructor follow-up is a historical
+checkpoint recorded in [native-engine-browser-060](../tasks/native-engine-browser-060.md).
+At that checkpoint, the text-only constructor contract below applied; the
+later 247 slice superseded its file-control boundary. Local and
 child-owned `new FormData(form)` calls collect named, enabled text controls in
 document order, including controls associated through an external `form`
 attribute, while submitter-only controls and unchecked checkbox/radio controls
-are excluded. File controls fail closed with a `TypeError`; File/Blob parts,
-picker/upload behavior, and full FormData Web IDL identity remain open.
+are excluded. File controls failed closed with a `TypeError` at that
+checkpoint; File/Blob parts, picker/upload behavior, and full FormData Web IDL
+identity remained open there.
 
 The completed bounded pattern-validation follow-up is
 [native-engine-browser-061](../tasks/native-engine-browser-061.md). Local and
@@ -3914,6 +3917,15 @@ cross-turn realm identity. Strict pull backpressure, transport cancellation,
 body disturbance, and complete Fetch Streams/Web IDL semantics remain issue
 #40 work. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-254.md`.
+
+The completed native-engine-browser-255 slice closes the visibility gap from
+accurate embedded-frame viewport negotiation. Semantic element actions now
+compute a bounded nearest root scroll for off-viewport layout targets before
+running the existing action owner; selected child-frame actions therefore
+remain usable when content follows the frame viewport. Explicit coordinate
+clicks bypass locator routing and remain unadjusted, and preflight keeps its
+side-effect-free outside-viewport result. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-255.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

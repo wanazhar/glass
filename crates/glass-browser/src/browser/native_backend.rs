@@ -8,9 +8,10 @@ use super::native_engine::{
     MAX_NATIVE_EFFECTS, NativeAction, NativeEffect, NativeEngine, NativeEngineConfig,
     NativeEngineError, NativeEventKind, NativeFrameScriptBinding, NativeFrameScriptContext,
     NativeFrameScriptRequest, NativeFrameScriptWindow, NativeHistoryDirection,
-    NativeInspectionSnapshot, NativeOrigin, NativePopupRequest, NativePostMessageRequest,
-    NativePreflightAction, NativeScriptCommand, NativeSurface, NativeTargetPreflight,
-    NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
+    NativeInspectionSnapshot, NativeOrigin, NativePoint, NativePopupRequest,
+    NativePostMessageRequest, NativePreflightAction, NativeScriptCommand, NativeSurface,
+    NativeTargetPreflight, NativeWindowCloseRequest, NativeWindowNavigationRequest,
+    NativeWindowProxyUpdate, parse_point_target,
 };
 use crate::browser::session::{
     FrameInfo, NavigationControlOutcome, PageTargetInfo, redact_diagnostic_text,
@@ -233,6 +234,175 @@ impl NativeEngineBackend {
         reconcile_native_frames(&mut targets.active_frames, &engine).await?;
         capture_native_frame_surface(&engine, &targets.active_frames, &frame_id)
             .and_then(|surface| surface.to_png().map_err(native_error))
+    }
+
+    /// Route a point click through the currently selected frame tree when the
+    /// point lands on a live embedded browsing context. A `None` result means
+    /// that the point belongs to the selected document and should continue
+    /// through the ordinary action path.
+    async fn dispatch_point_click(
+        &self,
+        context_id: &str,
+        target: &str,
+    ) -> Result<Option<BackendResponse>, BrowserBackendError> {
+        let Some((x, y)) = parse_point_target(target).map_err(native_error)? else {
+            return Ok(None);
+        };
+        let Some((frame_id, local_x, local_y)) =
+            ({
+                let mut targets = self.lock_targets(BackendOperation::Action)?;
+                let active_context_id = targets.active_target_id.clone().ok_or_else(|| {
+                    BrowserBackendError::Lifecycle {
+                        operation: "action".into(),
+                        state: "no-target-selected".into(),
+                        reason: "select an available native page target before clicking".into(),
+                    }
+                })?;
+                require_context_id(context_id, &active_context_id)?;
+                let engine = self.lock_engine_raw(BackendOperation::Action)?;
+                let root_frame_id = targets.active_frames.active_frame_id.clone();
+                reconcile_native_frames(&mut targets.active_frames, &engine).await?;
+                find_native_point_frame(&targets.active_frames, &root_frame_id, &engine, x, y, 0)?
+            })
+        else {
+            return Ok(None);
+        };
+
+        let route =
+            self.frame_route(&frame_id)?
+                .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                    reason: "native point target frame disappeared before action dispatch".into(),
+                })?;
+        let action = NativeAction::Click {
+            target: format!("point={local_x},{local_y}"),
+        };
+        let proxy_updates = self.window_proxy_updates(&frame_id)?;
+        let (revision, accepted, runtime_effects, owner_id) = self
+            .apply_action_to_native_frame(route, &frame_id, action, &proxy_updates)
+            .await?;
+        self.sync_target_name(&owner_id, &runtime_effects.window_name)?;
+        self.process_selected_frame_events(&frame_id, runtime_effects.events)
+            .await?;
+        self.process_pending_frame_scripts(runtime_effects.frame_scripts)
+            .await?;
+        self.process_pending_browser_effects(
+            runtime_effects.browser.0,
+            runtime_effects.browser.1,
+            runtime_effects.browser.2,
+            runtime_effects.browser.3,
+        )
+        .await?;
+        Ok(Some(BackendResponse::Action(ActionResult {
+            context_id: context_id.to_owned(),
+            revision,
+            accepted,
+        })))
+    }
+
+    async fn apply_action_to_native_frame(
+        &self,
+        route: NativeFrameRoute,
+        frame_id: &str,
+        action: NativeAction,
+        proxy_updates: &[NativeWindowProxyUpdate],
+    ) -> Result<(u64, bool, NativeFrameRuntimeEffects, String), BrowserBackendError> {
+        match route {
+            NativeFrameRoute::ActiveSelected => {
+                let mut engine = self.lock_engine_raw(BackendOperation::Action)?;
+                engine
+                    .sync_window_proxies(proxy_updates)
+                    .await
+                    .map_err(native_error)?;
+                let previous_revision = engine.revision();
+                let outcome = engine.action_async(action).await.map_err(native_error)?;
+                let runtime = take_native_frame_runtime_effects(&mut engine, previous_revision)?;
+                let owner_id = engine.config().context_id.clone();
+                Ok((outcome.revision, outcome.accepted, runtime, owner_id))
+            }
+            NativeFrameRoute::ActiveParked => {
+                let mut targets = self.lock_targets(BackendOperation::Action)?;
+                let owner_id = targets.active_target_id.clone().ok_or_else(|| {
+                    BrowserBackendError::SelectionFailed {
+                        reason: "native frame owner target disappeared during point dispatch"
+                            .into(),
+                    }
+                })?;
+                let frame = targets
+                    .active_frames
+                    .parked
+                    .get_mut(frame_id)
+                    .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                        reason: "native point target frame disappeared during action dispatch"
+                            .into(),
+                    })?;
+                frame
+                    .engine
+                    .sync_window_proxies(proxy_updates)
+                    .await
+                    .map_err(native_error)?;
+                let previous_revision = frame.engine.revision();
+                let outcome = frame
+                    .engine
+                    .action_async(action)
+                    .await
+                    .map_err(native_error)?;
+                let runtime =
+                    take_native_frame_runtime_effects(&mut frame.engine, previous_revision)?;
+                Ok((outcome.revision, outcome.accepted, runtime, owner_id))
+            }
+            NativeFrameRoute::ParkedSelected { target_id } => {
+                let mut targets = self.lock_targets(BackendOperation::Action)?;
+                let target = targets.parked.get_mut(&target_id).ok_or_else(|| {
+                    BrowserBackendError::SelectionFailed {
+                        reason: "native frame owner target disappeared during point dispatch"
+                            .into(),
+                    }
+                })?;
+                target
+                    .engine
+                    .sync_window_proxies(proxy_updates)
+                    .await
+                    .map_err(native_error)?;
+                let previous_revision = target.engine.revision();
+                let outcome = target
+                    .engine
+                    .action_async(action)
+                    .await
+                    .map_err(native_error)?;
+                let runtime =
+                    take_native_frame_runtime_effects(&mut target.engine, previous_revision)?;
+                Ok((outcome.revision, outcome.accepted, runtime, target_id))
+            }
+            NativeFrameRoute::ParkedParked { target_id } => {
+                let mut targets = self.lock_targets(BackendOperation::Action)?;
+                let target = targets.parked.get_mut(&target_id).ok_or_else(|| {
+                    BrowserBackendError::SelectionFailed {
+                        reason: "native frame owner target disappeared during point dispatch"
+                            .into(),
+                    }
+                })?;
+                let frame = target.frames.parked.get_mut(frame_id).ok_or_else(|| {
+                    BrowserBackendError::SelectionFailed {
+                        reason: "native point target frame disappeared during action dispatch"
+                            .into(),
+                    }
+                })?;
+                frame
+                    .engine
+                    .sync_window_proxies(proxy_updates)
+                    .await
+                    .map_err(native_error)?;
+                let previous_revision = frame.engine.revision();
+                let outcome = frame
+                    .engine
+                    .action_async(action)
+                    .await
+                    .map_err(native_error)?;
+                let runtime =
+                    take_native_frame_runtime_effects(&mut frame.engine, previous_revision)?;
+                Ok((outcome.revision, outcome.accepted, runtime, target_id))
+            }
+        }
     }
 
     /// Return a side-effect-free, revision-bound target preflight result.
@@ -2320,6 +2490,15 @@ impl BrowserBackend for NativeEngineBackend {
             } else {
                 None
             };
+            if let (BackendOperation::Action, BackendRequest::Action(action_request)) =
+                (&operation, &request)
+                && let SemanticAction::Click { target } = &action_request.action
+                && let Some(response) = self
+                    .dispatch_point_click(&action_request.context_id, target)
+                    .await?
+            {
+                return Ok(response);
+            }
             let mut engine = self.lock_engine(operation)?;
             if let Some(proxy_updates) = proxy_updates.as_deref() {
                 engine
@@ -2630,13 +2809,13 @@ fn capture_native_frame_surface_at_depth(
                 .enumerate()
                 .find(|(_, layout_box)| layout_box.node_id.index() == owner_node_index)
                 .map(|(order, layout_box)| (order, layout_box.node_id))?;
-            let destination = layout.viewport_rect_for(owner_node_id)?;
-            Some((box_order, child_id.clone(), destination))
+            let (destination, source_offset) = layout.viewport_projection_for(owner_node_id)?;
+            Some((box_order, child_id.clone(), destination, source_offset))
         })
         .collect::<Vec<_>>();
-    children.sort_by_key(|(box_order, child_id, _)| (*box_order, child_id.clone()));
+    children.sort_by_key(|(box_order, child_id, _, _)| (*box_order, child_id.clone()));
 
-    for (_, child_id, destination) in children {
+    for (_, child_id, destination, source_offset) in children {
         let Some(child) = frames.parked.get(&child_id) else {
             continue;
         };
@@ -2647,10 +2826,108 @@ fn capture_native_frame_surface_at_depth(
             depth.saturating_add(1),
         )?;
         surface
-            .composite_child(&child_surface, destination)
+            .composite_child(&child_surface, destination, source_offset)
             .map_err(native_error)?;
     }
     Ok(surface)
+}
+
+fn find_native_point_frame(
+    frames: &NativeFrameState,
+    frame_id: &str,
+    engine: &NativeEngine,
+    x: i64,
+    y: i64,
+    depth: usize,
+) -> Result<Option<(String, i64, i64)>, BrowserBackendError> {
+    if depth >= NATIVE_MAX_FRAMES {
+        return Err(BrowserBackendError::SelectionFailed {
+            reason: "native point routing exceeded its bounded frame depth".into(),
+        });
+    }
+    let layout = engine.layout().map_err(native_error)?;
+    let hit = engine.hit_test(x, y).map_err(native_error)?;
+    let point = NativePoint {
+        x: u32::try_from(x).map_err(|_| BrowserBackendError::InvalidConfiguration {
+            field: "point target".into(),
+            reason: "point coordinates must be unsigned integers".into(),
+        })?,
+        y: u32::try_from(y).map_err(|_| BrowserBackendError::InvalidConfiguration {
+            field: "point target".into(),
+            reason: "point coordinates must be unsigned integers".into(),
+        })?,
+    };
+    let mut candidates = Vec::new();
+    for (child_id, frame) in &frames.parked {
+        if frame.parent_id.as_deref() != Some(frame_id) {
+            continue;
+        }
+        let Some(owner_node_index) = frame.owner_node_index else {
+            continue;
+        };
+        for (order, layout_box) in layout.boxes.iter().enumerate() {
+            if layout_box.node_id.index() != owner_node_index || !layout_box.pointer_events {
+                continue;
+            }
+            let Some((destination, source_offset)) =
+                layout.viewport_projection_for(layout_box.node_id)
+            else {
+                continue;
+            };
+            if destination.width == 0 || destination.height == 0 || !destination.contains(point) {
+                continue;
+            }
+            candidates.push((
+                layout_box.z_index,
+                layout_box.depth,
+                order,
+                child_id.clone(),
+                layout_box.node_id,
+                destination,
+                source_offset,
+            ));
+        }
+    }
+    candidates.sort_by_key(|(z_index, box_depth, order, child_id, _, _, _)| {
+        (*z_index, *box_depth, *order, child_id.clone())
+    });
+
+    for (_, _, _, child_id, owner_node_id, destination, source_offset) in
+        candidates.into_iter().rev()
+    {
+        let is_owner_hit = match hit {
+            Some(hit_node) => engine
+                .is_descendant_or_self(hit_node, owner_node_id)
+                .map_err(native_error)?,
+            None => false,
+        };
+        if !is_owner_hit {
+            continue;
+        }
+        let local_x =
+            i64::from(source_offset.x).saturating_add(x.saturating_sub(i64::from(destination.x)));
+        let local_y =
+            i64::from(source_offset.y).saturating_add(y.saturating_sub(i64::from(destination.y)));
+        let child =
+            frames
+                .parked
+                .get(&child_id)
+                .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                    reason: "native point target child disappeared during hit testing".into(),
+                })?;
+        if let Some(target) = find_native_point_frame(
+            frames,
+            &child_id,
+            &child.engine,
+            local_x,
+            local_y,
+            depth.saturating_add(1),
+        )? {
+            return Ok(Some(target));
+        }
+        return Ok(Some((child_id, local_x, local_y)));
+    }
+    Ok(None)
 }
 
 fn native_window_name(name: &str) -> Option<String> {

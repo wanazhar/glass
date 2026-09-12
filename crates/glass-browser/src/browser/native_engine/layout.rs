@@ -463,25 +463,28 @@ impl NativeLayoutSnapshot {
     /// visible viewport and bounded overflow edges. The layout box itself
     /// remains in document coordinates.
     pub fn viewport_rect_for(&self, node_id: NativeNodeId) -> Option<NativeRect> {
+        self.viewport_projection_for(node_id).map(|(rect, _)| rect)
+    }
+
+    /// Return the visible viewport projection and the source-pixel offset
+    /// within the un-clipped projected box. The offset keeps embedded frame
+    /// pixels and pointer coordinates aligned when scrolling clips an owner.
+    pub(crate) fn viewport_projection_for(
+        &self,
+        node_id: NativeNodeId,
+    ) -> Option<(NativeRect, NativePoint)> {
         let (box_index, _) = self
             .boxes
             .iter()
             .enumerate()
             .find(|(_, layout_box)| layout_box.node_id == node_id)?;
+        let projected_rect = self.projected_boxes.get(box_index).copied()?;
         let rect = self
             .projected_overflow_clips
             .get(box_index)
             .copied()
             .flatten()
-            .map_or_else(
-                || self.projected_boxes.get(box_index).copied(),
-                |clip| {
-                    self.projected_boxes
-                        .get(box_index)
-                        .copied()
-                        .map(|rect| intersect_rect(rect, clip))
-                },
-            )?;
+            .map_or(projected_rect, |clip| intersect_rect(projected_rect, clip));
         let viewport_left = self.scroll_offset.x;
         let viewport_top = self.scroll_offset.y;
         let viewport_right = viewport_left.saturating_add(self.viewport.width);
@@ -490,12 +493,18 @@ impl NativeLayoutSnapshot {
         let top = rect.y.max(viewport_top).min(viewport_bottom);
         let right = rect.right().min(viewport_right);
         let bottom = rect.bottom().min(viewport_bottom);
-        (left < right && top < bottom).then_some(NativeRect {
-            x: left.saturating_sub(viewport_left),
-            y: top.saturating_sub(viewport_top),
-            width: right.saturating_sub(left),
-            height: bottom.saturating_sub(top),
-        })
+        (left < right && top < bottom).then_some((
+            NativeRect {
+                x: left.saturating_sub(viewport_left),
+                y: top.saturating_sub(viewport_top),
+                width: right.saturating_sub(left),
+                height: bottom.saturating_sub(top),
+            },
+            NativePoint {
+                x: left.saturating_sub(projected_rect.x),
+                y: top.saturating_sub(projected_rect.y),
+            },
+        ))
     }
 
     /// Return the maximum root horizontal and vertical scroll offset for this

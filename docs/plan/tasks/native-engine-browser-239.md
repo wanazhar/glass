@@ -43,11 +43,11 @@ promotion gates are complete.
 ## Tradeoffs and follow-up
 
 Composition is integer-pixel, one-to-one, and clipped to the current frame
-owner. The bounded child viewport is sampled from its top-left corner; scaling,
-transforms, fractional geometry, compositor stacking integration with parent
-overlays, and full browser frame-paint ordering remain later issue #40 work.
-The implementation keeps one surface owner per browsing context and avoids
-duplicating layout or JavaScript state.
+owner. The later 240 slice adds matching source-offset-aware point routing;
+scaling, transforms, fractional geometry, compositor stacking integration with
+parent overlays, and full browser frame-paint ordering remain later issue #40
+work. The implementation keeps one surface owner per browsing context and
+avoids duplicating layout or JavaScript state.
 
 Frame discovery remains bounded by the existing topology limit. Missing,
 detached, or not-currently-visible frame owners are skipped safely rather than

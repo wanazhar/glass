@@ -429,14 +429,14 @@ impl NativeSurface {
 
     /// Composite one opaque child browsing-context surface into this surface.
     ///
-    /// The child surface is sampled from its top-left corner and clipped to
-    /// the destination rectangle and this surface's bounds. Browsing-context
-    /// layout resolves the destination in the parent viewport; the raster
-    /// owner remains the only mutable pixel owner.
+    /// The source offset identifies the child pixels corresponding to the
+    /// visible destination origin. This keeps a clipped or scrolled frame
+    /// aligned while the raster owner remains the only mutable pixel owner.
     pub(crate) fn composite_child(
         &mut self,
         child: &Self,
         destination: NativeRect,
+        source_offset: NativePoint,
     ) -> Result<(), NativeEngineError> {
         destination
             .x
@@ -458,11 +458,11 @@ impl NativeSurface {
             })?;
         let copy_width = destination
             .width
-            .min(child.width())
+            .min(child.width().saturating_sub(source_offset.x))
             .min(self.width.saturating_sub(destination.x.min(self.width)));
         let copy_height = destination
             .height
-            .min(child.height())
+            .min(child.height().saturating_sub(source_offset.y))
             .min(self.height.saturating_sub(destination.y.min(self.height)));
         if copy_width == 0
             || copy_height == 0
@@ -504,16 +504,26 @@ impl NativeSurface {
         let destination_y = usize::try_from(destination.y).map_err(|_| {
             NativeEngineError::invalid("native child surface", "destination y exceeds host bounds")
         })?;
+        let source_x = usize::try_from(source_offset.x).map_err(|_| {
+            NativeEngineError::invalid("native child surface", "source x exceeds host bounds")
+        })?;
+        let source_y = usize::try_from(source_offset.y).map_err(|_| {
+            NativeEngineError::invalid("native child surface", "source y exceeds host bounds")
+        })?;
         let copy_height = usize::try_from(copy_height).map_err(|_| {
             NativeEngineError::invalid("native child surface", "child height exceeds host bounds")
         })?;
         for row in 0..copy_height {
-            let source_start = row.checked_mul(source_stride).ok_or_else(|| {
-                NativeEngineError::invalid(
-                    "native child surface",
-                    "source row offset exceeds host bounds",
-                )
-            })?;
+            let source_start = source_y
+                .checked_add(row)
+                .and_then(|value| value.checked_mul(source_stride))
+                .and_then(|value| value.checked_add(source_x.checked_mul(4)?))
+                .ok_or_else(|| {
+                    NativeEngineError::invalid(
+                        "native child surface",
+                        "source row offset exceeds host bounds",
+                    )
+                })?;
             let destination_start = destination_y
                 .checked_add(row)
                 .and_then(|value| value.checked_mul(destination_stride))

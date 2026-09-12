@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-253` locally. The versioned
+`native-engine-browser-254` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -43,6 +43,16 @@ same-origin cookie and response-cookie handoff, LF/CRLF/CR parsing, named and
 multiline messages, reconnect state, `Last-Event-ID`, and serialized page
 event/mutation delivery. The scoped local content suite is green; the broader
 native parity and production-promotion gates remain open on issue #40.
+
+The completed incremental Fetch response-body slice is
+[native-engine-browser-254](tasks/native-engine-browser-254.md). It transfers
+authorized response bodies from the process-backed loader as bounded
+transport chunks through a persistent `ReadableStream`, waits correctly for
+pending reads and terminal delivery, and preserves cross-turn Blob/File and
+ReadableStream constructor identity. Convenience body methods remain bounded
+full-body reads, transport cancellation and complete Fetch Streams/Web IDL
+parity remain open, and the broader native parity and production-promotion
+gates remain open on issue #40.
 
 The completed profile/contract task is
 [native-engine-browser-000](tasks/native-engine-browser-000.md). It freezes

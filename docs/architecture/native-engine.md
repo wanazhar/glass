@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-275` slice; the bounded foundation below remains
+`native-engine-browser-276` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5950,6 +5950,18 @@ current bridge intentionally exposes bounded text reasons and
 parser-accurate timing, and complete Promise/Web IDL semantics remain issue
 #40 work. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-275.md`.
+
+The completed native-engine-browser-276 slice adds bounded settlement
+notification for previously reported Promise rejections. The runtime keeps
+reported promise keys after `unhandledrejection`, removes them when a handler
+arrives, and emits a separate ordered `rejectionhandled` queue; handlers
+attached before the first checkpoint remain suppressed. The event reuses the
+native `PromiseRejectionEvent` shape with `cancelable: false`, while the
+bounded text reason and `promise === null` bridge remain explicit. Reported
+state eviction, structured identity, parser-accurate timing, complete event
+loop scheduling, and complete Promise/Web IDL semantics remain issue #40 work.
+Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-276.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

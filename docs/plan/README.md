@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-275` locally. The versioned
+`native-engine-browser-276` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -241,6 +241,16 @@ the page window, including `window.onunhandledrejection`. Rejection reasons
 are transported as bounded text and the `promise` field is currently `null`;
 `rejectionhandled`, structured reason identity, parser-accurate timing, and
 complete Promise/Web IDL semantics remain open on issue #40.
+
+The completed native rejection-settlement slice is
+[native-engine-browser-276](tasks/native-engine-browser-276.md). Rejections
+that were already reported and later acquire a handler now dispatch a
+non-cancelable `rejectionhandled` event through both the window listener and
+property-handler surfaces; pre-checkpoint handlers remain suppressed. The
+native queue preserves promise identity internally, bounds reported state,
+and keeps event order. The event still exposes a bounded textual reason with
+`promise === null`; structured identity, parser-accurate timing, and complete
+Promise/Web IDL semantics remain open on issue #40.
 
 The completed profile/contract task is
 [native-engine-browser-000](tasks/native-engine-browser-000.md). It freezes

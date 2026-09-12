@@ -4,6 +4,7 @@ use super::config::{
 };
 use super::error::NativeEngineError;
 use super::image::{MAX_NATIVE_IMAGE_TRANSFER_BYTES, NativeImage, decode_image_bytes};
+use super::interaction::MAX_NATIVE_FORM_BODY_BYTES;
 use super::javascript::{
     MAX_NATIVE_COOKIE_PROFILE_ENTRIES, NativeCookieChange, NativeCookieProfileEntry,
     load_cookie_profile,
@@ -23,7 +24,6 @@ const MAX_NATIVE_CACHE_ENTRIES: usize = 32;
 const MAX_NATIVE_PREFLIGHT_CACHE_ENTRIES: usize = 64;
 const MAX_NATIVE_PREFLIGHT_CACHE_AGE: Duration = Duration::from_secs(600);
 const MAX_NATIVE_COOKIE_BYTES: usize = 4096;
-const MAX_NATIVE_FORM_BODY_BYTES: usize = crate::browser_backend::MAX_TEXT_BYTES;
 const MAX_NATIVE_FETCH_HEADERS: usize = 16;
 const MAX_NATIVE_FETCH_HEADER_NAME_BYTES: usize = 128;
 const MAX_NATIVE_FETCH_HEADER_VALUE_BYTES: usize = 64 * 1024;
@@ -84,7 +84,7 @@ pub(crate) enum NativeNavigationMethod {
 pub(crate) struct NativeNavigationRequest {
     pub(crate) method: NativeNavigationMethod,
     pub(crate) url: String,
-    pub(crate) body: Option<String>,
+    pub(crate) body: Option<NativeRequestBody>,
     pub(crate) body_content_type: Option<String>,
     pub(crate) replace_history: bool,
 }
@@ -100,9 +100,9 @@ impl NativeNavigationRequest {
         }
     }
 
-    pub(crate) fn post_with_content_type(
+    pub(crate) fn post_with_body(
         url: impl Into<String>,
-        body: String,
+        body: NativeRequestBody,
         content_type: String,
     ) -> Result<Self, NativeEngineError> {
         if body.len() > MAX_NATIVE_FORM_BODY_BYTES {
@@ -129,12 +129,12 @@ impl NativeNavigationRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum NativeFetchBody {
+pub(crate) enum NativeRequestBody {
     Text(String),
     Bytes(Vec<u8>),
 }
 
-impl NativeFetchBody {
+impl NativeRequestBody {
     fn len(&self) -> usize {
         match self {
             Self::Text(body) => body.len(),
@@ -147,7 +147,7 @@ pub(crate) struct NativeFetchRequest<'a> {
     pub(crate) document_url: &'a str,
     pub(crate) href: &'a str,
     pub(crate) method: NativeNavigationMethod,
-    pub(crate) body: Option<NativeFetchBody>,
+    pub(crate) body: Option<NativeRequestBody>,
     pub(crate) content_type: Option<String>,
     pub(crate) request_headers: BTreeMap<String, String>,
     pub(crate) credentials: bool,
@@ -623,7 +623,7 @@ impl NativeResourceLoader {
                 None
             }
             NativeNavigationMethod::Post => {
-                let body = navigation.body.as_deref().ok_or_else(|| {
+                let body = navigation.body.clone().ok_or_else(|| {
                     NativeEngineError::invalid(
                         "POST navigation body",
                         "must be present for a form submission",
@@ -636,7 +636,7 @@ impl NativeResourceLoader {
                         body.len(),
                     ));
                 }
-                Some(body.to_owned())
+                Some(body)
             }
         };
         let request_content_type = match request_method {
@@ -682,15 +682,21 @@ impl NativeResourceLoader {
             request_url.set_fragment(None);
             let mut request = match current_method {
                 NativeNavigationMethod::Get => client.get(request_url),
-                NativeNavigationMethod::Post => client
-                    .post(request_url)
-                    .header(
+                NativeNavigationMethod::Post => {
+                    let request = client.post(request_url).header(
                         reqwest::header::CONTENT_TYPE,
                         current_content_type
                             .as_deref()
                             .unwrap_or("application/x-www-form-urlencoded"),
-                    )
-                    .body(current_body.clone().unwrap_or_default()),
+                    );
+                    match current_body
+                        .clone()
+                        .unwrap_or(NativeRequestBody::Text(String::new()))
+                    {
+                        NativeRequestBody::Text(body) => request.body(body),
+                        NativeRequestBody::Bytes(body) => request.body(body),
+                    }
+                }
             }
             .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml");
             if let Some(referrer) = request_referrer.as_deref() {
@@ -864,7 +870,7 @@ impl NativeResourceLoader {
             document_url,
             href,
             method,
-            body: body.map(NativeFetchBody::Text),
+            body: body.map(NativeRequestBody::Text),
             content_type,
             request_headers: BTreeMap::new(),
             credentials,
@@ -949,7 +955,7 @@ impl NativeResourceLoader {
                     return Err(NativeEngineError::limit(
                         "fetch request body",
                         MAX_NATIVE_FORM_BODY_BYTES,
-                        body.as_ref().map_or(0, NativeFetchBody::len),
+                        body.as_ref().map_or(0, NativeRequestBody::len),
                     ));
                 }
                 if content_type
@@ -1063,8 +1069,8 @@ impl NativeResourceLoader {
             .header(reqwest::header::ACCEPT, "*/*");
             if let Some(body) = current_body.as_ref() {
                 request = match body {
-                    NativeFetchBody::Text(body) => request.body(body.clone()),
-                    NativeFetchBody::Bytes(body) => request.body(body.clone()),
+                    NativeRequestBody::Text(body) => request.body(body.clone()),
+                    NativeRequestBody::Bytes(body) => request.body(body.clone()),
                 };
             }
             if let Some(content_type) = current_content_type.as_deref() {

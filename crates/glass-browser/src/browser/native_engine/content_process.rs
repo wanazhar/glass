@@ -9,7 +9,8 @@ use super::dom::{
 };
 use super::error::{NativeEngineError, NativeWorkerFailureKind};
 use super::interaction::{
-    MAX_NATIVE_EFFECTS, NativeEventKind, NativeFile, validate_native_edit_key, validate_native_key,
+    MAX_NATIVE_EFFECTS, MAX_NATIVE_FORM_BODY_BYTES, NativeEventKind, NativeFile,
+    validate_native_edit_key, validate_native_key,
 };
 use super::javascript::{
     MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_DIALOGS, MAX_NATIVE_HISTORY_STATE_BYTES,
@@ -30,8 +31,8 @@ use super::origin::NativeOrigin;
 use super::resource_loader::{
     MAX_NATIVE_RESPONSE_HEADER_BYTES, MAX_NATIVE_RESPONSE_HEADER_NAME_BYTES,
     MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES, MAX_NATIVE_RESPONSE_HEADERS, NativeCorsMode,
-    NativeFetchBody, NativeFetchRedirectMode, NativeFetchRequest, NativeFetchResponse,
-    NativeNavigationMethod, NativeNavigationRequest, NativeResourceLoader,
+    NativeFetchRedirectMode, NativeFetchRequest, NativeFetchResponse, NativeNavigationMethod,
+    NativeNavigationRequest, NativeRequestBody, NativeResourceLoader,
 };
 #[cfg(windows)]
 use super::sandbox::NativeContentSandbox;
@@ -336,7 +337,16 @@ impl NativeContentProcess {
                     NativeNavigationMethod::Get => "GET",
                     NativeNavigationMethod::Post => "POST",
                 },
-                "body": navigation.body,
+                "body": navigation.body.as_ref().and_then(|body| match body {
+                    NativeRequestBody::Text(body) => Some(body),
+                    NativeRequestBody::Bytes(_) => None,
+                }),
+                "body_base64": navigation.body.as_ref().and_then(|body| match body {
+                    NativeRequestBody::Text(_) => None,
+                    NativeRequestBody::Bytes(body) => Some(
+                        base64::engine::general_purpose::STANDARD.encode(body),
+                    ),
+                }),
                 "content_type": navigation.body_content_type,
                 "referrer": referrer,
                 "max_document_bytes": limits.max_document_bytes,
@@ -4451,7 +4461,7 @@ async fn load_content_resource(
             });
         }
     };
-    let body = request
+    let text_body = request
         .get("body")
         .and_then(|value| (!value.is_null()).then_some(value))
         .map(|value| {
@@ -4463,6 +4473,37 @@ async fn load_content_resource(
             })
         })
         .transpose()?;
+    let body_base64 = request
+        .get("body_base64")
+        .and_then(|value| (!value.is_null()).then_some(value))
+        .map(|value| {
+            value.as_str().ok_or_else(|| {
+                NativeEngineError::invalid(
+                    "content-process navigation binary body",
+                    "must be base64 text or null",
+                )
+            })
+        })
+        .transpose()?;
+    if text_body.is_some() && body_base64.is_some() {
+        return Err(NativeEngineError::invalid(
+            "content-process navigation body",
+            "must use either text or base64 bytes",
+        ));
+    }
+    let body = match body_base64 {
+        Some(encoded) => Some(NativeRequestBody::Bytes(
+            base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .map_err(|_| {
+                    NativeEngineError::invalid(
+                        "content-process navigation binary body",
+                        "must be valid base64",
+                    )
+                })?,
+        )),
+        None => text_body.map(str::to_owned).map(NativeRequestBody::Text),
+    };
     let content_type = request
         .get("content_type")
         .and_then(|value| (!value.is_null()).then_some(value))
@@ -4491,12 +4532,11 @@ async fn load_content_resource(
             }
             NativeNavigationRequest::get(url)
         }
-        NativeNavigationMethod::Post => NativeNavigationRequest::post_with_content_type(
+        NativeNavigationMethod::Post => NativeNavigationRequest::post_with_body(
             url,
             body.ok_or_else(|| {
                 NativeEngineError::invalid("content-process POST body", "must be present")
-            })?
-            .to_owned(),
+            })?,
             content_type
                 .unwrap_or_else(|| "application/x-www-form-urlencoded".into())
                 .to_owned(),
@@ -6437,7 +6477,7 @@ fn fetch_commands(
         String,
         NativeNavigationMethod,
         BTreeMap<String, String>,
-        Option<NativeFetchBody>,
+        Option<NativeRequestBody>,
         Option<String>,
         NativeCorsMode,
         NativeFetchRedirectMode,
@@ -6539,16 +6579,16 @@ fn fetch_commands(
                                     "must be valid base64",
                                 )
                             })?;
-                        if decoded.len() > crate::browser_backend::MAX_TEXT_BYTES {
+                        if decoded.len() > MAX_NATIVE_FORM_BODY_BYTES {
                             return Err(NativeEngineError::limit(
                                 "script fetch binary body",
-                                crate::browser_backend::MAX_TEXT_BYTES,
+                                MAX_NATIVE_FORM_BODY_BYTES,
                                 decoded.len(),
                             ));
                         }
-                        Some(NativeFetchBody::Bytes(decoded))
+                        Some(NativeRequestBody::Bytes(decoded))
                     }
-                    None => body.map(NativeFetchBody::Text),
+                    None => body.map(NativeRequestBody::Text),
                 };
                 Ok((
                     request_id,

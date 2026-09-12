@@ -16,6 +16,10 @@ pub const MAX_NATIVE_FILE_COUNT: usize = 16;
 pub const MAX_NATIVE_FILE_BYTES: usize = 4 * 1024 * 1024;
 /// Maximum bytes retained by all files in one native file-input action.
 pub const MAX_NATIVE_FILE_TOTAL_BYTES: usize = 8 * 1024 * 1024;
+/// Maximum encoded request body produced by a native form or fetch upload.
+pub(crate) const MAX_NATIVE_FORM_BODY_BYTES: usize = MAX_NATIVE_FILE_TOTAL_BYTES + 64 * 1024;
+/// Maximum JSON command envelope used when a page sends a bounded binary body.
+pub(crate) const MAX_NATIVE_SCRIPT_COMMAND_BYTES: usize = 16 * 1024 * 1024;
 const MAX_NATIVE_FILE_NAME_BYTES: usize = 1024;
 const MAX_NATIVE_FILE_TYPE_BYTES: usize = 128;
 

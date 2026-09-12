@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-247` locally. The versioned
+`native-engine-browser-248` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -2147,6 +2147,15 @@ fake path and `FormData` file projection, and dispatch `input`/`change` through
 the existing event bridge. CLI and MCP upload paths enforce the upload policy
 before copying regular files into the native boundary. Exact evidence is
 recorded in [native-engine-browser-247](tasks/native-engine-browser-247.md).
+
+The completed native-engine-browser-248 slice carries bounded binary request
+bodies through the shared native transport. Selected files now reach both
+`fetch(FormData)` and multipart form navigation in HTTP(S) content workers
+with exact raw bytes, filenames, media types, and boundaries; text/plain and
+URL-encoded submissions retain their existing behavior. `ArrayBuffer` and
+`ArrayBufferView` fetch bodies use the same bounded byte path, while content
+worker IPC rejects ambiguous or oversized body representations. Exact evidence
+is recorded in [native-engine-browser-248](tasks/native-engine-browser-248.md).
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` now returns persistent `Attr`

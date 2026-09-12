@@ -8873,9 +8873,12 @@ async fn native_local_unhandled_rejection_dispatches_window_event() {
                 <script>
                     globalThis.rejectionEvents = [];
                     globalThis.handlerEvents = [];
+                    globalThis.handledEvents = [];
+                    globalThis.handledHandlerEvents = [];
                     window.addEventListener('unhandledrejection', event => rejectionEvents.push([
                         String(event.reason).includes('first unhandled'),
                         String(event.reason).includes('second unhandled'),
+                        String(event.reason).includes('late handled'),
                         event.promise === null,
                         event instanceof PromiseRejectionEvent,
                         event.bubbles,
@@ -8886,9 +8889,21 @@ async fn native_local_unhandled_rejection_dispatches_window_event() {
                         String(event.reason).includes('first unhandled'),
                         String(event.reason).includes('second unhandled'),
                     ]);
+                    window.addEventListener('rejectionhandled', event => handledEvents.push([
+                        String(event.reason).includes('late handled'),
+                        event.promise === null,
+                        event instanceof PromiseRejectionEvent,
+                        event.bubbles,
+                        event.cancelable,
+                        event.target === window,
+                    ]));
+                    window.onrejectionhandled = event => handledHandlerEvents.push(
+                        String(event.reason).includes('late handled')
+                    );
                     Promise.reject('handled boom').catch(() => {});
                     Promise.reject('first unhandled');
                     Promise.reject('second unhandled');
+                    globalThis.lateRejection = Promise.reject('late handled');
                     globalThis.afterRejection = true;
                 </script>
                 <title>Unhandled rejection is observable</title>
@@ -8910,8 +8925,9 @@ async fn native_local_unhandled_rejection_dispatches_window_event() {
             .await
             .unwrap(),
         serde_json::json!([
-            [true, false, true, true, false, true, true],
-            [false, true, true, true, false, true, true],
+            [true, false, false, true, true, false, true, true],
+            [false, true, false, true, true, false, true, true],
+            [false, false, true, true, true, false, true, true],
         ])
     );
     assert_eq!(
@@ -8919,7 +8935,28 @@ async fn native_local_unhandled_rejection_dispatches_window_event() {
             .evaluate_async("globalThis.handlerEvents")
             .await
             .unwrap(),
-        serde_json::json!([[true, false], [false, true]])
+        serde_json::json!([[true, false], [false, true], [false, false]])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("lateRejection.catch(() => {}); true")
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.handledEvents")
+            .await
+            .unwrap(),
+        serde_json::json!([[true, true, true, false, false, true]])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.handledHandlerEvents")
+            .await
+            .unwrap(),
+        serde_json::json!([true])
     );
     assert_eq!(
         engine

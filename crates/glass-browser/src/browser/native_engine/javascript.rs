@@ -3182,8 +3182,10 @@ pub(crate) fn host_script_error_event_script(
 /// rejections into the persistent page realm after a microtask checkpoint.
 /// The rejection reason is intentionally transported as text until the native
 /// realm has a complete structured-reason bridge.
-fn unhandled_promise_rejection_event_script(
+fn promise_rejection_event_script(
+    event_type: &str,
     reasons: &[String],
+    cancelable: bool,
 ) -> Result<Option<String>, NativeEngineError> {
     if reasons.is_empty() {
         return Ok(None);
@@ -3193,13 +3195,19 @@ fn unhandled_promise_rejection_event_script(
         .map(|reason| serde_json::json!({ "reason": reason }))
         .collect::<Vec<_>>();
     let encoded = serde_json::to_string(&descriptors).map_err(|_| NativeEngineError::Worker {
-        operation: "serialize native unhandled promise rejection events".into(),
-        reason: "native unhandled promise rejection metadata could not be serialized".into(),
+        operation: "serialize native Promise rejection events".into(),
+        reason: "native Promise rejection metadata could not be serialized".into(),
     })?;
-    let source = format!("globalThis.__glassDispatchUnhandledRejections({encoded})");
+    let event_type = serde_json::to_string(event_type).map_err(|_| NativeEngineError::Worker {
+        operation: "serialize native Promise rejection event type".into(),
+        reason: "native Promise rejection event type could not be serialized".into(),
+    })?;
+    let source = format!(
+        "globalThis.__glassDispatchPromiseRejections({event_type}, {encoded}, {cancelable})"
+    );
     if source.len() > MAX_NATIVE_SCRIPT_BYTES {
         return Err(NativeEngineError::limit(
-            "native unhandled promise rejection events",
+            "native Promise rejection events",
             MAX_NATIVE_SCRIPT_BYTES,
             source.len(),
         ));
@@ -3506,6 +3514,8 @@ pub(crate) fn host_key_event_script_with_modifiers(
 #[derive(Default)]
 struct NativeUnhandledPromiseRejections {
     pending: BTreeMap<String, (u64, String)>,
+    reported: BTreeMap<String, (u64, String)>,
+    handled: BTreeMap<String, (u64, String)>,
     next_order: u64,
 }
 
@@ -3607,7 +3617,14 @@ impl NativeJavaScriptRuntime {
                 let reason = bounded_unhandled_promise_rejection_reason(reason);
                 if let Ok(mut queue) = rejection_queue.lock() {
                     if is_handled {
-                        queue.pending.remove(&key);
+                        if queue.pending.remove(&key).is_none()
+                            && let Some((_, reason)) = queue.reported.remove(&key)
+                            && queue.handled.len() < MAX_NATIVE_UNHANDLED_REJECTIONS
+                        {
+                            let order = queue.next_order;
+                            queue.next_order = queue.next_order.saturating_add(1);
+                            queue.handled.insert(key, (order, reason));
+                        }
                     } else if queue.pending.len() < MAX_NATIVE_UNHANDLED_REJECTIONS
                         || queue.pending.contains_key(&key)
                     {
@@ -3735,6 +3752,31 @@ impl NativeJavaScriptRuntime {
             return Vec::new();
         };
         let mut values = std::mem::take(&mut queue.pending)
+            .into_iter()
+            .collect::<Vec<_>>();
+        values.sort_unstable_by_key(|(_, (order, _))| *order);
+        let mut reasons = Vec::with_capacity(values.len());
+        for (key, (order, reason)) in values {
+            if queue.reported.len() >= MAX_NATIVE_UNHANDLED_REJECTIONS
+                && let Some(key) = queue
+                    .reported
+                    .iter()
+                    .min_by_key(|(_, (reported_order, _))| *reported_order)
+                    .map(|(key, _)| key.clone())
+            {
+                queue.reported.remove(&key);
+            }
+            queue.reported.insert(key, (order, reason.clone()));
+            reasons.push(reason);
+        }
+        reasons
+    }
+
+    fn take_handled_promise_rejections(&self) -> Vec<String> {
+        let Ok(mut queue) = self.unhandled_promise_rejections.lock() else {
+            return Vec::new();
+        };
+        let mut values = std::mem::take(&mut queue.handled)
             .into_values()
             .collect::<Vec<_>>();
         values.sort_unstable_by_key(|(order, _)| *order);
@@ -4848,15 +4890,31 @@ impl NativeJavaScriptRuntime {
                     break;
                 }
             }
-            let unhandled_rejections = self.take_unhandled_promise_rejections();
-            if let Some(source) = unhandled_promise_rejection_event_script(&unhandled_rejections)? {
-                ctx.eval::<(), _>(source.as_str()).map_err(|error| NativeEngineError::Worker {
-                    operation: "dispatch native unhandled promise rejection events".into(),
-                    reason: format!(
-                        "native unhandled promise rejection event dispatch failed: {}",
-                        CaughtError::from_error(&ctx, error)
-                    ),
-                })?;
+            for (event_type, cancelable, reasons) in [
+                (
+                    "unhandledrejection",
+                    true,
+                    self.take_unhandled_promise_rejections(),
+                ),
+                (
+                    "rejectionhandled",
+                    false,
+                    self.take_handled_promise_rejections(),
+                ),
+            ] {
+                if let Some(event_source) =
+                    promise_rejection_event_script(event_type, &reasons, cancelable)?
+                {
+                    ctx.eval::<(), _>(event_source.as_str()).map_err(|error| {
+                        NativeEngineError::Worker {
+                            operation: "dispatch native Promise rejection events".into(),
+                            reason: format!(
+                                "native Promise rejection event dispatch failed: {}",
+                                CaughtError::from_error(&ctx, error)
+                            ),
+                        }
+                    })?;
+                }
             }
             let commands = read_script_commands(ctx.clone())?;
             let mut document_commands = Vec::with_capacity(commands.len());
@@ -5161,15 +5219,31 @@ impl NativeJavaScriptRuntime {
                     break;
                 }
             }
-            let unhandled_rejections = self.take_unhandled_promise_rejections();
-            if let Some(event_source) = unhandled_promise_rejection_event_script(&unhandled_rejections)? {
-                ctx.eval::<(), _>(event_source.as_str()).map_err(|error| NativeEngineError::Worker {
-                    operation: "dispatch native unhandled promise rejection events".into(),
-                    reason: format!(
-                        "native unhandled promise rejection event dispatch failed: {}",
-                        CaughtError::from_error(&ctx, error)
-                    ),
-                })?;
+            for (event_type, cancelable, reasons) in [
+                (
+                    "unhandledrejection",
+                    true,
+                    self.take_unhandled_promise_rejections(),
+                ),
+                (
+                    "rejectionhandled",
+                    false,
+                    self.take_handled_promise_rejections(),
+                ),
+            ] {
+                if let Some(event_source) =
+                    promise_rejection_event_script(event_type, &reasons, cancelable)?
+                {
+                    ctx.eval::<(), _>(event_source.as_str()).map_err(|error| {
+                        NativeEngineError::Worker {
+                            operation: "dispatch native Promise rejection events".into(),
+                            reason: format!(
+                                "native Promise rejection event dispatch failed: {}",
+                                CaughtError::from_error(&ctx, error)
+                            ),
+                        }
+                    })?;
+                }
             }
             let commands = read_script_commands(ctx.clone())?;
             let mut document_commands = Vec::with_capacity(commands.len());
@@ -14294,8 +14368,11 @@ fn document_bootstrap(
     results.push(dispatchTarget(globalThis, createErrorEvent()));
     return results;
   }};
-  globalThis.__glassDispatchUnhandledRejections = (rejections) => {{
-    if (!Array.isArray(rejections)) throw new TypeError("native unhandled promise rejections are invalid");
+  globalThis.__glassDispatchPromiseRejections = (type, rejections, cancelable) => {{
+    const eventType = String(type || "");
+    if (eventType !== "unhandledrejection" && eventType !== "rejectionhandled")
+      throw new TypeError("native Promise rejection event type is invalid");
+    if (!Array.isArray(rejections)) throw new TypeError("native Promise rejections are invalid");
     return rejections.map((descriptor) => {{
       const reason = descriptor && typeof descriptor === "object" && descriptor.reason !== undefined
         ? descriptor.reason
@@ -14303,8 +14380,8 @@ fn document_bootstrap(
       const constructor = globalThis.__glassPromiseRejectionEventConstructor
         || globalThis.PromiseRejectionEvent;
       const event = typeof constructor === "function"
-        ? new constructor("unhandledrejection", {{ reason, promise: null, cancelable: true }})
-        : createEvent("unhandledrejection", {{ bubbles: false, cancelable: true }});
+        ? new constructor(eventType, {{ reason, promise: null, cancelable: Boolean(cancelable) }})
+        : createEvent(eventType, {{ bubbles: false, cancelable: Boolean(cancelable) }});
       if (event.reason === undefined) event.reason = reason;
       if (event.promise === undefined) event.promise = null;
       return dispatchTarget(globalThis, event);
@@ -17428,6 +17505,7 @@ fn document_bootstrap(
   globalThis.dispatchEvent = (event) => dispatchTarget(globalThis, event);
   if (!Object.prototype.hasOwnProperty.call(globalThis, "onerror")) installEventHandlerProperty(globalThis, "error");
   if (!Object.prototype.hasOwnProperty.call(globalThis, "onunhandledrejection")) installEventHandlerProperty(globalThis, "unhandledrejection");
+  if (!Object.prototype.hasOwnProperty.call(globalThis, "onrejectionhandled")) installEventHandlerProperty(globalThis, "rejectionhandled");
   const makeStorageEvent = (descriptor) => {{
     const event = createEvent("storage");
     event.key = descriptor.key === null ? null : String(descriptor.key);

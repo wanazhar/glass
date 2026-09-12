@@ -2,6 +2,7 @@
 
 use base64::Engine as _;
 use fs2::FileExt;
+use gif::{Encoder, Frame, Repeat};
 use glass_browser::browser::native_backend::NATIVE_ENGINE_BACKEND_ID;
 use glass_browser::browser::native_engine::{
     MAX_NATIVE_DIAGNOSTIC_DETAIL_BYTES, MAX_NATIVE_DIAGNOSTICS, NativeAction, NativeBorderRadius,
@@ -24,6 +25,7 @@ use glass_browser::browser_backend::{
     ScriptRequest, SemanticAction, StorageOperation, StorageRequest, StorageScope, SupportLevel,
 };
 use glass_browser::{BackendFactory, BrowserRuntime, BrowserRuntimeSession, NativeEngineBackend};
+use std::borrow::Cow;
 use std::fs::{self, OpenOptions};
 use std::io::Cursor;
 use std::sync::OnceLock;
@@ -148,6 +150,32 @@ fn native_test_small_gif_data_url() -> String {
         "data:image/gif;base64,{}",
         base64::engine::general_purpose::STANDARD.encode(native_test_gif_bytes())
     )
+}
+
+fn native_test_animated_gif_bytes() -> Vec<u8> {
+    let mut encoded = Vec::new();
+    let palette = [255, 0, 0, 0, 255, 0];
+    {
+        let mut encoder = Encoder::new(&mut encoded, 1, 1, &palette).unwrap();
+        encoder.set_repeat(Repeat::Infinite).unwrap();
+        let first = Frame {
+            delay: 1,
+            width: 1,
+            height: 1,
+            buffer: Cow::Owned(vec![0]),
+            ..Frame::default()
+        };
+        encoder.write_frame(&first).unwrap();
+        let second = Frame {
+            delay: 1,
+            width: 1,
+            height: 1,
+            buffer: Cow::Owned(vec![1]),
+            ..Frame::default()
+        };
+        encoder.write_frame(&second).unwrap();
+    }
+    encoded
 }
 
 #[tokio::test]
@@ -33239,6 +33267,47 @@ async fn native_gif_data_images_expose_intrinsic_dimensions_and_paint() {
 }
 
 #[tokio::test]
+async fn native_animated_gif_data_images_paint_multiple_frames() {
+    let source = format!(
+        "data:image/gif;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(native_test_animated_gif_bytes())
+    );
+    let config = NativeEngineConfig::default()
+        .with_initial_url("fixture://animated-gif-image/page")
+        .with_fixture(
+            "fixture://animated-gif-image/page",
+            format!("<img id='image' src='{source}' style='width:1px;height:1px'>"),
+        )
+        .unwrap();
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    let image_pixels = |engine: &NativeEngine| {
+        engine
+            .display_list()
+            .unwrap()
+            .commands
+            .into_iter()
+            .find_map(|command| match command {
+                NativeDisplayCommand::Image { pixels, .. } => Some(pixels),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let initial = image_pixels(&engine);
+    let mut changed = false;
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_millis(15)).await;
+        if image_pixels(&engine) != initial {
+            changed = true;
+            break;
+        }
+    }
+    assert!(changed, "animated GIF did not advance to another frame");
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_images_expose_accessible_role_and_alt_name() {
     let source = native_test_png_data_url();
     let config = NativeEngineConfig::default()
@@ -33508,6 +33577,70 @@ async fn native_content_process_loads_gif_picture_source() {
             .await
             .unwrap(),
         serde_json::json!([true, 1, 1, format!("http://{address}/photo.gif")])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_paints_animated_gif_frames() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let gif = native_test_animated_gif_bytes();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/photo.gif"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            if expected_path == "/photo.gif" {
+                let headers = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: image/gif\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    gif.len()
+                );
+                stream.write_all(headers.as_bytes()).await.unwrap();
+                stream.write_all(&gif).await.unwrap();
+            } else {
+                let body =
+                    "<img id='image' src='/photo.gif' style='width:1px;height:1px' alt='animated'>";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let image_pixels = |engine: &NativeEngine| {
+        engine
+            .display_list()
+            .unwrap()
+            .commands
+            .into_iter()
+            .find_map(|command| match command {
+                NativeDisplayCommand::Image { pixels, .. } => Some(pixels),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let initial = image_pixels(&engine);
+    let mut changed = false;
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_millis(15)).await;
+        if image_pixels(&engine) != initial {
+            changed = true;
+            break;
+        }
+    }
+    assert!(
+        changed,
+        "content-process GIF did not advance to another frame"
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

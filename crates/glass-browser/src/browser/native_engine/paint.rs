@@ -75,6 +75,9 @@ pub enum NativeDisplayCommand {
     Clear {
         color: NativeColor,
     },
+    SetNestedScrollOffset {
+        offset: NativePoint,
+    },
     FillRect {
         node_id: NativeNodeId,
         rect: NativeRect,
@@ -208,10 +211,38 @@ impl NativeDisplayList {
             },
         )?;
         let ordered_paint_order = paint_order_indices(layout);
+        let mut nested_scroll_offset = NativePoint { x: 0, y: 0 };
         for order in 0..layout.paint_order.len() {
             let entry_index = ordered_paint_order
                 .as_ref()
                 .map_or(order, |indices| indices[order]);
+            let next_nested_scroll_offset = match layout.paint_order[entry_index] {
+                NativeLayoutPaintOrder::Box(box_index) => layout
+                    .boxes
+                    .get(box_index)
+                    .map(|layout_box| {
+                        layout.nested_scroll_offset_for(document, layout_box.node_id, false)
+                    })
+                    .unwrap_or(NativePoint { x: 0, y: 0 }),
+                NativeLayoutPaintOrder::Text(text_index) => layout
+                    .text_runs
+                    .get(text_index)
+                    .map(|text_run| {
+                        layout.nested_scroll_offset_for(document, text_run.node_id, true)
+                    })
+                    .unwrap_or(NativePoint { x: 0, y: 0 }),
+                NativeLayoutPaintOrder::BeginOpacityGroup { .. }
+                | NativeLayoutPaintOrder::EndOpacityGroup { .. } => nested_scroll_offset,
+            };
+            if next_nested_scroll_offset != nested_scroll_offset {
+                push_command(
+                    &mut commands,
+                    NativeDisplayCommand::SetNestedScrollOffset {
+                        offset: next_nested_scroll_offset,
+                    },
+                )?;
+                nested_scroll_offset = next_nested_scroll_offset;
+            }
             match layout.paint_order[entry_index] {
                 NativeLayoutPaintOrder::BeginOpacityGroup { node_id, opacity } => {
                     push_command(
@@ -227,25 +258,23 @@ impl NativeDisplayList {
                         )
                     })?;
                     let style = document.computed_style_for_layout(layout_box.node_id);
+                    let rect = layout_box.rect;
                     let clip = paint_clip(document, layout, layout_box.node_id);
                     if let Some(color) = style.background_color() {
                         push_command(
                             &mut commands,
                             NativeDisplayCommand::FillRect {
                                 node_id: layout_box.node_id,
-                                rect: layout_box.rect,
+                                rect,
                                 radius: style.border_radius(),
                                 color,
                                 clip,
                             },
                         )?;
                     }
-                    for command in background_image_paint_commands(
-                        document,
-                        layout_box.node_id,
-                        layout_box.rect,
-                        clip,
-                    )? {
+                    for command in
+                        background_image_paint_commands(document, layout_box.node_id, rect, clip)?
+                    {
                         push_command(&mut commands, command)?;
                     }
                     if let Some(border) = style.border()
@@ -256,7 +285,7 @@ impl NativeDisplayList {
                             &mut commands,
                             NativeDisplayCommand::BorderRect {
                                 node_id: layout_box.node_id,
-                                rect: layout_box.rect,
+                                rect,
                                 radius: style.border_radius(),
                                 borders,
                                 clip,
@@ -264,13 +293,11 @@ impl NativeDisplayList {
                         )?;
                     }
                     if let Some(command) =
-                        image_paint_command(document, layout_box.node_id, layout_box.rect, clip)
+                        image_paint_command(document, layout_box.node_id, rect, clip)
                     {
                         push_command(&mut commands, command)?;
                     }
-                    for command in
-                        svg_paint_commands(document, layout_box.node_id, layout_box.rect, clip)
-                    {
+                    for command in svg_paint_commands(document, layout_box.node_id, rect, clip) {
                         push_command(&mut commands, command)?;
                     }
                 }

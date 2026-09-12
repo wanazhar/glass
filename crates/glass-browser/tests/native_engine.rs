@@ -945,6 +945,109 @@ async fn native_content_process_script_exposes_web_idl_identity() {
 }
 
 #[tokio::test]
+async fn native_content_process_scrolls_root_and_nested_overflow_containers() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/nested-scroll"));
+        let body = "<html><body><div id='scroller' style='width:40px;height:30px;overflow:auto'><div id='content' style='width:80px;height:90px;background-color:blue;position:relative'><div id='marker' style='position:absolute;left:30px;top:10px;width:10px;height:10px;background-color:red'></div></div></div><div id='tail' style='height:140px'></div></body></html>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_viewport(Viewport {
+                width: 120,
+                height: 100,
+                device_scale_factor_milli: 1000,
+            })
+            .with_initial_url(format!("http://{address}/nested-scroll")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const scroller = document.getElementById('scroller'); const events = []; scroller.addEventListener('scroll', event => events.push(['scroller', event.target === scroller, event.currentTarget === scroller, event.bubbles])); window.addEventListener('scroll', event => events.push(['window', event.target === window, event.currentTarget === window, event.bubbles])); document.addEventListener('scroll', event => events.push(['document', event.target === document, event.bubbles])); globalThis.scrollEvents = events; return true; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const scroller = document.getElementById('scroller'); return [scroller.clientWidth, scroller.clientHeight, scroller.scrollWidth, scroller.scrollHeight, scroller.scrollLeft, scroller.scrollTop, window.scrollY]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([40, 30, 80, 90, 0, 0, 0])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const scroller = document.getElementById('scroller'); scroller.scrollTo(20, 25); window.scrollTo(0, 40); return [scroller.scrollLeft, scroller.scrollTop, window.scrollY]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([20, 25, 40])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.scrollEvents")
+            .await
+            .unwrap(),
+        serde_json::json!([
+            ["scroller", true, true, false],
+            ["window", true, true, false]
+        ])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const content = document.getElementById('content').getBoundingClientRect(); const marker = document.getElementById('marker').getBoundingClientRect(); const scroller = document.getElementById('scroller'); return { content: [content.x, content.y], marker: [marker.x, marker.y], scroll: [scroller.scrollLeft, scroller.scrollTop, window.scrollY] }; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "content": [-20, -65],
+            "marker": [10, -55],
+            "scroll": [20, 25, 40],
+        })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const scroller = document.getElementById('scroller'); scroller.scrollTop = 10; document.body.setAttribute('data-refresh', 'yes'); return true; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "[document.getElementById('scroller').scrollTop, document.body.getAttribute('data-refresh')]",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([10, "yes"])
+    );
+
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_dialogs_are_owned_by_the_page_realm_and_prompt_backend() {
     let session =
         BrowserRuntimeSession::connect_native(NativeEngineConfig::default().with_initial_url(
@@ -3010,6 +3113,7 @@ async fn native_async_history_traversal_uses_the_runtime_owner() {
         .with_initial_url("fixture://history-async");
     let mut engine = NativeEngine::new(config).unwrap();
     engine.initialize_async().await.unwrap();
+
     let first = engine.snapshot().unwrap();
     let second = engine
         .navigate_async("fixture://history-async-next")
@@ -3946,6 +4050,165 @@ async fn native_local_script_exposes_layout_geometry_and_resize_observer() {
         engine.evaluate_async("globalThis.resizeLog").await.unwrap(),
         serde_json::json!([[["box", 40, 20, 40, 20]], [["box", 40, 60, 40, 60]],])
     );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_local_script_scrolls_root_and_nested_overflow_containers() {
+    let config = NativeEngineConfig::default()
+        .with_viewport(Viewport {
+            width: 120,
+            height: 100,
+            device_scale_factor_milli: 1000,
+        })
+        .with_fixture(
+            "fixture://nested-scroll",
+            "<html><body><div id='scroller' style='width:40px;height:30px;overflow:auto'><div id='content' style='width:80px;height:90px;background-color:blue;position:relative'><div id='marker' style='position:absolute;left:30px;top:10px;width:10px;height:10px;background-color:red'></div></div></div><div id='tail' style='height:140px'></div></body></html>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://nested-scroll");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const scroller = document.getElementById('scroller'); const events = []; scroller.addEventListener('scroll', event => events.push(['scroller', event.target === scroller, event.currentTarget === scroller, event.bubbles])); window.addEventListener('scroll', event => events.push(['window', event.target === window, event.currentTarget === window, event.bubbles])); document.addEventListener('scroll', event => events.push(['document', event.target === document, event.bubbles])); globalThis.scrollEvents = events; return true; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+
+    let initial = engine
+        .evaluate_async(
+            "(() => { const scroller = document.getElementById('scroller'); const content = document.getElementById('content'); const rect = content.getBoundingClientRect(); return { dimensions: [scroller.clientWidth, scroller.clientHeight, scroller.scrollWidth, scroller.scrollHeight, scroller.scrollLeft, scroller.scrollTop], content: [rect.x, rect.y], root: [document.documentElement.scrollWidth, document.documentElement.scrollHeight, window.scrollX, window.scrollY] }; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        initial["dimensions"],
+        serde_json::json!([40, 30, 80, 90, 0, 0])
+    );
+    assert_eq!(initial["content"], serde_json::json!([0, 0]));
+    assert_eq!(initial["root"][2], serde_json::json!(0));
+    assert_eq!(initial["root"][3], serde_json::json!(0));
+    assert!(initial["root"][1].as_i64().unwrap() > 100);
+    assert_eq!(
+        engine.rasterize().unwrap().pixel(31, 11),
+        Some([255, 0, 0, 255]),
+    );
+
+    engine
+        .evaluate_async("document.getElementById('scroller').scrollTo({ left: 20, top: 5 }); true")
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.scrollEvents")
+            .await
+            .unwrap(),
+        serde_json::json!([["scroller", true, true, false]])
+    );
+    assert_eq!(
+        engine.rasterize().unwrap().pixel(11, 6),
+        Some([255, 0, 0, 255])
+    );
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const scroller = document.getElementById('scroller'); scroller.scrollTo({ left: 20, top: 25 }); window.scrollTo({ top: 40 }); return [scroller.scrollLeft, scroller.scrollTop, window.scrollX, window.scrollY, document.documentElement.scrollTop]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([20, 25, 0, 40, 40])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.scrollEvents")
+            .await
+            .unwrap(),
+        serde_json::json!([
+            ["scroller", true, true, false],
+            ["scroller", true, true, false],
+            ["window", true, true, false]
+        ])
+    );
+    let moved = engine
+        .evaluate_async(
+            "(() => { const content = document.getElementById('content').getBoundingClientRect(); return [content.x, content.y, document.getElementById('scroller').scrollLeft, document.getElementById('scroller').scrollTop, window.scrollY]; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(moved, serde_json::json!([-20, -65, 20, 25, 40]));
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const scroller = document.getElementById('scroller'); scroller.scrollBy(100, 100); window.scrollBy(0, 100); return [scroller.scrollLeft, scroller.scrollTop, window.scrollY]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([40, 60, 70])
+    );
+    let clamped = engine
+        .evaluate_async(
+            "(() => { const content = document.getElementById('content').getBoundingClientRect(); return [content.x, content.y, document.documentElement.scrollTop]; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(clamped, serde_json::json!([-40, -130, 70]));
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const scroller = document.getElementById('scroller'); scroller.scrollTop = 10; document.body.setAttribute('data-refresh', 'yes'); return true; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "[document.getElementById('scroller').scrollTop, document.body.getAttribute('data-refresh')]",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([10, "yes"])
+    );
+
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_initial_page_script_scrolls_and_delivers_window_event() {
+    let config = NativeEngineConfig::default()
+        .with_viewport(Viewport {
+            width: 80,
+            height: 24,
+            device_scale_factor_milli: 1000,
+        })
+        .with_fixture(
+            "fixture://initial-scroll",
+            "<html><body><script>globalThis.initialScrollEvents = []; window.addEventListener('scroll', event => globalThis.initialScrollEvents.push([event.target === window, event.bubbles])); window.scrollTo({ top: 40 });</script><div style='height:220px'>Content</div></body></html>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://initial-scroll");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    let state = engine
+        .evaluate_async(
+            "[window.scrollY, document.documentElement.scrollTop, globalThis.initialScrollEvents]",
+        )
+        .await
+        .unwrap();
+    assert_eq!(state[0], serde_json::json!(40));
+    assert_eq!(state[1], serde_json::json!(40));
+    assert_eq!(state[2], serde_json::json!([[true, false]]));
+
     engine.close_async().await.unwrap();
 }
 
@@ -9441,6 +9704,7 @@ fn native_display_list_is_revisioned_deterministic_and_visibility_aware() {
         | NativeDisplayCommand::TextRun { node_id, .. } => *node_id == hidden,
         NativeDisplayCommand::BeginOpacityGroup { .. }
         | NativeDisplayCommand::Clear { .. }
+        | NativeDisplayCommand::SetNestedScrollOffset { .. }
         | NativeDisplayCommand::EndOpacityGroup { .. } => false,
     }));
     assert_eq!(list, document.display_list(viewport).unwrap());
@@ -14044,7 +14308,8 @@ fn native_local_presentation_important_priority_reaches_hidden_and_opacity_owner
             } => {
                 *command_node == node_id
             }
-            NativeDisplayCommand::Clear { .. } => false,
+            NativeDisplayCommand::Clear { .. }
+            | NativeDisplayCommand::SetNestedScrollOffset { .. } => false,
         }));
     }
     assert!(list.commands.iter().any(|command| {
@@ -27981,6 +28246,7 @@ fn native_br_elements_create_bounded_hard_breaks_without_layout_nodes() {
         }
         NativeDisplayCommand::BeginOpacityGroup { .. }
         | NativeDisplayCommand::Clear { .. }
+        | NativeDisplayCommand::SetNestedScrollOffset { .. }
         | NativeDisplayCommand::EndOpacityGroup { .. } => true,
     }));
     let surface = list.rasterize().unwrap();
@@ -28973,7 +29239,7 @@ fn native_overflow_css_wide_resets_reach_axis_clips_and_artifacts() {
 }
 
 #[test]
-fn native_overflow_no_clip_keywords_share_existing_projection_and_scroll_owner() {
+fn native_overflow_scroll_keywords_establish_axis_clips_and_scroll_owner() {
     let document = NativeDocument::parse(
         "<style>#visible,#auto,#scroll,#hidden{display:block;width:16px;height:10px;margin:0;padding:0;border:0;}#visible{overflow:visible;}#auto{overflow-x:AUTO;overflow-y:hidden;}#scroll{overflow-x:clip;overflow-y:ScRoLl;}#hidden{overflow:hidden;}.wide{display:block;width:56px;min-width:56px;height:10px;background-color:blue;}</style><button id='visible'><span id='visible-child' class='wide'></span></button><button id='auto'><span id='auto-child' class='wide'></span></button><button id='scroll'><span id='scroll-child' class='wide'></span></button><button id='hidden'><span id='hidden-child' class='wide'></span></button>",
         &NativeEngineLimits::default(),
@@ -29010,13 +29276,13 @@ fn native_overflow_no_clip_keywords_share_existing_projection_and_scroll_owner()
         })
     };
     assert_eq!(layout.viewport_rect_for(visible_child), expected_visible(0));
-    assert_eq!(layout.viewport_rect_for(auto_child), expected_visible(10));
+    assert_eq!(layout.viewport_rect_for(auto_child), expected_x_clip(10));
     assert_eq!(layout.viewport_rect_for(scroll_child), expected_x_clip(20));
     assert_eq!(layout.viewport_rect_for(hidden_child), expected_x_clip(30));
     assert_eq!(layout.content_width, 56);
     assert_eq!(layout.max_scroll_offset().x, 24);
     assert_eq!(layout.hit_test(20, 5).unwrap(), Some(visible_child));
-    assert_eq!(layout.hit_test(20, 15).unwrap(), Some(auto_child));
+    assert_eq!(layout.hit_test(20, 15).unwrap(), None);
     assert_ne!(layout.hit_test(20, 25).unwrap(), Some(scroll_child));
     assert_ne!(layout.hit_test(20, 35).unwrap(), Some(hidden_child));
 
@@ -29049,7 +29315,7 @@ fn native_overflow_no_clip_keywords_share_existing_projection_and_scroll_owner()
 
     let surface = list.rasterize().unwrap();
     assert_eq!(surface.pixel(20, 5), Some([0, 0, 255, 255]));
-    assert_eq!(surface.pixel(20, 15), Some([0, 0, 255, 255]));
+    assert_eq!(surface.pixel(20, 15), Some([255, 255, 255, 255]));
     assert_ne!(surface.pixel(20, 25), Some([0, 0, 255, 255]));
     assert_ne!(surface.pixel(20, 35), Some([0, 0, 255, 255]));
     assert!(!surface.to_png().unwrap().is_empty());
@@ -34381,7 +34647,7 @@ async fn native_content_process_selects_picture_source_and_reloads_img_fallback(
                 stream.write_all(headers.as_bytes()).await.unwrap();
                 stream.write_all(&png).await.unwrap();
             } else {
-                let body = "<picture><source id='webp' media='(min-width: 500px)' type='image/webp' srcset='/unsupported.webp 1x'><source id='wide' media='(min-width: 500px)' type='image/png' srcset='/wide.png 1x'><source id='narrow' media='(max-width: 499px)' type='image/png' srcset='/narrow.png 1x'><img id='image' src='/fallback.png' srcset='/fallback-set.png 1x' alt='responsive image'></picture>";
+                let body = "<picture><source id='avif' media='(min-width: 500px)' type='image/avif' srcset='/unsupported.avif 1x'><source id='wide' media='(min-width: 500px)' type='image/png' srcset='/wide.png 1x'><source id='narrow' media='(max-width: 499px)' type='image/png' srcset='/narrow.png 1x'><img id='image' src='/fallback.png' srcset='/fallback-set.png 1x' alt='responsive image'></picture>";
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()

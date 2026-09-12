@@ -96,8 +96,13 @@ impl NativeSurface {
         }];
         let mut opacity_groups = Vec::new();
         let scroll_offset = display_list.scroll_offset;
+        let mut nested_scroll_offset = NativePoint { x: 0, y: 0 };
         let mut text_run_index = 0usize;
         for command in &display_list.commands {
+            let render_scroll_offset = NativePoint {
+                x: scroll_offset.x.saturating_add(nested_scroll_offset.x),
+                y: scroll_offset.y.saturating_add(nested_scroll_offset.y),
+            };
             match command {
                 NativeDisplayCommand::BeginOpacityGroup { node_id, opacity } => {
                     if opacity_groups.len() >= MAX_NATIVE_OPACITY_GROUP_DEPTH {
@@ -136,6 +141,9 @@ impl NativeSurface {
                 NativeDisplayCommand::Clear { color } => {
                     Self::current_surface_mut(&mut surfaces)?.clear(*color);
                 }
+                NativeDisplayCommand::SetNestedScrollOffset { offset } => {
+                    nested_scroll_offset = *offset;
+                }
                 NativeDisplayCommand::FillRect {
                     rect,
                     radius,
@@ -143,7 +151,8 @@ impl NativeSurface {
                     clip,
                     ..
                 } => {
-                    let Some(viewport_rect) = Self::translate_rect(*rect, scroll_offset) else {
+                    let Some(viewport_rect) = Self::translate_rect(*rect, render_scroll_offset)
+                    else {
                         continue;
                     };
                     let Some(clip) = Self::translate_clip(*clip, scroll_offset) else {
@@ -155,7 +164,7 @@ impl NativeSurface {
                         *radius,
                         *color,
                         clip,
-                        scroll_offset,
+                        render_scroll_offset,
                     );
                 }
                 NativeDisplayCommand::Image {
@@ -167,7 +176,8 @@ impl NativeSurface {
                     clip,
                     ..
                 } => {
-                    let Some(viewport_rect) = Self::translate_rect(*rect, scroll_offset) else {
+                    let Some(viewport_rect) = Self::translate_rect(*rect, render_scroll_offset)
+                    else {
                         continue;
                     };
                     let Some(clip) = Self::translate_clip(*clip, scroll_offset) else {
@@ -181,7 +191,7 @@ impl NativeSurface {
                         *source_height,
                         pixels,
                         clip,
-                        scroll_offset,
+                        render_scroll_offset,
                     )?;
                 }
                 NativeDisplayCommand::SvgStroke {
@@ -201,7 +211,7 @@ impl NativeSurface {
                         *width,
                         *color,
                         clip,
-                        scroll_offset,
+                        render_scroll_offset,
                     );
                 }
                 NativeDisplayCommand::SvgPolygonFill {
@@ -219,7 +229,7 @@ impl NativeSurface {
                         points,
                         *color,
                         clip,
-                        scroll_offset,
+                        render_scroll_offset,
                     );
                 }
                 NativeDisplayCommand::SvgPolyline {
@@ -241,7 +251,7 @@ impl NativeSurface {
                         *width,
                         *color,
                         clip,
-                        scroll_offset,
+                        render_scroll_offset,
                     );
                 }
                 NativeDisplayCommand::SvgPathFill {
@@ -259,7 +269,7 @@ impl NativeSurface {
                         subpaths,
                         *color,
                         clip,
-                        scroll_offset,
+                        render_scroll_offset,
                     );
                 }
                 NativeDisplayCommand::SvgPathStroke {
@@ -279,7 +289,7 @@ impl NativeSurface {
                         *width,
                         *color,
                         clip,
-                        scroll_offset,
+                        render_scroll_offset,
                     );
                 }
                 NativeDisplayCommand::BorderRect {
@@ -297,7 +307,7 @@ impl NativeSurface {
                         *radius,
                         *borders,
                         clip,
-                        scroll_offset,
+                        render_scroll_offset,
                     );
                 }
                 NativeDisplayCommand::TextRun {
@@ -365,7 +375,7 @@ impl NativeSurface {
                         },
                         line_boundary,
                         clip,
-                        scroll_offset,
+                        render_scroll_offset,
                     );
                 }
                 NativeDisplayCommand::EndOpacityGroup { node_id } => {

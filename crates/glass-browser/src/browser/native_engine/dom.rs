@@ -352,6 +352,10 @@ pub(crate) struct NativeScriptDocumentSnapshot {
     #[serde(default)]
     pub(crate) scroll_y: u32,
     #[serde(default)]
+    pub(crate) scroll_width: u32,
+    #[serde(default)]
+    pub(crate) scroll_height: u32,
+    #[serde(default)]
     pub(crate) script_nodes: Vec<NativeScriptNodeIdentity>,
 }
 
@@ -371,6 +375,18 @@ pub(crate) struct NativeScriptGeometrySnapshot {
     pub(crate) content_y: i64,
     pub(crate) content_width: u32,
     pub(crate) content_height: u32,
+    #[serde(default)]
+    pub(crate) scroll_x: u32,
+    #[serde(default)]
+    pub(crate) scroll_y: u32,
+    #[serde(default)]
+    pub(crate) scroll_width: u32,
+    #[serde(default)]
+    pub(crate) scroll_height: u32,
+    #[serde(default)]
+    pub(crate) client_width: u32,
+    #[serde(default)]
+    pub(crate) client_height: u32,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -424,6 +440,10 @@ pub(crate) struct NativeScriptElementSnapshot {
     pub(crate) image_natural_height: u32,
     #[serde(default)]
     pub(crate) image_current_src: String,
+    #[serde(default)]
+    pub(crate) scroll_x: u32,
+    #[serde(default)]
+    pub(crate) scroll_y: u32,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq, Serialize)]
@@ -2014,6 +2034,8 @@ impl NativeDocument {
                     image_natural_width,
                     image_natural_height,
                     image_current_src,
+                    scroll_x: 0,
+                    scroll_y: 0,
                 })
             })
             .collect();
@@ -2025,6 +2047,8 @@ impl NativeDocument {
             geometry: Vec::new(),
             scroll_x: 0,
             scroll_y: 0,
+            scroll_width: 0,
+            scroll_height: 0,
             script_nodes: self
                 .script_node_ids
                 .iter()
@@ -2042,28 +2066,107 @@ impl NativeDocument {
         max_text_bytes: usize,
         viewport: Viewport,
         scroll_offset: NativePoint,
+        nested_scroll_offsets: &BTreeMap<u32, NativePoint>,
     ) -> Result<NativeScriptDocumentSnapshot, NativeEngineError> {
         let mut snapshot = self.script_snapshot_for_viewport(max_text_bytes, viewport);
-        let layout = self
-            .layout(viewport)?
-            .with_scroll_offset(self, scroll_offset)?;
+        let layout = self.layout(viewport)?.with_scroll_offset(
+            self,
+            scroll_offset,
+            nested_scroll_offsets,
+        )?;
         snapshot.geometry = layout
             .boxes
             .iter()
-            .map(|layout_box| NativeScriptGeometrySnapshot {
-                node_index: layout_box.node_id.index(),
-                x: i64::from(layout_box.rect.x) - i64::from(layout.scroll_offset.x),
-                y: i64::from(layout_box.rect.y) - i64::from(layout.scroll_offset.y),
-                width: layout_box.rect.width,
-                height: layout_box.rect.height,
-                content_x: i64::from(layout_box.content_rect.x) - i64::from(layout.scroll_offset.x),
-                content_y: i64::from(layout_box.content_rect.y) - i64::from(layout.scroll_offset.y),
-                content_width: layout_box.content_rect.width,
-                content_height: layout_box.content_rect.height,
+            .map(|layout_box| {
+                let scroll_container = layout.scroll_container_for(layout_box.node_id);
+                let nested_scroll_offset = if layout_box.fixed {
+                    NativePoint { x: 0, y: 0 }
+                } else {
+                    layout.nested_scroll_offset_for(self, layout_box.node_id, false)
+                };
+                let is_root = self
+                    .node(layout_box.node_id)
+                    .and_then(|node| node.element_name())
+                    == Some("html");
+                let client_width = if is_root {
+                    viewport.width
+                } else {
+                    scroll_container
+                        .map(|container| container.client_width)
+                        .unwrap_or(layout_box.rect.width)
+                };
+                let client_height = if is_root {
+                    viewport.height
+                } else {
+                    scroll_container
+                        .map(|container| container.client_height)
+                        .unwrap_or(layout_box.rect.height)
+                };
+                NativeScriptGeometrySnapshot {
+                    node_index: layout_box.node_id.index(),
+                    x: i64::from(layout_box.rect.x)
+                        - i64::from(layout.scroll_offset.x)
+                        - i64::from(nested_scroll_offset.x),
+                    y: i64::from(layout_box.rect.y)
+                        - i64::from(layout.scroll_offset.y)
+                        - i64::from(nested_scroll_offset.y),
+                    width: layout_box.rect.width,
+                    height: layout_box.rect.height,
+                    content_x: i64::from(layout_box.content_rect.x)
+                        - i64::from(layout.scroll_offset.x)
+                        - i64::from(nested_scroll_offset.x),
+                    content_y: i64::from(layout_box.content_rect.y)
+                        - i64::from(layout.scroll_offset.y)
+                        - i64::from(nested_scroll_offset.y),
+                    content_width: layout_box.content_rect.width,
+                    content_height: layout_box.content_rect.height,
+                    scroll_x: if is_root {
+                        layout.scroll_offset.x
+                    } else {
+                        scroll_container
+                            .map(|container| container.scroll_offset.x)
+                            .unwrap_or(0)
+                    },
+                    scroll_y: if is_root {
+                        layout.scroll_offset.y
+                    } else {
+                        scroll_container
+                            .map(|container| container.scroll_offset.y)
+                            .unwrap_or(0)
+                    },
+                    scroll_width: if is_root {
+                        layout.content_width
+                    } else {
+                        scroll_container
+                            .map(|container| container.scroll_width)
+                            .unwrap_or(layout_box.rect.width)
+                    },
+                    scroll_height: if is_root {
+                        layout.content_height
+                    } else {
+                        scroll_container
+                            .map(|container| container.scroll_height)
+                            .unwrap_or(layout_box.rect.height)
+                    },
+                    client_width,
+                    client_height,
+                }
             })
             .collect();
+        for element in &mut snapshot.elements {
+            if let Some(geometry) = snapshot
+                .geometry
+                .iter()
+                .find(|geometry| geometry.node_index == element.node_index)
+            {
+                element.scroll_x = geometry.scroll_x;
+                element.scroll_y = geometry.scroll_y;
+            }
+        }
         snapshot.scroll_x = layout.scroll_offset.x;
         snapshot.scroll_y = layout.scroll_offset.y;
+        snapshot.scroll_width = layout.content_width;
+        snapshot.scroll_height = layout.content_height;
         Ok(snapshot)
     }
 
@@ -2879,7 +2982,8 @@ impl NativeDocument {
                 }
                 NativeScriptCommand::HistoryPushState { .. }
                 | NativeScriptCommand::HistoryReplaceState { .. }
-                | NativeScriptCommand::HistoryGo { .. } => {}
+                | NativeScriptCommand::HistoryGo { .. }
+                | NativeScriptCommand::ScrollTo { .. } => {}
                 NativeScriptCommand::StorageSet { .. }
                 | NativeScriptCommand::StorageRemove { .. }
                 | NativeScriptCommand::StorageClear { .. }
@@ -4467,16 +4571,8 @@ impl NativeDocument {
             inherited_font_style = style.font_style();
             inherited_word_break = style.word_break();
             inherited_text_overflow = style.text_overflow();
-            inherited_overflow_x = if style.overflow_clip_x() {
-                OverflowValue::Clip
-            } else {
-                OverflowValue::Other
-            };
-            inherited_overflow_y = if style.overflow_clip_y() {
-                OverflowValue::Clip
-            } else {
-                OverflowValue::Other
-            };
+            inherited_overflow_x = style.overflow_x();
+            inherited_overflow_y = style.overflow_y();
             inherited_vertical_align = style.vertical_align();
             inherited_text_indent = style.text_indent();
             inherited_word_spacing = style.word_spacing();

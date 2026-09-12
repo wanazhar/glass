@@ -3,13 +3,14 @@ use super::css::{
     AlignContentValue, AlignItemsValue, AlignSelfValue, DirectionValue, DisplayValue,
     FlexBasisValue, FlexDirectionValue, FlexWrapValue, JustifyContentValue, NativeAutoEdges,
     NativeBorderRadius, NativeBoxEdges, NativeComputedStyle, NativeGridTrack, NativeGridTrackList,
-    NativePositionOffset, NativePositionValue, TextAlignLastValue, TextAlignValue,
+    NativePositionOffset, NativePositionValue, OverflowValue, TextAlignLastValue, TextAlignValue,
     TextJustifyValue, TextOverflowValue, TextTransformValue, VerticalAlignValue, WhiteSpaceValue,
     WordBreakValue,
 };
 use super::dom::{NativeDocument, NativeNode, NativeNodeId, NativeNodeKind};
 use super::error::NativeEngineError;
 use super::image::image_dimensions_from_source;
+use std::collections::BTreeMap;
 
 const DEFAULT_LINE_HEIGHT: u32 = 20;
 const DEFAULT_CONTROL_HEIGHT: u32 = 24;
@@ -150,6 +151,38 @@ pub struct NativeLayoutBox {
     pub pointer_events: bool,
 }
 
+/// Layout-backed scroll metrics for one element with bounded overflow.
+/// Coordinates remain in document space; only the scroll offset changes the
+/// projection of descendants into the viewport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NativeScrollContainer {
+    pub(crate) node_id: NativeNodeId,
+    pub(crate) client_width: u32,
+    pub(crate) client_height: u32,
+    pub(crate) scroll_width: u32,
+    pub(crate) scroll_height: u32,
+    pub(crate) scrollable_x: bool,
+    pub(crate) scrollable_y: bool,
+    pub(crate) scroll_offset: NativePoint,
+}
+
+impl NativeScrollContainer {
+    pub(crate) const fn max_scroll_offset(self) -> NativePoint {
+        NativePoint {
+            x: if self.scrollable_x {
+                self.scroll_width.saturating_sub(self.client_width)
+            } else {
+                0
+            },
+            y: if self.scrollable_y {
+                self.scroll_height.saturating_sub(self.client_height)
+            } else {
+                0
+            },
+        }
+    }
+}
+
 /// One bounded direct-text fragment placed by the native flow cursor.
 ///
 /// The `node_id` identifies the containing element that owns the fragment's
@@ -227,6 +260,10 @@ pub struct NativeLayoutSnapshot {
     pub(crate) paint_order: Vec<NativeLayoutPaintOrder>,
     overflow_clips: Vec<Option<NativeRect>>,
     sticky_projections: Vec<NativeStickyProjection>,
+    scroll_containers: Vec<NativeScrollContainer>,
+    nested_scroll_offsets: BTreeMap<u32, NativePoint>,
+    projected_boxes: Vec<NativeRect>,
+    projected_overflow_clips: Vec<Option<NativeRect>>,
 }
 
 impl NativeLayoutSnapshot {
@@ -258,21 +295,34 @@ impl NativeLayoutSnapshot {
             },
         };
         let flow = builder.layout_children(document.root(), 0, 0, viewport.width, 0);
+        let scroll_containers = scroll_containers_for(document, &builder.boxes, &builder.text_runs);
         let max_box_bottom = builder
             .boxes
             .iter()
+            .filter(|layout_box| {
+                !layout_box.fixed
+                    && !has_overflow_clip_ancestor(document, layout_box.node_id, false, false)
+            })
             .map(|layout_box| layout_box.rect.bottom())
             .max()
             .unwrap_or(0);
         let max_box_right = builder
             .boxes
             .iter()
+            .filter(|layout_box| {
+                !layout_box.fixed
+                    && !has_overflow_clip_ancestor(document, layout_box.node_id, false, true)
+            })
             .map(|layout_box| layout_box.rect.right())
             .max()
             .unwrap_or(0);
         let max_text_right = builder
             .text_runs
             .iter()
+            .filter(|text_run| {
+                !text_run.fixed
+                    && !has_overflow_clip_ancestor(document, text_run.node_id, true, true)
+            })
             .filter_map(|text_run| {
                 if text_run.truncated || text_run.text.is_empty() {
                     return None;
@@ -337,6 +387,16 @@ impl NativeLayoutSnapshot {
                 })
             })
             .collect();
+        let projected_boxes = builder
+            .boxes
+            .iter()
+            .map(|layout_box| layout_box.rect)
+            .collect();
+        let projected_overflow_clips = builder
+            .boxes
+            .iter()
+            .map(|layout_box| overflow_clip_for(document, &builder.boxes, layout_box.node_id))
+            .collect();
         Ok(Self {
             revision: document.revision(),
             viewport,
@@ -348,6 +408,10 @@ impl NativeLayoutSnapshot {
             paint_order: builder.paint_order,
             overflow_clips,
             sticky_projections,
+            scroll_containers,
+            nested_scroll_offsets: BTreeMap::new(),
+            projected_boxes,
+            projected_overflow_clips,
         })
     }
 
@@ -363,29 +427,61 @@ impl NativeLayoutSnapshot {
     /// exactly once by viewport consumers.
     pub(crate) fn overflow_clip_for(
         &self,
-        document: &NativeDocument,
+        _document: &NativeDocument,
         node_id: NativeNodeId,
     ) -> Option<NativeRect> {
-        overflow_clip_for(document, &self.boxes, node_id)
+        let box_index = self
+            .boxes
+            .iter()
+            .position(|layout_box| layout_box.node_id == node_id)?;
+        self.projected_overflow_clips
+            .get(box_index)
+            .copied()
+            .flatten()
+    }
+
+    pub(crate) fn scroll_container_for(
+        &self,
+        node_id: NativeNodeId,
+    ) -> Option<NativeScrollContainer> {
+        self.scroll_containers
+            .iter()
+            .find(|container| container.node_id == node_id)
+            .copied()
+    }
+
+    pub(crate) fn nested_scroll_offset_for(
+        &self,
+        document: &NativeDocument,
+        node_id: NativeNodeId,
+        include_self: bool,
+    ) -> NativePoint {
+        nested_scroll_offset_for_node(document, node_id, &self.nested_scroll_offsets, include_self)
     }
 
     /// Return a box projected into the current viewport, clipped at its
     /// visible viewport and bounded overflow edges. The layout box itself
     /// remains in document coordinates.
     pub fn viewport_rect_for(&self, node_id: NativeNodeId) -> Option<NativeRect> {
-        let (box_index, layout_box) = self
+        let (box_index, _) = self
             .boxes
             .iter()
             .enumerate()
             .find(|(_, layout_box)| layout_box.node_id == node_id)?;
         let rect = self
-            .overflow_clips
+            .projected_overflow_clips
             .get(box_index)
             .copied()
             .flatten()
-            .map_or(layout_box.rect, |clip| {
-                intersect_rect(layout_box.rect, clip)
-            });
+            .map_or_else(
+                || self.projected_boxes.get(box_index).copied(),
+                |clip| {
+                    self.projected_boxes
+                        .get(box_index)
+                        .copied()
+                        .map(|rect| intersect_rect(rect, clip))
+                },
+            )?;
         let viewport_left = self.scroll_offset.x;
         let viewport_top = self.scroll_offset.y;
         let viewport_right = viewport_left.saturating_add(self.viewport.width);
@@ -415,6 +511,7 @@ impl NativeLayoutSnapshot {
         mut self,
         document: &NativeDocument,
         scroll_offset: NativePoint,
+        nested_scroll_offsets: &BTreeMap<u32, NativePoint>,
     ) -> Result<Self, NativeEngineError> {
         let max_scroll = self.max_scroll_offset();
         if scroll_offset.x > max_scroll.x {
@@ -429,21 +526,38 @@ impl NativeLayoutSnapshot {
                 "vertical scroll offset exceeds document bounds",
             ));
         }
-        for layout_box in &mut self.boxes {
-            if !layout_box.fixed {
-                continue;
+        let mut resolved_nested_scroll_offsets = BTreeMap::new();
+        for container in &mut self.scroll_containers {
+            let requested = nested_scroll_offsets
+                .get(&container.node_id.index())
+                .copied()
+                .unwrap_or(NativePoint { x: 0, y: 0 });
+            let max_scroll = container.max_scroll_offset();
+            if requested.x > max_scroll.x || requested.y > max_scroll.y {
+                return Err(NativeEngineError::invalid(
+                    "native nested scroll offset",
+                    "scroll offset exceeds the element's scroll bounds",
+                ));
             }
-            layout_box.rect.x = layout_box.rect.x.saturating_add(scroll_offset.x);
-            layout_box.rect.y = layout_box.rect.y.saturating_add(scroll_offset.y);
-            layout_box.content_rect.x = layout_box.content_rect.x.saturating_add(scroll_offset.x);
-            layout_box.content_rect.y = layout_box.content_rect.y.saturating_add(scroll_offset.y);
+            container.scroll_offset = requested;
+            resolved_nested_scroll_offsets.insert(container.node_id.index(), requested);
+        }
+        self.nested_scroll_offsets = resolved_nested_scroll_offsets;
+        for layout_box in &mut self.boxes {
+            if layout_box.fixed {
+                layout_box.rect.x = layout_box.rect.x.saturating_add(scroll_offset.x);
+                layout_box.rect.y = layout_box.rect.y.saturating_add(scroll_offset.y);
+                layout_box.content_rect.x =
+                    layout_box.content_rect.x.saturating_add(scroll_offset.x);
+                layout_box.content_rect.y =
+                    layout_box.content_rect.y.saturating_add(scroll_offset.y);
+            }
         }
         for text_run in &mut self.text_runs {
-            if !text_run.fixed {
-                continue;
+            if text_run.fixed {
+                text_run.origin.x = text_run.origin.x.saturating_add(scroll_offset.x);
+                text_run.origin.y = text_run.origin.y.saturating_add(scroll_offset.y);
             }
-            text_run.origin.x = text_run.origin.x.saturating_add(scroll_offset.x);
-            text_run.origin.y = text_run.origin.y.saturating_add(scroll_offset.y);
         }
         for projection in &self.sticky_projections {
             let delta_x = sticky_axis_delta(
@@ -491,6 +605,36 @@ impl NativeLayoutSnapshot {
             .boxes
             .iter()
             .map(|layout_box| overflow_clip_for(document, &self.boxes, layout_box.node_id))
+            .collect();
+        self.projected_boxes = self
+            .boxes
+            .iter()
+            .map(|layout_box| {
+                if layout_box.fixed {
+                    layout_box.rect
+                } else {
+                    project_rect_for_node(
+                        document,
+                        &self.boxes,
+                        &self.nested_scroll_offsets,
+                        layout_box.node_id,
+                        layout_box.rect,
+                        false,
+                    )
+                }
+            })
+            .collect();
+        self.projected_overflow_clips = self
+            .boxes
+            .iter()
+            .map(|layout_box| {
+                overflow_clip_for_projected(
+                    document,
+                    &self.boxes,
+                    &self.nested_scroll_offsets,
+                    layout_box.node_id,
+                )
+            })
             .collect();
         self.scroll_offset = scroll_offset;
         Ok(self)
@@ -543,7 +687,7 @@ impl NativeLayoutSnapshot {
 
         let mut best: Option<(i32, usize, usize, NativeNodeId)> = None;
         for (order, layout_box) in self.boxes.iter().enumerate() {
-            if let Some(clip) = self.overflow_clips.get(order).copied().flatten()
+            if let Some(clip) = self.projected_overflow_clips.get(order).copied().flatten()
                 && !clip.contains(point)
             {
                 continue;
@@ -551,7 +695,10 @@ impl NativeLayoutSnapshot {
             if !layout_box.pointer_events {
                 continue;
             }
-            if !rounded_rect_contains(layout_box.rect, layout_box.border_radius, point) {
+            let Some(rect) = self.projected_boxes.get(order).copied() else {
+                continue;
+            };
+            if !rounded_rect_contains(rect, layout_box.border_radius, point) {
                 continue;
             }
             let replaces = best.is_none_or(|(best_z_index, best_depth, best_order, _)| {
@@ -569,6 +716,189 @@ impl NativeLayoutSnapshot {
         }
         Ok(best.map(|(_, _, _, node_id)| node_id))
     }
+}
+
+fn is_scroll_container(document: &NativeDocument, node_id: NativeNodeId) -> bool {
+    let style = document.computed_style_for_layout(node_id);
+    style.overflow_clip_x() || style.overflow_clip_y()
+}
+
+fn scrollable_overflow_axis(value: OverflowValue) -> bool {
+    matches!(
+        value,
+        OverflowValue::Hidden | OverflowValue::Auto | OverflowValue::Scroll
+    )
+}
+
+fn nearest_scroll_ancestor(
+    document: &NativeDocument,
+    node_id: NativeNodeId,
+    include_self: bool,
+) -> Option<NativeNodeId> {
+    let mut current = if include_self {
+        Some(node_id)
+    } else {
+        document.node(node_id).and_then(|node| node.parent())
+    };
+    for _ in 0..=MAX_NATIVE_DOM_DEPTH {
+        let current_id = current?;
+        if is_scroll_container(document, current_id) {
+            return Some(current_id);
+        }
+        current = document.node(current_id).and_then(|node| node.parent());
+    }
+    None
+}
+
+fn has_overflow_clip_ancestor(
+    document: &NativeDocument,
+    node_id: NativeNodeId,
+    include_self: bool,
+    horizontal: bool,
+) -> bool {
+    let mut current = if include_self {
+        Some(node_id)
+    } else {
+        document.node(node_id).and_then(|node| node.parent())
+    };
+    for _ in 0..=MAX_NATIVE_DOM_DEPTH {
+        let Some(current_id) = current else {
+            break;
+        };
+        let style = document.computed_style_for_layout(current_id);
+        if if horizontal {
+            style.overflow_clip_x()
+        } else {
+            style.overflow_clip_y()
+        } {
+            return true;
+        }
+        current = document.node(current_id).and_then(|node| node.parent());
+    }
+    false
+}
+
+fn nested_scroll_offset_for_node(
+    document: &NativeDocument,
+    node_id: NativeNodeId,
+    offsets: &BTreeMap<u32, NativePoint>,
+    include_self: bool,
+) -> NativePoint {
+    let mut current = if include_self {
+        Some(node_id)
+    } else {
+        document.node(node_id).and_then(|node| node.parent())
+    };
+    let mut offset = NativePoint { x: 0, y: 0 };
+    for _ in 0..=MAX_NATIVE_DOM_DEPTH {
+        let Some(current_id) = current else {
+            break;
+        };
+        if is_scroll_container(document, current_id)
+            && let Some(current_offset) = offsets.get(&current_id.index())
+        {
+            offset.x = offset.x.saturating_add(current_offset.x);
+            offset.y = offset.y.saturating_add(current_offset.y);
+        }
+        current = document.node(current_id).and_then(|node| node.parent());
+    }
+    offset
+}
+
+fn project_rect_for_node(
+    document: &NativeDocument,
+    boxes: &[NativeLayoutBox],
+    offsets: &BTreeMap<u32, NativePoint>,
+    node_id: NativeNodeId,
+    rect: NativeRect,
+    include_self: bool,
+) -> NativeRect {
+    let nested_offset = boxes
+        .iter()
+        .find(|layout_box| layout_box.node_id == node_id)
+        .filter(|layout_box| !layout_box.fixed)
+        .map_or(NativePoint { x: 0, y: 0 }, |_| {
+            nested_scroll_offset_for_node(document, node_id, offsets, include_self)
+        });
+    let left = i64::from(rect.x).saturating_sub(i64::from(nested_offset.x));
+    let top = i64::from(rect.y).saturating_sub(i64::from(nested_offset.y));
+    let right = i64::from(rect.right()).saturating_sub(i64::from(nested_offset.x));
+    let bottom = i64::from(rect.bottom()).saturating_sub(i64::from(nested_offset.y));
+    let visible_left = left.max(0);
+    let visible_top = top.max(0);
+    let visible_right = right.max(0);
+    let visible_bottom = bottom.max(0);
+    NativeRect {
+        x: u32::try_from(visible_left).unwrap_or(u32::MAX),
+        y: u32::try_from(visible_top).unwrap_or(u32::MAX),
+        width: u32::try_from(visible_right.saturating_sub(visible_left)).unwrap_or(u32::MAX),
+        height: u32::try_from(visible_bottom.saturating_sub(visible_top)).unwrap_or(u32::MAX),
+    }
+}
+
+fn scroll_containers_for(
+    document: &NativeDocument,
+    boxes: &[NativeLayoutBox],
+    text_runs: &[NativeTextLayout],
+) -> Vec<NativeScrollContainer> {
+    boxes
+        .iter()
+        .filter_map(|container_box| {
+            let style = document.computed_style_for_layout(container_box.node_id);
+            if !is_scroll_container(document, container_box.node_id) {
+                return None;
+            }
+            let mut scroll_width = container_box.rect.width;
+            let mut scroll_height = container_box.rect.height;
+            for child_box in boxes.iter().filter(|child_box| {
+                child_box.node_id != container_box.node_id
+                    && !child_box.fixed
+                    && nearest_scroll_ancestor(document, child_box.node_id, false)
+                        == Some(container_box.node_id)
+            }) {
+                scroll_width =
+                    scroll_width.max(child_box.rect.right().saturating_sub(container_box.rect.x));
+                scroll_height =
+                    scroll_height.max(child_box.rect.bottom().saturating_sub(container_box.rect.y));
+            }
+            for text_run in text_runs.iter().filter(|text_run| {
+                !text_run.fixed
+                    && nearest_scroll_ancestor(document, text_run.node_id, true)
+                        == Some(container_box.node_id)
+            }) {
+                let text_width = LayoutBuilder::text_width_with_justification(
+                    &text_run.text,
+                    style.letter_spacing(),
+                    style.word_spacing(),
+                    text_run.justify_spacing,
+                );
+                scroll_width = scroll_width.max(
+                    text_run
+                        .origin
+                        .x
+                        .saturating_add(text_width)
+                        .saturating_sub(container_box.rect.x),
+                );
+                scroll_height = scroll_height.max(
+                    text_run
+                        .origin
+                        .y
+                        .saturating_add(DEFAULT_LINE_HEIGHT)
+                        .saturating_sub(container_box.rect.y),
+                );
+            }
+            Some(NativeScrollContainer {
+                node_id: container_box.node_id,
+                client_width: container_box.rect.width,
+                client_height: container_box.rect.height,
+                scroll_width,
+                scroll_height,
+                scrollable_x: scrollable_overflow_axis(style.overflow_x()),
+                scrollable_y: scrollable_overflow_axis(style.overflow_y()),
+                scroll_offset: NativePoint { x: 0, y: 0 },
+            })
+        })
+        .collect()
 }
 
 fn fixed_layout_root(
@@ -599,6 +929,24 @@ fn overflow_clip_for(
     boxes: &[NativeLayoutBox],
     node_id: NativeNodeId,
 ) -> Option<NativeRect> {
+    overflow_clip_for_with_offsets(document, boxes, node_id, None)
+}
+
+fn overflow_clip_for_projected(
+    document: &NativeDocument,
+    boxes: &[NativeLayoutBox],
+    offsets: &BTreeMap<u32, NativePoint>,
+    node_id: NativeNodeId,
+) -> Option<NativeRect> {
+    overflow_clip_for_with_offsets(document, boxes, node_id, Some(offsets))
+}
+
+fn overflow_clip_for_with_offsets(
+    document: &NativeDocument,
+    boxes: &[NativeLayoutBox],
+    node_id: NativeNodeId,
+    offsets: Option<&BTreeMap<u32, NativePoint>>,
+) -> Option<NativeRect> {
     let fixed_root = fixed_layout_root(document, boxes, node_id);
     let mut current = Some(node_id);
     let mut clip = None;
@@ -611,7 +959,18 @@ fn overflow_clip_for(
             && let Some(rect) = boxes
                 .iter()
                 .find(|layout_box| layout_box.node_id == current_id)
-                .map(|layout_box| layout_box.rect)
+                .map(|layout_box| {
+                    offsets.map_or(layout_box.rect, |offsets| {
+                        project_rect_for_node(
+                            document,
+                            boxes,
+                            offsets,
+                            current_id,
+                            layout_box.rect,
+                            false,
+                        )
+                    })
+                })
         {
             let axis_clip = NativeRect {
                 x: if style.overflow_clip_x() { rect.x } else { 0 },
@@ -637,16 +996,20 @@ fn overflow_clip_for(
         }
         current = document.node(current_id).and_then(|node| node.parent());
     }
-    match (clip, svg_viewport_clip_for(document, boxes, node_id)) {
+    match (
+        clip,
+        svg_viewport_clip_for_with_offsets(document, boxes, node_id, offsets),
+    ) {
         (Some(first), Some(second)) => Some(intersect_rect(first, second)),
         (first, second) => first.or(second),
     }
 }
 
-fn svg_viewport_clip_for(
+fn svg_viewport_clip_for_with_offsets(
     document: &NativeDocument,
     boxes: &[NativeLayoutBox],
     node_id: NativeNodeId,
+    offsets: Option<&BTreeMap<u32, NativePoint>>,
 ) -> Option<NativeRect> {
     let mut current = document.node(node_id).and_then(|node| node.parent());
     let mut clip = None;
@@ -661,7 +1024,18 @@ fn svg_viewport_clip_for(
             && let Some(rect) = boxes
                 .iter()
                 .find(|layout_box| layout_box.node_id == current_id)
-                .map(|layout_box| layout_box.rect)
+                .map(|layout_box| {
+                    offsets.map_or(layout_box.rect, |offsets| {
+                        project_rect_for_node(
+                            document,
+                            boxes,
+                            offsets,
+                            current_id,
+                            layout_box.rect,
+                            false,
+                        )
+                    })
+                })
         {
             clip = Some(match clip {
                 Some(existing) => intersect_rect(existing, rect),
@@ -2026,8 +2400,13 @@ impl<'a> LayoutBuilder<'a> {
                             let margin = style.margin();
                             let available_width =
                                 flow.available_width.saturating_sub(margin.horizontal());
-                            let candidate_width =
-                                self.outer_width(child, style, false, available_width, true);
+                            let candidate_width = self.outer_width(
+                                child,
+                                style,
+                                false,
+                                available_width,
+                                !self.explicit_width_can_overflow(child),
+                            );
                             let candidate_width =
                                 candidate_width.saturating_add(margin.horizontal());
                             let separator_width =
@@ -2099,6 +2478,27 @@ impl<'a> LayoutBuilder<'a> {
         )
     }
 
+    fn explicit_width_can_overflow(&self, id: NativeNodeId) -> bool {
+        let mut current = self.document.node(id).and_then(|node| node.parent());
+        for _ in 0..=MAX_NATIVE_DOM_DEPTH {
+            let Some(current_id) = current else {
+                break;
+            };
+            let style = self.document.computed_style_for_layout(current_id);
+            if matches!(
+                style.overflow_x(),
+                OverflowValue::Auto | OverflowValue::Scroll
+            ) {
+                return true;
+            }
+            current = self
+                .document
+                .node(current_id)
+                .and_then(|node| node.parent());
+        }
+        false
+    }
+
     fn positioned_children(&self, parent: NativeNodeId) -> Vec<NativeNodeId> {
         self.document
             .node(parent)
@@ -2149,7 +2549,7 @@ impl<'a> LayoutBuilder<'a> {
                 style,
                 is_block,
                 available_width,
-                style.width().is_none(),
+                !self.explicit_width_can_overflow(child),
             );
             let box_start = self.boxes.len();
             let text_start = self.text_runs.len();
@@ -2280,9 +2680,15 @@ impl<'a> LayoutBuilder<'a> {
         let bottom_inset = border_bottom.saturating_add(padding.bottom());
         let horizontal_inset = left_inset.saturating_add(right_inset);
         let vertical_inset = top_inset.saturating_add(bottom_inset);
-        let width = forced_outer_size
-            .width
-            .unwrap_or_else(|| self.outer_width(id, style, is_block, available_width, true));
+        let width = forced_outer_size.width.unwrap_or_else(|| {
+            self.outer_width(
+                id,
+                style,
+                is_block,
+                available_width,
+                !self.explicit_width_can_overflow(id),
+            )
+        });
         let minimum_line_height = style.line_height().unwrap_or(DEFAULT_LINE_HEIGHT);
         let default_content_height = if is_block {
             minimum_line_height
@@ -2833,7 +3239,13 @@ impl<'a> LayoutBuilder<'a> {
             let item_width = if child_style.width().is_none() {
                 available_item_width
             } else {
-                self.outer_width(child, child_style, false, available_item_width, true)
+                self.outer_width(
+                    child,
+                    child_style,
+                    false,
+                    available_item_width,
+                    !self.explicit_width_can_overflow(child),
+                )
             };
             let box_start = self.boxes.len();
             let text_start = self.text_runs.len();
@@ -3463,7 +3875,13 @@ impl<'a> LayoutBuilder<'a> {
                         continue;
                     }
                     let margin = style.margin();
-                    let width = self.outer_width(child, style, false, available_width, true);
+                    let width = self.outer_width(
+                        child,
+                        style,
+                        false,
+                        available_width,
+                        !self.explicit_width_can_overflow(child),
+                    );
                     let height = self.flex_item_base_height(child, style);
                     let min_width = style
                         .min_width()
@@ -4172,7 +4590,13 @@ impl<'a> LayoutBuilder<'a> {
                         continue;
                     }
                     let margin = style.margin();
-                    let width = self.outer_width(child, style, false, available_width, true);
+                    let width = self.outer_width(
+                        child,
+                        style,
+                        false,
+                        available_width,
+                        !self.explicit_width_can_overflow(child),
+                    );
                     let height = self.flex_item_base_height(child, style);
                     let min_width = style
                         .min_width()
@@ -4757,7 +5181,13 @@ impl<'a> LayoutBuilder<'a> {
         wrapped: bool,
     ) -> u32 {
         match style.flex_basis() {
-            FlexBasisValue::Auto => self.outer_width(id, style, false, available_width, !wrapped),
+            FlexBasisValue::Auto => self.outer_width(
+                id,
+                style,
+                false,
+                available_width,
+                !wrapped && !self.explicit_width_can_overflow(id),
+            ),
             FlexBasisValue::Length(declared) => {
                 let width = outer_width_from_declared(style, declared);
                 let min_width = style

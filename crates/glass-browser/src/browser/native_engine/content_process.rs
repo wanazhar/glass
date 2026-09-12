@@ -1,7 +1,7 @@
 use super::browsing_context::NATIVE_CONTEXT_ID;
 use super::config::{
-    NativeEngineLimits, Viewport, is_network_url, validate_context_id, validate_url_text,
-    validate_window_name, without_fragment,
+    MAX_NATIVE_NODES, NativeEngineLimits, Viewport, is_network_url, validate_context_id,
+    validate_url_text, validate_window_name, without_fragment,
 };
 use super::dom::{
     NativeDocument, NativeDocumentWire, NativeNodeId, NativePageScriptSource,
@@ -49,7 +49,7 @@ use url::Url;
 
 const MAX_CONTENT_IPC_FRAME_BYTES: usize = 4 * 1024 * 1024;
 const MAX_CONTENT_DOCUMENT_WIRE_BYTES: usize = 2 * 1024 * 1024;
-const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 7;
+const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 8;
 const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTENT_PROCESS_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -64,6 +64,7 @@ pub(crate) struct NativeContentLoad {
     pub(crate) document: NativeDocumentWire,
     pub(crate) frame_sources: Option<Vec<String>>,
     pub(crate) events: Vec<NativeContentEvent>,
+    pub(crate) scroll_commands: Vec<NativeScriptCommand>,
     pub(crate) navigation: Option<NativeContentNavigation>,
     pub(crate) storage_events: Vec<NativeStorageEvent>,
     pub(crate) indexed_db_changes: Vec<NativeIndexedDbChange>,
@@ -96,6 +97,7 @@ pub(crate) struct NativeContentMutation {
     pub(crate) navigation: Option<NativeContentNavigation>,
     pub(crate) allowed: bool,
     pub(crate) history: Vec<NativeScriptCommand>,
+    pub(crate) scroll_commands: Vec<NativeScriptCommand>,
     pub(crate) storage_events: Vec<NativeStorageEvent>,
     pub(crate) indexed_db_changes: Vec<NativeIndexedDbChange>,
     pub(crate) dialogs: Vec<NativeDialog>,
@@ -131,6 +133,7 @@ pub(crate) struct NativeContentProcess {
     healthy: bool,
     failure_kind: Option<NativeWorkerFailureKind>,
     scroll_offset: NativePoint,
+    nested_scroll_offsets: BTreeMap<u32, NativePoint>,
     #[cfg(windows)]
     sandbox: NativeContentSandbox,
 }
@@ -191,6 +194,7 @@ impl NativeContentProcess {
             healthy: true,
             failure_kind: None,
             scroll_offset: NativePoint { x: 0, y: 0 },
+            nested_scroll_offsets: BTreeMap::new(),
             #[cfg(windows)]
             sandbox,
         };
@@ -242,6 +246,10 @@ impl NativeContentProcess {
             }))
             .await?;
         let result = require_response_kind(&response, "started", id, "content process start");
+        if result.is_ok() {
+            self.scroll_offset = NativePoint { x: 0, y: 0 };
+            self.nested_scroll_offsets.clear();
+        }
         if result.is_err() {
             self.mark_failed(NativeWorkerFailureKind::Protocol);
             let _ = self.child.start_kill();
@@ -631,6 +639,61 @@ impl NativeContentProcess {
             let _ = self.child.start_kill();
         } else {
             self.scroll_offset = scroll_offset;
+        }
+        result
+    }
+
+    pub(crate) async fn sync_nested_scroll_offsets(
+        &mut self,
+        offsets: &BTreeMap<u32, NativePoint>,
+    ) -> Result<(), NativeEngineError> {
+        if &self.nested_scroll_offsets == offsets {
+            return Ok(());
+        }
+        let id = self.next_id();
+        let nested = offsets
+            .iter()
+            .map(|(node_index, offset)| {
+                json!({
+                    "node_index": node_index,
+                    "x": offset.x,
+                    "y": offset.y,
+                })
+            })
+            .collect::<Vec<_>>();
+        let response = match timeout(
+            CONTENT_PROCESS_SCRIPT_TIMEOUT,
+            self.exchange(json!({
+                "kind": "scroll_sync",
+                "id": id,
+                "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
+                "nested": nested,
+            })),
+        )
+        .await
+        {
+            Ok(response) => response?,
+            Err(_) => {
+                self.mark_failed(NativeWorkerFailureKind::Timeout);
+                let _ = self.child.start_kill();
+                return Err(NativeEngineError::worker_failure(
+                    "content process nested scroll synchronization",
+                    NativeWorkerFailureKind::Timeout,
+                    "content process nested scroll synchronization exceeded its deadline",
+                ));
+            }
+        };
+        let result = require_response_kind(
+            &response,
+            "scroll_synced",
+            id,
+            "content process nested scroll synchronization",
+        );
+        if result.is_err() {
+            self.mark_failed(NativeWorkerFailureKind::InvalidTransfer);
+            let _ = self.child.start_kill();
+        } else {
+            self.nested_scroll_offsets = offsets.clone();
         }
         result
     }
@@ -1205,6 +1268,7 @@ fn decode_loaded_response(
     }
     let document = decode_document_wire(&document_bytes, "decode content process load")?;
     let events = decode_event_payload(response, "decode content process load")?;
+    let scroll_commands = decode_scroll_commands(response, "decode content process load")?;
     let origin_url =
         url::Url::parse(without_fragment(url)).map_err(|_| NativeEngineError::Worker {
             operation: "decode content process load".into(),
@@ -1232,6 +1296,7 @@ fn decode_loaded_response(
         document,
         frame_sources,
         events,
+        scroll_commands,
         navigation,
         storage_events,
         indexed_db_changes,
@@ -1490,6 +1555,7 @@ fn decode_mutation_payload(
     let window_navigations = decode_window_navigation_requests(response, operation)?;
     let window_name = decode_window_name(response, operation)?;
     let history = decode_mutation_history(response, operation)?;
+    let scroll_commands = decode_scroll_commands(response, operation)?;
     Ok(NativeContentMutation {
         document,
         events,
@@ -1499,6 +1565,7 @@ fn decode_mutation_payload(
             .and_then(Value::as_bool)
             .unwrap_or(true),
         history,
+        scroll_commands,
         storage_events,
         indexed_db_changes,
         dialogs,
@@ -1508,6 +1575,53 @@ fn decode_mutation_payload(
         window_navigations,
         window_name,
     })
+}
+
+fn decode_scroll_commands(
+    response: &Value,
+    operation: &str,
+) -> Result<Vec<NativeScriptCommand>, NativeEngineError> {
+    let Some(value) = response.get("scroll_commands") else {
+        return Ok(Vec::new());
+    };
+    let values = value.as_array().ok_or_else(|| NativeEngineError::Worker {
+        operation: operation.into(),
+        reason: "content process returned invalid scroll commands".into(),
+    })?;
+    if values.len() > MAX_NATIVE_EFFECTS {
+        return Err(NativeEngineError::limit(
+            "content-process scroll commands",
+            MAX_NATIVE_EFFECTS,
+            values.len(),
+        ));
+    }
+    let commands =
+        serde_json::from_value::<Vec<NativeScriptCommand>>(value.clone()).map_err(|_| {
+            NativeEngineError::Worker {
+                operation: operation.into(),
+                reason: "content process returned malformed scroll commands".into(),
+            }
+        })?;
+    for command in &commands {
+        let NativeScriptCommand::ScrollTo {
+            node_index,
+            left,
+            top,
+        } = command
+        else {
+            return Err(NativeEngineError::Worker {
+                operation: operation.into(),
+                reason: "content process returned a non-scroll command in scroll_commands".into(),
+            });
+        };
+        if *node_index == u32::MAX || *left < 0 || *top < 0 {
+            return Err(NativeEngineError::Worker {
+                operation: operation.into(),
+                reason: "content process returned an invalid scroll target or offset".into(),
+            });
+        }
+    }
+    Ok(commands)
 }
 
 fn decode_history_commands(
@@ -2392,6 +2506,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut document_origin = None;
     let mut viewport = Viewport::default();
     let mut scroll_offset = NativePoint { x: 0, y: 0 };
+    let mut nested_scroll_offsets = BTreeMap::new();
     let mut resource_loader = None;
     let mut javascript_runtime: Option<NativeJavaScriptRuntime> = None;
     let mut storage_state = NativeWebStorageState::default();
@@ -2505,6 +2620,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         opener_url = requested_opener_url.to_owned();
                         frame_script_context = requested_frame_context;
                         scroll_offset = NativePoint { x: 0, y: 0 };
+                        nested_scroll_offsets.clear();
                         running = true;
                         json!({"kind":"started","id":id})
                     }
@@ -2515,29 +2631,91 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 json!({"kind":"committed","id":id})
             }
             "scroll_sync" if protocol_matches(&request) && running => {
-                let x = request
-                    .get("x")
-                    .and_then(Value::as_u64)
-                    .and_then(|value| u32::try_from(value).ok())
-                    .ok_or_else(|| {
+                if request.get("x").is_some() || request.get("y").is_some() {
+                    let x = request
+                        .get("x")
+                        .and_then(Value::as_u64)
+                        .and_then(|value| u32::try_from(value).ok())
+                        .ok_or_else(|| {
+                            NativeEngineError::invalid(
+                                "content-process scroll x",
+                                "must be a non-negative integer",
+                            )
+                        })?;
+                    let y = request
+                        .get("y")
+                        .and_then(Value::as_u64)
+                        .and_then(|value| u32::try_from(value).ok())
+                        .ok_or_else(|| {
+                            NativeEngineError::invalid(
+                                "content-process scroll y",
+                                "must be a non-negative integer",
+                            )
+                        })?;
+                    scroll_offset = NativePoint { x, y };
+                }
+                if let Some(value) = request.get("nested") {
+                    let entries = value.as_array().ok_or_else(|| {
                         NativeEngineError::invalid(
-                            "content-process scroll x",
-                            "must be a non-negative integer",
+                            "content-process nested scroll offsets",
+                            "must be an array",
                         )
                     })?;
-                let y = request
-                    .get("y")
-                    .and_then(Value::as_u64)
-                    .and_then(|value| u32::try_from(value).ok())
-                    .ok_or_else(|| {
-                        NativeEngineError::invalid(
-                            "content-process scroll y",
-                            "must be a non-negative integer",
-                        )
-                    })?;
-                scroll_offset = NativePoint { x, y };
+                    if entries.len() > MAX_NATIVE_NODES {
+                        return Err(NativeEngineError::limit(
+                            "content-process nested scroll offsets",
+                            MAX_NATIVE_NODES,
+                            entries.len(),
+                        ));
+                    }
+                    let mut next_offsets = BTreeMap::new();
+                    for entry in entries {
+                        let node_index = entry
+                            .get("node_index")
+                            .and_then(Value::as_u64)
+                            .and_then(|value| u32::try_from(value).ok())
+                            .ok_or_else(|| {
+                                NativeEngineError::invalid(
+                                    "content-process nested scroll node",
+                                    "must be a non-negative integer",
+                                )
+                            })?;
+                        let x = entry
+                            .get("x")
+                            .and_then(Value::as_u64)
+                            .and_then(|value| u32::try_from(value).ok())
+                            .ok_or_else(|| {
+                                NativeEngineError::invalid(
+                                    "content-process nested scroll x",
+                                    "must be a non-negative integer",
+                                )
+                            })?;
+                        let y = entry
+                            .get("y")
+                            .and_then(Value::as_u64)
+                            .and_then(|value| u32::try_from(value).ok())
+                            .ok_or_else(|| {
+                                NativeEngineError::invalid(
+                                    "content-process nested scroll y",
+                                    "must be a non-negative integer",
+                                )
+                            })?;
+                        next_offsets.insert(node_index, NativePoint { x, y });
+                    }
+                    nested_scroll_offsets = next_offsets;
+                }
+                if request.get("x").is_none()
+                    && request.get("y").is_none()
+                    && request.get("nested").is_none()
+                {
+                    return Err(NativeEngineError::invalid(
+                        "content-process scroll synchronization",
+                        "must contain a root or nested scroll state",
+                    ));
+                }
                 if let Some(runtime) = javascript_runtime.as_ref() {
                     runtime.set_scroll_offset(scroll_offset);
+                    runtime.set_nested_scroll_offsets(nested_scroll_offsets.clone());
                 }
                 json!({"kind":"scroll_synced","id":id})
             }
@@ -2751,6 +2929,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             runtime.set_frame_script_context(frame_script_context.clone());
                             runtime.set_frame_script_bindings(frame_script_bindings.clone());
                             runtime.set_scroll_offset(scroll_offset);
+                            runtime.set_nested_scroll_offsets(nested_scroll_offsets.clone());
                         }
                         let document_cookie = resource_loader
                             .as_ref()
@@ -2774,6 +2953,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             Ok(page_scripts) if page_scripts.navigation.is_some() => {
                                 let dialogs = page_scripts.dialogs;
                                 let events = page_scripts.events;
+                                let scroll_commands = page_scripts.scroll_commands;
                                 let navigation = page_scripts.navigation.map(|navigation| {
                                     NativeContentNavigation {
                                         node_index: 0,
@@ -2783,14 +2963,19 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                         replace_history: navigation.replace_history,
                                     }
                                 });
-                                Ok((parsed, navigation, dialogs, events))
+                                Ok((parsed, navigation, dialogs, events, scroll_commands))
                             }
-                            Ok(page_scripts) if page_scripts.pending_fetches.is_empty() => {
-                                Ok((parsed, None, page_scripts.dialogs, page_scripts.events))
-                            }
+                            Ok(page_scripts) if page_scripts.pending_fetches.is_empty() => Ok((
+                                parsed,
+                                None,
+                                page_scripts.dialogs,
+                                page_scripts.events,
+                                page_scripts.scroll_commands,
+                            )),
                             Ok(page_scripts) => {
                                 let page_dialogs = page_scripts.dialogs;
                                 let mut page_events = page_scripts.events;
+                                let mut page_scroll_commands = page_scripts.scroll_commands;
                                 match (script_runtime.as_ref(), resource_loader.as_mut()) {
                                     (Some(runtime), Some(loader)) => {
                                         match resolve_script_fetches(
@@ -2813,11 +2998,14 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                                         (event.node_index, event.kind)
                                                     }),
                                                 );
+                                                page_scroll_commands
+                                                    .extend(mutation.scroll_commands);
                                                 Ok((
                                                     next,
                                                     mutation.navigation,
                                                     page_dialogs,
                                                     page_events,
+                                                    page_scroll_commands,
                                                 ))
                                             }
                                             Err(error) => Err(error),
@@ -2832,7 +3020,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             Err(error) => Err(error),
                         };
                         match prepared {
-                            Ok((parsed, navigation, dialogs, events)) => {
+                            Ok((parsed, navigation, dialogs, events, scroll_commands)) => {
                                 if let Some(runtime) = script_runtime.as_ref() {
                                     storage_state = runtime.storage_state();
                                     indexed_db_state.replace_origin(
@@ -2862,6 +3050,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                         "node_index": node_index,
                                         "kind": event_kind_text(*kind),
                                     })).collect::<Vec<_>>(),
+                                    "scroll_commands": scroll_commands,
                                     "frame_sources": resource.frame_sources,
                                     "document_base64": base64::engine::general_purpose::STANDARD
                                         .encode(serde_json::to_vec(&document_wire).unwrap_or_default()),
@@ -2963,6 +3152,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             runtime.set_frame_script_context(frame_script_context.clone());
                             runtime.set_frame_script_bindings(frame_script_bindings.clone());
                             runtime.set_scroll_offset(scroll_offset);
+                            runtime.set_nested_scroll_offsets(nested_scroll_offsets.clone());
                             javascript_runtime = Some(runtime);
                         }
                         Err(error) => {
@@ -2974,6 +3164,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 }
                 let runtime = javascript_runtime.as_ref().expect("runtime initialized");
                 runtime.set_scroll_offset(scroll_offset);
+                runtime.set_nested_scroll_offsets(nested_scroll_offsets.clone());
                 let Some(committed_url) = document_url.clone() else {
                     let response = content_error_response(
                         id,
@@ -3102,6 +3293,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                     "value": value,
                                     "history": history,
                                     "mutation_history": mutation.history,
+                                    "scroll_commands": mutation.scroll_commands,
                                     "frame_scripts": frame_scripts,
                                     "document_base64": base64::engine::general_purpose::STANDARD
                                         .encode(serde_json::to_vec(&mutation.document).unwrap_or_default()),
@@ -3210,6 +3402,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             "id": id,
                             "allowed": mutation.allowed,
                             "mutation_history": mutation.history,
+                            "scroll_commands": mutation.scroll_commands,
                             "document_base64": base64::engine::general_purpose::STANDARD
                                 .encode(serde_json::to_vec(&mutation.document).unwrap_or_default()),
                             "events": mutation.events.iter().map(|event| json!({
@@ -3319,6 +3512,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             "kind": "mutated",
                             "id": id,
                             "mutation_history": mutation.history,
+                            "scroll_commands": mutation.scroll_commands,
                             "document_base64": base64::engine::general_purpose::STANDARD
                                 .encode(serde_json::to_vec(&mutation.document).unwrap_or_default()),
                             "events": mutation.events.iter().map(|event| json!({
@@ -3444,6 +3638,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             "kind": "mutated",
                             "id": id,
                             "mutation_history": mutation.history,
+                            "scroll_commands": mutation.scroll_commands,
                             "document_base64": base64::engine::general_purpose::STANDARD
                                 .encode(serde_json::to_vec(&mutation.document).unwrap_or_default()),
                             "events": mutation.events.iter().map(|event| json!({
@@ -3609,6 +3804,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             "kind": "mutated",
                             "id": id,
                             "mutation_history": mutation.history,
+                            "scroll_commands": mutation.scroll_commands,
                             "document_base64": base64::engine::general_purpose::STANDARD
                                 .encode(serde_json::to_vec(&mutation.document).unwrap_or_default()),
                             "events": mutation.events.iter().map(|event| json!({
@@ -3684,6 +3880,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             "id": id,
                             "allowed": allowed,
                             "mutation_history": mutation.history,
+                            "scroll_commands": mutation.scroll_commands,
                             "document_base64": base64::engine::general_purpose::STANDARD
                                 .encode(serde_json::to_vec(&mutation.document).unwrap_or_default()),
                             "events": mutation.events.iter().map(|event| json!({
@@ -3797,6 +3994,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             "kind": "mutated",
                             "id": id,
                             "mutation_history": mutation.history,
+                            "scroll_commands": mutation.scroll_commands,
                             "document_base64": base64::engine::general_purpose::STANDARD
                                 .encode(serde_json::to_vec(&mutation.document).unwrap_or_default()),
                             "events": mutation.events.iter().map(|event| json!({
@@ -3890,6 +4088,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             "kind": "mutated",
                             "id": id,
                             "mutation_history": mutation.history,
+                            "scroll_commands": mutation.scroll_commands,
                             "document_base64": base64::engine::general_purpose::STANDARD
                                 .encode(serde_json::to_vec(&mutation.document).unwrap_or_default()),
                             "events": mutation.events.iter().map(|event| json!({
@@ -4399,6 +4598,7 @@ async fn load_content_resource(
                     kind: *kind,
                 })
                 .collect(),
+            scroll_commands: Vec::new(),
             navigation: None,
             storage_events: Vec::new(),
             indexed_db_changes: Vec::new(),
@@ -4667,6 +4867,7 @@ fn mutate_click_with_event_preflight(
     let node_id = NativeNodeId::from_parts(current.generation(), node_index);
     let mut next = current.clone();
     let mut history = Vec::new();
+    let mut scroll_commands = Vec::new();
     let mut events = next.apply_script_focus(node_id)?;
     let focus_metadata = events
         .iter()
@@ -4682,6 +4883,7 @@ fn mutate_click_with_event_preflight(
             runtime,
             &mut history,
         )?;
+        scroll_commands.extend(extract_scroll_commands(&evaluation.commands));
         events.extend(next.apply_script_commands(&evaluation.commands)?);
     }
 
@@ -4715,6 +4917,7 @@ fn mutate_click_with_event_preflight(
         runtime,
         &mut history,
     )?;
+    scroll_commands.extend(extract_scroll_commands(&click_evaluation.commands));
     events.extend(next.apply_script_commands(&click_evaluation.commands)?);
     let mut navigation = None;
     if click_allowed {
@@ -4732,6 +4935,7 @@ fn mutate_click_with_event_preflight(
                     Some(node_id),
                     &mut events,
                     &mut history,
+                    &mut scroll_commands,
                 )? {
                     navigation = Some(NativeContentNavigation {
                         node_index: form_id.index(),
@@ -4757,12 +4961,23 @@ fn mutate_click_with_event_preflight(
                     &invalid,
                     &mut events,
                     &mut history,
+                    &mut scroll_commands,
                 )?;
             }
         }
     } else {
         events.push((node_id, NativeEventKind::Click));
     }
+    dispatch_scroll_events(
+        &mut next,
+        runtime,
+        document_url,
+        document_origin,
+        viewport,
+        &mut scroll_commands,
+        &mut events,
+        &mut history,
+    )?;
     if events.len() > MAX_NATIVE_EFFECTS {
         return Err(NativeEngineError::limit(
             "content-process click event effects",
@@ -4782,6 +4997,7 @@ fn mutate_click_with_event_preflight(
         navigation,
         allowed: click_allowed,
         history,
+        scroll_commands,
         storage_events: Vec::new(),
         indexed_db_changes: Vec::new(),
         dialogs: Vec::new(),
@@ -4804,6 +5020,7 @@ fn dispatch_submit_event(
     submitter: Option<NativeNodeId>,
     events: &mut Vec<(NativeNodeId, NativeEventKind)>,
     history: &mut Vec<NativeScriptCommand>,
+    scroll_commands: &mut Vec<NativeScriptCommand>,
 ) -> Result<bool, NativeEngineError> {
     let source = host_submit_event_script(form_id.index(), submitter.map(NativeNodeId::index))?
         .ok_or_else(|| NativeEngineError::Worker {
@@ -4819,6 +5036,7 @@ fn dispatch_submit_event(
         runtime,
         history,
     )?;
+    scroll_commands.extend(extract_scroll_commands(&evaluation.commands));
     let allowed = evaluation
         .value
         .as_array()
@@ -4842,6 +5060,7 @@ fn dispatch_invalid_events(
     invalid: &[NativeNodeId],
     events: &mut Vec<(NativeNodeId, NativeEventKind)>,
     history: &mut Vec<NativeScriptCommand>,
+    scroll_commands: &mut Vec<NativeScriptCommand>,
 ) -> Result<(), NativeEngineError> {
     let metadata = invalid
         .iter()
@@ -4859,6 +5078,7 @@ fn dispatch_invalid_events(
         runtime,
         history,
     )?;
+    scroll_commands.extend(extract_scroll_commands(&evaluation.commands));
     events.extend(
         invalid
             .iter()
@@ -4881,6 +5101,7 @@ fn mutate_type_with_event_bridge(
     let node_id = NativeNodeId::from_parts(current.generation(), node_index);
     let mut next = current.clone();
     let mut history = Vec::new();
+    let mut scroll_commands = Vec::new();
     let mut events = next.apply_type(node_id, text)?;
     let default_events = events.clone();
     for (event_node, event_kind) in default_events {
@@ -4897,6 +5118,7 @@ fn mutate_type_with_event_bridge(
             runtime,
             &mut history,
         )?;
+        scroll_commands.extend(extract_scroll_commands(&evaluation.commands));
         events.extend(next.apply_script_commands(&evaluation.commands)?);
         if events.len() > MAX_NATIVE_EFFECTS {
             return Err(NativeEngineError::limit(
@@ -4906,6 +5128,16 @@ fn mutate_type_with_event_bridge(
             ));
         }
     }
+    dispatch_scroll_events(
+        &mut next,
+        runtime,
+        document_url,
+        document_origin,
+        viewport,
+        &mut scroll_commands,
+        &mut events,
+        &mut history,
+    )?;
     let mutation = NativeContentMutation {
         document: next.to_content_wire(),
         events: events
@@ -4918,6 +5150,7 @@ fn mutate_type_with_event_bridge(
         navigation: None,
         allowed: true,
         history,
+        scroll_commands,
         storage_events: Vec::new(),
         indexed_db_changes: Vec::new(),
         dialogs: Vec::new(),
@@ -4947,6 +5180,7 @@ fn mutate_form_action_with_event_bridge(
     let node_id = NativeNodeId::from_parts(current.generation(), node_index);
     let mut next = current.clone();
     let mut history = Vec::new();
+    let mut scroll_commands = Vec::new();
     let mut events = match action {
         NativeFormAction::Clear => next.apply_clear(node_id)?,
         NativeFormAction::Select(value) => next.apply_select(node_id, &value)?,
@@ -4966,6 +5200,7 @@ fn mutate_form_action_with_event_bridge(
             runtime,
             &mut history,
         )?;
+        scroll_commands.extend(extract_scroll_commands(&evaluation.commands));
         events.extend(next.apply_script_commands(&evaluation.commands)?);
         if events.len() > MAX_NATIVE_EFFECTS {
             return Err(NativeEngineError::limit(
@@ -4975,6 +5210,16 @@ fn mutate_form_action_with_event_bridge(
             ));
         }
     }
+    dispatch_scroll_events(
+        &mut next,
+        runtime,
+        document_url,
+        document_origin,
+        viewport,
+        &mut scroll_commands,
+        &mut events,
+        &mut history,
+    )?;
     let mutation = NativeContentMutation {
         document: next.to_content_wire(),
         events: events
@@ -4987,6 +5232,7 @@ fn mutate_form_action_with_event_bridge(
         navigation: None,
         allowed: true,
         history,
+        scroll_commands,
         storage_events: Vec::new(),
         indexed_db_changes: Vec::new(),
         dialogs: Vec::new(),
@@ -5017,6 +5263,7 @@ fn mutate_key_with_event_bridge(
     }
     let mut next = current.clone();
     let mut history = Vec::new();
+    let mut scroll_commands = Vec::new();
     let mut events = vec![(node_id, NativeEventKind::KeyDown)];
     let keydown_source = host_key_event_script(node_index, NativeEventKind::KeyDown, key)?
         .ok_or_else(|| NativeEngineError::Worker {
@@ -5037,6 +5284,7 @@ fn mutate_key_with_event_bridge(
         runtime,
         &mut history,
     )?;
+    scroll_commands.extend(extract_scroll_commands(&keydown.commands));
     let keydown_allowed = keydown
         .value
         .as_array()
@@ -5069,6 +5317,7 @@ fn mutate_key_with_event_bridge(
                 runtime,
                 &mut history,
             )?;
+            scroll_commands.extend(extract_scroll_commands(&evaluation.commands));
             events.extend(next.apply_script_commands(&evaluation.commands)?);
         }
     }
@@ -5095,7 +5344,18 @@ fn mutate_key_with_event_bridge(
         runtime,
         &mut history,
     )?;
+    scroll_commands.extend(extract_scroll_commands(&keyup.commands));
     events.extend(next.apply_script_commands(&keyup.commands)?);
+    dispatch_scroll_events(
+        &mut next,
+        runtime,
+        document_url,
+        document_origin,
+        viewport,
+        &mut scroll_commands,
+        &mut events,
+        &mut history,
+    )?;
     if events.len() > MAX_NATIVE_EFFECTS {
         return Err(NativeEngineError::limit(
             "content-process key press effects",
@@ -5115,6 +5375,7 @@ fn mutate_key_with_event_bridge(
         navigation: None,
         allowed: true,
         history,
+        scroll_commands,
         storage_events: Vec::new(),
         indexed_db_changes: Vec::new(),
         dialogs: Vec::new(),
@@ -5153,6 +5414,7 @@ fn mutate_key_event_with_event_bridge(
     }
     let mut next = current.clone();
     let mut history = Vec::new();
+    let mut scroll_commands = Vec::new();
     let source = host_key_event_script_with_modifiers(node_index, kind, key, modifiers)?
         .ok_or_else(|| NativeEngineError::Worker {
             operation: "content process key event bridge".into(),
@@ -5166,8 +5428,19 @@ fn mutate_key_event_with_event_bridge(
         runtime,
         &mut history,
     )?;
+    scroll_commands.extend(extract_scroll_commands(&evaluation.commands));
     let mut events = vec![(node_id, kind)];
     events.extend(next.apply_script_commands(&evaluation.commands)?);
+    dispatch_scroll_events(
+        &mut next,
+        runtime,
+        document_url,
+        document_origin,
+        viewport,
+        &mut scroll_commands,
+        &mut events,
+        &mut history,
+    )?;
     if events.len() > MAX_NATIVE_EFFECTS {
         return Err(NativeEngineError::limit(
             "content-process key event effects",
@@ -5189,6 +5462,7 @@ fn mutate_key_event_with_event_bridge(
             navigation: None,
             allowed: true,
             history,
+            scroll_commands,
             storage_events: Vec::new(),
             indexed_db_changes: Vec::new(),
             dialogs: Vec::new(),
@@ -5233,6 +5507,7 @@ fn mutate_key_shortcut_with_event_bridge(
     }
     let mut next = current.clone();
     let mut history = Vec::new();
+    let mut scroll_commands = Vec::new();
     let keydown_source =
         host_key_event_script_with_modifiers(node_index, NativeEventKind::KeyDown, key, modifiers)?
             .ok_or_else(|| NativeEngineError::Worker {
@@ -5253,6 +5528,7 @@ fn mutate_key_shortcut_with_event_bridge(
         runtime,
         &mut history,
     )?;
+    scroll_commands.extend(extract_scroll_commands(&keydown.commands));
     let keydown_allowed = keydown
         .value
         .as_array()
@@ -5281,6 +5557,7 @@ fn mutate_key_shortcut_with_event_bridge(
                 runtime,
                 &mut history,
             )?;
+            scroll_commands.extend(extract_scroll_commands(&evaluation.commands));
             events.extend(next.apply_script_commands(&evaluation.commands)?);
         }
     }
@@ -5304,8 +5581,19 @@ fn mutate_key_shortcut_with_event_bridge(
         runtime,
         &mut history,
     )?;
+    scroll_commands.extend(extract_scroll_commands(&keyup.commands));
     events.push((node_id, NativeEventKind::KeyUp));
     events.extend(next.apply_script_commands(&keyup.commands)?);
+    dispatch_scroll_events(
+        &mut next,
+        runtime,
+        document_url,
+        document_origin,
+        viewport,
+        &mut scroll_commands,
+        &mut events,
+        &mut history,
+    )?;
     if events.len() > MAX_NATIVE_EFFECTS {
         return Err(NativeEngineError::limit(
             "content-process shortcut effects",
@@ -5327,6 +5615,7 @@ fn mutate_key_shortcut_with_event_bridge(
             navigation: None,
             allowed: true,
             history,
+            scroll_commands,
             storage_events: Vec::new(),
             indexed_db_changes: Vec::new(),
             dialogs: Vec::new(),
@@ -5393,6 +5682,77 @@ fn extract_history_commands(commands: &[NativeScriptCommand]) -> Vec<NativeScrip
         })
         .cloned()
         .collect()
+}
+
+fn extract_scroll_commands(commands: &[NativeScriptCommand]) -> Vec<NativeScriptCommand> {
+    commands
+        .iter()
+        .filter(|command| matches!(command, NativeScriptCommand::ScrollTo { .. }))
+        .cloned()
+        .collect()
+}
+
+/// Deliver scroll events for commands emitted by the page realm and apply any
+/// synchronous mutations produced by those listeners. The content process is
+/// the owner of page JavaScript, so scroll listeners must run here before the
+/// resulting document snapshot crosses back to the parent coordinator.
+fn dispatch_scroll_events(
+    document: &mut NativeDocument,
+    runtime: &NativeJavaScriptRuntime,
+    document_url: &mut String,
+    document_origin: &NativeOrigin,
+    viewport: Viewport,
+    pending_commands: &mut Vec<NativeScriptCommand>,
+    events: &mut Vec<(NativeNodeId, NativeEventKind)>,
+    history: &mut Vec<NativeScriptCommand>,
+) -> Result<(), NativeEngineError> {
+    let mut pending = std::mem::take(pending_commands);
+    let mut cursor = 0;
+    while cursor < pending.len() {
+        let NativeScriptCommand::ScrollTo { node_index, .. } = pending[cursor] else {
+            cursor += 1;
+            continue;
+        };
+        let event_node_index = (node_index != 0).then_some(node_index).unwrap_or(u32::MAX);
+        let source = host_event_script(&[(event_node_index, NativeEventKind::Scroll)])?
+            .ok_or_else(|| NativeEngineError::Worker {
+                operation: "content process scroll event".into(),
+                reason: "native scroll event source was empty".into(),
+            })?;
+        let evaluation =
+            runtime.evaluate(&source, document, document_url, document_origin, viewport)?;
+        apply_content_event_history(
+            &evaluation.commands,
+            document_url,
+            document_origin,
+            runtime,
+            history,
+        )?;
+        let new_scroll_commands = extract_scroll_commands(&evaluation.commands);
+        if pending.len().saturating_add(new_scroll_commands.len()) > MAX_NATIVE_EFFECTS {
+            return Err(NativeEngineError::limit(
+                "content-process scroll event commands",
+                MAX_NATIVE_EFFECTS,
+                pending.len().saturating_add(new_scroll_commands.len()),
+            ));
+        }
+        events.push((
+            NativeNodeId::from_parts(document.generation(), event_node_index),
+            NativeEventKind::Scroll,
+        ));
+        events.extend(document.apply_script_commands(&evaluation.commands)?);
+        pending.extend(new_scroll_commands);
+        if events.len() > MAX_NATIVE_EFFECTS {
+            return Err(NativeEngineError::limit(
+                "content-process scroll event effects",
+                MAX_NATIVE_EFFECTS,
+                events.len(),
+            ));
+        }
+        cursor += 1;
+    }
+    *pending_commands = pending;
+    Ok(())
 }
 
 fn apply_content_event_history(
@@ -5576,10 +5936,11 @@ fn mutate_before_unload(
         })?;
     let mut next = current.clone();
     let mut history = Vec::new();
-    let mut events = vec![NativeContentEvent {
-        node_index: u32::MAX,
-        kind: NativeEventKind::BeforeUnload,
-    }];
+    let mut events = vec![(
+        NativeNodeId::from_parts(current.generation(), u32::MAX),
+        NativeEventKind::BeforeUnload,
+    )];
+    let mut scroll_commands = extract_scroll_commands(&evaluation.commands);
     let (commands, navigation) = split_location_navigation(evaluation.commands)?;
     apply_content_event_history(
         &commands,
@@ -5588,14 +5949,17 @@ fn mutate_before_unload(
         runtime,
         &mut history,
     )?;
-    events.extend(
-        next.apply_script_commands(&commands)?
-            .into_iter()
-            .map(|(node, kind)| NativeContentEvent {
-                node_index: node.index(),
-                kind,
-            }),
-    );
+    events.extend(next.apply_script_commands(&commands)?);
+    dispatch_scroll_events(
+        &mut next,
+        runtime,
+        document_url,
+        document_origin,
+        viewport,
+        &mut scroll_commands,
+        &mut events,
+        &mut history,
+    )?;
     if events.len() > MAX_NATIVE_EFFECTS {
         return Err(NativeEngineError::limit(
             "native beforeunload effects",
@@ -5607,10 +5971,17 @@ fn mutate_before_unload(
         next.clone(),
         NativeContentMutation {
             document: next.to_content_wire(),
-            events,
+            events: events
+                .into_iter()
+                .map(|(node, kind)| NativeContentEvent {
+                    node_index: node.index(),
+                    kind,
+                })
+                .collect(),
             navigation,
             allowed,
             history,
+            scroll_commands,
             storage_events: Vec::new(),
             indexed_db_changes: Vec::new(),
             dialogs: Vec::new(),
@@ -5640,6 +6011,7 @@ fn mutate_lifecycle_events(
                 navigation: None,
                 allowed: true,
                 history: Vec::new(),
+                scroll_commands: Vec::new(),
                 storage_events: Vec::new(),
                 indexed_db_changes: Vec::new(),
                 dialogs: Vec::new(),
@@ -5662,6 +6034,7 @@ fn mutate_lifecycle_events(
     let evaluation = runtime.evaluate(&source, current, document_url, document_origin, viewport)?;
     let mut next = current.clone();
     let mut history = Vec::new();
+    let mut scroll_commands = extract_scroll_commands(&evaluation.commands);
     let (commands, navigation) = split_location_navigation(evaluation.commands)?;
     apply_content_event_history(
         &commands,
@@ -5683,6 +6056,32 @@ fn mutate_lifecycle_events(
         node_index: node.index(),
         kind,
     }));
+    let mut event_effects = events
+        .iter()
+        .map(|event| {
+            (
+                NativeNodeId::from_parts(current.generation(), event.node_index),
+                event.kind,
+            )
+        })
+        .collect::<Vec<_>>();
+    dispatch_scroll_events(
+        &mut next,
+        runtime,
+        document_url,
+        document_origin,
+        viewport,
+        &mut scroll_commands,
+        &mut event_effects,
+        &mut history,
+    )?;
+    events = event_effects
+        .into_iter()
+        .map(|(node, kind)| NativeContentEvent {
+            node_index: node.index(),
+            kind,
+        })
+        .collect();
     if events.len() > MAX_NATIVE_EFFECTS {
         return Err(NativeEngineError::limit(
             "native lifecycle effects",
@@ -5698,6 +6097,7 @@ fn mutate_lifecycle_events(
             navigation,
             allowed: true,
             history,
+            scroll_commands,
             storage_events: Vec::new(),
             indexed_db_changes: Vec::new(),
             dialogs: Vec::new(),
@@ -5727,6 +6127,7 @@ fn mutate_hash_change(
     let evaluation = runtime.evaluate(&source, current, new_url, document_origin, viewport)?;
     let mut next = current.clone();
     let mut history = Vec::new();
+    let mut scroll_commands = extract_scroll_commands(&evaluation.commands);
     let (commands, navigation) = split_location_navigation(evaluation.commands)?;
     apply_content_event_history(&commands, new_url, document_origin, runtime, &mut history)?;
     let mut events = vec![NativeContentEvent {
@@ -5741,6 +6142,32 @@ fn mutate_hash_change(
                 kind,
             }),
     );
+    let mut event_effects = events
+        .iter()
+        .map(|event| {
+            (
+                NativeNodeId::from_parts(current.generation(), event.node_index),
+                event.kind,
+            )
+        })
+        .collect::<Vec<_>>();
+    dispatch_scroll_events(
+        &mut next,
+        runtime,
+        new_url,
+        document_origin,
+        viewport,
+        &mut scroll_commands,
+        &mut event_effects,
+        &mut history,
+    )?;
+    events = event_effects
+        .into_iter()
+        .map(|(node, kind)| NativeContentEvent {
+            node_index: node.index(),
+            kind,
+        })
+        .collect();
     if events.len() > MAX_NATIVE_EFFECTS {
         return Err(NativeEngineError::limit(
             "native hashchange effects",
@@ -5756,6 +6183,7 @@ fn mutate_hash_change(
             navigation,
             allowed: true,
             history,
+            scroll_commands,
             storage_events: Vec::new(),
             indexed_db_changes: Vec::new(),
             dialogs: Vec::new(),
@@ -5779,6 +6207,7 @@ async fn mutate_script_document(
 ) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
     let mut document_url = document_url.to_owned();
     let mut history = Vec::new();
+    let mut scroll_commands = extract_scroll_commands(commands);
     let mut next = current.clone();
     let mut events = next.apply_script_commands_allowing_links(commands)?;
     next.refresh_image_loads(viewport);
@@ -5805,6 +6234,7 @@ async fn mutate_script_document(
             runtime,
             &mut history,
         )?;
+        scroll_commands.extend(extract_scroll_commands(&evaluation.commands));
         events.extend(next.apply_script_commands(&evaluation.commands)?);
     }
     let image_events = if let Some(loader) = loader {
@@ -5825,6 +6255,7 @@ async fn mutate_script_document(
             runtime,
             &mut history,
         )?;
+        scroll_commands.extend(extract_scroll_commands(&evaluation.commands));
         events.extend(next.apply_script_commands(&evaluation.commands)?);
         events.push((
             NativeNodeId::from_parts(next.generation(), node_index),
@@ -5853,6 +6284,7 @@ async fn mutate_script_document(
                 *submitter,
                 &mut events,
                 &mut history,
+                &mut scroll_commands,
             )? {
                 navigation = None;
             }
@@ -5866,10 +6298,21 @@ async fn mutate_script_document(
                 &invalid,
                 &mut events,
                 &mut history,
+                &mut scroll_commands,
             )?;
             navigation = None;
         }
     }
+    dispatch_scroll_events(
+        &mut next,
+        runtime,
+        &mut document_url,
+        document_origin,
+        viewport,
+        &mut scroll_commands,
+        &mut events,
+        &mut history,
+    )?;
     if events.len() > MAX_NATIVE_EFFECTS {
         return Err(NativeEngineError::limit(
             "content-process script mutation effects",
@@ -5923,6 +6366,7 @@ async fn mutate_script_document(
             .transpose()?,
         allowed: true,
         history,
+        scroll_commands,
         storage_events: Vec::new(),
         indexed_db_changes: Vec::new(),
         dialogs: Vec::new(),
@@ -6190,6 +6634,9 @@ async fn resolve_script_fetches(
         next = resolved_next;
         mutation.events.extend(resolved_mutation.events);
         mutation.history.extend(resolved_history);
+        mutation
+            .scroll_commands
+            .extend(resolved_mutation.scroll_commands);
         if !resolved_mutation.history.is_empty() {
             current_url = resolve_content_history_document_url(
                 &resolved_mutation.history,

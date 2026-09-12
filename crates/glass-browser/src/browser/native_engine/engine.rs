@@ -46,7 +46,7 @@ use super::worker::{NativeRuntimeShared, NativeRuntimeWorker};
 use crate::browser::session::{Cookie, DownloadOutcome, PendingDialog};
 use crate::browser_backend::{PromptDecision, PromptResult, StorageOperation, StorageScope};
 use sha2::{Digest, Sha256};
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
@@ -362,6 +362,7 @@ pub struct NativeEngine {
     embedding_frame_sources: Option<Vec<String>>,
     revision: u64,
     scroll_offset: NativePoint,
+    nested_scroll_offsets: BTreeMap<u32, NativePoint>,
     effects: VecDeque<NativeEffect>,
     pending_lifecycle_effects: Vec<(NativeNodeId, NativeEventKind)>,
     skip_next_navigation_lifecycle: bool,
@@ -437,6 +438,7 @@ impl NativeEngine {
             embedding_frame_sources: None,
             revision: 0,
             scroll_offset: NativePoint { x: 0, y: 0 },
+            nested_scroll_offsets: BTreeMap::new(),
             effects: VecDeque::new(),
             pending_lifecycle_effects: Vec::new(),
             skip_next_navigation_lifecycle: false,
@@ -476,6 +478,7 @@ impl NativeEngine {
             crate::browser_backend::MAX_TEXT_BYTES,
             self.config.viewport,
             self.scroll_offset,
+            &self.nested_scroll_offsets,
         )
     }
 
@@ -1378,6 +1381,9 @@ impl NativeEngine {
                     .sync_frame_script_bindings(&self.frame_script_bindings)
                     .await?;
                 process.sync_scroll_offset(self.scroll_offset).await?;
+                process
+                    .sync_nested_scroll_offsets(&self.nested_scroll_offsets)
+                    .await?;
             }
             let NativeContentScriptResult {
                 value,
@@ -1462,6 +1468,7 @@ impl NativeEngine {
             javascript.set_frame_script_context(self.frame_script_context.clone());
             javascript.set_frame_id(self.frame_id.clone());
             javascript.set_scroll_offset(self.scroll_offset);
+            javascript.set_nested_scroll_offsets(self.nested_scroll_offsets.clone());
             self.javascript = Some(javascript);
         }
         self.deliver_pending_external_storage_events().await?;
@@ -2272,7 +2279,11 @@ impl NativeEngine {
         self.require_running("layout")?;
         self.document
             .layout(self.config.viewport)?
-            .with_scroll_offset(&self.document, self.scroll_offset)
+            .with_scroll_offset(
+                &self.document,
+                self.scroll_offset,
+                &self.nested_scroll_offsets,
+            )
     }
 
     /// Hit test one point in the configured viewport without scrolling or
@@ -2392,7 +2403,12 @@ impl NativeEngine {
             NativeAction::Scroll { delta_x, delta_y } => {
                 let moved = self.apply_scroll(delta_x, delta_y)?;
                 let events = moved
-                    .then(|| (self.document.root(), NativeEventKind::Scroll))
+                    .then(|| {
+                        (
+                            NativeNodeId::from_parts(self.document.generation(), u32::MAX),
+                            NativeEventKind::Scroll,
+                        )
+                    })
                     .into_iter()
                     .collect();
                 (events, moved)
@@ -2445,6 +2461,11 @@ impl NativeEngine {
             .as_mut()
             .expect("content process presence was checked")
             .sync_scroll_offset(self.scroll_offset)
+            .await?;
+        self.content_process
+            .as_mut()
+            .expect("content process presence was checked")
+            .sync_nested_scroll_offsets(&self.nested_scroll_offsets)
             .await?;
         match action {
             NativeAction::Check { target } => {
@@ -2771,6 +2792,7 @@ impl NativeEngine {
             });
         }
         let history_commands = self.prepare_local_history_commands(commands)?;
+        let mut scroll_commands = extract_local_scroll_commands(commands);
         let mut document = self.document.clone();
         let mut events = if allow_script_navigation {
             document.apply_script_commands_allowing_links(commands)?
@@ -2785,6 +2807,7 @@ impl NativeEngine {
         if !validation_events.is_empty()
             && let Some(evaluation) = self.evaluate_local_events(&document, &validation_events)?
         {
+            scroll_commands.extend(extract_local_scroll_commands(&evaluation.commands));
             events.extend(document.apply_script_commands(&evaluation.commands)?);
         }
         let mut navigation = if allow_script_navigation {
@@ -2816,6 +2839,7 @@ impl NativeEngine {
                         reason: "native submit event result was invalid".into(),
                     })?;
                 events.push((*form_id, NativeEventKind::Submit));
+                scroll_commands.extend(extract_local_scroll_commands(&evaluation.commands));
                 events.extend(document.apply_script_commands(&evaluation.commands)?);
                 if !allowed {
                     navigation = None;
@@ -2828,6 +2852,7 @@ impl NativeEngine {
                     .collect::<Vec<_>>();
                 if let Some(evaluation) = self.evaluate_local_events(&document, &invalid_events)? {
                     events.extend(invalid_events);
+                    scroll_commands.extend(extract_local_scroll_commands(&evaluation.commands));
                     events.extend(document.apply_script_commands(&evaluation.commands)?);
                 }
                 navigation = None;
@@ -2846,10 +2871,15 @@ impl NativeEngine {
         document.set_revision(next_revision);
         self.document = document;
         self.revision = next_revision;
+        let scroll_events = self.apply_scroll_commands(&self.document.clone(), &scroll_commands)?;
+        events.extend(scroll_events.iter().copied());
         self.history.update_current_scroll(self.scroll_offset);
         let history_traversal =
             self.apply_prepared_history_commands(history_commands, next_revision)?;
         self.record_effects(events);
+        if !scroll_events.is_empty() {
+            self.dispatch_local_events(&scroll_events)?;
+        }
         let navigation = match navigation {
             Some(ScriptNavigationTarget::Link { href, popup }) => {
                 let target_url = self.resolve_link_href(&href)?;
@@ -3559,10 +3589,12 @@ impl NativeEngine {
                 reason: "hashchange event source was empty".into(),
             }
         })?;
-        self.javascript
+        let javascript = self
+            .javascript
             .as_ref()
-            .expect("local JavaScript runtime is present")
-            .set_scroll_offset(self.scroll_offset);
+            .expect("local JavaScript runtime is present");
+        javascript.set_scroll_offset(self.scroll_offset);
+        javascript.set_nested_scroll_offsets(self.nested_scroll_offsets.clone());
         self.sync_javascript_history();
         let evaluation = self
             .javascript
@@ -3628,6 +3660,7 @@ impl NativeEngine {
             return Ok(None);
         };
         javascript.set_scroll_offset(self.scroll_offset);
+        javascript.set_nested_scroll_offsets(self.nested_scroll_offsets.clone());
         self.sync_javascript_history();
         let evaluation = javascript.evaluate(
             &source,
@@ -3657,6 +3690,7 @@ impl NativeEngine {
             return Ok(None);
         };
         javascript.set_scroll_offset(self.scroll_offset);
+        javascript.set_nested_scroll_offsets(self.nested_scroll_offsets.clone());
         self.sync_javascript_history();
         let evaluation = javascript.evaluate(
             &source,
@@ -3692,6 +3726,7 @@ impl NativeEngine {
             return Ok(None);
         };
         javascript.set_scroll_offset(self.scroll_offset);
+        javascript.set_nested_scroll_offsets(self.nested_scroll_offsets.clone());
         self.sync_javascript_history();
         let evaluation = javascript.evaluate(
             &source,
@@ -4224,6 +4259,7 @@ impl NativeEngine {
         self.queue_window_navigation_requests(std::mem::take(&mut mutation.window_navigations))?;
         self.publish_content_state(&mutation.storage_events, &mutation.indexed_db_changes)?;
         let dialogs = mutation.dialogs.clone();
+        let scroll_commands = std::mem::take(&mut mutation.scroll_commands);
         let generation = self.document.generation();
         let mut document = match NativeDocument::from_content_wire(
             mutation.document,
@@ -4236,7 +4272,7 @@ impl NativeEngine {
                 return Err(error);
             }
         };
-        let events = match mutation
+        let mut events = match mutation
             .events
             .into_iter()
             .map(|event| {
@@ -4274,7 +4310,7 @@ impl NativeEngine {
                     | NativeEventKind::PopState
             )
         });
-        if !document_changed && lifecycle_only {
+        if !document_changed && lifecycle_only && scroll_commands.is_empty() {
             let defer = events.iter().all(|(_, kind)| {
                 matches!(kind, NativeEventKind::PageHide | NativeEventKind::Unload)
             });
@@ -4293,6 +4329,8 @@ impl NativeEngine {
         document.set_revision(next_revision);
         self.document = document;
         self.revision = next_revision;
+        let scroll_events = self.apply_scroll_commands(&self.document.clone(), &scroll_commands)?;
+        events.extend(scroll_events);
         self.history.update_current_scroll(self.scroll_offset);
         self.record_effects(events);
         let dialog_url = self.url.clone();
@@ -4419,6 +4457,7 @@ impl NativeEngine {
         }
         self.document = prepared.document;
         self.javascript = None;
+        self.nested_scroll_offsets.clear();
         self.url = prepared.resource.url;
         self.origin = prepared.resource.origin;
         self.document_frame_sources = prepared.frame_sources;
@@ -4696,6 +4735,7 @@ impl NativeEngine {
             frame_sources: content.frame_sources,
             dialogs: content.dialogs,
             initial_events,
+            initial_scroll_commands: content.scroll_commands,
             execute_inline_scripts: false,
         })
     }
@@ -4725,6 +4765,7 @@ impl NativeEngine {
             frame_sources,
             dialogs: Vec::new(),
             initial_events: Vec::new(),
+            initial_scroll_commands: Vec::new(),
             execute_inline_scripts: true,
         })
     }
@@ -4736,6 +4777,7 @@ impl NativeEngine {
     ) -> Result<Option<NativeNavigationRequest>, NativeEngineError> {
         let skip_lifecycle = std::mem::take(&mut self.skip_next_navigation_lifecycle);
         let mut initial_events = std::mem::take(&mut prepared.initial_events);
+        let mut initial_scroll_commands = std::mem::take(&mut prepared.initial_scroll_commands);
         if !skip_lifecycle && self.javascript.is_some() {
             let (allowed, before_navigation) = self.dispatch_local_before_unload()?;
             if !allowed {
@@ -4786,6 +4828,7 @@ impl NativeEngine {
             )?;
             dialogs.extend(result.dialogs);
             initial_events.extend(result.events);
+            initial_scroll_commands.extend(result.scroll_commands);
             let popups = javascript
                 .as_ref()
                 .map(NativeJavaScriptRuntime::take_popup_events)
@@ -4813,7 +4856,7 @@ impl NativeEngine {
         } else {
             None
         };
-        let scroll_offset = self.fragment_scroll_offset_for_document(
+        let fragment_scroll_offset = self.fragment_scroll_offset_for_document(
             &prepared.document,
             &prepared.resource.url,
             NativePoint { x: 0, y: 0 },
@@ -4822,20 +4865,25 @@ impl NativeEngine {
         let revision = prepared.document.revision();
         self.document = prepared.document;
         self.javascript = javascript;
+        self.nested_scroll_offsets.clear();
         self.url = prepared.resource.url;
         self.origin = prepared.resource.origin;
         self.document_frame_sources = prepared.frame_sources;
-        self.scroll_offset = scroll_offset;
+        self.scroll_offset = fragment_scroll_offset;
         self.sync_javascript_scroll_offset();
+        let _ = self.apply_scroll_commands(&self.document.clone(), &initial_scroll_commands)?;
         self.revision = revision;
         self.pending_dialogs.clear();
         let dialog_url = self.url.clone();
         self.install_dialogs(dialogs, &dialog_url)?;
         match history_commit {
-            HistoryCommit::Push => self.history.push(self.url.clone(), revision, scroll_offset),
+            HistoryCommit::Push => {
+                self.history
+                    .push(self.url.clone(), revision, self.scroll_offset)
+            }
             HistoryCommit::Replace => {
                 self.history
-                    .replace_current(self.url.clone(), revision, scroll_offset)
+                    .replace_current(self.url.clone(), revision, self.scroll_offset)
             }
             HistoryCommit::Activate(_) => {
                 return Err(NativeEngineError::Scheduler {
@@ -4873,6 +4921,7 @@ impl NativeEngine {
         }
         let execute_page_scripts = prepared.execute_inline_scripts;
         let mut initial_events = std::mem::take(&mut prepared.initial_events);
+        let mut initial_scroll_commands = std::mem::take(&mut prepared.initial_scroll_commands);
         self.persist_local_web_storage()?;
         let storage_state = self.web_storage.clone();
         let cookie = self.loader.document_cookie(&prepared.resource.url)?;
@@ -4907,6 +4956,7 @@ impl NativeEngine {
             )?;
             dialogs.extend(result.dialogs);
             initial_events.extend(result.events);
+            initial_scroll_commands.extend(result.scroll_commands);
             let popups = javascript
                 .as_ref()
                 .map(NativeJavaScriptRuntime::take_popup_events)
@@ -4934,7 +4984,7 @@ impl NativeEngine {
         } else {
             None
         };
-        let scroll_offset = self.fragment_scroll_offset_for_document(
+        let fragment_scroll_offset = self.fragment_scroll_offset_for_document(
             &prepared.document,
             &prepared.resource.url,
             NativePoint { x: 0, y: 0 },
@@ -4944,20 +4994,25 @@ impl NativeEngine {
         let revision = prepared.document.revision();
         self.document = prepared.document;
         self.javascript = javascript;
+        self.nested_scroll_offsets.clear();
         self.url = prepared.resource.url;
         self.origin = prepared.resource.origin;
         self.document_frame_sources = prepared.frame_sources;
-        self.scroll_offset = scroll_offset;
+        self.scroll_offset = fragment_scroll_offset;
         self.sync_javascript_scroll_offset();
+        let _ = self.apply_scroll_commands(&self.document.clone(), &initial_scroll_commands)?;
         self.revision = revision;
         self.pending_dialogs.clear();
         let dialog_url = self.url.clone();
         self.install_dialogs(dialogs, &dialog_url)?;
         match history_commit {
-            HistoryCommit::Push => self.history.push(self.url.clone(), revision, scroll_offset),
+            HistoryCommit::Push => {
+                self.history
+                    .push(self.url.clone(), revision, self.scroll_offset)
+            }
             HistoryCommit::Replace => {
                 self.history
-                    .replace_current(self.url.clone(), revision, scroll_offset)
+                    .replace_current(self.url.clone(), revision, self.scroll_offset)
             }
             HistoryCommit::Activate(_) => {
                 return Err(NativeEngineError::Scheduler {
@@ -5193,6 +5248,7 @@ impl NativeEngine {
         let revision = prepared.document.revision();
         self.document = prepared.document;
         self.javascript = None;
+        self.nested_scroll_offsets.clear();
         self.url = prepared.resource.url;
         self.origin = prepared.resource.origin;
         self.document_frame_sources = prepared.frame_sources;
@@ -5242,6 +5298,7 @@ impl NativeEngine {
         let revision = prepared.document.revision();
         self.document = prepared.document;
         self.javascript = None;
+        self.nested_scroll_offsets.clear();
         self.url = prepared.resource.url;
         self.origin = prepared.resource.origin;
         self.document_frame_sources = prepared.frame_sources;
@@ -5606,6 +5663,71 @@ impl NativeEngine {
         self.record_effects(effects);
     }
 
+    fn apply_scroll_commands(
+        &mut self,
+        document: &NativeDocument,
+        commands: &[NativeScriptCommand],
+    ) -> Result<Vec<(NativeNodeId, NativeEventKind)>, NativeEngineError> {
+        if commands.is_empty() {
+            return Ok(Vec::new());
+        }
+        let layout = document.layout(self.config.viewport)?;
+        let mut root_offset = self.scroll_offset;
+        let mut nested_offsets = self.nested_scroll_offsets.clone();
+        let mut events = Vec::new();
+        for command in commands {
+            let NativeScriptCommand::ScrollTo {
+                node_index,
+                left,
+                top,
+            } = command
+            else {
+                continue;
+            };
+            if *node_index == 0 {
+                let max_scroll = layout.max_scroll_offset();
+                let next = NativePoint {
+                    x: clamp_script_scroll(*left, max_scroll.x),
+                    y: clamp_script_scroll(*top, max_scroll.y),
+                };
+                if next != root_offset {
+                    root_offset = next;
+                    events.push((
+                        NativeNodeId::from_parts(document.generation(), u32::MAX),
+                        NativeEventKind::Scroll,
+                    ));
+                }
+                continue;
+            }
+            let node_id = NativeNodeId::from_parts(document.generation(), *node_index);
+            let Some(container) = layout.scroll_container_for(node_id) else {
+                continue;
+            };
+            let max_scroll = container.max_scroll_offset();
+            let next = NativePoint {
+                x: clamp_script_scroll(*left, max_scroll.x),
+                y: clamp_script_scroll(*top, max_scroll.y),
+            };
+            let current = nested_offsets
+                .get(node_index)
+                .copied()
+                .unwrap_or(NativePoint { x: 0, y: 0 });
+            if next == current {
+                continue;
+            }
+            if next.x == 0 && next.y == 0 {
+                nested_offsets.remove(node_index);
+            } else {
+                nested_offsets.insert(*node_index, next);
+            }
+            events.push((node_id, NativeEventKind::Scroll));
+        }
+        self.scroll_offset = root_offset;
+        self.nested_scroll_offsets = nested_offsets;
+        self.sync_javascript_scroll_offset();
+        Ok(events)
+    }
+
     fn apply_scroll(&mut self, delta_x: i32, delta_y: i32) -> Result<bool, NativeEngineError> {
         if delta_x == 0 && delta_y == 0 {
             return Ok(false);
@@ -5638,6 +5760,7 @@ impl NativeEngine {
     fn sync_javascript_scroll_offset(&self) {
         if let Some(javascript) = self.javascript.as_ref() {
             javascript.set_scroll_offset(self.scroll_offset);
+            javascript.set_nested_scroll_offsets(self.nested_scroll_offsets.clone());
         }
     }
 
@@ -5669,12 +5792,21 @@ impl NativeEngine {
     }
 }
 
+fn clamp_script_scroll(value: i64, maximum: u32) -> u32 {
+    if value <= 0 {
+        0
+    } else {
+        u32::try_from(value).unwrap_or(u32::MAX).min(maximum)
+    }
+}
+
 struct PreparedNavigation {
     resource: NativeResource,
     document: NativeDocument,
     frame_sources: Option<Vec<String>>,
     dialogs: Vec<NativeDialog>,
     initial_events: Vec<(u32, NativeEventKind)>,
+    initial_scroll_commands: Vec<NativeScriptCommand>,
     execute_inline_scripts: bool,
 }
 
@@ -5906,6 +6038,14 @@ fn extract_local_history_commands(commands: &[NativeScriptCommand]) -> Vec<Nativ
                     | NativeScriptCommand::HistoryGo { .. }
             )
         })
+        .cloned()
+        .collect()
+}
+
+fn extract_local_scroll_commands(commands: &[NativeScriptCommand]) -> Vec<NativeScriptCommand> {
+    commands
+        .iter()
+        .filter(|command| matches!(command, NativeScriptCommand::ScrollTo { .. }))
         .cloned()
         .collect()
 }

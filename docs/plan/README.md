@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-230` locally. The versioned
+`native-engine-browser-231` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -2018,6 +2018,14 @@ registry, content-process hydration, display-list, raster, and CSSOM mutation
 owners, including the common `center/cover no-repeat` ordering. Exact
 evidence is recorded in
 [native-engine-browser-230](tasks/native-engine-browser-230.md).
+
+The completed native-engine-browser-231 slice adds bounded CSS relative
+positioning. `position: relative` with `top`/`right`/`bottom`/`left` signed
+pixel offsets now translates the complete emitted subtree through the shared
+layout, paint, scroll, capture, and hit-test geometry without changing sibling
+flow allocation; stylesheet, inline, `!important`, CSS-wide reset, and CSSOM
+paths share the same computed-style owner. Exact evidence is recorded in
+[native-engine-browser-231](tasks/native-engine-browser-231.md).
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` now returns persistent `Attr`

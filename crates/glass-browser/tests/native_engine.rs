@@ -41751,6 +41751,64 @@ async fn native_content_process_tracks_fetch_body_disturbance_and_clone_ownershi
 }
 
 #[tokio::test]
+async fn native_content_process_tees_fetch_streams_until_all_readers_cancel() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (closed_sender, mut closed_receiver) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = "<body>Fetch tee owner</body>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/tee"));
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        stream.write_all(b"3\r\ntee\r\n").await.unwrap();
+        let mut probe = [0_u8; 1];
+        let closed = stream.read(&mut probe).await.unwrap();
+        assert_eq!(
+            closed, 0,
+            "tee transport closed before all readers canceled"
+        );
+        closed_sender.send(()).unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await (async () => { const response = await fetch('/tee'); const clone = response.clone(); const left = response.body.getReader(); const right = clone.body.getReader(); const leftFirst = await left.read(); const rightFirst = await right.read(); await left.cancel(); await right.cancel(); left.releaseLock(); right.releaseLock(); return [Array.from(leftFirst.value), leftFirst.done, Array.from(rightFirst.value), rightFirst.done, response.bodyUsed, clone.bodyUsed]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([[116, 101, 101], false, [116, 101, 101], false, true, true])
+    );
+    tokio::time::timeout(Duration::from_secs(3), &mut closed_receiver)
+        .await
+        .unwrap()
+        .unwrap();
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_exposes_bounded_same_origin_post_fetch() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

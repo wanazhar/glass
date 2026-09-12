@@ -41951,6 +41951,50 @@ async fn native_content_process_drives_underlying_readable_stream_sources() {
 }
 
 #[tokio::test]
+async fn native_content_process_resolves_readable_stream_reader_closed() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = "<body>ReadableStream reader closed</body>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await (async () => { let controller; const stream = new ReadableStream({ start(candidate) { controller = candidate; candidate.enqueue('value'); } }); const reader = stream.getReader(); const closed = reader.closed.then(() => 'resolved', error => 'rejected:' + error.name); const first = await reader.read(); reader.releaseLock(); controller.close(); const replacement = stream.getReader(); const replacementClosed = replacement.closed.then(() => 'resolved', error => 'rejected:' + error.name); const end = await replacement.read(); replacement.releaseLock(); let errorController; const errored = new ReadableStream({ start(candidate) { errorController = candidate; } }); const errorReader = errored.getReader(); const errorClosed = errorReader.closed.then(() => 'resolved', error => 'rejected:' + error.name); errorController.error(new Error('boom')); const errorRead = await errorReader.read().then(() => 'readable', error => error.name); let cancelEvents = []; const canceled = new ReadableStream({ cancel(reason) { cancelEvents.push('cancel:' + reason); } }); const canceledReader = canceled.getReader(); const canceledClosed = canceledReader.closed.then(() => 'resolved', error => 'rejected:' + error.name); await canceledReader.cancel('stop'); canceledReader.releaseLock(); return { first, closed: await closed, replacementClosed: await replacementClosed, end: [end.value, end.done], errorClosed: await errorClosed, errorRead, cancelEvents, canceledClosed: await canceledClosed }; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "first": {"value": "value", "done": false},
+            "closed": "resolved",
+            "replacementClosed": "resolved",
+            "end": [null, true],
+            "errorClosed": "rejected:Error",
+            "errorRead": "Error",
+            "cancelEvents": ["cancel:stop"],
+            "canceledClosed": "resolved"
+        })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_tees_fetch_streams_until_all_readers_cancel() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -5418,6 +5418,70 @@ async fn native_local_streams_pipe_to_bounded_writable_sinks() {
 }
 
 #[tokio::test]
+async fn native_local_transform_streams_process_pipe_through_values() {
+    let config = NativeEngineConfig::default()
+        .with_fixture("fixture://transform-streams", "<p>Transform streams</p>")
+        .unwrap()
+        .with_initial_url("fixture://transform-streams");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            r#"(async () => {
+                const events = [];
+                const transform = new TransformStream({
+                    start() { events.push('start'); },
+                    transform(value, controller) {
+                        events.push('transform:' + value);
+                        controller.enqueue(value.toUpperCase());
+                    },
+                    flush(controller) {
+                        events.push('flush');
+                        controller.enqueue('tail');
+                    },
+                });
+                const source = new ReadableStream({
+                    start(controller) {
+                        controller.enqueue('one');
+                        controller.enqueue('two');
+                        controller.close();
+                    },
+                });
+                const output = source.pipeThrough(transform);
+                const reader = output.getReader();
+                const first = await reader.read();
+                const second = await reader.read();
+                const tail = await reader.read();
+                const end = await reader.read();
+                reader.releaseLock();
+                globalThis.transformStreamResult = {
+                    events,
+                    values: [first.value, second.value, tail.value, end.done],
+                    identities: [output === transform.readable, transform.writable instanceof WritableStream, output instanceof ReadableStream],
+                    sourceLocked: source.locked,
+                    outputLocked: output.locked,
+                };
+            })()"#,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.transformStreamResult")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "events": ["start", "transform:one", "transform:two", "flush"],
+            "values": ["ONE", "TWO", "tail", true],
+            "identities": [true, true, true],
+            "sourceLocked": false,
+            "outputLocked": false
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_script_applies_bounded_dom_commands_once() {
     let config = NativeEngineConfig::default()
         .with_fixture(

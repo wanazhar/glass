@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-243` locally. The versioned
+`native-engine-browser-244` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -2116,6 +2116,13 @@ bounded positive-`tabindex`/document-order sequence, preserve preventDefault
 and blur/focus event effects, and are covered in both local and HTTP
 content-process paths. Exact evidence is recorded in
 [native-engine-browser-243](tasks/native-engine-browser-243.md).
+
+The completed native-engine-browser-244 slice routes semantic targeted
+actions through the selected frame subtree. `Click`, `Type`, `Clear`,
+`Check`, `Uncheck`, and `Select` can reach a unique child-frame locator while
+preserving the existing event/effect owner and rejecting cross-frame
+ambiguity. Exact evidence is recorded in
+[native-engine-browser-244](tasks/native-engine-browser-244.md).
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` now returns persistent `Attr`

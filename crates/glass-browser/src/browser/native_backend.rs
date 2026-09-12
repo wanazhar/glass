@@ -305,6 +305,138 @@ impl NativeEngineBackend {
         })))
     }
 
+    /// Resolve a targeted semantic action through the selected frame subtree.
+    /// A `None` result keeps the ordinary selected-frame dispatcher in charge;
+    /// a child match is applied through the same route/effect pipeline as a
+    /// point-routed action.
+    async fn dispatch_locator_action(
+        &self,
+        context_id: &str,
+        action: &SemanticAction,
+    ) -> Result<Option<BackendResponse>, BrowserBackendError> {
+        let native_action = match action {
+            SemanticAction::Click { target } => NativeAction::Click {
+                target: target.clone(),
+            },
+            SemanticAction::Type { target, text } => NativeAction::Type {
+                target: target.clone(),
+                text: text.clone(),
+            },
+            SemanticAction::Clear { target } => NativeAction::Clear {
+                target: target.clone(),
+            },
+            SemanticAction::Check { target } => NativeAction::Check {
+                target: target.clone(),
+            },
+            SemanticAction::Uncheck { target } => NativeAction::Uncheck {
+                target: target.clone(),
+            },
+            SemanticAction::Select { target, value } => NativeAction::Select {
+                target: target.clone(),
+                value: value.clone(),
+            },
+            _ => return Ok(None),
+        };
+        let target = match action {
+            SemanticAction::Click { target }
+            | SemanticAction::Type { target, .. }
+            | SemanticAction::Clear { target }
+            | SemanticAction::Check { target }
+            | SemanticAction::Uncheck { target }
+            | SemanticAction::Select { target, .. } => target,
+            _ => return Ok(None),
+        };
+        let frame_id = {
+            let mut targets = self.lock_targets(BackendOperation::Action)?;
+            let active_context_id =
+                targets
+                    .active_target_id
+                    .clone()
+                    .ok_or_else(|| BrowserBackendError::Lifecycle {
+                        operation: "action".into(),
+                        state: "no-target-selected".into(),
+                        reason: "select an available native page target before acting".into(),
+                    })?;
+            require_context_id(context_id, &active_context_id)?;
+            let engine = self.lock_engine_raw(BackendOperation::Action)?;
+            let root_frame_id = targets.active_frames.active_frame_id.clone();
+            reconcile_native_frames(&mut targets.active_frames, &engine).await?;
+            let candidate_frame_ids = std::iter::once(root_frame_id.clone())
+                .chain(targets.active_frames.descendant_ids(&root_frame_id))
+                .collect::<Vec<_>>();
+            let mut matches = Vec::new();
+            let mut first_error = None;
+            for candidate_id in candidate_frame_ids {
+                let result = if candidate_id == root_frame_id {
+                    engine.resolve_target(target)
+                } else {
+                    targets
+                        .active_frames
+                        .parked
+                        .get(&candidate_id)
+                        .ok_or(NativeEngineError::DetachedTarget)
+                        .and_then(|frame| frame.engine.resolve_target(target))
+                };
+                match result {
+                    Ok(_) => matches.push(candidate_id),
+                    Err(NativeEngineError::TargetNotFound) => {}
+                    Err(error) => {
+                        first_error.get_or_insert(error);
+                    }
+                }
+            }
+            if let Some(error) = first_error {
+                return Err(native_error(error));
+            }
+            if matches.len() > 1 {
+                return Err(BrowserBackendError::UnsupportedOperation {
+                    operation: "action".into(),
+                    reason: format!(
+                        "native semantic locator matched {} frame documents; exactly one is required",
+                        matches.len()
+                    ),
+                });
+            }
+            matches.into_iter().next()
+        };
+        let Some(frame_id) = frame_id else {
+            return Ok(None);
+        };
+        let root_frame_id = self.active_frame_id()?;
+        if frame_id == root_frame_id {
+            return Ok(None);
+        }
+        let route =
+            self.frame_route(&frame_id)?
+                .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                    reason: "native locator target frame disappeared before action dispatch".into(),
+                })?;
+        let proxy_updates = self.window_proxy_updates(&frame_id)?;
+        let (revision, accepted, runtime_effects, owner_id) = self
+            .apply_action_to_native_frame(route, &frame_id, native_action, &proxy_updates)
+            .await?;
+        self.sync_target_name(&owner_id, &runtime_effects.window_name)?;
+        if accepted {
+            self.set_active_frame_focus(&frame_id)?;
+        }
+        self.process_selected_frame_events(&frame_id, runtime_effects.events)
+            .await?;
+        self.process_pending_frame_scripts(runtime_effects.frame_scripts)
+            .await?;
+        self.process_pending_browser_effects(
+            runtime_effects.browser.0,
+            runtime_effects.browser.1,
+            runtime_effects.browser.2,
+            runtime_effects.browser.3,
+        )
+        .await?;
+        Ok(Some(BackendResponse::Action(ActionResult {
+            context_id: context_id.to_owned(),
+            revision,
+            accepted,
+        })))
+    }
+
     async fn apply_action_to_native_frame(
         &self,
         route: NativeFrameRoute,
@@ -2575,6 +2707,14 @@ impl BrowserBackend for NativeEngineBackend {
                 && let SemanticAction::Click { target } = &action_request.action
                 && let Some(response) = self
                     .dispatch_point_click(&action_request.context_id, target)
+                    .await?
+            {
+                return Ok(response);
+            }
+            if let (BackendOperation::Action, BackendRequest::Action(action_request)) =
+                (&operation, &request)
+                && let Some(response) = self
+                    .dispatch_locator_action(&action_request.context_id, &action_request.action)
                     .await?
             {
                 return Ok(response);

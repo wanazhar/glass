@@ -2274,6 +2274,10 @@ impl NativeEngine {
         })
     }
 
+    pub(crate) fn resolve_target(&self, locator: &str) -> Result<NativeNodeId, NativeEngineError> {
+        self.document.resolve_target(locator)
+    }
+
     /// Return the current document's derived integer-pixel layout.
     pub fn layout(&self) -> Result<NativeLayoutSnapshot, NativeEngineError> {
         self.require_running("layout")?;

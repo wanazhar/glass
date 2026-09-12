@@ -8572,6 +8572,226 @@ fn document_bootstrap(
     const branches = [createBranch(), createBranch()];
     return branches;
   }};
+  const writableStreamState = (stream) => {{
+    if (!stream || stream.__glassWritableStream !== true || !stream._state)
+      throw new TypeError("native WritableStream receiver is invalid");
+    return stream._state;
+  }};
+  const settleWritableStreamClosed = (state) => {{
+    if (!state.closedWaiters || state.closedWaiters.length === 0) return;
+    const waiters = state.closedWaiters.splice(0);
+    if (state.error !== null) {{
+      const error = new Error(state.error);
+      for (const waiter of waiters) waiter.reject(error);
+    }} else if (state.closed) {{
+      for (const waiter of waiters) waiter.resolve();
+    }} else {{
+      state.closedWaiters.push(...waiters);
+    }}
+  }};
+  const watchWritableStreamClosed = (state, resolve, reject) => {{
+    if (state.error !== null) reject(new Error(state.error));
+    else if (state.closed) resolve();
+    else state.closedWaiters.push({{ resolve, reject }});
+  }};
+  const failWritableStream = (state, error) => {{
+    if (state.closed) return;
+    state.error = error instanceof Error ? error.message : String(error);
+    state.closed = true;
+    state.closing = true;
+    settleWritableStreamClosed(state);
+  }};
+  const finishWritableStream = (state) => {{
+    if (state.closed) return;
+    state.closed = true;
+    state.closing = true;
+    settleWritableStreamClosed(state);
+  }};
+  const WritableStreamNative = function(underlyingSink) {{
+    if (!(this instanceof WritableStreamNative)) throw new TypeError("native WritableStream requires new");
+    const sink = underlyingSink === undefined || underlyingSink === null ? {{}} : underlyingSink;
+    if (typeof sink !== "object" && typeof sink !== "function")
+      throw new TypeError("native WritableStream sink is invalid");
+    const state = {{
+      sink,
+      locked: false,
+      closing: false,
+      closed: false,
+      error: null,
+      writeQueue: 0,
+      writeTail: Promise.resolve(undefined),
+      closePromise: null,
+      startPromise: null,
+      aborted: false,
+      closedWaiters: [],
+    }};
+    let startResult;
+    try {{ startResult = typeof sink.start === "function" ? sink.start() : undefined; }}
+    catch (error) {{
+      state.error = error instanceof Error ? error.message : String(error);
+      state.closed = true;
+      state.closing = true;
+      startResult = Promise.reject(error);
+    }}
+    state.startPromise = Promise.resolve(startResult).then(
+      () => undefined,
+      error => {{ failWritableStream(state, error); throw error; }},
+    );
+    state.startPromise.catch(() => undefined);
+    Object.defineProperty(this, "__glassWritableStream", {{ value: true }});
+    Object.defineProperty(this, "_state", {{ value: state }});
+    Object.freeze(this);
+  }};
+  Object.defineProperty(WritableStreamNative.prototype, "locked", {{
+    configurable: true,
+    get() {{ return writableStreamState(this).locked; }},
+  }});
+  const writableStreamWrite = (state, chunk) => {{
+    if (state.error !== null) return Promise.reject(new Error(state.error));
+    if (state.closed || state.closing) return Promise.reject(new TypeError("native WritableStream is closed"));
+    if (state.writeQueue >= {fetch_stream_queue_limit})
+      return Promise.reject(new RangeError("native WritableStream queue limit exceeded"));
+    state.writeQueue += 1;
+    const operation = state.writeTail
+      .then(() => state.startPromise)
+      .then(() => {{
+        if (state.error !== null) throw new Error(state.error);
+        if (typeof state.sink.write !== "function") return undefined;
+        return state.sink.write(chunk);
+      }})
+      .then(
+        () => {{ state.writeQueue -= 1; }},
+        error => {{ state.writeQueue -= 1; failWritableStream(state, error); throw error; }},
+      );
+    state.writeTail = operation.catch(() => undefined);
+    return operation;
+  }};
+  const writableStreamClose = (state) => {{
+    if (state.error !== null) return Promise.reject(new Error(state.error));
+    if (state.closePromise) return state.closePromise;
+    if (state.closed) return Promise.resolve(undefined);
+    state.closing = true;
+    state.closePromise = state.writeTail
+      .then(() => state.startPromise)
+      .then(() => {{
+        if (state.error !== null) throw new Error(state.error);
+        return typeof state.sink.close === "function" ? state.sink.close() : undefined;
+      }})
+      .then(
+        () => {{ finishWritableStream(state); }},
+        error => {{ failWritableStream(state, error); throw error; }},
+      );
+    return state.closePromise;
+  }};
+  const writableStreamAbort = (state, reason) => {{
+    if (state.aborted) return state.error === null
+      ? Promise.resolve(undefined)
+      : Promise.reject(new Error(state.error));
+    if (state.closed && state.error === null) return Promise.resolve(undefined);
+    state.aborted = true;
+    state.closing = true;
+    const error = reason instanceof Error ? reason : new Error(String(reason || "native WritableStream aborted"));
+    state.error = error.message;
+    state.closed = true;
+    settleWritableStreamClosed(state);
+    let result;
+    try {{ result = typeof state.sink.abort === "function" ? state.sink.abort(reason) : undefined; }}
+    catch (abortError) {{ return Promise.reject(abortError); }}
+    return Promise.resolve(result);
+  }};
+  WritableStreamNative.prototype.getWriter = function() {{
+    const state = writableStreamState(this);
+    if (state.locked) throw new TypeError("native WritableStream is already locked");
+    state.locked = true;
+    let released = false;
+    let resolveClosed;
+    let rejectClosed;
+    const closed = new Promise((resolve, reject) => {{
+      resolveClosed = resolve;
+      rejectClosed = reject;
+    }});
+    watchWritableStreamClosed(state, resolveClosed, rejectClosed);
+    const writer = {{
+      get ready() {{ return Promise.resolve(undefined); }},
+      get desiredSize() {{ return state.closed || state.error !== null ? null : {fetch_stream_queue_limit} - state.writeQueue; }},
+      get closed() {{ return closed; }},
+      write(chunk) {{
+        if (released) return Promise.reject(new TypeError("native WritableStream writer is released"));
+        return writableStreamWrite(state, chunk);
+      }},
+      close() {{
+        if (released) return Promise.reject(new TypeError("native WritableStream writer is released"));
+        return writableStreamClose(state);
+      }},
+      abort(reason) {{
+        if (released) return Promise.reject(new TypeError("native WritableStream writer is released"));
+        return writableStreamAbort(state, reason);
+      }},
+      releaseLock() {{
+        if (released) return;
+        released = true;
+        state.locked = false;
+      }},
+    }};
+    return Object.freeze(writer);
+  }};
+  WritableStreamNative.prototype.abort = function(reason) {{
+    const state = writableStreamState(this);
+    if (state.locked) return Promise.reject(new TypeError("native WritableStream is locked"));
+    return writableStreamAbort(state, reason);
+  }};
+  ReadableStreamNative.prototype.pipeTo = function(destination, options) {{
+    const sourceState = readableStreamState(this);
+    const destinationState = writableStreamState(destination);
+    if (sourceState.locked) throw new TypeError("native ReadableStream is locked");
+    if (destinationState.locked) throw new TypeError("native WritableStream is locked");
+    const settings = options && typeof options === "object" ? options : {{}};
+    const preventClose = settings.preventClose === true;
+    const preventAbort = settings.preventAbort === true;
+    const preventCancel = settings.preventCancel === true;
+    const signal = settings.signal === undefined ? null : settings.signal;
+    if (signal !== null && (!signal || typeof signal !== "object" || typeof signal.aborted !== "boolean" || typeof signal.addEventListener !== "function" || typeof signal.removeEventListener !== "function"))
+      throw new TypeError("native pipeTo signal is invalid");
+    if (signal && signal.aborted) return Promise.reject(signal.reason === undefined ? nativeAbortError() : signal.reason);
+    const reader = this.getReader();
+    const writer = destination.getWriter();
+    let abortListener = null;
+    const cleanup = () => {{
+      if (signal && abortListener) signal.removeEventListener("abort", abortListener);
+      reader.releaseLock();
+      writer.releaseLock();
+    }};
+    const readNext = () => reader.read().then(result => {{
+      if (result.done) return preventClose ? undefined : writer.close();
+      return writer.write(result.value).then(readNext);
+    }});
+    const abortPromise = signal
+      ? new Promise((_, reject) => {{
+          abortListener = () => reject(signal.reason === undefined ? nativeAbortError() : signal.reason);
+          signal.addEventListener("abort", abortListener);
+        }})
+      : new Promise(() => {{}});
+    const operation = Promise.race([readNext(), abortPromise]);
+    return operation.then(
+      value => {{ cleanup(); return value; }},
+      error => {{
+        const actions = [];
+        if (!preventAbort) actions.push(writer.abort(error).catch(() => undefined));
+        if (!preventCancel) actions.push(reader.cancel(error).catch(() => undefined));
+        return Promise.all(actions).then(() => {{ cleanup(); throw error; }});
+      }},
+    );
+  }};
+  ReadableStreamNative.prototype.pipeThrough = function(transform, options) {{
+    if (!transform || typeof transform !== "object") throw new TypeError("native pipeThrough transform is invalid");
+    const writable = transform.writable;
+    const readable = transform.readable;
+    writableStreamState(writable);
+    readableStreamState(readable);
+    this.pipeTo(writable, options);
+    return readable;
+  }};
+  globalThis.WritableStream = WritableStreamNative;
   globalThis.__glassDispatchFetchStreamEvent = (streamId, payload) => {{
     const group = fetchStreamGroup(streamId);
     if (!payload || typeof payload !== "object" || group.done) return null;

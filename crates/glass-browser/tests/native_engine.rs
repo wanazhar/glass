@@ -5348,6 +5348,76 @@ async fn native_local_response_objects_support_stream_bodies_and_tee() {
 }
 
 #[tokio::test]
+async fn native_local_streams_pipe_to_bounded_writable_sinks() {
+    let config = NativeEngineConfig::default()
+        .with_fixture("fixture://stream-piping", "<p>Stream piping</p>")
+        .unwrap()
+        .with_initial_url("fixture://stream-piping");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            r#"(async () => {
+                const events = [];
+                const sink = new WritableStream({
+                    write(value) { events.push('write:' + value); },
+                    close() { events.push('close'); },
+                });
+                const source = new ReadableStream({
+                    start(controller) {
+                        controller.enqueue('one');
+                        controller.enqueue('two');
+                        controller.close();
+                    },
+                });
+                await source.pipeTo(sink);
+                const writer = sink.getWriter();
+                const writerClosed = writer.closed.then(() => 'resolved', error => 'rejected:' + error.name);
+                const afterPipe = [source.locked, sink.locked, writer.desiredSize];
+                await writerClosed;
+                writer.releaseLock();
+                const failureEvents = [];
+                const failingSource = new ReadableStream({
+                    start(controller) { controller.enqueue('bad'); },
+                    cancel(reason) { failureEvents.push('cancel:' + reason.message); },
+                });
+                const failingSink = new WritableStream({
+                    write() { throw new Error('sink-failure'); },
+                    abort(reason) { failureEvents.push('abort:' + reason.message); },
+                });
+                const failure = await failingSource.pipeTo(failingSink).then(() => 'resolved', error => error.message);
+                globalThis.streamPipeResult = {
+                    events,
+                    afterPipe,
+                    writerClosed: await writerClosed,
+                    failure,
+                    failureEvents,
+                    failingSourceLocked: failingSource.locked,
+                    failingSinkLocked: failingSink.locked,
+                };
+            })()"#,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.streamPipeResult")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "events": ["write:one", "write:two", "close"],
+            "afterPipe": [false, true, null],
+            "writerClosed": "resolved",
+            "failure": "sink-failure",
+            "failureEvents": ["abort:sink-failure", "cancel:sink-failure"],
+            "failingSourceLocked": false,
+            "failingSinkLocked": false
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_script_applies_bounded_dom_commands_once() {
     let config = NativeEngineConfig::default()
         .with_fixture(

@@ -11,7 +11,7 @@ use super::args::{
     WorkflowAuthoringCommand, WorkspaceCommand,
 };
 #[cfg(feature = "native-engine")]
-use crate::browser::native_engine::NativeEngineConfig;
+use crate::browser::native_engine::{NativeEngineConfig, NativeFile};
 use crate::browser::policy::{BrowserPolicy, PolicyCapability, PolicyPreset};
 use crate::browser::profile::ProfileManager;
 use crate::browser::runtime::{BrowserRuntime, BrowserRuntimeSession};
@@ -575,6 +575,7 @@ fn validate_alternative_runtime_command(
         }
         Commands::AcceptDialog | Commands::DismissDialog if native => Ok(()),
         Commands::Download { .. } if native => Ok(()),
+        Commands::Upload { .. } if native => Ok(()),
         Commands::Navigate { .. }
         | Commands::Click { .. }
         | Commands::Type { .. }
@@ -949,6 +950,31 @@ async fn run_alternative_runtime_command(
             .await?,
             response_mode,
         ),
+        Commands::Upload {
+            target,
+            files,
+            expected_revision,
+        } if session.runtime().is_native() => {
+            #[cfg(feature = "native-engine")]
+            {
+                policy.require(PolicyCapability::Upload)?;
+                let files = files
+                    .iter()
+                    .map(|path| {
+                        let path = policy.require_existing_path(path)?;
+                        NativeFile::from_path(&path).map_err(Into::into)
+                    })
+                    .collect::<BrowserResult<Vec<_>>>()?;
+                print_json_mode(
+                    &session
+                        .native_upload_files(target, files, *expected_revision)
+                        .await?,
+                    response_mode,
+                )
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
+        }
         Commands::ClickAt { x, y } if session.runtime().is_native() => {
             let target = native_point_locator(*x, *y)?;
             print_json_mode(

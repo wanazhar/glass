@@ -54,7 +54,10 @@ pub use engine::{
 };
 pub use error::{NativeEngineError, NativeWorkerFailureKind};
 pub use history::{NativeHistory, NativeHistoryDirection, NativeHistoryEntry};
-pub use interaction::{MAX_NATIVE_EFFECTS, NativeAction, NativeEffect, NativeEventKind};
+pub use interaction::{
+    MAX_NATIVE_EFFECTS, MAX_NATIVE_FILE_BYTES, MAX_NATIVE_FILE_COUNT, MAX_NATIVE_FILE_TOTAL_BYTES,
+    NativeAction, NativeEffect, NativeEventKind, NativeFile,
+};
 pub(crate) use javascript::{
     NativeFrameScriptBinding, NativeFrameScriptContext, NativeFrameScriptRequest,
     NativeFrameScriptWindow, NativePopupRequest, NativePostMessageRequest, NativeScriptCommand,

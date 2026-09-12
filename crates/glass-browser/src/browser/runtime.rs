@@ -11,7 +11,9 @@ use super::bidi_backend::BidiBackendConfig;
 #[cfg(feature = "native-engine")]
 use super::native_backend::NativeFrameInspectionSnapshot;
 #[cfg(feature = "native-engine")]
-use super::native_engine::{NativeEngineConfig, NativePreflightAction, NativeTargetPreflight};
+use super::native_engine::{
+    NativeEngineConfig, NativeFile, NativePreflightAction, NativeTargetPreflight,
+};
 use crate::browser_backend::{
     ActionRequest, ActionResult, BackendProfile, BrowserBackendDispatcher, BrowsingContext,
     ContextRequest, EffectsRequest, EffectsResult, EvidenceLevel, EvidenceRequest, EvidenceResult,
@@ -522,6 +524,60 @@ impl BrowserRuntimeSession {
         match &self.backend {
             BackendStartup::Native(backend) => Ok(backend.preflight_target(target, action).await?),
             _ => Err("native target preflight is only available on the native runtime".into()),
+        }
+    }
+
+    /// Upload bounded file objects to one fresh, uniquely-resolved native
+    /// file input while preserving the caller's optional semantic revision.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_upload_files(
+        &self,
+        target: &str,
+        files: Vec<NativeFile>,
+        expected_revision: Option<u64>,
+    ) -> BrowserResult<ActionResult> {
+        let _operation = self.operation_lock.lock().await;
+        NativeFile::validate_many(&files)?;
+        let observation = self.native_semantic_observation_unlocked().await?;
+        if let Some(expected_revision) = expected_revision
+            && observation.revision != expected_revision
+        {
+            return Err(Box::new(ActionContractError::stale_revision(
+                expected_revision,
+                observation.revision,
+            )));
+        }
+        let preflight = match &self.backend {
+            BackendStartup::Native(backend) => {
+                backend
+                    .preflight_target(target, NativePreflightAction::Upload)
+                    .await?
+            }
+            _ => return Err("native uploads are only available on the native runtime".into()),
+        };
+        if !preflight.unique {
+            return Err(format!(
+                "native upload target could not be resolved uniquely: {:?}",
+                preflight.error_kind
+            )
+            .into());
+        }
+        if preflight.actionable != Some(true) {
+            return Err(format!(
+                "native upload target is not actionable: {:?}",
+                preflight.actionability_reason
+            )
+            .into());
+        }
+        let frame_id = preflight
+            .frame_id
+            .as_deref()
+            .unwrap_or(&observation.page.frame_id);
+        match &self.backend {
+            BackendStartup::Native(backend) => Ok(backend
+                .upload_files_in_frame(&observation.route.target_id, frame_id, target, files)
+                .await?),
+            _ => Err("native uploads are only available on the native runtime".into()),
         }
     }
 

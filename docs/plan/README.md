@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-245` locally. The versioned
+`native-engine-browser-247` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -2138,6 +2138,15 @@ ordering; child-frame locators resolve both drag endpoints within one frame;
 and CLI/MCP dispatches use the shared semantic action contract. Exact evidence
 is recorded in
 [native-engine-browser-246](tasks/native-engine-browser-246.md).
+
+The completed native-engine-browser-247 slice wires bounded file selection into
+the native action owner. Local and HTTP(S) documents now attach validated
+in-memory file objects to unique `input[type=file]` controls, expose
+`FileList`/`File` metadata and bytes to the page realm, preserve the browser
+fake path and `FormData` file projection, and dispatch `input`/`change` through
+the existing event bridge. CLI and MCP upload paths enforce the upload policy
+before copying regular files into the native boundary. Exact evidence is
+recorded in [native-engine-browser-247](tasks/native-engine-browser-247.md).
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` now returns persistent `Attr`

@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-245`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-247`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -3822,6 +3822,19 @@ through the content worker, and frame-aware routing requires both drag
 endpoints to belong to one attached frame. CLI and MCP now reach these native
 actions through the same semantic backend request. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-246.md`.
+
+The completed native-engine-browser-247 slice extends the same action contract
+through file inputs. A policy-authorized CLI or MCP path is copied into a
+bounded `NativeFile` list before it crosses the native worker boundary; local
+and HTTP(S) documents validate the target as an enabled `input[type=file]`,
+enforce `multiple`, and commit the selected files with `input`/`change` event
+effects. The page realm receives a persistent `FileList`/`File` projection with
+metadata and bytes, fake-path value semantics, and file-valued `FormData`
+entries. The slice deliberately keeps multipart request-body serialization as
+the next transport gate: observing/constructing file-valued `FormData` is now
+real, while full native navigation/fetch upload delivery still needs the
+binary-body owner. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-247.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

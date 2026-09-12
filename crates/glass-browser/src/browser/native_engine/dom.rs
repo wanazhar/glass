@@ -6,7 +6,9 @@ use super::image::{
     MAX_NATIVE_IMAGE_FRAMES, MAX_NATIVE_IMAGE_TRANSFER_BYTES, MAX_NATIVE_IMAGE_TRANSFER_PIXELS,
     NativeImage, NativeImageFrame, NativeImageResource, decode_data_image,
 };
-use super::interaction::{NativeEventKind, validate_native_edit_key, validate_native_key};
+use super::interaction::{
+    NativeEventKind, NativeFile, validate_native_edit_key, validate_native_key,
+};
 use super::javascript::NativeScriptCommand;
 use super::layout::{NativeLayoutSnapshot, NativePoint};
 use super::paint::NativeDisplayList;
@@ -54,8 +56,9 @@ enum NativeFormEncoding {
     TextPlain,
 }
 
-const SUPPORTED_ROLES: [&str; 9] = [
+const SUPPORTED_ROLES: [&str; 10] = [
     "button", "link", "textbox", "checkbox", "radio", "combobox", "option", "heading", "img",
+    "file",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,6 +102,7 @@ pub(crate) struct NativeElementState {
     namespace_uri: Option<String>,
     attribute_namespaces: BTreeMap<String, String>,
     value: Option<String>,
+    files: Vec<NativeFile>,
     checked: bool,
     focused: bool,
     selected: bool,
@@ -120,6 +124,7 @@ impl NativeElementState {
                 })
                 .collect(),
             value: (name == "input").then(|| attributes.get("value").cloned().unwrap_or_default()),
+            files: Vec::new(),
             checked: attributes.contains_key("checked"),
             focused: false,
             selected: attributes.contains_key("selected"),
@@ -233,6 +238,8 @@ pub(crate) struct NativeElementStateWire {
     #[serde(default)]
     pub(crate) attribute_namespaces: BTreeMap<String, String>,
     pub(crate) value: Option<String>,
+    #[serde(default)]
+    pub(crate) files: Vec<NativeFile>,
     pub(crate) checked: bool,
     pub(crate) focused: bool,
     pub(crate) selected: bool,
@@ -420,6 +427,8 @@ pub(crate) struct NativeScriptElementSnapshot {
     #[serde(default)]
     pub(crate) inner_html: String,
     pub(crate) value: Option<String>,
+    #[serde(default)]
+    pub(crate) files: Vec<NativeFile>,
     pub(crate) checked: bool,
     pub(crate) selected: bool,
     pub(crate) disabled: bool,
@@ -1228,6 +1237,7 @@ impl NativeDocument {
                         .or_else(|| Some(String::new())),
                     attribute_namespaces: node.state.attribute_namespaces.clone(),
                     value: node.state.value.clone(),
+                    files: node.state.files.clone(),
                     checked: node.state.checked,
                     focused: node.state.focused,
                     selected: node.state.selected,
@@ -1497,6 +1507,9 @@ impl NativeDocument {
             } else {
                 BTreeMap::new()
             };
+            if !wire_node.state.files.is_empty() {
+                NativeFile::validate_many(&wire_node.state.files)?;
+            }
             nodes.push(NativeNode {
                 id: NativeNodeId { generation, index },
                 parent,
@@ -1506,6 +1519,7 @@ impl NativeDocument {
                     namespace_uri,
                     attribute_namespaces,
                     value: wire_node.state.value.clone(),
+                    files: wire_node.state.files.clone(),
                     checked: wire_node.state.checked,
                     focused: wire_node.state.focused,
                     selected: wire_node.state.selected,
@@ -2018,6 +2032,7 @@ impl NativeDocument {
                     text,
                     inner_html: self.element_inner_html(node.id(), max_text_bytes),
                     value: self.current_value(node.id()),
+                    files: node.state.files.clone(),
                     checked: node.state.checked,
                     selected: node.state.selected,
                     disabled: self.is_disabled(node.id()),
@@ -2503,6 +2518,48 @@ impl NativeDocument {
             (destination, NativeEventKind::DragOver),
             (destination, NativeEventKind::Drop),
             (source, NativeEventKind::DragEnd),
+        ])
+    }
+
+    /// Attach bounded file objects to one native file input and return the
+    /// browser-visible input/change event order. File selection is a direct
+    /// browser-owner operation, so it remains valid for hidden file inputs;
+    /// the file contents never become DOM attributes or locator text.
+    pub(crate) fn apply_upload(
+        &mut self,
+        id: NativeNodeId,
+        files: &[NativeFile],
+    ) -> Result<Vec<(NativeNodeId, NativeEventKind)>, NativeEngineError> {
+        NativeFile::validate_many(files)?;
+        let node = self.node(id).ok_or(NativeEngineError::DetachedTarget)?;
+        if node.element_name() != Some("input")
+            || !node
+                .attribute("type")
+                .unwrap_or("text")
+                .eq_ignore_ascii_case("file")
+        {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "upload requires an input type=file control".into(),
+            });
+        }
+        if self.is_disabled(id) {
+            return Err(NativeEngineError::DisabledTarget);
+        }
+        if node.attribute("multiple").is_none() && files.len() > 1 {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "file input does not allow multiple files".into(),
+            });
+        }
+        let fake_path = format!(r"C:\fakepath\{}", files[0].name);
+        let state = &mut self
+            .node_mut(id)
+            .ok_or(NativeEngineError::DetachedTarget)?
+            .state;
+        state.files = files.to_vec();
+        state.value = Some(fake_path);
+        Ok(vec![
+            (id, NativeEventKind::Input),
+            (id, NativeEventKind::Change),
         ])
     }
 
@@ -3138,6 +3195,27 @@ impl NativeDocument {
                 | NativeScriptCommand::PostMessage { .. }
                 | NativeScriptCommand::FrameScriptBatch { .. }
                 | NativeScriptCommand::FrameScript { .. } => {}
+                NativeScriptCommand::ClearFileInput { node_index } => {
+                    let id = self.resolve_script_node_id(*node_index, &script_nodes);
+                    let node = self
+                        .script_node(id, &script_nodes)
+                        .ok_or(NativeEngineError::DetachedTarget)?;
+                    if node.element_name() != Some("input")
+                        || !node
+                            .attribute("type")
+                            .unwrap_or("text")
+                            .eq_ignore_ascii_case("file")
+                    {
+                        return Err(NativeEngineError::TargetNotActionable {
+                            reason: "clear file input requires an input type=file control".into(),
+                        });
+                    }
+                    let node = self
+                        .script_node_mut(id, &script_nodes)
+                        .ok_or(NativeEngineError::DetachedTarget)?;
+                    node.state.files.clear();
+                    node.state.value = Some(String::new());
+                }
                 NativeScriptCommand::SetValue { node_index, value } => {
                     self.apply_script_value(*node_index, value, &script_nodes)?;
                 }
@@ -3474,6 +3552,24 @@ impl NativeDocument {
                     .state
                     .selected = matching == Some(option_id);
             }
+            return Ok(());
+        }
+        if element_name == "input"
+            && self
+                .node(id)
+                .and_then(|node| node.attribute("type"))
+                .is_some_and(|input_type| input_type.eq_ignore_ascii_case("file"))
+        {
+            if !value.is_empty() {
+                return Err(NativeEngineError::TargetNotActionable {
+                    reason: "script cannot assign a non-empty file input value".into(),
+                });
+            }
+            let node = self
+                .script_node_mut(id, script_nodes)
+                .ok_or(NativeEngineError::DetachedTarget)?;
+            node.state.files.clear();
+            node.state.value = Some(String::new());
             return Ok(());
         }
         if !matches!(element_name, "input" | "textarea") {
@@ -4505,7 +4601,8 @@ impl NativeDocument {
                 .to_ascii_lowercase()
         });
         let empty = matches!(role.as_str(), "textbox" | "combobox")
-            .then(|| self.current_value(id).is_none_or(|value| value.is_empty()));
+            .then(|| self.current_value(id).is_none_or(|value| value.is_empty()))
+            .or_else(|| (role == "file").then(|| node.state.files.is_empty()));
         let checked = matches!(role.as_str(), "checkbox" | "radio").then(|| node.state.checked);
         let selected = (role == "option").then_some(node.state.selected);
         Some(NativeSemanticNode {
@@ -5430,6 +5527,7 @@ impl NativeDocument {
                 "button" | "submit" | "reset" | "image" => Some("button"),
                 "checkbox" => Some("checkbox"),
                 "radio" => Some("radio"),
+                "file" => Some("file"),
                 "text" | "email" | "password" | "search" | "tel" | "url" => Some("textbox"),
                 _ => None,
             },

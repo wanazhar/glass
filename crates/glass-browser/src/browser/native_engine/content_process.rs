@@ -9,7 +9,7 @@ use super::dom::{
 };
 use super::error::{NativeEngineError, NativeWorkerFailureKind};
 use super::interaction::{
-    MAX_NATIVE_EFFECTS, NativeEventKind, validate_native_edit_key, validate_native_key,
+    MAX_NATIVE_EFFECTS, NativeEventKind, NativeFile, validate_native_edit_key, validate_native_key,
 };
 use super::javascript::{
     MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_DIALOGS, MAX_NATIVE_HISTORY_STATE_BYTES,
@@ -47,8 +47,11 @@ use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::time::timeout;
 use url::Url;
 
-const MAX_CONTENT_IPC_FRAME_BYTES: usize = 4 * 1024 * 1024;
-const MAX_CONTENT_DOCUMENT_WIRE_BYTES: usize = 2 * 1024 * 1024;
+// File-input mutations carry bounded in-memory file objects through the same
+// document snapshot channel. Keep the channel finite while leaving room for
+// the base64 envelope and the rest of the document state.
+const MAX_CONTENT_IPC_FRAME_BYTES: usize = 16 * 1024 * 1024;
+const MAX_CONTENT_DOCUMENT_WIRE_BYTES: usize = 16 * 1024 * 1024;
 const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 8;
 const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
@@ -3577,12 +3580,30 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             )
                         })?,
                     },
+                    Some("upload") => {
+                        let files = serde_json::from_value::<Vec<NativeFile>>(
+                            action.get("files").cloned().ok_or_else(|| {
+                                NativeEngineError::invalid(
+                                    "content-process upload files",
+                                    "must be present",
+                                )
+                            })?,
+                        )
+                        .map_err(|_| {
+                            NativeEngineError::invalid(
+                                "content-process upload files",
+                                "must be a valid native file list",
+                            )
+                        })?;
+                        NativeFile::validate_many(&files)?;
+                        NativeFormAction::Upload(files)
+                    }
                     _ => {
                         let response = content_error_response(
                             id,
                             NativeEngineError::invalid(
                                 "content-process form action",
-                                "kind must be clear, select, hover, or drag",
+                                "kind must be clear, select, hover, drag, or upload",
                             ),
                         );
                         write_value_frame(&mut stdout, &response).await?;
@@ -5182,6 +5203,7 @@ enum NativeFormAction {
     Select(String),
     Hover,
     Drag { destination_node_index: u32 },
+    Upload(Vec<NativeFile>),
 }
 
 fn mutate_form_action_with_event_bridge(
@@ -5207,6 +5229,7 @@ fn mutate_form_action_with_event_bridge(
             node_id,
             NativeNodeId::from_parts(current.generation(), destination_node_index),
         )?,
+        NativeFormAction::Upload(files) => next.apply_upload(node_id, &files)?,
     };
     let default_events = events.clone();
     for (event_node, event_kind) in default_events {

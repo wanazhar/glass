@@ -3,8 +3,9 @@ use super::css::{
     AlignContentValue, AlignItemsValue, AlignSelfValue, DirectionValue, DisplayValue,
     FlexBasisValue, FlexDirectionValue, FlexWrapValue, JustifyContentValue, NativeAutoEdges,
     NativeBorderRadius, NativeBoxEdges, NativeComputedStyle, NativeGridTrack, NativeGridTrackList,
-    TextAlignLastValue, TextAlignValue, TextJustifyValue, TextOverflowValue, TextTransformValue,
-    VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
+    NativePositionOffset, NativePositionValue, TextAlignLastValue, TextAlignValue,
+    TextJustifyValue, TextOverflowValue, TextTransformValue, VerticalAlignValue, WhiteSpaceValue,
+    WordBreakValue,
 };
 use super::dom::{NativeDocument, NativeNode, NativeNodeId, NativeNodeKind};
 use super::error::NativeEngineError;
@@ -501,6 +502,22 @@ fn constrain_dimension(value: u32, minimum: Option<u32>, maximum: Option<u32>) -
     let minimum = minimum.unwrap_or_default();
     let value = value.max(minimum);
     maximum.map_or(value, |maximum| value.min(maximum.max(minimum)))
+}
+
+fn shift_coordinate(value: u32, offset: i64) -> u32 {
+    if offset.is_negative() {
+        value.saturating_sub(u32::try_from(offset.unsigned_abs()).unwrap_or(u32::MAX))
+    } else {
+        value.saturating_add(u32::try_from(offset).unwrap_or(u32::MAX))
+    }
+}
+
+fn relative_offset(primary: NativePositionOffset, opposite: NativePositionOffset) -> i64 {
+    primary
+        .length()
+        .map(i64::from)
+        .or_else(|| opposite.length().map(|value| -i64::from(value)))
+        .unwrap_or(0)
 }
 
 fn outer_width_inset(style: NativeComputedStyle) -> u32 {
@@ -1855,6 +1872,7 @@ impl<'a> LayoutBuilder<'a> {
             self.intrinsic_inline_height(id).max(minimum_line_height)
         };
         let box_index = self.boxes.len();
+        let text_start = self.text_runs.len();
         self.boxes.push(NativeLayoutBox {
             node_id: id,
             rect: NativeRect {
@@ -1946,6 +1964,16 @@ impl<'a> LayoutBuilder<'a> {
             width: content_width,
             height: content_height,
         };
+        if style.position() == NativePositionValue::Relative {
+            self.shift_layout(
+                box_index,
+                self.boxes.len(),
+                text_start,
+                self.text_runs.len(),
+                relative_offset(style.left(), style.right()),
+                relative_offset(style.top(), style.bottom()),
+            );
+        }
         if grouped {
             self.paint_order
                 .push(NativeLayoutPaintOrder::EndOpacityGroup { node_id: id });
@@ -2011,6 +2039,32 @@ impl<'a> LayoutBuilder<'a> {
         let text_start = text_start.min(text_end);
         for text_run in &mut self.text_runs[text_start..text_end] {
             text_run.origin.y = shift(text_run.origin.y);
+        }
+    }
+
+    fn shift_layout(
+        &mut self,
+        box_start: usize,
+        box_end: usize,
+        text_start: usize,
+        text_end: usize,
+        offset_x: i64,
+        offset_y: i64,
+    ) {
+        let box_end = box_end.min(self.boxes.len());
+        let box_start = box_start.min(box_end);
+        for layout_box in &mut self.boxes[box_start..box_end] {
+            layout_box.rect.x = shift_coordinate(layout_box.rect.x, offset_x);
+            layout_box.rect.y = shift_coordinate(layout_box.rect.y, offset_y);
+            layout_box.content_rect.x = shift_coordinate(layout_box.content_rect.x, offset_x);
+            layout_box.content_rect.y = shift_coordinate(layout_box.content_rect.y, offset_y);
+        }
+
+        let text_end = text_end.min(self.text_runs.len());
+        let text_start = text_start.min(text_end);
+        for text_run in &mut self.text_runs[text_start..text_end] {
+            text_run.origin.x = shift_coordinate(text_run.origin.x, offset_x);
+            text_run.origin.y = shift_coordinate(text_run.origin.y, offset_y);
         }
     }
 

@@ -33346,6 +33346,73 @@ fn native_css_background_shorthand_expands_into_one_positioned_layer() {
 }
 
 #[test]
+fn native_css_relative_position_translates_subtree_without_reflow() {
+    let document = NativeDocument::parse(
+        "<div id='first' style='width:24px;height:8px;background:red;position:relative;left:4px;top:3px'><span>Hi</span></div><div id='second' style='width:8px;height:8px;background:blue'></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let first = document.resolve_target("id=first").unwrap();
+    let second = document.resolve_target("id=second").unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 24,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(
+        layout.box_for(first),
+        Some(NativeRect {
+            x: 4,
+            y: 3,
+            width: 24,
+            height: 8,
+        })
+    );
+    assert_eq!(layout.box_for(second).unwrap().y, 8);
+    assert_eq!(layout.hit_test(23, 4).unwrap(), Some(first));
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == first
+                    && *rect == NativeRect { x: 4, y: 3, width: 24, height: 8 }
+                    && *color == NativeColor::RED
+        )
+    }));
+}
+
+#[test]
+fn native_css_relative_position_uses_opposite_edge_when_primary_is_auto() {
+    let document = NativeDocument::parse(
+        "<div style='width:30px;height:30px;padding:10px;box-sizing:border-box'><div id='target' style='width:8px;height:8px;position:relative;right:3px;bottom:4px;background:blue'></div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let target = document.resolve_target("id=target").unwrap();
+    let layout = document
+        .layout(Viewport {
+            width: 40,
+            height: 40,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+
+    assert_eq!(
+        layout.box_for(target),
+        Some(NativeRect {
+            x: 7,
+            y: 6,
+            width: 8,
+            height: 8,
+        })
+    );
+}
+
+#[test]
 fn native_stylesheet_background_geometry_cascades_into_paint() {
     let source = native_test_png_data_url();
     let markup = format!(

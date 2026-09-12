@@ -596,6 +596,29 @@ pub(crate) enum DisplayValue {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum NativePositionValue {
+    #[default]
+    Static,
+    Relative,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum NativePositionOffset {
+    #[default]
+    Auto,
+    Length(i32),
+}
+
+impl NativePositionOffset {
+    pub(crate) const fn length(self) -> Option<i32> {
+        match self {
+            Self::Auto => None,
+            Self::Length(value) => Some(value),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum NativeGridTrack {
     Length(u32),
     Fr(u32),
@@ -1240,6 +1263,11 @@ impl NativeAutoEdges {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct NativeComputedStyle {
     display: DisplayValue,
+    position: NativePositionValue,
+    top: NativePositionOffset,
+    right: NativePositionOffset,
+    bottom: NativePositionOffset,
+    left: NativePositionOffset,
     grid_template_columns: NativeGridTrackList,
     grid_template_rows: NativeGridTrackList,
     visibility_hidden: bool,
@@ -1310,6 +1338,26 @@ impl NativeComputedStyle {
 
     pub(crate) const fn display(self) -> DisplayValue {
         self.display
+    }
+
+    pub(crate) const fn position(self) -> NativePositionValue {
+        self.position
+    }
+
+    pub(crate) const fn top(self) -> NativePositionOffset {
+        self.top
+    }
+
+    pub(crate) const fn right(self) -> NativePositionOffset {
+        self.right
+    }
+
+    pub(crate) const fn bottom(self) -> NativePositionOffset {
+        self.bottom
+    }
+
+    pub(crate) const fn left(self) -> NativePositionOffset {
+        self.left
     }
 
     pub(crate) const fn grid_template_columns(self) -> NativeGridTrackList {
@@ -1675,6 +1723,16 @@ impl NativeStylesheet {
     ) -> NativeComputedStyle {
         let mut display: [Option<CascadeValue<LocalCascadeDeclaration<DisplayValue>>>;
             MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
+        let mut position: [Option<CascadeValue<LocalCascadeDeclaration<NativePositionValue>>>;
+            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
+        let mut top: [Option<CascadeValue<LocalCascadeDeclaration<NativePositionOffset>>>;
+            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
+        let mut right: [Option<CascadeValue<LocalCascadeDeclaration<NativePositionOffset>>>;
+            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
+        let mut bottom: [Option<CascadeValue<LocalCascadeDeclaration<NativePositionOffset>>>;
+            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
+        let mut left: [Option<CascadeValue<LocalCascadeDeclaration<NativePositionOffset>>>;
+            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
         let mut grid_template_columns: [Option<
             CascadeValue<LocalCascadeDeclaration<NativeGridTrackList>>,
         >; MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
@@ -1849,6 +1907,46 @@ impl NativeStylesheet {
                 false,
                 rule.declarations.local_importance.display,
                 &mut display,
+            );
+            apply_local_important_cascade_declaration(
+                rule.declarations.position,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.local_importance.position,
+                &mut position,
+            );
+            apply_local_important_cascade_declaration(
+                rule.declarations.top,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.local_importance.top,
+                &mut top,
+            );
+            apply_local_important_cascade_declaration(
+                rule.declarations.right,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.local_importance.right,
+                &mut right,
+            );
+            apply_local_important_cascade_declaration(
+                rule.declarations.bottom,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.local_importance.bottom,
+                &mut bottom,
+            );
+            apply_local_important_cascade_declaration(
+                rule.declarations.left,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.local_importance.left,
+                &mut left,
             );
             apply_local_important_cascade_declaration(
                 rule.declarations.grid_template_columns,
@@ -2358,6 +2456,46 @@ impl NativeStylesheet {
                 true,
                 declarations.local_importance.display,
                 &mut display,
+            );
+            apply_local_important_cascade_declaration(
+                declarations.position,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.local_importance.position,
+                &mut position,
+            );
+            apply_local_important_cascade_declaration(
+                declarations.top,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.local_importance.top,
+                &mut top,
+            );
+            apply_local_important_cascade_declaration(
+                declarations.right,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.local_importance.right,
+                &mut right,
+            );
+            apply_local_important_cascade_declaration(
+                declarations.bottom,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.local_importance.bottom,
+                &mut bottom,
+            );
+            apply_local_important_cascade_declaration(
+                declarations.left,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.local_importance.left,
+                &mut left,
             );
             apply_local_important_cascade_declaration(
                 declarations.grid_template_columns,
@@ -2967,6 +3105,11 @@ impl NativeStylesheet {
             resolve_local_inherited_cascade_declaration(box_sizing, inherited.box_sizing);
         NativeComputedStyle {
             display: resolve_local_cascade_declaration(display, DisplayValue::Auto),
+            position: resolve_local_cascade_declaration(position, NativePositionValue::Static),
+            top: resolve_local_cascade_declaration(top, NativePositionOffset::Auto),
+            right: resolve_local_cascade_declaration(right, NativePositionOffset::Auto),
+            bottom: resolve_local_cascade_declaration(bottom, NativePositionOffset::Auto),
+            left: resolve_local_cascade_declaration(left, NativePositionOffset::Auto),
             grid_template_columns: resolve_local_cascade_declaration(
                 grid_template_columns,
                 NativeGridTrackList::default(),
@@ -5184,6 +5327,11 @@ struct NativeFlexDeclarationImportance {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct NativeLocalDeclarationImportance {
     display: bool,
+    position: bool,
+    top: bool,
+    right: bool,
+    bottom: bool,
+    left: bool,
     visibility: bool,
     opacity: bool,
 }
@@ -5240,6 +5388,11 @@ struct NativeTextDeclarationImportance {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct NativeDeclarations {
     display: Option<LocalCascadeDeclaration<DisplayValue>>,
+    position: Option<LocalCascadeDeclaration<NativePositionValue>>,
+    top: Option<LocalCascadeDeclaration<NativePositionOffset>>,
+    right: Option<LocalCascadeDeclaration<NativePositionOffset>>,
+    bottom: Option<LocalCascadeDeclaration<NativePositionOffset>>,
+    left: Option<LocalCascadeDeclaration<NativePositionOffset>>,
     grid_template_columns: Option<LocalCascadeDeclaration<NativeGridTrackList>>,
     grid_template_columns_important: bool,
     grid_template_rows: Option<LocalCascadeDeclaration<NativeGridTrackList>>,
@@ -5640,6 +5793,11 @@ fn parse_style_rule(
     );
     collect_background_image_sources(&source[open + 1..close], context.background_image_sources);
     let has_supported_declaration = declarations.display.is_some()
+        || declarations.position.is_some()
+        || declarations.top.is_some()
+        || declarations.right.is_some()
+        || declarations.bottom.is_some()
+        || declarations.left.is_some()
         || declarations.grid_template_columns.is_some()
         || declarations.grid_template_rows.is_some()
         || declarations.visibility.is_some()
@@ -5854,6 +6012,10 @@ fn parse_declarations_with_diagnostics(
         let property_name = property.to_ascii_lowercase();
         let supported = match property_name.as_str() {
             "display" => supports_display_declaration(value),
+            "position" => parse_position_declaration(value).is_some(),
+            "top" | "right" | "bottom" | "left" => {
+                parse_position_offset_declaration(value).is_some()
+            }
             "grid-template-columns" | "grid-template-rows" => {
                 parse_grid_track_list_declaration(value).is_some()
             }
@@ -6032,6 +6194,11 @@ fn is_known_css_property(property: &str) -> bool {
     matches!(
         property,
         "display"
+            | "position"
+            | "top"
+            | "right"
+            | "bottom"
+            | "left"
             | "grid-template-columns"
             | "grid-template-rows"
             | "visibility"
@@ -6242,6 +6409,36 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 if let Some(parsed) = parse_display_declaration(value) {
                     declarations.display = Some(parsed);
                     declarations.local_importance.display = important;
+                }
+            }
+            "position" => {
+                if let Some(parsed) = parse_position_declaration(value) {
+                    declarations.position = Some(parsed);
+                    declarations.local_importance.position = important;
+                }
+            }
+            "top" => {
+                if let Some(parsed) = parse_position_offset_declaration(value) {
+                    declarations.top = Some(parsed);
+                    declarations.local_importance.top = important;
+                }
+            }
+            "right" => {
+                if let Some(parsed) = parse_position_offset_declaration(value) {
+                    declarations.right = Some(parsed);
+                    declarations.local_importance.right = important;
+                }
+            }
+            "bottom" => {
+                if let Some(parsed) = parse_position_offset_declaration(value) {
+                    declarations.bottom = Some(parsed);
+                    declarations.local_importance.bottom = important;
+                }
+            }
+            "left" => {
+                if let Some(parsed) = parse_position_offset_declaration(value) {
+                    declarations.left = Some(parsed);
+                    declarations.local_importance.left = important;
                 }
             }
             "grid-template-columns" => {
@@ -8913,6 +9110,48 @@ fn supports_display_declaration(value: &str) -> bool {
                 | "grid"
                 | "contents"
         )
+}
+
+fn parse_position(value: &str) -> Option<NativePositionValue> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "static" => Some(NativePositionValue::Static),
+        "relative" => Some(NativePositionValue::Relative),
+        _ => None,
+    }
+}
+
+fn parse_position_declaration(value: &str) -> Option<LocalCascadeDeclaration<NativePositionValue>> {
+    if is_inherit_keyword(value) {
+        return Some(LocalCascadeDeclaration::Inherit);
+    }
+    parse_local_reset_cascade_declaration(value, parse_position)
+}
+
+fn parse_position_offset(value: &str) -> Option<NativePositionOffset> {
+    let value = value.trim().to_ascii_lowercase();
+    if value == "auto" {
+        return Some(NativePositionOffset::Auto);
+    }
+    let value = if value == "0" {
+        "0"
+    } else {
+        value.strip_suffix("px")?.trim()
+    };
+    if value.is_empty() {
+        return None;
+    }
+    let value = value.parse::<i64>().ok()?;
+    (value.abs() <= i64::from(MAX_NATIVE_VIEWPORT_DIMENSION))
+        .then_some(NativePositionOffset::Length(i32::try_from(value).ok()?))
+}
+
+fn parse_position_offset_declaration(
+    value: &str,
+) -> Option<LocalCascadeDeclaration<NativePositionOffset>> {
+    if is_inherit_keyword(value) {
+        return Some(LocalCascadeDeclaration::Inherit);
+    }
+    parse_local_reset_cascade_declaration(value, parse_position_offset)
 }
 
 fn parse_grid_track_list_declaration(

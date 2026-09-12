@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-245` slice; the bounded foundation below remains
+`native-engine-browser-247` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5639,6 +5639,17 @@ bounded `dragstart`/`dragenter`/`dragover`/`drop`/`dragend` sequence. Local and
 HTTP(S) content-worker listeners receive the same event metadata, and child
 frame actions resolve both drag endpoints within one owner frame. Exact
 evidence is recorded in `docs/plan/tasks/native-engine-browser-246.md`.
+
+The completed native-engine-browser-247 slice carries bounded file selection
+through the native owner. `NativeFile` copies a regular file into a bounded
+engine-owned object with a leaf name, media type, modification time, and bytes;
+the runtime preflights a unique file input and routes the action through the
+same root/parked-frame and local/content-worker coordinators used by other
+semantic actions. The JavaScript host exposes live `FileList` and `File`
+objects, `input.value` uses the browser fake path, `FormData` sees the selected
+file, and `input`/`change` listeners run before the revision is committed.
+CLI and MCP path handling remains policy-gated before filesystem reads. Exact
+evidence is recorded in `docs/plan/tasks/native-engine-browser-247.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

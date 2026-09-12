@@ -6,7 +6,7 @@
 
 use super::native_engine::{
     MAX_NATIVE_EFFECTS, MAX_NATIVE_VIEWPORT_DIMENSION, NativeAction, NativeEffect, NativeEngine,
-    NativeEngineConfig, NativeEngineError, NativeEventKind, NativeFrameScriptBinding,
+    NativeEngineConfig, NativeEngineError, NativeEventKind, NativeFile, NativeFrameScriptBinding,
     NativeFrameScriptContext, NativeFrameScriptRequest, NativeFrameScriptWindow,
     NativeHistoryDirection, NativeInspectionSnapshot, NativeOrigin, NativePoint,
     NativePopupRequest, NativePostMessageRequest, NativePreflightAction, NativeScriptCommand,
@@ -540,6 +540,75 @@ impl NativeEngineBackend {
         if accepted {
             self.set_active_frame_focus(frame_id)?;
         }
+        self.process_selected_frame_events(frame_id, runtime_effects.events)
+            .await?;
+        self.process_pending_frame_scripts(runtime_effects.frame_scripts)
+            .await?;
+        self.process_pending_browser_effects(
+            runtime_effects.browser.0,
+            runtime_effects.browser.1,
+            runtime_effects.browser.2,
+            runtime_effects.browser.3,
+        )
+        .await?;
+        Ok(ActionResult {
+            context_id: context_id.to_owned(),
+            revision,
+            accepted,
+        })
+    }
+
+    /// Upload bounded in-memory file objects to one exact native frame.
+    /// Unlike pointer and keyboard actions, file selection does not require a
+    /// visible hit target and therefore does not update the focused frame.
+    pub async fn upload_files_in_frame(
+        &self,
+        context_id: &str,
+        frame_id: &str,
+        target: &str,
+        files: Vec<NativeFile>,
+    ) -> Result<ActionResult, BrowserBackendError> {
+        NativeFile::validate_many(&files).map_err(native_error)?;
+        {
+            let mut targets = self.lock_targets(BackendOperation::Action)?;
+            let active_context_id =
+                targets
+                    .active_target_id
+                    .clone()
+                    .ok_or_else(|| BrowserBackendError::Lifecycle {
+                        operation: "upload".into(),
+                        state: "no-target-selected".into(),
+                        reason: "select an available native page target before uploading".into(),
+                    })?;
+            require_context_id(context_id, &active_context_id)?;
+            validate_native_topology_id(frame_id)?;
+            let engine = self.lock_engine_raw(BackendOperation::Action)?;
+            let root_frame_id = targets.active_frames.active_frame_id.clone();
+            reconcile_native_frames(&mut targets.active_frames, &engine).await?;
+            if frame_id != root_frame_id && !targets.active_frames.parked.contains_key(frame_id) {
+                return Err(BrowserBackendError::SelectionFailed {
+                    reason: "native upload frame is no longer attached; inspect again".into(),
+                });
+            }
+        }
+        let route =
+            self.frame_route(frame_id)?
+                .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                    reason: "native upload frame disappeared before action dispatch".into(),
+                })?;
+        let proxy_updates = self.window_proxy_updates(frame_id)?;
+        let (revision, accepted, runtime_effects, owner_id) = self
+            .apply_action_to_native_frame(
+                route,
+                frame_id,
+                NativeAction::Upload {
+                    target: target.to_owned(),
+                    files,
+                },
+                &proxy_updates,
+            )
+            .await?;
+        self.sync_target_name(&owner_id, &runtime_effects.window_name)?;
         self.process_selected_frame_events(frame_id, runtime_effects.events)
             .await?;
         self.process_pending_frame_scripts(runtime_effects.frame_scripts)

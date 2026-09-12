@@ -8,7 +8,7 @@ use glass_browser::browser::native_engine::{
     MAX_NATIVE_DIAGNOSTIC_DETAIL_BYTES, MAX_NATIVE_DIAGNOSTICS, NativeAction, NativeBorderRadius,
     NativeBorderStyle, NativeColor, NativeDiagnosticCode, NativeDiagnosticSource,
     NativeDisplayCommand, NativeDocument, NativeEngine, NativeEngineConfig, NativeEngineError,
-    NativeEngineLimits, NativeEventKind, NativeHistoryDirection, NativeLifecycleState,
+    NativeEngineLimits, NativeEventKind, NativeFile, NativeHistoryDirection, NativeLifecycleState,
     NativeNodeId, NativePoint, NativePreflightAction, NativeRect, NativeRuntimeState,
     NativeRuntimeTraceKind, NativeSurface, NativeSvgStrokeShape, NativeTextDecorationSkipInk,
     NativeTextDecorationSkipSpaces, NativeTextDecorationStyle, NativeWorkerFailureKind, Viewport,
@@ -5603,6 +5603,54 @@ async fn native_local_pointer_actions_dispatch_browser_event_order() {
 }
 
 #[tokio::test]
+async fn native_local_upload_populates_file_list_and_dispatches_input_change() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://upload",
+            "<form id='form'><input id='upload' type='file' name='asset' multiple></form><script>globalThis.uploadEvents = []; const input = document.getElementById('upload'); input.addEventListener('input', event => uploadEvents.push(event.type + ':' + event.target.id)); input.addEventListener('change', event => uploadEvents.push(event.type + ':' + event.target.id));</script>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://upload");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    let uploaded = engine
+        .action(NativeAction::Upload {
+            target: "id=upload".into(),
+            files: vec![NativeFile {
+                name: "payload.bin".into(),
+                media_type: "application/octet-stream".into(),
+                last_modified: 1234,
+                bytes: vec![0, 255, 128, b'G'],
+            }],
+        })
+        .unwrap();
+    assert!(uploaded.accepted);
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(async () => { const input = document.getElementById('upload'); const file = input.files.item(0); const formFile = new FormData(document.getElementById('form')).get('asset'); return { list: input.files instanceof FileList, length: input.files.length, itemMissing: input.files.item(1), name: file.name, type: file.type, size: file.size, modified: file.lastModified, bytes: Array.from(await file.bytes()), value: input.value, formFile: [formFile instanceof File, formFile.name, formFile.size, Array.from(await formFile.bytes())], events: globalThis.uploadEvents }; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "list": true,
+            "length": 1,
+            "itemMissing": null,
+            "name": "payload.bin",
+            "type": "application/octet-stream",
+            "size": 4,
+            "modified": 1234,
+            "bytes": [0, 255, 128, 71],
+            "value": r"C:\fakepath\payload.bin",
+            "formFile": [true, "payload.bin", 4, [0, 255, 128, 71]],
+            "events": ["input:upload", "change:upload"],
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_keypress_edits_focused_text_and_honors_keydown_cancel() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -9823,6 +9871,63 @@ async fn native_content_process_pointer_actions_bridge_dom_events() {
                 "drop:destination",
                 "dragend:source",
             ],
+        })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_upload_bridges_file_objects_and_dom_events() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let _ = read_http_request(&mut stream).await;
+        let body = "<form id='form'><input id='upload' type='file' name='asset' multiple></form><script>globalThis.uploadEvents = []; const input = document.getElementById('upload'); input.addEventListener('input', event => uploadEvents.push(event.type + ':' + event.target.id)); input.addEventListener('change', event => uploadEvents.push(event.type + ':' + event.target.id));</script>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/upload")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let uploaded = engine
+        .action_async(NativeAction::Upload {
+            target: "id=upload".into(),
+            files: vec![NativeFile {
+                name: "worker.txt".into(),
+                media_type: "text/plain".into(),
+                last_modified: 5678,
+                bytes: b"worker upload".to_vec(),
+            }],
+        })
+        .await
+        .unwrap();
+    assert!(uploaded.accepted);
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(async () => { const input = document.getElementById('upload'); const file = input.files[0]; const formFile = new FormData(document.getElementById('form')).get('asset'); return { length: input.files.length, name: file.name, type: file.type, size: file.size, modified: file.lastModified, text: await file.text(), formFile: [formFile.name, await formFile.text()], value: input.value, events: globalThis.uploadEvents }; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "length": 1,
+            "name": "worker.txt",
+            "type": "text/plain",
+            "size": 13,
+            "modified": 5678,
+            "text": "worker upload",
+            "formFile": ["worker.txt", "worker upload"],
+            "value": r"C:\fakepath\worker.txt",
+            "events": ["input:upload", "change:upload"],
         })
     );
     engine.close_async().await.unwrap();

@@ -14,6 +14,7 @@ use super::dom::{
 };
 use super::error::NativeEngineError;
 use super::interaction::NativeEventKind;
+use super::interaction::{MAX_NATIVE_FILE_BYTES, MAX_NATIVE_FILE_TOTAL_BYTES};
 use super::layout::NativePoint;
 use super::origin::NativeOrigin;
 use fs2::FileExt;
@@ -190,6 +191,9 @@ pub(crate) enum NativeScriptCommand {
     SetValue {
         node_index: u32,
         value: String,
+    },
+    ClearFileInput {
+        node_index: u32,
     },
     SetSelection {
         node_index: u32,
@@ -5015,6 +5019,8 @@ fn document_bootstrap(
     frame_context: Option<&NativeFrameScriptContext>,
     run_timers: bool,
 ) -> Result<String, NativeEngineError> {
+    let native_file_bytes = MAX_NATIVE_FILE_BYTES;
+    let native_form_body_bytes = MAX_NATIVE_FILE_TOTAL_BYTES.saturating_add(64 * 1024);
     let state = document.script_snapshot_with_layout(
         crate::browser_backend::MAX_TEXT_BYTES,
         viewport,
@@ -6429,7 +6435,17 @@ fn document_bootstrap(
       }}
       const type = String(control.getAttribute("type") || "text").toLowerCase();
       if (["button", "reset", "submit", "image"].includes(type)) continue;
-      if (type === "file") throw new TypeError("native FormData file controls are unsupported");
+      if (type === "file") {{
+        const selectedFiles = control.files && typeof control.files.length === "number"
+          ? Array.from(control.files)
+          : [];
+        if (selectedFiles.length === 0) {{
+          entries.push([name, formDataValue(new FileNative([], "", {{ type: "", lastModified: 0 }}), "")]);
+        }} else {{
+          for (const file of selectedFiles) entries.push([name, formDataValue(file)]);
+        }}
+        continue;
+      }}
       if (["checkbox", "radio"].includes(type) && !control.checked) continue;
       if (control.tagName === "OPTION") continue;
       entries.push([name, String(control.value)]);
@@ -6528,7 +6544,7 @@ fn document_bootstrap(
     if (character === "=") return -2;
     return -1;
   }};
-  const decodeBase64 = (encoded) => {{
+  const decodeBase64 = (encoded, maxBytes = storageValueLimit) => {{
     if (typeof encoded !== "string" || encoded.length % 4 !== 0) throw new TypeError("native response bytes are not valid base64");
     const bytes = [];
     for (let index = 0; index < encoded.length; index += 4) {{
@@ -6544,12 +6560,12 @@ fn document_bootstrap(
       if (third !== -2) bytes.push(((second & 15) << 4) | (third >> 2));
       if (fourth !== -2) bytes.push(((third & 3) << 6) | fourth);
     }}
-    if (bytes.length > storageValueLimit) throw new RangeError("native Blob binary size limit exceeded");
+    if (bytes.length > maxBytes) throw new RangeError("native binary payload exceeds its limit");
     return bytes;
   }};
-  const encodeBase64 = (bytes) => {{
+  const encodeBase64 = (bytes, maxBytes = storageValueLimit) => {{
     if (!Array.isArray(bytes)) throw new TypeError("native Blob bytes are invalid");
-    if (bytes.length > storageValueLimit) throw new RangeError("native Blob binary size limit exceeded");
+    if (bytes.length > maxBytes) throw new RangeError("native binary payload exceeds its limit");
     const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let encoded = "";
     for (let index = 0; index < bytes.length; index += 3) {{
@@ -6655,6 +6671,41 @@ fn document_bootstrap(
   FileNative.prototype.constructor = FileNative;
   globalThis.Blob = BlobNative;
   globalThis.File = FileNative;
+  const FileListNative = function(entries) {{
+    const files = Array.isArray(entries) ? entries : [];
+    Object.defineProperty(this, "_files", {{ enumerable: false, configurable: false, value: files.slice() }});
+    for (let index = 0; index < this._files.length; index += 1) {{
+      Object.defineProperty(this, String(index), {{ enumerable: true, configurable: false, value: this._files[index] }});
+    }}
+  }};
+  Object.defineProperty(FileListNative.prototype, "length", {{
+    configurable: false,
+    get() {{ return this._files.length; }},
+  }});
+  FileListNative.prototype.item = function(index) {{
+    const numeric = Number(index);
+    return Number.isInteger(numeric) && numeric >= 0 && numeric < this._files.length
+      ? this._files[numeric]
+      : null;
+  }};
+  FileListNative.prototype[Symbol.iterator] = function() {{ return this._files[Symbol.iterator](); }};
+  globalThis.FileList = FileListNative;
+  const nativeFileByteLimit = {native_file_bytes};
+  const nativeFormBodyLimit = {native_form_body_bytes};
+  const nativeFileFromEntry = (entry) => {{
+    const bytes = decodeBase64(String(entry && entry.bytes || ""), nativeFileByteLimit);
+    const file = new FileNative([], String(entry && entry.name || ""), {{
+      type: String(entry && entry.type || ""),
+      lastModified: Number(entry && entry.lastModified) || 0,
+    }});
+    file._bytes = bytes;
+    file._text = utf8TextFromBytes(bytes);
+    file.size = bytes.length;
+    return file;
+  }};
+  const makeNativeFileList = (entries) => new FileListNative(
+    (Array.isArray(entries) ? entries : []).map(nativeFileFromEntry),
+  );
   const formDataValue = (value, filename) => {{
     if (value && value.__glassNativeBlob === true) {{
       const defaultFilename = value.__glassNativeFile === true ? value.name : "blob";
@@ -6745,7 +6796,7 @@ fn document_bootstrap(
     if (hasBinaryFile) {{
       const bytes = [];
       const appendBytes = source => {{
-        if (bytes.length + source.length > storageValueLimit) throw new RangeError("native FormData body limit exceeded");
+        if (bytes.length + source.length > nativeFormBodyLimit) throw new RangeError("native FormData body limit exceeded");
         for (const value of source) bytes.push(value);
       }};
       const appendText = value => appendBytes(blobUtf8Bytes(String(value)));
@@ -6763,7 +6814,7 @@ fn document_bootstrap(
       appendText("--" + boundary + "--\r\n");
       return {{
         body: utf8TextFromBytes(bytes),
-        bodyBase64: encodeBase64(bytes),
+        bodyBase64: encodeBase64(bytes, nativeFormBodyLimit),
         contentType: "multipart/form-data; boundary=" + boundary,
       }};
     }}
@@ -9269,6 +9320,7 @@ fn document_bootstrap(
         ? (entry.attributes.value === undefined ? entry.text : entry.attributes.value)
         : "")
       : entry.value;
+    let files = makeNativeFileList(entry.files);
     let disabled = Boolean(entry.disabled);
     let hidden = Boolean(entry.hidden);
     let multiple = Object.prototype.hasOwnProperty.call(entry.attributes, "multiple");
@@ -9420,6 +9472,7 @@ fn document_bootstrap(
           ? (entry.attributes.value === undefined ? entry.text : entry.attributes.value)
           : "")
         : entry.value,
+      get files() {{ return files; }},
       checked: entry.checked,
       selected: entry.selected,
       multiple,
@@ -9926,7 +9979,18 @@ fn document_bootstrap(
       configurable: false,
       get() {{ return value; }},
       set(next) {{
-        value = String(next);
+        const nextValue = String(next);
+        const inputType = entry.tagName.toLowerCase() === "input"
+          ? String(entry.attributes.type || "text").toLowerCase()
+          : "";
+        if (inputType === "file") {{
+          if (nextValue !== "") throw new DOMExceptionNative("This input element accepts a filename only when selected by the user", "InvalidStateError");
+          value = "";
+          files = makeNativeFileList([]);
+          pushCommand({{ kind: "clearFileInput", node_index: entry.nodeIndex }});
+          return;
+        }}
+        value = nextValue;
         if (selectionStart !== null) {{
           selectionStart = selectionLength();
           selectionEnd = selectionStart;
@@ -10016,6 +10080,7 @@ fn document_bootstrap(
         selectionDirection = nextEntry.selectionDirection || "none";
         checked = nextEntry.checked;
         selected = nextEntry.selected;
+        files = makeNativeFileList(nextEntry.files);
         imageComplete = nextEntry.imageComplete === undefined
           ? !Object.prototype.hasOwnProperty.call(nextEntry.attributes, "src")
           : Boolean(nextEntry.imageComplete);
@@ -10045,6 +10110,7 @@ fn document_bootstrap(
       text: "",
       innerHtml: "",
       value: null,
+      files: [],
       checked: false,
       selected: false,
       disabled: false,

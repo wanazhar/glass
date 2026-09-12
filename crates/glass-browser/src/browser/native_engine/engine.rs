@@ -212,6 +212,7 @@ fn native_action_supported(
             "button" | "link" | "checkbox" | "radio" | "textbox" | "combobox" | "option"
         ),
         NativePreflightAction::Hover => !node.hidden,
+        NativePreflightAction::Upload => node.role == "file" && node.tag_name == "input",
         NativePreflightAction::Type => {
             node.role == "textbox" && matches!(node.tag_name.as_str(), "input" | "textarea")
         }
@@ -263,6 +264,7 @@ pub struct NativeDiagnosticsSnapshot {
 pub enum NativePreflightAction {
     Click,
     Hover,
+    Upload,
     Type,
     Check,
     Select,
@@ -2251,13 +2253,14 @@ impl NativeEngine {
             return Ok(unresolved(NativeTargetErrorKind::StaleReference));
         };
         let geometry = self.layout()?.viewport_rect_for(id);
-        let actionability_reason = if node.hidden {
-            Some(NativeActionabilityReason::NotVisible)
-        } else if node.disabled {
+        let requires_geometry = !matches!(action, NativePreflightAction::Upload);
+        let actionability_reason = if node.disabled {
             Some(NativeActionabilityReason::Disabled)
+        } else if node.hidden && requires_geometry {
+            Some(NativeActionabilityReason::NotVisible)
         } else if matches!(action, NativePreflightAction::Type) && node.read_only {
             Some(NativeActionabilityReason::ReadOnly)
-        } else if geometry.is_none() {
+        } else if requires_geometry && geometry.is_none() {
             Some(NativeActionabilityReason::OutsideViewport)
         } else if !native_action_supported(action, &node) {
             Some(NativeActionabilityReason::UnsupportedAction)
@@ -2400,6 +2403,16 @@ impl NativeEngine {
                     );
                 }
                 (self.document.apply_drag(source_id, destination_id)?, true)
+            }
+            NativeAction::Upload { target, files } => {
+                let id = self.document.resolve_target(&target)?;
+                if self.javascript.is_some() {
+                    return self.action_local_form_with_event_transaction(
+                        |document| document.apply_upload(id, &files),
+                        "native upload event effects",
+                    );
+                }
+                (self.document.apply_upload(id, &files)?, true)
             }
             NativeAction::Type { target, text } => {
                 let id = self.document.resolve_target(&target)?;
@@ -2672,6 +2685,30 @@ impl NativeEngine {
                             "kind": "drag",
                             "node_index": source_id.index(),
                             "destination_node_index": destination_id.index(),
+                        }))
+                        .await?
+                };
+                let next_revision = self.next_revision()?;
+                self.apply_content_process_mutation_async_at(next_revision, mutation)
+                    .await
+            }
+            NativeAction::Upload { target, files } => {
+                let id = self.document.resolve_target(&target)?;
+                let mut preview = self.document.clone();
+                preview.apply_upload(id, &files)?;
+                let mutation = {
+                    let process =
+                        self.content_process
+                            .as_mut()
+                            .ok_or_else(|| NativeEngineError::Worker {
+                                operation: "content process upload event bridge".into(),
+                                reason: "native content process is not running".into(),
+                            })?;
+                    process
+                        .mutate_form_action_with_event_bridge(serde_json::json!({
+                            "kind": "upload",
+                            "node_index": id.index(),
+                            "files": files,
                         }))
                         .await?
                 };
@@ -6062,6 +6099,7 @@ fn frame_script_command_source(command: &NativeScriptCommand) -> Result<String, 
             NativeScriptCommand::Focus { .. }
                 | NativeScriptCommand::Blur { .. }
                 | NativeScriptCommand::Click { .. }
+                | NativeScriptCommand::ClearFileInput { .. }
                 | NativeScriptCommand::SetValue { .. }
                 | NativeScriptCommand::SetSelection { .. }
                 | NativeScriptCommand::SetChecked { .. }
@@ -6115,6 +6153,7 @@ fn is_frame_script_batch_command(command: &NativeScriptCommand) -> bool {
     matches!(
         command,
         NativeScriptCommand::SetValue { .. }
+            | NativeScriptCommand::ClearFileInput { .. }
             | NativeScriptCommand::SetSelection { .. }
             | NativeScriptCommand::SetChecked { .. }
             | NativeScriptCommand::SetSelected { .. }

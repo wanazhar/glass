@@ -24,7 +24,7 @@ use tracing::{debug, info};
 
 use crate::browser::cdp::CdpError;
 #[cfg(feature = "native-engine")]
-use crate::browser::native_engine::{NativeEngineConfig, Viewport};
+use crate::browser::native_engine::{NativeEngineConfig, NativeFile, Viewport};
 use crate::browser::policy::{BrowserPolicy, PolicyError};
 use crate::browser::profile::ProfileManager;
 use crate::browser::runtime::BrowserRuntimeSession;
@@ -3656,6 +3656,26 @@ async fn call_native_tool(
                 response_mode,
             )
             .await
+        }
+        ToolInvocation::Upload {
+            target,
+            files,
+            expected_revision,
+        } => {
+            policy.require(crate::browser::policy::PolicyCapability::Upload)?;
+            let files = files
+                .iter()
+                .map(|path| {
+                    let path = policy.require_existing_path(path)?;
+                    NativeFile::from_path(&path).map_err(Into::into)
+                })
+                .collect::<BrowserResult<Vec<_>>>()?;
+            serialized_result_mode(
+                &session
+                    .native_upload_files(target.as_ref(), files, expected_revision)
+                    .await?,
+                response_mode,
+            )
         }
         ToolInvocation::ClickAt { x, y } => {
             let target = native_mcp_point_target(x, y)?;

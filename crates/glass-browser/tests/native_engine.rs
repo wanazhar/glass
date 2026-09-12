@@ -33512,6 +33512,90 @@ fn native_css_absolute_position_is_filtered_from_flex_and_grid_items() {
 }
 
 #[test]
+fn native_css_fixed_position_stays_viewport_anchored_when_root_scrolls() {
+    let config = NativeEngineConfig::default()
+        .with_viewport(Viewport {
+            width: 32,
+            height: 20,
+            device_scale_factor_milli: 1000,
+        })
+        .with_fixture(
+            "fixture://fixed",
+            "<div style='width:10px;height:5px;overflow:hidden'><button id='fixed' style='display:block;position:fixed;left:20px;top:3px;width:8px;height:4px;background:red'></button></div><div style='height:120px'></div>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://fixed");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize().unwrap();
+    let fixed = engine
+        .preflight_target("id=fixed", NativePreflightAction::Click)
+        .unwrap()
+        .node
+        .unwrap()
+        .node_id;
+    let initial = engine.layout().unwrap();
+    assert_eq!(
+        initial.box_for(fixed),
+        Some(NativeRect {
+            x: 20,
+            y: 3,
+            width: 8,
+            height: 4,
+        })
+    );
+    assert!(
+        initial
+            .boxes
+            .iter()
+            .find(|layout_box| layout_box.node_id == fixed)
+            .is_some_and(|layout_box| layout_box.fixed)
+    );
+
+    let scrolled = engine
+        .action(NativeAction::Scroll {
+            delta_x: 0,
+            delta_y: 10,
+        })
+        .unwrap();
+    assert!(scrolled.accepted);
+    let layout = engine.layout().unwrap();
+    assert_eq!(
+        layout.box_for(fixed),
+        Some(NativeRect {
+            x: 20,
+            y: 13,
+            width: 8,
+            height: 4,
+        })
+    );
+    assert_eq!(
+        layout.viewport_rect_for(fixed),
+        Some(NativeRect {
+            x: 20,
+            y: 3,
+            width: 8,
+            height: 4,
+        })
+    );
+    assert_eq!(engine.hit_test(21, 4).unwrap(), Some(fixed));
+
+    let list = engine.display_list().unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == fixed
+                    && *rect == NativeRect { x: 20, y: 13, width: 8, height: 4 }
+                    && *color == NativeColor::RED
+        )
+    }));
+    assert_eq!(
+        engine.rasterize().unwrap().pixel(20, 3),
+        Some([255, 0, 0, 255])
+    );
+}
+
+#[test]
 fn native_stylesheet_background_geometry_cascades_into_paint() {
     let source = native_test_png_data_url();
     let markup = format!(

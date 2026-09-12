@@ -140,6 +140,8 @@ pub struct NativeLayoutBox {
     /// The physical circular corner radii for the outer border box.
     pub border_radius: NativeBorderRadius,
     pub depth: usize,
+    /// Whether this box belongs to a viewport-anchored fixed subtree.
+    pub fixed: bool,
 }
 
 /// One bounded direct-text fragment placed by the native flow cursor.
@@ -161,6 +163,8 @@ pub struct NativeTextLayout {
     /// `text-align:justify` or `text-align-last:justify`, when
     /// `text-justify` permits expansion.
     pub justify_spacing: u32,
+    /// Whether this text run belongs to a viewport-anchored fixed subtree.
+    pub fixed: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -199,6 +203,13 @@ impl NativeLayoutSnapshot {
             boxes: Vec::new(),
             text_runs: Vec::new(),
             paint_order: Vec::new(),
+            initial_containing_block: PositionedContainingBlock {
+                x: 0,
+                y: 0,
+                width: viewport.width,
+                height: viewport.height,
+            },
+            fixed: false,
             containing_block: PositionedContainingBlock {
                 x: 0,
                 y: 0,
@@ -346,6 +357,31 @@ impl NativeLayoutSnapshot {
                 "vertical scroll offset exceeds document bounds",
             ));
         }
+        for layout_box in &mut self.boxes {
+            if !layout_box.fixed {
+                continue;
+            }
+            layout_box.rect.x = layout_box.rect.x.saturating_add(scroll_offset.x);
+            layout_box.rect.y = layout_box.rect.y.saturating_add(scroll_offset.y);
+            layout_box.content_rect.x = layout_box.content_rect.x.saturating_add(scroll_offset.x);
+            layout_box.content_rect.y = layout_box.content_rect.y.saturating_add(scroll_offset.y);
+        }
+        for text_run in &mut self.text_runs {
+            if !text_run.fixed {
+                continue;
+            }
+            text_run.origin.x = text_run.origin.x.saturating_add(scroll_offset.x);
+            text_run.origin.y = text_run.origin.y.saturating_add(scroll_offset.y);
+        }
+        for (layout_box, clip) in self.boxes.iter().zip(&mut self.overflow_clips) {
+            if !layout_box.fixed {
+                continue;
+            }
+            if let Some(clip) = clip {
+                clip.x = clip.x.saturating_add(scroll_offset.x);
+                clip.y = clip.y.saturating_add(scroll_offset.y);
+            }
+        }
         self.scroll_offset = scroll_offset;
         Ok(self)
     }
@@ -416,11 +452,35 @@ impl NativeLayoutSnapshot {
     }
 }
 
+fn fixed_layout_root(
+    document: &NativeDocument,
+    boxes: &[NativeLayoutBox],
+    node_id: NativeNodeId,
+) -> Option<NativeNodeId> {
+    let mut current = Some(node_id);
+    let mut root = None;
+    for _ in 0..=MAX_NATIVE_DOM_DEPTH {
+        let Some(current_id) = current else {
+            break;
+        };
+        if boxes
+            .iter()
+            .find(|layout_box| layout_box.node_id == current_id)
+            .is_some_and(|layout_box| layout_box.fixed)
+        {
+            root = Some(current_id);
+        }
+        current = document.node(current_id).and_then(|node| node.parent());
+    }
+    root
+}
+
 fn overflow_clip_for(
     document: &NativeDocument,
     boxes: &[NativeLayoutBox],
     node_id: NativeNodeId,
 ) -> Option<NativeRect> {
+    let fixed_root = fixed_layout_root(document, boxes, node_id);
     let mut current = Some(node_id);
     let mut clip = None;
     for _ in 0..=MAX_NATIVE_DOM_DEPTH {
@@ -452,6 +512,9 @@ fn overflow_clip_for(
                 Some(existing) => intersect_rect(existing, axis_clip),
                 None => axis_clip,
             });
+        }
+        if fixed_root == Some(current_id) {
+            break;
         }
         current = document.node(current_id).and_then(|node| node.parent());
     }
@@ -679,7 +742,9 @@ struct LayoutBuilder<'a> {
     boxes: Vec<NativeLayoutBox>,
     text_runs: Vec<NativeTextLayout>,
     paint_order: Vec<NativeLayoutPaintOrder>,
+    initial_containing_block: PositionedContainingBlock,
     containing_block: PositionedContainingBlock,
+    fixed: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1845,7 +1910,10 @@ impl<'a> LayoutBuilder<'a> {
     }
 
     fn is_out_of_flow(&self, id: NativeNodeId) -> bool {
-        self.document.computed_style_for_layout(id).position() == NativePositionValue::Absolute
+        matches!(
+            self.document.computed_style_for_layout(id).position(),
+            NativePositionValue::Absolute | NativePositionValue::Fixed
+        )
     }
 
     fn positioned_children(&self, parent: NativeNodeId) -> Vec<NativeNodeId> {
@@ -1875,6 +1943,11 @@ impl<'a> LayoutBuilder<'a> {
     ) {
         for child in children {
             let style = self.document.computed_style_for_layout(child);
+            let containing_block = if style.position() == NativePositionValue::Fixed {
+                self.initial_containing_block
+            } else {
+                containing_block
+            };
             let display = self.effective_display(child);
             if display == DisplayValue::None
                 || self.is_non_rendered(child)
@@ -1956,6 +2029,10 @@ impl<'a> LayoutBuilder<'a> {
         {
             return FlowSize::default();
         }
+        let previous_fixed = self.fixed;
+        if style.position() == NativePositionValue::Fixed {
+            self.fixed = true;
+        }
         if display == DisplayValue::Contents {
             let opacity = style.opacity();
             let grouped = opacity < u8::MAX;
@@ -1967,6 +2044,7 @@ impl<'a> LayoutBuilder<'a> {
                     });
             }
             let result = self.layout_children(id, x, y, available_width, depth);
+            self.fixed = previous_fixed;
             if grouped {
                 self.paint_order
                     .push(NativeLayoutPaintOrder::EndOpacityGroup { node_id: id });
@@ -2034,6 +2112,7 @@ impl<'a> LayoutBuilder<'a> {
             },
             border_radius: style.border_radius(),
             depth,
+            fixed: self.fixed,
         });
         self.paint_order
             .push(NativeLayoutPaintOrder::Box(box_index));
@@ -2069,6 +2148,7 @@ impl<'a> LayoutBuilder<'a> {
             }
         };
         self.containing_block = previous_containing_block;
+        self.fixed = previous_fixed;
         let auto_content_height = default_content_height.max(children.height);
         let height = forced_outer_size.height.unwrap_or_else(|| {
             style.height().map_or(
@@ -4598,6 +4678,7 @@ impl<'a> LayoutBuilder<'a> {
             starts_line: false,
             ends_line: false,
             justify_spacing: 0,
+            fixed: self.fixed,
         });
         self.paint_order
             .push(NativeLayoutPaintOrder::Text(text_index));
@@ -4949,6 +5030,7 @@ impl<'a> LayoutBuilder<'a> {
             starts_line: false,
             ends_line: false,
             justify_spacing: 0,
+            fixed: self.fixed,
         });
         self.paint_order
             .push(NativeLayoutPaintOrder::Text(text_index));

@@ -15,16 +15,18 @@ use super::interaction::{
 use super::javascript::{
     MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_DIALOGS, MAX_NATIVE_HISTORY_STATE_BYTES,
     MAX_NATIVE_INDEXED_DB_CHANGES, MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_SCRIPT_BYTES,
-    MAX_NATIVE_XHR_TIMEOUT_MS, NativeCookieProfileEntry, NativeDialog, NativeFrameScriptBinding,
-    NativeFrameScriptContext, NativeFrameScriptRequest, NativeFrameScriptWindow,
-    NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime, NativePageScript,
-    NativePopupRequest, NativePostMessageRequest, NativeScriptCommand, NativeScriptEvaluation,
-    NativeStorageEvent, NativeWebStorageState, NativeWindowCloseRequest,
-    NativeWindowNavigationRequest, NativeWindowProxyUpdate, diff_indexed_db_changes,
-    execute_page_scripts, host_event_script, host_hash_change_event_script, host_key_event_script,
-    host_key_event_script_with_modifiers, host_submit_event_script,
-    literal_dynamic_module_specifiers, load_indexed_db_profile, load_web_storage_profile,
-    order_page_scripts, save_web_storage_profile, static_module_specifiers, storage_key,
+    MAX_NATIVE_WEBSOCKET_CLOSE_REASON_BYTES, MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES,
+    MAX_NATIVE_WEBSOCKET_PROTOCOL_BYTES, MAX_NATIVE_WEBSOCKET_PROTOCOLS, MAX_NATIVE_XHR_TIMEOUT_MS,
+    NativeCookieProfileEntry, NativeDialog, NativeFrameScriptBinding, NativeFrameScriptContext,
+    NativeFrameScriptRequest, NativeFrameScriptWindow, NativeIndexedDbChange, NativeIndexedDbState,
+    NativeJavaScriptRuntime, NativePageScript, NativePopupRequest, NativePostMessageRequest,
+    NativeScriptCommand, NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState,
+    NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
+    diff_indexed_db_changes, execute_page_scripts, host_event_script,
+    host_hash_change_event_script, host_key_event_script, host_key_event_script_with_modifiers,
+    host_submit_event_script, literal_dynamic_module_specifiers, load_indexed_db_profile,
+    load_web_storage_profile, order_page_scripts, save_web_storage_profile,
+    static_module_specifiers, storage_key,
 };
 use super::layout::NativePoint;
 use super::origin::NativeOrigin;
@@ -32,12 +34,13 @@ use super::resource_loader::{
     MAX_NATIVE_RESPONSE_HEADER_BYTES, MAX_NATIVE_RESPONSE_HEADER_NAME_BYTES,
     MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES, MAX_NATIVE_RESPONSE_HEADERS, NativeCorsMode,
     NativeFetchRedirectMode, NativeFetchRequest, NativeFetchResponse, NativeNavigationMethod,
-    NativeNavigationRequest, NativeRequestBody, NativeResourceLoader,
+    NativeNavigationRequest, NativeRequestBody, NativeResourceLoader, NativeWebSocketTarget,
 };
 #[cfg(windows)]
 use super::sandbox::NativeContentSandbox;
 use super::sandbox::prepare_worker_command;
 use base64::Engine as _;
+use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -45,7 +48,12 @@ use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, ChildStdout};
+use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout};
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::{Message, client::IntoClientRequest},
+};
 use url::Url;
 
 // File-input mutations carry bounded in-memory file objects through the same
@@ -58,6 +66,9 @@ const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTENT_PROCESS_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_CONTENT_EVENT_LOOP_TURNS: usize = MAX_NATIVE_EFFECTS;
+const NATIVE_WEBSOCKET_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const NATIVE_WEBSOCKET_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const MAX_NATIVE_WEBSOCKET_EVENTS: usize = MAX_NATIVE_EFFECTS;
 const MAX_CONTENT_STYLESHEETS: usize = 16;
 const MAX_CONTENT_STYLESHEET_BYTES: usize = 512 * 1024;
 const MAX_CONTENT_IMAGES: usize = 64;
@@ -85,6 +96,358 @@ pub(crate) struct NativeContentLoad {
 pub(crate) struct NativeContentEvent {
     pub(crate) node_index: u32,
     pub(crate) kind: NativeEventKind,
+}
+
+enum NativeWebSocketCommand {
+    Send(Message),
+    Close { code: u16, reason: String },
+}
+
+enum NativeWebSocketEvent {
+    Open {
+        protocol: String,
+    },
+    MessageText {
+        data: String,
+        origin: String,
+    },
+    MessageBinary {
+        data: Vec<u8>,
+        origin: String,
+    },
+    Error {
+        message: String,
+    },
+    Close {
+        code: u16,
+        reason: String,
+        was_clean: bool,
+    },
+}
+
+struct NativeWebSocketConnection {
+    commands: mpsc::Sender<NativeWebSocketCommand>,
+    events: mpsc::Receiver<NativeWebSocketEvent>,
+}
+
+fn bounded_websocket_text(value: impl AsRef<str>, limit: usize) -> String {
+    let value = value.as_ref();
+    let mut end = value.len().min(limit);
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_owned()
+}
+
+fn validate_websocket_protocols(protocols: &[String]) -> Result<(), NativeEngineError> {
+    if protocols.len() > MAX_NATIVE_WEBSOCKET_PROTOCOLS {
+        return Err(NativeEngineError::limit(
+            "native WebSocket protocols",
+            MAX_NATIVE_WEBSOCKET_PROTOCOLS,
+            protocols.len(),
+        ));
+    }
+    let mut seen = BTreeSet::new();
+    for protocol in protocols {
+        if protocol.is_empty()
+            || protocol.len() > MAX_NATIVE_WEBSOCKET_PROTOCOL_BYTES
+            || !protocol.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric()
+                    || matches!(
+                        byte,
+                        b'!' | b'#'
+                            | b'$'
+                            | b'%'
+                            | b'&'
+                            | b'\''
+                            | b'*'
+                            | b'+'
+                            | b'-'
+                            | b'.'
+                            | b'^'
+                            | b'_'
+                            | b'`'
+                            | b'|'
+                            | b'~'
+                    )
+            })
+            || !seen.insert(protocol)
+        {
+            return Err(NativeEngineError::invalid(
+                "native WebSocket protocols",
+                "must contain unique bounded WebSocket tokens",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn native_websocket_request(
+    target: NativeWebSocketTarget,
+    origin: &NativeOrigin,
+    protocols: &[String],
+) -> Result<tokio_tungstenite::tungstenite::http::Request<()>, NativeEngineError> {
+    validate_websocket_protocols(protocols)?;
+    let mut request =
+        target
+            .url
+            .as_str()
+            .into_client_request()
+            .map_err(|error| NativeEngineError::Network {
+                operation: "WebSocket handshake".into(),
+                reason: format!("could not build request: {error}"),
+            })?;
+    let headers = request.headers_mut();
+    headers.insert(
+        tokio_tungstenite::tungstenite::http::header::ORIGIN,
+        tokio_tungstenite::tungstenite::http::HeaderValue::from_str(&origin.serialized()).map_err(
+            |_| NativeEngineError::Network {
+                operation: "WebSocket handshake".into(),
+                reason: "document origin is not a valid request header".into(),
+            },
+        )?,
+    );
+    if let Some(cookie) = target.cookie {
+        headers.insert(
+            tokio_tungstenite::tungstenite::http::header::COOKIE,
+            tokio_tungstenite::tungstenite::http::HeaderValue::from_str(&cookie).map_err(|_| {
+                NativeEngineError::Network {
+                    operation: "WebSocket handshake".into(),
+                    reason: "native cookie state is not a valid request header".into(),
+                }
+            })?,
+        );
+    }
+    if !protocols.is_empty() {
+        let value = protocols.join(", ");
+        headers.insert(
+            tokio_tungstenite::tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL,
+            tokio_tungstenite::tungstenite::http::HeaderValue::from_str(&value).map_err(|_| {
+                NativeEngineError::Network {
+                    operation: "WebSocket handshake".into(),
+                    reason: "WebSocket protocols are not valid request headers".into(),
+                }
+            })?,
+        );
+    }
+    Ok(request)
+}
+
+async fn queue_websocket_event(
+    events: &mpsc::Sender<NativeWebSocketEvent>,
+    event: NativeWebSocketEvent,
+) -> bool {
+    events.send(event).await.is_ok()
+}
+
+async fn run_native_websocket(
+    request: tokio_tungstenite::tungstenite::http::Request<()>,
+    origin: String,
+    mut commands: mpsc::Receiver<NativeWebSocketCommand>,
+    events: mpsc::Sender<NativeWebSocketEvent>,
+) {
+    let connection = timeout(NATIVE_WEBSOCKET_CONNECT_TIMEOUT, connect_async(request)).await;
+    let (socket, response) = match connection {
+        Ok(Ok(connection)) => connection,
+        Ok(Err(error)) => {
+            let message = bounded_websocket_text(error.to_string(), MAX_NATIVE_SCRIPT_BYTES);
+            if !queue_websocket_event(&events, NativeWebSocketEvent::Error { message }).await {
+                return;
+            }
+            let _ = queue_websocket_event(
+                &events,
+                NativeWebSocketEvent::Close {
+                    code: 1006,
+                    reason: String::new(),
+                    was_clean: false,
+                },
+            )
+            .await;
+            return;
+        }
+        Err(_) => {
+            if !queue_websocket_event(
+                &events,
+                NativeWebSocketEvent::Error {
+                    message: "native WebSocket handshake timed out".into(),
+                },
+            )
+            .await
+            {
+                return;
+            }
+            let _ = queue_websocket_event(
+                &events,
+                NativeWebSocketEvent::Close {
+                    code: 1006,
+                    reason: String::new(),
+                    was_clean: false,
+                },
+            )
+            .await;
+            return;
+        }
+    };
+    let protocol = response
+        .headers()
+        .get(tokio_tungstenite::tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    if !queue_websocket_event(&events, NativeWebSocketEvent::Open { protocol }).await {
+        return;
+    }
+    let (mut sink, mut stream) = socket.split();
+    loop {
+        tokio::select! {
+            command = commands.recv() => {
+                match command {
+                    Some(NativeWebSocketCommand::Send(message)) => {
+                        if let Err(error) = sink.send(message).await {
+                            let message = bounded_websocket_text(error.to_string(), MAX_NATIVE_SCRIPT_BYTES);
+                            if !queue_websocket_event(&events, NativeWebSocketEvent::Error { message }).await {
+                                return;
+                            }
+                            let _ = queue_websocket_event(&events, NativeWebSocketEvent::Close {
+                                code: 1006,
+                                reason: String::new(),
+                                was_clean: false,
+                            }).await;
+                            return;
+                        }
+                    }
+                    Some(NativeWebSocketCommand::Close { code, reason }) => {
+                        let close = Message::Close(Some(tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                            code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::from(code),
+                            reason: reason.clone().into(),
+                        }));
+                        let clean = sink.send(close).await.is_ok();
+                        let _ = sink.close().await;
+                        let _ = queue_websocket_event(&events, NativeWebSocketEvent::Close {
+                            code: if clean { code } else { 1006 },
+                            reason: if clean { reason } else { String::new() },
+                            was_clean: clean,
+                        }).await;
+                        return;
+                    }
+                    None => {
+                        let _ = sink.close().await;
+                        let _ = queue_websocket_event(&events, NativeWebSocketEvent::Close {
+                            code: 1006,
+                            reason: String::new(),
+                            was_clean: false,
+                        }).await;
+                        return;
+                    }
+                }
+            }
+            incoming = stream.next() => {
+                match incoming {
+                    Some(Ok(Message::Text(data))) => {
+                        let data = data.to_string();
+                        if data.len() > MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES {
+                            let _ = queue_websocket_event(&events, NativeWebSocketEvent::Error {
+                                message: "native WebSocket message exceeds its limit".into(),
+                            }).await;
+                            let _ = queue_websocket_event(&events, NativeWebSocketEvent::Close {
+                                code: 1009,
+                                reason: String::new(),
+                                was_clean: false,
+                            }).await;
+                            return;
+                        }
+                        if !queue_websocket_event(&events, NativeWebSocketEvent::MessageText { data, origin: origin.clone() }).await {
+                            return;
+                        }
+                    }
+                    Some(Ok(Message::Binary(data))) => {
+                        let data = data.to_vec();
+                        if data.len() > MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES {
+                            let _ = queue_websocket_event(&events, NativeWebSocketEvent::Error {
+                                message: "native WebSocket message exceeds its limit".into(),
+                            }).await;
+                            let _ = queue_websocket_event(&events, NativeWebSocketEvent::Close {
+                                code: 1009,
+                                reason: String::new(),
+                                was_clean: false,
+                            }).await;
+                            return;
+                        }
+                        if !queue_websocket_event(&events, NativeWebSocketEvent::MessageBinary { data, origin: origin.clone() }).await {
+                            return;
+                        }
+                    }
+                    Some(Ok(Message::Close(frame))) => {
+                        let (code, reason) = frame
+                            .map(|frame| (u16::from(frame.code), bounded_websocket_text(frame.reason, MAX_NATIVE_WEBSOCKET_CLOSE_REASON_BYTES)))
+                            .unwrap_or((1005, String::new()));
+                        let _ = queue_websocket_event(&events, NativeWebSocketEvent::Close {
+                            code,
+                            reason,
+                            was_clean: true,
+                        }).await;
+                        return;
+                    }
+                    Some(Ok(Message::Ping(data))) => {
+                        if let Err(error) = sink.send(Message::Pong(data)).await {
+                            let message = bounded_websocket_text(error.to_string(), MAX_NATIVE_SCRIPT_BYTES);
+                            if !queue_websocket_event(&events, NativeWebSocketEvent::Error { message }).await {
+                                return;
+                            }
+                            let _ = queue_websocket_event(&events, NativeWebSocketEvent::Close {
+                                code: 1006,
+                                reason: String::new(),
+                                was_clean: false,
+                            }).await;
+                            return;
+                        }
+                    }
+                    Some(Ok(Message::Pong(_))) => {}
+                    Some(Ok(_)) => {}
+                    Some(Err(error)) => {
+                        let message = bounded_websocket_text(error.to_string(), MAX_NATIVE_SCRIPT_BYTES);
+                        if !queue_websocket_event(&events, NativeWebSocketEvent::Error { message }).await {
+                            return;
+                        }
+                        let _ = queue_websocket_event(&events, NativeWebSocketEvent::Close {
+                            code: 1006,
+                            reason: String::new(),
+                            was_clean: false,
+                        }).await;
+                        return;
+                    }
+                    None => {
+                        let _ = queue_websocket_event(&events, NativeWebSocketEvent::Close {
+                            code: 1006,
+                            reason: String::new(),
+                            was_clean: false,
+                        }).await;
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn spawn_native_websocket(
+    target: NativeWebSocketTarget,
+    origin: &NativeOrigin,
+    protocols: &[String],
+) -> Result<NativeWebSocketConnection, NativeEngineError> {
+    let request = native_websocket_request(target, origin, protocols)?;
+    let (command_sender, command_receiver) = mpsc::channel(MAX_NATIVE_WEBSOCKET_EVENTS);
+    let (event_sender, event_receiver) = mpsc::channel(MAX_NATIVE_WEBSOCKET_EVENTS);
+    tokio::spawn(run_native_websocket(
+        request,
+        origin.serialized(),
+        command_receiver,
+        event_sender,
+    ));
+    Ok(NativeWebSocketConnection {
+        commands: command_sender,
+        events: event_receiver,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -2520,6 +2883,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut nested_scroll_offsets = BTreeMap::new();
     let mut resource_loader = None;
     let mut javascript_runtime: Option<NativeJavaScriptRuntime> = None;
+    let mut websocket_connections = BTreeMap::new();
     let mut storage_state = NativeWebStorageState::default();
     let mut indexed_db_state = NativeIndexedDbState::default();
     let mut storage_profile_path: Option<PathBuf> = None;
@@ -2903,6 +3267,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             }
             "load" if protocol_matches(&request) && running => {
                 frame_script_bindings.clear();
+                websocket_connections.clear();
                 if let Some(runtime) = javascript_runtime.as_ref() {
                     storage_state = runtime.storage_state();
                 }
@@ -2976,13 +3341,18 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 });
                                 Ok((parsed, navigation, dialogs, events, scroll_commands))
                             }
-                            Ok(page_scripts) if page_scripts.pending_fetches.is_empty() => Ok((
-                                parsed,
-                                None,
-                                page_scripts.dialogs,
-                                page_scripts.events,
-                                page_scripts.scroll_commands,
-                            )),
+                            Ok(page_scripts)
+                                if page_scripts.pending_fetches.is_empty()
+                                    && page_scripts.websocket_commands.is_empty() =>
+                            {
+                                Ok((
+                                    parsed,
+                                    None,
+                                    page_scripts.dialogs,
+                                    page_scripts.events,
+                                    page_scripts.scroll_commands,
+                                ))
+                            }
                             Ok(page_scripts) => {
                                 let page_dialogs = page_scripts.dialogs;
                                 let mut page_events = page_scripts.events;
@@ -2993,12 +3363,17 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                             &parsed,
                                             runtime,
                                             Some(loader),
+                                            &mut websocket_connections,
                                             &resource.url,
                                             &resource.origin,
                                             loaded_viewport,
                                             NativeScriptEvaluation {
                                                 value: Value::Null,
-                                                commands: page_scripts.pending_fetches,
+                                                commands: page_scripts
+                                                    .pending_fetches
+                                                    .into_iter()
+                                                    .chain(page_scripts.websocket_commands)
+                                                    .collect(),
                                                 top_level_await_pending: false,
                                             },
                                         )
@@ -3243,11 +3618,24 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             }
                         };
                         let has_fetch = !fetches.is_empty();
-                        let result = if has_fetch || top_level_await_pending {
+                        let has_websocket = commands.iter().any(|command| {
+                            matches!(
+                                command,
+                                NativeScriptCommand::WebSocketOpen { .. }
+                                    | NativeScriptCommand::WebSocketSend { .. }
+                                    | NativeScriptCommand::WebSocketClose { .. }
+                            )
+                        });
+                        let result = if has_fetch
+                            || has_websocket
+                            || top_level_await_pending
+                            || !websocket_connections.is_empty()
+                        {
                             resolve_script_fetches(
                                 current,
                                 runtime,
                                 resource_loader.as_mut(),
+                                &mut websocket_connections,
                                 &script_url,
                                 document_origin,
                                 viewport,
@@ -6476,6 +6864,185 @@ async fn mutate_script_document(
     Ok((next, mutation))
 }
 
+fn process_websocket_commands(
+    commands: Vec<NativeScriptCommand>,
+    connections: &mut BTreeMap<u32, NativeWebSocketConnection>,
+    loader: Option<&NativeResourceLoader>,
+    document_url: &str,
+    document_origin: &NativeOrigin,
+) -> Result<Vec<NativeScriptCommand>, NativeEngineError> {
+    let mut retained = Vec::with_capacity(commands.len());
+    for command in commands {
+        match command {
+            NativeScriptCommand::WebSocketOpen {
+                socket_id,
+                href,
+                protocols,
+            } => {
+                if connections.contains_key(&socket_id) {
+                    return Err(NativeEngineError::Network {
+                        operation: "WebSocket open".into(),
+                        reason: "WebSocket identifier is already active".into(),
+                    });
+                }
+                if connections.len() >= MAX_NATIVE_WEBSOCKET_EVENTS {
+                    return Err(NativeEngineError::limit(
+                        "native WebSocket connections",
+                        MAX_NATIVE_WEBSOCKET_EVENTS,
+                        connections.len().saturating_add(1),
+                    ));
+                }
+                let loader = loader.ok_or_else(|| NativeEngineError::Worker {
+                    operation: "WebSocket open".into(),
+                    reason: "content process has no resource loader".into(),
+                })?;
+                let target = loader.websocket_target(document_url, &href)?;
+                let connection = spawn_native_websocket(target, document_origin, &protocols)?;
+                connections.insert(socket_id, connection);
+            }
+            NativeScriptCommand::WebSocketSend {
+                socket_id,
+                data,
+                data_base64,
+            } => {
+                let message = match (data, data_base64) {
+                    (Some(data), None) => {
+                        if data.len() > MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES {
+                            return Err(NativeEngineError::limit(
+                                "native WebSocket message",
+                                MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES,
+                                data.len(),
+                            ));
+                        }
+                        Message::Text(data.into())
+                    }
+                    (None, Some(data_base64)) => {
+                        let data = base64::engine::general_purpose::STANDARD
+                            .decode(data_base64)
+                            .map_err(|_| {
+                                NativeEngineError::invalid(
+                                    "native WebSocket binary message",
+                                    "must be valid base64",
+                                )
+                            })?;
+                        if data.len() > MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES {
+                            return Err(NativeEngineError::limit(
+                                "native WebSocket message",
+                                MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES,
+                                data.len(),
+                            ));
+                        }
+                        Message::Binary(data.into())
+                    }
+                    _ => {
+                        return Err(NativeEngineError::invalid(
+                            "native WebSocket message",
+                            "must contain exactly one text or binary payload",
+                        ));
+                    }
+                };
+                let connection =
+                    connections
+                        .get(&socket_id)
+                        .ok_or_else(|| NativeEngineError::Network {
+                            operation: "WebSocket send".into(),
+                            reason: "WebSocket identifier is not active".into(),
+                        })?;
+                connection
+                    .commands
+                    .try_send(NativeWebSocketCommand::Send(message))
+                    .map_err(|_| NativeEngineError::Network {
+                        operation: "WebSocket send".into(),
+                        reason: "WebSocket command queue is full or closed".into(),
+                    })?;
+            }
+            NativeScriptCommand::WebSocketClose {
+                socket_id,
+                code,
+                reason,
+            } => {
+                if code != 1000 && !(3000..=4999).contains(&code) {
+                    return Err(NativeEngineError::invalid(
+                        "native WebSocket close code",
+                        "must be 1000 or in the 3000-4999 range",
+                    ));
+                }
+                if reason.len() > MAX_NATIVE_WEBSOCKET_CLOSE_REASON_BYTES {
+                    return Err(NativeEngineError::limit(
+                        "native WebSocket close reason",
+                        MAX_NATIVE_WEBSOCKET_CLOSE_REASON_BYTES,
+                        reason.len(),
+                    ));
+                }
+                let connection =
+                    connections
+                        .get(&socket_id)
+                        .ok_or_else(|| NativeEngineError::Network {
+                            operation: "WebSocket close".into(),
+                            reason: "WebSocket identifier is not active".into(),
+                        })?;
+                connection
+                    .commands
+                    .try_send(NativeWebSocketCommand::Close { code, reason })
+                    .map_err(|_| NativeEngineError::Network {
+                        operation: "WebSocket close".into(),
+                        reason: "WebSocket command queue is full or closed".into(),
+                    })?;
+            }
+            command => retained.push(command),
+        }
+    }
+    Ok(retained)
+}
+
+fn take_websocket_event(
+    connections: &mut BTreeMap<u32, NativeWebSocketConnection>,
+) -> Option<(u32, NativeWebSocketEvent)> {
+    let socket_ids = connections.keys().copied().collect::<Vec<_>>();
+    for socket_id in socket_ids {
+        let Some(connection) = connections.get_mut(&socket_id) else {
+            continue;
+        };
+        match connection.events.try_recv() {
+            Ok(event) => return Some((socket_id, event)),
+            Err(mpsc::error::TryRecvError::Empty) => {}
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                connections.remove(&socket_id);
+            }
+        }
+    }
+    None
+}
+
+fn websocket_event_payload(event: &NativeWebSocketEvent) -> Value {
+    match event {
+        NativeWebSocketEvent::Open { protocol } => {
+            json!({"type": "open", "protocol": protocol})
+        }
+        NativeWebSocketEvent::MessageText { data, origin } => {
+            json!({"type": "message", "data": data, "binary": false, "origin": origin})
+        }
+        NativeWebSocketEvent::MessageBinary { data, origin } => json!({
+            "type": "message",
+            "data": "",
+            "dataBase64": base64::engine::general_purpose::STANDARD.encode(data),
+            "binary": true,
+            "origin": origin,
+        }),
+        NativeWebSocketEvent::Error { message } => json!({"type": "error", "message": message}),
+        NativeWebSocketEvent::Close {
+            code,
+            reason,
+            was_clean,
+        } => json!({
+            "type": "close",
+            "code": code,
+            "reason": reason,
+            "wasClean": was_clean,
+        }),
+    }
+}
+
 fn fetch_commands(
     commands: &[NativeScriptCommand],
 ) -> Result<
@@ -6638,6 +7205,7 @@ async fn resolve_script_fetches(
     current: &NativeDocument,
     runtime: &NativeJavaScriptRuntime,
     mut loader: Option<&mut NativeResourceLoader>,
+    websocket_connections: &mut BTreeMap<u32, NativeWebSocketConnection>,
     document_url: &str,
     document_origin: &NativeOrigin,
     viewport: Viewport,
@@ -6649,6 +7217,13 @@ async fn resolve_script_fetches(
         ..
     } = evaluation;
     let mut current_url = document_url.to_owned();
+    let initial_commands = process_websocket_commands(
+        initial_commands,
+        websocket_connections,
+        loader.as_deref(),
+        &current_url,
+        document_origin,
+    )?;
     let (mut next, mut mutation) = mutate_script_document(
         current,
         runtime,
@@ -6723,7 +7298,14 @@ async fn resolve_script_fetches(
             if top_level_await_pending && let Some(value) = runtime.take_top_level_await_result()? {
                 resolved_value = Some(value);
             }
-            let resolved_history = extract_history_commands(&resolved.commands);
+            let resolved_commands = process_websocket_commands(
+                resolved.commands,
+                websocket_connections,
+                Some(&*loader),
+                &current_url,
+                document_origin,
+            )?;
+            let resolved_history = extract_history_commands(&resolved_commands);
             if !resolved_history.is_empty() {
                 let mut url = Some(current_url.clone());
                 apply_content_runtime_history(
@@ -6743,7 +7325,7 @@ async fn resolve_script_fetches(
                 &current_url,
                 document_origin,
                 viewport,
-                &resolved.commands,
+                &resolved_commands,
                 Some(loader),
             )
             .await?;
@@ -6770,15 +7352,112 @@ async fn resolve_script_fetches(
                             .into(),
                 });
             }
-            pending.extend(fetch_commands(&resolved.commands)?);
+            pending.extend(fetch_commands(&resolved_commands)?);
         }
-        if !top_level_await_pending || resolved_value.is_some() {
+        if top_level_await_pending && resolved_value.is_some() {
             break;
         }
-        if let Some(value) = runtime.take_top_level_await_result()? {
+        if top_level_await_pending && let Some(value) = runtime.take_top_level_await_result()? {
             resolved_value = Some(value);
             break;
         }
+        if let Some((socket_id, event)) = take_websocket_event(websocket_connections) {
+            event_loop_turns = event_loop_turns.saturating_add(1);
+            if event_loop_turns > MAX_CONTENT_EVENT_LOOP_TURNS {
+                return Err(NativeEngineError::limit(
+                    "content-process event-loop turns",
+                    MAX_CONTENT_EVENT_LOOP_TURNS,
+                    event_loop_turns,
+                ));
+            }
+            let remove_after_dispatch = matches!(&event, NativeWebSocketEvent::Close { .. });
+            let event_evaluation = runtime.dispatch_websocket_event(
+                socket_id,
+                &websocket_event_payload(&event),
+                &next,
+                &current_url,
+                document_origin,
+                viewport,
+            )?;
+            let event_commands = process_websocket_commands(
+                event_evaluation.commands,
+                websocket_connections,
+                loader.as_deref(),
+                &current_url,
+                document_origin,
+            )?;
+            let event_history = extract_history_commands(&event_commands);
+            if !event_history.is_empty() {
+                let mut url = Some(current_url.clone());
+                apply_content_runtime_history(&event_history, &mut url, document_origin, runtime)?;
+                current_url = url.ok_or_else(|| NativeEngineError::Worker {
+                    operation: "content process WebSocket history".into(),
+                    reason: "WebSocket callback history lost its document URL".into(),
+                })?;
+                mutation.history.extend(event_history);
+            }
+            let (event_next, event_mutation) = mutate_script_document(
+                &next,
+                runtime,
+                &current_url,
+                document_origin,
+                viewport,
+                &event_commands,
+                loader.as_deref_mut(),
+            )
+            .await?;
+            next = event_next;
+            mutation.events.extend(event_mutation.events);
+            mutation
+                .scroll_commands
+                .extend(event_mutation.scroll_commands);
+            if !event_mutation.history.is_empty() {
+                current_url = resolve_content_history_document_url(
+                    &event_mutation.history,
+                    &current_url,
+                    document_origin,
+                )?;
+                mutation.history.extend(event_mutation.history);
+            }
+            if mutation.navigation.is_none() {
+                mutation.navigation = event_mutation.navigation;
+            } else if event_mutation.navigation.is_some() {
+                return Err(NativeEngineError::TargetNotActionable {
+                    reason: "one WebSocket event batch cannot activate multiple navigations".into(),
+                });
+            }
+            pending.extend(fetch_commands(&event_commands)?);
+            if remove_after_dispatch {
+                websocket_connections.remove(&socket_id);
+            }
+            if top_level_await_pending && let Some(value) = runtime.take_top_level_await_result()? {
+                resolved_value = Some(value);
+            }
+            continue;
+        }
+        if !top_level_await_pending {
+            break;
+        }
+        let timer_delay = runtime.next_timer_delay_ms()?;
+        if let Some(delay_ms) = timer_delay
+            && delay_ms > 0
+        {
+            sleep(Duration::from_millis(
+                delay_ms.min(NATIVE_WEBSOCKET_POLL_INTERVAL.as_millis() as u64),
+            ))
+            .await;
+            continue;
+        }
+        if timer_delay.is_none() && !websocket_connections.is_empty() {
+            sleep(NATIVE_WEBSOCKET_POLL_INTERVAL).await;
+            continue;
+        }
+        let Some(delay_ms) = timer_delay else {
+            return Err(NativeEngineError::Worker {
+                operation: "content process script event loop".into(),
+                reason: "top-level await remained pending without a native host operation".into(),
+            });
+        };
         event_loop_turns = event_loop_turns.saturating_add(1);
         if event_loop_turns > MAX_CONTENT_EVENT_LOOP_TURNS {
             return Err(NativeEngineError::limit(
@@ -6787,12 +7466,6 @@ async fn resolve_script_fetches(
                 event_loop_turns,
             ));
         }
-        let Some(delay_ms) = runtime.next_timer_delay_ms()? else {
-            return Err(NativeEngineError::Worker {
-                operation: "content process script event loop".into(),
-                reason: "top-level await remained pending without a native host operation".into(),
-            });
-        };
         if delay_ms > 0 {
             sleep(Duration::from_millis(delay_ms)).await;
         }

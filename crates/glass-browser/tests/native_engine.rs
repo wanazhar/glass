@@ -2,6 +2,7 @@
 
 use base64::Engine as _;
 use fs2::FileExt;
+use futures_util::{SinkExt, StreamExt};
 use gif::{Encoder, Frame, Repeat};
 use glass_browser::browser::native_backend::NATIVE_ENGINE_BACKEND_ID;
 use glass_browser::browser::native_engine::{
@@ -33,6 +34,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, oneshot};
+use tokio_tungstenite::{accept_async, tungstenite::Message};
 
 fn native_content_process_test_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -41366,6 +41368,98 @@ async fn native_content_process_drives_timer_started_fetch_continuation() {
             .await
             .unwrap(),
         serde_json::json!("network-done")
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_drives_websocket_text_binary_and_close_events() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = format!(
+            "<input id='result' value='pending'><script>globalThis.pageScriptStatus = 'before'; try {{ globalThis.pageSocket = new WebSocket('ws://{address}/socket'); globalThis.pageScriptStatus = 'after'; }} catch (error) {{ globalThis.pageScriptStatus = String(error); }}</script>"
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut websocket = accept_async(stream).await.unwrap();
+        websocket
+            .send(Message::Ping(b"keepalive".to_vec().into()))
+            .await
+            .unwrap();
+        websocket
+            .send(Message::Text("server-text".into()))
+            .await
+            .unwrap();
+        websocket
+            .send(Message::Binary(vec![7_u8, 8, 255].into()))
+            .await
+            .unwrap();
+        let mut received = Vec::new();
+        let mut pong_received = false;
+        while received.len() < 2 || !pong_received {
+            match tokio::time::timeout(Duration::from_secs(2), websocket.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+            {
+                Message::Text(value) => received.push(("text", value.to_string().into_bytes())),
+                Message::Binary(value) => received.push(("binary", value.to_vec())),
+                Message::Close(_) => break,
+                Message::Pong(value) => {
+                    assert_eq!(value.as_ref(), b"keepalive");
+                    pong_received = true;
+                }
+                Message::Ping(_) => {}
+                _ => {}
+            }
+        }
+        assert_eq!(
+            received,
+            vec![("text", b"client-text".to_vec()), ("binary", vec![1, 2, 3])]
+        );
+        assert!(pong_received);
+        let _ = tokio::time::timeout(Duration::from_secs(2), websocket.next()).await;
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("[globalThis.pageScriptStatus, typeof globalThis.pageSocket]")
+            .await
+            .unwrap(),
+        serde_json::json!(["after", "object"])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(&format!(
+                "await new Promise((resolve, reject) => {{ const socket = globalThis.pageSocket; socket.binaryType = 'arraybuffer'; socket.onopen = () => {{ socket.send('client-text'); socket.send(new Uint8Array([1, 2, 3])); }}; const messages = []; socket.onmessage = event => {{ if (typeof event.data === 'string') messages.push(event.data); else messages.push(Array.from(new Uint8Array(event.data)).join(',')); if (messages.length === 2) {{ document.getElementById('result').value = messages.join('|'); socket.close(1000, 'done'); resolve(messages.join('|')); }} }}; socket.onerror = () => reject(new Error('websocket failed')); }})"
+            ))
+            .await
+            .unwrap(),
+        serde_json::json!("server-text|7,8,255")
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("document.getElementById('result').value")
+            .await
+            .unwrap(),
+        serde_json::json!("server-text|7,8,255")
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

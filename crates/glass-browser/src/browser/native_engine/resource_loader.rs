@@ -205,6 +205,11 @@ pub(crate) struct NativeFetchRequest<'a> {
     pub(crate) max_response_bytes: Option<usize>,
 }
 
+pub(crate) struct NativeWebSocketTarget {
+    pub(crate) url: Url,
+    pub(crate) cookie: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeScriptResource {
     pub(crate) url: String,
@@ -444,6 +449,86 @@ impl NativeResourceLoader {
 
     pub(crate) fn max_document_bytes(&self) -> usize {
         self.max_document_bytes
+    }
+
+    pub(crate) fn websocket_target(
+        &self,
+        document_url: &str,
+        href: &str,
+    ) -> Result<NativeWebSocketTarget, NativeEngineError> {
+        validate_url_text("WebSocket owner URL", document_url)?;
+        validate_url_text("WebSocket URL", href)?;
+        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "WebSocket owner URL is not valid HTTP(S) syntax".into(),
+            }
+        })?;
+        if !is_network_url(document_url.as_str()) {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "WebSocket requires an HTTP(S) document owner".into(),
+            });
+        }
+        reject_credentials(&document_url)?;
+        let target_url =
+            document_url
+                .join(href)
+                .map_err(|_| NativeEngineError::UnsupportedUrl {
+                    reason: "WebSocket URL could not be resolved against the document".into(),
+                })?;
+        reject_credentials(&target_url)?;
+        if !matches!(target_url.scheme(), "ws" | "wss") {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "WebSocket URL must use ws or wss".into(),
+            });
+        }
+        if document_url.scheme() == "https" && target_url.scheme() == "ws" {
+            return Err(NativeEngineError::Network {
+                operation: "WebSocket policy".into(),
+                reason: "HTTPS documents cannot open insecure ws connections".into(),
+            });
+        }
+        let policy = self
+            .network
+            .document_policies
+            .get(&cache_key(&document_url))
+            .cloned()
+            .unwrap_or_default();
+        let mut policy_target = target_url.clone();
+        policy_target
+            .set_scheme(if target_url.scheme() == "wss" {
+                "https"
+            } else {
+                "http"
+            })
+            .map_err(|_| NativeEngineError::UnsupportedUrl {
+                reason: "WebSocket policy URL could not be normalized".into(),
+            })?;
+        if !policy.allows(NativeSubresourceKind::Connect, &document_url, &target_url)
+            && !policy.allows(
+                NativeSubresourceKind::Connect,
+                &document_url,
+                &policy_target,
+            )
+        {
+            return Err(NativeEngineError::Network {
+                operation: "WebSocket policy".into(),
+                reason: "document CSP blocked the WebSocket connect target".into(),
+            });
+        }
+        let mut cookie_target = target_url.clone();
+        cookie_target
+            .set_scheme(if target_url.scheme() == "wss" {
+                "https"
+            } else {
+                "http"
+            })
+            .map_err(|_| NativeEngineError::UnsupportedUrl {
+                reason: "WebSocket cookie URL could not be normalized".into(),
+            })?;
+        Ok(NativeWebSocketTarget {
+            url: target_url,
+            cookie: self.network.cookie_header(&cookie_target),
+        })
     }
 
     pub(crate) fn frame_sources_for_document(

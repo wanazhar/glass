@@ -2950,10 +2950,14 @@ impl NativeEngine {
             matches!(
                 command,
                 super::javascript::NativeScriptCommand::Fetch { .. }
+                    | super::javascript::NativeScriptCommand::WebSocketOpen { .. }
+                    | super::javascript::NativeScriptCommand::WebSocketSend { .. }
+                    | super::javascript::NativeScriptCommand::WebSocketClose { .. }
             )
         }) {
             return Err(NativeEngineError::UnsupportedUrl {
-                reason: "script fetch requires a process-backed HTTP(S) document".into(),
+                reason: "script network transport requires a process-backed HTTP(S) document"
+                    .into(),
             });
         }
         let history_commands = self.prepare_local_history_commands(commands)?;

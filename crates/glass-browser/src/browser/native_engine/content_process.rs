@@ -2998,11 +2998,12 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                             NativeScriptEvaluation {
                                                 value: Value::Null,
                                                 commands: page_scripts.pending_fetches,
+                                                top_level_await_pending: false,
                                             },
                                         )
                                         .await
                                         {
-                                            Ok((next, mutation)) => {
+                                            Ok((next, mutation, _resolved_value)) => {
                                                 page_events.extend(
                                                     mutation.events.into_iter().map(|event| {
                                                         (event.node_index, event.kind)
@@ -3201,17 +3202,35 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     indexed_db_state.origin(&storage_key(&committed_url, document_origin)),
                 );
                 match runtime.evaluate(source, current, &committed_url, document_origin, viewport) {
-                    Ok(NativeScriptEvaluation { value, commands }) if commands.is_empty() => {
-                        let frame_scripts = runtime.take_frame_script_events();
-                        json!({
-                            "kind":"evaluated",
-                            "id":id,
-                            "value":value,
-                            "history": [],
-                            "frame_scripts":frame_scripts,
-                        })
+                    Ok(NativeScriptEvaluation {
+                        value,
+                        commands,
+                        top_level_await_pending,
+                    }) if commands.is_empty() => {
+                        if top_level_await_pending {
+                            content_error_response(
+                                id,
+                                NativeEngineError::Worker {
+                                    operation: "content process script".into(),
+                                    reason: "top-level await remained pending without a native host operation".into(),
+                                },
+                            )
+                        } else {
+                            let frame_scripts = runtime.take_frame_script_events();
+                            json!({
+                                "kind":"evaluated",
+                                "id":id,
+                                "value":value,
+                                "history": [],
+                                "frame_scripts":frame_scripts,
+                            })
+                        }
                     }
-                    Ok(NativeScriptEvaluation { value, commands }) => {
+                    Ok(NativeScriptEvaluation {
+                        value,
+                        commands,
+                        top_level_await_pending,
+                    }) => {
                         let history = extract_history_commands(&commands);
                         if let Err(error) = apply_content_runtime_history(
                             &history,
@@ -3246,6 +3265,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                         NativeScriptEvaluation {
                                             value: value.clone(),
                                             commands,
+                                            top_level_await_pending,
                                         },
                                     )
                                     .await
@@ -3266,9 +3286,11 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 resource_loader.as_mut(),
                             )
                             .await
+                            .map(|(next, mutation)| (next, mutation, None))
                         };
                         match result {
-                            Ok((next, mutation)) => {
+                            Ok((next, mutation, resolved_value)) => {
+                                let value = resolved_value.unwrap_or(value);
                                 if !mutation.history.is_empty() {
                                     let Some(base_url) = document_url.as_deref() else {
                                         let response = content_error_response(
@@ -6637,7 +6659,12 @@ async fn resolve_script_fetches(
     document_origin: &NativeOrigin,
     viewport: Viewport,
     evaluation: NativeScriptEvaluation,
-) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
+) -> Result<(NativeDocument, NativeContentMutation, Option<Value>), NativeEngineError> {
+    let NativeScriptEvaluation {
+        commands: initial_commands,
+        top_level_await_pending,
+        ..
+    } = evaluation;
     let mut current_url = document_url.to_owned();
     let (mut next, mut mutation) = mutate_script_document(
         current,
@@ -6645,7 +6672,7 @@ async fn resolve_script_fetches(
         &current_url,
         document_origin,
         viewport,
-        &evaluation.commands,
+        &initial_commands,
         Some(loader),
     )
     .await?;
@@ -6653,8 +6680,9 @@ async fn resolve_script_fetches(
         current_url =
             resolve_content_history_document_url(&mutation.history, &current_url, document_origin)?;
     }
-    let mut pending = fetch_commands(&evaluation.commands)?;
+    let mut pending = fetch_commands(&initial_commands)?;
     let mut resolved_count = 0usize;
+    let mut resolved_value = None;
     while let Some((
         request_id,
         href,
@@ -6701,6 +6729,9 @@ async fn resolve_script_fetches(
             document_origin,
             viewport,
         )?;
+        if top_level_await_pending && let Some(value) = runtime.take_top_level_await_result()? {
+            resolved_value = Some(value);
+        }
         let resolved_history = extract_history_commands(&resolved.commands);
         if !resolved_history.is_empty() {
             let mut url = Some(current_url.clone());
@@ -6751,7 +6782,16 @@ async fn resolve_script_fetches(
         ));
     }
     mutation.document = next.to_content_wire();
-    Ok((next, mutation))
+    if top_level_await_pending && resolved_value.is_none() {
+        resolved_value = runtime.take_top_level_await_result()?;
+        if resolved_value.is_none() {
+            return Err(NativeEngineError::Worker {
+                operation: "content process script fetch".into(),
+                reason: "top-level await remained pending after native fetch resolution".into(),
+            });
+        }
+    }
+    Ok((next, mutation, resolved_value))
 }
 
 enum ScriptNavigationTarget {

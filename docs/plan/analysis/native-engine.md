@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-248`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-250`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -3856,6 +3856,19 @@ HTTP policy: 301/302/303 convert body-bearing methods to GET, while 307/308
 retain method and body. The focused content-process fixture observes all
 five methods, four preflights, and the uploaded bodies. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-249.md`.
+
+The completed native-engine-browser-250 slice repairs the asynchronous
+evaluation boundary exposed by real page code. Top-level-await evaluation
+uses QuickJS's pending promise without calling the blocking `finish` path
+until the host has serviced its commands. The content worker then resolves
+fetches through the existing response continuation loop, drains queued jobs,
+and extracts the fulfilled value or reports a rejected promise as a native
+script error. The state marker is held inside the JavaScript realm, preserving
+the `BrowserBackend: Send + Sync` contract that a persistent rquickjs handle
+would violate. Timer-only promises and full async event-loop scheduling remain
+separate work; this slice closes the fetch-driven await path used by ordinary
+applications. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-250.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

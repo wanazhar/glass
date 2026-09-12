@@ -30635,6 +30635,58 @@ async fn native_backend_captures_png_without_mutating_revision_and_denies_other_
 }
 
 #[tokio::test]
+async fn native_backend_composes_nested_frame_surfaces_into_capture() {
+    let config = NativeEngineConfig::default()
+        .with_viewport(Viewport {
+            width: 24,
+            height: 12,
+            device_scale_factor_milli: 1000,
+        })
+        .with_fixture(
+            "fixture://frame-composite-parent",
+            "<iframe id='child' style='display:block;width:8px;height:6px' src='fixture://frame-composite-child'></iframe>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://frame-composite-child",
+            "<iframe id='grand' style='display:block;width:4px;height:3px' src='fixture://frame-composite-grand'></iframe><div style='display:block;width:8px;height:6px;background-color:blue'></div>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://frame-composite-grand",
+            "<div style='display:block;width:4px;height:3px;background-color:red'></div>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://frame-composite-parent");
+    let backend = NativeEngineBackend::new(config).unwrap();
+    let dispatcher = BrowserBackendDispatcher::new(&backend);
+    dispatcher.initialize().await.unwrap();
+
+    let capture = dispatcher
+        .capture(CaptureRequest {
+            context_id: "native-context".into(),
+            format: CaptureFormat::Png,
+        })
+        .await
+        .unwrap();
+    let decoder = png::Decoder::new(Cursor::new(capture.bytes));
+    let mut reader = decoder.read_info().unwrap();
+    let mut decoded = vec![0; reader.output_buffer_size()];
+    let output = reader.next_frame(&mut decoded).unwrap();
+    assert_eq!((output.width, output.height), (24, 12));
+    let pixel = |x: usize, y: usize| {
+        let index = y
+            .saturating_mul(output.line_size)
+            .saturating_add(x.saturating_mul(4));
+        &decoded[index..index + 4]
+    };
+    assert_eq!(pixel(1, 1), &[255, 0, 0, 255]);
+    assert_eq!(pixel(1, 4), &[0, 0, 255, 255]);
+    assert_eq!(pixel(12, 1), &[255, 255, 255, 255]);
+    dispatcher.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_backend_dispatches_vertical_scroll_into_capture() {
     let config = NativeEngineConfig::default()
         .with_viewport(Viewport {
@@ -30893,6 +30945,31 @@ async fn fixture_navigation_projects_through_the_real_backend_dispatcher() {
             .capability(BrowserCapability::Capture)
             .level,
         SupportLevel::Available
+    );
+    assert!(
+        !backend
+            .profile()
+            .capability(BrowserCapability::Action)
+            .limitations
+            .iter()
+            .any(|limitation| limitation.contains("nested scrolling remain open"))
+    );
+    assert!(
+        !backend
+            .profile()
+            .capability(BrowserCapability::Storage)
+            .limitations
+            .iter()
+            .any(|limitation| limitation.contains("IndexedDB remains open"))
+    );
+    assert!(
+        !backend
+            .profile()
+            .identity
+            .certification
+            .limitations
+            .iter()
+            .any(|limitation| limitation.contains("IndexedDB unavailable"))
     );
 
     let dispatcher = BrowserBackendDispatcher::new(&backend);

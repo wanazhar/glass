@@ -1001,7 +1001,7 @@ async fn run_alternative_runtime_command(
                 let screenshot = if *screenshot {
                     Some(
                         base64::engine::general_purpose::STANDARD
-                            .encode(session.native_capture_png()?),
+                            .encode(session.native_capture_png_async().await?),
                     )
                 } else {
                     None
@@ -1115,7 +1115,7 @@ async fn run_alternative_runtime_command(
             #[cfg(feature = "native-engine")]
             {
                 let output = policy.require_output_path(std::path::Path::new(output))?;
-                let bytes = session.native_capture_png()?;
+                let bytes = session.native_capture_png_async().await?;
                 tokio::fs::write(&output, bytes).await?;
                 println!("wrote {}", output.display());
                 print_json_mode(

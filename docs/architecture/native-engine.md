@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-250` slice; the bounded foundation below remains
+`native-engine-browser-251` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5682,6 +5682,19 @@ script error. The same path retains the existing synchronous completion
 behavior for already-settled promises and does not add a thread-unsafe
 cross-backend handle. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-250.md`.
+
+The completed native-engine-browser-251 slice adds a bounded host event-loop
+turn for pending top-level JavaScript evaluation. The content process now
+inspects the persistent realm's timer and animation-frame queue, waits for the
+next due deadline when necessary, executes one timer turn, drains promise
+jobs, and feeds timer-originated DOM mutations and fetch requests through the
+same native mutation/network owners. Timer-only `await` no longer fails as an
+unsupported host operation, and a timer callback can start a fetch before the
+outer promise is published. The loop has bounded turn and effect limits and
+retains the existing script timeout; workers, WebSocket/EventSource,
+background-page scheduling, and full browser event-loop conformance remain
+issue #40 promotion work. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-251.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

@@ -45,7 +45,7 @@ use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, ChildStdout};
-use tokio::time::timeout;
+use tokio::time::{sleep, timeout};
 use url::Url;
 
 // File-input mutations carry bounded in-memory file objects through the same
@@ -57,6 +57,7 @@ const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 8;
 const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTENT_PROCESS_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_CONTENT_EVENT_LOOP_TURNS: usize = MAX_NATIVE_EFFECTS;
 const MAX_CONTENT_STYLESHEETS: usize = 16;
 const MAX_CONTENT_STYLESHEET_BYTES: usize = 512 * 1024;
 const MAX_CONTENT_IMAGES: usize = 64;
@@ -2991,7 +2992,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                         match resolve_script_fetches(
                                             &parsed,
                                             runtime,
-                                            loader,
+                                            Some(loader),
                                             &resource.url,
                                             &resource.origin,
                                             loaded_viewport,
@@ -3206,25 +3207,15 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         value,
                         commands,
                         top_level_await_pending,
-                    }) if commands.is_empty() => {
-                        if top_level_await_pending {
-                            content_error_response(
-                                id,
-                                NativeEngineError::Worker {
-                                    operation: "content process script".into(),
-                                    reason: "top-level await remained pending without a native host operation".into(),
-                                },
-                            )
-                        } else {
-                            let frame_scripts = runtime.take_frame_script_events();
-                            json!({
-                                "kind":"evaluated",
-                                "id":id,
-                                "value":value,
-                                "history": [],
-                                "frame_scripts":frame_scripts,
-                            })
-                        }
+                    }) if commands.is_empty() && !top_level_await_pending => {
+                        let frame_scripts = runtime.take_frame_script_events();
+                        json!({
+                            "kind":"evaluated",
+                            "id":id,
+                            "value":value,
+                            "history": [],
+                            "frame_scripts":frame_scripts,
+                        })
                     }
                     Ok(NativeScriptEvaluation {
                         value,
@@ -3252,29 +3243,21 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             }
                         };
                         let has_fetch = !fetches.is_empty();
-                        let result = if has_fetch {
-                            match resource_loader.as_mut() {
-                                Some(loader) => {
-                                    resolve_script_fetches(
-                                        current,
-                                        runtime,
-                                        loader,
-                                        &script_url,
-                                        document_origin,
-                                        viewport,
-                                        NativeScriptEvaluation {
-                                            value: value.clone(),
-                                            commands,
-                                            top_level_await_pending,
-                                        },
-                                    )
-                                    .await
-                                }
-                                None => Err(NativeEngineError::Worker {
-                                    operation: "content process script fetch".into(),
-                                    reason: "content process has no resource loader".into(),
-                                }),
-                            }
+                        let result = if has_fetch || top_level_await_pending {
+                            resolve_script_fetches(
+                                current,
+                                runtime,
+                                resource_loader.as_mut(),
+                                &script_url,
+                                document_origin,
+                                viewport,
+                                NativeScriptEvaluation {
+                                    value: value.clone(),
+                                    commands,
+                                    top_level_await_pending,
+                                },
+                            )
+                            .await
                         } else {
                             mutate_script_document(
                                 current,
@@ -6654,7 +6637,7 @@ fn fetch_response_payload(result: Result<NativeFetchResponse, NativeEngineError>
 async fn resolve_script_fetches(
     current: &NativeDocument,
     runtime: &NativeJavaScriptRuntime,
-    loader: &mut NativeResourceLoader,
+    mut loader: Option<&mut NativeResourceLoader>,
     document_url: &str,
     document_origin: &NativeOrigin,
     viewport: Viewport,
@@ -6673,7 +6656,7 @@ async fn resolve_script_fetches(
         document_origin,
         viewport,
         &initial_commands,
-        Some(loader),
+        loader.as_deref_mut(),
     )
     .await?;
     if !mutation.history.is_empty() {
@@ -6683,96 +6666,179 @@ async fn resolve_script_fetches(
     let mut pending = fetch_commands(&initial_commands)?;
     let mut resolved_count = 0usize;
     let mut resolved_value = None;
-    while let Some((
-        request_id,
-        href,
-        method,
-        headers,
-        body,
-        content_type,
-        cors_mode,
-        redirect_mode,
-        timeout,
-        credentials,
-    )) = pending.pop()
-    {
-        resolved_count = resolved_count.saturating_add(1);
-        if resolved_count > MAX_NATIVE_EFFECTS {
+    let mut event_loop_turns = 0usize;
+    loop {
+        while let Some((
+            request_id,
+            href,
+            method,
+            headers,
+            body,
+            content_type,
+            cors_mode,
+            redirect_mode,
+            timeout,
+            credentials,
+        )) = pending.pop()
+        {
+            resolved_count = resolved_count.saturating_add(1);
+            if resolved_count > MAX_NATIVE_EFFECTS {
+                return Err(NativeEngineError::limit(
+                    "script fetch requests",
+                    MAX_NATIVE_EFFECTS,
+                    resolved_count,
+                ));
+            }
+            let Some(loader) = loader.as_deref_mut() else {
+                return Err(NativeEngineError::Worker {
+                    operation: "content process script fetch".into(),
+                    reason: "content process has no resource loader".into(),
+                });
+            };
+            let payload = fetch_response_payload(
+                loader
+                    .fetch_request_with_headers_async(NativeFetchRequest {
+                        document_url: &current_url,
+                        href: &href,
+                        method,
+                        body,
+                        content_type,
+                        request_headers: headers,
+                        cors_mode,
+                        redirect_mode,
+                        timeout,
+                        credentials,
+                        max_response_bytes: None,
+                    })
+                    .await,
+            );
+            let resolved = runtime.resolve_fetch(
+                request_id,
+                &payload,
+                &next,
+                &current_url,
+                document_origin,
+                viewport,
+            )?;
+            if top_level_await_pending && let Some(value) = runtime.take_top_level_await_result()? {
+                resolved_value = Some(value);
+            }
+            let resolved_history = extract_history_commands(&resolved.commands);
+            if !resolved_history.is_empty() {
+                let mut url = Some(current_url.clone());
+                apply_content_runtime_history(
+                    &resolved_history,
+                    &mut url,
+                    document_origin,
+                    runtime,
+                )?;
+                current_url = url.ok_or_else(|| NativeEngineError::Worker {
+                    operation: "content process fetch history".into(),
+                    reason: "fetch callback history lost its document URL".into(),
+                })?;
+            }
+            let (resolved_next, resolved_mutation) = mutate_script_document(
+                &next,
+                runtime,
+                &current_url,
+                document_origin,
+                viewport,
+                &resolved.commands,
+                Some(loader),
+            )
+            .await?;
+            next = resolved_next;
+            mutation.events.extend(resolved_mutation.events);
+            mutation.history.extend(resolved_history);
+            mutation
+                .scroll_commands
+                .extend(resolved_mutation.scroll_commands);
+            if !resolved_mutation.history.is_empty() {
+                current_url = resolve_content_history_document_url(
+                    &resolved_mutation.history,
+                    &current_url,
+                    document_origin,
+                )?;
+                mutation.history.extend(resolved_mutation.history);
+            }
+            if mutation.navigation.is_none() {
+                mutation.navigation = resolved_mutation.navigation;
+            } else if resolved_mutation.navigation.is_some() {
+                return Err(NativeEngineError::TargetNotActionable {
+                    reason:
+                        "one script event-loop fetch batch cannot activate multiple navigations"
+                            .into(),
+                });
+            }
+            pending.extend(fetch_commands(&resolved.commands)?);
+        }
+        if !top_level_await_pending || resolved_value.is_some() {
+            break;
+        }
+        if let Some(value) = runtime.take_top_level_await_result()? {
+            resolved_value = Some(value);
+            break;
+        }
+        event_loop_turns = event_loop_turns.saturating_add(1);
+        if event_loop_turns > MAX_CONTENT_EVENT_LOOP_TURNS {
             return Err(NativeEngineError::limit(
-                "script fetch requests",
-                MAX_NATIVE_EFFECTS,
-                resolved_count,
+                "content-process event-loop turns",
+                MAX_CONTENT_EVENT_LOOP_TURNS,
+                event_loop_turns,
             ));
         }
-        let payload = fetch_response_payload(
-            loader
-                .fetch_request_with_headers_async(NativeFetchRequest {
-                    document_url: &current_url,
-                    href: &href,
-                    method,
-                    body,
-                    content_type,
-                    request_headers: headers,
-                    cors_mode,
-                    redirect_mode,
-                    timeout,
-                    credentials,
-                    max_response_bytes: None,
-                })
-                .await,
-        );
-        let resolved = runtime.resolve_fetch(
-            request_id,
-            &payload,
-            &next,
-            &current_url,
-            document_origin,
-            viewport,
-        )?;
-        if top_level_await_pending && let Some(value) = runtime.take_top_level_await_result()? {
-            resolved_value = Some(value);
+        let Some(delay_ms) = runtime.next_timer_delay_ms()? else {
+            return Err(NativeEngineError::Worker {
+                operation: "content process script event loop".into(),
+                reason: "top-level await remained pending without a native host operation".into(),
+            });
+        };
+        if delay_ms > 0 {
+            sleep(Duration::from_millis(delay_ms)).await;
         }
-        let resolved_history = extract_history_commands(&resolved.commands);
-        if !resolved_history.is_empty() {
+        let timer_evaluation =
+            runtime.run_timer_turn(&next, &current_url, document_origin, viewport)?;
+        let timer_history = extract_history_commands(&timer_evaluation.commands);
+        if !timer_history.is_empty() {
             let mut url = Some(current_url.clone());
-            apply_content_runtime_history(&resolved_history, &mut url, document_origin, runtime)?;
+            apply_content_runtime_history(&timer_history, &mut url, document_origin, runtime)?;
             current_url = url.ok_or_else(|| NativeEngineError::Worker {
-                operation: "content process fetch history".into(),
-                reason: "fetch callback history lost its document URL".into(),
+                operation: "content process timer history".into(),
+                reason: "timer callback history lost its document URL".into(),
             })?;
+            mutation.history.extend(timer_history);
         }
-        let (resolved_next, resolved_mutation) = mutate_script_document(
+        let (timer_next, timer_mutation) = mutate_script_document(
             &next,
             runtime,
             &current_url,
             document_origin,
             viewport,
-            &resolved.commands,
-            Some(loader),
+            &timer_evaluation.commands,
+            loader.as_deref_mut(),
         )
         .await?;
-        next = resolved_next;
-        mutation.events.extend(resolved_mutation.events);
-        mutation.history.extend(resolved_history);
+        next = timer_next;
+        mutation.events.extend(timer_mutation.events);
         mutation
             .scroll_commands
-            .extend(resolved_mutation.scroll_commands);
-        if !resolved_mutation.history.is_empty() {
+            .extend(timer_mutation.scroll_commands);
+        if !timer_mutation.history.is_empty() {
             current_url = resolve_content_history_document_url(
-                &resolved_mutation.history,
+                &timer_mutation.history,
                 &current_url,
                 document_origin,
             )?;
-            mutation.history.extend(resolved_mutation.history);
+            mutation.history.extend(timer_mutation.history);
         }
         if mutation.navigation.is_none() {
-            mutation.navigation = resolved_mutation.navigation;
-        } else if resolved_mutation.navigation.is_some() {
+            mutation.navigation = timer_mutation.navigation;
+        } else if timer_mutation.navigation.is_some() {
             return Err(NativeEngineError::TargetNotActionable {
-                reason: "one script fetch batch cannot activate multiple navigations".into(),
+                reason: "one script event-loop batch cannot activate multiple navigations".into(),
             });
         }
-        pending.extend(fetch_commands(&resolved.commands)?);
+        pending.extend(fetch_commands(&timer_evaluation.commands)?);
     }
     if mutation.events.len() > MAX_NATIVE_EFFECTS {
         return Err(NativeEngineError::limit(
@@ -6782,15 +6848,6 @@ async fn resolve_script_fetches(
         ));
     }
     mutation.document = next.to_content_wire();
-    if top_level_await_pending && resolved_value.is_none() {
-        resolved_value = runtime.take_top_level_await_result()?;
-        if resolved_value.is_none() {
-            return Err(NativeEngineError::Worker {
-                operation: "content process script fetch".into(),
-                reason: "top-level await remained pending after native fetch resolution".into(),
-            });
-        }
-    }
     Ok((next, mutation, resolved_value))
 }
 

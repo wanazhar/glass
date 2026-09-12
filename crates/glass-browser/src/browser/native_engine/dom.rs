@@ -491,6 +491,7 @@ pub(crate) enum NativePageScriptSource {
     Inline {
         source: String,
         timing: NativePageScriptTiming,
+        node_index: u32,
     },
     External {
         href: String,
@@ -500,6 +501,7 @@ pub(crate) enum NativePageScriptSource {
     ModuleInline {
         source: String,
         timing: NativePageScriptTiming,
+        node_index: u32,
     },
     ModuleExternal {
         href: String,
@@ -2248,9 +2250,17 @@ impl NativeDocument {
                 let mut source = String::new();
                 self.collect_raw_text(node.id(), &mut source);
                 (source.len() <= max_source_bytes && !source.is_empty()).then_some(if module {
-                    NativePageScriptSource::ModuleInline { source, timing }
+                    NativePageScriptSource::ModuleInline {
+                        source,
+                        timing,
+                        node_index: node.id().index(),
+                    }
                 } else {
-                    NativePageScriptSource::Inline { source, timing }
+                    NativePageScriptSource::Inline {
+                        source,
+                        timing,
+                        node_index: node.id().index(),
+                    }
                 })
             })
             .collect()

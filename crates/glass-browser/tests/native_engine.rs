@@ -8754,6 +8754,43 @@ async fn native_content_process_reports_external_module_evaluation_failure_witho
 }
 
 #[tokio::test]
+async fn native_local_inline_script_failure_dispatches_error_without_aborting_document() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://inline-script-error",
+            "<script>globalThis.inlineEvents = []; const broken = document.getElementById('broken'); broken.addEventListener('error', () => inlineEvents.push('error'));</script><script id='broken'>throw new Error('inline boom'); globalThis.inlineRan = true;</script><title>Inline error is isolated</title><p>Document committed</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://inline-script-error");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    let snapshot = engine.snapshot().unwrap();
+    assert_eq!(snapshot.url, "fixture://inline-script-error");
+    assert_eq!(snapshot.title, "Inline error is isolated");
+    assert_eq!(snapshot.visible_text, "Document committed");
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.inlineEvents")
+            .await
+            .unwrap(),
+        serde_json::json!(["error"])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("Boolean(globalThis.inlineRan)")
+            .await
+            .unwrap(),
+        serde_json::json!(false)
+    );
+    assert_eq!(
+        engine.evaluate_async("document.readyState").await.unwrap(),
+        serde_json::json!("complete")
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_resolves_literal_dynamic_imports() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

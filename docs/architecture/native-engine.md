@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-264` slice; the bounded foundation below remains
+`native-engine-browser-265` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -27,6 +27,7 @@ bounded-fetch-request-form-data/
 bounded-readable-stream-sources/
 bounded-readable-stream-reader-lifecycle/
 bounded-readable-stream-tee/
+bounded-stream-request-bodies/
 bounded-native-frame-sequential-focus-traversal/
 bounded-native-frame-locator-routing/
 bounded-min-max-dimensions/bounded-opacity-groups/bounded-text-alignment/
@@ -5836,6 +5837,16 @@ deferred until both branches cancel. This supports page-created and
 Fetch-backed stream branching without claiming full Streams tee, BYOB, or Web
 IDL parity. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-264.md`.
+
+The completed native-engine-browser-265 slice connects page-created streams to
+the existing Request/Fetch body path. Request construction accepts only
+usable native streams, Request convenience readers drain bounded byte chunks,
+unconsumed stream Requests clone through tee branches, and Fetch drains both
+Request-owned and direct options-owned streams before issuing the existing
+Rust request command. The body remains bounded and buffered at the transport
+boundary; full upload streaming/progress, BYOB, piping, and complete Fetch
+Streams/Web IDL parity remain open. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-265.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-264` locally. The versioned
+`native-engine-browser-265` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -139,6 +139,15 @@ existing queue bound as backpressure, and cancels the upstream only after both
 branches cancel. Page-created stream tee algorithms, BYOB readers, piping,
 transfer strategies, and complete Streams/Web IDL parity remain open on issue
 #40.
+
+The completed native stream-backed Request body slice is
+[native-engine-browser-265](tasks/native-engine-browser-265.md). Native
+`Request` accepts usable page-created streams, convenience body methods drain
+bounded byte chunks, `Request.clone()` tees an unconsumed stream body, and
+Fetch accepts both Request-owned and direct stream upload bodies through the
+existing Rust request transport. Full upload streaming/progress semantics,
+BYOB readers, piping, transfer strategies, and complete Fetch Streams/Web IDL
+parity remain open on issue #40.
 
 The completed profile/contract task is
 [native-engine-browser-000](tasks/native-engine-browser-000.md). It freezes

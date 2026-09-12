@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-264`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-265`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -4000,6 +4000,15 @@ branch controllers, branch queues stop upstream demand at the existing finite
 bound, terminal close/error reaches both branches, and the upstream source is
 canceled only after both branches cancel. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-264.md`.
+
+The completed native-engine-browser-265 slice connects native page-created
+streams to Request and Fetch bodies. Usable streams can back Requests,
+convenience body methods drain bounded byte chunks, Request cloning tees an
+unconsumed stream body, and Fetch drains Request-owned or direct options-owned
+streams before using the existing Rust request command. The transport handoff
+is intentionally bounded and buffered; full upload streaming/progress, BYOB,
+piping, and complete Fetch Streams/Web IDL behavior remain issue #40 work.
+Exact evidence is in `docs/plan/tasks/native-engine-browser-265.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

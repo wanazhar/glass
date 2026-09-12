@@ -8390,6 +8390,82 @@ fn document_bootstrap(
       return {{ bodyNull: false, bytes: Array.from(new Uint8Array(input.buffer, input.byteOffset, input.byteLength)), contentType: null }};
     return {{ bodyNull: false, bytes: blobUtf8Bytes(String(input)), contentType: null }};
   }};
+  const nativeMultipartParameter = (value, parameter) => {{
+    for (const piece of String(value).split(";")) {{
+      const separator = piece.indexOf("=");
+      if (separator < 0 || piece.slice(0, separator).trim().toLowerCase() !== parameter) continue;
+      let result = piece.slice(separator + 1).trim();
+      if (result.startsWith('"') && result.endsWith('"')) result = result.slice(1, -1);
+      return result.replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+    }}
+    return null;
+  }};
+  const nativeRequestFormData = (bytes, payload, request) => {{
+    if (bytes.length > nativeFormBodyLimit) throw new RangeError("native Request FormData body limit exceeded");
+    const declaredType = request.headers.get("content-type") || payload.contentType || "";
+    const mediaType = String(declaredType).split(";", 1)[0].trim().toLowerCase();
+    if (mediaType === "application/x-www-form-urlencoded") {{
+      const form = new FormDataNative();
+      const params = new URLSearchParamsNative(utf8TextFromBytes(bytes));
+      for (const entry of params._entries) form.append(entry[0], entry[1]);
+      return form;
+    }}
+    if (mediaType !== "multipart/form-data")
+      throw new TypeError("native Request body is not FormData-compatible");
+    const boundaryMatch = String(declaredType).match(/boundary=(?:"([^"]+)"|([^;\s]+))/i);
+    const boundary = boundaryMatch ? (boundaryMatch[1] || boundaryMatch[2]) : null;
+    if (!boundary || boundary.length > 256) throw new TypeError("native multipart boundary is invalid");
+    const source = (() => {{
+      let text = "";
+      for (let offset = 0; offset < bytes.length; offset += 4096)
+        text += String.fromCharCode(...bytes.slice(offset, Math.min(offset + 4096, bytes.length)));
+      return text;
+    }})();
+    const marker = "--" + boundary;
+    if (!source.startsWith(marker)) throw new TypeError("native multipart body is malformed");
+    const form = new FormDataNative();
+    let offset = marker.length;
+    let entryCount = 0;
+    if (source.startsWith("--", offset)) return form;
+    if (source.slice(offset, offset + 2) !== "\r\n") throw new TypeError("native multipart body is malformed");
+    offset += 2;
+    while (offset < source.length) {{
+      const headerEnd = source.indexOf("\r\n\r\n", offset);
+      if (headerEnd < 0) throw new TypeError("native multipart headers are malformed");
+      const headerValues = {{}};
+      for (const line of source.slice(offset, headerEnd).split("\r\n")) {{
+        const separator = line.indexOf(":");
+        if (separator < 0) continue;
+        headerValues[line.slice(0, separator).trim().toLowerCase()] = line.slice(separator + 1).trim();
+      }}
+      const disposition = headerValues["content-disposition"] || "";
+      if (disposition.toLowerCase().split(";", 1)[0].trim() !== "form-data")
+        throw new TypeError("native multipart disposition is unsupported");
+      const name = nativeMultipartParameter(disposition, "name");
+      if (name === null || name.length > storageKeyLimit) throw new TypeError("native multipart field name is invalid");
+      const bodyStart = headerEnd + 4;
+      const nextBoundary = source.indexOf("\r\n" + marker, bodyStart);
+      if (nextBoundary < 0) throw new TypeError("native multipart boundary is missing");
+      const bodyEnd = nextBoundary;
+      const filename = nativeMultipartParameter(disposition, "filename");
+      const fieldBytes = bytes.slice(bodyStart, bodyEnd);
+      entryCount += 1;
+      if (entryCount > storageEntryLimit) throw new RangeError("native Request FormData entry limit exceeded");
+      if (filename === null) form.append(name, utf8TextFromBytes(fieldBytes));
+      else {{
+        const file = new FileNative([], filename, {{ type: headerValues["content-type"] || "" }});
+        file._bytes = fieldBytes;
+        file._text = utf8TextFromBytes(fieldBytes);
+        file.size = fieldBytes.length;
+        form.append(name, file);
+      }}
+      offset = nextBoundary + 2 + marker.length;
+      if (source.startsWith("--", offset)) return form;
+      if (source.slice(offset, offset + 2) !== "\r\n") throw new TypeError("native multipart body is malformed");
+      offset += 2;
+    }}
+    throw new TypeError("native multipart body is incomplete");
+  }};
   const nativeRequestBodyIsUsed = (request) => request.__glassRequestBodyState.used === true
     || Boolean(request.body && readableStreamState(request.body).disturbed);
   const nativeRequestBodyUse = (request) => {{
@@ -8406,7 +8482,11 @@ fn document_bootstrap(
   const nativeRequestBodyUnusable = () => Promise.reject(new TypeError("native Request body is unusable"));
   const nativeRequestBodyPromise = (request, transform) => {{
     if (!nativeRequestBodyUse(request)) return nativeRequestBodyUnusable();
-    return Promise.resolve(transform(request.__glassRequestBodyPayload.bytes.slice(), request.__glassRequestBodyPayload));
+    try {{
+      return Promise.resolve(transform(request.__glassRequestBodyPayload.bytes.slice(), request.__glassRequestBodyPayload));
+    }} catch (error) {{
+      return Promise.reject(error);
+    }}
   }};
   RequestNative.prototype.text = function() {{
     return nativeRequestBodyPromise(this, bytes => utf8TextFromBytes(bytes));
@@ -8415,13 +8495,19 @@ fn document_bootstrap(
     return nativeRequestBodyPromise(this, bytes => JSON.parse(utf8TextFromBytes(bytes)));
   }};
   RequestNative.prototype.blob = function() {{
-    return nativeRequestBodyPromise(this, (bytes, payload) => responseBodyBlobFromBytes(bytes, payload.contentType));
+    return nativeRequestBodyPromise(this, (bytes, payload) => responseBodyBlobFromBytes(
+      bytes,
+      payload.contentType || this.headers.get("content-type") || "",
+    ));
   }};
   RequestNative.prototype.arrayBuffer = function() {{
     return nativeRequestBodyPromise(this, bytes => new Uint8Array(bytes).buffer);
   }};
   RequestNative.prototype.bytes = function() {{
     return nativeRequestBodyPromise(this, bytes => new Uint8Array(bytes));
+  }};
+  RequestNative.prototype.formData = function() {{
+    return nativeRequestBodyPromise(this, (bytes, payload) => nativeRequestFormData(bytes, payload, this));
   }};
   const responseInitEntries = (input) => {{
     if (input === undefined || input === null) return [];

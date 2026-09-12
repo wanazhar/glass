@@ -41857,6 +41857,57 @@ async fn native_content_process_exposes_request_body_stream_and_methods() {
 }
 
 #[tokio::test]
+async fn native_content_process_parses_request_form_data() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = "<body>Request form data</body>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await (async () => { const encoded = new Request('/encoded', { method: 'POST', body: 'name=glass&tag=one&tag=two', headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }); const encodedForm = await encoded.formData(); const encodedView = [encodedForm instanceof FormData, Array.from(encodedForm.entries()), encoded.bodyUsed]; const source = new FormData(); source.append('name', 'glass'); source.append('file', new File([new Uint8Array([0, 255, 128, 70])], 'data.bin', { type: 'application/octet-stream' })); const multipart = new Request('/multipart', { method: 'POST', body: source }); const multipartForm = await multipart.formData(); const file = multipartForm.get('file'); const multipartView = [Array.from(multipartForm.entries()).map(entry => [entry[0], entry[1] instanceof File ? 'file' : entry[1]]), file instanceof File, file.name, file.type, file.size, Array.from(await file.bytes()), multipart.bodyUsed]; const unsupported = new Request('/unsupported', { method: 'POST', body: 'raw' }); const unsupportedResult = await unsupported.formData().then(() => 'readable', error => error.name); return { encodedView, multipartView, unsupported: [unsupportedResult, unsupported.bodyUsed] }; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "encodedView": [
+                true,
+                [["name", "glass"], ["tag", "one"], ["tag", "two"]],
+                true
+            ],
+            "multipartView": [
+                [["name", "glass"], ["file", "file"]],
+                true,
+                "data.bin",
+                "application/octet-stream",
+                4,
+                [0, 255, 128, 70],
+                true
+            ],
+            "unsupported": ["TypeError", true]
+        })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_tees_fetch_streams_until_all_readers_cancel() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

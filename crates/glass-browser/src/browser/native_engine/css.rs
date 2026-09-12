@@ -282,6 +282,23 @@ impl Default for NativeBackgroundSize {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeBackgroundShorthandDeclaration {
+    Value(NativeBackgroundShorthand),
+    Inherit,
+    Reset,
+    RevertLayer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NativeBackgroundShorthand {
+    color: NativeBackgroundColorValue,
+    image: NativeBackgroundImageValue,
+    repeat: NativeBackgroundRepeat,
+    position: NativeBackgroundPosition,
+    size: NativeBackgroundSize,
+}
+
 /// Bounded text-decoration patterns owned separately from border styling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum NativeTextDecorationStyle {
@@ -5326,6 +5343,53 @@ struct NativeDeclarations {
     logical_box_model: NativeLogicalBoxModelDeclarations,
 }
 
+fn apply_background_shorthand_declaration(
+    declarations: &mut NativeDeclarations,
+    shorthand: NativeBackgroundShorthandDeclaration,
+    important: bool,
+) {
+    let (color, image, repeat, position, size) = match shorthand {
+        NativeBackgroundShorthandDeclaration::Value(value) => (
+            LocalCascadeDeclaration::Value(value.color),
+            LocalCascadeDeclaration::Value(value.image),
+            LocalCascadeDeclaration::Value(value.repeat),
+            LocalCascadeDeclaration::Value(value.position),
+            LocalCascadeDeclaration::Value(value.size),
+        ),
+        NativeBackgroundShorthandDeclaration::Inherit => (
+            LocalCascadeDeclaration::Inherit,
+            LocalCascadeDeclaration::Inherit,
+            LocalCascadeDeclaration::Inherit,
+            LocalCascadeDeclaration::Inherit,
+            LocalCascadeDeclaration::Inherit,
+        ),
+        NativeBackgroundShorthandDeclaration::Reset => (
+            LocalCascadeDeclaration::Reset,
+            LocalCascadeDeclaration::Reset,
+            LocalCascadeDeclaration::Reset,
+            LocalCascadeDeclaration::Reset,
+            LocalCascadeDeclaration::Reset,
+        ),
+        NativeBackgroundShorthandDeclaration::RevertLayer => (
+            LocalCascadeDeclaration::RevertLayer,
+            LocalCascadeDeclaration::RevertLayer,
+            LocalCascadeDeclaration::RevertLayer,
+            LocalCascadeDeclaration::RevertLayer,
+            LocalCascadeDeclaration::RevertLayer,
+        ),
+    };
+    declarations.background_color = Some(color);
+    declarations.background_color_important = important;
+    declarations.background_image = Some(image);
+    declarations.background_image_important = important;
+    declarations.background_repeat = Some(repeat);
+    declarations.background_repeat_important = important;
+    declarations.background_position = Some(position);
+    declarations.background_position_important = important;
+    declarations.background_size = Some(size);
+    declarations.background_size_important = important;
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NativeStyleRule {
     selector: NativeSelector,
@@ -5837,6 +5901,7 @@ fn parse_declarations_with_diagnostics(
                 parse_local_dimension_declaration(value).is_some()
             }
             "line-height" => parse_line_height_declaration(value).is_some(),
+            "background" => parse_background_shorthand_declaration(value).is_some(),
             "background-color" => parse_background_color_declaration(value).is_some(),
             "background-image" => parse_background_image_declaration(value).is_some(),
             "background-repeat" => parse_background_repeat_declaration(value).is_some(),
@@ -6014,6 +6079,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "min-height"
             | "max-height"
             | "line-height"
+            | "background"
             | "background-color"
             | "background-image"
             | "background-repeat"
@@ -6477,6 +6543,11 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 if let Some(parsed) = parse_line_height_declaration(value) {
                     declarations.line_height = Some(parsed);
                     declarations.text_importance.line_height = important;
+                }
+            }
+            "background" => {
+                if let Some(parsed) = parse_background_shorthand_declaration(value) {
+                    apply_background_shorthand_declaration(&mut declarations, parsed, important);
                 }
             }
             "background-color" => {
@@ -7840,6 +7911,135 @@ fn parse_background_size_declaration(
     parse_local_reset_cascade_declaration(value, parse_background_size)
 }
 
+fn split_background_size_separator(value: &str) -> Option<(&str, Option<&str>)> {
+    let mut parentheses = 0usize;
+    let mut quote = None;
+    let mut escaped = false;
+    let mut separator = None;
+    for (index, byte) in value.bytes().enumerate() {
+        if let Some(delimiter) = quote {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == delimiter {
+                quote = None;
+            }
+            continue;
+        }
+        match byte {
+            b'\'' | b'"' => quote = Some(byte),
+            b'(' => parentheses = parentheses.checked_add(1)?,
+            b')' => parentheses = parentheses.checked_sub(1)?,
+            b'/' if parentheses == 0 => {
+                if separator.replace(index).is_some() {
+                    return None;
+                }
+            }
+            _ => {}
+        }
+    }
+    if parentheses != 0 || quote.is_some() {
+        return None;
+    }
+    match separator {
+        Some(index) => {
+            let before = value[..index].trim();
+            let after = value[index.saturating_add(1)..].trim();
+            (!before.is_empty() && !after.is_empty()).then_some((before, Some(after)))
+        }
+        None => Some((value.trim(), None)),
+    }
+}
+
+fn parse_background_shorthand(value: &str) -> Option<NativeBackgroundShorthand> {
+    let (before_size, after_size) = split_background_size_separator(value)?;
+    let tokens = split_css_value_tokens(before_size)?;
+    let mut color = None;
+    let mut image = None;
+    let mut repeat = None;
+    let mut position_tokens = Vec::new();
+    for token in tokens {
+        if image.is_none()
+            && let Some(parsed) = parse_background_image_value(token)
+            && matches!(
+                parsed,
+                NativeBackgroundImageValue::Url(_) | NativeBackgroundImageValue::None
+            )
+        {
+            image = Some(parsed);
+            continue;
+        }
+        if repeat.is_none()
+            && let Some(parsed) = parse_background_repeat(token)
+        {
+            repeat = Some(parsed);
+            continue;
+        }
+        if color.is_none()
+            && let Some(parsed) = parse_background_color_value(token)
+            && matches!(
+                parsed,
+                NativeBackgroundColorValue::Color(_) | NativeBackgroundColorValue::CurrentColor
+            )
+        {
+            color = Some(parsed);
+            continue;
+        }
+        position_tokens.push(token);
+    }
+
+    let position = if position_tokens.is_empty() {
+        NativeBackgroundPosition::default()
+    } else {
+        parse_background_position(&position_tokens.join(" "))?
+    };
+    let mut size_tokens = match after_size {
+        Some(value) => split_css_value_tokens(value)?,
+        None => Vec::new(),
+    };
+    if repeat.is_none()
+        && let Some(last) = size_tokens.last().copied()
+        && let Some(parsed) = parse_background_repeat(last)
+    {
+        repeat = Some(parsed);
+        size_tokens.pop();
+    }
+    let size = if size_tokens.is_empty() {
+        NativeBackgroundSize::default()
+    } else {
+        parse_background_size(&size_tokens.join(" "))?
+    };
+    Some(NativeBackgroundShorthand {
+        color: color.unwrap_or(NativeBackgroundColorValue::Color(NativeColor {
+            red: 0,
+            green: 0,
+            blue: 0,
+            alpha: 0,
+        })),
+        image: image.unwrap_or(NativeBackgroundImageValue::None),
+        repeat: repeat.unwrap_or_default(),
+        position,
+        size,
+    })
+}
+
+fn parse_background_shorthand_declaration(
+    value: &str,
+) -> Option<NativeBackgroundShorthandDeclaration> {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("revert-layer") {
+        return Some(NativeBackgroundShorthandDeclaration::RevertLayer);
+    }
+    if value.eq_ignore_ascii_case("inherit") {
+        return Some(NativeBackgroundShorthandDeclaration::Inherit);
+    }
+    if is_local_reset_keyword(value) {
+        return Some(NativeBackgroundShorthandDeclaration::Reset);
+    }
+    parse_background_shorthand(value).map(NativeBackgroundShorthandDeclaration::Value)
+}
+
 pub(crate) fn collect_background_image_sources(
     source: &str,
     background_image_sources: &mut BTreeMap<u32, String>,
@@ -7848,22 +8048,36 @@ pub(crate) fn collect_background_image_sources(
         let Some((property, value)) = declaration.split_once(':') else {
             continue;
         };
-        if !property.trim().eq_ignore_ascii_case("background-image") {
-            continue;
-        }
         let (value, _) = strip_important_suffix(value);
-        let Some(source) = parse_background_image_url(value) else {
-            continue;
-        };
-        let source_id = background_image_source_id(source);
-        if background_image_sources
-            .get(&source_id)
-            .is_none_or(|existing| existing == source)
+        if property.trim().eq_ignore_ascii_case("background-image") {
+            if let Some(source) = parse_background_image_url(value) {
+                register_background_image_source(source, background_image_sources);
+            }
+        } else if property.trim().eq_ignore_ascii_case("background")
+            && parse_background_shorthand(value).is_some()
+            && let Some(tokens) = split_css_value_tokens(value)
         {
-            background_image_sources
-                .entry(source_id)
-                .or_insert_with(|| source.to_owned());
+            for token in tokens {
+                if let Some(source) = parse_background_image_url(token) {
+                    register_background_image_source(source, background_image_sources);
+                }
+            }
         }
+    }
+}
+
+fn register_background_image_source(
+    source: &str,
+    background_image_sources: &mut BTreeMap<u32, String>,
+) {
+    let source_id = background_image_source_id(source);
+    if background_image_sources
+        .get(&source_id)
+        .is_none_or(|existing| existing == source)
+    {
+        background_image_sources
+            .entry(source_id)
+            .or_insert_with(|| source.to_owned());
     }
 }
 

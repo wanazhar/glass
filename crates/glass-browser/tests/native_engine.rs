@@ -33318,6 +33318,34 @@ fn native_css_background_cover_and_contain_keep_intrinsic_ratio() {
 }
 
 #[test]
+fn native_css_background_shorthand_expands_into_one_positioned_layer() {
+    let source = native_test_png_data_url();
+    let markup = format!(
+        "<div id='surface' style='width:8px;height:8px;background:red url(\"{source}\") no-repeat right bottom / 4px 2px'></div>"
+    );
+    let document = NativeDocument::parse(&markup, &NativeEngineLimits::default()).unwrap();
+    let surface_id = document.resolve_target("id=surface").unwrap();
+    let list = document
+        .display_list(Viewport {
+            width: 8,
+            height: 8,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::Image { node_id, rect, .. }
+                if *node_id == surface_id
+                    && *rect == NativeRect { x: 4, y: 6, width: 4, height: 2 }
+        )
+    }));
+    let painted = list.rasterize().unwrap();
+    assert_eq!(painted.pixel(0, 0), Some([255, 0, 0, 255]));
+    assert_eq!(painted.pixel(4, 6), Some([255, 0, 0, 255]));
+}
+
+#[test]
 fn native_stylesheet_background_geometry_cascades_into_paint() {
     let source = native_test_png_data_url();
     let markup = format!(
@@ -34489,7 +34517,7 @@ async fn native_content_process_loads_external_background_png_through_document_w
                 stream.write_all(headers.as_bytes()).await.unwrap();
                 stream.write_all(&png).await.unwrap();
             } else {
-                let body = "<div id='surface' style=\"width:8px;height:8px;background-image:url('/image.png');background-repeat:no-repeat;background-size:100% 100%\"></div>";
+                let body = "<div id='surface' style=\"width:8px;height:8px;background:url('/image.png') no-repeat 0 0 / 100% 100%\"></div>";
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
@@ -34571,7 +34599,7 @@ async fn native_content_process_loads_background_png_after_style_mutation() {
     assert_eq!(
         engine
             .evaluate_async(
-                "(() => { const surface = document.getElementById('surface'); surface.style.backgroundImage = \"url('/image.png')\"; surface.style.backgroundRepeat = 'no-repeat'; surface.style.backgroundSize = '100% 100%'; return true; })()",
+                "(() => { const surface = document.getElementById('surface'); surface.style.background = \"url('/image.png') no-repeat 0 0 / 100% 100%\"; return true; })()",
             )
             .await
             .unwrap(),

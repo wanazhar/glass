@@ -14,6 +14,8 @@ pub(crate) const MAX_NATIVE_FLEX_SHRINK: u32 = 1024;
 pub(crate) const MAX_NATIVE_TEXT_DECORATION_THICKNESS: u32 = 4;
 pub(crate) const MIN_NATIVE_TEXT_UNDERLINE_OFFSET: i32 = -4;
 pub(crate) const MAX_NATIVE_TEXT_UNDERLINE_OFFSET: i32 = 4;
+pub(crate) const NATIVE_BACKGROUND_PERCENT_SCALE: i32 = 1_000;
+const MAX_NATIVE_BACKGROUND_PERCENT: i32 = 100_000;
 const MAX_SELECTOR_BYTES: usize = 256;
 const MAX_SELECTOR_PARTS: usize = 8;
 const MAX_NATIVE_NAMED_CASCADE_LAYERS: usize = 15;
@@ -216,6 +218,66 @@ impl NativeBackgroundImageValue {
         match self {
             Self::Url(source) => Some(source),
             Self::None | Self::Inherit | Self::Unset | Self::Initial | Self::Revert => None,
+        }
+    }
+}
+
+/// The single-layer background repeat modes understood by the bounded native
+/// display list.  Two-value `repeat` syntax is normalized while parsing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum NativeBackgroundRepeat {
+    #[default]
+    Repeat,
+    RepeatX,
+    RepeatY,
+    NoRepeat,
+}
+
+/// A background position component. Percentages use thousandths of the
+/// available position range (`1000` means `100%`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum NativeBackgroundPositionComponent {
+    Length(i32),
+    Percentage(i32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct NativeBackgroundPosition {
+    pub(crate) x: NativeBackgroundPositionComponent,
+    pub(crate) y: NativeBackgroundPositionComponent,
+}
+
+impl Default for NativeBackgroundPosition {
+    fn default() -> Self {
+        Self {
+            x: NativeBackgroundPositionComponent::Percentage(0),
+            y: NativeBackgroundPositionComponent::Percentage(0),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum NativeBackgroundSizeComponent {
+    Auto,
+    Length(u32),
+    Percentage(u32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum NativeBackgroundSize {
+    Explicit {
+        width: NativeBackgroundSizeComponent,
+        height: NativeBackgroundSizeComponent,
+    },
+    Cover,
+    Contain,
+}
+
+impl Default for NativeBackgroundSize {
+    fn default() -> Self {
+        Self::Explicit {
+            width: NativeBackgroundSizeComponent::Auto,
+            height: NativeBackgroundSizeComponent::Auto,
         }
     }
 }
@@ -1207,6 +1269,9 @@ pub(crate) struct NativeComputedStyle {
     line_height: Option<u32>,
     background_color: Option<NativeColor>,
     background_image: Option<u32>,
+    background_repeat: NativeBackgroundRepeat,
+    background_position: NativeBackgroundPosition,
+    background_size: NativeBackgroundSize,
     border: Option<NativeBorder>,
     border_colors: Option<[NativeColor; 4]>,
     border_widths: [u32; 4],
@@ -1411,6 +1476,18 @@ impl NativeComputedStyle {
 
     pub(crate) const fn background_image(self) -> Option<u32> {
         self.background_image
+    }
+
+    pub(crate) const fn background_repeat(self) -> NativeBackgroundRepeat {
+        self.background_repeat
+    }
+
+    pub(crate) const fn background_position(self) -> NativeBackgroundPosition {
+        self.background_position
+    }
+
+    pub(crate) const fn background_size(self) -> NativeBackgroundSize {
+        self.background_size
     }
 
     pub(crate) const fn border(self) -> Option<NativeBorder> {
@@ -1677,6 +1754,15 @@ impl NativeStylesheet {
         >; MAX_NATIVE_PAINT_CASCADE_LAYERS] = [None; MAX_NATIVE_PAINT_CASCADE_LAYERS];
         let mut background_image: [Option<
             CascadeValue<LocalCascadeDeclaration<NativeBackgroundImageValue>>,
+        >; MAX_NATIVE_PAINT_CASCADE_LAYERS] = [None; MAX_NATIVE_PAINT_CASCADE_LAYERS];
+        let mut background_repeat: [Option<
+            CascadeValue<LocalCascadeDeclaration<NativeBackgroundRepeat>>,
+        >; MAX_NATIVE_PAINT_CASCADE_LAYERS] = [None; MAX_NATIVE_PAINT_CASCADE_LAYERS];
+        let mut background_position: [Option<
+            CascadeValue<LocalCascadeDeclaration<NativeBackgroundPosition>>,
+        >; MAX_NATIVE_PAINT_CASCADE_LAYERS] = [None; MAX_NATIVE_PAINT_CASCADE_LAYERS];
+        let mut background_size: [Option<
+            CascadeValue<LocalCascadeDeclaration<NativeBackgroundSize>>,
         >; MAX_NATIVE_PAINT_CASCADE_LAYERS] = [None; MAX_NATIVE_PAINT_CASCADE_LAYERS];
         let mut border: [[Option<CascadeValue<LocalCascadeDeclaration<NativeBorderDeclaration>>>;
             MAX_NATIVE_CASCADE_LAYERS]; 4] = [[None; MAX_NATIVE_CASCADE_LAYERS]; 4];
@@ -2107,6 +2193,30 @@ impl NativeStylesheet {
                 false,
                 rule.declarations.background_image_important,
                 &mut background_image,
+            );
+            apply_paint_cascade_declaration(
+                rule.declarations.background_repeat,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.background_repeat_important,
+                &mut background_repeat,
+            );
+            apply_paint_cascade_declaration(
+                rule.declarations.background_position,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.background_position_important,
+                &mut background_position,
+            );
+            apply_paint_cascade_declaration(
+                rule.declarations.background_size,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.background_size_important,
+                &mut background_size,
             );
             apply_local_cascade_edges(
                 &rule.declarations.border,
@@ -2585,6 +2695,30 @@ impl NativeStylesheet {
                 declarations.background_image_important,
                 &mut background_image,
             );
+            apply_paint_cascade_declaration(
+                declarations.background_repeat,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.background_repeat_important,
+                &mut background_repeat,
+            );
+            apply_paint_cascade_declaration(
+                declarations.background_position,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.background_position_important,
+                &mut background_position,
+            );
+            apply_paint_cascade_declaration(
+                declarations.background_size,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.background_size_important,
+                &mut background_size,
+            );
             apply_local_cascade_edges(
                 &declarations.border,
                 u16::MAX,
@@ -2774,6 +2908,11 @@ impl NativeStylesheet {
         );
         let resolved_background_image =
             resolve_local_background_image_declaration(background_image);
+        let resolved_background_repeat =
+            resolve_local_background_repeat_declaration(background_repeat);
+        let resolved_background_position =
+            resolve_local_background_position_declaration(background_position);
+        let resolved_background_size = resolve_local_background_size_declaration(background_size);
         let resolved_border_color: [Option<NativeColor>; 4] = std::array::from_fn(|index| {
             resolve_local_border_color_declaration(
                 border_color[index],
@@ -2925,6 +3064,9 @@ impl NativeStylesheet {
             line_height: resolve_line_height(line_height, inherited.line_height),
             background_color: resolved_background_color,
             background_image: resolved_background_image,
+            background_repeat: resolved_background_repeat,
+            background_position: resolved_background_position,
+            background_size: resolved_background_size,
             border: NativeBorder::from_sides(resolved_border),
             border_colors: Some(border_colors),
             border_widths,
@@ -3371,6 +3513,55 @@ fn resolve_local_background_image_declaration(
         LocalCascadeDeclaration::Inherit
         | LocalCascadeDeclaration::Reset
         | LocalCascadeDeclaration::RevertLayer => None,
+    })
+}
+
+fn resolve_local_background_repeat_declaration(
+    candidates: [Option<CascadeValue<LocalCascadeDeclaration<NativeBackgroundRepeat>>>;
+        MAX_NATIVE_PAINT_CASCADE_LAYERS],
+) -> NativeBackgroundRepeat {
+    resolve_alignment_candidates(
+        candidates,
+        NativeBackgroundRepeat::default(),
+        |declaration| match declaration {
+            LocalCascadeDeclaration::Value(value) => Some(value),
+            LocalCascadeDeclaration::Inherit | LocalCascadeDeclaration::Reset => {
+                Some(NativeBackgroundRepeat::default())
+            }
+            LocalCascadeDeclaration::RevertLayer => None,
+        },
+    )
+}
+
+fn resolve_local_background_position_declaration(
+    candidates: [Option<CascadeValue<LocalCascadeDeclaration<NativeBackgroundPosition>>>;
+        MAX_NATIVE_PAINT_CASCADE_LAYERS],
+) -> NativeBackgroundPosition {
+    resolve_alignment_candidates(
+        candidates,
+        NativeBackgroundPosition::default(),
+        |declaration| match declaration {
+            LocalCascadeDeclaration::Value(value) => Some(value),
+            LocalCascadeDeclaration::Inherit | LocalCascadeDeclaration::Reset => {
+                Some(NativeBackgroundPosition::default())
+            }
+            LocalCascadeDeclaration::RevertLayer => None,
+        },
+    )
+}
+
+fn resolve_local_background_size_declaration(
+    candidates: [Option<CascadeValue<LocalCascadeDeclaration<NativeBackgroundSize>>>;
+        MAX_NATIVE_PAINT_CASCADE_LAYERS],
+) -> NativeBackgroundSize {
+    resolve_alignment_candidates(candidates, NativeBackgroundSize::default(), |declaration| {
+        match declaration {
+            LocalCascadeDeclaration::Value(value) => Some(value),
+            LocalCascadeDeclaration::Inherit | LocalCascadeDeclaration::Reset => {
+                Some(NativeBackgroundSize::default())
+            }
+            LocalCascadeDeclaration::RevertLayer => None,
+        }
     })
 }
 
@@ -5095,6 +5286,12 @@ struct NativeDeclarations {
     background_color_important: bool,
     background_image: Option<LocalCascadeDeclaration<NativeBackgroundImageValue>>,
     background_image_important: bool,
+    background_repeat: Option<LocalCascadeDeclaration<NativeBackgroundRepeat>>,
+    background_repeat_important: bool,
+    background_position: Option<LocalCascadeDeclaration<NativeBackgroundPosition>>,
+    background_position_important: bool,
+    background_size: Option<LocalCascadeDeclaration<NativeBackgroundSize>>,
+    background_size_important: bool,
     border: [Option<LocalCascadeDeclaration<NativeBorderDeclaration>>; 4],
     border_order: [usize; 4],
     border_important: [bool; 4],
@@ -5426,6 +5623,9 @@ fn parse_style_rule(
         || declarations.line_height.is_some()
         || declarations.background_color.is_some()
         || declarations.background_image.is_some()
+        || declarations.background_repeat.is_some()
+        || declarations.background_position.is_some()
+        || declarations.background_size.is_some()
         || declarations.border.iter().any(Option::is_some)
         || declarations.logical_border.has_any()
         || declarations.border_width.iter().any(Option::is_some)
@@ -5639,6 +5839,9 @@ fn parse_declarations_with_diagnostics(
             "line-height" => parse_line_height_declaration(value).is_some(),
             "background-color" => parse_background_color_declaration(value).is_some(),
             "background-image" => parse_background_image_declaration(value).is_some(),
+            "background-repeat" => parse_background_repeat_declaration(value).is_some(),
+            "background-position" => parse_background_position_declaration(value).is_some(),
+            "background-size" => parse_background_size_declaration(value).is_some(),
             "fill" | "stroke" => parse_svg_paint_declaration(value),
             "color" => parse_local_color_declaration(value).is_some(),
             "border" | "border-top" | "border-right" | "border-bottom" | "border-left" => {
@@ -5813,6 +6016,9 @@ fn is_known_css_property(property: &str) -> bool {
             | "line-height"
             | "background-color"
             | "background-image"
+            | "background-repeat"
+            | "background-position"
+            | "background-size"
             | "fill"
             | "stroke"
             | "color"
@@ -6283,6 +6489,24 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 if let Some(parsed) = parse_background_image_declaration(value) {
                     declarations.background_image = Some(parsed);
                     declarations.background_image_important = important;
+                }
+            }
+            "background-repeat" => {
+                if let Some(parsed) = parse_background_repeat_declaration(value) {
+                    declarations.background_repeat = Some(parsed);
+                    declarations.background_repeat_important = important;
+                }
+            }
+            "background-position" => {
+                if let Some(parsed) = parse_background_position_declaration(value) {
+                    declarations.background_position = Some(parsed);
+                    declarations.background_position_important = important;
+                }
+            }
+            "background-size" => {
+                if let Some(parsed) = parse_background_size_declaration(value) {
+                    declarations.background_size = Some(parsed);
+                    declarations.background_size_important = important;
                 }
             }
             "border" => {
@@ -7430,6 +7654,190 @@ fn parse_background_image_declaration(
     value: &str,
 ) -> Option<LocalCascadeDeclaration<NativeBackgroundImageValue>> {
     parse_local_cascade_declaration(value, parse_background_image_value)
+}
+
+fn parse_background_repeat(value: &str) -> Option<NativeBackgroundRepeat> {
+    let tokens = value
+        .split_ascii_whitespace()
+        .map(|token| token.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    match tokens.as_slice() {
+        [repeat] => match repeat.as_str() {
+            "repeat" => Some(NativeBackgroundRepeat::Repeat),
+            "repeat-x" => Some(NativeBackgroundRepeat::RepeatX),
+            "repeat-y" => Some(NativeBackgroundRepeat::RepeatY),
+            "no-repeat" => Some(NativeBackgroundRepeat::NoRepeat),
+            _ => None,
+        },
+        [horizontal, vertical] => match (horizontal.as_str(), vertical.as_str()) {
+            ("repeat", "repeat") => Some(NativeBackgroundRepeat::Repeat),
+            ("repeat", "no-repeat") => Some(NativeBackgroundRepeat::RepeatX),
+            ("no-repeat", "repeat") => Some(NativeBackgroundRepeat::RepeatY),
+            ("no-repeat", "no-repeat") => Some(NativeBackgroundRepeat::NoRepeat),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn parse_background_repeat_declaration(
+    value: &str,
+) -> Option<LocalCascadeDeclaration<NativeBackgroundRepeat>> {
+    if is_inherit_keyword(value) {
+        return Some(LocalCascadeDeclaration::Inherit);
+    }
+    parse_local_reset_cascade_declaration(value, parse_background_repeat)
+}
+
+fn parse_background_percentage(value: &str) -> Option<i32> {
+    let value = value.trim();
+    let value = value.strip_suffix('%')?.trim();
+    let (negative, value) = value
+        .strip_prefix('-')
+        .map_or((false, value), |value| (true, value));
+    let milli = i64::from(parse_decimal_milli(value)?);
+    let scaled = (milli + 50) / 100;
+    let scaled = if negative { -scaled } else { scaled };
+    (scaled.abs() <= i64::from(MAX_NATIVE_BACKGROUND_PERCENT))
+        .then(|| i32::try_from(scaled).ok())
+        .flatten()
+}
+
+fn parse_background_pixel(value: &str) -> Option<i32> {
+    let value = value.trim().to_ascii_lowercase();
+    let (negative, value) = value
+        .strip_prefix('-')
+        .map_or((false, value.as_str()), |value| (true, value));
+    let value = if value == "0" {
+        value
+    } else {
+        value.strip_suffix("px")?.trim()
+    };
+    let milli = i64::from(parse_decimal_milli(value)?);
+    let pixels = (milli + 500) / 1_000;
+    let pixels = if negative { -pixels } else { pixels };
+    (pixels.abs() <= i64::from(MAX_NATIVE_VIEWPORT_DIMENSION))
+        .then(|| i32::try_from(pixels).ok())
+        .flatten()
+}
+
+fn parse_background_position_axis_component(
+    value: &str,
+    horizontal: bool,
+) -> Option<NativeBackgroundPositionComponent> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "left" if horizontal => Some(NativeBackgroundPositionComponent::Percentage(0)),
+        "right" if horizontal => Some(NativeBackgroundPositionComponent::Percentage(
+            NATIVE_BACKGROUND_PERCENT_SCALE,
+        )),
+        "top" if !horizontal => Some(NativeBackgroundPositionComponent::Percentage(0)),
+        "bottom" if !horizontal => Some(NativeBackgroundPositionComponent::Percentage(
+            NATIVE_BACKGROUND_PERCENT_SCALE,
+        )),
+        "center" => Some(NativeBackgroundPositionComponent::Percentage(
+            NATIVE_BACKGROUND_PERCENT_SCALE / 2,
+        )),
+        value if value.ends_with('%') => {
+            parse_background_percentage(value).map(NativeBackgroundPositionComponent::Percentage)
+        }
+        value => parse_background_pixel(value).map(NativeBackgroundPositionComponent::Length),
+    }
+}
+
+fn parse_background_position(value: &str) -> Option<NativeBackgroundPosition> {
+    let tokens = split_css_value_tokens(value)?;
+    match tokens.as_slice() {
+        [value] => {
+            if let Some(x) = parse_background_position_axis_component(value, true) {
+                Some(NativeBackgroundPosition {
+                    x,
+                    y: NativeBackgroundPositionComponent::Percentage(
+                        NATIVE_BACKGROUND_PERCENT_SCALE / 2,
+                    ),
+                })
+            } else {
+                parse_background_position_axis_component(value, false).map(|y| {
+                    NativeBackgroundPosition {
+                        x: NativeBackgroundPositionComponent::Percentage(
+                            NATIVE_BACKGROUND_PERCENT_SCALE / 2,
+                        ),
+                        y,
+                    }
+                })
+            }
+        }
+        [first, second] => {
+            if let (Some(x), Some(y)) = (
+                parse_background_position_axis_component(first, true),
+                parse_background_position_axis_component(second, false),
+            ) {
+                Some(NativeBackgroundPosition { x, y })
+            } else if let (Some(y), Some(x)) = (
+                parse_background_position_axis_component(first, false),
+                parse_background_position_axis_component(second, true),
+            ) {
+                Some(NativeBackgroundPosition { x, y })
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn parse_background_position_declaration(
+    value: &str,
+) -> Option<LocalCascadeDeclaration<NativeBackgroundPosition>> {
+    if is_inherit_keyword(value) {
+        return Some(LocalCascadeDeclaration::Inherit);
+    }
+    parse_local_reset_cascade_declaration(value, parse_background_position)
+}
+
+fn parse_background_size_component(value: &str) -> Option<NativeBackgroundSizeComponent> {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("auto") {
+        return Some(NativeBackgroundSizeComponent::Auto);
+    }
+    if value.ends_with('%') {
+        return u32::try_from(parse_background_percentage(value).filter(|value| *value >= 0)?)
+            .ok()
+            .map(NativeBackgroundSizeComponent::Percentage);
+    }
+    u32::try_from(parse_background_pixel(value).filter(|value| *value >= 0)?)
+        .ok()
+        .map(NativeBackgroundSizeComponent::Length)
+}
+
+fn parse_background_size(value: &str) -> Option<NativeBackgroundSize> {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("cover") {
+        return Some(NativeBackgroundSize::Cover);
+    }
+    if value.eq_ignore_ascii_case("contain") {
+        return Some(NativeBackgroundSize::Contain);
+    }
+    let tokens = split_css_value_tokens(value)?;
+    match tokens.as_slice() {
+        [width] => Some(NativeBackgroundSize::Explicit {
+            width: parse_background_size_component(width)?,
+            height: NativeBackgroundSizeComponent::Auto,
+        }),
+        [width, height] => Some(NativeBackgroundSize::Explicit {
+            width: parse_background_size_component(width)?,
+            height: parse_background_size_component(height)?,
+        }),
+        _ => None,
+    }
+}
+
+fn parse_background_size_declaration(
+    value: &str,
+) -> Option<LocalCascadeDeclaration<NativeBackgroundSize>> {
+    if is_inherit_keyword(value) {
+        return Some(LocalCascadeDeclaration::Inherit);
+    }
+    parse_local_reset_cascade_declaration(value, parse_background_size)
 }
 
 pub(crate) fn collect_background_image_sources(

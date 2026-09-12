@@ -1,6 +1,8 @@
 use super::config::MAX_NATIVE_NODES;
 use super::css::{
-    FontStyleValue, FontWeightValue, NativeBorderRadius, NativeBorderStyle, NativeColor,
+    FontStyleValue, FontWeightValue, NATIVE_BACKGROUND_PERCENT_SCALE, NativeBackgroundPosition,
+    NativeBackgroundPositionComponent, NativeBackgroundRepeat, NativeBackgroundSize,
+    NativeBackgroundSizeComponent, NativeBorderRadius, NativeBorderStyle, NativeColor,
     NativeTextDecorationSkipInk, NativeTextDecorationSkipSpaces, NativeTextDecorationStyle,
 };
 use super::dom::{NativeDocument, NativeNode, NativeNodeId};
@@ -11,6 +13,7 @@ use super::layout::{
     NativeSvgSubpath, svg_line_points, svg_path_subpaths, svg_points, svg_transform_for_node,
     svg_transformed_points, svg_transformed_subpaths,
 };
+use std::sync::Arc;
 
 /// Maximum number of immutable commands retained in one native display list.
 pub const MAX_NATIVE_DISPLAY_COMMANDS: usize = MAX_NATIVE_NODES.saturating_mul(4).saturating_add(1);
@@ -82,9 +85,10 @@ pub enum NativeDisplayCommand {
     Image {
         node_id: NativeNodeId,
         rect: NativeRect,
+        source_rect: NativeRect,
         source_width: u32,
         source_height: u32,
-        pixels: Vec<u8>,
+        pixels: Arc<[u8]>,
         clip: Option<NativeRect>,
     },
     SvgStroke {
@@ -232,12 +236,12 @@ impl NativeDisplayList {
                             },
                         )?;
                     }
-                    if let Some(command) = background_image_paint_command(
+                    for command in background_image_paint_commands(
                         document,
                         layout_box.node_id,
                         layout_box.rect,
                         clip,
-                    ) {
+                    )? {
                         push_command(&mut commands, command)?;
                     }
                     if let Some(border) = style.border()
@@ -346,35 +350,355 @@ fn image_paint_command(
     Some(NativeDisplayCommand::Image {
         node_id,
         rect: bounds,
+        source_rect: NativeRect {
+            x: 0,
+            y: 0,
+            width: image.width,
+            height: image.height,
+        },
         source_width: image.width,
         source_height: image.height,
-        pixels: image.current_pixels().to_vec(),
+        pixels: Arc::from(image.current_pixels()),
         clip,
     })
 }
 
-fn background_image_paint_command(
+fn background_image_paint_commands(
     document: &NativeDocument,
     node_id: NativeNodeId,
     bounds: NativeRect,
     clip: Option<NativeRect>,
-) -> Option<NativeDisplayCommand> {
+) -> Result<Vec<NativeDisplayCommand>, NativeEngineError> {
     if bounds.width == 0 || bounds.height == 0 {
-        return None;
+        return Ok(Vec::new());
     }
-    let source = document.background_image_source_for_node(node_id)?;
+    let Some(source) = document.background_image_source_for_node(node_id) else {
+        return Ok(Vec::new());
+    };
     let image = document
         .background_image_resource_for_node(node_id)
         .cloned()
-        .or_else(|| decode_data_image(source))?;
-    Some(NativeDisplayCommand::Image {
-        node_id,
-        rect: bounds,
-        source_width: image.width,
-        source_height: image.height,
-        pixels: image.current_pixels().to_vec(),
-        clip,
+        .or_else(|| decode_data_image(source));
+    let Some(image) = image else {
+        return Ok(Vec::new());
+    };
+    let pixels = Arc::<[u8]>::from(image.current_pixels());
+    let style = document.computed_style_for_layout(node_id);
+    let Some((tile_width, tile_height)) =
+        background_tile_size(image.width, image.height, bounds, style.background_size())
+    else {
+        return Ok(Vec::new());
+    };
+    let position = background_position_origin(
+        bounds,
+        (tile_width, tile_height),
+        style.background_position(),
+    );
+    let (repeat_x, repeat_y) = match style.background_repeat() {
+        NativeBackgroundRepeat::Repeat => (true, true),
+        NativeBackgroundRepeat::RepeatX => (true, false),
+        NativeBackgroundRepeat::RepeatY => (false, true),
+        NativeBackgroundRepeat::NoRepeat => (false, false),
+    };
+    let x_starts = background_tile_starts(
+        i64::from(bounds.x),
+        i64::from(bounds.right()),
+        position.0,
+        i64::from(tile_width),
+        repeat_x,
+    );
+    let y_starts = background_tile_starts(
+        i64::from(bounds.y),
+        i64::from(bounds.bottom()),
+        position.1,
+        i64::from(tile_height),
+        repeat_y,
+    );
+    let tile_count = x_starts.len().saturating_mul(y_starts.len());
+    if tile_count > MAX_NATIVE_BACKGROUND_TILES {
+        return Err(NativeEngineError::limit(
+            "native background tiles",
+            MAX_NATIVE_BACKGROUND_TILES,
+            tile_count,
+        ));
+    }
+    let mut commands = Vec::new();
+    for tile_y in y_starts {
+        for tile_x in &x_starts {
+            let Some(tile_right) = tile_x.checked_add(i64::from(tile_width)) else {
+                continue;
+            };
+            let Some(tile_bottom) = tile_y.checked_add(i64::from(tile_height)) else {
+                continue;
+            };
+            let visible_left = (*tile_x).max(i64::from(bounds.x));
+            let visible_top = tile_y.max(i64::from(bounds.y));
+            let visible_right = tile_right.min(i64::from(bounds.right()));
+            let visible_bottom = tile_bottom.min(i64::from(bounds.bottom()));
+            if visible_left >= visible_right || visible_top >= visible_bottom {
+                continue;
+            }
+            let Some(rect) = signed_rect(visible_left, visible_top, visible_right, visible_bottom)
+            else {
+                continue;
+            };
+            commands.push(NativeDisplayCommand::Image {
+                node_id,
+                rect,
+                source_rect: background_source_rect(
+                    *tile_x,
+                    tile_y,
+                    tile_right,
+                    tile_bottom,
+                    visible_left,
+                    visible_top,
+                    visible_right,
+                    visible_bottom,
+                    image.width,
+                    image.height,
+                ),
+                source_width: image.width,
+                source_height: image.height,
+                pixels: Arc::clone(&pixels),
+                clip: clip.and_then(|clip| intersect_rects(Some(bounds), Some(clip))),
+            });
+        }
+    }
+    Ok(commands)
+}
+
+const MAX_NATIVE_BACKGROUND_TILES: usize = MAX_NATIVE_DISPLAY_COMMANDS;
+
+fn signed_rect(left: i64, top: i64, right: i64, bottom: i64) -> Option<NativeRect> {
+    if left < 0 || top < 0 || left >= right || top >= bottom {
+        return None;
+    }
+    Some(NativeRect {
+        x: u32::try_from(left).ok()?,
+        y: u32::try_from(top).ok()?,
+        width: u32::try_from(right.saturating_sub(left)).ok()?,
+        height: u32::try_from(bottom.saturating_sub(top)).ok()?,
     })
+}
+
+fn intersect_rects(first: Option<NativeRect>, second: Option<NativeRect>) -> Option<NativeRect> {
+    match (first, second) {
+        (Some(first), Some(second)) => signed_rect(
+            i64::from(first.x.max(second.x)),
+            i64::from(first.y.max(second.y)),
+            i64::from(first.right().min(second.right())),
+            i64::from(first.bottom().min(second.bottom())),
+        ),
+        (Some(rect), None) | (None, Some(rect)) => Some(rect),
+        (None, None) => None,
+    }
+}
+
+fn background_size_component_pixels(
+    component: NativeBackgroundSizeComponent,
+    available: u32,
+) -> Option<Option<u32>> {
+    match component {
+        NativeBackgroundSizeComponent::Auto => Some(None),
+        NativeBackgroundSizeComponent::Length(value) => Some(Some(value)),
+        NativeBackgroundSizeComponent::Percentage(value) => {
+            let pixels = u64::from(available)
+                .saturating_mul(u64::from(value))
+                .checked_add(u64::from(NATIVE_BACKGROUND_PERCENT_SCALE as u32 / 2))?
+                / u64::from(NATIVE_BACKGROUND_PERCENT_SCALE as u32);
+            Some(Some(u32::try_from(pixels).ok()?))
+        }
+    }
+}
+
+fn scaled_background_dimension(value: u32, numerator: u32, denominator: u32) -> Option<u32> {
+    if value == 0 || denominator == 0 {
+        return None;
+    }
+    let scaled = u64::from(value)
+        .saturating_mul(u64::from(numerator))
+        .checked_add(u64::from(denominator / 2))?
+        / u64::from(denominator);
+    u32::try_from(scaled).ok()
+}
+
+fn background_tile_size(
+    image_width: u32,
+    image_height: u32,
+    bounds: NativeRect,
+    size: NativeBackgroundSize,
+) -> Option<(u32, u32)> {
+    if image_width == 0 || image_height == 0 {
+        return None;
+    }
+    let (width, height) = match size {
+        NativeBackgroundSize::Explicit { width, height } => {
+            let width = background_size_component_pixels(width, bounds.width)?;
+            let height = background_size_component_pixels(height, bounds.height)?;
+            match (width, height) {
+                (Some(width), Some(height)) => (width, height),
+                (Some(width), None) => (
+                    width,
+                    scaled_background_dimension(image_height, width, image_width)?,
+                ),
+                (None, Some(height)) => (
+                    scaled_background_dimension(image_width, height, image_height)?,
+                    height,
+                ),
+                (None, None) => (image_width, image_height),
+            }
+        }
+        NativeBackgroundSize::Cover => {
+            if u64::from(bounds.width).saturating_mul(u64::from(image_height))
+                >= u64::from(bounds.height).saturating_mul(u64::from(image_width))
+            {
+                (
+                    bounds.width,
+                    scaled_background_dimension(image_height, bounds.width, image_width)?,
+                )
+            } else {
+                (
+                    scaled_background_dimension(image_width, bounds.height, image_height)?,
+                    bounds.height,
+                )
+            }
+        }
+        NativeBackgroundSize::Contain => {
+            if u64::from(bounds.width).saturating_mul(u64::from(image_height))
+                <= u64::from(bounds.height).saturating_mul(u64::from(image_width))
+            {
+                (
+                    bounds.width,
+                    scaled_background_dimension(image_height, bounds.width, image_width)?,
+                )
+            } else {
+                (
+                    scaled_background_dimension(image_width, bounds.height, image_height)?,
+                    bounds.height,
+                )
+            }
+        }
+    };
+    (width > 0 && height > 0).then_some((width, height))
+}
+
+fn background_position_offset(
+    start: u32,
+    available: u32,
+    tile: u32,
+    component: NativeBackgroundPositionComponent,
+) -> i64 {
+    let available = i64::from(available).saturating_sub(i64::from(tile));
+    let offset = match component {
+        NativeBackgroundPositionComponent::Length(value) => i64::from(value),
+        NativeBackgroundPositionComponent::Percentage(value) => available
+            .saturating_mul(i64::from(value))
+            .checked_div(i64::from(NATIVE_BACKGROUND_PERCENT_SCALE))
+            .unwrap_or_default(),
+    };
+    i64::from(start).saturating_add(offset)
+}
+
+fn background_position_origin(
+    bounds: NativeRect,
+    tile: (u32, u32),
+    position: NativeBackgroundPosition,
+) -> (i64, i64) {
+    (
+        background_position_offset(bounds.x, bounds.width, tile.0, position.x),
+        background_position_offset(bounds.y, bounds.height, tile.1, position.y),
+    )
+}
+
+fn background_tile_starts(
+    range_start: i64,
+    range_end: i64,
+    origin: i64,
+    tile: i64,
+    repeat: bool,
+) -> Vec<i64> {
+    if tile <= 0 || range_start >= range_end {
+        return Vec::new();
+    }
+    if !repeat {
+        return vec![origin];
+    }
+    let offset = range_start.saturating_sub(origin).div_euclid(tile);
+    let Some(mut start) = origin.checked_add(offset.saturating_mul(tile)) else {
+        return Vec::new();
+    };
+    let mut starts = Vec::new();
+    while start < range_end && starts.len() <= MAX_NATIVE_BACKGROUND_TILES {
+        starts.push(start);
+        let Some(next) = start.checked_add(tile) else {
+            break;
+        };
+        start = next;
+    }
+    starts
+}
+
+fn background_source_range(
+    tile_start: i64,
+    tile_end: i64,
+    visible_start: i64,
+    visible_end: i64,
+    source_length: u32,
+) -> (u32, u32) {
+    let tile_length = u64::try_from(tile_end.saturating_sub(tile_start)).unwrap_or(1);
+    let start_offset = u64::try_from(visible_start.saturating_sub(tile_start)).unwrap_or_default();
+    let end_offset = u64::try_from(visible_end.saturating_sub(tile_start)).unwrap_or_default();
+    let source_length = u64::from(source_length);
+    let source_start = start_offset
+        .saturating_mul(source_length)
+        .checked_div(tile_length)
+        .unwrap_or_default()
+        .min(source_length.saturating_sub(1));
+    let source_end = end_offset
+        .saturating_mul(source_length)
+        .saturating_add(tile_length.saturating_sub(1))
+        .checked_div(tile_length)
+        .unwrap_or(source_length)
+        .min(source_length)
+        .max(source_start.saturating_add(1).min(source_length));
+    (
+        u32::try_from(source_start).unwrap_or_default(),
+        u32::try_from(source_end.saturating_sub(source_start)).unwrap_or(1),
+    )
+}
+
+fn background_source_rect(
+    tile_left: i64,
+    tile_top: i64,
+    tile_right: i64,
+    tile_bottom: i64,
+    visible_left: i64,
+    visible_top: i64,
+    visible_right: i64,
+    visible_bottom: i64,
+    source_width: u32,
+    source_height: u32,
+) -> NativeRect {
+    let (x, width) = background_source_range(
+        tile_left,
+        tile_right,
+        visible_left,
+        visible_right,
+        source_width,
+    );
+    let (y, height) = background_source_range(
+        tile_top,
+        tile_bottom,
+        visible_top,
+        visible_bottom,
+        source_height,
+    );
+    NativeRect {
+        x,
+        y,
+        width,
+        height,
+    }
 }
 
 const MAX_NATIVE_SVG_SCANLINES: u32 = 1024;

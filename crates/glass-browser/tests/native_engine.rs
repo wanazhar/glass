@@ -33083,7 +33083,7 @@ fn native_inline_png_images_share_intrinsic_layout_paint_and_capture() {
 fn native_inline_png_background_images_share_css_paint_and_capture() {
     let source = native_test_png_data_url();
     let markup = format!(
-        "<div id='surface' style='width:8px;height:8px;background-image:url(\"{source}\")'></div>"
+        "<div id='surface' style='width:8px;height:8px;background-image:url(\"{source}\");background-repeat:no-repeat;background-size:100% 100%'></div>"
     );
     let document = NativeDocument::parse(&markup, &NativeEngineLimits::default()).unwrap();
     let surface_id = document.resolve_target("id=surface").unwrap();
@@ -33104,6 +33104,7 @@ fn native_inline_png_background_images_share_css_paint_and_capture() {
                 source_height: 2,
                 pixels,
                 clip: None,
+                ..
             } if *node_id == surface_id
                 && *rect == NativeRect { x: 0, y: 0, width: 8, height: 8 }
                 && pixels.len() == 16
@@ -33114,6 +33115,237 @@ fn native_inline_png_background_images_share_css_paint_and_capture() {
     assert_eq!(painted.pixel(5, 1), Some([127, 255, 127, 255]));
     assert_eq!(painted.pixel(1, 5), Some([0, 0, 255, 255]));
     assert_eq!(painted.pixel(5, 5), Some([255, 255, 255, 255]));
+}
+
+#[test]
+fn native_css_background_images_repeat_and_crop_tiles() {
+    let source = native_test_png_data_url();
+    let markup = format!(
+        "<div id='surface' style='width:6px;height:4px;background-image:url(\"{source}\")'></div>"
+    );
+    let document = NativeDocument::parse(&markup, &NativeEngineLimits::default()).unwrap();
+    let surface_id = document.resolve_target("id=surface").unwrap();
+    let list = document
+        .display_list(Viewport {
+            width: 6,
+            height: 4,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    let images = list
+        .commands
+        .iter()
+        .filter_map(|command| match command {
+            NativeDisplayCommand::Image {
+                node_id,
+                rect,
+                source_rect,
+                source_width,
+                source_height,
+                ..
+            } if *node_id == surface_id => {
+                Some((*rect, *source_rect, *source_width, *source_height))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(images.len(), 6);
+    assert!(images.iter().all(|(rect, source_rect, width, height)| {
+        *rect
+            == NativeRect {
+                x: rect.x,
+                y: rect.y,
+                width: 2,
+                height: 2,
+            }
+            && *source_rect
+                == NativeRect {
+                    x: 0,
+                    y: 0,
+                    width: 2,
+                    height: 2,
+                }
+            && *width == 2
+            && *height == 2
+    }));
+    let painted = list.rasterize().unwrap();
+    assert_eq!(painted.pixel(0, 0), Some([255, 0, 0, 255]));
+    assert_eq!(painted.pixel(2, 0), Some([255, 0, 0, 255]));
+    assert_eq!(painted.pixel(4, 3), Some([0, 0, 255, 255]));
+}
+
+#[test]
+fn native_css_background_size_and_position_place_one_scaled_tile() {
+    let source = native_test_png_data_url();
+    let markup = format!(
+        "<div id='surface' style='width:8px;height:8px;background-image:url(\"{source}\");background-repeat:no-repeat;background-size:4px 2px;background-position:right bottom'></div>"
+    );
+    let document = NativeDocument::parse(&markup, &NativeEngineLimits::default()).unwrap();
+    let surface_id = document.resolve_target("id=surface").unwrap();
+    let list = document
+        .display_list(Viewport {
+            width: 8,
+            height: 8,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    let command = list
+        .commands
+        .iter()
+        .find(|command| {
+            matches!(
+                command,
+                NativeDisplayCommand::Image { node_id, .. } if *node_id == surface_id
+            )
+        })
+        .unwrap();
+    assert!(matches!(
+        command,
+        NativeDisplayCommand::Image {
+            rect,
+            source_rect,
+            source_width: 2,
+            source_height: 2,
+            ..
+        } if *rect == NativeRect { x: 4, y: 6, width: 4, height: 2 }
+            && *source_rect == NativeRect { x: 0, y: 0, width: 2, height: 2 }
+    ));
+    let painted = list.rasterize().unwrap();
+    assert_eq!(painted.pixel(3, 6), Some([255, 255, 255, 255]));
+    assert_eq!(painted.pixel(4, 6), Some([255, 0, 0, 255]));
+    assert_eq!(painted.pixel(7, 7), Some([255, 255, 255, 255]));
+}
+
+#[test]
+fn native_css_background_partial_tile_uses_the_matching_source_crop() {
+    let source = native_test_png_data_url();
+    let markup = format!(
+        "<div id='surface' style='width:1px;height:2px;background-image:url(\"{source}\");background-repeat:no-repeat;background-size:4px 2px;background-position:-3px 0'></div>"
+    );
+    let document = NativeDocument::parse(&markup, &NativeEngineLimits::default()).unwrap();
+    let surface_id = document.resolve_target("id=surface").unwrap();
+    let list = document
+        .display_list(Viewport {
+            width: 1,
+            height: 2,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    let command = list
+        .commands
+        .iter()
+        .find(|command| {
+            matches!(
+                command,
+                NativeDisplayCommand::Image { node_id, .. } if *node_id == surface_id
+            )
+        })
+        .unwrap();
+    assert!(matches!(
+        command,
+        NativeDisplayCommand::Image {
+            rect,
+            source_rect,
+            ..
+        } if *rect == NativeRect { x: 0, y: 0, width: 1, height: 2 }
+            && *source_rect == NativeRect { x: 1, y: 0, width: 1, height: 2 }
+    ));
+    assert_eq!(
+        list.rasterize().unwrap().pixel(0, 0),
+        Some([127, 255, 127, 255])
+    );
+}
+
+#[test]
+fn native_css_background_cover_and_contain_keep_intrinsic_ratio() {
+    let source = native_test_png_data_url();
+    let cover = NativeDocument::parse(
+        &format!(
+            "<div id='surface' style='width:8px;height:4px;background-image:url(\"{source}\");background-repeat:no-repeat;background-size:cover'></div>"
+        ),
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let cover_id = cover.resolve_target("id=surface").unwrap();
+    let cover_list = cover
+        .display_list(Viewport {
+            width: 8,
+            height: 4,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    assert!(cover_list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::Image {
+                node_id,
+                rect,
+                source_rect,
+                ..
+            }
+                if *node_id == cover_id
+                    && *rect == NativeRect { x: 0, y: 0, width: 8, height: 4 }
+                    && *source_rect == NativeRect { x: 0, y: 0, width: 2, height: 1 }
+        )
+    }));
+
+    let contain = NativeDocument::parse(
+        &format!(
+            "<div id='surface' style='width:8px;height:4px;background-image:url(\"{source}\");background-repeat:no-repeat;background-size:contain'></div>"
+        ),
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let contain_id = contain.resolve_target("id=surface").unwrap();
+    let contain_list = contain
+        .display_list(Viewport {
+            width: 8,
+            height: 4,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    assert!(contain_list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::Image { node_id, rect, .. }
+                if *node_id == contain_id
+                    && *rect == NativeRect { x: 0, y: 0, width: 4, height: 4 }
+        )
+    }));
+    let painted = contain_list.rasterize().unwrap();
+    assert_eq!(painted.pixel(0, 0), Some([255, 0, 0, 255]));
+    assert_eq!(painted.pixel(5, 0), Some([255, 255, 255, 255]));
+}
+
+#[test]
+fn native_stylesheet_background_geometry_cascades_into_paint() {
+    let source = native_test_png_data_url();
+    let markup = format!(
+        "<style>#surface {{ background-image:url(\"{source}\"); background-repeat:repeat-x; background-size:3px 2px; background-position:100% 0; }}</style><div id='surface' style='width:7px;height:4px'></div>"
+    );
+    let document = NativeDocument::parse(&markup, &NativeEngineLimits::default()).unwrap();
+    let surface_id = document.resolve_target("id=surface").unwrap();
+    let list = document
+        .display_list(Viewport {
+            width: 7,
+            height: 4,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    let images = list
+        .commands
+        .iter()
+        .filter(|command| {
+            matches!(
+                command,
+                NativeDisplayCommand::Image { node_id, .. } if *node_id == surface_id
+            )
+        })
+        .count();
+    assert_eq!(images, 3);
+    let painted = list.rasterize().unwrap();
+    assert_eq!(painted.pixel(4, 0), Some([255, 0, 0, 255]));
+    assert_eq!(painted.pixel(0, 2), Some([255, 255, 255, 255]));
 }
 
 #[tokio::test]
@@ -34257,7 +34489,7 @@ async fn native_content_process_loads_external_background_png_through_document_w
                 stream.write_all(headers.as_bytes()).await.unwrap();
                 stream.write_all(&png).await.unwrap();
             } else {
-                let body = "<div id='surface' style=\"width:8px;height:8px;background-image:url('/image.png')\"></div>";
+                let body = "<div id='surface' style=\"width:8px;height:8px;background-image:url('/image.png');background-repeat:no-repeat;background-size:100% 100%\"></div>";
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
@@ -34339,7 +34571,7 @@ async fn native_content_process_loads_background_png_after_style_mutation() {
     assert_eq!(
         engine
             .evaluate_async(
-                "(() => { document.getElementById('surface').style.backgroundImage = \"url('/image.png')\"; return true; })()",
+                "(() => { const surface = document.getElementById('surface'); surface.style.backgroundImage = \"url('/image.png')\"; surface.style.backgroundRepeat = 'no-repeat'; surface.style.backgroundSize = '100% 100%'; return true; })()",
             )
             .await
             .unwrap(),

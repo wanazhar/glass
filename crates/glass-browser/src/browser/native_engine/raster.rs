@@ -160,6 +160,7 @@ impl NativeSurface {
                 }
                 NativeDisplayCommand::Image {
                     rect,
+                    source_rect,
                     source_width,
                     source_height,
                     pixels,
@@ -175,6 +176,7 @@ impl NativeSurface {
                     Self::current_surface_mut(&mut surfaces)?.draw_image(
                         viewport_rect,
                         *rect,
+                        *source_rect,
                         *source_width,
                         *source_height,
                         pixels,
@@ -510,6 +512,7 @@ impl NativeSurface {
         &mut self,
         viewport_rect: NativeRect,
         document_rect: NativeRect,
+        source_rect: NativeRect,
         source_width: u32,
         source_height: u32,
         pixels: &[u8],
@@ -522,6 +525,16 @@ impl NativeSurface {
             || document_rect.height == 0
         {
             return Ok(());
+        }
+        if source_rect.width == 0
+            || source_rect.height == 0
+            || source_rect.right() > source_width
+            || source_rect.bottom() > source_height
+        {
+            return Err(NativeEngineError::invalid(
+                "native image",
+                "source rectangle exceeds RGBA pixel payload dimensions",
+            ));
         }
         let expected_len = usize::try_from(source_width)
             .ok()
@@ -557,8 +570,11 @@ impl NativeSurface {
             if local_y >= u64::from(document_rect.height) {
                 continue;
             }
-            let source_y = (local_y * u64::from(source_height) / u64::from(document_rect.height))
-                .min(u64::from(source_height.saturating_sub(1)))
+            let source_y = u64::from(source_rect.y)
+                .saturating_add(
+                    local_y * u64::from(source_rect.height) / u64::from(document_rect.height),
+                )
+                .min(u64::from(source_rect.bottom().saturating_sub(1)))
                 as usize;
             for x in left..right {
                 let document_x = i64::from(x).saturating_add(i64::from(scroll_offset.x));
@@ -571,8 +587,11 @@ impl NativeSurface {
                 if local_x >= u64::from(document_rect.width) {
                     continue;
                 }
-                let source_x = (local_x * u64::from(source_width) / u64::from(document_rect.width))
-                    .min(u64::from(source_width.saturating_sub(1)))
+                let source_x = u64::from(source_rect.x)
+                    .saturating_add(
+                        local_x * u64::from(source_rect.width) / u64::from(document_rect.width),
+                    )
+                    .min(u64::from(source_rect.right().saturating_sub(1)))
                     as usize;
                 let index = (source_y * usize::try_from(source_width).unwrap_or(0) + source_x) * 4;
                 self.blend_pixel(

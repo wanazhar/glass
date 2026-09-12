@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-261`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-262`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -3978,6 +3978,14 @@ files preserve bounded raw bytes, filenames, and content types; unsupported
 media types and malformed boundaries fail closed. Streaming upload sources
 and complete Fetch Streams/Web IDL behavior remain issue #40 work. Exact
 evidence is in `docs/plan/tasks/native-engine-browser-261.md`.
+
+The completed native-engine-browser-262 slice adds bounded underlying-source
+support to `ReadableStream`. Page-created streams now receive `start`,
+demand-driven `pull`, and `cancel` callbacks plus controller enqueue,
+close, and error operations under a finite queue. BYOB readers, piping,
+transfer strategies, and complete Streams/Web IDL behavior remain issue #40
+work. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-262.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

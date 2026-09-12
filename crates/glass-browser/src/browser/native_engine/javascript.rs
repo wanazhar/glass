@@ -8130,6 +8130,97 @@ fn document_bootstrap(
     state.disturbed = true;
     if (typeof state.onDisturb === "function") state.onDisturb();
   }};
+  const failReadableStreamSource = (state, error) => {{
+    if (state.done || state.cancelled || state.error !== null) return;
+    state.error = error instanceof Error ? error.message : String(error);
+    state.done = true;
+    if (state.pendingRead) {{
+      state.pendingRead.reject(new Error(state.error));
+      state.pendingRead = null;
+    }}
+  }};
+  const closeReadableStreamSource = (state) => {{
+    if (state.done || state.cancelled || state.error !== null) return;
+    state.done = true;
+    if (state.pendingRead) {{
+      state.pendingRead.resolve({{ value: undefined, done: true }});
+      state.pendingRead = null;
+    }}
+  }};
+  const enqueueReadableStreamSource = (state, value) => {{
+    if (state.done || state.cancelled || state.error !== null)
+      throw new TypeError("native ReadableStream controller is closed");
+    const size = value instanceof ArrayBuffer
+      ? value.byteLength
+      : typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(value)
+        ? value.byteLength
+        : typeof value === "string"
+          ? blobUtf8Bytes(value).length
+          : 1;
+    if (size > storageValueLimit) throw new RangeError("native ReadableStream chunk exceeds its limit");
+    if (state.pendingRead) {{
+      const pending = state.pendingRead;
+      state.pendingRead = null;
+      pending.resolve({{ value, done: false }});
+    }} else {{
+      if (state.queued.length >= {fetch_stream_queue_limit})
+        throw new RangeError("native ReadableStream queue limit exceeded");
+      state.queued.push(value);
+    }}
+  }};
+  const pullReadableStreamSource = (state) => {{
+    const source = state.underlyingSource;
+    if (!source || state.sourceStarting || state.sourcePulling || state.done || state.cancelled || state.error !== null)
+      return;
+    if (typeof source.pull !== "function") return;
+    state.sourcePulling = true;
+    let result;
+    try {{
+      result = source.pull(state.sourceController);
+    }} catch (error) {{
+      state.sourcePulling = false;
+      failReadableStreamSource(state, error);
+      return;
+    }}
+    Promise.resolve(result).then(
+      () => {{ state.sourcePulling = false; }},
+      error => {{ state.sourcePulling = false; failReadableStreamSource(state, error); }},
+    );
+  }};
+  const startReadableStreamSource = (state) => {{
+    const source = state.underlyingSource;
+    if (!source || typeof source.start !== "function") {{
+      state.sourceStarting = false;
+      return;
+    }}
+    let result;
+    try {{
+      result = source.start(state.sourceController);
+    }} catch (error) {{
+      state.sourceStarting = false;
+      failReadableStreamSource(state, error);
+      return;
+    }}
+    Promise.resolve(result).then(
+      () => {{ state.sourceStarting = false; pullReadableStreamSource(state); }},
+      error => {{ state.sourceStarting = false; failReadableStreamSource(state, error); }},
+    );
+  }};
+  const cancelReadableStreamSource = (state, reason) => {{
+    if (state.cancelled) return Promise.resolve(undefined);
+    markReadableStreamDisturbed(state);
+    state.cancelled = true;
+    state.done = true;
+    state.queued = [];
+    if (state.pendingRead) {{
+      state.pendingRead.resolve({{ value: undefined, done: true }});
+      state.pendingRead = null;
+    }}
+    if (!state.underlyingSource || typeof state.underlyingSource.cancel !== "function")
+      return Promise.resolve(undefined);
+    try {{ return Promise.resolve(state.underlyingSource.cancel(reason)); }}
+    catch (error) {{ return Promise.reject(error); }}
+  }};
   const readableStreamDone = (state) => state.cancelled || state.done || state.error !== null;
   const responseBodyIsUsed = (response) => {{
     if (!response || !response.__glassBodyState) return false;
@@ -8160,8 +8251,15 @@ fn document_bootstrap(
     ? globalThis.__glassReadableStreamConstructor
     : function(bytes, streamId, onDisturb) {{
     if (!(this instanceof ReadableStreamNative)) throw new TypeError("native ReadableStream requires new");
-    const hostId = streamId === undefined || streamId === null ? null : Number(streamId);
-    const values = hostId === null && Array.isArray(bytes) ? bytes.slice() : [];
+    const underlyingSource = bytes && typeof bytes === "object" && !Array.isArray(bytes)
+      && (streamId === undefined || (streamId && typeof streamId === "object"))
+      ? bytes
+      : null;
+    const streamOptions = underlyingSource && streamId && typeof streamId === "object" ? streamId : {{}};
+    if (underlyingSource && streamOptions.type !== undefined && streamOptions.type !== "bytes")
+      throw new TypeError("native ReadableStream type is unsupported");
+    const hostId = underlyingSource || streamId === undefined || streamId === null ? null : Number(streamId);
+    const values = hostId === null && underlyingSource === null && Array.isArray(bytes) ? bytes.slice() : [];
     if (values.length > storageValueLimit) throw new RangeError("native ReadableStream body limit exceeded");
     for (const value of values) {{
       if (!Number.isInteger(value) || value < 0 || value > 255)
@@ -8173,21 +8271,35 @@ fn document_bootstrap(
       bytes: values,
       offset: 0,
       queued,
+      underlyingSource,
+      sourceController: null,
+      sourceStarting: Boolean(underlyingSource && typeof underlyingSource.start === "function"),
+      sourcePulling: false,
       locked: false,
       cancelled: false,
       disturbed: false,
       consumedByResponse: false,
       consumedByRequest: false,
-      done: group ? group.done : true,
+      done: underlyingSource ? false : group ? group.done : true,
       error: group ? group.error : null,
       streamId: hostId,
       group,
       pendingRead: null,
       onDisturb: typeof onDisturb === "function" ? onDisturb : null,
+      byteMode: underlyingSource === null,
     }};
+    if (underlyingSource) {{
+      state.sourceController = Object.freeze({{
+        get desiredSize() {{ return {fetch_stream_queue_limit} - state.queued.length; }},
+        enqueue(value) {{ enqueueReadableStreamSource(state, value); }},
+        close() {{ closeReadableStreamSource(state); }},
+        error(error) {{ failReadableStreamSource(state, error); }},
+      }});
+    }}
     if (group) group.streams.push(state);
     Object.defineProperty(this, "__glassReadableStream", {{ value: true }});
     Object.defineProperty(this, "_state", {{ value: state }});
+    if (underlyingSource) startReadableStreamSource(state);
     Object.freeze(this);
   }};
   Object.defineProperty(ReadableStreamNative.prototype, "locked", {{
@@ -8213,14 +8325,15 @@ fn document_bootstrap(
       state.locked = false;
     }};
     const readQueued = () => {{
-      if (state.streamId === null) {{
+      if (state.streamId === null && state.underlyingSource === null) {{
         if (state.offset >= state.bytes.length) return null;
         const value = new Uint8Array(state.bytes.slice(state.offset));
         state.offset = state.bytes.length;
         return {{ value, done: false }};
       }}
       if (state.queued.length === 0) return null;
-      return {{ value: new Uint8Array(state.queued.shift()), done: false }};
+      const value = state.queued.shift();
+      return {{ value: state.byteMode ? new Uint8Array(value) : value, done: false }};
     }};
     const read = () => {{
       if (state.consumedByResponse) return responseBodyUnusable();
@@ -8238,7 +8351,10 @@ fn document_bootstrap(
       }}
       if (state.pendingRead) return Promise.reject(new TypeError("native ReadableStream read is already pending"));
       const promise = new Promise((resolve, reject) => {{ state.pendingRead = {{ resolve, reject }}; }});
-      try {{ requestFetchStreamRead(state.group); }}
+      try {{
+        if (state.underlyingSource) pullReadableStreamSource(state);
+        else requestFetchStreamRead(state.group);
+      }}
       catch (error) {{ state.pendingRead = null; return Promise.reject(error); }}
       return promise;
     }};
@@ -8247,8 +8363,9 @@ fn document_bootstrap(
         if (released) return Promise.reject(new TypeError("native ReadableStream reader is released"));
         return read();
       }},
-      cancel() {{
+      cancel(reason) {{
         if (released) return Promise.reject(new TypeError("native ReadableStream reader is released"));
+        if (state.underlyingSource) return cancelReadableStreamSource(state, reason);
         state.cancelled = true;
         markReadableStreamDisturbed(state);
         state.done = true;
@@ -8261,6 +8378,12 @@ fn document_bootstrap(
       releaseLock() {{ release(); }},
       return() {{
         if (released) return Promise.resolve({{ value: undefined, done: true }});
+        if (state.underlyingSource) {{
+          const cancellation = cancelReadableStreamSource(state);
+          settleClosed();
+          release();
+          return cancellation.then(() => ({{ value: undefined, done: true }}));
+        }}
         state.cancelled = true;
         markReadableStreamDisturbed(state);
         state.done = true;
@@ -8276,9 +8399,10 @@ fn document_bootstrap(
     Object.defineProperty(reader, "closed", {{ value: closedPromise }});
     return Object.freeze(reader);
   }};
-  ReadableStreamNative.prototype.cancel = function() {{
+  ReadableStreamNative.prototype.cancel = function(reason) {{
     const state = readableStreamState(this);
     if (state.locked) return Promise.reject(new TypeError("native ReadableStream is locked"));
+    if (state.underlyingSource) return cancelReadableStreamSource(state, reason);
     state.cancelled = true;
     markReadableStreamDisturbed(state);
     state.done = true;

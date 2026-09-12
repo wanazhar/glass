@@ -41908,6 +41908,49 @@ async fn native_content_process_parses_request_form_data() {
 }
 
 #[tokio::test]
+async fn native_content_process_drives_underlying_readable_stream_sources() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = "<body>ReadableStream source</body>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await (async () => { const events = []; const stream = new ReadableStream({ start(controller) { events.push('start'); controller.enqueue('first'); }, pull(controller) { events.push('pull'); controller.enqueue('second'); controller.close(); }, cancel(reason) { events.push('cancel:' + reason); } }); const reader = stream.getReader(); const first = await reader.read(); const second = await reader.read(); const end = await reader.read(); const beforeRelease = stream.locked; reader.releaseLock(); const canceled = new ReadableStream({ cancel(reason) { events.push('cancel:' + reason); } }); await canceled.cancel('stop'); return { events, first, second, end: [end.value, end.done], beforeRelease, afterRelease: stream.locked, canceled: canceled.locked }; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "events": ["start", "pull", "cancel:stop"],
+            "first": {"value": "first", "done": false},
+            "second": {"value": "second", "done": false},
+            "end": [null, true],
+            "beforeRelease": true,
+            "afterRelease": false,
+            "canceled": false
+        })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_tees_fetch_streams_until_all_readers_cancel() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-236` locally. The versioned
+`native-engine-browser-237` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -2065,6 +2065,16 @@ non-targetable boxes without changing their paint, while explicit descendant
 overrides remain targetable through an inherited `none` ancestor. Exact
 evidence is recorded in
 [native-engine-browser-236](tasks/native-engine-browser-236.md).
+
+The completed native-engine-browser-237 slice adds bounded nested scrolling
+through typed axis-specific `overflow` values. Element `scrollLeft`/
+`scrollTop`, `scrollTo`, and `scrollBy` update measured overflow containers;
+the resulting offsets feed script geometry, projected overflow clips,
+display-list replay, rasterization, capture, and hit testing. Element scroll
+events target the scroller without bubbling, root scroll events target the
+window realm, and local/content-process page scripts can establish scroll state
+during initial navigation. Exact evidence is recorded in
+[native-engine-browser-237](tasks/native-engine-browser-237.md).
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` now returns persistent `Attr`

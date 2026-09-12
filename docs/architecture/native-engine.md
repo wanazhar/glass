@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-236` slice; the bounded foundation below remains
+`native-engine-browser-237` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -13,6 +13,7 @@ bounded-descendant-selectors/bounded-overflow-clip/bounded-hard-line-breaks/
 bounded-pre-line-breaks/bounded-preformatted-whitespace/
 bounded-pre-wrap-whitespace/bounded-nowrap-whitespace/bounded-inherited-line-height/
 bounded-clip-aware-root-overflow/bounded-axis-specific-overflow/
+bounded-nested-scrolling-and-scroll-events/
 bounded-min-max-dimensions/bounded-opacity-groups/bounded-text-alignment/
 bounded-functional-alpha-colors/bounded-fixed-cell-text-decoration/
 bounded-inherited-text-transform/bounded-first-line-text-indent/
@@ -5549,6 +5550,16 @@ painted while pointer targeting passes through it; an explicit `auto`
 descendant can still receive the target through an inherited `none` ancestor.
 Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-236.md`.
+
+The completed native-engine-browser-237 slice adds bounded nested scrolling to
+the shared browser surface. Typed axis-specific `overflow` values derive
+element scroll metrics and independently bounded offsets; script geometry,
+overflow clips, display-list replay, rasterization, capture, and hit testing
+all consume the same nested projection. Element scroll events target the
+scroller without bubbling, root events target the window realm, and initial
+page-script scroll commands survive local and content-process navigation
+commit. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-237.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

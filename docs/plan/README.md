@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-229` locally. The versioned
+`native-engine-browser-230` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -2010,6 +2010,14 @@ immutable RGBA payloads now flow through local and HTTP(S) content-process
 computed style, display-list, raster, capture, and mutation owners. Exact
 evidence is recorded in
 [native-engine-browser-229](tasks/native-engine-browser-229.md).
+
+The completed native-engine-browser-230 slice adds the common one-layer CSS
+`background` shorthand. Supported color, image, repeat, position, and
+`/`-separated size components now expand into the existing cascade, source
+registry, content-process hydration, display-list, raster, and CSSOM mutation
+owners, including the common `center/cover no-repeat` ordering. Exact
+evidence is recorded in
+[native-engine-browser-230](tasks/native-engine-browser-230.md).
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` now returns persistent `Attr`

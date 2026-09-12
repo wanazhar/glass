@@ -5661,6 +5661,7 @@ async fn load_page_script_sources(
                 let mut seen = BTreeSet::new();
                 seen.insert(name.clone());
                 let mut total_bytes = source.len();
+                let script_start = sources.len();
                 sources.push((
                     timing,
                     NativePageScript::Module {
@@ -5668,7 +5669,7 @@ async fn load_page_script_sources(
                         source: source.clone(),
                     },
                 ));
-                load_module_dependencies(
+                let dependency_result = load_module_dependencies(
                     document_url,
                     &name,
                     &source,
@@ -5678,7 +5679,10 @@ async fn load_page_script_sources(
                     &mut seen,
                     &mut total_bytes,
                 )
-                .await?;
+                .await;
+                if dependency_result.is_err() {
+                    sources.truncate(script_start);
+                }
             }
             NativePageScriptSource::External {
                 href,
@@ -5715,7 +5719,7 @@ async fn load_page_script_sources(
                 {
                     Ok(resource) => match resource {
                         Some(resource) => {
-                            resource_events.push((node_index, NativeEventKind::Load));
+                            let script_start = sources.len();
                             let name = resource.url;
                             let source = resource.body;
                             let mut seen = BTreeSet::new();
@@ -5728,7 +5732,7 @@ async fn load_page_script_sources(
                                     source: source.clone(),
                                 },
                             ));
-                            load_module_dependencies(
+                            let dependency_result = load_module_dependencies(
                                 document_url,
                                 &name,
                                 &source,
@@ -5738,7 +5742,13 @@ async fn load_page_script_sources(
                                 &mut seen,
                                 &mut total_bytes,
                             )
-                            .await?;
+                            .await;
+                            if dependency_result.is_ok() {
+                                resource_events.push((node_index, NativeEventKind::Load));
+                            } else {
+                                sources.truncate(script_start);
+                                resource_events.push((node_index, NativeEventKind::Error));
+                            }
                         }
                         None => resource_events.push((node_index, NativeEventKind::Error)),
                     },
@@ -5772,7 +5782,10 @@ async fn load_module_dependencies(
                 .load_script_async(owner_url, &target, MAX_NATIVE_SCRIPT_BYTES)
                 .await?
             else {
-                continue;
+                return Err(NativeEngineError::Network {
+                    operation: "module dependency".into(),
+                    reason: "module dependency could not be loaded".into(),
+                });
             };
             let name = resource.url;
             if !seen.insert(name.clone()) {

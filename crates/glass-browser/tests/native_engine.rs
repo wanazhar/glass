@@ -8633,6 +8633,73 @@ async fn native_content_process_prefetches_static_module_graphs() {
 }
 
 #[tokio::test]
+async fn native_content_process_isolates_static_module_dependency_failure() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/app.js", "/missing.js"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            if expected_path == "/missing.js" {
+                stream
+                    .write_all(
+                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await
+                    .unwrap();
+            } else {
+                let body = if expected_path == "/page" {
+                    "<script id='module' type='module' src='/app.js'></script><title>Module failure is isolated</title><p>Document committed</p>"
+                } else {
+                    "import { value } from './missing.js'; globalThis.moduleRan = value;"
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    if expected_path == "/page" {
+                        "text/html"
+                    } else {
+                        "application/javascript"
+                    },
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let snapshot = engine.snapshot().unwrap();
+    assert_eq!(snapshot.url, format!("http://{address}/page"));
+    assert_eq!(snapshot.title, "Module failure is isolated");
+    assert_eq!(snapshot.visible_text, "Document committed");
+    assert_eq!(
+        engine
+            .evaluate_async("Boolean(globalThis.moduleRan)")
+            .await
+            .unwrap(),
+        serde_json::json!(false)
+    );
+    assert_eq!(
+        engine
+            .effects_since(0)
+            .unwrap()
+            .effects
+            .iter()
+            .filter(|effect| effect.kind == NativeEventKind::Error)
+            .count(),
+        1
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_resolves_literal_dynamic_imports() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -144,6 +144,8 @@ pub struct NativeLayoutBox {
     pub fixed: bool,
     /// Whether this box belongs to a flow-preserving sticky subtree.
     pub sticky: bool,
+    /// The bounded effective stacking level used by paint and hit-testing.
+    pub z_index: i32,
 }
 
 /// One bounded direct-text fragment placed by the native flow cursor.
@@ -169,6 +171,8 @@ pub struct NativeTextLayout {
     pub fixed: bool,
     /// Whether this text run belongs to a flow-preserving sticky subtree.
     pub sticky: bool,
+    /// The bounded effective stacking level used by paint.
+    pub z_index: i32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -243,6 +247,7 @@ impl NativeLayoutSnapshot {
             },
             fixed: false,
             sticky_root: None,
+            stacking_context: 0,
             containing_block: PositionedContainingBlock {
                 x: 0,
                 y: 0,
@@ -534,7 +539,7 @@ impl NativeLayoutSnapshot {
                 })?,
         };
 
-        let mut best: Option<(usize, usize, NativeNodeId)> = None;
+        let mut best: Option<(i32, usize, usize, NativeNodeId)> = None;
         for (order, layout_box) in self.boxes.iter().enumerate() {
             if let Some(clip) = self.overflow_clips.get(order).copied().flatten()
                 && !clip.contains(point)
@@ -544,14 +549,20 @@ impl NativeLayoutSnapshot {
             if !rounded_rect_contains(layout_box.rect, layout_box.border_radius, point) {
                 continue;
             }
-            let replaces = best.is_none_or(|(best_depth, best_order, _)| {
-                (layout_box.depth, order) > (best_depth, best_order)
+            let replaces = best.is_none_or(|(best_z_index, best_depth, best_order, _)| {
+                (layout_box.z_index, layout_box.depth, order)
+                    > (best_z_index, best_depth, best_order)
             });
             if replaces {
-                best = Some((layout_box.depth, order, layout_box.node_id));
+                best = Some((
+                    layout_box.z_index,
+                    layout_box.depth,
+                    order,
+                    layout_box.node_id,
+                ));
             }
         }
-        Ok(best.map(|(_, _, node_id)| node_id))
+        Ok(best.map(|(_, _, _, node_id)| node_id))
     }
 }
 
@@ -911,6 +922,7 @@ struct LayoutBuilder<'a> {
     containing_block: PositionedContainingBlock,
     fixed: bool,
     sticky_root: Option<usize>,
+    stacking_context: i32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2199,6 +2211,12 @@ impl<'a> LayoutBuilder<'a> {
         if style.position() == NativePositionValue::Fixed {
             self.fixed = true;
         }
+        let previous_stacking_context = self.stacking_context;
+        if !style.z_index().is_auto() && self.z_index_applies(id, style) {
+            self.stacking_context = self
+                .stacking_context
+                .saturating_add(style.z_index().value());
+        }
         if display == DisplayValue::Contents {
             let opacity = style.opacity();
             let grouped = opacity < u8::MAX;
@@ -2211,6 +2229,7 @@ impl<'a> LayoutBuilder<'a> {
             }
             let result = self.layout_children(id, x, y, available_width, depth);
             self.fixed = previous_fixed;
+            self.stacking_context = previous_stacking_context;
             if grouped {
                 self.paint_order
                     .push(NativeLayoutPaintOrder::EndOpacityGroup { node_id: id });
@@ -2289,6 +2308,7 @@ impl<'a> LayoutBuilder<'a> {
             depth,
             fixed: self.fixed,
             sticky: self.sticky_root.is_some(),
+            z_index: self.stacking_context,
         });
         self.paint_order
             .push(NativeLayoutPaintOrder::Box(box_index));
@@ -2325,6 +2345,7 @@ impl<'a> LayoutBuilder<'a> {
         };
         self.containing_block = previous_containing_block;
         self.fixed = previous_fixed;
+        self.stacking_context = previous_stacking_context;
         let auto_content_height = default_content_height.max(children.height);
         let height = forced_outer_size.height.unwrap_or_else(|| {
             style.height().map_or(
@@ -2392,6 +2413,20 @@ impl<'a> LayoutBuilder<'a> {
                 .push(NativeLayoutPaintOrder::EndOpacityGroup { node_id: id });
         }
         FlowSize { width, height }
+    }
+
+    fn z_index_applies(&self, id: NativeNodeId, style: NativeComputedStyle) -> bool {
+        style.position() != NativePositionValue::Static
+            || self
+                .document
+                .node(id)
+                .and_then(|node| node.parent())
+                .is_some_and(|parent| {
+                    matches!(
+                        self.document.computed_style_for_layout(parent).display(),
+                        DisplayValue::Flex | DisplayValue::Grid
+                    )
+                })
     }
 
     fn explicit_content_height(style: NativeComputedStyle) -> Option<u32> {
@@ -4872,6 +4907,7 @@ impl<'a> LayoutBuilder<'a> {
             justify_spacing: 0,
             fixed: self.fixed,
             sticky: self.sticky_root.is_some(),
+            z_index: self.stacking_context,
         });
         self.paint_order
             .push(NativeLayoutPaintOrder::Text(text_index));
@@ -5225,6 +5261,7 @@ impl<'a> LayoutBuilder<'a> {
             justify_spacing: 0,
             fixed: self.fixed,
             sticky: self.sticky_root.is_some(),
+            z_index: self.stacking_context,
         });
         self.paint_order
             .push(NativeLayoutPaintOrder::Text(text_index));

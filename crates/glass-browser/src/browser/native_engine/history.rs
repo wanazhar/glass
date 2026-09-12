@@ -1,5 +1,6 @@
 use super::layout::NativePoint;
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 /// One committed local navigation entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -7,6 +8,10 @@ pub struct NativeHistoryEntry {
     pub url: String,
     pub revision: u64,
     pub scroll_offset: NativePoint,
+    /// Per-element scroll offsets captured with this entry. Keys are stable
+    /// node indexes within the bounded document representation; traversal
+    /// drops entries that no longer resolve to a scroll container.
+    pub nested_scroll_offsets: BTreeMap<u32, NativePoint>,
     /// JSON-backed state supplied by the page's History API.
     pub state: Value,
     /// Identity of the document lifecycle that owns this entry. Entries
@@ -42,7 +47,14 @@ impl NativeHistory {
     }
 
     pub(crate) fn push(&mut self, url: String, revision: u64, scroll_offset: NativePoint) {
-        self.push_with_state(url, revision, scroll_offset, Value::Null, false);
+        self.push_with_state(
+            url,
+            revision,
+            scroll_offset,
+            &BTreeMap::new(),
+            Value::Null,
+            false,
+        );
     }
 
     pub(crate) fn push_same_document(
@@ -50,8 +62,16 @@ impl NativeHistory {
         url: String,
         revision: u64,
         scroll_offset: NativePoint,
+        nested_scroll_offsets: &BTreeMap<u32, NativePoint>,
     ) {
-        self.push_with_state(url, revision, scroll_offset, Value::Null, true);
+        self.push_with_state(
+            url,
+            revision,
+            scroll_offset,
+            nested_scroll_offsets,
+            Value::Null,
+            true,
+        );
     }
 
     pub(crate) fn push_with_state(
@@ -59,6 +79,7 @@ impl NativeHistory {
         url: String,
         revision: u64,
         scroll_offset: NativePoint,
+        nested_scroll_offsets: &BTreeMap<u32, NativePoint>,
         state: Value,
         same_document: bool,
     ) {
@@ -76,6 +97,7 @@ impl NativeHistory {
             url,
             revision,
             scroll_offset,
+            nested_scroll_offsets: nested_scroll_offsets.clone(),
             state,
             document_id,
         });
@@ -92,7 +114,14 @@ impl NativeHistory {
         revision: u64,
         scroll_offset: NativePoint,
     ) {
-        self.replace_current_with_state(url, revision, scroll_offset, Value::Null, false);
+        self.replace_current_with_state(
+            url,
+            revision,
+            scroll_offset,
+            &BTreeMap::new(),
+            Value::Null,
+            false,
+        );
     }
 
     pub(crate) fn replace_current_with_state(
@@ -100,6 +129,7 @@ impl NativeHistory {
         url: String,
         revision: u64,
         scroll_offset: NativePoint,
+        nested_scroll_offsets: &BTreeMap<u32, NativePoint>,
         state: Value,
         same_document: bool,
     ) {
@@ -111,7 +141,14 @@ impl NativeHistory {
             self.allocate_document_id()
         };
         let Some(current) = self.current else {
-            self.push_with_state(url, revision, scroll_offset, state, same_document);
+            self.push_with_state(
+                url,
+                revision,
+                scroll_offset,
+                nested_scroll_offsets,
+                state,
+                same_document,
+            );
             return;
         };
         if let Some(entry) = self.entries.get_mut(current) {
@@ -119,11 +156,19 @@ impl NativeHistory {
                 url,
                 revision,
                 scroll_offset,
+                nested_scroll_offsets: nested_scroll_offsets.clone(),
                 state,
                 document_id,
             };
         } else {
-            self.push_with_state(url, revision, scroll_offset, state, same_document);
+            self.push_with_state(
+                url,
+                revision,
+                scroll_offset,
+                nested_scroll_offsets,
+                state,
+                same_document,
+            );
         }
     }
 
@@ -167,11 +212,16 @@ impl NativeHistory {
             .is_some_and(|entry| entry.document_id == current.document_id)
     }
 
-    pub(crate) fn update_current_scroll(&mut self, scroll_offset: NativePoint) {
+    pub(crate) fn update_current_scroll(
+        &mut self,
+        scroll_offset: NativePoint,
+        nested_scroll_offsets: &BTreeMap<u32, NativePoint>,
+    ) {
         if let Some(index) = self.current
             && let Some(entry) = self.entries.get_mut(index)
         {
             entry.scroll_offset = scroll_offset;
+            entry.nested_scroll_offsets = nested_scroll_offsets.clone();
         }
     }
 

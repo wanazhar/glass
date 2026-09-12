@@ -32,7 +32,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, oneshot};
 
 fn native_content_process_test_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -4364,6 +4364,138 @@ async fn native_local_script_exposes_same_document_history_api() {
 }
 
 #[tokio::test]
+async fn native_local_history_restores_nested_scroll_offsets() {
+    let config = NativeEngineConfig::default()
+        .with_viewport(Viewport {
+            width: 120,
+            height: 100,
+            device_scale_factor_milli: 1000,
+        })
+        .with_fixture(
+            "fixture://nested-history",
+            "<html><body><div id='scroller' style='width:40px;height:30px;overflow:auto'><div style='width:80px;height:90px'></div></div><div style='height:140px'></div></body></html>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://nested-history");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const scroller = document.getElementById('scroller'); scroller.scrollTo({ left: 20, top: 25 }); window.scrollTo({ top: 40 }); return [scroller.scrollLeft, scroller.scrollTop, window.scrollY]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([20, 25, 40])
+    );
+    assert_eq!(engine.history().entries()[0].nested_scroll_offsets.len(), 1);
+
+    engine
+        .evaluate_async(
+            "history.pushState({ view: 'next' }, '', '?view=next'); ({ length: history.length, url: location.href })",
+        )
+        .await
+        .unwrap();
+    engine
+        .evaluate_async(
+            "(() => { const scroller = document.getElementById('scroller'); scroller.scrollTo(0, 0); window.scrollTo(0, 0); return true; })()",
+        )
+        .await
+        .unwrap();
+
+    engine.evaluate_async("history.back(); true").await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const scroller = document.getElementById('scroller'); return [scroller.scrollLeft, scroller.scrollTop, window.scrollX, window.scrollY, document.documentElement.scrollTop]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([20, 25, 0, 40, 40])
+    );
+    assert_eq!(
+        engine
+            .history()
+            .current()
+            .unwrap()
+            .nested_scroll_offsets
+            .len(),
+        1
+    );
+
+    engine
+        .evaluate_async("history.forward(); true")
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const scroller = document.getElementById('scroller'); return [scroller.scrollLeft, scroller.scrollTop, window.scrollY]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([0, 0, 0])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_local_history_restores_nested_scroll_offsets_across_resource_navigation() {
+    let config = NativeEngineConfig::default()
+        .with_viewport(Viewport {
+            width: 120,
+            height: 100,
+            device_scale_factor_milli: 1000,
+        })
+        .with_fixture(
+            "fixture://nested-history-a",
+            "<html><body><div id='scroller' style='width:40px;height:30px;overflow:auto'><div style='width:80px;height:90px'></div></div><div style='height:140px'></div></body></html>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://nested-history-b",
+            "<html><body><p>Second document</p></body></html>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://nested-history-a");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            "(() => { const scroller = document.getElementById('scroller'); scroller.scrollTo({ left: 20, top: 25 }); window.scrollTo({ top: 40 }); return true; })()",
+        )
+        .await
+        .unwrap();
+
+    engine
+        .navigate_async("fixture://nested-history-b")
+        .await
+        .unwrap();
+    assert_eq!(engine.snapshot().unwrap().url, "fixture://nested-history-b");
+    engine.go_back_async().await.unwrap().unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const scroller = document.getElementById('scroller'); return [scroller.scrollLeft, scroller.scrollTop, window.scrollY]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([20, 25, 40])
+    );
+    assert_eq!(
+        engine
+            .history()
+            .current()
+            .unwrap()
+            .nested_scroll_offsets
+            .len(),
+        1
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_action_event_preserves_history_api() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -4410,7 +4542,7 @@ async fn native_content_process_script_exposes_same_document_history_api() {
         let (mut stream, _) = listener.accept().await.unwrap();
         let request = read_http_request(&mut stream).await;
         assert_eq!(request.split_whitespace().nth(1), Some("/app"));
-        let body = "<html><body><p>HTTP single document application</p></body></html>";
+        let body = "<html><body><div id='scroller' style='width:40px;height:30px;overflow:auto'><div style='width:80px;height:90px'></div></div><div style='height:140px'></div></body></html>";
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
@@ -4419,9 +4551,16 @@ async fn native_content_process_script_exposes_same_document_history_api() {
     });
 
     let initial_url = format!("http://{address}/app");
-    let mut engine =
-        NativeEngine::new(NativeEngineConfig::default().with_initial_url(initial_url.clone()))
-            .unwrap();
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_viewport(Viewport {
+                width: 120,
+                height: 100,
+                device_scale_factor_milli: 1000,
+            })
+            .with_initial_url(initial_url.clone()),
+    )
+    .unwrap();
     engine.initialize_async().await.unwrap();
     assert_eq!(
         engine
@@ -4433,10 +4572,26 @@ async fn native_content_process_script_exposes_same_document_history_api() {
         serde_json::json!({"length": 1, "state": null, "url": initial_url})
     );
 
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const scroller = document.getElementById('scroller'); scroller.scrollTo({ left: 20, top: 25 }); window.scrollTo({ top: 40 }); return [scroller.scrollLeft, scroller.scrollTop, window.scrollY]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([20, 25, 40])
+    );
+
     let pushed_url = format!("http://{address}/app?screen=settings");
     engine
         .evaluate_async(
             "history.pushState({ screen: 'settings' }, '', '?screen=settings'); ({ length: history.length, state: history.state, url: location.href })",
+        )
+        .await
+        .unwrap();
+    engine
+        .evaluate_async(
+            "(() => { const scroller = document.getElementById('scroller'); scroller.scrollTo(0, 0); window.scrollTo(0, 0); return true; })()",
         )
         .await
         .unwrap();
@@ -4453,6 +4608,15 @@ async fn native_content_process_script_exposes_same_document_history_api() {
             .unwrap(),
         serde_json::json!({"length": 2, "state": null, "url": initial_url})
     );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const scroller = document.getElementById('scroller'); return [scroller.scrollLeft, scroller.scrollTop, window.scrollY]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([20, 25, 40])
+    );
     engine
         .evaluate_async("history.forward(); true")
         .await
@@ -4465,7 +4629,115 @@ async fn native_content_process_script_exposes_same_document_history_api() {
             .unwrap(),
         serde_json::json!({"state": {"screen": "settings"}, "url": pushed_url})
     );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const scroller = document.getElementById('scroller'); return [scroller.scrollLeft, scroller.scrollTop, window.scrollY]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([0, 0, 0])
+    );
     engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_history_restores_nested_scroll_offsets_across_resource_navigation()
+{
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (server_stop_tx, mut server_stop_rx) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        loop {
+            let accepted = tokio::select! {
+                _ = &mut server_stop_rx => break,
+                accepted = listener.accept() => accepted,
+            };
+            let Ok((mut stream, _)) = accepted else {
+                break;
+            };
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap_or_default();
+            let body = match path {
+                "/a" => {
+                    "<html><body><div id='scroller' style='width:40px;height:30px;overflow:auto'><div style='width:80px;height:90px'></div></div><div style='height:140px'></div></body></html>"
+                }
+                "/b" => "<html><body><p>Second document</p></body></html>",
+                _ => "<html><body>Not found</body></html>",
+            };
+            let status = if matches!(path, "/a" | "/b") {
+                "200 OK"
+            } else {
+                "404 Not Found"
+            };
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let initial_url = format!("http://{address}/a");
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_viewport(Viewport {
+                width: 120,
+                height: 100,
+                device_scale_factor_milli: 1000,
+            })
+            .with_initial_url(initial_url.clone()),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const scroller = document.getElementById('scroller'); scroller.scrollTo({ left: 20, top: 25 }); window.scrollTo({ top: 40 }); return true; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(engine.scroll_offset(), NativePoint { x: 0, y: 40 });
+    assert_eq!(
+        engine.history().entries()[0].scroll_offset,
+        NativePoint { x: 0, y: 40 }
+    );
+
+    engine
+        .navigate_async(format!("http://{address}/b"))
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.history().entries()[0].scroll_offset,
+        NativePoint { x: 0, y: 40 }
+    );
+    engine.go_back_async().await.unwrap().unwrap();
+    assert_eq!(engine.snapshot().unwrap().url, initial_url);
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const scroller = document.getElementById('scroller'); return [scroller.scrollLeft, scroller.scrollTop, window.scrollY]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([20, 25, 40])
+    );
+    assert_eq!(
+        engine
+            .history()
+            .current()
+            .unwrap()
+            .nested_scroll_offsets
+            .len(),
+        1
+    );
+
+    engine.close_async().await.unwrap();
+    let _ = server_stop_tx.send(());
     server.await.unwrap();
 }
 

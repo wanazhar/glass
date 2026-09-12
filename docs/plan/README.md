@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-228` locally. The versioned
+`native-engine-browser-229` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -2001,6 +2001,15 @@ viewBox ratios share the inline SVG sizing path. Decode size, raster surface,
 transfer, and recursive data-SVG limits remain enforced before publication.
 Exact evidence is recorded in
 [native-engine-browser-228](tasks/native-engine-browser-228.md).
+
+The completed native-engine-browser-229 slice adds bounded CSS background
+geometry to the existing single background-image layer. Repeat/repeat-x/
+repeat-y/no-repeat, keyword/pixel/percentage position, auto/pixel/percentage
+size, cover/contain aspect-ratio sizing, edge-tile source crops, and shared
+immutable RGBA payloads now flow through local and HTTP(S) content-process
+computed style, display-list, raster, capture, and mutation owners. Exact
+evidence is recorded in
+[native-engine-browser-229](tasks/native-engine-browser-229.md).
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` now returns persistent `Attr`

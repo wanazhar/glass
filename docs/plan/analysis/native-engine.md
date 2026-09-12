@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-228`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-229`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 205
 slice carries bounded quadratic/cubic SVG path geometry through shared path
 parsing, flattening, layout, display-list, raster, clipping, and capture
@@ -3664,6 +3664,15 @@ viewBox ratios use the same sizing interpretation as inline SVG; resource
 bytes, raster pixels, transfer bytes, and recursive data-SVG decode depth are
 validated before publication. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-228.md`.
+
+The completed native-engine-browser-229 slice closes the first CSS background
+geometry gap. The computed-style cascade now carries bounded repeat,
+position, and size values; the paint owner derives repeated or positioned
+tiles with aspect-ratio-preserving cover/contain sizing; and the raster owner
+validates source crops while sharing one immutable decoded pixel payload among
+tiles. Local data images, stylesheet rules, CSSStyleDeclaration mutation, and
+HTTP(S) content-process backgrounds use the same path. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-229.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

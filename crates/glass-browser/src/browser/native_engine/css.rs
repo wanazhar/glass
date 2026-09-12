@@ -600,6 +600,7 @@ pub(crate) enum NativePositionValue {
     #[default]
     Static,
     Relative,
+    Absolute,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -9116,6 +9117,7 @@ fn parse_position(value: &str) -> Option<NativePositionValue> {
     match value.trim().to_ascii_lowercase().as_str() {
         "static" => Some(NativePositionValue::Static),
         "relative" => Some(NativePositionValue::Relative),
+        "absolute" => Some(NativePositionValue::Absolute),
         _ => None,
     }
 }

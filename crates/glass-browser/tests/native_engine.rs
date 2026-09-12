@@ -33413,6 +33413,105 @@ fn native_css_relative_position_uses_opposite_edge_when_primary_is_auto() {
 }
 
 #[test]
+fn native_css_absolute_position_is_out_of_flow_and_paints_after_flow() {
+    let document = NativeDocument::parse(
+        "<div id='overlay' style='position:absolute;left:6px;top:4px;width:8px;height:8px;background:red'></div><div id='flow' style='width:10px;height:8px;background:blue'></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let overlay = document.resolve_target("id=overlay").unwrap();
+    let flow = document.resolve_target("id=flow").unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 24,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(
+        layout.box_for(overlay),
+        Some(NativeRect {
+            x: 6,
+            y: 4,
+            width: 8,
+            height: 8,
+        })
+    );
+    assert_eq!(layout.box_for(flow).unwrap().y, 0);
+    assert_eq!(layout.hit_test(7, 5).unwrap(), Some(overlay));
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == overlay
+                    && *rect == NativeRect { x: 6, y: 4, width: 8, height: 8 }
+                    && *color == NativeColor::RED
+        )
+    }));
+}
+
+#[test]
+fn native_css_absolute_position_uses_nearest_positioned_padding_box() {
+    let document = NativeDocument::parse(
+        "<div style='position:relative;width:30px;height:30px;padding:5px;box-sizing:border-box'><div id='overlay' style='position:absolute;left:3px;top:4px;width:8px;height:8px;background:blue'></div><div id='flow' style='width:5px;height:5px'></div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let overlay = document.resolve_target("id=overlay").unwrap();
+    let flow = document.resolve_target("id=flow").unwrap();
+    let layout = document
+        .layout(Viewport {
+            width: 40,
+            height: 40,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+
+    assert_eq!(
+        layout.box_for(overlay),
+        Some(NativeRect {
+            x: 3,
+            y: 4,
+            width: 8,
+            height: 8,
+        })
+    );
+    assert_eq!(layout.box_for(flow).unwrap().x, 5);
+    assert_eq!(layout.box_for(flow).unwrap().y, 5);
+}
+
+#[test]
+fn native_css_absolute_position_is_filtered_from_flex_and_grid_items() {
+    let document = NativeDocument::parse(
+        "<div id='flex' style='display:flex;width:30px;height:10px'><div id='flex-overlay' style='position:absolute;left:2px;top:1px;width:4px;height:4px'></div><div id='flex-flow' style='width:6px;height:4px'></div></div><div id='grid' style='display:grid;width:30px;grid-template-columns:10px 10px'><div id='grid-overlay' style='position:absolute;left:12px;top:1px;width:4px;height:4px'></div><div id='grid-flow' style='height:4px'></div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let flex_overlay = document.resolve_target("id=flex-overlay").unwrap();
+    let flex_flow = document.resolve_target("id=flex-flow").unwrap();
+    let grid_overlay = document.resolve_target("id=grid-overlay").unwrap();
+    let grid_flow = document.resolve_target("id=grid-flow").unwrap();
+    let layout = document
+        .layout(Viewport {
+            width: 40,
+            height: 40,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+
+    assert_eq!(layout.box_for(flex_overlay).unwrap().x, 2);
+    assert_eq!(layout.box_for(flex_overlay).unwrap().y, 1);
+    assert_eq!(layout.box_for(flex_flow).unwrap().x, 0);
+    assert_eq!(layout.box_for(flex_flow).unwrap().y, 0);
+    assert_eq!(layout.box_for(grid_overlay).unwrap().x, 12);
+    assert_eq!(layout.box_for(grid_overlay).unwrap().y, 11);
+    assert_eq!(layout.box_for(grid_flow).unwrap().x, 0);
+    assert_eq!(layout.box_for(grid_flow).unwrap().y, 10);
+}
+
+#[test]
 fn native_stylesheet_background_geometry_cascades_into_paint() {
     let source = native_test_png_data_url();
     let markup = format!(

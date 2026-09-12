@@ -199,6 +199,12 @@ impl NativeLayoutSnapshot {
             boxes: Vec::new(),
             text_runs: Vec::new(),
             paint_order: Vec::new(),
+            containing_block: PositionedContainingBlock {
+                x: 0,
+                y: 0,
+                width: viewport.width,
+                height: viewport.height,
+            },
         };
         let flow = builder.layout_children(document.root(), 0, 0, viewport.width, 0);
         let max_box_bottom = builder
@@ -520,6 +526,28 @@ fn relative_offset(primary: NativePositionOffset, opposite: NativePositionOffset
         .unwrap_or(0)
 }
 
+fn positioned_coordinate(
+    origin: u32,
+    extent: u32,
+    size: u32,
+    primary: NativePositionOffset,
+    opposite: NativePositionOffset,
+    leading_margin: u32,
+    trailing_margin: u32,
+) -> u32 {
+    if let Some(offset) = primary.length() {
+        shift_coordinate(origin.saturating_add(leading_margin), i64::from(offset))
+    } else if let Some(offset) = opposite.length() {
+        let base = origin
+            .saturating_add(extent)
+            .saturating_sub(size)
+            .saturating_sub(trailing_margin);
+        shift_coordinate(base, -i64::from(offset))
+    } else {
+        origin.saturating_add(leading_margin)
+    }
+}
+
 fn outer_width_inset(style: NativeComputedStyle) -> u32 {
     let padding = style.padding();
     let (border_left, border_right) = style.border().map_or((0, 0), |border| {
@@ -651,6 +679,15 @@ struct LayoutBuilder<'a> {
     boxes: Vec<NativeLayoutBox>,
     text_runs: Vec<NativeTextLayout>,
     paint_order: Vec<NativeLayoutPaintOrder>,
+    containing_block: PositionedContainingBlock,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PositionedContainingBlock {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -1491,7 +1528,8 @@ impl<'a> LayoutBuilder<'a> {
                 owns_line_boundaries,
             },
         );
-        self.process_children(parent, &mut flow, depth);
+        let containing_block = self.containing_block;
+        self.process_children(parent, &mut flow, depth, containing_block);
         self.flush_final_line(&mut flow);
         let bottom = flow.max_bottom;
         let start_y = y;
@@ -1651,12 +1689,19 @@ impl<'a> LayoutBuilder<'a> {
         }
     }
 
-    fn process_children(&mut self, parent: NativeNodeId, flow: &mut FlowCursor, depth: usize) {
+    fn process_children(
+        &mut self,
+        parent: NativeNodeId,
+        flow: &mut FlowCursor,
+        depth: usize,
+        containing_block: PositionedContainingBlock,
+    ) {
         let children = self
             .document
             .node(parent)
             .map(|node| node.children().to_vec())
             .unwrap_or_default();
+        let mut positioned_children = Vec::new();
         for child in children {
             let Some(node) = self.document.node(child) else {
                 continue;
@@ -1668,10 +1713,14 @@ impl<'a> LayoutBuilder<'a> {
                 }
                 NativeNodeKind::DocumentType { .. } | NativeNodeKind::Comment(_) => {}
                 NativeNodeKind::Document => {
-                    self.process_children(child, flow, depth);
+                    self.process_children(child, flow, depth, containing_block);
                 }
                 NativeNodeKind::Element { .. } => {
                     if self.is_non_rendered(child) || self.document.is_hidden_for_layout(child) {
+                        continue;
+                    }
+                    if self.is_out_of_flow(child) {
+                        positioned_children.push(child);
                         continue;
                     }
                     let display = self.effective_display(child);
@@ -1698,7 +1747,7 @@ impl<'a> LayoutBuilder<'a> {
                                         opacity,
                                     });
                             }
-                            self.process_children(child, flow, depth + 1);
+                            self.process_children(child, flow, depth + 1, containing_block);
                             if grouped {
                                 self.paint_order
                                     .push(NativeLayoutPaintOrder::EndOpacityGroup {
@@ -1774,6 +1823,7 @@ impl<'a> LayoutBuilder<'a> {
                 }
             }
         }
+        self.layout_positioned_children(positioned_children, containing_block, depth);
     }
 
     fn layout_element(
@@ -1792,6 +1842,101 @@ impl<'a> LayoutBuilder<'a> {
             depth,
             ForcedOuterSize::default(),
         )
+    }
+
+    fn is_out_of_flow(&self, id: NativeNodeId) -> bool {
+        self.document.computed_style_for_layout(id).position() == NativePositionValue::Absolute
+    }
+
+    fn positioned_children(&self, parent: NativeNodeId) -> Vec<NativeNodeId> {
+        self.document
+            .node(parent)
+            .map(|node| {
+                node.children()
+                    .iter()
+                    .copied()
+                    .filter(|child| {
+                        self.document.node(*child).is_some_and(|node| {
+                            matches!(node.kind(), NativeNodeKind::Element { .. })
+                        }) && self.is_out_of_flow(*child)
+                            && !self.is_non_rendered(*child)
+                            && !self.document.is_hidden_for_layout(*child)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn layout_positioned_children(
+        &mut self,
+        children: Vec<NativeNodeId>,
+        containing_block: PositionedContainingBlock,
+        depth: usize,
+    ) {
+        for child in children {
+            let style = self.document.computed_style_for_layout(child);
+            let display = self.effective_display(child);
+            if display == DisplayValue::None
+                || self.is_non_rendered(child)
+                || self.document.is_hidden_for_layout(child)
+            {
+                continue;
+            }
+            let is_block = matches!(
+                display,
+                DisplayValue::Block | DisplayValue::Flex | DisplayValue::Grid
+            );
+            let margin = style.margin();
+            let available_width = containing_block.width.saturating_sub(margin.horizontal());
+            let width = self.outer_width(
+                child,
+                style,
+                is_block,
+                available_width,
+                style.width().is_none(),
+            );
+            let box_start = self.boxes.len();
+            let text_start = self.text_runs.len();
+            let initial_x = containing_block.x.saturating_add(margin.left());
+            let initial_y = containing_block.y.saturating_add(margin.top());
+            let size = self.layout_element_with_outer_width(
+                child,
+                initial_x,
+                initial_y,
+                available_width,
+                depth,
+                ForcedOuterSize {
+                    width: Some(width),
+                    ..ForcedOuterSize::default()
+                },
+            );
+            let final_x = positioned_coordinate(
+                containing_block.x,
+                containing_block.width,
+                size.width,
+                style.left(),
+                style.right(),
+                margin.left(),
+                margin.right(),
+            );
+            let final_y = positioned_coordinate(
+                containing_block.y,
+                containing_block.height,
+                size.height,
+                style.top(),
+                style.bottom(),
+                margin.top(),
+                margin.bottom(),
+            );
+            self.shift_layout(
+                box_start,
+                self.boxes.len(),
+                text_start,
+                self.text_runs.len(),
+                i64::from(final_x).saturating_sub(i64::from(initial_x)),
+                i64::from(final_y).saturating_sub(i64::from(initial_y)),
+            );
+        }
     }
 
     fn layout_element_with_outer_width(
@@ -1893,41 +2038,37 @@ impl<'a> LayoutBuilder<'a> {
         self.paint_order
             .push(NativeLayoutPaintOrder::Box(box_index));
 
+        let content_x = x.saturating_add(left_inset);
+        let content_y = y.saturating_add(top_inset);
         let content_width = width.saturating_sub(horizontal_inset);
+        let previous_containing_block = self.containing_block;
+        if style.position() != NativePositionValue::Static
+            || matches!(display, DisplayValue::Flex | DisplayValue::Grid)
+        {
+            self.containing_block = PositionedContainingBlock {
+                x: x.saturating_add(border_left),
+                y: y.saturating_add(border_top),
+                width: width.saturating_sub(border_left.saturating_add(border_right)),
+                height: Self::explicit_content_height(style)
+                    .unwrap_or(default_content_height)
+                    .saturating_add(padding.vertical()),
+            };
+        }
         let children = if self.document.node(id).and_then(|node| node.element_name()) == Some("svg")
         {
-            self.layout_svg_children(
-                id,
-                x.saturating_add(left_inset),
-                y.saturating_add(top_inset),
-                content_width,
-                depth + 1,
-            )
+            self.layout_svg_children(id, content_x, content_y, content_width, depth + 1)
         } else {
             match display {
-                DisplayValue::Flex if self.can_use_flex_layout(id) => self.layout_flex_children(
-                    id,
-                    x.saturating_add(left_inset),
-                    y.saturating_add(top_inset),
-                    content_width,
-                    depth + 1,
-                ),
-                DisplayValue::Grid => self.layout_grid_children(
-                    id,
-                    x.saturating_add(left_inset),
-                    y.saturating_add(top_inset),
-                    content_width,
-                    depth + 1,
-                ),
-                _ => self.layout_children(
-                    id,
-                    x.saturating_add(left_inset),
-                    y.saturating_add(top_inset),
-                    content_width,
-                    depth + 1,
-                ),
+                DisplayValue::Flex if self.can_use_flex_layout(id) => {
+                    self.layout_flex_children(id, content_x, content_y, content_width, depth + 1)
+                }
+                DisplayValue::Grid => {
+                    self.layout_grid_children(id, content_x, content_y, content_width, depth + 1)
+                }
+                _ => self.layout_children(id, content_x, content_y, content_width, depth + 1),
             }
         };
+        self.containing_block = previous_containing_block;
         let auto_content_height = default_content_height.max(children.height);
         let height = forced_outer_size.height.unwrap_or_else(|| {
             style.height().map_or(
@@ -2288,6 +2429,7 @@ impl<'a> LayoutBuilder<'a> {
                         if self.is_non_rendered(*child)
                             || self.document.is_hidden_for_layout(*child)
                             || self.effective_display(*child) == DisplayValue::None
+                            || self.is_out_of_flow(*child)
                         {
                             return true;
                         }
@@ -2362,6 +2504,9 @@ impl<'a> LayoutBuilder<'a> {
             {
                 continue;
             }
+            if self.is_out_of_flow(child) {
+                continue;
+            }
             let column = grid_index % column_count;
             let row = grid_index / column_count;
             grid_index = grid_index.saturating_add(1);
@@ -2411,6 +2556,12 @@ impl<'a> LayoutBuilder<'a> {
             .len()
             .max(parent_style.grid_template_rows().len());
         if row_count == 0 {
+            let containing_block = self.containing_block;
+            self.layout_positioned_children(
+                self.positioned_children(parent),
+                containing_block,
+                depth,
+            );
             return FlowSize {
                 width: available_width,
                 height: 0,
@@ -2520,6 +2671,8 @@ impl<'a> LayoutBuilder<'a> {
                     ),
             );
         }
+        let containing_block = self.containing_block;
+        self.layout_positioned_children(self.positioned_children(parent), containing_block, depth);
         FlowSize {
             width: max_right.saturating_sub(x).max(available_width),
             height: max_bottom.saturating_sub(y),
@@ -2989,6 +3142,9 @@ impl<'a> LayoutBuilder<'a> {
                     if self.is_non_rendered(child) || self.document.is_hidden_for_layout(child) {
                         continue;
                     }
+                    if self.is_out_of_flow(child) {
+                        continue;
+                    }
                     let style = self.document.computed_style_for_layout(child);
                     if self.effective_display(child) == DisplayValue::None {
                         continue;
@@ -3335,6 +3491,8 @@ impl<'a> LayoutBuilder<'a> {
             }
         }
 
+        let containing_block = self.containing_block;
+        self.layout_positioned_children(self.positioned_children(parent), containing_block, depth);
         FlowSize {
             width: max_right.saturating_sub(x),
             height: max_bottom.saturating_sub(y),
@@ -3693,6 +3851,9 @@ impl<'a> LayoutBuilder<'a> {
                     if self.is_non_rendered(child) || self.document.is_hidden_for_layout(child) {
                         continue;
                     }
+                    if self.is_out_of_flow(child) {
+                        continue;
+                    }
                     let style = self.document.computed_style_for_layout(child);
                     if self.effective_display(child) == DisplayValue::None {
                         continue;
@@ -3876,6 +4037,8 @@ impl<'a> LayoutBuilder<'a> {
             max_bottom = max_bottom.max(y.saturating_add(line_layout.height));
         }
 
+        let containing_block = self.containing_block;
+        self.layout_positioned_children(self.positioned_children(parent), containing_block, depth);
         FlowSize {
             width: max_right.saturating_sub(x).max(available_width),
             height: max_bottom.saturating_sub(y),
@@ -3945,6 +4108,9 @@ impl<'a> LayoutBuilder<'a> {
                 }
                 NativeNodeKind::Element { .. } => {
                     if self.is_non_rendered(child) || self.document.is_hidden_for_layout(child) {
+                        continue;
+                    }
+                    if self.is_out_of_flow(child) {
                         continue;
                     }
                     let style = self.document.computed_style_for_layout(child);
@@ -4230,6 +4396,8 @@ impl<'a> LayoutBuilder<'a> {
         } else {
             row_width
         };
+        let containing_block = self.containing_block;
+        self.layout_positioned_children(self.positioned_children(parent), containing_block, depth);
         FlowSize {
             width,
             height: max_bottom.saturating_sub(y),

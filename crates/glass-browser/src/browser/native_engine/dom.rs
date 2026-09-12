@@ -2647,6 +2647,72 @@ impl NativeDocument {
             .unwrap_or(self.root)
     }
 
+    /// Move focus through the bounded sequentially focusable controls in
+    /// document order. Positive `tabindex` values are ordered before the
+    /// natural zero-order controls; negative values are skipped.
+    pub(crate) fn apply_tab_focus(
+        &mut self,
+        reverse: bool,
+    ) -> Result<Vec<(NativeNodeId, NativeEventKind)>, NativeEngineError> {
+        let mut focusable = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(order, node)| {
+                if !self.is_attached(node.id())
+                    || self.is_hidden(node.id())
+                    || self.is_disabled(node.id())
+                {
+                    return None;
+                }
+                let role = self.semantic_role(node.id())?;
+                if !matches!(
+                    role,
+                    "button" | "link" | "textbox" | "checkbox" | "radio" | "combobox"
+                ) {
+                    return None;
+                }
+                let tab_index = node
+                    .attribute("tabindex")
+                    .and_then(|value| value.parse::<i32>().ok())
+                    .unwrap_or(0);
+                (tab_index >= 0).then_some((tab_index, order, node.id()))
+            })
+            .collect::<Vec<_>>();
+        focusable.sort_by_key(|(tab_index, order, _)| {
+            (
+                if *tab_index > 0 { 0 } else { 1 },
+                (*tab_index).max(0),
+                *order,
+            )
+        });
+        let Some((current_index, _)) =
+            focusable
+                .iter()
+                .enumerate()
+                .find_map(|(index, (_, _, id))| {
+                    self.node(*id)
+                        .is_some_and(|node| node.state.focused)
+                        .then_some((index, *id))
+                })
+        else {
+            let Some((_, _, id)) = (if reverse {
+                focusable.last().copied()
+            } else {
+                focusable.first().copied()
+            }) else {
+                return Ok(Vec::new());
+            };
+            return Ok(self.focus_element(id));
+        };
+        let next_index = if reverse {
+            current_index.checked_sub(1).unwrap_or(focusable.len() - 1)
+        } else {
+            (current_index + 1) % focusable.len()
+        };
+        Ok(self.focus_element(focusable[next_index].2))
+    }
+
     /// Return the bounded text-control selection as character offsets and a
     /// direction. Non-text elements have no selection API in the native host.
     fn selection_snapshot(&self, id: NativeNodeId) -> Option<(usize, usize, String)> {

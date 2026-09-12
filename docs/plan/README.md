@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-242` locally. The versioned
+`native-engine-browser-243` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -2109,6 +2109,13 @@ frame’s viewport from its parent owner content box. Child layout, raster,
 capture, hit-testing, and local actions now share the dimensions of the
 visible frame surface, including nested frame levels. Exact evidence is
 recorded in [native-engine-browser-242](tasks/native-engine-browser-242.md).
+
+The completed native-engine-browser-243 slice adds sequential keyboard focus
+traversal inside the focused native frame. `Tab` and `Shift+Tab` share a
+bounded positive-`tabindex`/document-order sequence, preserve preventDefault
+and blur/focus event effects, and are covered in both local and HTTP
+content-process paths. Exact evidence is recorded in
+[native-engine-browser-243](tasks/native-engine-browser-243.md).
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` now returns persistent `Attr`

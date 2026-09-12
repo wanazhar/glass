@@ -129,7 +129,7 @@ fn should_apply_native_key_default(key: &str, modifiers: i64) -> bool {
         && (key.chars().count() == 1
             || matches!(
                 key,
-                "Backspace" | "Delete" | "ArrowLeft" | "ArrowRight" | "Home" | "End"
+                "Backspace" | "Delete" | "ArrowLeft" | "ArrowRight" | "Home" | "End" | "Tab"
             ))
 }
 
@@ -2688,11 +2688,13 @@ impl NativeEngine {
             NativeAction::Shortcut { shortcut } => {
                 let (modifiers, key) = parse_native_shortcut(&shortcut)?;
                 let node_index = self.document.focused_node().index();
-                let apply_default = self
-                    .document
-                    .focused_text_control()
-                    .is_ok_and(|id| id.index() == node_index)
-                    && should_apply_native_key_default(&key, modifiers);
+                let default_allowed = should_apply_native_key_default(&key, modifiers);
+                let apply_default = default_allowed
+                    && (key == "Tab"
+                        || self
+                            .document
+                            .focused_text_control()
+                            .is_ok_and(|id| id.index() == node_index));
                 let mutation = {
                     let process =
                         self.content_process
@@ -4110,16 +4112,23 @@ impl NativeEngine {
             events.extend(document.apply_script_commands(&keydown.commands)?);
         }
 
-        if keydown_allowed
-            && apply_default
-            && should_apply_native_key_default(key, modifiers)
-            && document
+        if keydown_allowed && apply_default && should_apply_native_key_default(key, modifiers) {
+            let default_events = if key == "Tab" {
+                if document.focused_node() == id {
+                    document.apply_tab_focus(modifiers & 8 != 0)?
+                } else {
+                    Vec::new()
+                }
+            } else if document
                 .focused_text_control()
                 .is_ok_and(|focused| focused == id)
-        {
-            let input_events = document.apply_key_default(id, key, modifiers)?;
-            events.extend(input_events.clone());
-            for (event_node, event_kind) in input_events {
+            {
+                document.apply_key_default(id, key, modifiers)?
+            } else {
+                Vec::new()
+            };
+            events.extend(default_events.clone());
+            for (event_node, event_kind) in default_events {
                 if let Some(evaluation) =
                     self.evaluate_local_events(&document, &[(event_node, event_kind)])?
                 {

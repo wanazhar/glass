@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-252`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-253`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -3891,6 +3891,17 @@ Ping/Pong. Open, message, error, and close events re-enter the same serialized
 realm and mutation/fetch loop, and a later ordinary script evaluation drains
 queued events rather than discarding them. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-252.md`.
+
+The completed native-engine-browser-253 slice adds the companion persistent
+EventSource/SSE owner to the process-backed page path. QuickJS exposes bounded
+EventSource state and listener dispatch; the content worker validates HTTP(S),
+connect policy, mixed content, CORS, referrer, and cookie behavior, then
+parses bounded LF/CRLF/CR event records from an unbuffered stream. Named and
+multiline messages, latest-event-ID/retry reconnect state, response-cookie
+handoff, and explicit close are covered by the serialized event/mutation loop.
+Passive evaluations do not drain background events unless the evaluation is
+waiting for them. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-253.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

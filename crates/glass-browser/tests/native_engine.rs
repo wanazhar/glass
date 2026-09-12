@@ -41466,6 +41466,114 @@ async fn native_content_process_drives_websocket_text_binary_and_close_events() 
 }
 
 #[tokio::test]
+async fn native_content_process_drives_event_source_named_multiline_events() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = "<body></body><script>globalThis.pageCookie = document.cookie; globalThis.pageSource = new EventSource('/events');</script>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nSet-Cookie: session=page; Path=/\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().next(), Some("GET"));
+        assert_eq!(request.split_whitespace().nth(1), Some("/events"));
+        assert!(request.lines().any(|line| {
+            line.split_once(':').is_some_and(|(name, value)| {
+                name.eq_ignore_ascii_case("accept") && value.trim() == "text/event-stream"
+            })
+        }));
+        assert!(request.lines().any(|line| {
+            line.split_once(':').is_some_and(|(name, value)| {
+                name.eq_ignore_ascii_case("cookie")
+                    && value
+                        .split(';')
+                        .any(|cookie| cookie.trim() == "session=page")
+            })
+        }));
+        let first = b"retry: 5\rid: 42\revent: greeting\rdata: hello\r";
+        let second = b"\ndata: world\r\r";
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nSet-Cookie: sse=connected; Path=/\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        stream
+            .write_all(format!("{:X}\r\n", first.len()).as_bytes())
+            .await
+            .unwrap();
+        stream.write_all(first).await.unwrap();
+        stream.write_all(b"\r\n").await.unwrap();
+        stream
+            .write_all(format!("{:X}\r\n", second.len()).as_bytes())
+            .await
+            .unwrap();
+        stream.write_all(second).await.unwrap();
+        stream.write_all(b"\r\n").await.unwrap();
+        let mut close_probe = [0_u8; 1];
+        let _ =
+            tokio::time::timeout(Duration::from_millis(100), stream.read(&mut close_probe)).await;
+
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/check"));
+        assert!(request.lines().any(|line| {
+            line.split_once(':').is_some_and(|(name, value)| {
+                name.eq_ignore_ascii_case("cookie")
+                    && value
+                        .split(';')
+                        .any(|cookie| cookie.trim() == "sse=connected")
+            })
+        }));
+        let body = "cookie-ok";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await new Promise((resolve, reject) => { const source = globalThis.pageSource; source.addEventListener('greeting', event => { document.body.setAttribute('data-event', event.type); document.body.setAttribute('data-last-id', event.lastEventId); document.body.setAttribute('data-message', event.data); source.close(); resolve([event.type, event.data, event.lastEventId, source.readyState]); }); source.onerror = event => reject(new Error('event source failed: ' + event.message)); })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["greeting", "hello\nworld", "42", 2])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("[document.body.getAttribute('data-event'), document.body.getAttribute('data-last-id'), document.body.getAttribute('data-message')]")
+            .await
+            .unwrap(),
+        serde_json::json!(["greeting", "42", "hello\nworld"])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("await fetch('/check').then(response => response.text())")
+            .await
+            .unwrap(),
+        serde_json::json!("cookie-ok")
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_exposes_bounded_same_origin_post_fetch() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

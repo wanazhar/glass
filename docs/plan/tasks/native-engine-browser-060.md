@@ -4,6 +4,11 @@ status: done
 depends-on: [native-engine-browser-059]
 ---
 
+This task records the historical text-only FormData checkpoint. Its
+file-control rejection boundary was superseded by
+`native-engine-browser-247`, which added bounded File/FileList and
+file-valued FormData support.
+
 # BE-03ae/BE-04ap: bounded FormData form constructor
 
 ## Objective

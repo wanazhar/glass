@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-254` slice; the bounded foundation below remains
+`native-engine-browser-255` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -17,6 +17,7 @@ bounded-nested-scrolling-and-scroll-events/bounded-history-nested-scroll-restora
 bounded-native-frame-point-routing/
 bounded-native-frame-focus-routing/
 bounded-native-frame-viewport-negotiation/
+bounded-semantic-action-scroll-into-view/
 bounded-native-frame-sequential-focus-traversal/
 bounded-native-frame-locator-routing/
 bounded-min-max-dimensions/bounded-opacity-groups/bounded-text-alignment/
@@ -689,12 +690,15 @@ and `setCustomValidity()` persists through the typed state wire. Pattern/file
 validation, picker/UI behavior, and full live `ValidityState` Web IDL identity
 remain open.
 
-The completed native-engine-browser-060 batch adds bounded form construction.
-Local and child-owned `new FormData(form)` calls collect named, enabled text
+The completed native-engine-browser-060 batch records the initial bounded form
+construction checkpoint. At that historical checkpoint, local and child-owned
+`new FormData(form)` calls collected named, enabled text
 controls in document order, including controls associated through an external
 `form` attribute, while submitter-only controls and unchecked checkbox/radio
-controls are excluded. File controls fail closed with a `TypeError`; File/Blob
-parts, picker/upload behavior, and full FormData Web IDL identity remain open.
+controls were excluded. File controls failed closed with a `TypeError` at that
+checkpoint; the later 247 slice supersedes that boundary with File/FileList
+and file-valued FormData support. Exact historical evidence remains in the
+060 task record; full FormData Web IDL identity remains open.
 
 The completed native-engine-browser-061 batch adds bounded pattern validation.
 Local and child-owned text-like controls apply Rust-owned whole-value
@@ -4854,9 +4858,13 @@ The native backend accepts semantic `Click`, `Type`, focused-text `KeyPress`,
 point is checked against the
 viewport, resolved to the deepest visible layout box, and walked to the
 nearest actionable semantic ancestor before focus or control state changes.
-There is no implicit scrolling or nearest-target adjustment. Explicit scroll
-changes the root viewport only; horizontal deltas are denied and edge/no-op
-scrolls do not mutate the revision. Click focuses
+Semantic element actions perform a bounded nearest-edge root scroll when a
+resolved target has a layout box outside the active viewport; the scroll is
+folded into the following action state transition without an extra revision.
+Explicit point clicks never scroll or adjust coordinates. Read-only preflight
+does not scroll and continues to report outside-viewport actionability.
+Explicit scroll changes the root viewport only; horizontal deltas are denied
+and edge/no-op scrolls do not mutate the revision. Click focuses
 supported buttons, links, checkboxes, radios, textboxes, and comboboxes;
 checkbox and radio state changes are retained in the document owner. Clicking
 an option in a single-select combobox selects it and clears its siblings. Type
@@ -4886,7 +4894,7 @@ The native profile is `experimental` and declares:
 | navigation | available | local resources plus bounded external HTTP(S) HTML navigation, inline/classic/module-root/static-graph/literal-dynamic-import child scripts with bounded parser-blocking/async/defer ordering, bounded task turns, and bounded GET or POST form navigation with urlencoded, multipart, and text/plain encodings plus validated submitter overrides; no computed module loading or general subresources |
 | contexts | available | up to 32 independent page targets with one explicitly selected active target; create, select, list, and close are native-owned |
 | evidence | available | bounded URL, title, visible text, revision; native semantic projection is Rust-only |
-| action | available | semantic click/type, focused-text printable/Backspace/Delete key input, bounded single- and multi-select option interaction, bounded vertical root scrolling, bounded GET or POST form defaults with supported encodings and submitter overrides, plus native point targets for supported local controls; text selection, IME, and nested scrolling remain open |
+| action | available | semantic click/type, focused-text printable/Backspace/Delete key input, bounded single- and multi-select option interaction, bounded semantic root scroll-into-view, bounded vertical root scrolling, bounded GET or POST form defaults with supported encodings and submitter overrides, plus native point targets for supported local controls; text selection, IME, inner CSS scroll-container adjustment, and nested scrolling remain open |
 | effects | available | current revision and changed signal; bounded event metadata is Rust-only |
 | script | available | bounded QuickJS ECMAScript with a refreshed `window`/`document` snapshot, bounded inline/classic/module-root page-script loading and parser/lifecycle ordering, HTTP(S) static module graphs, literal dynamic imports, bounded due-time `setTimeout`/`setInterval` turns, policy-owned bounded GET, same-origin string-body POST, and bounded cross-origin simple/preflighted POST `fetch()` promises with independent text/json/blob/UTF-8 arrayBuffer/bytes response reads and bounded transport-backed incremental `ReadableStream` response bodies split into 8 KiB chunks with reader lock/release/cancel, a bounded read-only response Headers view with duplicate-name combination and same-origin/CORS-exposed filtering, and raw bounded byte-preserving response payloads for response body variants and binary Blob slicing, bounded Blob/File construction from ArrayBuffer and typed-array parts, bounded raw-byte-backed Blob/File request bodies for Fetch and asynchronous XHR, bounded mutable Fetch Headers records with live owner-backed iterators plus plain-object custom request headers with JavaScript/Rust validation, forbidden/internal-header protection, same-origin transfer, and sorted multi-header CORS preflight authorization with bounded positive-`Access-Control-Max-Age` caching, bounded Fetch `cors`/`no-cors`/`same-origin` mode policy with fail-closed same-origin and no-cors request checks plus opaque cross-origin no-cors response projection, bounded Fetch `follow`/`error`/`manual` redirect policy with `redirected` and filtered `opaqueredirect` response projection, direct text-backed Blob/File request bodies with normalized MIME propagation and bounded observable fetch AbortController/AbortSignal cancellation with static abort/timeout/any composition, bounded text-only `FormData(form)` construction, text-backed and raw-byte-backed Blob/File parts, and multipart bodies with Rust-owned form association plus bounded live owner-backed `entries()`/`keys()`/`values()`/`[Symbol.iterator]()` iterators, and bounded URLSearchParams construction from strings, records, pair arrays, and pair iterables, mutation, sorting, live entries/keys/values iteration, and URL-encoded bodies, plus asynchronous bounded GET/POST `XMLHttpRequest` with string, text-backed, and raw-byte-backed Blob/File request bodies, bounded `arraybuffer`/`blob` response types, bounded non-zero timeout with zero disabling the extra deadline, request-local abort/reset state, bounded `readystatechange`/`abort`/`timeout` callbacks, and stale-continuation suppression, bounded persistent WebSocket text/binary/Ping-Pong transport and EventSource/SSE stream transport with serialized open/message/error/close delivery, from explicit evaluations and initial page scripts, typed click/form-submit/attribute/focus commands, persistent listener records, bounded Event/CustomEvent capture/target/bubble dispatch, cancelable click preflight, transactional type/input/change event re-entry, bounded common constraint validation for required/email/URL/length/numeric/date/month/time/datetime-local/pattern controls, bounded `validity`/`validationMessage`/`willValidate` snapshots with `checkValidity()`/`reportValidity()` and custom validity, submitter event metadata and successful-control serialization, bounded external form ownership, bounded multipart/text/plain form encodings and validated `formaction`/`formmethod`/`formenctype` overrides, bounded `readyState`/`readystatechange`/DOMContentLoaded/load phase ordering, form `novalidate`/`formnovalidate` bypass, top-level link/form navigation handoff, and relative HTTP(S)/same-document resolution; no live Web IDL identity, child-frame execution, resource-specific lifecycle parity, beforeinput/composition, full JavaScript RegExp `v`-flag/Unicode-set and file constraint validation or picker/UI parity, full live `ValidityState` identity, private-network access, streaming FormData body parity, synchronous XHR, XHR upload/progress/streaming parity, transport-level fetch cancellation, complete Fetch Streams/Web IDL semantics, invalid raw response-header bytes, response trailers, service workers, full WebSocket/EventSource Web IDL identity, animation/idle callbacks, task-source fairness, background page scheduling, computed imports, bare specifiers/import maps, local external subresources, or general page loading |
 | capture | available | bounded PNG of the current logical RGBA surface; JPEG/PDF and screenshot-containing evidence are unavailable |
@@ -5729,6 +5737,16 @@ survive bootstrap turns. Strict stream backpressure, transport cancellation,
 body disturbance, and complete Fetch Streams/Web IDL behavior remain open.
 Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-254.md`.
+
+The completed native-engine-browser-255 slice aligns semantic native actions
+with the browser action contract's visibility step. Resolved element targets
+are brought into the bounded root viewport when necessary, including selected
+child-frame documents whose negotiated viewport is smaller than their content;
+the scroll state is synchronized before the existing action/event owner runs
+and does not create a second revision. Explicit point clicks remain stable and
+outside points return typed action errors, while read-only preflight remains
+non-scrolling. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-255.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

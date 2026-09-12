@@ -5,6 +5,10 @@ status: done
 depends-on: [native-engine-008]
 ---
 
+This task records the initial layout seed. Its explicit no-implicit-scroll
+boundary was later extended by the browser action contract and native slice
+255's bounded semantic target scroll-into-view behavior.
+
 # Native bounded layout and hit-testing seed
 
 ## Objective

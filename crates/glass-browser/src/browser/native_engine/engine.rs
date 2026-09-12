@@ -2351,6 +2351,7 @@ impl NativeEngine {
         action: NativeAction,
     ) -> Result<NativeActionResult, NativeEngineError> {
         self.require_running("action")?;
+        self.scroll_action_targets_into_view(&action)?;
         if let NativeAction::DoubleClick { target } = action {
             self.action(NativeAction::Click {
                 target: target.clone(),
@@ -2516,6 +2517,7 @@ impl NativeEngine {
         action: NativeAction,
     ) -> Result<NativeActionResult, NativeEngineError> {
         self.require_running("action")?;
+        self.scroll_action_targets_into_view(&action)?;
         if let NativeAction::DoubleClick { target } = action {
             Box::pin(self.action_async(NativeAction::Click {
                 target: target.clone(),
@@ -2892,6 +2894,94 @@ impl NativeEngine {
             }
             NativeAction::Scroll { .. } => self.action(action),
         }
+    }
+
+    /// Apply the browser action contract's bounded scroll-into-view step for
+    /// semantic element targets. Coordinate clicks are deliberately excluded:
+    /// their viewport coordinates are explicit and must never be adjusted.
+    /// The scroll is folded into the following action transaction, so the
+    /// action still commits one revision; read-only preflight never calls this
+    /// helper.
+    fn scroll_action_targets_into_view(
+        &mut self,
+        action: &NativeAction,
+    ) -> Result<(), NativeEngineError> {
+        let mut targets = Vec::new();
+        match action {
+            NativeAction::Click { target }
+            | NativeAction::DoubleClick { target }
+            | NativeAction::Hover { target }
+            | NativeAction::Type { target, .. }
+            | NativeAction::Clear { target }
+            | NativeAction::Check { target }
+            | NativeAction::Uncheck { target }
+            | NativeAction::Select { target, .. } => targets.push(target.as_str()),
+            NativeAction::Drag {
+                source,
+                destination,
+            } => {
+                targets.push(source.as_str());
+                targets.push(destination.as_str());
+            }
+            NativeAction::Upload { .. }
+            | NativeAction::KeyDown { .. }
+            | NativeAction::KeyUp { .. }
+            | NativeAction::Shortcut { .. }
+            | NativeAction::KeyPress { .. }
+            | NativeAction::Scroll { .. } => {}
+        }
+        for target in targets {
+            if parse_point_target(target)?.is_some() {
+                continue;
+            }
+            let id = self.document.resolve_target(target)?;
+            self.scroll_node_into_view(id)?;
+        }
+        Ok(())
+    }
+
+    fn scroll_node_into_view(&mut self, id: NativeNodeId) -> Result<(), NativeEngineError> {
+        if self.document.is_hidden_for_layout(id) {
+            return Ok(());
+        }
+        let layout = self.layout()?;
+        if layout.viewport_rect_for(id).is_some() {
+            return Ok(());
+        }
+        let Some(target) = layout
+            .boxes
+            .iter()
+            .find(|layout_box| layout_box.node_id == id)
+        else {
+            return Ok(());
+        };
+        let max_scroll = layout.max_scroll_offset();
+        let viewport_right = self.scroll_offset.x.saturating_add(layout.viewport.width);
+        let viewport_bottom = self.scroll_offset.y.saturating_add(layout.viewport.height);
+        let next = NativePoint {
+            x: scroll_axis_into_view(
+                target.rect.x,
+                target.rect.right(),
+                self.scroll_offset.x,
+                viewport_right,
+                max_scroll.x,
+            ),
+            y: scroll_axis_into_view(
+                target.rect.y,
+                target.rect.bottom(),
+                self.scroll_offset.y,
+                viewport_bottom,
+                max_scroll.y,
+            ),
+        };
+        if next == self.scroll_offset {
+            return Ok(());
+        }
+        self.scroll_offset = next;
+        self.sync_javascript_scroll_offset();
+        self.history
+            .update_current_scroll(self.scroll_offset, &self.nested_scroll_offsets);
+        Ok(())
     }
 
     fn action_checked_with_click(
@@ -6084,6 +6174,25 @@ fn clamp_script_scroll(value: i64, maximum: u32) -> u32 {
     } else {
         u32::try_from(value).unwrap_or(u32::MAX).min(maximum)
     }
+}
+
+fn scroll_axis_into_view(
+    start: u32,
+    end: u32,
+    viewport_start: u32,
+    viewport_end: u32,
+    maximum: u32,
+) -> u32 {
+    let viewport_extent = viewport_end.saturating_sub(viewport_start);
+    let target_extent = end.saturating_sub(start);
+    let requested = if target_extent >= viewport_extent || start < viewport_start {
+        start
+    } else if end > viewport_end {
+        end.saturating_sub(viewport_end.saturating_sub(viewport_start))
+    } else {
+        viewport_start
+    };
+    requested.min(maximum)
 }
 
 struct PreparedNavigation {

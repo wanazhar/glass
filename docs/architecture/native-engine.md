@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-228` slice; the bounded foundation below remains
+`native-engine-browser-229` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5476,6 +5476,14 @@ dimensions, common `px` viewport lengths, and one-sided viewBox ratios through
 image lifecycle, typed wire, transfer budget, clipping, capture, and load/error
 owners remain shared; recursive data-SVG graphs are rejected before nested
 decode. Exact evidence is in `docs/plan/tasks/native-engine-browser-228.md`.
+
+The completed native-engine-browser-229 slice adds the first geometry-aware
+CSS background layer. Repeat modes, keyword/pixel/percentage placement,
+explicit and aspect-ratio-preserving sizes, and partial edge-tile source
+rectangles are resolved in the shared computed-style and display-list owners.
+The software rasterizer validates those source rectangles and shares decoded
+RGBA storage between repeated commands. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-229.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

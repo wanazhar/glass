@@ -3703,6 +3703,16 @@ must be represented in the shared projection metadata rather than treated as
 ordinary document-space absolute geometry. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-232.md`.
 
+The completed native-engine-browser-233 slice closes the viewport-anchored
+positioning gap. The typed CSS cascade accepts `position: fixed` with the same
+bounded signed pixel inset grammar; fixed children use the initial viewport
+containing block even when nested under positioned ancestors, remain outside
+normal block/flex/grid allocation, and are marked across every emitted box and
+text run in their subtree. Current root scrolling rebases that fixed geometry
+before display-list, script geometry, capture, and hit-test projection, while
+fixed roots stop ordinary ancestor overflow clips. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-233.md`.
+
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame
 realms. `document.createAttribute()` creates persistent `Attr` objects;

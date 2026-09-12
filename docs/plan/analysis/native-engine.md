@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-247`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-248`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -3835,6 +3835,15 @@ the next transport gate: observing/constructing file-valued `FormData` is now
 real, while full native navigation/fetch upload delivery still needs the
 binary-body owner. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-247.md`.
+
+The completed native-engine-browser-248 slice extends file inputs through the
+HTTP request owner. `NativeRequestBody` carries bounded text or raw bytes for
+POST navigation and fetch, the content worker transports the byte arm as
+base64, and multipart form encoding preserves selected-file metadata and
+payload bytes. `fetch(FormData)`, multipart form navigation, and typed
+`ArrayBuffer`/`ArrayBufferView` bodies now have server-observed HTTP coverage;
+body ambiguity, GET binary bodies, and size violations fail closed. Exact
+evidence is in `docs/plan/tasks/native-engine-browser-248.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

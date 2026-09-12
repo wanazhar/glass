@@ -13,8 +13,10 @@ use super::dom::{
     NativeScriptElementSnapshot,
 };
 use super::error::NativeEngineError;
-use super::interaction::NativeEventKind;
-use super::interaction::{MAX_NATIVE_FILE_BYTES, MAX_NATIVE_FILE_TOTAL_BYTES};
+use super::interaction::{
+    MAX_NATIVE_FILE_BYTES, MAX_NATIVE_FORM_BODY_BYTES, MAX_NATIVE_SCRIPT_COMMAND_BYTES,
+    NativeEventKind,
+};
 use super::layout::NativePoint;
 use super::origin::NativeOrigin;
 use fs2::FileExt;
@@ -4649,10 +4651,10 @@ fn read_script_commands<'js>(
             operation: "collect JavaScript host commands".into(),
             reason: "native JavaScript host commands could not be collected".into(),
         })?;
-    if json.len() > MAX_NATIVE_SCRIPT_RESULT_BYTES {
+    if json.len() > MAX_NATIVE_SCRIPT_COMMAND_BYTES {
         return Err(NativeEngineError::limit(
             "script host commands",
-            MAX_NATIVE_SCRIPT_RESULT_BYTES,
+            MAX_NATIVE_SCRIPT_COMMAND_BYTES,
             json.len(),
         ));
     }
@@ -5020,7 +5022,7 @@ fn document_bootstrap(
     run_timers: bool,
 ) -> Result<String, NativeEngineError> {
     let native_file_bytes = MAX_NATIVE_FILE_BYTES;
-    let native_form_body_bytes = MAX_NATIVE_FILE_TOTAL_BYTES.saturating_add(64 * 1024);
+    let native_form_body_bytes = MAX_NATIVE_FORM_BODY_BYTES;
     let state = document.script_snapshot_with_layout(
         crate::browser_backend::MAX_TEXT_BYTES,
         viewport,
@@ -6678,6 +6680,7 @@ fn document_bootstrap(
       Object.defineProperty(this, String(index), {{ enumerable: true, configurable: false, value: this._files[index] }});
     }}
   }};
+  FileListNative.prototype.constructor = FileListNative;
   Object.defineProperty(FileListNative.prototype, "length", {{
     configurable: false,
     get() {{ return this._files.length; }},
@@ -6694,7 +6697,7 @@ fn document_bootstrap(
   const nativeFormBodyLimit = {native_form_body_bytes};
   const nativeFileFromEntry = (entry) => {{
     const bytes = decodeBase64(String(entry && entry.bytes || ""), nativeFileByteLimit);
-    const file = new FileNative([], String(entry && entry.name || ""), {{
+    const file = new globalThis.File([], String(entry && entry.name || ""), {{
       type: String(entry && entry.type || ""),
       lastModified: Number(entry && entry.lastModified) || 0,
     }});
@@ -6703,7 +6706,7 @@ fn document_bootstrap(
     file.size = bytes.length;
     return file;
   }};
-  const makeNativeFileList = (entries) => new FileListNative(
+  const makeNativeFileList = (entries) => new globalThis.FileList(
     (Array.isArray(entries) ? entries : []).map(nativeFileFromEntry),
   );
   const formDataValue = (value, filename) => {{
@@ -7491,7 +7494,12 @@ fn document_bootstrap(
     const blobBody = settings.body && settings.body.__glassNativeBlob === true
       ? settings.body
       : null;
-    const rawBody = settings.body === undefined || settings.body === null || blobBody
+    const binaryBody = settings.body instanceof ArrayBuffer
+      ? Array.from(new Uint8Array(settings.body))
+      : typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(settings.body)
+        ? Array.from(new Uint8Array(settings.body.buffer, settings.body.byteOffset, settings.body.byteLength))
+        : null;
+    const rawBody = settings.body === undefined || settings.body === null || blobBody || binaryBody !== null
       ? null
       : String(settings.body);
     const formData = settings.body && settings.body.__glassFormData === true
@@ -7500,10 +7508,16 @@ fn document_bootstrap(
     const urlSearchParams = settings.body && settings.body.__glassUrlSearchParams === true
       ? settings.body
       : null;
-    let body = blobBody ? blobBody._text : rawBody;
+    let body = blobBody
+      ? blobBody._text
+      : binaryBody !== null
+        ? utf8TextFromBytes(binaryBody)
+        : rawBody;
     let bodyBase64 = blobBody && Array.isArray(blobBody._bytes)
-      ? encodeBase64(blobBody._bytes)
-      : null;
+      ? encodeBase64(blobBody._bytes, nativeFormBodyLimit)
+      : binaryBody !== null
+        ? encodeBase64(binaryBody, nativeFormBodyLimit)
+        : null;
     if (method !== "GET" && method !== "POST") {{
       return Promise.reject(new TypeError("native fetch supports only GET and POST requests"));
     }}

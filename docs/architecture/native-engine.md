@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-247` slice; the bounded foundation below remains
+`native-engine-browser-248` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5650,6 +5650,17 @@ objects, `input.value` uses the browser fake path, `FormData` sees the selected
 file, and `input`/`change` listeners run before the revision is committed.
 CLI and MCP path handling remains policy-gated before filesystem reads. Exact
 evidence is recorded in `docs/plan/tasks/native-engine-browser-247.md`.
+
+The completed native-engine-browser-248 slice carries bounded binary request
+bodies through the same native transport. `NativeRequestBody` preserves text
+versus raw bytes for POST navigation and fetch; content-worker IPC uses a
+validated base64 arm for bytes and rejects dual, malformed, GET, or oversized
+representations. Selected files now reach HTTP(S) `fetch(FormData)` and native
+multipart form navigation with exact bytes, filenames, media types, and
+boundaries. `ArrayBuffer` and `ArrayBufferView` fetch bodies share the byte
+path, and the reusable DOM wrapper refreshes `File`/`FileList` objects against
+the current realm constructors. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-248.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

@@ -5629,7 +5629,7 @@ async fn native_local_upload_populates_file_list_and_dispatches_input_change() {
     assert_eq!(
         engine
             .evaluate_async(
-                "(async () => { const input = document.getElementById('upload'); const file = input.files.item(0); const formFile = new FormData(document.getElementById('form')).get('asset'); return { list: input.files instanceof FileList, length: input.files.length, itemMissing: input.files.item(1), name: file.name, type: file.type, size: file.size, modified: file.lastModified, bytes: Array.from(await file.bytes()), value: input.value, formFile: [formFile instanceof File, formFile.name, formFile.size, Array.from(await formFile.bytes())], events: globalThis.uploadEvents }; })()",
+                "await (async () => { const input = document.getElementById('upload'); const file = input.files.item(0); const formFile = new FormData(document.getElementById('form')).get('asset'); return { list: input.files instanceof FileList, length: input.files.length, itemMissing: input.files.item(1), name: file.name, type: file.type, size: file.size, modified: file.lastModified, bytes: Array.from(await file.bytes()), value: input.value, formFile: [formFile instanceof File, formFile.name, formFile.size, Array.from(await formFile.bytes())], events: globalThis.uploadEvents }; })()",
             )
             .await
             .unwrap(),
@@ -8449,6 +8449,126 @@ async fn native_content_process_form_submission_supports_multipart_and_text_plai
 }
 
 #[tokio::test]
+async fn native_content_process_selected_file_reaches_fetch_and_form_navigation() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/form", "/fetch", "/arraybuffer", "/result"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request_bytes(&mut stream).await;
+            let request_text = String::from_utf8_lossy(&request);
+            assert_eq!(request_text.split_whitespace().nth(1), Some(expected_path));
+            if matches!(expected_path, "/fetch" | "/result") {
+                assert_eq!(request_text.split_whitespace().next(), Some("POST"));
+                let content_type = request_text.lines().find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.eq_ignore_ascii_case("content-type")
+                            .then_some(value.trim().to_owned())
+                    })
+                });
+                let boundary = content_type
+                    .as_deref()
+                    .and_then(|value| value.strip_prefix("multipart/form-data; boundary="))
+                    .expect("selected-file multipart boundary");
+                let header_end = request
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .expect("selected-file request headers")
+                    + 4;
+                let body = &request[header_end..];
+                assert!(
+                    body.windows(b"name=\"asset\"; filename=\"selected.bin\"".len())
+                        .any(|window| { window == b"name=\"asset\"; filename=\"selected.bin\"" })
+                );
+                assert!(
+                    body.windows([0_u8, 255, 128, b'F'].len())
+                        .any(|window| window == [0_u8, 255, 128, b'F'])
+                );
+                assert!(body.ends_with(format!("--{boundary}--\r\n").as_bytes()));
+            } else if expected_path == "/arraybuffer" {
+                assert_eq!(request_text.split_whitespace().next(), Some("POST"));
+                let header_end = request
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .expect("arraybuffer request headers")
+                    + 4;
+                assert_eq!(&request[header_end..], &[0_u8, 255, 128, 70]);
+            }
+            let (content_type, body) = match expected_path {
+                "/form" => (
+                    "text/html",
+                    "<form id='form' method='post' enctype='multipart/form-data' action='/result'><input id='upload' type='file' name='asset'></form>",
+                ),
+                "/fetch" => ("text/plain", "fetch-uploaded"),
+                "/arraybuffer" => ("text/plain", "arraybuffer-uploaded"),
+                _ => ("text/html", "<title>Submitted</title><p>form-uploaded</p>"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/form")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let uploaded = engine
+        .action_async(NativeAction::Upload {
+            target: "id=upload".into(),
+            files: vec![NativeFile {
+                name: "selected.bin".into(),
+                media_type: "application/octet-stream".into(),
+                last_modified: 9012,
+                bytes: vec![0, 255, 128, b'F'],
+            }],
+        })
+        .await
+        .unwrap();
+    assert!(uploaded.accepted);
+    engine
+        .evaluate_async(
+            "fetch('/fetch', { method: 'POST', body: new FormData(document.getElementById('form')) }).then(response => response.text()).then(text => { globalThis.selectedFetchResult = text; })",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.selectedFetchResult")
+            .await
+            .unwrap(),
+        serde_json::json!("fetch-uploaded")
+    );
+    engine
+        .evaluate_async(
+            "fetch('/arraybuffer', { method: 'POST', body: new Uint8Array([0, 255, 128, 70]) }).then(response => response.text()).then(text => { globalThis.arrayBufferResult = text; })",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.arrayBufferResult")
+            .await
+            .unwrap(),
+        serde_json::json!("arraybuffer-uploaded")
+    );
+    engine
+        .evaluate_async("document.getElementById('form').submit()")
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        format!("http://{address}/result")
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_submitter_overrides_form_action_method_and_encoding() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -9914,7 +10034,7 @@ async fn native_content_process_upload_bridges_file_objects_and_dom_events() {
     assert_eq!(
         engine
             .evaluate_async(
-                "(async () => { const input = document.getElementById('upload'); const file = input.files[0]; const formFile = new FormData(document.getElementById('form')).get('asset'); return { length: input.files.length, name: file.name, type: file.type, size: file.size, modified: file.lastModified, text: await file.text(), formFile: [formFile.name, await formFile.text()], value: input.value, events: globalThis.uploadEvents }; })()",
+                "await (async () => { const input = document.getElementById('upload'); const file = input.files[0]; const formFile = new FormData(document.getElementById('form')).get('asset'); return { length: input.files.length, name: file.name, type: file.type, size: file.size, modified: file.lastModified, text: await file.text(), formFile: [formFile.name, await formFile.text()], value: input.value, events: globalThis.uploadEvents }; })()",
             )
             .await
             .unwrap(),

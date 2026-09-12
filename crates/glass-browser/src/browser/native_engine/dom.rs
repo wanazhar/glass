@@ -7,13 +7,14 @@ use super::image::{
     NativeImage, NativeImageFrame, NativeImageResource, decode_data_image,
 };
 use super::interaction::{
-    NativeEventKind, NativeFile, validate_native_edit_key, validate_native_key,
+    MAX_NATIVE_FORM_BODY_BYTES, NativeEventKind, NativeFile, validate_native_edit_key,
+    validate_native_key,
 };
 use super::javascript::NativeScriptCommand;
 use super::layout::{NativeLayoutSnapshot, NativePoint};
 use super::paint::NativeDisplayList;
 use super::raster::NativeSurface;
-use super::resource_loader::NativeNavigationRequest;
+use super::resource_loader::{NativeNavigationRequest, NativeRequestBody};
 use super::{
     config::{MAX_NATIVE_DOM_DEPTH, MAX_NATIVE_NODES, TextFragmentTerms, Viewport},
     css::{
@@ -54,6 +55,13 @@ enum NativeFormEncoding {
     UrlEncoded,
     Multipart,
     TextPlain,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum NativeFormValue {
+    Text(String),
+    File(NativeFile),
+    EmptyFile,
 }
 
 const SUPPORTED_ROLES: [&str; 10] = [
@@ -5014,7 +5022,7 @@ impl NativeDocument {
                 let target = target.to_string();
                 validate_url_text("form submission URL", &target)?;
                 let (body, content_type) = encode_form_data(&pairs, encoding)?;
-                NativeNavigationRequest::post_with_content_type(target, body, content_type)
+                NativeNavigationRequest::post_with_body(target, body, content_type)
             }
         }
     }
@@ -5267,7 +5275,7 @@ impl NativeDocument {
     fn collect_form_data(
         &self,
         form_id: NativeNodeId,
-        pairs: &mut Vec<(String, String)>,
+        pairs: &mut Vec<(String, NativeFormValue)>,
         submitter: Option<NativeNodeId>,
     ) -> Result<(), NativeEngineError> {
         for child_id in self.form_controls_in_document_order(form_id)? {
@@ -5292,6 +5300,22 @@ impl NativeDocument {
                         }
                         continue;
                     }
+                    if input_type.eq_ignore_ascii_case("file") {
+                        if let Some(name) = name {
+                            if child.state.files.is_empty() {
+                                append_form_value(pairs, name, NativeFormValue::EmptyFile)?;
+                            } else {
+                                for file in &child.state.files {
+                                    append_form_value(
+                                        pairs,
+                                        name,
+                                        NativeFormValue::File(file.clone()),
+                                    )?;
+                                }
+                            }
+                        }
+                        continue;
+                    }
                     if (input_type.eq_ignore_ascii_case("checkbox")
                         || input_type.eq_ignore_ascii_case("radio"))
                         && !child.state.checked
@@ -5299,35 +5323,22 @@ impl NativeDocument {
                         continue;
                     }
                     if let Some(name) = name {
-                        if pairs.len() >= MAX_FORM_CONTROLS {
-                            return Err(NativeEngineError::limit(
-                                "form controls",
-                                MAX_FORM_CONTROLS,
-                                pairs.len().saturating_add(1),
-                            ));
-                        }
                         let value = child
                             .state
                             .value
                             .clone()
                             .or_else(|| child.attribute("value").map(str::to_owned))
                             .unwrap_or_default();
-                        pairs.push((name.to_owned(), value));
+                        append_form_value(pairs, name, NativeFormValue::Text(value))?;
                     }
                 }
                 Some("textarea") => {
                     if let Some(name) = name {
-                        if pairs.len() >= MAX_FORM_CONTROLS {
-                            return Err(NativeEngineError::limit(
-                                "form controls",
-                                MAX_FORM_CONTROLS,
-                                pairs.len().saturating_add(1),
-                            ));
-                        }
-                        pairs.push((
-                            name.to_owned(),
-                            self.current_value(child_id).unwrap_or_default(),
-                        ));
+                        append_form_value(
+                            pairs,
+                            name,
+                            NativeFormValue::Text(self.current_value(child_id).unwrap_or_default()),
+                        )?;
                     }
                 }
                 Some("button") => {
@@ -5345,13 +5356,6 @@ impl NativeDocument {
                             if !option.state.selected {
                                 continue;
                             }
-                            if pairs.len() >= MAX_FORM_CONTROLS {
-                                return Err(NativeEngineError::limit(
-                                    "form controls",
-                                    MAX_FORM_CONTROLS,
-                                    pairs.len().saturating_add(1),
-                                ));
-                            }
                             let value = option
                                 .attribute("value")
                                 .map(str::to_owned)
@@ -5360,7 +5364,7 @@ impl NativeDocument {
                                         .map(|(value, _)| value)
                                 })
                                 .unwrap_or_default();
-                            pairs.push((name.to_owned(), value));
+                            append_form_value(pairs, name, NativeFormValue::Text(value))?;
                         }
                     }
                 }
@@ -5373,19 +5377,12 @@ impl NativeDocument {
     fn append_submitter_data(
         &self,
         id: NativeNodeId,
-        pairs: &mut Vec<(String, String)>,
+        pairs: &mut Vec<(String, NativeFormValue)>,
     ) -> Result<(), NativeEngineError> {
         let node = self.node(id).ok_or(NativeEngineError::DetachedTarget)?;
         let Some(name) = node.attribute("name").filter(|name| !name.is_empty()) else {
             return Ok(());
         };
-        if pairs.len() >= MAX_FORM_CONTROLS {
-            return Err(NativeEngineError::limit(
-                "form controls",
-                MAX_FORM_CONTROLS,
-                pairs.len().saturating_add(1),
-            ));
-        }
         let value = match node.element_name() {
             Some("input") => node
                 .state
@@ -5396,8 +5393,7 @@ impl NativeDocument {
             Some("button") => node.attribute("value").unwrap_or_default().to_owned(),
             _ => String::new(),
         };
-        pairs.push((name.to_owned(), value));
-        Ok(())
+        append_form_value(pairs, name, NativeFormValue::Text(value))
     }
 
     /// Resolve one decoded, exact local fragment target. A unique `id` wins;
@@ -6169,10 +6165,36 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     era * 146_097 + day_of_era
 }
 
-fn encode_urlencoded_form_data(pairs: &[(String, String)]) -> Result<String, NativeEngineError> {
+fn append_form_value(
+    pairs: &mut Vec<(String, NativeFormValue)>,
+    name: &str,
+    value: NativeFormValue,
+) -> Result<(), NativeEngineError> {
+    if pairs.len() >= MAX_FORM_CONTROLS {
+        return Err(NativeEngineError::limit(
+            "form controls",
+            MAX_FORM_CONTROLS,
+            pairs.len().saturating_add(1),
+        ));
+    }
+    pairs.push((name.to_owned(), value));
+    Ok(())
+}
+
+fn form_value_text(value: &NativeFormValue) -> &str {
+    match value {
+        NativeFormValue::Text(value) => value,
+        NativeFormValue::File(file) => &file.name,
+        NativeFormValue::EmptyFile => "",
+    }
+}
+
+fn encode_urlencoded_form_data(
+    pairs: &[(String, NativeFormValue)],
+) -> Result<String, NativeEngineError> {
     let mut query = url::form_urlencoded::Serializer::new(String::new());
     for (name, value) in pairs {
-        query.append_pair(name, value);
+        query.append_pair(name, form_value_text(value));
     }
     let query = query.finish();
     if query.len() > MAX_LOCATOR_BYTES {
@@ -6186,12 +6208,12 @@ fn encode_urlencoded_form_data(pairs: &[(String, String)]) -> Result<String, Nat
 }
 
 fn encode_form_data(
-    pairs: &[(String, String)],
+    pairs: &[(String, NativeFormValue)],
     encoding: NativeFormEncoding,
-) -> Result<(String, String), NativeEngineError> {
+) -> Result<(NativeRequestBody, String), NativeEngineError> {
     match encoding {
         NativeFormEncoding::UrlEncoded => Ok((
-            encode_urlencoded_form_data(pairs)?,
+            NativeRequestBody::Text(encode_urlencoded_form_data(pairs)?),
             "application/x-www-form-urlencoded".into(),
         )),
         NativeFormEncoding::TextPlain => {
@@ -6199,17 +6221,17 @@ fn encode_form_data(
             for (name, value) in pairs {
                 body.push_str(name);
                 body.push('=');
-                body.push_str(value);
+                body.push_str(form_value_text(value));
                 body.push_str("\r\n");
             }
-            if body.len() > MAX_LOCATOR_BYTES {
+            if body.len() > MAX_NATIVE_FORM_BODY_BYTES {
                 return Err(NativeEngineError::limit(
                     "form submission data",
-                    MAX_LOCATOR_BYTES,
+                    MAX_NATIVE_FORM_BODY_BYTES,
                     body.len(),
                 ));
             }
-            Ok((body, "text/plain".into()))
+            Ok((NativeRequestBody::Text(body), "text/plain".into()))
         }
         NativeFormEncoding::Multipart => {
             if pairs.iter().any(|(name, _)| name.contains(['\r', '\n'])) {
@@ -6225,7 +6247,20 @@ fn encode_form_data(
                 };
                 pairs
                     .iter()
-                    .all(|(name, value)| !name.contains(&candidate) && !value.contains(&candidate))
+                    .all(|(name, value)| {
+                        !name.contains(&candidate)
+                            && match value {
+                                NativeFormValue::Text(value) => !value.contains(&candidate),
+                                NativeFormValue::File(file) => {
+                                    !file.name.contains(&candidate)
+                                        && !file
+                                            .bytes
+                                            .windows(candidate.len())
+                                            .any(|window| window == candidate.as_bytes())
+                                }
+                                NativeFormValue::EmptyFile => true,
+                            }
+                    })
                     .then_some(candidate)
             });
             let Some(boundary) = boundary else {
@@ -6235,27 +6270,64 @@ fn encode_form_data(
                     17,
                 ));
             };
-            let mut body = String::new();
+            let mut body = Vec::new();
             for (name, value) in pairs {
-                body.push_str("--");
-                body.push_str(&boundary);
-                body.push_str("\r\nContent-Disposition: form-data; name=\"");
-                body.push_str(&name.replace('\\', "\\\\").replace('"', "\\\""));
-                body.push_str("\"\r\n\r\n");
-                body.push_str(value);
-                body.push_str("\r\n");
+                body.extend_from_slice(b"--");
+                body.extend_from_slice(boundary.as_bytes());
+                body.extend_from_slice(b"\r\nContent-Disposition: form-data; name=\"");
+                body.extend_from_slice(name.replace('\\', "\\\\").replace('"', "\\\"").as_bytes());
+                body.extend_from_slice(b"\"");
+                match value {
+                    NativeFormValue::Text(value) => {
+                        body.extend_from_slice(b"\r\n\r\n");
+                        body.extend_from_slice(value.as_bytes());
+                    }
+                    NativeFormValue::File(file) => {
+                        body.extend_from_slice(b"; filename=\"");
+                        body.extend_from_slice(
+                            file.name
+                                .replace('\\', "\\\\")
+                                .replace('"', "\\\"")
+                                .as_bytes(),
+                        );
+                        body.extend_from_slice(b"\"\r\nContent-Type: ");
+                        body.extend_from_slice(if file.media_type.is_empty() {
+                            b"application/octet-stream".as_slice()
+                        } else {
+                            file.media_type.as_bytes()
+                        });
+                        body.extend_from_slice(b"\r\n\r\n");
+                        body.extend_from_slice(&file.bytes);
+                    }
+                    NativeFormValue::EmptyFile => {
+                        body.extend_from_slice(
+                            b"; filename=\"\"\r\nContent-Type: application/octet-stream\r\n\r\n",
+                        );
+                    }
+                }
+                body.extend_from_slice(b"\r\n");
+                if body.len() > MAX_NATIVE_FORM_BODY_BYTES {
+                    return Err(NativeEngineError::limit(
+                        "form submission data",
+                        MAX_NATIVE_FORM_BODY_BYTES,
+                        body.len(),
+                    ));
+                }
             }
-            body.push_str("--");
-            body.push_str(&boundary);
-            body.push_str("--\r\n");
-            if body.len() > MAX_LOCATOR_BYTES {
+            body.extend_from_slice(b"--");
+            body.extend_from_slice(boundary.as_bytes());
+            body.extend_from_slice(b"--\r\n");
+            if body.len() > MAX_NATIVE_FORM_BODY_BYTES {
                 return Err(NativeEngineError::limit(
                     "form submission data",
-                    MAX_LOCATOR_BYTES,
+                    MAX_NATIVE_FORM_BODY_BYTES,
                     body.len(),
                 ));
             }
-            Ok((body, format!("multipart/form-data; boundary={boundary}")))
+            Ok((
+                NativeRequestBody::Bytes(body),
+                format!("multipart/form-data; boundary={boundary}"),
+            ))
         }
     }
 }

@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-271` slice; the bounded foundation below remains
+`native-engine-browser-272` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5909,6 +5909,15 @@ non-bubbling `error` event on the root script while the HTML document proceeds
 through commit and ready/load. Static graph limits and inline-module
 error-event identity remain bounded follow-up work. Exact evidence is recorded
 in `docs/plan/tasks/native-engine-browser-271.md`.
+
+The completed native-engine-browser-272 slice completes the external script
+failure boundary through evaluation. External classic and module roots carry
+their element identity into the evaluator; an ignorable script evaluation
+failure now dispatches one non-bubbling root-element `error` event and removes
+the provisional `load` event, while the document continues through its normal
+commit and ready/load phases. Full window error reporting and inline-script
+Web IDL identity remain issue #40 work. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-272.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

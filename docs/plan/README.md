@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-271` locally. The versioned
+`native-engine-browser-272` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -203,6 +203,15 @@ while the owning document still commits and reaches its normal lifecycle.
 Static graph limits and inline-module error-event identity remain separately
 bounded; resource scheduling, BFCache restoration, and complete module/Web
 IDL parity remain open on issue #40.
+
+The completed native external-script failure slice is
+[native-engine-browser-272](tasks/native-engine-browser-272.md). External
+classic and module scripts that throw during evaluation now dispatch one
+owning-element `error` event, suppress their provisional `load`, and leave the
+document lifecycle able to complete. The module graph is never published as a
+successful script after evaluation failure; full window error reporting,
+inline-script identity, and complete script/Web IDL semantics remain open on
+issue #40.
 
 The completed profile/contract task is
 [native-engine-browser-000](tasks/native-engine-browser-000.md). It freezes

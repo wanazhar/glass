@@ -5654,7 +5654,13 @@ async fn load_page_script_sources(
     {
         match script {
             NativePageScriptSource::Inline { source, timing } => {
-                sources.push((timing, NativePageScript::Classic { source }));
+                sources.push((
+                    timing,
+                    NativePageScript::Classic {
+                        source,
+                        node_index: None,
+                    },
+                ));
             }
             NativePageScriptSource::ModuleInline { source, timing } => {
                 let name = format!("{document_url}#glass-inline-module-{index}");
@@ -5667,6 +5673,7 @@ async fn load_page_script_sources(
                     NativePageScript::Module {
                         name: name.clone(),
                         source: source.clone(),
+                        node_index: None,
                     },
                 ));
                 let dependency_result = load_module_dependencies(
@@ -5700,6 +5707,7 @@ async fn load_page_script_sources(
                                 timing,
                                 NativePageScript::Classic {
                                     source: resource.body,
+                                    node_index: Some(node_index),
                                 },
                             ));
                         }
@@ -5730,6 +5738,7 @@ async fn load_page_script_sources(
                                 NativePageScript::Module {
                                     name: name.clone(),
                                     source: source.clone(),
+                                    node_index: Some(node_index),
                                 },
                             ));
                             let dependency_result = load_module_dependencies(

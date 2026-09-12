@@ -2423,7 +2423,8 @@ impl NativeEngine {
         let next_revision = self.next_revision()?;
         self.document.set_revision(next_revision);
         self.revision = next_revision;
-        self.history.update_current_scroll(self.scroll_offset);
+        self.history
+            .update_current_scroll(self.scroll_offset, &self.nested_scroll_offsets);
         self.record_effects(events.clone());
         self.dispatch_local_events(&events)?;
         Ok(NativeActionResult {
@@ -2873,7 +2874,8 @@ impl NativeEngine {
         self.revision = next_revision;
         let scroll_events = self.apply_scroll_commands(&self.document.clone(), &scroll_commands)?;
         events.extend(scroll_events.iter().copied());
-        self.history.update_current_scroll(self.scroll_offset);
+        self.history
+            .update_current_scroll(self.scroll_offset, &self.nested_scroll_offsets);
         let history_traversal =
             self.apply_prepared_history_commands(history_commands, next_revision)?;
         self.record_effects(events);
@@ -3448,7 +3450,8 @@ impl NativeEngine {
         document.set_revision(next_revision);
         self.document = document;
         self.revision = next_revision;
-        self.history.update_current_scroll(self.scroll_offset);
+        self.history
+            .update_current_scroll(self.scroll_offset, &self.nested_scroll_offsets);
         let history_traversal =
             self.apply_local_history_commands_at(&history_commands, next_revision)?;
         self.record_effects(effects);
@@ -3498,7 +3501,8 @@ impl NativeEngine {
         document.set_revision(next_revision);
         self.document = document;
         self.revision = next_revision;
-        self.history.update_current_scroll(self.scroll_offset);
+        self.history
+            .update_current_scroll(self.scroll_offset, &self.nested_scroll_offsets);
         let history_traversal =
             self.apply_local_history_commands_at(&history_commands, next_revision)?;
         self.record_effects(effects);
@@ -3558,7 +3562,8 @@ impl NativeEngine {
         document.set_revision(next_revision);
         self.document = document;
         self.revision = next_revision;
-        self.history.update_current_scroll(self.scroll_offset);
+        self.history
+            .update_current_scroll(self.scroll_offset, &self.nested_scroll_offsets);
         let history_traversal =
             self.apply_local_history_commands_at(&history_commands, next_revision)?;
         self.record_effects(effects);
@@ -3627,7 +3632,8 @@ impl NativeEngine {
         document.set_revision(next_revision);
         self.document = document;
         self.revision = next_revision;
-        self.history.update_current_scroll(self.scroll_offset);
+        self.history
+            .update_current_scroll(self.scroll_offset, &self.nested_scroll_offsets);
         let history_traversal =
             self.apply_local_history_commands_at(&history_commands, next_revision)?;
         self.record_effects(effects);
@@ -3844,7 +3850,8 @@ impl NativeEngine {
         document.set_revision(next_revision);
         self.document = document;
         self.revision = next_revision;
-        self.history.update_current_scroll(self.scroll_offset);
+        self.history
+            .update_current_scroll(self.scroll_offset, &self.nested_scroll_offsets);
         let history_traversal =
             self.apply_local_history_commands_at(&history_commands, next_revision)?;
         self.record_effects(events);
@@ -3909,7 +3916,8 @@ impl NativeEngine {
             let next_revision = self.next_revision()?;
             self.document.set_revision(next_revision);
             self.revision = next_revision;
-            self.history.update_current_scroll(self.scroll_offset);
+            self.history
+                .update_current_scroll(self.scroll_offset, &self.nested_scroll_offsets);
             self.record_effects(events);
             return Ok(NativeActionResult {
                 revision: next_revision,
@@ -3919,7 +3927,8 @@ impl NativeEngine {
         let next_revision = self.next_revision()?;
         self.document.set_revision(next_revision);
         self.revision = next_revision;
-        self.history.update_current_scroll(self.scroll_offset);
+        self.history
+            .update_current_scroll(self.scroll_offset, &self.nested_scroll_offsets);
         self.record_effects(events);
         let request =
             self.document
@@ -3957,7 +3966,8 @@ impl NativeEngine {
         document.set_revision(next_revision);
         self.document = document;
         self.revision = next_revision;
-        self.history.update_current_scroll(self.scroll_offset);
+        self.history
+            .update_current_scroll(self.scroll_offset, &self.nested_scroll_offsets);
         let history_traversal =
             self.apply_local_history_commands_at(&history_commands, next_revision)?;
         self.record_effects(events);
@@ -4002,7 +4012,8 @@ impl NativeEngine {
         document.set_revision(next_revision);
         self.document = document;
         self.revision = next_revision;
-        self.history.update_current_scroll(self.scroll_offset);
+        self.history
+            .update_current_scroll(self.scroll_offset, &self.nested_scroll_offsets);
         let history_traversal =
             self.apply_local_history_commands_at(&history_commands, next_revision)?;
         self.record_effects(events);
@@ -4045,7 +4056,8 @@ impl NativeEngine {
         document.set_revision(next_revision);
         self.document = document;
         self.revision = next_revision;
-        self.history.update_current_scroll(self.scroll_offset);
+        self.history
+            .update_current_scroll(self.scroll_offset, &self.nested_scroll_offsets);
         let history_traversal =
             self.apply_local_history_commands_at(&history_commands, next_revision)?;
         self.record_effects(events);
@@ -4131,7 +4143,8 @@ impl NativeEngine {
         document.set_revision(next_revision);
         self.document = document;
         self.revision = next_revision;
-        self.history.update_current_scroll(self.scroll_offset);
+        self.history
+            .update_current_scroll(self.scroll_offset, &self.nested_scroll_offsets);
         let history_traversal =
             self.apply_local_history_commands_at(&history_commands, next_revision)?;
         self.record_effects(events);
@@ -4204,8 +4217,14 @@ impl NativeEngine {
             match command {
                 LocalHistoryCommand::PushState { url, state } => {
                     self.url = url.clone();
-                    self.history
-                        .push_with_state(url, revision, self.scroll_offset, state, true);
+                    self.history.push_with_state(
+                        url,
+                        revision,
+                        self.scroll_offset,
+                        &self.nested_scroll_offsets,
+                        state,
+                        true,
+                    );
                 }
                 LocalHistoryCommand::ReplaceState { url, state } => {
                     self.url = url.clone();
@@ -4213,6 +4232,7 @@ impl NativeEngine {
                         url,
                         revision,
                         self.scroll_offset,
+                        &self.nested_scroll_offsets,
                         state,
                         true,
                     );
@@ -4231,6 +4251,16 @@ impl NativeEngine {
     ) -> Result<Option<i32>, NativeEngineError> {
         let prepared = self.prepare_local_history_commands(commands)?;
         self.apply_prepared_history_commands(prepared, revision)
+    }
+
+    async fn sync_content_scroll_offsets_async(&mut self) -> Result<(), NativeEngineError> {
+        if let Some(process) = self.content_process.as_mut() {
+            process.sync_scroll_offset(self.scroll_offset).await?;
+            process
+                .sync_nested_scroll_offsets(&self.nested_scroll_offsets)
+                .await?;
+        }
+        Ok(())
     }
 
     async fn sync_content_history_async(&mut self) -> Result<(), NativeEngineError> {
@@ -4331,7 +4361,8 @@ impl NativeEngine {
         self.revision = next_revision;
         let scroll_events = self.apply_scroll_commands(&self.document.clone(), &scroll_commands)?;
         events.extend(scroll_events);
-        self.history.update_current_scroll(self.scroll_offset);
+        self.history
+            .update_current_scroll(self.scroll_offset, &self.nested_scroll_offsets);
         self.record_effects(events);
         let dialog_url = self.url.clone();
         self.install_dialogs(dialogs, &dialog_url)?;
@@ -4370,7 +4401,8 @@ impl NativeEngine {
             };
             self.document.set_revision(revision);
             self.revision = revision;
-            self.history.update_current_scroll(self.scroll_offset);
+            self.history
+                .update_current_scroll(self.scroll_offset, &self.nested_scroll_offsets);
             self.record_effects(events);
             self.queue_download(target_url, &download_attribute)?;
             return Ok(NativeActionResult {
@@ -4386,7 +4418,8 @@ impl NativeEngine {
             };
             self.document.set_revision(revision);
             self.revision = revision;
-            self.history.update_current_scroll(self.scroll_offset);
+            self.history
+                .update_current_scroll(self.scroll_offset, &self.nested_scroll_offsets);
             self.record_effects(events);
             self.queue_popup(target_url)?;
             return Ok(NativeActionResult {
@@ -4405,7 +4438,8 @@ impl NativeEngine {
             } else {
                 self.document.set_revision(revision);
                 self.revision = revision;
-                self.history.update_current_scroll(self.scroll_offset);
+                self.history
+                    .update_current_scroll(self.scroll_offset, &self.nested_scroll_offsets);
                 self.record_effects(events);
                 return Ok(NativeActionResult {
                     revision,
@@ -4435,8 +4469,12 @@ impl NativeEngine {
             self.scroll_offset = scroll_offset;
             self.sync_javascript_scroll_offset();
             self.revision = revision;
-            self.history
-                .push_same_document(resource.url, revision, scroll_offset);
+            self.history.push_same_document(
+                resource.url,
+                revision,
+                scroll_offset,
+                &self.nested_scroll_offsets,
+            );
             self.sync_javascript_history();
             self.record_effects(events);
             return Ok(NativeActionResult {
@@ -5041,22 +5079,67 @@ impl NativeEngine {
         Ok(None)
     }
 
+    /// Clamp a history entry's saved scroll state against the document being
+    /// activated. Same-document mutations can remove a scroller, and a full
+    /// resource traversal can rebuild the DOM with different bounds; both
+    /// cases should restore the usable portion of the saved state instead of
+    /// making the next layout fail.
+    fn restore_history_scroll_state(
+        &self,
+        document: &NativeDocument,
+        saved_scroll: NativePoint,
+        saved_nested_scroll_offsets: &BTreeMap<u32, NativePoint>,
+    ) -> Result<(NativePoint, BTreeMap<u32, NativePoint>), NativeEngineError> {
+        let layout = document.layout(self.config.viewport)?;
+        let max_scroll = layout.max_scroll_offset();
+        let scroll_offset = NativePoint {
+            x: saved_scroll.x.min(max_scroll.x),
+            y: saved_scroll.y.min(max_scroll.y),
+        };
+        let mut nested_scroll_offsets = BTreeMap::new();
+        for (&node_index, &saved_offset) in saved_nested_scroll_offsets {
+            let node_id = NativeNodeId::from_parts(document.generation(), node_index);
+            let Some(container) = layout.scroll_container_for(node_id) else {
+                continue;
+            };
+            let max_scroll = container.max_scroll_offset();
+            let offset = NativePoint {
+                x: saved_offset.x.min(max_scroll.x),
+                y: saved_offset.y.min(max_scroll.y),
+            };
+            if offset.x != 0 || offset.y != 0 {
+                nested_scroll_offsets.insert(node_index, offset);
+            }
+        }
+        Ok((scroll_offset, nested_scroll_offsets))
+    }
+
     fn commit_same_document_navigation(
         &mut self,
         url: String,
         history_commit: HistoryCommit,
     ) -> Result<Option<NativeNavigationRequest>, NativeEngineError> {
         let old_url = self.url.clone();
-        let scroll_offset = match &history_commit {
-            HistoryCommit::Push | HistoryCommit::Replace => self.fragment_scroll_offset(&url)?,
-            HistoryCommit::Activate(index) => self
-                .history
-                .entry(*index)
-                .map(|entry| entry.scroll_offset)
-                .ok_or_else(|| NativeEngineError::Scheduler {
-                    reason: "history target is no longer available".into(),
-                })?,
+        let (saved_scroll, saved_nested_scroll_offsets) = match &history_commit {
+            HistoryCommit::Push | HistoryCommit::Replace => (
+                self.fragment_scroll_offset(&url)?,
+                self.nested_scroll_offsets.clone(),
+            ),
+            HistoryCommit::Activate(index) => {
+                let entry =
+                    self.history
+                        .entry(*index)
+                        .ok_or_else(|| NativeEngineError::Scheduler {
+                            reason: "history target is no longer available".into(),
+                        })?;
+                (entry.scroll_offset, entry.nested_scroll_offsets.clone())
+            }
         };
+        let (scroll_offset, nested_scroll_offsets) = self.restore_history_scroll_state(
+            &self.document,
+            saved_scroll,
+            &saved_nested_scroll_offsets,
+        )?;
         self.run_commit_task(
             NativeTask::CommitSameDocumentNavigation,
             "same-document navigation",
@@ -5065,17 +5148,22 @@ impl NativeEngine {
         self.document.set_revision(revision);
         self.url = url.clone();
         self.scroll_offset = scroll_offset;
+        self.nested_scroll_offsets = nested_scroll_offsets;
         self.sync_javascript_scroll_offset();
         self.revision = revision;
         let traversing_history = matches!(&history_commit, HistoryCommit::Activate(_));
         match history_commit {
-            HistoryCommit::Push => self
-                .history
-                .push_same_document(url, revision, scroll_offset),
+            HistoryCommit::Push => self.history.push_same_document(
+                url,
+                revision,
+                scroll_offset,
+                &self.nested_scroll_offsets,
+            ),
             HistoryCommit::Replace => self.history.replace_current_with_state(
                 url,
                 revision,
                 scroll_offset,
+                &self.nested_scroll_offsets,
                 serde_json::Value::Null,
                 true,
             ),
@@ -5085,6 +5173,8 @@ impl NativeEngine {
                         reason: "history entry disappeared during same-document traversal".into(),
                     }
                 })?;
+                self.history
+                    .update_current_scroll(self.scroll_offset, &self.nested_scroll_offsets);
             }
         }
         self.sync_javascript_history();
@@ -5119,16 +5209,26 @@ impl NativeEngine {
         page_navigation_handoffs: usize,
     ) -> Result<(), NativeEngineError> {
         let old_url = self.url.clone();
-        let scroll_offset = match &history_commit {
-            HistoryCommit::Push | HistoryCommit::Replace => self.fragment_scroll_offset(&url)?,
-            HistoryCommit::Activate(index) => self
-                .history
-                .entry(*index)
-                .map(|entry| entry.scroll_offset)
-                .ok_or_else(|| NativeEngineError::Scheduler {
-                    reason: "history target is no longer available".into(),
-                })?,
+        let (saved_scroll, saved_nested_scroll_offsets) = match &history_commit {
+            HistoryCommit::Push | HistoryCommit::Replace => (
+                self.fragment_scroll_offset(&url)?,
+                self.nested_scroll_offsets.clone(),
+            ),
+            HistoryCommit::Activate(index) => {
+                let entry =
+                    self.history
+                        .entry(*index)
+                        .ok_or_else(|| NativeEngineError::Scheduler {
+                            reason: "history target is no longer available".into(),
+                        })?;
+                (entry.scroll_offset, entry.nested_scroll_offsets.clone())
+            }
         };
+        let (scroll_offset, nested_scroll_offsets) = self.restore_history_scroll_state(
+            &self.document,
+            saved_scroll,
+            &saved_nested_scroll_offsets,
+        )?;
         self.run_commit_task_async(
             NativeTask::CommitSameDocumentNavigation,
             "same-document navigation",
@@ -5139,17 +5239,22 @@ impl NativeEngine {
         self.document.set_revision(revision);
         self.url = url.clone();
         self.scroll_offset = scroll_offset;
+        self.nested_scroll_offsets = nested_scroll_offsets;
         self.sync_javascript_scroll_offset();
         self.revision = revision;
         let traversing_history = matches!(&history_commit, HistoryCommit::Activate(_));
         match history_commit {
-            HistoryCommit::Push => self
-                .history
-                .push_same_document(url, revision, scroll_offset),
+            HistoryCommit::Push => self.history.push_same_document(
+                url,
+                revision,
+                scroll_offset,
+                &self.nested_scroll_offsets,
+            ),
             HistoryCommit::Replace => self.history.replace_current_with_state(
                 url,
                 revision,
                 scroll_offset,
+                &self.nested_scroll_offsets,
                 serde_json::Value::Null,
                 true,
             ),
@@ -5159,9 +5264,12 @@ impl NativeEngine {
                         reason: "history entry disappeared during same-document traversal".into(),
                     }
                 })?;
+                self.history
+                    .update_current_scroll(self.scroll_offset, &self.nested_scroll_offsets);
             }
         }
         self.sync_javascript_history();
+        self.sync_content_scroll_offsets_async().await?;
         self.sync_content_history_async().await?;
         let mut navigation = if traversing_history {
             self.dispatch_content_events_async(&[NativeEventKind::PopState])
@@ -5228,27 +5336,24 @@ impl NativeEngine {
                 reason: "history target is no longer available".into(),
             });
         }
-        let saved_scroll = self
+        let (saved_scroll, saved_nested_scroll_offsets) = self
             .history
             .entry(history_index)
-            .map(|entry| entry.scroll_offset)
+            .map(|entry| (entry.scroll_offset, entry.nested_scroll_offsets.clone()))
             .ok_or_else(|| NativeEngineError::Scheduler {
                 reason: "history target is no longer available".into(),
             })?;
-        let max_scroll = prepared
-            .document
-            .layout(self.config.viewport)?
-            .max_scroll_offset();
-        let scroll_offset = NativePoint {
-            x: saved_scroll.x.min(max_scroll.x),
-            y: saved_scroll.y.min(max_scroll.y),
-        };
+        let (scroll_offset, nested_scroll_offsets) = self.restore_history_scroll_state(
+            &prepared.document,
+            saved_scroll,
+            &saved_nested_scroll_offsets,
+        )?;
         let dialogs = prepared.dialogs;
         self.run_commit_task(NativeTask::TraverseHistory, "history traversal")?;
         let revision = prepared.document.revision();
         self.document = prepared.document;
         self.javascript = None;
-        self.nested_scroll_offsets.clear();
+        self.nested_scroll_offsets = nested_scroll_offsets;
         self.url = prepared.resource.url;
         self.origin = prepared.resource.origin;
         self.document_frame_sources = prepared.frame_sources;
@@ -5262,6 +5367,8 @@ impl NativeEngine {
             .ok_or_else(|| NativeEngineError::Scheduler {
                 reason: "history target disappeared during traversal".into(),
             })?;
+        self.history
+            .update_current_scroll(self.scroll_offset, &self.nested_scroll_offsets);
         Ok(())
     }
 
@@ -5277,28 +5384,25 @@ impl NativeEngine {
                 reason: "history target is no longer available".into(),
             });
         }
-        let saved_scroll = self
+        let (saved_scroll, saved_nested_scroll_offsets) = self
             .history
             .entry(history_index)
-            .map(|entry| entry.scroll_offset)
+            .map(|entry| (entry.scroll_offset, entry.nested_scroll_offsets.clone()))
             .ok_or_else(|| NativeEngineError::Scheduler {
                 reason: "history target is no longer available".into(),
             })?;
-        let max_scroll = prepared
-            .document
-            .layout(self.config.viewport)?
-            .max_scroll_offset();
-        let scroll_offset = NativePoint {
-            x: saved_scroll.x.min(max_scroll.x),
-            y: saved_scroll.y.min(max_scroll.y),
-        };
+        let (scroll_offset, nested_scroll_offsets) = self.restore_history_scroll_state(
+            &prepared.document,
+            saved_scroll,
+            &saved_nested_scroll_offsets,
+        )?;
         let dialogs = prepared.dialogs;
         self.run_commit_task_async(NativeTask::TraverseHistory, "history traversal", worker)
             .await?;
         let revision = prepared.document.revision();
         self.document = prepared.document;
         self.javascript = None;
-        self.nested_scroll_offsets.clear();
+        self.nested_scroll_offsets = nested_scroll_offsets;
         self.url = prepared.resource.url;
         self.origin = prepared.resource.origin;
         self.document_frame_sources = prepared.frame_sources;
@@ -5312,6 +5416,9 @@ impl NativeEngine {
             .ok_or_else(|| NativeEngineError::Scheduler {
                 reason: "history target disappeared during traversal".into(),
             })?;
+        self.history
+            .update_current_scroll(self.scroll_offset, &self.nested_scroll_offsets);
+        self.sync_content_scroll_offsets_async().await?;
         self.sync_content_history_async().await?;
         Ok(())
     }

@@ -22,7 +22,7 @@ use super::origin::NativeOrigin;
 use fs2::FileExt;
 use rquickjs::function::This;
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
-use rquickjs::{CaughtError, Context, Error, Function, Module, Runtime, Value};
+use rquickjs::{CaughtError, Coerced, Context, Error, FromJs, Function, Module, Runtime, Value};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
@@ -88,6 +88,8 @@ pub(crate) const MAX_NATIVE_EVENTSOURCE_FIELD_BYTES: usize = 128;
 pub(crate) const MAX_NATIVE_FETCH_STREAM_CHUNK_BYTES: usize = 8 * 1024;
 pub(crate) const MAX_NATIVE_FETCH_STREAM_BODY_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) const MAX_NATIVE_FETCH_STREAM_QUEUED_CHUNKS: usize = 32;
+const MAX_NATIVE_UNHANDLED_REJECTIONS: usize = 64;
+const MAX_NATIVE_UNHANDLED_REJECTION_REASON_CHARS: usize = 4096;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -3176,6 +3178,42 @@ pub(crate) fn host_script_error_event_script(
     Ok(Some(source))
 }
 
+/// Build the internal source used to report bounded unhandled Promise
+/// rejections into the persistent page realm after a microtask checkpoint.
+/// The rejection reason is intentionally transported as text until the native
+/// realm has a complete structured-reason bridge.
+fn unhandled_promise_rejection_event_script(
+    reasons: &[String],
+) -> Result<Option<String>, NativeEngineError> {
+    if reasons.is_empty() {
+        return Ok(None);
+    }
+    let descriptors = reasons
+        .iter()
+        .map(|reason| serde_json::json!({ "reason": reason }))
+        .collect::<Vec<_>>();
+    let encoded = serde_json::to_string(&descriptors).map_err(|_| NativeEngineError::Worker {
+        operation: "serialize native unhandled promise rejection events".into(),
+        reason: "native unhandled promise rejection metadata could not be serialized".into(),
+    })?;
+    let source = format!("globalThis.__glassDispatchUnhandledRejections({encoded})");
+    if source.len() > MAX_NATIVE_SCRIPT_BYTES {
+        return Err(NativeEngineError::limit(
+            "native unhandled promise rejection events",
+            MAX_NATIVE_SCRIPT_BYTES,
+            source.len(),
+        ));
+    }
+    Ok(Some(source))
+}
+
+fn bounded_unhandled_promise_rejection_reason(reason: String) -> String {
+    reason
+        .chars()
+        .take(MAX_NATIVE_UNHANDLED_REJECTION_REASON_CHARS)
+        .collect()
+}
+
 /// Build the internal source used to project events from a child browsing
 /// context into its same-origin parent realm. The child node identity remains
 /// data; the receiving realm resolves it against its own immutable binding
@@ -3465,6 +3503,12 @@ pub(crate) fn host_key_event_script_with_modifiers(
 /// One persistent ECMAScript realm. A full navigation creates a new value;
 /// same-document navigation retains it, matching a page global object's
 /// lifetime.
+#[derive(Default)]
+struct NativeUnhandledPromiseRejections {
+    pending: BTreeMap<String, (u64, String)>,
+    next_order: u64,
+}
+
 pub(crate) struct NativeJavaScriptRuntime {
     runtime: Runtime,
     context: Context,
@@ -3477,6 +3521,7 @@ pub(crate) struct NativeJavaScriptRuntime {
     pending_storage_events: Arc<Mutex<Vec<NativeStorageEvent>>>,
     cookie: Arc<Mutex<String>>,
     cookie_updates: Arc<Mutex<Vec<String>>>,
+    unhandled_promise_rejections: Arc<Mutex<NativeUnhandledPromiseRejections>>,
     dialog_events: Arc<Mutex<Vec<NativeDialog>>>,
     popup_events: Arc<Mutex<Vec<NativePopupRequest>>>,
     post_message_events: Arc<Mutex<Vec<NativePostMessageRequest>>>,
@@ -3549,6 +3594,37 @@ impl NativeJavaScriptRuntime {
                 .and_then(|deadline| *deadline)
                 .is_some_and(|deadline| Instant::now() >= deadline)
         })));
+        let unhandled_promise_rejections =
+            Arc::new(Mutex::new(NativeUnhandledPromiseRejections::default()));
+        let rejection_queue = Arc::clone(&unhandled_promise_rejections);
+        runtime.set_host_promise_rejection_tracker(Some(Box::new(
+            move |ctx, promise, reason, is_handled| {
+                let key = format!("{promise:?}");
+                let fallback = format!("{reason:?}");
+                let reason = Coerced::<std::string::String>::from_js(&ctx, reason)
+                    .map(|value| value.0)
+                    .unwrap_or(fallback);
+                let reason = bounded_unhandled_promise_rejection_reason(reason);
+                if let Ok(mut queue) = rejection_queue.lock() {
+                    if is_handled {
+                        queue.pending.remove(&key);
+                    } else if queue.pending.len() < MAX_NATIVE_UNHANDLED_REJECTIONS
+                        || queue.pending.contains_key(&key)
+                    {
+                        let order = queue
+                            .pending
+                            .get(&key)
+                            .map(|(order, _)| *order)
+                            .unwrap_or_else(|| {
+                                let order = queue.next_order;
+                                queue.next_order = queue.next_order.saturating_add(1);
+                                order
+                            });
+                        queue.pending.insert(key, (order, reason));
+                    }
+                }
+            },
+        )));
         let context = Context::full(&runtime).map_err(|_| NativeEngineError::Worker {
             operation: "create JavaScript context".into(),
             reason: "native JavaScript context could not be created".into(),
@@ -3565,6 +3641,7 @@ impl NativeJavaScriptRuntime {
             pending_storage_events: Arc::new(Mutex::new(Vec::new())),
             cookie: Arc::new(Mutex::new(String::new())),
             cookie_updates: Arc::new(Mutex::new(Vec::new())),
+            unhandled_promise_rejections,
             dialog_events: Arc::new(Mutex::new(Vec::new())),
             popup_events: Arc::new(Mutex::new(Vec::new())),
             post_message_events: Arc::new(Mutex::new(Vec::new())),
@@ -3651,6 +3728,17 @@ impl NativeJavaScriptRuntime {
             .lock()
             .map(|state| state.clone())
             .unwrap_or_default()
+    }
+
+    fn take_unhandled_promise_rejections(&self) -> Vec<String> {
+        let Ok(mut queue) = self.unhandled_promise_rejections.lock() else {
+            return Vec::new();
+        };
+        let mut values = std::mem::take(&mut queue.pending)
+            .into_values()
+            .collect::<Vec<_>>();
+        values.sort_unstable_by_key(|(order, _)| *order);
+        values.into_iter().map(|(_, reason)| reason).collect()
     }
 
     pub(crate) fn take_storage_changes(&self) -> Vec<NativeStorageEvent> {
@@ -4760,6 +4848,16 @@ impl NativeJavaScriptRuntime {
                     break;
                 }
             }
+            let unhandled_rejections = self.take_unhandled_promise_rejections();
+            if let Some(source) = unhandled_promise_rejection_event_script(&unhandled_rejections)? {
+                ctx.eval::<(), _>(source.as_str()).map_err(|error| NativeEngineError::Worker {
+                    operation: "dispatch native unhandled promise rejection events".into(),
+                    reason: format!(
+                        "native unhandled promise rejection event dispatch failed: {}",
+                        CaughtError::from_error(&ctx, error)
+                    ),
+                })?;
+            }
             let commands = read_script_commands(ctx.clone())?;
             let mut document_commands = Vec::with_capacity(commands.len());
             for command in commands {
@@ -5062,6 +5160,16 @@ impl NativeJavaScriptRuntime {
                 if !ctx.execute_pending_job() {
                     break;
                 }
+            }
+            let unhandled_rejections = self.take_unhandled_promise_rejections();
+            if let Some(event_source) = unhandled_promise_rejection_event_script(&unhandled_rejections)? {
+                ctx.eval::<(), _>(event_source.as_str()).map_err(|error| NativeEngineError::Worker {
+                    operation: "dispatch native unhandled promise rejection events".into(),
+                    reason: format!(
+                        "native unhandled promise rejection event dispatch failed: {}",
+                        CaughtError::from_error(&ctx, error)
+                    ),
+                })?;
             }
             let commands = read_script_commands(ctx.clone())?;
             let mut document_commands = Vec::with_capacity(commands.len());
@@ -14186,6 +14294,22 @@ fn document_bootstrap(
     results.push(dispatchTarget(globalThis, createErrorEvent()));
     return results;
   }};
+  globalThis.__glassDispatchUnhandledRejections = (rejections) => {{
+    if (!Array.isArray(rejections)) throw new TypeError("native unhandled promise rejections are invalid");
+    return rejections.map((descriptor) => {{
+      const reason = descriptor && typeof descriptor === "object" && descriptor.reason !== undefined
+        ? descriptor.reason
+        : null;
+      const constructor = globalThis.__glassPromiseRejectionEventConstructor
+        || globalThis.PromiseRejectionEvent;
+      const event = typeof constructor === "function"
+        ? new constructor("unhandledrejection", {{ reason, promise: null, cancelable: true }})
+        : createEvent("unhandledrejection", {{ bubbles: false, cancelable: true }});
+      if (event.reason === undefined) event.reason = reason;
+      if (event.promise === undefined) event.promise = null;
+      return dispatchTarget(globalThis, event);
+    }});
+  }};
   globalThis.window = globalThis;
   const dialogText = (value, field) => {{
     const text = String(value === undefined || value === null ? "" : value);
@@ -17241,18 +17365,29 @@ fn document_bootstrap(
     try {{ Object.setPrototypeOf(event, ErrorEventNative.prototype); }} catch (_error) {{}}
     return event;
   }};
+  const PromiseRejectionEventNative = globalThis.__glassPromiseRejectionEventConstructor || function PromiseRejectionEvent(type, options) {{
+    const event = globalThis.__glassCreateEvent(type, options);
+    const settings = options && typeof options === "object" ? options : {{}};
+    event.promise = settings.promise === undefined ? null : settings.promise;
+    event.reason = settings.reason === undefined ? null : settings.reason;
+    try {{ Object.setPrototypeOf(event, PromiseRejectionEventNative.prototype); }} catch (_error) {{}}
+    return event;
+  }};
   globalThis.__glassEventConstructor = EventNative;
   globalThis.__glassCustomEventConstructor = CustomEventNative;
   globalThis.__glassStorageEventConstructor = StorageEventNative;
   globalThis.__glassErrorEventConstructor = ErrorEventNative;
+  globalThis.__glassPromiseRejectionEventConstructor = PromiseRejectionEventNative;
   globalThis.__glassCreateEvent = createEvent;
   globalThis.Event = EventNative;
   globalThis.CustomEvent = CustomEventNative;
   globalThis.StorageEvent = StorageEventNative;
   globalThis.ErrorEvent = ErrorEventNative;
+  globalThis.PromiseRejectionEvent = PromiseRejectionEventNative;
   try {{ Object.setPrototypeOf(CustomEventNative.prototype, EventNative.prototype); }} catch (_error) {{}}
   try {{ Object.setPrototypeOf(StorageEventNative.prototype, EventNative.prototype); }} catch (_error) {{}}
   try {{ Object.setPrototypeOf(ErrorEventNative.prototype, EventNative.prototype); }} catch (_error) {{}}
+  try {{ Object.setPrototypeOf(PromiseRejectionEventNative.prototype, EventNative.prototype); }} catch (_error) {{}}
   try {{ Object.setPrototypeOf(document, DocumentNative.prototype); }} catch (_error) {{}}
   try {{ Object.setPrototypeOf(location, LocationNative.prototype); }} catch (_error) {{}}
   for (const element of elements) {{
@@ -17292,6 +17427,7 @@ fn document_bootstrap(
   globalThis.removeEventListener = (type, callback, options) => removeListener("window", type, callback, options);
   globalThis.dispatchEvent = (event) => dispatchTarget(globalThis, event);
   if (!Object.prototype.hasOwnProperty.call(globalThis, "onerror")) installEventHandlerProperty(globalThis, "error");
+  if (!Object.prototype.hasOwnProperty.call(globalThis, "onunhandledrejection")) installEventHandlerProperty(globalThis, "unhandledrejection");
   const makeStorageEvent = (descriptor) => {{
     const event = createEvent("storage");
     event.key = descriptor.key === null ? null : String(descriptor.key);

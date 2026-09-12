@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-274`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-275`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -4092,6 +4092,21 @@ remain intact, while evaluator/worker infrastructure failures stay hard
 errors. Parser-accurate timing and complete script/Web IDL semantics remain
 issue #40 work. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-274.md`.
+
+The completed native-engine-browser-275 slice extends the same persistent
+realm event loop with host-tracked unhandled Promise rejection reporting.
+QuickJS rejection callbacks retain at most 64 pending promises, bound each
+reason to 4096 Unicode scalar values, remove a promise when a handler is
+attached, and retain creation order for delivery. After the existing pending
+job checkpoint, the host injects only bounded reason text; the realm constructs
+cancelable, non-bubbling `PromiseRejectionEvent` instances and dispatches them
+to the window, where both `addEventListener("unhandledrejection", ...)` and
+`window.onunhandledrejection` observe them. The current event carries
+`promise === null` because the host does not yet expose a structured promise
+identity across the Rust/QuickJS boundary. `rejectionhandled`, structured
+reason identity, parser-accurate timing, and complete Promise/Web IDL
+semantics remain issue #40 work. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-275.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

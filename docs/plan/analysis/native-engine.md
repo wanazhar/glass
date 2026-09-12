@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-256`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-257`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -3935,6 +3935,15 @@ boundary so the live HTTP response is dropped. Body disturbance, shared
 tee/backpressure semantics, BYOB/piping, trailers, and complete Fetch Streams
 and Web IDL behavior remain open. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-256.md`.
+
+The completed native-engine-browser-257 slice adds the response-side body
+ownership contract. `bodyUsed` becomes true when a response body is consumed
+through a body method or stream reader, repeated body methods reject, and
+`clone()` rejects after locking or disturbance while pre-consumption clones
+retain independent bounded readers. Shared tee ownership, BYOB/piping,
+trailers, and complete Fetch Streams/Web IDL behavior remain issue #40 work.
+Exact evidence is in
+`docs/plan/tasks/native-engine-browser-257.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

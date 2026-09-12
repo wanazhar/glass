@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-262` slice; the bounded foundation below remains
+`native-engine-browser-263` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -25,6 +25,7 @@ bounded-fetch-request-body-ownership/
 bounded-fetch-request-body-surface/
 bounded-fetch-request-form-data/
 bounded-readable-stream-sources/
+bounded-readable-stream-reader-lifecycle/
 bounded-native-frame-sequential-focus-traversal/
 bounded-native-frame-locator-routing/
 bounded-min-max-dimensions/bounded-opacity-groups/bounded-text-alignment/
@@ -5817,6 +5818,14 @@ transport streams retain their ownership path. BYOB readers, piping, transfer
 strategies, and complete Streams/Web IDL parity remain open. Exact evidence
 is recorded in
 `docs/plan/tasks/native-engine-browser-262.md`.
+
+The completed native-engine-browser-263 slice completes the bounded terminal
+notification path for native `ReadableStream` readers. Stream close, source
+error, and cancellation now settle all registered reader `closed` promises,
+including a reader released before the stream becomes terminal; later readers
+observe the already-settled state, and source errors reject both `closed` and
+pending reads. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-263.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

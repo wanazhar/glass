@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-265` locally. The versioned
+`native-engine-browser-266` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -146,6 +146,15 @@ The completed native stream-backed Request body slice is
 bounded byte chunks, `Request.clone()` tees an unconsumed stream body, and
 Fetch accepts both Request-owned and direct stream upload bodies through the
 existing Rust request transport. Full upload streaming/progress semantics,
+BYOB readers, piping, transfer strategies, and complete Fetch Streams/Web IDL
+parity remain open on issue #40.
+
+The completed native stream-backed Response slice is
+[native-engine-browser-266](tasks/native-engine-browser-266.md). Native
+`Response` accepts usable page-created streams, exposes them through the
+existing body/`bodyUsed` surface, clones them through bounded tee branches, and
+drains them for text/json/blob/arrayBuffer/bytes consumers. Fetch-created
+responses retain their transport stream implementation; upload progress,
 BYOB readers, piping, transfer strategies, and complete Fetch Streams/Web IDL
 parity remain open on issue #40.
 

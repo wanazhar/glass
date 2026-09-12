@@ -184,6 +184,23 @@ fn native_test_animated_webp_bytes() -> Vec<u8> {
         .unwrap()
 }
 
+fn native_test_animated_apng_bytes() -> Vec<u8> {
+    let mut encoded = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut encoded, 1, 1);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.set_animated(2, 0).unwrap();
+        let mut writer = encoder.write_header().unwrap();
+        writer.set_frame_delay(1, 100).unwrap();
+        writer.write_image_data(&[255, 0, 0, 255]).unwrap();
+        writer.set_frame_delay(1, 100).unwrap();
+        writer.write_image_data(&[0, 255, 0, 255]).unwrap();
+        writer.finish().unwrap();
+    }
+    encoded
+}
+
 #[tokio::test]
 async fn native_runtime_session_uses_explicit_local_constructor() {
     let session =
@@ -33355,6 +33372,47 @@ async fn native_animated_webp_data_images_paint_multiple_frames() {
 }
 
 #[tokio::test]
+async fn native_animated_apng_data_images_paint_multiple_frames() {
+    let source = format!(
+        "data:image/apng;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(native_test_animated_apng_bytes())
+    );
+    let config = NativeEngineConfig::default()
+        .with_initial_url("fixture://animated-apng-image/page")
+        .with_fixture(
+            "fixture://animated-apng-image/page",
+            format!("<img id='image' src='{source}' style='width:1px;height:1px'>"),
+        )
+        .unwrap();
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    let image_pixels = |engine: &NativeEngine| {
+        engine
+            .display_list()
+            .unwrap()
+            .commands
+            .into_iter()
+            .find_map(|command| match command {
+                NativeDisplayCommand::Image { pixels, .. } => Some(pixels),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let initial = image_pixels(&engine);
+    let mut changed = false;
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_millis(15)).await;
+        if image_pixels(&engine) != initial {
+            changed = true;
+            break;
+        }
+    }
+    assert!(changed, "animated APNG did not advance to another frame");
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_images_expose_accessible_role_and_alt_name() {
     let source = native_test_png_data_url();
     let config = NativeEngineConfig::default()
@@ -33751,6 +33809,69 @@ async fn native_content_process_paints_animated_webp_frames() {
     assert!(
         changed,
         "content-process WebP did not advance to another frame"
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_paints_animated_apng_frames() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let apng = native_test_animated_apng_bytes();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/photo.apng"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            if expected_path == "/photo.apng" {
+                let headers = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: image/apng\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    apng.len()
+                );
+                stream.write_all(headers.as_bytes()).await.unwrap();
+                stream.write_all(&apng).await.unwrap();
+            } else {
+                let body = "<img id='image' src='/photo.apng' style='width:1px;height:1px' alt='animated'>";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let image_pixels = |engine: &NativeEngine| {
+        engine
+            .display_list()
+            .unwrap()
+            .commands
+            .into_iter()
+            .find_map(|command| match command {
+                NativeDisplayCommand::Image { pixels, .. } => Some(pixels),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let initial = image_pixels(&engine);
+    let mut changed = false;
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_millis(15)).await;
+        if image_pixels(&engine) != initial {
+            changed = true;
+            break;
+        }
+    }
+    assert!(
+        changed,
+        "content-process APNG did not advance to another frame"
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

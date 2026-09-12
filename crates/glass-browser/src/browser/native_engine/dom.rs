@@ -185,7 +185,7 @@ pub(crate) struct NativeImageResourceWire {
     #[serde(default)]
     pub(crate) frames: Vec<NativeImageFrameWire>,
     #[serde(default)]
-    pub(crate) loop_count: Option<u16>,
+    pub(crate) loop_count: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -6540,7 +6540,7 @@ fn image_type_is_supported(image_type: Option<&str>) -> bool {
         image_type.is_empty()
             || matches!(
                 image_type.as_str(),
-                "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+                "image/png" | "image/apng" | "image/jpeg" | "image/webp" | "image/gif"
             )
     })
 }

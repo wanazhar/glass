@@ -2274,6 +2274,8 @@ fn supported_image_media_type(
         Some("image/gif")
     } else if media_type.eq_ignore_ascii_case("image/apng") {
         Some("image/apng")
+    } else if media_type.eq_ignore_ascii_case("image/svg+xml") {
+        Some("image/svg+xml")
     } else {
         None
     })

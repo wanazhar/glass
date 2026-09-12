@@ -6540,7 +6540,12 @@ fn image_type_is_supported(image_type: Option<&str>) -> bool {
         image_type.is_empty()
             || matches!(
                 image_type.as_str(),
-                "image/png" | "image/apng" | "image/jpeg" | "image/webp" | "image/gif"
+                "image/png"
+                    | "image/apng"
+                    | "image/jpeg"
+                    | "image/webp"
+                    | "image/gif"
+                    | "image/svg+xml"
             )
     })
 }

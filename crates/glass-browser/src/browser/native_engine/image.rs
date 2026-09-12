@@ -1,3 +1,5 @@
+use super::config::{NativeEngineLimits, Viewport};
+use super::dom::NativeDocument;
 use base64::Engine as _;
 use gif::{ColorOutput, DecodeOptions, DisposalMethod, MemoryLimit, Repeat};
 use image_webp::{LoopCount, WebPDecoder};
@@ -8,6 +10,14 @@ use std::sync::OnceLock;
 use std::time::Instant;
 use zune_jpeg::JpegDecoder;
 use zune_jpeg::zune_core::{bytestream::ZCursor, colorspace::ColorSpace, options::DecoderOptions};
+
+const DEFAULT_NATIVE_SVG_IMAGE_WIDTH: u32 = 300;
+const DEFAULT_NATIVE_SVG_IMAGE_HEIGHT: u32 = 150;
+const MAX_NATIVE_SVG_IMAGE_DECODE_DEPTH: usize = 1;
+
+thread_local! {
+    static NATIVE_SVG_IMAGE_DECODE_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 /// Maximum decoded RGBA bytes retained for one native inline image.
 pub(crate) const MAX_NATIVE_IMAGE_BYTES: usize = 16 * 1024 * 1024;
@@ -162,6 +172,7 @@ pub(crate) fn decode_data_image(source: &str) -> Option<NativeImage> {
             "image/jpeg",
             "image/webp",
             "image/gif",
+            "image/svg+xml",
         ],
     ) {
         return None;
@@ -443,6 +454,7 @@ pub(crate) fn decode_image_bytes(
     media_type: &str,
     max_decoded_bytes: usize,
 ) -> Option<NativeImage> {
+    let decode_depth = NATIVE_SVG_IMAGE_DECODE_DEPTH.with(std::cell::Cell::get);
     if media_type.eq_ignore_ascii_case("image/png") || media_type.eq_ignore_ascii_case("image/apng")
     {
         return decode_png_bytes(bytes, max_decoded_bytes);
@@ -456,7 +468,170 @@ pub(crate) fn decode_image_bytes(
     if media_type.eq_ignore_ascii_case("image/gif") {
         return decode_gif_bytes(bytes, max_decoded_bytes);
     }
+    if media_type.eq_ignore_ascii_case("image/svg+xml") {
+        return decode_svg_bytes(bytes, max_decoded_bytes, decode_depth);
+    }
     None
+}
+
+fn decode_svg_bytes(
+    bytes: &[u8],
+    max_decoded_bytes: usize,
+    decode_depth: usize,
+) -> Option<NativeImage> {
+    if bytes.is_empty()
+        || bytes.len() > MAX_NATIVE_IMAGE_BYTES
+        || max_decoded_bytes < 4
+        || decode_depth >= MAX_NATIVE_SVG_IMAGE_DECODE_DEPTH
+    {
+        return None;
+    }
+    let source = std::str::from_utf8(bytes).ok()?.trim();
+    if source.is_empty() {
+        return None;
+    }
+    let limits = NativeEngineLimits::default();
+    let document = NativeDocument::parse(source, &limits).ok()?;
+    if document_contains_nested_raster_image(&document) {
+        return None;
+    }
+    let root = document
+        .node(document.root())?
+        .children()
+        .iter()
+        .find_map(|node_id| {
+            let node = document.node(*node_id)?;
+            (node.element_name() == Some("svg")
+                && node.namespace_uri() == Some(super::dom::SVG_NAMESPACE_URI))
+            .then_some(*node_id)
+        })?;
+    let (width, height) = svg_image_dimensions(document.node(root)?)?;
+    let pixel_count = usize::try_from(width)
+        .ok()?
+        .checked_mul(usize::try_from(height).ok()?)?;
+    let decoded_bytes = pixel_count.checked_mul(4)?;
+    if decoded_bytes > max_decoded_bytes || pixel_count > super::raster::MAX_NATIVE_SURFACE_PIXELS {
+        return None;
+    }
+    let surface = NATIVE_SVG_IMAGE_DECODE_DEPTH.with(|depth| {
+        depth.set(decode_depth.saturating_add(1));
+        let result = document.rasterize(Viewport {
+            width,
+            height,
+            device_scale_factor_milli: 1000,
+        });
+        depth.set(decode_depth);
+        result.ok()
+    })?;
+    (surface.width() == width
+        && surface.height() == height
+        && surface.rgba().len() == decoded_bytes)
+        .then(|| NativeImage::new(width, height, surface.rgba().to_vec()))
+}
+
+fn document_contains_nested_raster_image(document: &NativeDocument) -> bool {
+    fn contains(document: &NativeDocument, node_id: super::dom::NativeNodeId) -> bool {
+        let Some(node) = document.node(node_id) else {
+            return false;
+        };
+        let nested_svg_image = node.element_name() == Some("img")
+            && is_svg_data_url(&document.image_current_src(node_id, Viewport::default()));
+        if nested_svg_image
+            || document
+                .background_image_source_for_node(node_id)
+                .is_some_and(is_svg_data_url)
+        {
+            return true;
+        }
+        node.children()
+            .iter()
+            .any(|child| contains(document, *child))
+    }
+    let Some(root) = document.node(document.root()) else {
+        return false;
+    };
+    root.children()
+        .iter()
+        .any(|child| contains(document, *child))
+}
+
+fn is_svg_data_url(source: &str) -> bool {
+    let Some(prefix) = source.get(..5) else {
+        return false;
+    };
+    if !prefix.eq_ignore_ascii_case("data:") {
+        return false;
+    }
+    let metadata = &source[5..];
+    metadata
+        .split_once(',')
+        .and_then(|(metadata, _)| metadata.split(';').next())
+        .is_some_and(|media_type| media_type.eq_ignore_ascii_case("image/svg+xml"))
+}
+
+fn svg_image_dimensions(node: &super::dom::NativeNode) -> Option<(u32, u32)> {
+    let width = svg_length(node.attribute("width"));
+    let height = svg_length(node.attribute("height"));
+    let viewbox = node.attribute("viewBox").and_then(parse_svg_viewbox);
+    let width = width.unwrap_or(DEFAULT_NATIVE_SVG_IMAGE_WIDTH);
+    let height = height.unwrap_or(DEFAULT_NATIVE_SVG_IMAGE_HEIGHT);
+    if width == 0 || height == 0 {
+        return None;
+    }
+    if node.attribute("width").is_none()
+        && node.attribute("height").is_some()
+        && let Some((viewbox_width, viewbox_height)) = viewbox
+    {
+        let width = scaled_svg_dimension(height, viewbox_width, viewbox_height)?;
+        return Some((width, height));
+    }
+    if node.attribute("height").is_none()
+        && node.attribute("width").is_some()
+        && let Some((viewbox_width, viewbox_height)) = viewbox
+    {
+        let height = scaled_svg_dimension(width, viewbox_height, viewbox_width)?;
+        return Some((width, height));
+    }
+    Some((width, height))
+}
+
+fn svg_length(value: Option<&str>) -> Option<u32> {
+    let value = value?.trim();
+    let value = value.strip_suffix("px").map(str::trim).unwrap_or(value);
+    if value.is_empty() || value.ends_with('%') {
+        return None;
+    }
+    let value = value.parse::<f64>().ok()?;
+    if !value.is_finite() || value <= 0.0 {
+        return None;
+    }
+    u32::try_from(value.ceil() as u64)
+        .ok()
+        .filter(|value| *value > 0)
+}
+
+fn parse_svg_viewbox(value: &str) -> Option<(f64, f64)> {
+    let values = value
+        .split(|character: char| character == ',' || character.is_ascii_whitespace())
+        .filter(|value| !value.is_empty())
+        .map(str::parse::<f64>)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    (values.len() == 4
+        && values.iter().all(|value| value.is_finite())
+        && values[2] > 0.0
+        && values[3] > 0.0)
+        .then_some((values[2], values[3]))
+}
+
+fn scaled_svg_dimension(value: u32, numerator: f64, denominator: f64) -> Option<u32> {
+    let scaled = f64::from(value) * numerator / denominator;
+    if !scaled.is_finite() || scaled <= 0.0 {
+        return None;
+    }
+    u32::try_from(scaled.ceil() as u64)
+        .ok()
+        .filter(|value| *value > 0)
 }
 
 fn decode_jpeg_bytes(bytes: &[u8], max_decoded_bytes: usize) -> Option<NativeImage> {

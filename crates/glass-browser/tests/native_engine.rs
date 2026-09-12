@@ -8865,6 +8865,73 @@ async fn native_local_inline_script_failure_dispatches_error_without_aborting_do
 }
 
 #[tokio::test]
+async fn native_local_unhandled_rejection_dispatches_window_event() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://unhandled-rejection",
+            r#"
+                <script>
+                    globalThis.rejectionEvents = [];
+                    globalThis.handlerEvents = [];
+                    window.addEventListener('unhandledrejection', event => rejectionEvents.push([
+                        String(event.reason).includes('first unhandled'),
+                        String(event.reason).includes('second unhandled'),
+                        event.promise === null,
+                        event instanceof PromiseRejectionEvent,
+                        event.bubbles,
+                        event.cancelable,
+                        event.target === window,
+                    ]));
+                    window.onunhandledrejection = event => handlerEvents.push([
+                        String(event.reason).includes('first unhandled'),
+                        String(event.reason).includes('second unhandled'),
+                    ]);
+                    Promise.reject('handled boom').catch(() => {});
+                    Promise.reject('first unhandled');
+                    Promise.reject('second unhandled');
+                    globalThis.afterRejection = true;
+                </script>
+                <title>Unhandled rejection is observable</title>
+                <p>Document committed</p>
+            "#,
+        )
+        .unwrap()
+        .with_initial_url("fixture://unhandled-rejection");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    let snapshot = engine.snapshot().unwrap();
+    assert_eq!(snapshot.url, "fixture://unhandled-rejection");
+    assert_eq!(snapshot.title, "Unhandled rejection is observable");
+    assert_eq!(snapshot.visible_text, "Document committed");
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.rejectionEvents")
+            .await
+            .unwrap(),
+        serde_json::json!([
+            [true, false, true, true, false, true, true],
+            [false, true, true, true, false, true, true],
+        ])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.handlerEvents")
+            .await
+            .unwrap(),
+        serde_json::json!([[true, false], [false, true]])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("Boolean(globalThis.afterRejection)")
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_resolves_literal_dynamic_imports() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

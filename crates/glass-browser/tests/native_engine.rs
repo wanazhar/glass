@@ -30683,6 +30683,23 @@ async fn native_backend_composes_nested_frame_surfaces_into_capture() {
     assert_eq!(pixel(1, 1), &[255, 0, 0, 255]);
     assert_eq!(pixel(1, 4), &[0, 0, 255, 255]);
     assert_eq!(pixel(12, 1), &[255, 255, 255, 255]);
+
+    let child = backend
+        .list_frames()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|frame| frame.parent_id.is_some())
+        .unwrap();
+    backend.select_frame(&child.id).await.unwrap();
+    assert_eq!(
+        backend.inspection_snapshot().unwrap().layout.viewport,
+        Viewport {
+            width: 8,
+            height: 6,
+            device_scale_factor_milli: 1000,
+        }
+    );
     dispatcher.close().await.unwrap();
 }
 

@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-241`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-242`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -3784,6 +3784,12 @@ key-down, key-up, key-press, and shortcut actions follow that frame through
 the existing native content-process and event/effect pipeline. Generation
 rebuilds and explicit frame selection keep the owner current. Exact evidence
 is in `docs/plan/tasks/native-engine-browser-241.md`.
+
+The completed native-engine-browser-242 slice aligns embedded child viewports
+with their parent frame-owner content boxes. Each nested child now negotiates
+its own bounded dimensions before initialization, so layout, capture,
+hit-testing, and local coordinates use the same visible surface size. Exact
+evidence is in `docs/plan/tasks/native-engine-browser-242.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

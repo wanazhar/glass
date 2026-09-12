@@ -45,7 +45,8 @@ Focus ownership is target-local and bounded to the existing native frame tree;
 it does not change the public selected-frame route used for DOM/script
 inspection. Browser-level focus traversal, pointer capture, composition/IME,
 selection ranges, and automatic locator resolution across frame boundaries
-remain subsequent Issue #40 work.
+remain subsequent Issue #40 work. Child viewport sizing is now covered by the
+following 242 slice.
 
 ## Verification
 

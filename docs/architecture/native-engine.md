@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-241` slice; the bounded foundation below remains
+`native-engine-browser-242` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -16,6 +16,7 @@ bounded-clip-aware-root-overflow/bounded-axis-specific-overflow/
 bounded-nested-scrolling-and-scroll-events/bounded-history-nested-scroll-restoration/bounded-native-frame-surface-composition/
 bounded-native-frame-point-routing/
 bounded-native-frame-focus-routing/
+bounded-native-frame-viewport-negotiation/
 bounded-min-max-dimensions/bounded-opacity-groups/bounded-text-alignment/
 bounded-functional-alpha-colors/bounded-fixed-cell-text-decoration/
 bounded-inherited-text-transform/bounded-first-line-text-indent/
@@ -5599,6 +5600,13 @@ content-process, event, navigation, popup, and script-effect owners. Frame
 generation rebuilds clear detached focus identities, and explicit frame
 selection establishes the selected frame. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-241.md`.
+
+The completed native-engine-browser-242 slice negotiates each embedded frame's
+viewport from its parent's owner content box while preserving the inherited
+device scale. Nested frame engines therefore share the dimensions used by
+parent layout, capture, hit-testing, and local input; missing owner geometry
+retains a bounded validated base viewport. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-242.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

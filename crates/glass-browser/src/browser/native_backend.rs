@@ -5,13 +5,13 @@
 //! `browser_backend` contract.
 
 use super::native_engine::{
-    MAX_NATIVE_EFFECTS, NativeAction, NativeEffect, NativeEngine, NativeEngineConfig,
-    NativeEngineError, NativeEventKind, NativeFrameScriptBinding, NativeFrameScriptContext,
-    NativeFrameScriptRequest, NativeFrameScriptWindow, NativeHistoryDirection,
-    NativeInspectionSnapshot, NativeOrigin, NativePoint, NativePopupRequest,
-    NativePostMessageRequest, NativePreflightAction, NativeScriptCommand, NativeSurface,
-    NativeTargetPreflight, NativeWindowCloseRequest, NativeWindowNavigationRequest,
-    NativeWindowProxyUpdate, parse_point_target,
+    MAX_NATIVE_EFFECTS, MAX_NATIVE_VIEWPORT_DIMENSION, NativeAction, NativeEffect, NativeEngine,
+    NativeEngineConfig, NativeEngineError, NativeEventKind, NativeFrameScriptBinding,
+    NativeFrameScriptContext, NativeFrameScriptRequest, NativeFrameScriptWindow,
+    NativeHistoryDirection, NativeInspectionSnapshot, NativeOrigin, NativePoint,
+    NativePopupRequest, NativePostMessageRequest, NativePreflightAction, NativeScriptCommand,
+    NativeSurface, NativeTargetPreflight, NativeWindowCloseRequest, NativeWindowNavigationRequest,
+    NativeWindowProxyUpdate, Viewport, parse_point_target,
 };
 use crate::browser::session::{
     FrameInfo, NavigationControlOutcome, PageTargetInfo, redact_diagnostic_text,
@@ -3399,6 +3399,35 @@ fn native_frame_script_window(
     })
 }
 
+fn native_frame_viewport(
+    parent_engine: &NativeEngine,
+    owner_node_index: u32,
+) -> Result<Option<Viewport>, BrowserBackendError> {
+    let layout = parent_engine.layout().map_err(native_error)?;
+    let Some(owner) = layout
+        .boxes
+        .iter()
+        .find(|layout_box| layout_box.node_id.index() == owner_node_index)
+    else {
+        return Ok(None);
+    };
+    let width = owner
+        .content_rect
+        .width
+        .max(1)
+        .min(MAX_NATIVE_VIEWPORT_DIMENSION);
+    let height = owner
+        .content_rect
+        .height
+        .max(1)
+        .min(MAX_NATIVE_VIEWPORT_DIMENSION);
+    Ok(Some(Viewport {
+        width,
+        height,
+        device_scale_factor_milli: parent_engine.config().viewport.device_scale_factor_milli,
+    }))
+}
+
 async fn reconcile_native_frames(
     frames: &mut NativeFrameState,
     engine: &NativeEngine,
@@ -3467,10 +3496,16 @@ async fn reconcile_native_frames(
             } else {
                 "about:blank".to_owned()
             };
+            let frame_viewport = native_frame_viewport(parent_engine, node_index)?;
             let (embedding_document_url, embedding_frame_sources) =
                 parent_engine.frame_navigation_policy();
-            let mut child = NativeEngine::new(base_config.clone().with_initial_url(frame_url))
-                .map_err(native_error)?;
+            let child_config = base_config.clone().with_initial_url(frame_url);
+            let child_config = if let Some(viewport) = frame_viewport {
+                child_config.with_viewport(viewport)
+            } else {
+                child_config
+            };
+            let mut child = NativeEngine::new(child_config).map_err(native_error)?;
             child.set_frame_id(frame_id.clone());
             child.set_embedding_frame_policy(embedding_document_url, embedding_frame_sources);
             if let Err(error) = child.initialize_async().await {

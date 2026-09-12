@@ -2955,6 +2955,8 @@ impl NativeEngine {
                     | super::javascript::NativeScriptCommand::WebSocketClose { .. }
                     | super::javascript::NativeScriptCommand::EventSourceOpen { .. }
                     | super::javascript::NativeScriptCommand::EventSourceClose { .. }
+                    | super::javascript::NativeScriptCommand::FetchStreamRead { .. }
+                    | super::javascript::NativeScriptCommand::FetchStreamCancel { .. }
             )
         }) {
             return Err(NativeEngineError::UnsupportedUrl {

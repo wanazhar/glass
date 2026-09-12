@@ -41574,6 +41574,66 @@ async fn native_content_process_drives_event_source_named_multiline_events() {
 }
 
 #[tokio::test]
+async fn native_content_process_streams_fetch_response_body_incrementally() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = "<body>Fetch stream owner</body>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/stream"));
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        let first = [1_u8, 2, 3];
+        stream
+            .write_all(format!("{:X}\r\n", first.len()).as_bytes())
+            .await
+            .unwrap();
+        stream.write_all(&first).await.unwrap();
+        stream.write_all(b"\r\n").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        let second = [4_u8, 5];
+        stream
+            .write_all(format!("{:X}\r\n", second.len()).as_bytes())
+            .await
+            .unwrap();
+        stream.write_all(&second).await.unwrap();
+        stream.write_all(b"\r\n0\r\n\r\n").await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await (async () => { const response = await fetch('/stream'); const reader = response.body.getReader(); const first = await reader.read(); const second = await reader.read(); const end = await reader.read(); return [response.status, response.body instanceof ReadableStream, Array.from(first.value), Array.from(second.value), end.done]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([200, true, [1, 2, 3], [4, 5], true])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_exposes_bounded_same_origin_post_fetch() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

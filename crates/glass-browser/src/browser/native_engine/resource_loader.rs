@@ -229,6 +229,12 @@ pub struct NativeFetchResponse {
     pub opaque_redirect: bool,
 }
 
+pub(crate) struct NativeFetchResponseStream {
+    pub(crate) response: NativeFetchResponse,
+    pub(crate) body: reqwest::Response,
+    pub(crate) max_response_bytes: usize,
+}
+
 /// Bounded resource loader for local documents and HTTP(S) HTML responses.
 #[derive(Clone, PartialEq, Eq)]
 pub struct NativeResourceLoader {
@@ -1243,6 +1249,30 @@ impl NativeResourceLoader {
         &mut self,
         request: NativeFetchRequest<'_>,
     ) -> Result<NativeFetchResponse, NativeEngineError> {
+        let opened = self.open_fetch_response_stream_async(request).await?;
+        let mut stream = opened.body.bytes_stream();
+        let mut body = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|error| network_error("fetch response body", error))?;
+            let next_len = body.len().saturating_add(chunk.len());
+            if next_len > opened.max_response_bytes {
+                return Err(NativeEngineError::limit(
+                    "fetch response",
+                    opened.max_response_bytes,
+                    next_len,
+                ));
+            }
+            body.extend_from_slice(&chunk);
+        }
+        let mut response = opened.response;
+        response.body = body;
+        Ok(response)
+    }
+
+    pub(crate) async fn open_fetch_response_stream_async(
+        &mut self,
+        request: NativeFetchRequest<'_>,
+    ) -> Result<NativeFetchResponseStream, NativeEngineError> {
         let NativeFetchRequest {
             document_url,
             href,
@@ -1450,15 +1480,19 @@ impl NativeResourceLoader {
                     self.cookie_changes
                         .extend(self.network.store_cookie(&cookie_url, &cookie));
                 }
-                return Ok(NativeFetchResponse {
-                    url: without_fragment(current_url.as_str()).to_owned(),
-                    status: response.status().as_u16(),
-                    content_type: None,
-                    headers: Vec::new(),
-                    body: Vec::new(),
-                    redirected: false,
-                    opaque: false,
-                    opaque_redirect: true,
+                return Ok(NativeFetchResponseStream {
+                    response: NativeFetchResponse {
+                        url: without_fragment(current_url.as_str()).to_owned(),
+                        status: response.status().as_u16(),
+                        content_type: None,
+                        headers: Vec::new(),
+                        body: Vec::new(),
+                        redirected: false,
+                        opaque: false,
+                        opaque_redirect: true,
+                    },
+                    body: response,
+                    max_response_bytes,
                 });
             }
             if redirects >= MAX_NATIVE_NETWORK_REDIRECTS {
@@ -1541,24 +1575,6 @@ impl NativeResourceLoader {
                     .unwrap_or(usize::MAX),
             ));
         }
-        let mut stream = response.bytes_stream();
-        let mut body = Vec::with_capacity(
-            content_length
-                .unwrap_or_default()
-                .min(max_response_bytes as u64) as usize,
-        );
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|error| network_error("fetch response body", error))?;
-            let next_len = body.len().saturating_add(chunk.len());
-            if next_len > max_response_bytes {
-                return Err(NativeEngineError::limit(
-                    "fetch response",
-                    max_response_bytes,
-                    next_len,
-                ));
-            }
-            body.extend_from_slice(&chunk);
-        }
         for (cookie_url, cookie) in pending_cookies {
             self.cookie_changes
                 .extend(self.network.store_cookie(&cookie_url, &cookie));
@@ -1581,15 +1597,19 @@ impl NativeResourceLoader {
                 credentials,
             )?
         };
-        Ok(NativeFetchResponse {
-            url: without_fragment(final_url.as_str()).to_owned(),
-            status,
-            content_type,
-            headers,
-            body: if opaque { Vec::new() } else { body },
-            redirected,
-            opaque,
-            opaque_redirect: false,
+        Ok(NativeFetchResponseStream {
+            response: NativeFetchResponse {
+                url: without_fragment(final_url.as_str()).to_owned(),
+                status,
+                content_type,
+                headers,
+                body: Vec::new(),
+                redirected,
+                opaque,
+                opaque_redirect: false,
+            },
+            body: response,
+            max_response_bytes,
         })
     }
 

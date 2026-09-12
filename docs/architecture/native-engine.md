@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-224` slice; the bounded foundation below remains
+`native-engine-browser-225` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5439,6 +5439,16 @@ intrinsic-state, display-list, capture, and terminal load/error path. Multi-
 frame, sub-rect, malformed, and over-limit GIFs remain broken until native
 frame timing, compositing, and repaint invalidation are owned. Exact evidence
 is in `docs/plan/tasks/native-engine-browser-224.md`.
+
+The completed native-engine-browser-225 slice extends that owner to animated
+GIF playback. The decoder composites bounded sub-rect frames onto a logical
+RGBA canvas, applies GIF disposal rules, normalizes delays, and preserves loop
+metadata. Display-list image and CSS background paint samples the current
+frame from a monotonic animation clock for local data URLs and HTTP(S)
+content-process resources; the typed wire validates every frame before
+publication. Frame count, decoded-byte, encoded-transfer, and delay limits
+fail closed without creating an unbounded animation allocation. Exact evidence
+is in `docs/plan/tasks/native-engine-browser-225.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

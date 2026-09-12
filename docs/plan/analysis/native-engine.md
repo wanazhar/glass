@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-224`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-225`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 205
 slice carries bounded quadratic/cubic SVG path geometry through shared path
 parsing, flattening, layout, display-list, raster, clipping, and capture
@@ -3621,6 +3621,18 @@ pixels, transfer bytes, cache, typed document wire, intrinsic state,
 GIFs fail closed until frame timing, compositing, and repaint invalidation are
 implemented; this avoids claiming animation from a first frame. Exact evidence
 is in `docs/plan/tasks/native-engine-browser-224.md`.
+
+The completed native-engine-browser-225 slice closes the animated GIF image
+gap. The pure-Rust decoder now retains a bounded sequence of full-canvas RGBA
+frames, composites sub-rect updates with transparent-pixel and disposal
+handling, normalizes frame delays, and carries finite or infinite loop
+metadata. The shared paint owner samples the current frame from a monotonic
+clock for image and CSS background commands, while the content-process wire
+validates frame dimensions, delay metadata, current-frame identity, and total
+decoded/encoded budgets. This makes animated GIF paint observable through data
+URLs and HTTP(S) content-worker resources without inventing a DOM mutation or
+load event per frame. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-225.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

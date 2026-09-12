@@ -8762,7 +8762,10 @@ fn document_bootstrap(
       writer.releaseLock();
     }};
     const readNext = () => reader.read().then(result => {{
-      if (result.done) return preventClose ? undefined : writer.close();
+      if (result.done) {{
+        reader.releaseLock();
+        return preventClose ? undefined : writer.close();
+      }}
       return writer.write(result.value).then(readNext);
     }});
     const abortPromise = signal
@@ -8791,6 +8794,73 @@ fn document_bootstrap(
     this.pipeTo(writable, options);
     return readable;
   }};
+  const TransformStreamNative = function(transformer) {{
+    if (!(this instanceof TransformStreamNative)) throw new TypeError("native TransformStream requires new");
+    const source = transformer === undefined || transformer === null ? {{}} : transformer;
+    if (typeof source !== "object" && typeof source !== "function")
+      throw new TypeError("native TransformStream transformer is invalid");
+    const transformState = {{ readable: null, controller: null, errored: null, terminated: false }};
+    const readable = new ReadableStreamNative({{
+      start(controller) {{ transformState.controller = controller; }},
+    }});
+    transformState.readable = readable;
+    const transformController = Object.freeze({{
+      get desiredSize() {{
+        if (transformState.errored !== null || transformState.terminated) return null;
+        return {fetch_stream_queue_limit} - readableStreamState(readable).queued.length;
+      }},
+      enqueue(value) {{
+        if (transformState.errored !== null || transformState.terminated)
+          throw new TypeError("native TransformStream controller is closed");
+        transformState.controller.enqueue(value);
+      }},
+      error(reason) {{
+        if (transformState.errored !== null) return;
+        transformState.errored = reason instanceof Error ? reason.message : String(reason);
+        transformState.controller.error(reason);
+      }},
+      terminate() {{
+        if (transformState.errored !== null || transformState.terminated) return;
+        transformState.terminated = true;
+        transformState.controller.close();
+      }},
+    }});
+    const invoke = (name, args) => {{
+      if (transformState.errored !== null) return Promise.reject(new Error(transformState.errored));
+      if (transformState.terminated && name === "transform")
+        return Promise.reject(new TypeError("native TransformStream is terminated"));
+      const callback = source[name];
+      if (typeof callback !== "function") return Promise.resolve(undefined);
+      try {{ return Promise.resolve(callback.call(source, ...args)); }}
+      catch (error) {{
+        transformState.errored = error instanceof Error ? error.message : String(error);
+        if (!transformState.terminated) transformState.controller.error(error);
+        return Promise.reject(error);
+      }}
+    }};
+    const writable = new WritableStreamNative({{
+      start() {{ return invoke("start", [transformController]); }},
+      write(chunk) {{
+        if (typeof source.transform === "function") return invoke("transform", [chunk, transformController]);
+        transformController.enqueue(chunk);
+        return undefined;
+      }},
+      close() {{
+        return invoke("flush", [transformController]).then(() => {{
+          if (transformState.errored !== null || transformState.terminated) return;
+          transformState.controller.close();
+        }});
+      }},
+      abort(reason) {{
+        if (!transformState.terminated && transformState.errored === null) transformState.controller.error(reason);
+        return undefined;
+      }},
+    }});
+    this.readable = readable;
+    this.writable = writable;
+    Object.freeze(this);
+  }};
+  globalThis.TransformStream = TransformStreamNative;
   globalThis.WritableStream = WritableStreamNative;
   globalThis.__glassDispatchFetchStreamEvent = (streamId, payload) => {{
     const group = fetchStreamGroup(streamId);

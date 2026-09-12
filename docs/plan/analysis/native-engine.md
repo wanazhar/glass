@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-263`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-264`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -3993,6 +3993,13 @@ cancellation settle every registered `reader.closed`, released readers remain
 attached to the stream terminal state, and later readers immediately observe a
 terminal stream; source errors reject `closed` and reads consistently. Exact
 evidence is in `docs/plan/tasks/native-engine-browser-263.md`.
+
+The completed native-engine-browser-264 slice adds bounded
+`ReadableStream.prototype.tee()` support. A single upstream reader feeds two
+branch controllers, branch queues stop upstream demand at the existing finite
+bound, terminal close/error reaches both branches, and the upstream source is
+canceled only after both branches cancel. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-264.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

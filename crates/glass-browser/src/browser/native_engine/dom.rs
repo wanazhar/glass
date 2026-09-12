@@ -5024,6 +5024,7 @@ impl NativeDocument {
                 let (body, content_type) = encode_form_data(&pairs, encoding)?;
                 NativeNavigationRequest::post_with_body(target, body, content_type)
             }
+            _ => unreachable!("form method was validated above"),
         }
     }
 

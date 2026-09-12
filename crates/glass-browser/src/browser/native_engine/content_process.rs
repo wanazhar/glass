@@ -333,10 +333,7 @@ impl NativeContentProcess {
                 "id": id,
                 "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
                 "url": navigation.url,
-                "method": match navigation.method {
-                    NativeNavigationMethod::Get => "GET",
-                    NativeNavigationMethod::Post => "POST",
-                },
+                "method": navigation.method.as_str(),
                 "body": navigation.body.as_ref().and_then(|body| match body {
                     NativeRequestBody::Text(body) => Some(body),
                     NativeRequestBody::Bytes(_) => None,
@@ -4541,6 +4538,11 @@ async fn load_content_resource(
                 .unwrap_or_else(|| "application/x-www-form-urlencoded".into())
                 .to_owned(),
         )?,
+        _ => {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "content process supports only GET and POST document navigation".into(),
+            });
+        }
     };
     let max_document_bytes = request
         .get("max_document_bytes")
@@ -6559,16 +6561,13 @@ fn fetch_commands(
                         ));
                     }
                 };
-                let method = match method.as_str() {
-                    "GET" => NativeNavigationMethod::Get,
-                    "POST" => NativeNavigationMethod::Post,
-                    _ => {
-                        return Err(NativeEngineError::invalid(
+                let method =
+                    NativeNavigationMethod::from_fetch_method(method.as_str()).map_err(|_| {
+                        NativeEngineError::invalid(
                             "script fetch method",
-                            "must be GET or POST",
-                        ));
-                    }
-                };
+                            "must be GET, HEAD, POST, PUT, PATCH, DELETE, or OPTIONS",
+                        )
+                    })?;
                 let body = match body_base64 {
                     Some(encoded) => {
                         let decoded = base64::engine::general_purpose::STANDARD

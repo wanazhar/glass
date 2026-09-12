@@ -7326,6 +7326,8 @@ fn document_bootstrap(
   }});
   HeadersNative.prototype[Symbol.iterator] = HeadersNative.prototype.entries;
   globalThis.Headers = HeadersNative;
+  const nativeRequestMethods = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
+  const nativeBodylessMethods = ["GET", "HEAD"];
   const RequestNative = function(input, init) {{
     const source = input && input.__glassRequest === true ? input : null;
     const sourceUrl = input && input.__glassUrl === true ? input : null;
@@ -7334,9 +7336,9 @@ fn document_bootstrap(
     const overrides = init && typeof init === "object" ? init : {{}};
     const settings = Object.assign({{}}, source ? source._settings : {{}}, overrides);
     const method = settings.method === undefined ? "GET" : String(settings.method).toUpperCase();
-    if (!["GET", "POST"].includes(method)) throw new TypeError("native Request supports only GET and POST");
-    if (method === "GET" && settings.body !== undefined && settings.body !== null)
-      throw new TypeError("native GET Requests must not have a body");
+    if (!nativeRequestMethods.includes(method)) throw new TypeError("native Request method is unsupported");
+    if (nativeBodylessMethods.includes(method) && settings.body !== undefined && settings.body !== null)
+      throw new TypeError("native " + method + " Requests must not have a body");
     const mode = settings.mode === undefined ? "cors" : String(settings.mode).toLowerCase();
     if (!["cors", "no-cors", "same-origin"].includes(mode)) throw new TypeError("native Request mode is unsupported");
     const redirect = settings.redirect === undefined ? "follow" : String(settings.redirect).toLowerCase();
@@ -7518,8 +7520,8 @@ fn document_bootstrap(
       : binaryBody !== null
         ? encodeBase64(binaryBody, nativeFormBodyLimit)
         : null;
-    if (method !== "GET" && method !== "POST") {{
-      return Promise.reject(new TypeError("native fetch supports only GET and POST requests"));
+    if (!nativeRequestMethods.includes(method)) {{
+      return Promise.reject(new TypeError("native fetch method is unsupported"));
     }}
     const requestHeaderName = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
     const forbiddenRequestHeader = (name) => [
@@ -7578,8 +7580,8 @@ fn document_bootstrap(
       contentType = "application/x-www-form-urlencoded;charset=UTF-8";
     }}
     if (blobBody && contentType === null && blobBody.type) contentType = blobBody.type;
-    if (method === "GET" && body !== null) {{
-      return Promise.reject(new TypeError("GET fetch requests must not have a body"));
+    if (nativeBodylessMethods.includes(method) && body !== null) {{
+      return Promise.reject(new TypeError(method + " fetch requests must not have a body"));
     }}
     nextFetchRequestId += 1;
     globalThis.__glassNextFetchRequestId = nextFetchRequestId;
@@ -7909,8 +7911,8 @@ fn document_bootstrap(
   XMLHttpRequestNative.prototype.open = function(method, url, async) {{
     if (async === false) throw new TypeError("native XMLHttpRequest requires async mode");
     const normalizedMethod = String(method).toUpperCase();
-    if (normalizedMethod !== "GET" && normalizedMethod !== "POST")
-      throw new TypeError("native XMLHttpRequest supports only GET and POST");
+    if (!nativeRequestMethods.includes(normalizedMethod))
+      throw new TypeError("native XMLHttpRequest method is unsupported");
     if (typeof url !== "string") throw new TypeError("native XMLHttpRequest URL must be text");
     this._method = normalizedMethod;
     this._url = url;
@@ -7957,7 +7959,9 @@ fn document_bootstrap(
     if (!["", "text", "arraybuffer", "blob"].includes(responseType)) throw new TypeError("native XMLHttpRequest responseType is unsupported");
     const requestBody = body && (body.__glassFormData === true || body.__glassUrlSearchParams === true || body.__glassNativeBlob === true)
       ? body
-      : body === undefined || body === null ? null : String(body);
+      : body instanceof ArrayBuffer || (typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(body))
+        ? body
+        : body === undefined || body === null ? null : String(body);
     const controller = new AbortControllerNative();
     this._controller = controller;
     this._aborted = false;

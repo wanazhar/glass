@@ -77,7 +77,55 @@ pub struct NativeResource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NativeNavigationMethod {
     Get,
+    Head,
     Post,
+    Put,
+    Patch,
+    Delete,
+    Options,
+}
+
+impl NativeNavigationMethod {
+    pub(crate) fn from_fetch_method(method: &str) -> Result<Self, NativeEngineError> {
+        match method {
+            "GET" => Ok(Self::Get),
+            "HEAD" => Ok(Self::Head),
+            "POST" => Ok(Self::Post),
+            "PUT" => Ok(Self::Put),
+            "PATCH" => Ok(Self::Patch),
+            "DELETE" => Ok(Self::Delete),
+            "OPTIONS" => Ok(Self::Options),
+            _ => Err(NativeEngineError::invalid(
+                "fetch method",
+                "must be GET, HEAD, POST, PUT, PATCH, DELETE, or OPTIONS",
+            )),
+        }
+    }
+
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Get => "GET",
+            Self::Head => "HEAD",
+            Self::Post => "POST",
+            Self::Put => "PUT",
+            Self::Patch => "PATCH",
+            Self::Delete => "DELETE",
+            Self::Options => "OPTIONS",
+        }
+    }
+
+    fn reqwest_method(self) -> reqwest::Method {
+        reqwest::Method::from_bytes(self.as_str().as_bytes())
+            .expect("native fetch method is a valid HTTP token")
+    }
+
+    const fn is_bodyless(self) -> bool {
+        matches!(self, Self::Get | Self::Head)
+    }
+
+    const fn is_document_method(self) -> bool {
+        matches!(self, Self::Get | Self::Post)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -606,6 +654,14 @@ impl NativeResourceLoader {
         referrer: Option<&str>,
     ) -> Result<NativeResource, NativeEngineError> {
         let request_method = navigation.method;
+        if !request_method.is_document_method() {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: format!(
+                    "HTTP(S) document navigation does not support {} requests",
+                    request_method.as_str()
+                ),
+            });
+        }
         let request_body = match request_method {
             NativeNavigationMethod::Get => {
                 if navigation.body.is_some() {
@@ -638,6 +694,7 @@ impl NativeResourceLoader {
                 }
                 Some(body)
             }
+            _ => unreachable!("document method was validated above"),
         };
         let request_content_type = match request_method {
             NativeNavigationMethod::Get => None,
@@ -648,6 +705,7 @@ impl NativeResourceLoader {
                     .unwrap_or("application/x-www-form-urlencoded")
                     .to_owned(),
             ),
+            _ => unreachable!("document method was validated above"),
         };
         let url = navigation.url.as_str();
         validate_url_text("navigation URL", url)?;
@@ -680,25 +738,18 @@ impl NativeResourceLoader {
         let response = loop {
             let mut request_url = current_url.clone();
             request_url.set_fragment(None);
-            let mut request = match current_method {
-                NativeNavigationMethod::Get => client.get(request_url),
-                NativeNavigationMethod::Post => {
-                    let request = client.post(request_url).header(
-                        reqwest::header::CONTENT_TYPE,
-                        current_content_type
-                            .as_deref()
-                            .unwrap_or("application/x-www-form-urlencoded"),
-                    );
-                    match current_body
-                        .clone()
-                        .unwrap_or(NativeRequestBody::Text(String::new()))
-                    {
-                        NativeRequestBody::Text(body) => request.body(body),
-                        NativeRequestBody::Bytes(body) => request.body(body),
-                    }
-                }
+            let mut request = client
+                .request(current_method.reqwest_method(), request_url)
+                .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml");
+            if let Some(body) = current_body.clone() {
+                request = match body {
+                    NativeRequestBody::Text(body) => request.body(body),
+                    NativeRequestBody::Bytes(body) => request.body(body),
+                };
             }
-            .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml");
+            if let Some(content_type) = current_content_type.as_deref() {
+                request = request.header(reqwest::header::CONTENT_TYPE, content_type);
+            }
             if let Some(referrer) = request_referrer.as_deref() {
                 request = request.header(reqwest::header::REFERER, referrer);
             }
@@ -941,13 +992,13 @@ impl NativeResourceLoader {
             ));
         }
         match method {
-            NativeNavigationMethod::Get if body.is_some() || content_type.is_some() => {
+            method if method.is_bodyless() && (body.is_some() || content_type.is_some()) => {
                 return Err(NativeEngineError::invalid(
-                    "GET fetch body",
+                    format!("{} fetch body", method.as_str()),
                     "must be absent",
                 ));
             }
-            NativeNavigationMethod::Post => {
+            _ => {
                 if body
                     .as_ref()
                     .is_some_and(|body| body.len() > MAX_NATIVE_FORM_BODY_BYTES)
@@ -968,7 +1019,6 @@ impl NativeResourceLoader {
                     ));
                 }
             }
-            NativeNavigationMethod::Get => {}
         }
         let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
             NativeEngineError::UnsupportedUrl {
@@ -1037,18 +1087,24 @@ impl NativeResourceLoader {
             request_url.set_fragment(None);
             let requested_headers =
                 cors_preflight_request_headers(current_content_type.as_deref(), &current_headers);
+            let cross_origin_request = document_url.origin() != current_url.origin();
+            let simple_method = matches!(
+                current_method,
+                NativeNavigationMethod::Get
+                    | NativeNavigationMethod::Head
+                    | NativeNavigationMethod::Post
+            );
             if cors_mode == NativeCorsMode::NoCors
-                && document_url.origin() != current_url.origin()
-                && !requested_headers.is_empty()
+                && cross_origin_request
+                && (!simple_method || !requested_headers.is_empty())
             {
                 return Err(NativeEngineError::Network {
                     operation: "fetch mode".into(),
                     reason:
-                        "no-cors fetch contains a non-safelisted request header or content type"
-                            .into(),
+                        "no-cors fetch contains a non-safelisted method, request header, or content type".into(),
                 });
             }
-            if !requested_headers.is_empty()
+            if (!simple_method || !requested_headers.is_empty())
                 && cors_mode == NativeCorsMode::Cors
                 && cors_origin_header(&document_url, &current_url, NativeCorsMode::Cors).is_some()
             {
@@ -1062,11 +1118,9 @@ impl NativeResourceLoader {
                 )
                 .await?;
             }
-            let mut request = match current_method {
-                NativeNavigationMethod::Get => client.get(request_url),
-                NativeNavigationMethod::Post => client.post(request_url),
-            }
-            .header(reqwest::header::ACCEPT, "*/*");
+            let mut request = client
+                .request(current_method.reqwest_method(), request_url)
+                .header(reqwest::header::ACCEPT, "*/*");
             if let Some(body) = current_body.as_ref() {
                 request = match body {
                     NativeRequestBody::Text(body) => request.body(body.clone()),
@@ -1171,7 +1225,12 @@ impl NativeResourceLoader {
                 current_headers.remove("authorization");
             }
             no_cors_cross_origin |= document_url.origin() != next_url.origin();
-            if matches!(response.status().as_u16(), 301 | 302 | 303) {
+            if matches!(response.status().as_u16(), 301 | 302 | 303)
+                && !matches!(
+                    current_method,
+                    NativeNavigationMethod::Get | NativeNavigationMethod::Head
+                )
+            {
                 current_method = NativeNavigationMethod::Get;
                 current_body = None;
                 current_content_type = None;
@@ -1266,10 +1325,7 @@ impl NativeResourceLoader {
         else {
             return Ok(());
         };
-        let method = match method {
-            NativeNavigationMethod::Get => "GET",
-            NativeNavigationMethod::Post => "POST",
-        };
+        let method = method.as_str();
         let cache_key = cors_preflight_cache_key(
             document_url,
             target_url,

@@ -5662,6 +5662,17 @@ path, and the reusable DOM wrapper refreshes `File`/`FileList` objects against
 the current realm constructors. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-248.md`.
 
+The completed native-engine-browser-249 slice extends the shared fetch/XHR/
+`Request` method contract from GET/POST to HEAD, PUT, PATCH, DELETE, and
+OPTIONS. Bodyless GET/HEAD requests fail closed when a body or content type is
+present; non-simple cross-origin methods use the existing CORS preflight
+owner; no-cors rejects non-simple cross-origin methods; and 301/302/303
+redirects rewrite body-bearing methods to GET while 307/308 preserve the
+method and body. The content-worker wire, reqwest transport, and JavaScript
+surface use one typed method owner, with server-observed coverage for all five
+new methods. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-249.md`.
+
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`
 objects, element attribute-node methods preserve ownership and replacement

@@ -38717,6 +38717,106 @@ async fn native_content_process_fetches_cross_origin_simple_post_without_preflig
 }
 
 #[tokio::test]
+async fn native_content_process_fetches_common_http_methods_with_cors_preflight() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let document_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let document_address = document_listener.local_addr().unwrap();
+    let api_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let api_address = api_listener.local_addr().unwrap();
+    let document_origin = format!("http://{document_address}");
+    let response_origin = document_origin.clone();
+
+    let document_server = tokio::spawn(async move {
+        let (mut stream, _) = document_listener.accept().await.unwrap();
+        let _request = read_http_request(&mut stream).await;
+        let body = "<title>Fetch methods</title><p>Native fetch</p>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: connect-src *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+    let api_server = tokio::spawn(async move {
+        for _ in 0..9 {
+            let (mut stream, _) = api_listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            let method = request.split_whitespace().next().unwrap_or_default();
+            let is_preflight = method == "OPTIONS"
+                && request.lines().any(|line| {
+                    line.split_once(':').is_some_and(|(name, _)| {
+                        name.eq_ignore_ascii_case("access-control-request-method")
+                    })
+                });
+            if is_preflight {
+                assert!(request.lines().any(|line| {
+                    line.split_once(':').is_some_and(|(name, value)| {
+                        name.eq_ignore_ascii_case("access-control-request-method")
+                            && ["PUT", "PATCH", "DELETE", "OPTIONS"].contains(&value.trim())
+                    })
+                }));
+                let response = format!(
+                    "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: {response_origin}\r\nAccess-Control-Allow-Methods: HEAD, PUT, PATCH, DELETE, OPTIONS\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                continue;
+            }
+            assert_eq!(request.split_whitespace().nth(1), Some("/methods"));
+            assert!(matches!(
+                method,
+                "HEAD" | "PUT" | "PATCH" | "DELETE" | "OPTIONS"
+            ));
+            let request_body = request
+                .split_once("\r\n\r\n")
+                .map(|(_, body)| body)
+                .unwrap_or_default();
+            if method == "HEAD" {
+                assert!(request_body.is_empty());
+            } else {
+                assert_eq!(request_body, method);
+            }
+            let body = if method == "HEAD" { "" } else { method };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: {response_origin}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            if !body.is_empty() {
+                stream.write_all(body.as_bytes()).await.unwrap();
+            }
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("{document_origin}/index.html")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    for method in ["HEAD", "PUT", "PATCH", "DELETE", "OPTIONS"] {
+        let body = if method == "HEAD" {
+            "undefined".to_owned()
+        } else {
+            format!("'{method}'")
+        };
+        engine
+            .evaluate_async(&format!(
+                "fetch('http://{api_address}/methods', {{ method: '{method}', credentials: 'omit', body: {body} }}).then(response => {{ globalThis.commonFetchMethod = [response.status, response.url]; }});"
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            engine
+                .evaluate_async("globalThis.commonFetchMethod")
+                .await
+                .unwrap(),
+            serde_json::json!([200, format!("http://{api_address}/methods")])
+        );
+    }
+    engine.close_async().await.unwrap();
+    document_server.await.unwrap();
+    api_server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_exposes_opaque_no_cors_response() {
     let _guard = native_content_process_test_lock().lock().await;
     let document_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

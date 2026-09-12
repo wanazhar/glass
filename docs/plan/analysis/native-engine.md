@@ -3845,6 +3845,18 @@ payload bytes. `fetch(FormData)`, multipart form navigation, and typed
 body ambiguity, GET binary bodies, and size violations fail closed. Exact
 evidence is in `docs/plan/tasks/native-engine-browser-248.md`.
 
+The completed native-engine-browser-249 slice extends the bounded request
+method owner to HEAD, PUT, PATCH, DELETE, and OPTIONS across JavaScript
+`fetch`, `Request`, and XHR, plus the content-worker IPC and shared reqwest
+loader. GET/HEAD remain bodyless; cross-origin PUT/PATCH/DELETE/OPTIONS
+requests take the existing CORS preflight path, while simple cross-origin
+HEAD requests go directly through the CORS response check. Cross-origin
+no-cors rejects non-simple methods. Redirect handling follows the native
+HTTP policy: 301/302/303 convert body-bearing methods to GET, while 307/308
+retain method and body. The focused content-process fixture observes all
+five methods, four preflights, and the uploaded bodies. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-249.md`.
+
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame
 realms. `document.createAttribute()` creates persistent `Attr` objects;

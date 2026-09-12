@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-270` slice; the bounded foundation below remains
+`native-engine-browser-271` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5900,6 +5900,15 @@ accurately identifies the non-BFCache path. Static module dependency failure
 policy, resource scheduling/timing, BFCache restoration, and complete
 lifecycle/Web IDL parity remain open. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-270.md`.
+
+The completed native-engine-browser-271 slice isolates static module dependency
+failures. A successfully fetched external module root is now evaluated only
+when every bounded static dependency is available; a missing, policy-blocked,
+invalid, or over-limit dependency discards that graph and dispatches one
+non-bubbling `error` event on the root script while the HTML document proceeds
+through commit and ready/load. Static graph limits and inline-module
+error-event identity remain bounded follow-up work. Exact evidence is recorded
+in `docs/plan/tasks/native-engine-browser-271.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

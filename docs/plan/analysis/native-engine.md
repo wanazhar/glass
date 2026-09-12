@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-270`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-271`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -4054,6 +4054,15 @@ native path does not restore a BFCache entry. Static module dependency failure
 policy, resource scheduling/timing, BFCache restoration, and complete
 lifecycle/Web IDL semantics remain issue #40 work. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-270.md`.
+
+The completed native-engine-browser-271 slice isolates static module dependency
+failures at the external module root. The content loader now discards a root
+module graph when a bounded static dependency cannot be fetched, authorized,
+validated, or kept within graph limits, emits one root-script `error` event,
+and lets the document continue to commit and complete its ready/load phases.
+Inline-module element identity for the error event, resource scheduling, BFCache
+restoration, and complete module/Web IDL semantics remain issue #40 work. Exact
+evidence is in `docs/plan/tasks/native-engine-browser-271.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

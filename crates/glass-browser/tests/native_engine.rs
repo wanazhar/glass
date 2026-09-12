@@ -5482,6 +5482,96 @@ async fn native_local_transform_streams_process_pipe_through_values() {
 }
 
 #[tokio::test]
+async fn native_local_byte_streams_support_byob_reads_and_strategies() {
+    let config = NativeEngineConfig::default()
+        .with_fixture("fixture://byte-streams", "<p>Byte streams</p>")
+        .unwrap()
+        .with_initial_url("fixture://byte-streams");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            r#"(async () => {
+                const events = [];
+                const source = new ReadableStream({
+                    type: 'bytes',
+                    pull(controller) {
+                        const request = controller.byobRequest;
+                        events.push(request ? ['byob', request.view.byteLength, controller.desiredSize] : ['default', controller.desiredSize]);
+                        if (!request) throw new Error('BYOB request was not supplied');
+                        request.view[0] = 9;
+                        request.view[1] = 8;
+                        request.respond(2);
+                        controller.close();
+                    },
+                }, { highWaterMark: 2, size(chunk) { return chunk.byteLength; } });
+                const reader = source.getReader({ mode: 'byob' });
+                const view = new Uint8Array(4);
+                const first = await reader.read(view);
+                const end = await reader.read(new Uint8Array(2));
+                reader.releaseLock();
+
+                let strategyDesiredSize;
+                const queued = new ReadableStream({
+                    type: 'bytes',
+                    start(controller) {
+                        controller.enqueue(new Uint8Array([1, 2, 3]));
+                        strategyDesiredSize = controller.desiredSize;
+                        controller.close();
+                    },
+                }, { highWaterMark: 2, size(chunk) { return chunk.byteLength; } });
+                const queuedReader = queued.getReader({ mode: 'byob' });
+                const queuedFirst = await queuedReader.read(new Uint8Array(2));
+                const queuedSecond = await queuedReader.read(new Uint8Array(2));
+                const queuedEnd = await queuedReader.read(new Uint8Array(2));
+                queuedReader.releaseLock();
+                const replacement = new ReadableStream({
+                    type: 'bytes',
+                    pull(controller) {
+                        controller.byobRequest.respondWithNewView(new Uint8Array([7, 6]));
+                        controller.close();
+                    },
+                });
+                const replacementReader = replacement.getReader({ mode: 'byob' });
+                const replacementResult = await replacementReader.read(new Uint8Array(2));
+                replacementReader.releaseLock();
+                const invalid = (() => {
+                    try { new ReadableStream().getReader({ mode: 'byob' }); return 'accepted'; }
+                    catch (error) { return error.name; }
+                })();
+                globalThis.byobResult = {
+                    events,
+                    first: [Array.from(first.value), first.value.byteLength, first.done],
+                    end: [end.value.byteLength, end.done],
+                    queued: [Array.from(queuedFirst.value), Array.from(queuedSecond.value), [queuedEnd.value.byteLength, queuedEnd.done]],
+                    replacement: [Array.from(replacementResult.value), replacementResult.done],
+                    desiredSize: strategyDesiredSize,
+                    invalid,
+                };
+            })()"#,
+        )
+        .await
+        .unwrap();
+    let result = engine
+        .evaluate_async("globalThis.byobResult")
+        .await
+        .unwrap();
+    assert_eq!(
+        result,
+        serde_json::json!({
+            "events": [["byob", 4, 2]],
+            "first": [[9, 8], 2, false],
+            "end": [0, true],
+            "queued": [[1, 2], [3], [0, true]],
+            "replacement": [[7, 6], false],
+            "desiredSize": -1,
+            "invalid": "TypeError"
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_script_applies_bounded_dom_commands_once() {
     let config = NativeEngineConfig::default()
         .with_fixture(

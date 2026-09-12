@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-268` locally. The versioned
+`native-engine-browser-269` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -175,6 +175,15 @@ operations, making `pipeThrough(new TransformStream(...))` functional. Full
 controller strategy semantics, TransformStream/Web IDL parity, BYOB readers,
 transfer strategies, upload progress, and complete Fetch Streams parity remain
 open on issue #40.
+
+The completed native byte-stream slice is
+[native-engine-browser-269](tasks/native-engine-browser-269.md). Byte-backed
+`ReadableStream` owners now validate byte sources, honor bounded
+`highWaterMark`/`size` strategies for `desiredSize`, expose BYOB readers and
+`byobRequest` response methods, preserve partial buffers, and retain byte mode
+through Fetch delivery and tee branches. Full Web IDL descriptors, transfer
+strategies, upload progress, and complete Fetch Streams parity remain open on
+issue #40.
 
 The completed profile/contract task is
 [native-engine-browser-000](tasks/native-engine-browser-000.md). It freezes

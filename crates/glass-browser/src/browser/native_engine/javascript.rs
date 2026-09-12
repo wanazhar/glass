@@ -8155,6 +8155,130 @@ fn document_bootstrap(
       throw new TypeError("native ReadableStream receiver is invalid");
     return stream._state;
   }};
+  const readableStreamStrategy = (strategy, byteMode) => {{
+    const value = strategy === undefined || strategy === null ? {{}} : strategy;
+    if (typeof value !== "object" && typeof value !== "function")
+      throw new TypeError("native ReadableStream strategy is invalid");
+    let highWaterMark = value.highWaterMark === undefined
+      ? {fetch_stream_queue_limit}
+      : Number(value.highWaterMark);
+    if (!Number.isFinite(highWaterMark) || highWaterMark < 0)
+      throw new RangeError("native ReadableStream highWaterMark is invalid");
+    highWaterMark = Math.min(highWaterMark, {fetch_stream_queue_limit});
+    const size = value.size === undefined
+      ? (chunk => byteMode
+        ? (chunk instanceof ArrayBuffer || ArrayBuffer.isView(chunk) ? chunk.byteLength : 1)
+        : 1)
+      : value.size;
+    if (typeof size !== "function")
+      throw new TypeError("native ReadableStream size algorithm is invalid");
+    return {{ highWaterMark, size }};
+  }};
+  const readableByteView = (value) => {{
+    if (value instanceof ArrayBuffer)
+      return new Uint8Array(value.slice(0));
+    if (typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(value))
+      return new Uint8Array(value.buffer, value.byteOffset, value.byteLength).slice();
+    throw new TypeError("native byte stream chunks must be ArrayBuffer or views");
+  }};
+  const readableValueByteLength = (value) => value instanceof ArrayBuffer
+    ? value.byteLength
+    : typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(value)
+      ? value.byteLength
+      : typeof value === "string"
+        ? blobUtf8Bytes(value).length
+        : 1;
+  const readableChunkSize = (state, value) => {{
+    const size = Number(state.strategy.size(value));
+    if (!Number.isFinite(size) || size < 0)
+      throw new RangeError("native ReadableStream chunk size is invalid");
+    return size;
+  }};
+  const readableByobResultView = (view, byteLength) => {{
+    const bytesPerElement = Number(view.BYTES_PER_ELEMENT) || 1;
+    const elements = Math.floor(byteLength / bytesPerElement);
+    if (typeof view.subarray === "function") return view.subarray(0, elements);
+    return new Uint8Array(view.buffer, view.byteOffset, elements * bytesPerElement);
+  }};
+  const clearReadablePendingRead = (state) => {{
+    const pending = state.pendingRead;
+    state.pendingRead = null;
+    state.byobRequest = null;
+    return pending;
+  }};
+  const resolveReadablePending = (state, value, done) => {{
+    const pending = state.pendingRead;
+    if (!pending) return false;
+    if (pending.byobView) {{
+      if (done) {{
+        const current = clearReadablePendingRead(state);
+        current.resolve({{ value: readableByobResultView(current.byobView, 0), done: true }});
+        return true;
+      }}
+      let bytes;
+      try {{ bytes = readableByteView(value); }}
+      catch (error) {{
+        const current = clearReadablePendingRead(state);
+        current.reject(error);
+        return true;
+      }}
+      const bytesPerElement = Number(pending.byobView.BYTES_PER_ELEMENT) || 1;
+      const capacity = Math.floor(pending.byobView.byteLength / bytesPerElement) * bytesPerElement;
+      const count = Math.min(bytes.length, capacity);
+      if (count === 0) return false;
+      new Uint8Array(pending.byobView.buffer, pending.byobView.byteOffset, count)
+        .set(bytes.subarray(0, count));
+      if (count < bytes.length) {{
+        const remainder = bytes.slice(count);
+        state.queued.unshift(remainder);
+        const remainderSize = readableChunkSize(state, remainder);
+        state.queueSizes.unshift(remainderSize);
+        state.queueSize += remainderSize;
+      }}
+      const current = clearReadablePendingRead(state);
+      current.resolve({{ value: readableByobResultView(current.byobView, count), done: false }});
+      return true;
+    }}
+    const current = clearReadablePendingRead(state);
+    current.resolve({{
+      value: value === undefined ? undefined : state.byteMode ? new Uint8Array(readableByteView(value)) : value,
+      done: Boolean(done),
+    }});
+    return true;
+  }};
+  const readableByobRequest = (state) => {{
+    const pending = state.pendingRead;
+    if (!pending || !pending.byobView || state.done || state.cancelled || state.error !== null)
+      return null;
+    if (state.byobRequest) return state.byobRequest;
+    const request = {{
+      get view() {{ return pending.byobView; }},
+      respond(bytesWritten) {{
+        const count = Number(bytesWritten);
+        if (!Number.isInteger(count) || count < 0 || count > pending.byobView.byteLength)
+          throw new RangeError("native ReadableStream BYOB response is invalid");
+        if (count === 0 && !state.done)
+          throw new TypeError("native ReadableStream BYOB response is empty");
+        state.sourceProduced = true;
+        const current = clearReadablePendingRead(state);
+        current.resolve({{ value: readableByobResultView(current.byobView, count), done: false }});
+      }},
+      respondWithNewView(view) {{
+        if (!view || typeof ArrayBuffer.isView !== "function" || !ArrayBuffer.isView(view))
+          throw new TypeError("native ReadableStream BYOB view is invalid");
+        const bytes = readableByteView(view);
+        if (bytes.byteLength > pending.byobView.byteLength)
+          throw new RangeError("native ReadableStream BYOB view exceeds its request");
+        new Uint8Array(pending.byobView.buffer, pending.byobView.byteOffset, bytes.byteLength)
+          .set(bytes);
+        state.sourceProduced = true;
+        const current = clearReadablePendingRead(state);
+        current.resolve({{ value: readableByobResultView(current.byobView, bytes.byteLength), done: false }});
+      }},
+    }};
+    state.byobRequest = Object.freeze(request);
+    return state.byobRequest;
+  }};
   const settleReadableStreamClosed = (state) => {{
     if (!state.closedWaiters || state.closedWaiters.length === 0) return;
     const waiters = state.closedWaiters.splice(0);
@@ -8186,8 +8310,8 @@ fn document_bootstrap(
     state.error = error instanceof Error ? error.message : String(error);
     state.done = true;
     if (state.pendingRead) {{
-      state.pendingRead.reject(new Error(state.error));
-      state.pendingRead = null;
+      const pending = clearReadablePendingRead(state);
+      pending.reject(new Error(state.error));
     }}
     settleReadableStreamClosed(state);
   }};
@@ -8195,8 +8319,7 @@ fn document_bootstrap(
     if (state.done || state.cancelled || state.error !== null) return;
     state.done = true;
     if (state.pendingRead) {{
-      state.pendingRead.resolve({{ value: undefined, done: true }});
-      state.pendingRead = null;
+      resolveReadablePending(state, undefined, true);
     }}
     settleReadableStreamClosed(state);
   }};
@@ -8204,22 +8327,19 @@ fn document_bootstrap(
     if (state.done || state.cancelled || state.error !== null)
       throw new TypeError("native ReadableStream controller is closed");
     state.sourceProduced = true;
-    const size = value instanceof ArrayBuffer
-      ? value.byteLength
-      : typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(value)
-        ? value.byteLength
-        : typeof value === "string"
-          ? blobUtf8Bytes(value).length
-          : 1;
+    const queuedValue = state.byteMode ? readableByteView(value) : value;
+    const byteLength = readableValueByteLength(queuedValue);
+    if (byteLength > storageValueLimit) throw new RangeError("native ReadableStream chunk exceeds its limit");
+    const size = readableChunkSize(state, queuedValue);
     if (size > storageValueLimit) throw new RangeError("native ReadableStream chunk exceeds its limit");
     if (state.pendingRead) {{
-      const pending = state.pendingRead;
-      state.pendingRead = null;
-      pending.resolve({{ value, done: false }});
+      if (resolveReadablePending(state, queuedValue, false)) return;
     }} else {{
       if (state.queued.length >= {fetch_stream_queue_limit})
         throw new RangeError("native ReadableStream queue limit exceeded");
-      state.queued.push(value);
+      state.queued.push(queuedValue);
+      state.queueSizes.push(size);
+      state.queueSize += size;
     }}
   }};
   const pullReadableStreamSource = (state) => {{
@@ -8273,9 +8393,10 @@ fn document_bootstrap(
     state.cancelled = true;
     state.done = true;
     state.queued = [];
+    state.queueSizes = [];
+    state.queueSize = 0;
     if (state.pendingRead) {{
-      state.pendingRead.resolve({{ value: undefined, done: true }});
-      state.pendingRead = null;
+      resolveReadablePending(state, undefined, true);
     }}
     settleReadableStreamClosed(state);
     if (!state.underlyingSource || typeof state.underlyingSource.cancel !== "function")
@@ -8318,8 +8439,12 @@ fn document_bootstrap(
       ? bytes
       : null;
     const streamOptions = underlyingSource && streamId && typeof streamId === "object" ? streamId : {{}};
-    if (underlyingSource && streamOptions.type !== undefined && streamOptions.type !== "bytes")
+    if (underlyingSource && underlyingSource.type !== undefined && underlyingSource.type !== "bytes")
       throw new TypeError("native ReadableStream type is unsupported");
+    const byteMode = (underlyingSource && underlyingSource.type === "bytes")
+      || (underlyingSource === null && Array.isArray(bytes))
+      || (underlyingSource === null && streamId !== undefined && streamId !== null);
+    const strategy = readableStreamStrategy(streamOptions, byteMode);
     const hostId = underlyingSource || streamId === undefined || streamId === null ? null : Number(streamId);
     const values = hostId === null && underlyingSource === null && Array.isArray(bytes) ? bytes.slice() : [];
     if (values.length > storageValueLimit) throw new RangeError("native ReadableStream body limit exceeded");
@@ -8329,10 +8454,14 @@ fn document_bootstrap(
     }}
     const group = hostId === null ? null : fetchStreamGroup(hostId);
     const queued = group ? group.chunks.map(chunk => chunk.slice()) : [];
+    const queueSizes = queued.map(value => value.byteLength);
     const state = {{
       bytes: values,
       offset: 0,
       queued,
+      queueSizes,
+      queueSize: queueSizes.reduce((total, size) => total + size, 0),
+      strategy,
       underlyingSource,
       sourceController: null,
       sourceStarting: Boolean(underlyingSource && typeof underlyingSource.start === "function"),
@@ -8350,13 +8479,15 @@ fn document_bootstrap(
       streamId: hostId,
       group,
       pendingRead: null,
+      byobRequest: null,
       closedWaiters: [],
       onDisturb: typeof onDisturb === "function" ? onDisturb : null,
-      byteMode: underlyingSource === null,
+      byteMode,
     }};
     if (underlyingSource) {{
       state.sourceController = Object.freeze({{
-        get desiredSize() {{ return {fetch_stream_queue_limit} - state.queued.length; }},
+        get desiredSize() {{ return state.strategy.highWaterMark - state.queueSize; }},
+        get byobRequest() {{ return readableByobRequest(state); }},
         enqueue(value) {{ enqueueReadableStreamSource(state, value); }},
         close() {{ closeReadableStreamSource(state); }},
         error(error) {{ failReadableStreamSource(state, error); }},
@@ -8372,9 +8503,18 @@ fn document_bootstrap(
     configurable: true,
     get() {{ return readableStreamState(this).locked; }},
   }});
-  ReadableStreamNative.prototype.getReader = function(_options) {{
+  ReadableStreamNative.prototype.getReader = function(options) {{
     const state = readableStreamState(this);
     if (state.locked) throw new TypeError("native ReadableStream is already locked");
+    const readerOptions = options === undefined || options === null ? {{}} : options;
+    if (typeof readerOptions !== "object" && typeof readerOptions !== "function")
+      throw new TypeError("native ReadableStream reader options are invalid");
+    const mode = readerOptions.mode === undefined ? undefined : String(readerOptions.mode);
+    if (mode !== undefined && mode !== "byob")
+      throw new TypeError("native ReadableStream reader mode is unsupported");
+    const byob = mode === "byob";
+    if (byob && !state.byteMode)
+      throw new TypeError("native BYOB reader requires a byte stream");
     state.locked = true;
     let released = false;
     let resolveClosed;
@@ -8398,23 +8538,66 @@ fn document_bootstrap(
       }}
       if (state.queued.length === 0) return null;
       const value = state.queued.shift();
+      state.queueSize = Math.max(0, state.queueSize - state.queueSizes.shift());
       return {{ value: state.byteMode ? new Uint8Array(value) : value, done: false }};
     }};
-    const read = () => {{
+    const readByteQueued = (view) => {{
+      const target = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+      if (state.streamId === null && state.underlyingSource === null) {{
+        if (state.offset >= state.bytes.length) return null;
+        const count = Math.min(target.byteLength, state.bytes.length - state.offset);
+        target.set(state.bytes.slice(state.offset, state.offset + count));
+        state.offset += count;
+        return {{ value: readableByobResultView(view, count), done: false }};
+      }}
+      if (state.queued.length === 0) return null;
+      const value = new Uint8Array(state.queued[0]);
+      const count = Math.min(target.byteLength, value.byteLength);
+      target.set(value.subarray(0, count));
+      if (count === value.byteLength) {{
+        state.queued.shift();
+        state.queueSize = Math.max(0, state.queueSize - state.queueSizes.shift());
+      }} else {{
+        const remainder = value.slice(count);
+        state.queued[0] = remainder;
+        state.queueSize = Math.max(0, state.queueSize - state.queueSizes[0]);
+        state.queueSizes[0] = readableChunkSize(state, remainder);
+        state.queueSize += state.queueSizes[0];
+      }}
+      return {{ value: readableByobResultView(view, count), done: false }};
+    }};
+    const resolveQueuedRead = () => {{
+      const pending = state.pendingRead;
+      if (!pending) return false;
+      const result = pending.byobView ? readByteQueued(pending.byobView) : readQueued();
+      if (!result) return false;
+      const current = clearReadablePendingRead(state);
+      current.resolve(result);
+      return true;
+    }};
+    const read = (view) => {{
       if (state.consumedByResponse && !state.consumingResponseBody) return responseBodyUnusable();
       if (state.consumedByRequest && !state.consumingRequestBody) return Promise.reject(new TypeError("native Request body is unusable"));
+      if (byob) {{
+        if (!view || typeof ArrayBuffer.isView !== "function" || !ArrayBuffer.isView(view) || view.byteLength === 0)
+          throw new TypeError("native BYOB read requires a non-empty view");
+      }} else if (view !== undefined) {{
+        throw new TypeError("native default reader read does not accept a view");
+      }}
       markReadableStreamDisturbed(state);
-      const queued = readQueued();
+      const queued = byob ? readByteQueued(view) : readQueued();
       if (queued) {{
         requestFetchStreamRead(state.group);
         return Promise.resolve(queued);
       }}
       if (state.error !== null) return Promise.reject(new Error(state.error));
       if (readableStreamDone(state)) {{
-        return Promise.resolve({{ value: undefined, done: true }});
+        return Promise.resolve(byob
+          ? {{ value: readableByobResultView(view, 0), done: true }}
+          : {{ value: undefined, done: true }});
       }}
       if (state.pendingRead) return Promise.reject(new TypeError("native ReadableStream read is already pending"));
-      const promise = new Promise((resolve, reject) => {{ state.pendingRead = {{ resolve, reject }}; }});
+      const promise = new Promise((resolve, reject) => {{ state.pendingRead = {{ resolve, reject, byobView: byob ? view : null }}; }});
       try {{
         if (state.underlyingSource) pullReadableStreamSource(state);
         else requestFetchStreamRead(state.group);
@@ -8423,9 +8606,9 @@ fn document_bootstrap(
       return promise;
     }};
     const reader = {{
-      read() {{
+      read(view) {{
         if (released) return Promise.reject(new TypeError("native ReadableStream reader is released"));
-        return read();
+        return read(view);
       }},
       cancel(reason) {{
         if (released) return Promise.reject(new TypeError("native ReadableStream reader is released"));
@@ -8434,7 +8617,9 @@ fn document_bootstrap(
         markReadableStreamDisturbed(state);
         state.done = true;
         state.queued = [];
-        if (state.pendingRead) {{ state.pendingRead.resolve({{ value: undefined, done: true }}); state.pendingRead = null; }}
+        state.queueSizes = [];
+        state.queueSize = 0;
+        if (state.pendingRead) resolveReadablePending(state, undefined, true);
         settleReadableStreamClosed(state);
         maybeCancelFetchStreamGroup(state.group);
         return Promise.resolve(undefined);
@@ -8451,7 +8636,9 @@ fn document_bootstrap(
         markReadableStreamDisturbed(state);
         state.done = true;
         state.queued = [];
-        if (state.pendingRead) {{ state.pendingRead.resolve({{ value: undefined, done: true }}); state.pendingRead = null; }}
+        state.queueSizes = [];
+        state.queueSize = 0;
+        if (state.pendingRead) resolveReadablePending(state, undefined, true);
         settleReadableStreamClosed(state);
         release();
         maybeCancelFetchStreamGroup(state.group);
@@ -8470,6 +8657,8 @@ fn document_bootstrap(
     markReadableStreamDisturbed(state);
     state.done = true;
     state.queued = [];
+    state.queueSizes = [];
+    state.queueSize = 0;
     settleReadableStreamClosed(state);
     maybeCancelFetchStreamGroup(state.group);
     return Promise.resolve(undefined);
@@ -8560,11 +8749,13 @@ fn document_bootstrap(
     }};
     const createBranch = () => {{
       const branch = {{ controller: null, stream: null, state: null, cancelled: false }};
-      branch.stream = new ReadableStreamNative({{
+      const branchSource = {{
         start(controller) {{ branch.controller = controller; }},
         pull() {{ return maybePullTee(); }},
         cancel(reason) {{ return cancelBranch(branch, reason); }},
-      }});
+      }};
+      if (sourceState.byteMode) branchSource.type = "bytes";
+      branch.stream = new ReadableStreamNative(branchSource);
       branch.state = readableStreamState(branch.stream);
       tee.branches.push(branch);
       return branch.stream;
@@ -8807,7 +8998,8 @@ fn document_bootstrap(
     const transformController = Object.freeze({{
       get desiredSize() {{
         if (transformState.errored !== null || transformState.terminated) return null;
-        return {fetch_stream_queue_limit} - readableStreamState(readable).queued.length;
+        const outputState = readableStreamState(readable);
+        return outputState.strategy.highWaterMark - outputState.queueSize;
       }},
       enqueue(value) {{
         if (transformState.errored !== null || transformState.terminated)
@@ -8877,7 +9069,13 @@ fn document_bootstrap(
         for (const state of group.streams) {{
           state.error = group.error;
           state.done = true;
-          if (state.pendingRead) {{ state.pendingRead.reject(new Error(group.error)); state.pendingRead = null; }}
+          state.queued = [];
+          state.queueSizes = [];
+          state.queueSize = 0;
+          if (state.pendingRead) {{
+            const pending = clearReadablePendingRead(state);
+            pending.reject(new Error(group.error));
+          }}
         }}
         rejectFetchStreamWaiters(group);
         return null;
@@ -8888,16 +9086,20 @@ fn document_bootstrap(
         if (state.cancelled || state.consumedByResponse) continue;
         state.done = false;
         if (state.pendingRead) {{
-          state.pendingRead.resolve({{ value: new Uint8Array(bytes.slice()), done: false }});
-          state.pendingRead = null;
-        }} else state.queued.push(bytes.slice());
+          resolveReadablePending(state, new Uint8Array(bytes), false);
+        }} else {{
+          const queued = new Uint8Array(bytes.slice());
+          state.queued.push(queued);
+          state.queueSizes.push(queued.byteLength);
+          state.queueSize += queued.byteLength;
+        }}
       }}
       if (group.waiters.length > 0) requestFetchStreamRead(group);
     }} else if (type === "end") {{
       group.done = true;
       for (const state of group.streams) {{
         state.done = true;
-        if (state.pendingRead) {{ state.pendingRead.resolve({{ value: undefined, done: true }}); state.pendingRead = null; }}
+        if (state.pendingRead) resolveReadablePending(state, undefined, true);
         settleReadableStreamClosed(state);
       }}
       settleFetchStreamWaiters(group);
@@ -8907,7 +9109,13 @@ fn document_bootstrap(
       for (const state of group.streams) {{
         state.error = group.error;
         state.done = true;
-        if (state.pendingRead) {{ state.pendingRead.reject(new Error(group.error)); state.pendingRead = null; }}
+        state.queued = [];
+        state.queueSizes = [];
+        state.queueSize = 0;
+        if (state.pendingRead) {{
+          const pending = clearReadablePendingRead(state);
+          pending.reject(new Error(group.error));
+        }}
         settleReadableStreamClosed(state);
       }}
       rejectFetchStreamWaiters(group);

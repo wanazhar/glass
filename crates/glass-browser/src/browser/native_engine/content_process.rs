@@ -5653,16 +5653,24 @@ async fn load_page_script_sources(
         .enumerate()
     {
         match script {
-            NativePageScriptSource::Inline { source, timing } => {
+            NativePageScriptSource::Inline {
+                source,
+                timing,
+                node_index,
+            } => {
                 sources.push((
                     timing,
                     NativePageScript::Classic {
                         source,
-                        node_index: None,
+                        node_index: Some(node_index),
                     },
                 ));
             }
-            NativePageScriptSource::ModuleInline { source, timing } => {
+            NativePageScriptSource::ModuleInline {
+                source,
+                timing,
+                node_index,
+            } => {
                 let name = format!("{document_url}#glass-inline-module-{index}");
                 let mut seen = BTreeSet::new();
                 seen.insert(name.clone());
@@ -5673,7 +5681,7 @@ async fn load_page_script_sources(
                     NativePageScript::Module {
                         name: name.clone(),
                         source: source.clone(),
-                        node_index: None,
+                        node_index: Some(node_index),
                     },
                 ));
                 let dependency_result = load_module_dependencies(

@@ -2703,19 +2703,27 @@ pub(crate) fn execute_inline_scripts(
         .into_iter()
         .enumerate()
         .filter_map(|(index, source)| match source {
-            NativePageScriptSource::Inline { source, timing } => Some((
+            NativePageScriptSource::Inline {
+                source,
+                timing,
+                node_index,
+            } => Some((
                 timing,
                 NativePageScript::Classic {
                     source,
-                    node_index: None,
+                    node_index: Some(node_index),
                 },
             )),
-            NativePageScriptSource::ModuleInline { source, timing } => Some((
+            NativePageScriptSource::ModuleInline {
+                source,
+                timing,
+                node_index,
+            } => Some((
                 timing,
                 NativePageScript::Module {
                     name: format!("{document_url}#glass-inline-module-{index}"),
                     source,
-                    node_index: None,
+                    node_index: Some(node_index),
                 },
             )),
             NativePageScriptSource::External { .. }

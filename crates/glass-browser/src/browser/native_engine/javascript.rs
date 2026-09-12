@@ -8442,6 +8442,96 @@ fn document_bootstrap(
       [Symbol.asyncIterator]() {{ return this; }},
     }});
   }};
+  ReadableStreamNative.prototype.tee = function() {{
+    const sourceState = readableStreamState(this);
+    if (sourceState.locked) throw new TypeError("native ReadableStream is locked");
+    markReadableStreamDisturbed(sourceState);
+    const upstreamReader = this.getReader();
+    const tee = {{
+      upstreamReader,
+      reading: false,
+      done: false,
+      error: null,
+      upstreamReleased: false,
+      branches: [],
+    }};
+    const releaseUpstream = () => {{
+      if (tee.upstreamReleased) return;
+      tee.upstreamReleased = true;
+      tee.upstreamReader.releaseLock();
+    }};
+    const cancelUpstream = reason => {{
+      if (tee.upstreamReleased) return Promise.resolve(undefined);
+      tee.done = true;
+      return Promise.resolve(tee.upstreamReader.cancel(reason)).then(
+        () => {{ releaseUpstream(); }},
+        error => {{ releaseUpstream(); throw error; }},
+      );
+    }};
+    const failTee = error => {{
+      if (tee.error !== null) return Promise.resolve(undefined);
+      const normalized = error instanceof Error ? error : new Error(String(error));
+      tee.error = normalized.message;
+      tee.done = true;
+      for (const branch of tee.branches) {{
+        if (!branch.cancelled && branch.controller) branch.controller.error(normalized);
+      }}
+      return cancelUpstream(normalized).catch(() => undefined);
+    }};
+    const finishTee = () => {{
+      if (tee.done) return;
+      tee.done = true;
+      for (const branch of tee.branches) {{
+        if (!branch.cancelled && branch.controller) branch.controller.close();
+      }}
+      releaseUpstream();
+    }};
+    const maybePullTee = () => {{
+      if (tee.reading || tee.done || tee.error !== null) return Promise.resolve(undefined);
+      const activeBranches = tee.branches.filter(branch => !branch.cancelled);
+      if (activeBranches.length === 0) return cancelUpstream();
+      if (activeBranches.some(branch => branch.state && branch.state.queued.length >= {fetch_stream_queue_limit}))
+        return Promise.resolve(undefined);
+      tee.reading = true;
+      return tee.upstreamReader.read().then(
+        result => {{
+          tee.reading = false;
+          if (result.done) {{
+            finishTee();
+            return;
+          }}
+          for (const branch of tee.branches) {{
+            if (branch.cancelled || !branch.controller) continue;
+            try {{ branch.controller.enqueue(result.value); }}
+            catch (error) {{ return failTee(error); }}
+          }}
+        }},
+        error => {{
+          tee.reading = false;
+          return failTee(error);
+        }},
+      );
+    }};
+    const cancelBranch = (branch, reason) => {{
+      if (branch.cancelled) return Promise.resolve(undefined);
+      branch.cancelled = true;
+      if (tee.branches.every(candidate => candidate.cancelled)) return cancelUpstream(reason);
+      return Promise.resolve(undefined);
+    }};
+    const createBranch = () => {{
+      const branch = {{ controller: null, stream: null, state: null, cancelled: false }};
+      branch.stream = new ReadableStreamNative({{
+        start(controller) {{ branch.controller = controller; }},
+        pull() {{ return maybePullTee(); }},
+        cancel(reason) {{ return cancelBranch(branch, reason); }},
+      }});
+      branch.state = readableStreamState(branch.stream);
+      tee.branches.push(branch);
+      return branch.stream;
+    }};
+    const branches = [createBranch(), createBranch()];
+    return branches;
+  }};
   globalThis.__glassDispatchFetchStreamEvent = (streamId, payload) => {{
     const group = fetchStreamGroup(streamId);
     if (!payload || typeof payload !== "object" || group.done) return null;

@@ -41995,6 +41995,89 @@ async fn native_content_process_resolves_readable_stream_reader_closed() {
 }
 
 #[tokio::test]
+async fn native_content_process_tees_underlying_readable_stream_sources() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = "<body>ReadableStream tee</body>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await (async () => { const events = []; let pulls = 0; const source = new ReadableStream({ start(controller) { events.push('start'); controller.enqueue('a'); }, pull(controller) { events.push('pull'); if (pulls++ === 0) { controller.enqueue('b'); controller.close(); } }, cancel(reason) { events.push('cancel:' + reason); } }); const [left, right] = source.tee(); const leftReader = left.getReader(); const rightReader = right.getReader(); const leftFirst = await leftReader.read(); const rightFirst = await rightReader.read(); const leftSecond = await leftReader.read(); const rightSecond = await rightReader.read(); const leftEnd = await leftReader.read(); const rightEnd = await rightReader.read(); leftReader.releaseLock(); rightReader.releaseLock(); return { events, left: [leftFirst.value, leftSecond.value, leftEnd.done], right: [rightFirst.value, rightSecond.value, rightEnd.done], sourceLocked: source.locked, leftLocked: left.locked, rightLocked: right.locked }; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "events": ["start", "pull"],
+            "left": ["a", "b", true],
+            "right": ["a", "b", true],
+            "sourceLocked": false,
+            "leftLocked": false,
+            "rightLocked": false
+        })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_cancels_tee_upstream_after_both_branches_cancel() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = "<body>ReadableStream tee cancel</body>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await (async () => { const events = []; const source = new ReadableStream({ pull(controller) { controller.enqueue('value'); }, cancel(reason) { events.push('cancel:' + reason); } }); const [left, right] = source.tee(); const leftReader = left.getReader(); const rightReader = right.getReader(); await leftReader.cancel('left'); const rightValue = await rightReader.read(); await rightReader.cancel('right'); leftReader.releaseLock(); rightReader.releaseLock(); return { rightValue, events, sourceLocked: source.locked, leftLocked: left.locked, rightLocked: right.locked }; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "rightValue": {"value": "value", "done": false},
+            "events": ["cancel:right"],
+            "sourceLocked": false,
+            "leftLocked": false,
+            "rightLocked": false
+        })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_tees_fetch_streams_until_all_readers_cancel() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

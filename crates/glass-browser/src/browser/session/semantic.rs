@@ -156,6 +156,11 @@ pub struct SemanticExpansionHandle {
 #[serde(rename_all = "camelCase")]
 pub struct SemanticTarget {
     pub reference: String,
+    /// Native and multi-context backends may attach the owning browsing
+    /// context frame. The field is optional so existing single-document
+    /// observations remain wire-compatible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame_id: Option<String>,
     pub role: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
@@ -750,6 +755,14 @@ impl SemanticObservation {
                     MAX_ID_BYTES,
                     false,
                 )?;
+                if let Some(frame_id) = &target.frame_id {
+                    validate_text(
+                        &format!("{target_path}.frameId"),
+                        frame_id,
+                        MAX_ID_BYTES,
+                        false,
+                    )?;
+                }
                 validate_text(
                     &format!("{target_path}.role"),
                     &target.role,
@@ -1465,6 +1478,7 @@ fn append_semantic_target(
 ) {
     region.targets.push(SemanticTarget {
         reference: control.reference.clone(),
+        frame_id: None,
         role: bounded_semantic_text(&control.role, MAX_ROLE_BYTES),
         name: bounded_semantic_text(&control.name, MAX_LABEL_BYTES),
         input_type: control
@@ -2069,6 +2083,7 @@ mod tests {
         previous.level = SemanticObservationLevel::Interactive;
         previous.regions[0].targets.push(SemanticTarget {
             reference: "axr-42-9".into(),
+            frame_id: None,
             role: "button".into(),
             name: "Continue".into(),
             input_type: None,

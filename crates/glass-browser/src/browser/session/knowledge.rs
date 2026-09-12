@@ -3299,6 +3299,7 @@ mod tests {
         let candidate = SemanticIntentCandidate {
             id: "candidate_1".into(),
             reference: "axr-42-1".into(),
+            frame_id: None,
             role: "button".into(),
             name: "Private Settings Label".into(),
             input_type: None,

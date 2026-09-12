@@ -9,6 +9,8 @@
 use super::backend_factory::{BackendFactory, BackendStartup};
 use super::bidi_backend::BidiBackendConfig;
 #[cfg(feature = "native-engine")]
+use super::native_backend::NativeFrameInspectionSnapshot;
+#[cfg(feature = "native-engine")]
 use super::native_engine::{NativeEngineConfig, NativePreflightAction, NativeTargetPreflight};
 use crate::browser_backend::{
     ActionRequest, ActionResult, BackendProfile, BrowserBackendDispatcher, BrowsingContext,
@@ -44,6 +46,10 @@ use tokio::sync::Mutex;
 const NATIVE_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(25);
 #[cfg(feature = "native-engine")]
 const NATIVE_MAX_WAIT_DEADLINE: Duration = Duration::from_secs(300);
+#[cfg(feature = "native-engine")]
+const NATIVE_SEMANTIC_TARGET_LIMIT: usize = 32;
+#[cfg(feature = "native-engine")]
+const NATIVE_SEMANTIC_TEXT_LIMIT: usize = 8 * 1024;
 
 /// Browser runtimes supported by the portable semantic session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
@@ -235,7 +241,7 @@ impl BrowserRuntimeSession {
         expected_revision: Option<u64>,
     ) -> BrowserResult<PopupClickOutcome> {
         let _operation = self.operation_lock.lock().await;
-        let observation = self.native_semantic_observation_unlocked()?;
+        let observation = self.native_semantic_observation_unlocked().await?;
         if let Some(expected_revision) = expected_revision
             && observation.revision != expected_revision
         {
@@ -246,12 +252,18 @@ impl BrowserRuntimeSession {
         }
         let preflight = match &self.backend {
             BackendStartup::Native(backend) => {
-                backend.preflight_target(target, NativePreflightAction::Click)?
+                backend
+                    .preflight_target(target, NativePreflightAction::Click)
+                    .await?
             }
             _ => return Err("native popup clicks are only available on the native runtime".into()),
         };
         let (action, popup) = match &self.backend {
-            BackendStartup::Native(backend) => backend.click_expect_popup(target).await?,
+            BackendStartup::Native(backend) => {
+                backend
+                    .click_expect_popup_in_frame(target, preflight.frame_id.as_deref())
+                    .await?
+            }
             _ => return Err("native popup clicks are only available on the native runtime".into()),
         };
         let label = preflight
@@ -508,7 +520,7 @@ impl BrowserRuntimeSession {
     ) -> BrowserResult<NativeTargetPreflight> {
         let _operation = self.operation_lock.lock().await;
         match &self.backend {
-            BackendStartup::Native(backend) => Ok(backend.preflight_target(target, action)?),
+            BackendStartup::Native(backend) => Ok(backend.preflight_target(target, action).await?),
             _ => Err("native target preflight is only available on the native runtime".into()),
         }
     }
@@ -570,7 +582,7 @@ impl BrowserRuntimeSession {
 
         let execution_result = {
             let _operation = self.operation_lock.lock().await;
-            let observation = self.native_semantic_observation_unlocked()?;
+            let observation = self.native_semantic_observation_unlocked().await?;
             let resolution = super::session::resolve_intent(&execution.request, &observation);
             let resolution_id = super::session::intent_resolution_id(
                 &execution.request,
@@ -620,6 +632,7 @@ impl BrowserRuntimeSession {
 
             let candidate_reference = candidate.reference.clone();
             let candidate_name = candidate.name.clone();
+            let candidate_frame_id = candidate.frame_id.clone();
             let (action_kind, action) = match execution.request.action {
                 SemanticIntentAction::Click
                 | SemanticIntentAction::Submit
@@ -685,7 +698,14 @@ impl BrowserRuntimeSession {
                 }
             };
 
-            let action_result = self.action_unlocked(action).await?;
+            let action_result = match (&self.backend, candidate_frame_id.as_deref()) {
+                (BackendStartup::Native(backend), Some(frame_id)) => {
+                    backend
+                        .action_in_frame(&observation.route.target_id, frame_id, action)
+                        .await?
+                }
+                _ => self.action_unlocked(action).await?,
+            };
             if !action_result.accepted {
                 return Ok(ActAndVerifyResult {
                     status: "not_executed".into(),
@@ -708,7 +728,7 @@ impl BrowserRuntimeSession {
                 });
             }
 
-            let after = self.native_semantic_observation_unlocked()?;
+            let after = self.native_semantic_observation_unlocked().await?;
             let current_revision = after.revision;
             let action_outcome = ActionOutcome {
                 status: ActionStatus::Succeeded,
@@ -722,7 +742,7 @@ impl BrowserRuntimeSession {
                 previous_revision: observation.revision,
                 current_revision,
                 target_id: after.route.target_id.clone(),
-                frame_id: after.route.frame_id.clone(),
+                frame_id: candidate_frame_id.unwrap_or(after.route.frame_id.clone()),
                 verification: ActionVerificationEvidence {
                     revision_delta: current_revision.saturating_sub(observation.revision),
                     url_changed: observation.page.url != after.page.url,
@@ -790,79 +810,109 @@ impl BrowserRuntimeSession {
         &self,
     ) -> BrowserResult<super::session::SemanticObservation> {
         let _operation = self.operation_lock.lock().await;
-        self.native_semantic_observation_unlocked()
+        self.native_semantic_observation_unlocked().await
     }
 
     #[cfg(feature = "native-engine")]
-    fn native_semantic_observation_unlocked(
+    async fn native_semantic_observation_unlocked(
         &self,
     ) -> BrowserResult<super::session::SemanticObservation> {
-        let (native, frame_id) = match &self.backend {
-            BackendStartup::Native(backend) => {
-                (backend.inspection_snapshot()?, backend.active_frame_id()?)
-            }
+        let frames = match &self.backend {
+            BackendStartup::Native(backend) => backend.inspection_snapshots().await?,
             _ => {
                 return Err(
                     "native semantic inspection is only available on the native runtime".into(),
                 );
             }
         };
+        let native = frames
+            .first()
+            .ok_or("native semantic inspection returned no active frame")?;
+        let native = &native.inspection;
+        let frame_id = frames[0].frame_id.clone();
         let route = super::session::SemanticRouteIdentity {
             target_id: native.context_id.clone(),
-            frame_id,
+            frame_id: frame_id.clone(),
             url: native.snapshot.url.clone(),
         };
-        let targets = native
-            .nodes
+        let revision = native_aggregate_revision(&frames);
+        let mut omitted_targets = 0usize;
+        let regions = frames
             .iter()
-            .map(native_semantic_target)
+            .enumerate()
+            .map(|(index, frame)| {
+                let available = frame.inspection.nodes.len();
+                let targets = frame
+                    .inspection
+                    .nodes
+                    .iter()
+                    .take(NATIVE_SEMANTIC_TARGET_LIMIT)
+                    .map(|node| native_semantic_target(node, &frame.frame_id))
+                    .collect::<Vec<_>>();
+                omitted_targets =
+                    omitted_targets.saturating_add(available.saturating_sub(targets.len()));
+                let region_id = if index == 0 {
+                    "region_main".to_owned()
+                } else {
+                    format!("region_frame_{index}")
+                };
+                super::session::SemanticRegion {
+                    id: region_id.clone(),
+                    kind: super::session::SemanticRegionKind::Main,
+                    label: if index == 0 {
+                        "Main content".into()
+                    } else {
+                        format!("Embedded frame {index}")
+                    },
+                    interactive_count: available,
+                    item_count: Some(available),
+                    confidence: super::session::SemanticConfidence::High,
+                    structured_records: Vec::new(),
+                    evidence: vec!["native frame semantic projection".into()],
+                    targets,
+                    expansion: Some(super::session::SemanticExpansionHandle {
+                        region_id,
+                        revision,
+                        route: route.clone(),
+                    }),
+                }
+            })
             .collect::<Vec<_>>();
-        let region = super::session::SemanticRegion {
-            id: "region_main".into(),
-            kind: super::session::SemanticRegionKind::Main,
-            label: "Main content".into(),
-            interactive_count: targets.len(),
-            item_count: Some(targets.len()),
-            confidence: super::session::SemanticConfidence::High,
-            structured_records: Vec::new(),
-            evidence: vec!["native semantic node projection".into()],
-            targets,
-            expansion: Some(super::session::SemanticExpansionHandle {
-                region_id: "region_main".into(),
-                revision: native.snapshot.revision,
-                route: route.clone(),
-            }),
-        };
+        let (text, text_truncated) = bounded_native_semantic_text(&frames);
         let viewport = native.layout.viewport;
         let scroll_offset = native.layout.scroll_offset;
         let observation = super::session::SemanticObservation {
             schema_version: super::session::SEMANTIC_OBSERVATION_SCHEMA_VERSION,
-            revision: native.snapshot.revision,
+            revision,
             level: super::session::SemanticObservationLevel::Structured,
             route: route.clone(),
             page: super::session::SemanticPage {
                 kind: super::session::SemanticPageKind::Generic,
-                title: native.snapshot.title,
-                url: native.snapshot.url,
+                title: native.snapshot.title.clone(),
+                url: native.snapshot.url.clone(),
                 target_id: route.target_id.clone(),
                 frame_id: route.frame_id.clone(),
                 confidence: super::session::SemanticConfidence::Medium,
                 evidence: vec!["native page snapshot".into()],
             },
-            regions: vec![region],
-            text: Some(native.snapshot.visible_text.clone()),
+            regions,
+            text: Some(text.clone()),
             accessibility: None,
             raw_accessibility: None,
             changes: None,
             limits: super::session::SemanticObservationLimits {
-                truncated: native.snapshot.title_truncated || native.snapshot.text_truncated,
+                truncated: frames.iter().any(|frame| {
+                    frame.inspection.snapshot.title_truncated
+                        || frame.inspection.snapshot.text_truncated
+                }) || omitted_targets > 0
+                    || text_truncated,
                 omitted_regions: 0,
-                omitted_targets: 0,
+                omitted_targets,
                 omitted_structured_records: 0,
                 structured_bytes: Some(0),
                 omitted_bytes: None,
-                text_bytes: Some(native.snapshot.visible_text.len()),
-                text_truncated: native.snapshot.text_truncated,
+                text_bytes: Some(text.len()),
+                text_truncated,
                 viewport: Some(super::session::SemanticViewport {
                     scroll_x: f64::from(scroll_offset.x),
                     scroll_y: f64::from(scroll_offset.y),
@@ -873,6 +923,7 @@ impl BrowserRuntimeSession {
                 }),
             },
         };
+        observation.validate()?;
         Ok(observation)
     }
 
@@ -1228,9 +1279,11 @@ fn native_not_executed_result(
 #[cfg(feature = "native-engine")]
 fn native_semantic_target(
     node: &super::native_engine::NativeSemanticNode,
+    frame_id: &str,
 ) -> super::session::SemanticTarget {
     super::session::SemanticTarget {
         reference: node.reference.clone(),
+        frame_id: Some(frame_id.to_owned()),
         role: node.role.clone(),
         name: node.name.clone(),
         input_type: node.input_type.clone(),
@@ -1240,4 +1293,57 @@ fn native_semantic_target(
         checked: node.checked,
         empty: node.empty,
     }
+}
+
+#[cfg(feature = "native-engine")]
+fn native_aggregate_revision(frames: &[NativeFrameInspectionSnapshot]) -> u64 {
+    if frames.len() == 1 {
+        return frames[0].inspection.snapshot.revision;
+    }
+    let mut hash = 0xcbf29ce484222325_u64;
+    for frame in frames {
+        for byte in frame.frame_id.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        hash ^= 0xff;
+        hash = hash.wrapping_mul(0x100000001b3);
+        for byte in frame.inspection.snapshot.revision.to_le_bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    }
+    (hash != 0).then_some(hash).unwrap_or(1)
+}
+
+#[cfg(feature = "native-engine")]
+fn bounded_native_semantic_text(frames: &[NativeFrameInspectionSnapshot]) -> (String, bool) {
+    let mut output = String::new();
+    let mut truncated = false;
+    for frame in frames {
+        let value = frame.inspection.snapshot.visible_text.as_str();
+        if value.is_empty() {
+            continue;
+        }
+        if !output.is_empty() {
+            if output.len().saturating_add(1) > NATIVE_SEMANTIC_TEXT_LIMIT {
+                truncated = true;
+                break;
+            }
+            output.push('\n');
+        }
+        let available = NATIVE_SEMANTIC_TEXT_LIMIT.saturating_sub(output.len());
+        if value.len() <= available {
+            output.push_str(value);
+            continue;
+        }
+        let mut end = available.min(value.len());
+        while end > 0 && !value.is_char_boundary(end) {
+            end -= 1;
+        }
+        output.push_str(&value[..end]);
+        truncated = true;
+        break;
+    }
+    (output, truncated)
 }

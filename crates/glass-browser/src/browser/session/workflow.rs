@@ -3344,6 +3344,7 @@ mod tests {
             candidates: vec![SemanticIntentCandidate {
                 id: "candidate-1".into(),
                 reference: "r7:backend-secret".into(),
+                frame_id: None,
                 role: "button".into(),
                 name: "Submit order".into(),
                 input_type: None,
@@ -3430,6 +3431,7 @@ mod tests {
         let candidate = |id: &str| SemanticIntentCandidate {
             id: id.into(),
             reference: format!("{id}:ref"),
+            frame_id: None,
             role: "button".into(),
             name: "Settings".into(),
             input_type: None,

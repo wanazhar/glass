@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-244` slice; the bounded foundation below remains
+`native-engine-browser-245` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5622,6 +5622,15 @@ through the selected frame subtree. A unique child locator can receive click,
 type, clear, check, uncheck, or select through the same parked-frame action
 and effect owners; duplicates across frame documents are rejected. Exact
 evidence is recorded in `docs/plan/tasks/native-engine-browser-244.md`.
+
+The completed native-engine-browser-245 slice carries frame identity through
+the semantic surface. Inspection snapshots cover the selected frame subtree,
+child targets and intent candidates expose their owning `frameId`, aggregate
+revisions bind resolution to that observed topology, and preflight plus
+semantic actions dispatch through the exact winning frame. Popup intent clicks
+use the same ownership, and wrong-frame revision references become structured
+stale results during subtree search. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-245.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

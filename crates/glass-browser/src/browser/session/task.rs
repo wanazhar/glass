@@ -2846,6 +2846,7 @@ mod tests {
     fn target(name: &str, reference: &str) -> SemanticTarget {
         SemanticTarget {
             reference: reference.into(),
+            frame_id: None,
             role: "textbox".into(),
             name: name.into(),
             input_type: Some("text".into()),

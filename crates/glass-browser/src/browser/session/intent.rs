@@ -412,6 +412,7 @@ pub fn resolve_intent_with_historical_matches(
             candidates.push(SemanticIntentCandidate {
                 id,
                 reference: target.reference.clone(),
+                frame_id: target.frame_id.clone(),
                 role: target.role.clone(),
                 name: target.name.clone(),
                 input_type: target.input_type.clone(),
@@ -1071,6 +1072,10 @@ pub struct SemanticIntentRequest {
 pub struct SemanticIntentCandidate {
     pub id: String,
     pub reference: String,
+    /// Owning browsing-context frame when the observation came from a
+    /// multi-frame backend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame_id: Option<String>,
     pub role: String,
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1867,6 +1872,7 @@ mod tests {
             targets: vec![
                 SemanticTarget {
                     reference: "r42:b1".into(),
+                    frame_id: None,
                     role: "button".into(),
                     name: "Settings".into(),
                     input_type: None,
@@ -1878,6 +1884,7 @@ mod tests {
                 },
                 SemanticTarget {
                     reference: "r42:b2".into(),
+                    frame_id: None,
                     role: "button".into(),
                     name: "Continue shopping".into(),
                     input_type: None,
@@ -1889,6 +1896,7 @@ mod tests {
                 },
                 SemanticTarget {
                     reference: "r42:b3".into(),
+                    frame_id: None,
                     role: "button".into(),
                     name: "Continue to payment".into(),
                     input_type: None,
@@ -2008,6 +2016,7 @@ mod tests {
             candidates: vec![SemanticIntentCandidate {
                 id: "candidate_1".into(),
                 reference: "r42:b17".into(),
+                frame_id: None,
                 role: "button".into(),
                 name: "Settings".into(),
                 input_type: None,

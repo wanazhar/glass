@@ -1258,6 +1258,97 @@ async fn native_runtime_session_exposes_agent_inspection_and_target_discovery() 
 }
 
 #[tokio::test]
+async fn native_runtime_semantic_intents_discover_and_route_nested_frame_targets() {
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default()
+            .with_fixture(
+                "fixture://semantic-frame-parent",
+                "<iframe style='display:block;width:16px;height:6px' src='fixture://semantic-frame-child'></iframe>",
+            )
+            .unwrap()
+            .with_fixture(
+                "fixture://semantic-frame-child",
+                "<input id='inside' aria-label='Inside' value='before'>",
+            )
+            .unwrap()
+            .with_initial_url("fixture://semantic-frame-parent"),
+    )
+    .await
+    .unwrap();
+
+    let inspection = session.native_inspect_page().await.unwrap();
+    assert_eq!(inspection.regions.len(), 2);
+    let child_target = inspection
+        .regions
+        .iter()
+        .flat_map(|region| region.targets.iter())
+        .find(|target| target.name == "Inside")
+        .expect("nested input must be discoverable");
+    let child_frame_id = child_target
+        .frame_id
+        .clone()
+        .expect("nested semantic target must identify its frame");
+    assert_ne!(child_frame_id, inspection.page.frame_id);
+
+    let request = SemanticIntentRequest {
+        schema_version: 1,
+        intent: "inside".into(),
+        action: SemanticIntentAction::Type,
+        scope: Default::default(),
+        constraints: IntentConstraints {
+            role: Some("textbox".into()),
+            name: Some("Inside".into()),
+            ..Default::default()
+        },
+        resolution_policy: SemanticResolutionPolicy::RequireExact,
+        expected_revision: Some(inspection.revision),
+    };
+    let resolved = session.native_find_target(&request).await.unwrap();
+    assert_eq!(resolved.ambiguity, "none");
+    assert_eq!(resolved.candidates.len(), 1);
+    assert_eq!(
+        resolved.candidates[0].frame_id.as_deref(),
+        Some(child_frame_id.as_str())
+    );
+
+    let preflight = session
+        .native_preflight_target(
+            &resolved.candidates[0].reference,
+            NativePreflightAction::Type,
+        )
+        .await
+        .unwrap();
+    assert!(preflight.unique);
+    assert_eq!(preflight.frame_id.as_deref(), Some(child_frame_id.as_str()));
+
+    let execution = session
+        .native_act_and_verify(
+            &SemanticIntentExecutionRequest {
+                request,
+                candidate_id: resolved.candidates[0].id.clone(),
+                value: Some("after".into()),
+            },
+            None,
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+    assert_eq!(execution.status, "dispatched_unverified");
+    assert_eq!(
+        execution.execution.action.as_ref().unwrap().frame_id,
+        child_frame_id
+    );
+
+    session.native_select_frame(&child_frame_id).await.unwrap();
+    let value = session
+        .script("document.getElementById('inside').value")
+        .await
+        .unwrap();
+    assert_eq!(value.value, serde_json::json!("after"));
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_runtime_session_preserves_independent_target_state_and_lifecycle() {
     let first_url = "data:text/html,%3Ctitle%3EFirst%3C%2Ftitle%3E%3Cp%3Efirst%20target%3C%2Fp%3E";
     let second_url =

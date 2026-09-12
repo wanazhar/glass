@@ -2667,19 +2667,18 @@ impl Loader for NativeModuleLoader {
 pub(crate) fn order_page_scripts(
     sources: Vec<(NativePageScriptTiming, NativePageScript)>,
 ) -> Vec<NativePageScript> {
-    let mut parser_blocking = Vec::new();
-    let mut asynchronous = Vec::new();
+    let mut parser_and_async = Vec::new();
     let mut deferred = Vec::new();
     for (timing, source) in sources {
         match timing {
-            NativePageScriptTiming::ParserBlocking => parser_blocking.push(source),
-            NativePageScriptTiming::Async => asynchronous.push(source),
+            NativePageScriptTiming::ParserBlocking | NativePageScriptTiming::Async => {
+                parser_and_async.push(source)
+            }
             NativePageScriptTiming::Defer => deferred.push(source),
         }
     }
-    parser_blocking.extend(asynchronous);
-    parser_blocking.extend(deferred);
-    parser_blocking
+    parser_and_async.extend(deferred);
+    parser_and_async
 }
 
 /// Execute the bounded inline scripts discovered in one parsed document.

@@ -8535,7 +8535,7 @@ async fn native_content_process_honors_bounded_async_and_defer_script_order() {
             .evaluate_async("globalThis.parserOrder")
             .await
             .unwrap(),
-        serde_json::json!("blocking-1-blocking-2-async-defer")
+        serde_json::json!("blocking-1-async-blocking-2-defer")
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

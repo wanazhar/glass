@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-276`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-277`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -4120,6 +4120,18 @@ value remain represented as `promise === null` and bounded text, so structured
 identity, parser-accurate timing, full Web IDL descriptors, and complete event
 loop semantics remain issue #40 work. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-276.md`.
+
+The completed native-engine-browser-277 slice corrects the ordering policy for
+the already-prefetched page-script batch. Parser-blocking and async sources
+remain in discovery order, so an async source discovered before a later
+parser-blocking source is no longer moved behind every blocking source;
+deferred sources remain in their own document-order tail. This keeps the
+existing bounded loader contract deterministic while aligning the common
+blocking/async/defer relationship more closely with browser execution. The
+loader still fetches sources sequentially before execution, so true network
+completion-order races, parser-stream execution, async script task timing,
+and complete script/lifecycle/Web IDL semantics remain issue #40 work. Exact
+evidence is in `docs/plan/tasks/native-engine-browser-277.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

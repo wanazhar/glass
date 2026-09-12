@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-276` slice; the bounded foundation below remains
+`native-engine-browser-277` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5962,6 +5962,17 @@ state eviction, structured identity, parser-accurate timing, complete event
 loop scheduling, and complete Promise/Web IDL semantics remain issue #40 work.
 Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-276.md`.
+
+The completed native-engine-browser-277 slice fixes the bounded page-script
+schedule so parser-blocking and async sources remain in discovery order,
+while defer and module sources stay in a document-order tail. This prevents an
+async source from being unconditionally delayed behind later parser-blocking
+sources in the prefetched batch and is covered for the content-process path.
+The resource loader still resolves sources sequentially before evaluation;
+true network completion-order scheduling, parser-stream execution, task
+timing, and complete script/lifecycle/Web IDL semantics remain issue #40 work.
+Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-277.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

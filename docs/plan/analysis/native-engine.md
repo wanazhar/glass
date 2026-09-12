@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-227`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-228`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 205
 slice carries bounded quadratic/cubic SVG path geometry through shared path
 parsing, flattening, layout, display-list, raster, clipping, and capture
@@ -3653,6 +3653,17 @@ the GIF/WebP local, HTTP(S), content-process, background-paint, and typed-wire
 owners, including bounded frame count, canvas pixels, output, and retained
 bytes. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-227.md`.
+
+The completed native-engine-browser-228 slice closes the SVG image-resource
+gap for bounded data URLs and HTTP(S) content-process pages. The image owner
+parses a standalone SVG through the existing native DOM, viewBox/layout,
+display-list, clipping, and software surface path, then publishes intrinsic
+dimensions and RGBA pixels to `<img>`, one CSS background-image URL, and
+`<picture>` source selection. Common `px` viewport lengths and one-sided
+viewBox ratios use the same sizing interpretation as inline SVG; resource
+bytes, raster pixels, transfer bytes, and recursive data-SVG decode depth are
+validated before publication. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-228.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

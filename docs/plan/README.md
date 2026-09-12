@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-227` locally. The versioned
+`native-engine-browser-228` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -1991,6 +1991,16 @@ delays, and finite/infinite loop metadata across local data URLs and HTTP(S)
 content-process image resources. `image/apng` is accepted by source selection
 and the typed transfer path under the same frame and memory limits. Exact
 evidence is recorded in [native-engine-browser-227](tasks/native-engine-browser-227.md).
+
+The completed native-engine-browser-228 slice connects SVG image resources to
+the existing native SVG document/layout/raster pipeline. Bounded
+`data:image/svg+xml` and HTTP(S) `image/svg+xml` sources now expose intrinsic
+dimensions and RGBA display-list pixels through `<img>`, CSS background paint,
+and `<picture>` source selection; common `px` viewport dimensions and one-sided
+viewBox ratios share the inline SVG sizing path. Decode size, raster surface,
+transfer, and recursive data-SVG limits remain enforced before publication.
+Exact evidence is recorded in
+[native-engine-browser-228](tasks/native-engine-browser-228.md).
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` now returns persistent `Attr`

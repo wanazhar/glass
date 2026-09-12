@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-227` slice; the bounded foundation below remains
+`native-engine-browser-228` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5467,6 +5467,15 @@ metadata before storing full-canvas RGBA snapshots. Local data URLs,
 HTTP(S) content-process resources, image paint, CSS background paint, and the
 typed wire share the same validation and retained-byte budget. Exact evidence
 is in `docs/plan/tasks/native-engine-browser-227.md`.
+
+The completed native-engine-browser-228 slice connects image/svg+xml to the
+existing SVG document and software-raster owners. Bounded local data URLs and
+HTTP(S) content-process responses now render SVG images with intrinsic
+dimensions, common `px` viewport lengths, and one-sided viewBox ratios through
+`<img>`, CSS background paint, and `<picture>` source selection. The existing
+image lifecycle, typed wire, transfer budget, clipping, capture, and load/error
+owners remain shared; recursive data-SVG graphs are rejected before nested
+decode. Exact evidence is in `docs/plan/tasks/native-engine-browser-228.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

@@ -6,13 +6,13 @@ Status: Accepted
 
 Glass is a reusable Rust library plus one `glass` executable from the
 `glass-dev` package that gives local automation clients a semantic execution
-layer over direct Chrome control through raw CDP. It also exposes a bounded
-portable semantic session for externally managed Firefox BiDi and Safari
-WebDriver endpoints, plus a feature-gated Glass-owned native-engine
-experiment. It owns the client and session lifecycle, bounded extraction, Web
-IR reconciliation, deterministic task compilation, and guarded execution; CDP,
-BiDi, and WebDriver browsers remain external processes, while the native engine
-is an explicitly selected in-process experiment.
+layer over the Glass-owned native browser runtime by default. It also exposes
+an explicit Chromium/CDP migration session and bounded portable sessions for
+externally managed Firefox BiDi and Safari WebDriver endpoints. It owns the
+client and session lifecycle, bounded extraction, Web IR reconciliation,
+deterministic task compilation, and guarded execution; external browser
+processes are selected explicitly rather than silently used as a native
+fallback.
 
 ## Product constraints
 
@@ -30,23 +30,25 @@ CLI ─────┐
 MCP ─────┼──> Task Protocol ──> Web IR compiler ──> guarded task executor ──┐
 TUI ─────┘                                                                  │
 CLI ─────┐                                                                  ▼
-MCP ─────┼───────────────────────────────> BrowserSession ──> CdpClient ──> Chrome
-TUI ─────┘                                        │
-                                                  ├──> Profile/Chrome lifecycle
-                                                  └──> bounded PageContext
-Native Rust API ──────────────────────────────────> NativeEngineBackend (opt-in)
+MCP ─────┼──> Native BrowserRuntimeSession ──> NativeEngineBackend
+TUI ─────┘                         │
+                                  └──> bounded PageContext / software surface
+Explicit Chromium ────────────────> BrowserSession ──> CdpClient ──> Chrome
+Native Rust API ──────────────────> NativeEngineBackend
 ```
 
-`BrowserSession` owns browser semantics. Frontends do not issue raw CDP
+The native BrowserRuntimeSession is the default browser seam for
+feature-enabled CLI, MCP, and TUI entrypoints. `BrowserSession` owns the
+explicit Chromium migration semantics. Frontends do not issue raw CDP
 commands. High-level tasks must pass through the browser-free Web IR compiler
 before the guarded executor dispatches an existing browser operation.
 `CdpClient` owns WebSocket request routing and lightweight event delivery.
 Chrome lifecycle owns only processes started by Glass.
 
-The portable alternative CLI path is intentionally separate from this full
-session data plane: BrowserRuntimeSession talks to an externally managed
-Firefox BiDi or Safari WebDriver endpoint and exposes only its certified
-semantic subset. It does not enter the TUI/MCP/Chrome lifecycle shown above.
+The portable endpoint path remains separate from the native data plane:
+BrowserRuntimeSession can talk to an externally managed Firefox BiDi or Safari
+WebDriver endpoint and exposes only its certified semantic subset. It does not
+silently enter the TUI/MCP/Chromium lifecycle shown above.
 
 ## Main concepts
 
@@ -78,12 +80,13 @@ semantic subset. It does not enter the TUI/MCP/Chrome lifecycle shown above.
 - Browser-free CLI, MCP, protocol, and Rust helpers use the same stable Web IR,
   Task Protocol, and compiler contracts as live execution.
 - The TUI preserves its current layout, but browser I/O runs in a worker task rather than the render/input loop.
-- The native engine is default-off, fixture/data-URL-only (including bounded
+- The native engine is enabled by default in feature-enabled products and
+  currently owns local and bounded HTTP(S) navigation (including bounded
   standard padded-base64 `data:text/html`) in its current phase,
   exposes bounded presentation/normal-flow and outer/content box geometry with
   physical four-side padding/margin shorthand and longhand cascade plus
   bounded physical min/max width/height constraints,
-  root horizontal and vertical viewport scrolling, plus native point hit testing through explicit Rust or feature-gated local CLI
+  root horizontal and vertical viewport scrolling, plus native point hit testing through explicit Rust or native local CLI
   paths. Its current Rust-only presentation artifacts include side-specific
   solid/dashed/dotted-border paint, bounded physical circular border radii, a
   bounded inline-box line placement, bounded fixed pixel line-height flow,
@@ -92,7 +95,9 @@ semantic subset. It does not enter the TUI/MCP/Chrome lifecycle shown above.
   and bounded `overflow:hidden` clips shared by paint, viewport projection, and
   point hit-testing, bounded axis-specific `overflow-x`/`overflow-y`
   `hidden`/`clip` clips through the same owner, a display list, a logical RGBA software surface, and
-  bounded PNG capture; it never enters automatic backend selection.
+  bounded PNG capture; it is the primary selected backend for current browser
+  entrypoints, while final Core Web Profile certification remains an explicit
+  issue #40 gate.
 
 ## Module index
 

@@ -1,4 +1,5 @@
-//! Browser lifecycle, transport adapters, policy, profiles, and sessions.
+//! Browser lifecycle, the native runtime, transport adapters, policy, profiles,
+//! and sessions.
 //!
 //! [`session module`](crate::browser::session) is the primary embedded API. An
 //! owned session launches Chrome, owns its process and profile flush, and must
@@ -8,10 +9,12 @@
 //! provides a separate portable semantic slice for externally managed
 //! Firefox BiDi and Safari WebDriver endpoints.
 //!
-//! The production path is raw CDP through the [`CDP module`](crate::browser::cdp);
-//! the [`BiDi backend module`](crate::browser::bidi_backend) is a bounded
-//! experimental adapter. Callers should depend on semantic requests and
-//! responses from [`crate::browser_backend`] instead of transport IDs.
+//! Feature-enabled products use the Glass-owned native runtime as their primary
+//! local path. Raw CDP through the [`CDP module`](crate::browser::cdp) remains
+//! an explicit Chromium migration backend; the [`BiDi backend module`](crate::browser::bidi_backend)
+//! is a bounded experimental adapter. Callers should depend on semantic
+//! requests and responses from [`crate::browser_backend`] instead of transport
+//! IDs.
 //! The [`policy module`](crate::browser::policy) gates privileged capabilities,
 //! the [`DOM module`](crate::browser::dom) builds compact structured evidence,
 //! the [`mouse module`](crate::browser::mouse) implements human/fast pointer

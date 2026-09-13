@@ -105,10 +105,10 @@ async fn dispatch_product(mut cli: Cli, _development_enabled: bool) -> BrowserRe
             "sandbox support is required, and behavior may break"
         ));
     }
-    if cli.browser_runtime != BrowserRuntime::Chromium || cli.browser_endpoint.is_some() {
-        return dispatch_alternative_runtime(&cli, &mut policy).await;
-    }
     if cli.mcp {
+        if cli.browser_runtime != BrowserRuntime::Chromium || cli.browser_endpoint.is_some() {
+            return dispatch_alternative_runtime(&cli, &mut policy).await;
+        }
         return crate::mcp::server::run_mcp_server(&cli).await;
     }
 
@@ -265,6 +265,10 @@ async fn dispatch_product(mut cli: Cli, _development_enabled: bool) -> BrowserRe
         _ => {}
     }
 
+    if cli.browser_runtime != BrowserRuntime::Chromium || cli.browser_endpoint.is_some() {
+        return dispatch_alternative_runtime(&cli, &mut policy).await;
+    }
+
     if let Some(Commands::RecoverRun { execution_id }) = &cli.command {
         let result = crate::browser::session::recover_run(execution_id)?;
         print_json_mode(&result, cli.response_mode)?;
@@ -357,6 +361,23 @@ async fn dispatch_alternative_runtime(cli: &Cli, policy: &mut BrowserPolicy) -> 
                 .into(),
         );
     }
+    #[cfg(feature = "native-engine")]
+    if native
+        && cli.prompt.is_none()
+        && matches!(
+            cli.command.as_ref(),
+            None | Some(Commands::Tui) | Some(Commands::Browser { .. })
+        )
+    {
+        if should_run_tui(
+            std::io::stdin().is_terminal(),
+            std::io::stdout().is_terminal(),
+        ) {
+            return crate::tui::app::run_tui_for_product(cli, false).await;
+        }
+        print_start_here();
+        return Ok(());
+    }
     let command = cli.command.as_ref().ok_or_else(|| {
         format!(
             "an explicit browser command is required for {} runtime mode",
@@ -446,7 +467,7 @@ fn validate_alternative_runtime_flags(cli: &Cli, runtime: BrowserRuntime) -> Bro
         )
     } else if cli.headed {
         Some("--headed is only available when Glass launches Chromium")
-    } else if cli.viewport.is_some() {
+    } else if cli.viewport.is_some() && !runtime.is_native() {
         Some("--viewport is only available on the full Chromium session")
     } else if cli.interaction != InteractionMode::Human {
         Some("--interaction is only available on the full Chromium session")
@@ -458,15 +479,16 @@ fn validate_alternative_runtime_flags(cli: &Cli, runtime: BrowserRuntime) -> Bro
         Some("--chrome-path is only available on the full Chromium session")
     } else if cli.experimental_extensions {
         Some("--experimental-extensions is only available on the full Chromium session")
-    } else if cli.tui_layout != TuiLayout::Auto
-        || cli.tui_transport != TuiTransport::Auto
-        || cli.tui_graphics != TuiGraphics::Auto
-        || cli.tui_rtt_ms.is_some()
-        || cli.tui_throughput_mbps.is_some()
-        || cli.tui_live != TuiLiveMode::Off
-        || cli.tui_live_backend != TuiLiveBackend::Auto
-        || cli.tui_live_quality != TuiLiveQuality::Balanced
-        || cli.tui_live_fit != TuiLiveFit::Contain
+    } else if !runtime.is_native()
+        && (cli.tui_layout != TuiLayout::Auto
+            || cli.tui_transport != TuiTransport::Auto
+            || cli.tui_graphics != TuiGraphics::Auto
+            || cli.tui_rtt_ms.is_some()
+            || cli.tui_throughput_mbps.is_some()
+            || cli.tui_live != TuiLiveMode::Off
+            || cli.tui_live_backend != TuiLiveBackend::Auto
+            || cli.tui_live_quality != TuiLiveQuality::Balanced
+            || cli.tui_live_fit != TuiLiveFit::Contain)
     {
         Some("TUI presentation options are only available on the full Chromium session")
     } else if cli.knowledge_store.is_some() {

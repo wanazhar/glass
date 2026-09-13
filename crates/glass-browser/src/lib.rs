@@ -1,5 +1,5 @@
-//! Local, revision-safe browser intelligence for Chromium, Firefox, Safari,
-//! and an experimental Glass-owned native engine.
+//! Local, revision-safe browser intelligence for the Glass-owned native
+//! runtime, explicit Chromium/CDP migration sessions, Firefox, and Safari.
 //!
 //! `glass-browser` provides an owned/attached Chromium [`BrowserSession`],
 //! structured semantic observation, guarded actions, stable Web IR, Task
@@ -9,12 +9,12 @@
 //! Glass does not bundle a browser, host a browser service, or infer an
 //! autonomous plan. Callers select operations; Glass validates current
 //! evidence, policy, capabilities, revisions, unique targeting, and bounded
-//! postconditions. CDP is the production backend for the full session. The
-//! portable [`BrowserRuntimeSession`] covers the bounded semantic slice for
-//! Firefox BiDi and Safari WebDriver. The default-off `native-engine` feature
-//! exposes a deterministic local kernel plus bounded asynchronous HTTP(S)
-//! document navigation through explicit Rust and feature-gated CLI runtime
-//! paths; it is not a browser-parity or hostile-content security boundary.
+//! postconditions. Feature-enabled builds select the Glass-owned native
+//! runtime for the primary CLI/session path. Chromium/CDP remains an explicit
+//! migration backend, and the portable [`BrowserRuntimeSession`] covers the
+//! bounded semantic slice for Firefox BiDi and Safari WebDriver. Native browser
+//! parity and hostile-content security certification are versioned issue #40
+//! gates; unsupported operations fail closed without a transport fallback.
 //!
 //! The docs.rs page documents the Rust library API; installed command behavior
 //! is specified in the [CLI reference](https://github.com/wanazhar/glass/blob/main/docs/cli.md).
@@ -30,7 +30,7 @@
 //! | Share standalone/embedded browser UI state | [`browser_workspace`] |
 //! | Assess scoped historical knowledge | [`KnowledgeStore`] |
 //! | Implement/select a backend | [`browser_backend`] and [`browser::BackendFactory`] |
-//! | Experiment with the native engine | the default-off `native-engine` feature and `NativeEngine` |
+//! | Use the native engine | the default-enabled `native-engine` feature and `NativeEngine` |
 //! | Expose MCP or canonical requests | [`mcp`] and [`protocol`] |
 //! | Present terminal frames | [`presentation`] and [`terminal_graphics`] |
 //!
@@ -127,8 +127,9 @@
 //! - `visual-compare` enables PNG comparison helpers for explicit screenshot
 //!   checks.
 //! - `fuzzing` enables test-only fuzz hooks and is not for normal applications.
-//! - `native-engine` enables the experimental Glass-owned local-content backend;
-//!   it is default-off and adds no dependency.
+//! - `native-engine` enables the Glass-owned native browser backend; it is
+//!   enabled by default for the current feature-enabled products and adds its
+//!   optional native runtime dependencies.
 //!
 //! docs.rs builds all features. The default library remains browser-focused.
 //!
@@ -148,7 +149,7 @@
 //! # Module map
 //!
 //! - [`browser`] — Chrome lifecycle, CDP client, DOM/accessibility parsing,
-//!   the feature-gated native engine, policy, profiles, actions, observations,
+//!   the native engine, policy, profiles, actions, observations,
 //!   workflows, and knowledge.
 //! - [`browser_backend`] — semantic backend capabilities, requests, responses,
 //!   errors, and mandatory dispatcher.

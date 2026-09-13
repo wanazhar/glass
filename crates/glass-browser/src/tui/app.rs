@@ -28,9 +28,13 @@ use super::live_view::{
     AnsiPane, VisualPath, decide_path, frame_fit, frame_interval_ms, pane_size,
 };
 use crate::browser::session::{
-    BrowserResult, BrowserSession, SessionOptions, WorkflowCheckpoint, WorkflowDefinition,
-    WorkflowRunResult,
+    BrowserResult, BrowserSession, PageTargetInfo, SessionOptions, WorkflowCheckpoint,
+    WorkflowDefinition, WorkflowRunResult,
 };
+#[cfg(feature = "native-engine")]
+use crate::browser::{BrowserRuntimeSession, NativeEngineConfig, NativeHistoryDirection, Viewport};
+#[cfg(feature = "native-engine")]
+use crate::browser_backend::{EvidenceLevel, SemanticAction};
 use crate::browser_workspace::{
     BrowserConnectionPhase, BrowserWorkspaceAdapterKind, BrowserWorkspaceController,
     BrowserWorkspaceEntity, BrowserWorkspaceIntent, BrowserWorkspaceLayout,
@@ -78,12 +82,354 @@ struct BrowserTui {
     command: String,
     status: String,
     page: String,
-    session: Option<BrowserSession>,
+    session: Option<BrowserTuiSession>,
     workspace: BrowserWorkspaceController,
     graphics: Option<HerdrGraphicsWorker>,
     visual: VisualState,
     last_workflow: Option<(WorkflowDefinition, WorkflowRunResult)>,
     workflow_checkpoint: Option<WorkflowCheckpoint>,
+}
+
+enum BrowserTuiSession {
+    Chromium(Box<BrowserSession>),
+    #[cfg(feature = "native-engine")]
+    Native(Box<BrowserRuntimeSession>),
+}
+
+impl BrowserTuiSession {
+    #[cfg(feature = "native-engine")]
+    const fn is_native(&self) -> bool {
+        matches!(self, Self::Native(_))
+    }
+
+    async fn close(self) -> BrowserResult<()> {
+        match self {
+            Self::Chromium(session) => session.close().await,
+            #[cfg(feature = "native-engine")]
+            Self::Native(session) => session.close().await,
+        }
+    }
+}
+
+struct TuiObservation {
+    title: String,
+    url: String,
+    loading: bool,
+    revision: u64,
+    visible_text: String,
+    entities: Vec<BrowserWorkspaceEntity>,
+}
+
+struct TuiControlOutcome {
+    action: String,
+    current_revision: u64,
+}
+
+impl BrowserTuiSession {
+    async fn navigate(&self, url: &str) -> BrowserResult<TuiObservation> {
+        match self {
+            Self::Chromium(session) => {
+                session.navigate(url).await?;
+            }
+            #[cfg(feature = "native-engine")]
+            Self::Native(session) => {
+                session.navigate(url).await?;
+            }
+        }
+        self.observe().await
+    }
+
+    async fn observe(&self) -> BrowserResult<TuiObservation> {
+        match self {
+            Self::Chromium(session) => {
+                let observation = session.observe().await?;
+                let revision = observation.accessibility.revision;
+                Ok(TuiObservation {
+                    title: observation.page.title,
+                    url: observation.page.url,
+                    loading: observation.page.ready_state != "complete",
+                    revision,
+                    visible_text: observation.text,
+                    entities: observation
+                        .accessibility
+                        .interactive
+                        .into_iter()
+                        .map(|entity| BrowserWorkspaceEntity {
+                            reference: entity.reference,
+                            role: entity.role,
+                            name: entity.name,
+                            actionable: true,
+                            revision,
+                        })
+                        .collect(),
+                })
+            }
+            #[cfg(feature = "native-engine")]
+            Self::Native(session) => {
+                let evidence = session.evidence(EvidenceLevel::Compact).await?;
+                let revision = evidence.revision;
+                let entities = session
+                    .native_semantic_nodes()?
+                    .into_iter()
+                    .map(|node| BrowserWorkspaceEntity {
+                        reference: node.reference,
+                        role: node.role,
+                        name: node.name,
+                        actionable: !node.hidden && !node.disabled,
+                        revision,
+                    })
+                    .collect();
+                Ok(TuiObservation {
+                    title: evidence.title,
+                    url: evidence.url,
+                    loading: !evidence.complete,
+                    revision,
+                    visible_text: evidence.visible_text,
+                    entities,
+                })
+            }
+        }
+    }
+
+    async fn type_text(
+        &self,
+        text: &str,
+        target: Option<&str>,
+        expected_revision: u64,
+    ) -> BrowserResult<()> {
+        match self {
+            Self::Chromium(session) => {
+                session
+                    .type_text_with_expected_revision(text, target, Some(expected_revision))
+                    .await?;
+            }
+            #[cfg(feature = "native-engine")]
+            Self::Native(session) => {
+                let target = target.ok_or("native type requires a selected semantic target")?;
+                session
+                    .action_with_revision(
+                        SemanticAction::Type {
+                            target: target.to_owned(),
+                            text: text.to_owned(),
+                        },
+                        expected_revision,
+                    )
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn scroll(&self, dx: f64, dy: f64, expected_revision: u64) -> BrowserResult<()> {
+        match self {
+            Self::Chromium(session) => {
+                session
+                    .scroll_with_revision(dx, dy, Some(expected_revision))
+                    .await?;
+            }
+            #[cfg(feature = "native-engine")]
+            Self::Native(session) => {
+                let (delta_x, delta_y) = native_scroll_deltas(dx, dy)?;
+                session
+                    .action_with_revision(
+                        SemanticAction::Scroll { delta_x, delta_y },
+                        expected_revision,
+                    )
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn targets(&self) -> BrowserResult<Vec<PageTargetInfo>> {
+        match self {
+            Self::Chromium(session) => session.list_targets().await,
+            #[cfg(feature = "native-engine")]
+            Self::Native(session) => session.native_list_targets().await,
+        }
+    }
+
+    async fn select_target(&self, target_id: &str) -> BrowserResult<()> {
+        match self {
+            Self::Chromium(session) => {
+                session.select_target(target_id).await?;
+            }
+            #[cfg(feature = "native-engine")]
+            Self::Native(session) => {
+                session.native_select_target(target_id).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn click(&self, target: &str, expected_revision: u64) -> BrowserResult<()> {
+        match self {
+            Self::Chromium(session) => {
+                session
+                    .click_with_revision(target, expected_revision)
+                    .await?;
+            }
+            #[cfg(feature = "native-engine")]
+            Self::Native(session) => {
+                session
+                    .action_with_revision(
+                        SemanticAction::Click {
+                            target: target.to_owned(),
+                        },
+                        expected_revision,
+                    )
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "native-engine")]
+    async fn history(
+        &self,
+        direction: NativeHistoryDirection,
+        expected_revision: u64,
+    ) -> BrowserResult<TuiControlOutcome> {
+        match self {
+            Self::Chromium(_) => Err("native history direction is not valid for Chromium".into()),
+            #[cfg(feature = "native-engine")]
+            Self::Native(session) => {
+                require_native_revision(session, expected_revision).await?;
+                let outcome = session.native_navigate_history(direction).await?;
+                Ok(TuiControlOutcome {
+                    action: outcome.action,
+                    current_revision: outcome.current_revision,
+                })
+            }
+        }
+    }
+
+    async fn reload(&self, expected_revision: u64) -> BrowserResult<TuiControlOutcome> {
+        match self {
+            Self::Chromium(session) => {
+                let outcome = session.reload_with_revision(expected_revision).await?;
+                Ok(TuiControlOutcome {
+                    action: outcome.action,
+                    current_revision: outcome.current_revision,
+                })
+            }
+            #[cfg(feature = "native-engine")]
+            Self::Native(session) => {
+                require_native_revision(session, expected_revision).await?;
+                session.script("location.reload()").await?;
+                let observation = self.observe().await?;
+                Ok(TuiControlOutcome {
+                    action: "reload".into(),
+                    current_revision: observation.revision,
+                })
+            }
+        }
+    }
+
+    async fn stop_loading(&self, expected_revision: u64) -> BrowserResult<TuiControlOutcome> {
+        match self {
+            Self::Chromium(session) => {
+                let outcome = session
+                    .stop_loading_with_revision(expected_revision)
+                    .await?;
+                Ok(TuiControlOutcome {
+                    action: outcome.action,
+                    current_revision: outcome.current_revision,
+                })
+            }
+            #[cfg(feature = "native-engine")]
+            Self::Native(session) => {
+                let current_revision = require_native_revision(session, expected_revision).await?;
+                Ok(TuiControlOutcome {
+                    action: "stopLoading".into(),
+                    current_revision,
+                })
+            }
+        }
+    }
+
+    async fn screenshot_png(&self) -> BrowserResult<Vec<u8>> {
+        match self {
+            Self::Chromium(session) => session.screenshot_png().await,
+            #[cfg(feature = "native-engine")]
+            Self::Native(session) => session.native_capture_png_async().await,
+        }
+    }
+
+    async fn run_workflow(
+        &self,
+        workflow: &WorkflowDefinition,
+        inputs: &BTreeMap<String, serde_json::Value>,
+    ) -> BrowserResult<WorkflowRunResult> {
+        match self {
+            Self::Chromium(session) => session.run_workflow(workflow, inputs).await,
+            #[cfg(feature = "native-engine")]
+            Self::Native(_) => Err(
+                "native workflow execution is not wired through the TUI session yet; use explicit native commands"
+                    .into(),
+            ),
+        }
+    }
+
+    async fn export_workflow_checkpoint(
+        &self,
+        workflow: &WorkflowDefinition,
+        result: &WorkflowRunResult,
+    ) -> BrowserResult<WorkflowCheckpoint> {
+        match self {
+            Self::Chromium(session) => session.export_workflow_checkpoint(workflow, result).await,
+            #[cfg(feature = "native-engine")]
+            Self::Native(_) => {
+                Err("native workflow checkpoints are not wired through the TUI session yet".into())
+            }
+        }
+    }
+
+    async fn resume_workflow(
+        &self,
+        workflow: &WorkflowDefinition,
+        inputs: &BTreeMap<String, serde_json::Value>,
+        checkpoint: &WorkflowCheckpoint,
+    ) -> BrowserResult<WorkflowRunResult> {
+        match self {
+            Self::Chromium(session) => session.resume_workflow(workflow, inputs, checkpoint).await,
+            #[cfg(feature = "native-engine")]
+            Self::Native(_) => {
+                Err("native workflow resume is not wired through the TUI session yet".into())
+            }
+        }
+    }
+}
+
+#[cfg(feature = "native-engine")]
+async fn require_native_revision(
+    session: &BrowserRuntimeSession,
+    expected_revision: u64,
+) -> BrowserResult<u64> {
+    let actual_revision = session.evidence(EvidenceLevel::Compact).await?.revision;
+    if actual_revision != expected_revision {
+        return Err(format!(
+            "stale browser revision: expected {expected_revision}, observed {actual_revision}"
+        )
+        .into());
+    }
+    Ok(actual_revision)
+}
+
+#[cfg(feature = "native-engine")]
+fn native_scroll_deltas(dx: f64, dy: f64) -> BrowserResult<(i32, i32)> {
+    if !dx.is_finite()
+        || !dy.is_finite()
+        || dx.fract() != 0.0
+        || dy.fract() != 0.0
+        || dx < f64::from(i32::MIN)
+        || dx > f64::from(i32::MAX)
+        || dy < f64::from(i32::MIN)
+        || dy > f64::from(i32::MAX)
+    {
+        return Err("native scroll deltas must be finite 32-bit integers".into());
+    }
+    Ok((dx as i32, dy as i32))
 }
 
 #[derive(Default)]
@@ -187,11 +533,16 @@ impl BrowserTui {
             Some(VisualPath::Herdr) | Some(VisualPath::Kitty) | Some(VisualPath::Ansi)
         ) && matches!(cli.tui_live, TuiLiveMode::On | TuiLiveMode::Auto);
         let _ = visual.request_live(auto_live);
+        let page = if cli.browser_runtime.is_native() {
+            "No native browser session.\n\nSTART HERE\n  [l] start the Glass native engine\n  [n] enter an address to navigate\n  [?] show the command reference"
+        } else {
+            "No browser session.\n\nSTART HERE\n  [l] launch a local browser on a free port\n  [a] attach an existing Chrome on a DevTools port\n  [n] enter an address to navigate\n  [?] show the command reference"
+        };
         Self {
             mode: WorkspaceMode::Browser,
             command: String::new(),
             status: "Ready · structured observation is the default".into(),
-            page: "No browser session.\n\nSTART HERE\n  [l] launch a local browser on a free port\n  [a] attach an existing Chrome on a DevTools port\n  [n] enter an address to navigate\n  [?] show the command reference".into(),
+            page: page.into(),
             session: None,
             workspace: BrowserWorkspaceController::for_adapter(
                 BrowserWorkspaceLayout::Desktop,
@@ -244,7 +595,7 @@ impl BrowserTui {
             self.session
                 .as_ref()
                 .ok_or("browser is detached")?
-                .type_text_with_expected_revision(&text, target.as_deref(), Some(expected_revision))
+                .type_text(&text, target.as_deref(), expected_revision)
                 .await?;
             self.observe().await?;
             self.status = "Text sent to selected semantic target".into();
@@ -270,7 +621,7 @@ impl BrowserTui {
             self.session
                 .as_ref()
                 .ok_or("browser is detached")?
-                .scroll_with_revision(dx, dy, Some(expected_revision))
+                .scroll(dx, dy, expected_revision)
                 .await?;
             self.observe().await?;
             self.status = format!("Scrolled page by {dy:.0}px");
@@ -290,7 +641,7 @@ impl BrowserTui {
         }
         if command == "targets" {
             let session = self.session.as_ref().ok_or("browser is detached")?;
-            let targets = session.list_targets().await?;
+            let targets = session.targets().await?;
             self.workspace.replace_targets(
                 targets
                     .into_iter()
@@ -355,7 +706,11 @@ impl BrowserTui {
             let port = listener.local_addr()?.port();
             drop(listener);
             self.start_at(cli, port, false).await?;
-            self.status = format!("Browser launched on automatic free port {port}");
+            self.status = if cli.browser_runtime.is_native() {
+                "Native browser engine started".into()
+            } else {
+                format!("Browser launched on automatic free port {port}")
+            };
             return Ok(false);
         }
         if let Some(port) = command.strip_prefix("launch ") {
@@ -367,7 +722,11 @@ impl BrowserTui {
                 session.close().await?;
             }
             self.start_at(cli, port, false).await?;
-            self.status = format!("Browser launched on explicit port {port}");
+            self.status = if cli.browser_runtime.is_native() {
+                "Native browser engine started".into()
+            } else {
+                format!("Browser launched on explicit port {port}")
+            };
             return Ok(false);
         }
         if let Some(port) = command.strip_prefix("attach ") {
@@ -494,19 +853,13 @@ impl BrowserTui {
         }
         if let Some(url) = command.strip_prefix("navigate ") {
             self.ensure_session(cli).await?;
-            let page = self
+            let observation = self
                 .session
                 .as_ref()
                 .expect("session initialized")
                 .navigate(url.trim())
                 .await?;
-            self.workspace.update_page(
-                page.title.clone(),
-                page.url.clone(),
-                false,
-                self.workspace.state().browser_revision,
-            );
-            self.page = format!("{}\n{}", page.title, page.url);
+            self.apply_observation(observation);
             self.status = "Navigation complete · run `observe` for structured evidence".into();
             return Ok(false);
         }
@@ -523,6 +876,29 @@ impl BrowserTui {
 
     async fn start_at(&mut self, cli: &Cli, port: u16, attach: bool) -> BrowserResult<()> {
         if self.session.is_none() {
+            #[cfg(feature = "native-engine")]
+            if cli.browser_runtime.is_native() {
+                if attach {
+                    return Err(
+                        "the native browser is process-owned; use Chromium explicitly for DevTools attach"
+                            .into(),
+                    );
+                }
+                let mut config = NativeEngineConfig::default();
+                if let Some(viewport) = cli.viewport.as_deref() {
+                    let (width, height) = crate::cli::runner::parse_viewport(viewport)?;
+                    config = config.with_viewport(Viewport {
+                        width: u32::try_from(width)?,
+                        height: u32::try_from(height)?,
+                        device_scale_factor_milli: 1000,
+                    });
+                }
+                self.session = Some(BrowserTuiSession::Native(Box::new(
+                    BrowserRuntimeSession::connect_native(config).await?,
+                )));
+                self.workspace.connected(true, Some("native".into()), None);
+                return Ok(());
+            }
             let options = SessionOptions {
                 port,
                 chrome_path: cli.chrome_path.clone(),
@@ -536,7 +912,9 @@ impl BrowserTui {
                 audit: cli.audit,
                 policy: Some(crate::cli::runner::policy_from_cli(cli)?),
             };
-            self.session = Some(BrowserSession::start(&options).await?);
+            self.session = Some(BrowserTuiSession::Chromium(Box::new(
+                BrowserSession::start(&options).await?,
+            )));
             self.workspace
                 .connected(!attach, Some(format!("127.0.0.1:{port}")), None);
         }
@@ -545,38 +923,34 @@ impl BrowserTui {
 
     async fn observe(&mut self) -> BrowserResult<()> {
         let Some(session) = self.session.as_ref() else {
-            self.status = "Navigate first; observation never starts Chrome implicitly".into();
+            self.status = "Navigate first; observation never starts a browser implicitly".into();
             return Ok(());
         };
         let observation = session.observe().await?;
-        let revision = observation.accessibility.revision;
-        self.workspace.update_page(
-            observation.page.title.clone(),
-            observation.page.url.clone(),
-            observation.page.ready_state != "complete",
-            Some(revision),
-        );
-        self.workspace.replace_entities(
-            revision,
-            observation
-                .accessibility
-                .interactive
-                .iter()
-                .map(|entity| BrowserWorkspaceEntity {
-                    reference: entity.reference.clone(),
-                    role: entity.role.clone(),
-                    name: entity.name.clone(),
-                    actionable: true,
-                    revision,
-                })
-                .collect(),
-        );
+        let revision = observation.revision;
+        self.apply_observation(observation);
         self.page = semantic_text(&self.workspace);
-        self.status = format!(
-            "Structured observation · revision {}",
-            observation.accessibility.revision
-        );
+        self.status = format!("Structured observation · revision {revision}");
         Ok(())
+    }
+
+    fn apply_observation(&mut self, observation: TuiObservation) {
+        let TuiObservation {
+            title,
+            url,
+            loading,
+            revision,
+            visible_text,
+            entities,
+        } = observation;
+        self.workspace
+            .update_page(title.clone(), url.clone(), loading, Some(revision));
+        self.workspace.replace_entities(revision, entities);
+        self.page = if self.workspace.state().entities.is_empty() {
+            format!("{title}\n{url}\n\n{visible_text}")
+        } else {
+            semantic_text(&self.workspace)
+        };
     }
 
     async fn close(&mut self) -> BrowserResult<()> {
@@ -602,10 +976,7 @@ impl BrowserTui {
         let Some(session) = self.session.as_ref() else {
             return Err("browser is detached".into());
         };
-        match session
-            .click_with_revision(&target, expected_revision)
-            .await
-        {
+        match session.click(&target, expected_revision).await {
             Ok(_) => self.observe().await,
             Err(error) => {
                 let stale = error.to_string().to_lowercase().contains("stale");
@@ -624,21 +995,81 @@ impl BrowserTui {
         let session = self.session.as_ref().ok_or("browser is detached")?;
         let outcome = match action {
             Some(crate::browser_workspace::BrowserWorkspaceAction::Back { expected_revision }) => {
-                session.go_back_with_revision(expected_revision).await?
+                #[cfg(feature = "native-engine")]
+                if session.is_native() {
+                    session
+                        .history(NativeHistoryDirection::Back, expected_revision)
+                        .await?
+                } else {
+                    match session {
+                        BrowserTuiSession::Chromium(session) => {
+                            let outcome = session.go_back_with_revision(expected_revision).await?;
+                            TuiControlOutcome {
+                                action: outcome.action,
+                                current_revision: outcome.current_revision,
+                            }
+                        }
+                        BrowserTuiSession::Native(_) => {
+                            unreachable!("native history handled above")
+                        }
+                    }
+                }
+                #[cfg(not(feature = "native-engine"))]
+                {
+                    match session {
+                        BrowserTuiSession::Chromium(session) => {
+                            let outcome = session.go_back_with_revision(expected_revision).await?;
+                            TuiControlOutcome {
+                                action: outcome.action,
+                                current_revision: outcome.current_revision,
+                            }
+                        }
+                    }
+                }
             }
             Some(crate::browser_workspace::BrowserWorkspaceAction::Forward {
                 expected_revision,
-            }) => session.go_forward_with_revision(expected_revision).await?,
+            }) => {
+                #[cfg(feature = "native-engine")]
+                if session.is_native() {
+                    session
+                        .history(NativeHistoryDirection::Forward, expected_revision)
+                        .await?
+                } else {
+                    match session {
+                        BrowserTuiSession::Chromium(session) => {
+                            let outcome =
+                                session.go_forward_with_revision(expected_revision).await?;
+                            TuiControlOutcome {
+                                action: outcome.action,
+                                current_revision: outcome.current_revision,
+                            }
+                        }
+                        BrowserTuiSession::Native(_) => {
+                            unreachable!("native history handled above")
+                        }
+                    }
+                }
+                #[cfg(not(feature = "native-engine"))]
+                {
+                    match session {
+                        BrowserTuiSession::Chromium(session) => {
+                            let outcome =
+                                session.go_forward_with_revision(expected_revision).await?;
+                            TuiControlOutcome {
+                                action: outcome.action,
+                                current_revision: outcome.current_revision,
+                            }
+                        }
+                    }
+                }
+            }
             Some(crate::browser_workspace::BrowserWorkspaceAction::Reload {
                 expected_revision,
-            }) => session.reload_with_revision(expected_revision).await?,
+            }) => session.reload(expected_revision).await?,
             Some(crate::browser_workspace::BrowserWorkspaceAction::StopLoading {
                 expected_revision,
-            }) => {
-                session
-                    .stop_loading_with_revision(expected_revision)
-                    .await?
-            }
+            }) => session.stop_loading(expected_revision).await?,
             _ => return Ok(()),
         };
         self.workspace.state_mut().browser_revision = Some(outcome.current_revision);
@@ -853,6 +1284,8 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
             "Ready · {} · n address · Enter activates the selection",
             app.visual.label()
         )
+    } else if cli.browser_runtime.is_native() {
+        "Ready · native engine · n enters an address · help lists all".into()
     } else {
         "Ready · n enters an address · `navigate URL` starts a browser · `attach PORT` reuses one · help lists all"
             .into()
@@ -916,15 +1349,20 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
                             Ok(true) | Ok(false) => {}
                             Err(error) => {
                                 app.workspace.disconnected(error.to_string(), true);
-                                app.status = format!(
-                                    "Launch failed: {error} · press l to retry or a to attach"
-                                );
+                                app.status = format!("Launch failed: {error} · press l to retry");
                             }
                         }
                     }
                     KeyCode::Char('a') if app.command.is_empty() => {
-                        app.command = "attach ".into();
-                        app.status = "Attach entry · type a DevTools port · Enter connects".into();
+                        if cli.browser_runtime.is_native() {
+                            app.status =
+                                "Native engine owns its browser process; use Chromium explicitly for DevTools attach"
+                                    .into();
+                        } else {
+                            app.command = "attach ".into();
+                            app.status =
+                                "Attach entry · type a DevTools port · Enter connects".into();
+                        }
                     }
                     KeyCode::Char('n') if app.command.is_empty() => {
                         app.command = "navigate ".into();
@@ -1301,9 +1739,20 @@ mod tests {
 
     #[test]
     fn browser_tui_welcome_shows_launch_attach_and_navigation_actions() {
-        let app = BrowserTui::new(&test_cli(&[], TuiLiveMode::Off));
+        let mut cli = test_cli(&[], TuiLiveMode::Off);
+        cli.browser_runtime = crate::browser::runtime::BrowserRuntime::Chromium;
+        let app = BrowserTui::new(&cli);
         assert!(app.page.contains("[l] launch a local browser"));
         assert!(app.page.contains("[a] attach an existing Chrome"));
+        assert!(app.page.contains("[n] enter an address"));
+    }
+
+    #[cfg(feature = "native-engine")]
+    #[test]
+    fn browser_tui_welcome_makes_native_engine_the_primary_path() {
+        let app = BrowserTui::new(&test_cli(&[], TuiLiveMode::Off));
+        assert!(app.page.contains("[l] start the Glass native engine"));
+        assert!(!app.page.contains("attach an existing Chrome"));
         assert!(app.page.contains("[n] enter an address"));
     }
 
@@ -1358,9 +1807,21 @@ mod tests {
     }
 
     fn test_cli(extra: &[&str], _mode: TuiLiveMode) -> Cli {
-        let mut base: Cli =
-            clap::Parser::parse_from(std::iter::once("glass-browser").chain(extra.iter().copied()));
-        base.tui_layout = crate::cli::args::TuiLayout::Desktop;
-        base
+        // The generated Clap command is deep enough that this isolated test
+        // helper needs a little more stack than libtest's default thread.
+        let arguments = std::iter::once("glass-browser".to_string())
+            .chain(extra.iter().map(|argument| (*argument).to_string()))
+            .collect::<Vec<_>>();
+        std::thread::Builder::new()
+            .name("glass-tui-cli-fixture".into())
+            .stack_size(4 * 1024 * 1024)
+            .spawn(move || {
+                let mut base: Cli = clap::Parser::try_parse_from(arguments).unwrap();
+                base.tui_layout = crate::cli::args::TuiLayout::Desktop;
+                base
+            })
+            .expect("spawn TUI CLI fixture thread")
+            .join()
+            .expect("TUI CLI fixture thread did not panic")
     }
 }

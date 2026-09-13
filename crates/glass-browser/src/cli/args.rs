@@ -114,14 +114,26 @@ pub struct Cli {
     #[arg(long = "chrome-path", alias = "chrome", global = true)]
     pub chrome_path: Option<PathBuf>,
 
-    /// Select the browser runtime for portable semantic one-shot operations.
-    /// Chromium remains the default full BrowserSession/CDP runtime; native is
-    /// available only in a native-engine feature build.
-    #[arg(
-        long = "browser-runtime",
-        global = true,
-        value_enum,
-        default_value = "chromium"
+    /// Select the browser runtime for browser operations.
+    /// Native is the default in feature-enabled builds; Chromium remains an
+    /// explicit migration backend.
+    #[cfg_attr(
+        feature = "native-engine",
+        arg(
+            long = "browser-runtime",
+            global = true,
+            value_enum,
+            default_value = "native"
+        )
+    )]
+    #[cfg_attr(
+        not(feature = "native-engine"),
+        arg(
+            long = "browser-runtime",
+            global = true,
+            value_enum,
+            default_value = "chromium"
+        )
     )]
     pub browser_runtime: BrowserRuntime,
 
@@ -1682,6 +1694,20 @@ mod tests {
 
         assert!(cli.prompt.is_none());
         assert!(cli.command.is_none());
+    }
+
+    #[cfg(feature = "native-engine")]
+    #[test]
+    fn native_engine_is_the_default_browser_runtime() {
+        let cli = Cli::try_parse_from(["glass"]).unwrap();
+        assert_eq!(cli.browser_runtime, BrowserRuntime::Native);
+    }
+
+    #[cfg(not(feature = "native-engine"))]
+    #[test]
+    fn chromium_is_the_default_browser_runtime_without_native_engine() {
+        let cli = Cli::try_parse_from(["glass"]).unwrap();
+        assert_eq!(cli.browser_runtime, BrowserRuntime::Chromium);
     }
 
     #[test]

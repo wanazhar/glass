@@ -62,25 +62,25 @@ bypass those checks.
 
 ## Current browser runtime mapping
 
-The full `BrowserSession` remains the Chromium/CDP production path. The public
-`BrowserRuntimeSession` adds a deliberately smaller portable path:
+The Glass-owned native runtime is the primary browser path in feature-enabled
+products. `BrowserSession` remains the explicit Chromium/CDP migration path.
+The public `BrowserRuntimeSession` also exposes the smaller portable endpoint
+path:
 
 | Runtime | Transport | Status | Startup |
 |---|---|---|---|
-| Chromium | Chrome DevTools Protocol | Production full session | Glass launches or explicitly attaches |
+| Native | Glass-owned in-process Rust engine | Primary local runtime for feature-enabled builds; active Core Web Profile certification | `NativeEngineConfig` or the default local CLI/TUI/MCP path; no endpoint |
+| Chromium | Chrome DevTools Protocol | Explicit full-session migration path | Glass launches or explicitly attaches |
 | Firefox | WebDriver BiDi WebSocket | Experimental portable semantics | User starts Firefox with `--remote-debugging-port` and supplies `--browser-endpoint` |
 | Safari | W3C WebDriver HTTP through `safaridriver` | Experimental portable semantics | User starts `safaridriver` and supplies its base URL |
-| Native | Glass-owned in-process Rust engine | Experimental local semantics; feature-gated | Explicit `native-engine` build; `NativeEngineConfig` or the local CLI path; no endpoint |
 
-The external portable command set is navigation, one active context, compact
+The external portable command set is navigation, one active context,
 script-derived evidence, script evaluation, CSS click/type actions, and
-revision effects. The native command set is local navigation, one active
-context, bounded URL/title/visible-text evidence, semantic click/type actions,
-and bounded native point hit testing plus revision effects; it does not execute
-script. Screenshots, storage,
-prompts, downloads, keyboard, scrolling, multi-window control, profiles, MCP,
-TUI, and the full locator/Web IR pipeline remain capability-denied on these
-adapters.
+revision effects. The native command set includes bounded HTTP(S)/local
+navigation, persistent page scripts, semantic and point actions, scrolling,
+target/frame topology, storage/download paths, compact evidence, and PNG
+capture as each native contract declares them. Unsupported operations fail
+closed and never switch to Chromium/CDP implicitly.
 
 Firefox is configured as a browser-specific BiDi profile so selection can
 require `browserFamily=firefox`; Safari is intentionally represented by the
@@ -97,7 +97,7 @@ Protocol references:
 
 The native-engine program now has real Phase 2 semantic interaction and
 initial Phase 3 presentation/layout/display-list/software-surface slices
-behind the default-off `native-engine` feature. It owns one deterministic
+behind the default-enabled `native-engine` feature in current products. It owns one deterministic
 in-process context, local `about:blank`, `data:text/html`, and registered
 `fixture://` resources, a small DOM/text projection, history, revisions,
 bounded CSS presentation, integer normal-flow rectangles, point hit testing,

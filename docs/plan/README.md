@@ -28,7 +28,10 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-316` locally. The versioned
+`native-engine-browser-317` locally. Native is now the default runtime for
+feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
+explicit migration backend and is never selected as a silent fallback. The
+versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -341,6 +344,17 @@ full matrix-string semantics remain out of scope; complete Canvas/Web IDL
 breadth and the remaining issue #40 production gates remain open. Exact
 evidence is recorded in
 [tasks/native-engine-browser-316.md](tasks/native-engine-browser-316.md).
+
+The completed native-engine-browser-317 slice makes the native runtime the
+primary product path. Feature-enabled builds enable `native-engine` by
+default, CLI parsing selects `native` by default, browser dispatch preserves
+browser-free administration, and the standalone browser TUI now adapts its
+navigation, observation, semantic actions, target selection, history, reload,
+and PNG presentation through `BrowserRuntimeSession`. Explicit
+`--browser-runtime chromium` retains the BrowserSession/CDP migration path;
+complete Core Web Profile conformance, native workflow coverage, and
+cross-platform certification remain issue #40 gates. Exact evidence is
+recorded in [tasks/native-engine-browser-317.md](tasks/native-engine-browser-317.md).
 
 The completed native-engine-browser-299 page-runtime-primitives slice adds
 page `TextEncoder`/`TextDecoder`, bounded `atob`/`btoa`,

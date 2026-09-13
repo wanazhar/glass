@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-310` slice; the bounded foundation below remains
+`native-engine-browser-311` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 
 Slice 283 adds a bounded dedicated-worker bridge after the page-facing
@@ -287,6 +287,16 @@ resource, so screenshots and content snapshots observe the same pixels.
 Canvas/Web IDL breadth, image/bitmap/video sources, font shaping, GPU paths,
 and full native/CDP replacement remain Issue #40 gates. Exact evidence is
 recorded in `docs/plan/tasks/native-engine-browser-310.md`.
+
+Slice 311 connects the existing decoded image owner to Canvas 2D. Image pixels
+are projected in a bounded script snapshot and accepted by the same source
+adapter as canvas surfaces; two-, four-, and eight-argument `drawImage()`
+forms share the transformed software sampler. A canvas carries an
+origin-clean bit through commits and snapshots, propagates taint across image
+and canvas draws, and blocks pixel/PNG readback with `SecurityError` when a
+different-origin image has been consumed. ImageBitmap/media sources, complete
+CORS image semantics, and full native/CDP replacement remain Issue #40 gates.
+Exact evidence is recorded in `docs/plan/tasks/native-engine-browser-311.md`.
 
 Slice 282 adds a bounded page-facing computed-style and media-query bridge:
 the JavaScript realm reads the native cascade/layout snapshot through a

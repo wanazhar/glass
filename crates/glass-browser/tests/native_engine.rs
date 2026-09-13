@@ -13422,6 +13422,7 @@ async fn native_content_process_recovers_after_worker_exit_during_startup() {
 
 #[tokio::test]
 async fn native_local_canvas_2d_script_and_raster_pipeline() {
+    let image_url = native_test_png_data_url();
     let config = NativeEngineConfig::default()
         .with_viewport(Viewport {
             width: 32,
@@ -13430,7 +13431,7 @@ async fn native_local_canvas_2d_script_and_raster_pipeline() {
         })
         .with_fixture(
             "fixture://canvas",
-            "<html><body><canvas id='canvas' width='8' height='6' style='display:block;width:8px;height:6px'></canvas></body></html>",
+            &format!("<html><body><canvas id='canvas' width='8' height='6' style='display:block;width:8px;height:6px'></canvas><img id='source' src='{image_url}' style='display:none'></body></html>"),
         )
         .unwrap()
         .with_initial_url("fixture://canvas");
@@ -13451,7 +13452,7 @@ async fn native_local_canvas_2d_script_and_raster_pipeline() {
 
     let drawn = engine
         .evaluate_async(
-            "(() => { const canvas = nativeCanvas; const context = nativeCanvasContext; context.fillStyle = '#ff0000'; context.fillRect(1, 1, 3, 2); context.clearRect(2, 1, 1, 1); const copy = context.createImageData(1, 1); copy.data.set([0, 255, 0, 255]); context.putImageData(copy, 5, 2); const image = context.getImageData(0, 0, 4, 3); const pixel = (value, x, y) => Array.from(value.data.slice((y * value.width + x) * 4, (y * value.width + x + 1) * 4)); const output = { samples: [pixel(image, 1, 1), pixel(image, 2, 1), pixel(image, 3, 1)], copy: pixel(context.getImageData(5, 2, 1, 1), 0, 0), png: canvas.toDataURL().startsWith('data:image/png;base64,iVBORw0KGgo'), imageData: [image instanceof ImageData, image.data instanceof Uint8ClampedArray] }; return output; })()",
+            "(() => { const canvas = nativeCanvas; const context = nativeCanvasContext; const source = document.getElementById('source'); context.fillStyle = '#ff0000'; context.fillRect(1, 1, 3, 2); context.clearRect(2, 1, 1, 1); const copy = context.createImageData(1, 1); copy.data.set([0, 255, 0, 255]); context.putImageData(copy, 5, 2); context.drawImage(source, 0, 4); const image = context.getImageData(0, 0, 4, 3); const sourcePixel = Array.from(context.getImageData(0, 4, 1, 1).data); const pixel = (value, x, y) => Array.from(value.data.slice((y * value.width + x) * 4, (y * value.width + x + 1) * 4)); const output = { samples: [pixel(image, 1, 1), pixel(image, 2, 1), pixel(image, 3, 1)], copy: pixel(context.getImageData(5, 2, 1, 1), 0, 0), source: sourcePixel, png: canvas.toDataURL().startsWith('data:image/png;base64,iVBORw0KGgo'), imageData: [image instanceof ImageData, image.data instanceof Uint8ClampedArray] }; return output; })()",
         )
         .await
         .unwrap();
@@ -13460,18 +13461,20 @@ async fn native_local_canvas_2d_script_and_raster_pipeline() {
         serde_json::json!([[255, 0, 0, 255], [0, 0, 0, 0], [255, 0, 0, 255]])
     );
     assert_eq!(drawn["copy"], serde_json::json!([0, 255, 0, 255]));
+    assert_eq!(drawn["source"], serde_json::json!([255, 0, 0, 255]));
     assert_eq!(drawn["imageData"], serde_json::json!([true, true]));
     assert_eq!(drawn["png"], serde_json::json!(true));
 
     let advanced = engine
         .evaluate_async(
-            "(() => { const canvas = document.createElement('canvas'); canvas.width = 4; canvas.height = 4; document.body.appendChild(canvas); const context = canvas.getContext('2d'); context.strokeStyle = '#00ff00'; context.strokeRect(0.5, 0.5, 3, 3); const border = Array.from(context.getImageData(0, 0, 1, 1).data); context.save(); context.globalAlpha = 0.25; context.lineWidth = 4; context.restore(); const gradient = context.createLinearGradient(0, 0, 4, 0); gradient.addColorStop(0, '#ff0000'); gradient.addColorStop(1, '#0000ff'); context.fillStyle = gradient; context.fillRect(0, 1, 4, 1); const left = Array.from(context.getImageData(0, 1, 1, 1).data); const right = Array.from(context.getImageData(3, 1, 1, 1).data); const state = [context.globalAlpha, context.lineWidth, gradient instanceof CanvasGradient]; canvas.remove(); return { border, left, right, state }; })()",
+            "(() => { const canvas = document.createElement('canvas'); canvas.width = 4; canvas.height = 4; document.body.appendChild(canvas); const context = canvas.getContext('2d'); context.strokeStyle = '#00ff00'; context.strokeRect(0.5, 0.5, 3, 3); const border = Array.from(context.getImageData(0, 0, 1, 1).data); context.save(); context.globalAlpha = 0.25; context.lineWidth = 4; context.restore(); const gradient = context.createLinearGradient(0, 0, 4, 0); gradient.addColorStop(0, '#ff0000'); gradient.addColorStop(1, '#0000ff'); context.fillStyle = gradient; context.fillRect(0, 1, 4, 1); const left = Array.from(context.getImageData(0, 1, 1, 1).data); const right = Array.from(context.getImageData(3, 1, 1, 1).data); canvas.width = canvas.width; const reset = Array.from(canvas.getContext('2d').getImageData(0, 0, 1, 1).data); const state = [context.globalAlpha, context.lineWidth, gradient instanceof CanvasGradient]; canvas.remove(); return { border, left, right, reset, state }; })()",
         )
         .await
         .unwrap();
     assert_eq!(advanced["border"], serde_json::json!([0, 255, 0, 255]));
     assert!(advanced["left"][0].as_u64().unwrap() > advanced["left"][2].as_u64().unwrap());
     assert!(advanced["right"][2].as_u64().unwrap() > advanced["right"][0].as_u64().unwrap());
+    assert_eq!(advanced["reset"], serde_json::json!([0, 0, 0, 0]));
     assert_eq!(advanced["state"], serde_json::json!([1, 1, true]));
 
     let persisted = engine
@@ -13488,6 +13491,67 @@ async fn native_local_canvas_2d_script_and_raster_pipeline() {
     assert_eq!(surface.pixel(3, 1), Some([255, 0, 0, 255]));
     assert_eq!(surface.pixel(5, 2), Some([0, 255, 0, 255]));
     engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_canvas_cross_origin_image_taints_readback() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let page_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let page_address = page_listener.local_addr().unwrap();
+    let image_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let image_address = image_listener.local_addr().unwrap();
+    let png = native_test_png_bytes();
+    let page_server = tokio::spawn(async move {
+        let (mut stream, _) = page_listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = format!(
+            "<img id='source' src='http://{image_address}/image.png'><div id='host'></div>"
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+    let image_server = tokio::spawn(async move {
+        let (mut stream, _) = image_listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/image.png"));
+        let headers = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            png.len()
+        );
+        stream.write_all(headers.as_bytes()).await.unwrap();
+        stream.write_all(&png).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_viewport(Viewport {
+                width: 8,
+                height: 8,
+                device_scale_factor_milli: 1000,
+            })
+            .with_initial_url(format!("http://{page_address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+
+    let result = engine
+        .evaluate_async(
+            "(() => { const source = document.getElementById('source'); const canvas = document.createElement('canvas'); canvas.width = 2; canvas.height = 2; document.getElementById('host').appendChild(canvas); const context = canvas.getContext('2d'); context.drawImage(source, 0, 0); const readback = (() => { try { context.getImageData(0, 0, 1, 1); return 'readable'; } catch (error) { return error.name; } })(); const exported = (() => { try { canvas.toDataURL(); return 'readable'; } catch (error) { return error.name; } })(); return [source.complete, source.naturalWidth, readback, exported]; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        result,
+        serde_json::json!([true, 2, "SecurityError", "SecurityError"])
+    );
+
+    engine.close_async().await.unwrap();
+    page_server.await.unwrap();
+    image_server.await.unwrap();
 }
 
 #[test]

@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-310`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-311`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -4465,6 +4465,18 @@ pixel-perfect edge cases, and final native/CDP replacement remain issue #40
 gates. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-310.md`.
 
+The completed native-engine-browser-311 image-source slice projects bounded
+decoded `<img>` and data-image pixels into the page realm and extends Canvas 2D
+`drawImage()` to canvas and image sources in its supported argument forms.
+Destination surfaces preserve an origin-clean bit across transformed sampling,
+canvas-to-canvas propagation, per-turn commits, and later document snapshots;
+pixel and PNG readback now fail with `SecurityError` after a different-origin
+image draw. The focused witness covers data-image raster output and an
+HTTP(S) cross-origin taint case. ImageBitmap/media sources, complete CORS
+image semantics, full Canvas/Web IDL, and final native/CDP replacement remain
+issue #40 gates. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-311.md`.
+
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame
 realms. `document.createAttribute()` creates persistent `Attr` objects;
@@ -5541,7 +5553,8 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-198.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-197.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-196.md` is the preceding completed task;
-The current browser-slice evidence chain is `native-engine-browser-310`,
+The current browser-slice evidence chain is `native-engine-browser-311`,
+`native-engine-browser-310`,
 `native-engine-browser-309`,
 `native-engine-browser-308`,
 `native-engine-browser-307`,

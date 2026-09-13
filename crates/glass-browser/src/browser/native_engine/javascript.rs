@@ -50,6 +50,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use url::Url;
 
+fn default_true() -> bool {
+    true
+}
+
 /// Maximum source accepted by the native script evaluator.
 pub(crate) const MAX_NATIVE_SCRIPT_BYTES: usize = crate::browser_backend::MAX_TEXT_BYTES;
 /// Maximum JSON representation returned to the semantic backend.
@@ -292,6 +296,8 @@ pub(crate) enum NativeScriptCommand {
         width: u32,
         height: u32,
         pixels_base64: String,
+        #[serde(default = "default_true")]
+        origin_clean: bool,
     },
     SetChecked {
         node_index: u32,
@@ -4447,7 +4453,32 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
     try {
       const pixels = decodeBase64(String(resource.pixels_base64 || ""), nativeCanvasByteLimit);
       if (pixels.length === width * height * 4) {
-        nativeCanvasResources.set(Number(resource.node_index), { width, height, pixels });
+        nativeCanvasResources.set(Number(resource.node_index), {
+          width,
+          height,
+          pixels,
+          originClean: resource.origin_clean !== false,
+        });
+      }
+    } catch (_error) {}
+  }
+  const nativeCanvasImageResources = new Map();
+  for (const resource of Array.isArray(state.imageResources) ? state.imageResources : []) {
+    if (!resource || !Number.isSafeInteger(Number(resource.nodeIndex))) continue;
+    const width = Number(resource.width);
+    const height = Number(resource.height);
+    if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height)
+        || width < 1 || height < 1 || width > nativeCanvasDimensionLimit
+        || height > nativeCanvasDimensionLimit || width * height > nativeCanvasPixelLimit) continue;
+    try {
+      const pixels = decodeBase64(String(resource.pixelsBase64 || ""), nativeCanvasByteLimit);
+      if (pixels.length === width * height * 4) {
+        nativeCanvasImageResources.set(Number(resource.nodeIndex), {
+          width,
+          height,
+          pixels,
+          source: String(resource.source || ""),
+        });
       }
     } catch (_error) {}
   }
@@ -4477,7 +4508,12 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
     const pixels = resource && resource.width === dimensions.width && resource.height === dimensions.height
       ? resource.pixels.slice()
       : nativeCanvasBlankPixels(dimensions.width, dimensions.height);
-    const surface = { width: dimensions.width, height: dimensions.height, pixels };
+    const surface = {
+      width: dimensions.width,
+      height: dimensions.height,
+      pixels,
+      originClean: resource ? resource.originClean !== false : true,
+    };
     nativeCanvasSurfaces.set(nodeIndex, surface);
     return surface;
   };
@@ -4697,10 +4733,11 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
         command.width = surface.width;
         command.height = surface.height;
         command.pixels_base64 = encoded;
+        command.origin_clean = surface.originClean !== false;
         return;
       }
     }
-    pushCommand({ kind: "canvasCommit", node_index: Number(canvas.nodeIndex), width: surface.width, height: surface.height, pixels_base64: encoded });
+    pushCommand({ kind: "canvasCommit", node_index: Number(canvas.nodeIndex), width: surface.width, height: surface.height, pixels_base64: encoded, origin_clean: surface.originClean !== false });
   };
   const nativeCanvasError = (message, name = "IndexSizeError") => {
     const Constructor = globalThis.DOMException;
@@ -4708,6 +4745,9 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
     const error = new Error(message);
     error.name = name;
     return error;
+  };
+  const nativeCanvasRequireOriginClean = (surface) => {
+    if (surface.originClean === false) throw nativeCanvasError("canvas is not origin-clean", "SecurityError");
   };
   const nativeCanvasNumber = (value, fallback = 0) => {
     const numeric = Number(value);
@@ -4742,8 +4782,15 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
     if (path.points.length === 0 || path.points[path.points.length - 1].x !== point.x || path.points[path.points.length - 1].y !== point.y) path.points.push(point);
   };
   const nativeCanvasResetSurface = (canvas) => {
-    nativeCanvasSurfaces.delete(Number(canvas.nodeIndex));
-    const surface = nativeCanvasSurfaceForEntry(canvas.__glassCanvasEntry());
+    const entry = canvas.__glassCanvasEntry();
+    const dimensions = nativeCanvasDimensions(entry);
+    const surface = {
+      width: dimensions.width,
+      height: dimensions.height,
+      pixels: nativeCanvasBlankPixels(dimensions.width, dimensions.height),
+      originClean: true,
+    };
+    nativeCanvasSurfaces.set(Number(canvas.nodeIndex), surface);
     if (canvas.__glassCanvasContext) canvas.__glassCanvasContext.__glassCanvasState = nativeCanvasState();
     nativeCanvasCommit(canvas, surface);
   };
@@ -4811,6 +4858,28 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
   globalThis.__glassCanvasRenderingContext2DConstructor = CanvasRenderingContext2DNative;
   globalThis.CanvasRenderingContext2D = CanvasRenderingContext2DNative;
   const nativeCanvasContextSurface = (context) => nativeCanvasSurfaceForEntry(context.__glassCanvas.__glassCanvasEntry());
+  const nativeCanvasImageOriginClean = (source) => {
+    const current = String(source && (source.currentSrc || source.src) || "");
+    if (!current || /^(?:data|fixture):/i.test(current)) return true;
+    const URLConstructor = globalThis.URL;
+    if (typeof URLConstructor !== "function") return false;
+    try {
+      return new URLConstructor(current, host.url).origin === String(host.origin || "null");
+    } catch (_error) {
+      return false;
+    }
+  };
+  const nativeCanvasSource = (source) => {
+    if (source && source.__glassCanvasSurface) {
+      const surface = source.__glassCanvasSurface;
+      return { surface, originClean: surface.originClean !== false };
+    }
+    if (!source || String(source.localName || "").toLowerCase() !== "img") return null;
+    const resource = nativeCanvasImageResources.get(Number(source.nodeIndex));
+    if (!resource) return null;
+    if (source.complete === false) throw nativeCanvasError("image is not ready", "InvalidStateError");
+    return { surface: resource, originClean: nativeCanvasImageOriginClean(source) };
+  };
   const nativeCanvasContextDrawPolygon = (context, points, style = context.__glassCanvasState.fillStyle, operation = context.__glassCanvasState.globalCompositeOperation) => {
     const surface = nativeCanvasContextSurface(context);
     nativeCanvasFillPolygon(surface, points, style, context.__glassCanvasState.globalAlpha, operation);
@@ -4913,6 +4982,78 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
     });
   };
   nativeCanvasInstallContextMethods();
+  Object.defineProperty(CanvasRenderingContext2DNative.prototype, "drawImage", {
+    configurable: true,
+    writable: true,
+    value(source, ...args) {
+      const sourceInfo = nativeCanvasSource(source);
+      if (!sourceInfo) throw new TypeError("drawImage source is not a ready canvas or image");
+      const sourceSurface = sourceInfo.surface;
+      let sx = 0;
+      let sy = 0;
+      let sw = sourceSurface.width;
+      let sh = sourceSurface.height;
+      let dx;
+      let dy;
+      let dw;
+      let dh;
+      if (args.length === 2) {
+        [dx, dy] = args;
+        dw = sw;
+        dh = sh;
+      } else if (args.length === 4) {
+        [dx, dy, dw, dh] = args;
+      } else if (args.length === 8) {
+        [sx, sy, sw, sh, dx, dy, dw, dh] = args;
+      } else {
+        throw new TypeError("drawImage arguments are invalid");
+      }
+      sx = Number(sx);
+      sy = Number(sy);
+      sw = Number(sw);
+      sh = Number(sh);
+      dx = Number(dx);
+      dy = Number(dy);
+      dw = Number(dw);
+      dh = Number(dh);
+      if (![sx, sy, sw, sh, dx, dy, dw, dh].every(Number.isFinite)
+          || sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0) {
+        throw nativeCanvasError("drawImage dimensions are invalid");
+      }
+      const surface = nativeCanvasContextSurface(this);
+      surface.originClean = surface.originClean && sourceInfo.originClean;
+      const inverse = nativeCanvasMatrixInverse(this.__glassCanvasState.transform);
+      if (!inverse) return;
+      for (let y = 0; y < surface.height; y += 1) {
+        for (let x = 0; x < surface.width; x += 1) {
+          const user = nativeCanvasMatrixPoint(inverse, x + 0.5, y + 0.5);
+          if (user.x < dx || user.x >= dx + dw || user.y < dy || user.y >= dy + dh) continue;
+          const sourceX = Math.floor(sx + (user.x - dx) * sw / dw);
+          const sourceY = Math.floor(sy + (user.y - dy) * sh / dh);
+          if (sourceX < 0 || sourceY < 0 || sourceX >= sourceSurface.width || sourceY >= sourceSurface.height) continue;
+          const sourceIndex = (sourceY * sourceSurface.width + sourceX) * 4;
+          nativeCanvasBlendPixel(
+            surface,
+            x,
+            y,
+            sourceSurface.pixels.slice(sourceIndex, sourceIndex + 4),
+            this.__glassCanvasState.globalAlpha,
+            this.__glassCanvasState.globalCompositeOperation,
+          );
+        }
+      }
+      nativeCanvasCommit(this.__glassCanvas, surface);
+    },
+  });
+  const nativeCanvasGetImageData = CanvasRenderingContext2DNative.prototype.getImageData;
+  Object.defineProperty(CanvasRenderingContext2DNative.prototype, "getImageData", {
+    configurable: true,
+    writable: true,
+    value(...args) {
+      nativeCanvasRequireOriginClean(nativeCanvasContextSurface(this));
+      return nativeCanvasGetImageData.call(this, ...args);
+    },
+  });
   const nativeCanvasMakeContext = (canvas) => {
     const context = Object.create(CanvasRenderingContext2DNative.prototype);
     Object.defineProperties(context, {
@@ -4945,7 +5086,29 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
   globalThis.__glassCanvasPngCrcTable = nativeCanvasPngCrcTable;
   const nativeCanvasPngCrc = (bytes) => { let crc = 0xffffffff; for (const value of bytes) crc = nativeCanvasPngCrcTable[(crc ^ value) & 255] ^ (crc >>> 8); return (crc ^ 0xffffffff) >>> 0; };
   const nativeCanvasPngChunk = (type, bytes) => { const result = []; const length = bytes.length; result.push((length >>> 24) & 255, (length >>> 16) & 255, (length >>> 8) & 255, length & 255); const typeBytes = Array.from(type).map((value) => value.charCodeAt(0)); result.push(...typeBytes, ...bytes); const crc = nativeCanvasPngCrc(typeBytes.concat(bytes)); result.push((crc >>> 24) & 255, (crc >>> 16) & 255, (crc >>> 8) & 255, crc & 255); return result; };
-  const nativeCanvasPngBytes = (surface) => { const raw = []; for (let row = 0; row < surface.height; row += 1) raw.push(0, ...surface.pixels.slice(row * surface.width * 4, (row + 1) * surface.width * 4)); const compressed = [0x78, 0x01]; for (let offset = 0; offset < raw.length; offset += 65535) { const length = Math.min(65535, raw.length - offset); const final = offset + length >= raw.length; compressed.push(final ? 1 : 0, length & 255, (length >>> 8) & 255, (~length) & 255, ((~length) >>> 8) & 255, ...raw.slice(offset, offset + length)); } let a = 1; let b = 0; for (const value of raw) { a = (a + value) % 65521; b = (b + a) % 65521; } compressed.push((b >>> 8) & 255, b & 255, (a >>> 8) & 255, a & 255); const header = [137, 80, 78, 71, 13, 10, 26, 10]; const ihdr = [(surface.width >>> 24) & 255, (surface.width >>> 16) & 255, (surface.width >>> 8) & 255, surface.width & 255, (surface.height >>> 24) & 255, (surface.height >>> 16) & 255, (surface.height >>> 8) & 255, surface.height & 255, 8, 6, 0, 0, 0]; return header.concat(nativeCanvasPngChunk("IHDR", ihdr), nativeCanvasPngChunk("IDAT", compressed), nativeCanvasPngChunk("IEND", [])); };
+  const nativeCanvasPngBytes = (surface) => {
+    nativeCanvasRequireOriginClean(surface);
+    const raw = [];
+    for (let row = 0; row < surface.height; row += 1) {
+      raw.push(0, ...surface.pixels.slice(row * surface.width * 4, (row + 1) * surface.width * 4));
+    }
+    const compressed = [0x78, 0x01];
+    for (let offset = 0; offset < raw.length; offset += 65535) {
+      const length = Math.min(65535, raw.length - offset);
+      const final = offset + length >= raw.length;
+      compressed.push(final ? 1 : 0, length & 255, (length >>> 8) & 255, (~length) & 255, ((~length) >>> 8) & 255, ...raw.slice(offset, offset + length));
+    }
+    let a = 1;
+    let b = 0;
+    for (const value of raw) {
+      a = (a + value) % 65521;
+      b = (b + a) % 65521;
+    }
+    compressed.push((b >>> 8) & 255, b & 255, (a >>> 8) & 255, a & 255);
+    const header = [137, 80, 78, 71, 13, 10, 26, 10];
+    const ihdr = [(surface.width >>> 24) & 255, (surface.width >>> 16) & 255, (surface.width >>> 8) & 255, surface.width & 255, (surface.height >>> 24) & 255, (surface.height >>> 16) & 255, (surface.height >>> 8) & 255, surface.height & 255, 8, 6, 0, 0, 0];
+    return header.concat(nativeCanvasPngChunk("IHDR", ihdr), nativeCanvasPngChunk("IDAT", compressed), nativeCanvasPngChunk("IEND", []));
+  };
 "###;
 
 fn is_ignorable_page_script_error(error: &NativeEngineError) -> bool {

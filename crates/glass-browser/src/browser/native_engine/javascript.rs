@@ -29,6 +29,8 @@ use rquickjs::function::This;
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::{CaughtError, Coerced, Context, Error, FromJs, Function, Module, Runtime, Value};
 use serde::{Deserialize, Serialize};
+use sha1::Sha1;
+use sha2::{Digest, Sha256, Sha384, Sha512};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Write};
@@ -6267,7 +6269,7 @@ impl NativeJavaScriptRuntime {
             *current = Some(deadline);
         }
         let result = self.context.with(|ctx| {
-            install_native_random_source(ctx.clone())?;
+            install_native_crypto_sources(ctx.clone())?;
             ctx.eval::<(), _>(bootstrap.as_str())
                 .map_err(|_| NativeEngineError::Worker {
                     operation: "install JavaScript host view".into(),
@@ -6590,7 +6592,7 @@ impl NativeJavaScriptRuntime {
             *current = Some(deadline);
         }
         let result = self.context.with(|ctx| {
-            install_native_random_source(ctx.clone())?;
+            install_native_crypto_sources(ctx.clone())?;
             ctx.eval::<(), _>(bootstrap.as_str())
                 .map_err(|error| NativeEngineError::Worker {
                     operation: "install native Worker host view".into(),
@@ -6913,7 +6915,7 @@ impl NativeJavaScriptRuntime {
             *current = Some(deadline);
         }
         let result = self.context.with(|ctx| {
-            install_native_random_source(ctx.clone())?;
+            install_native_crypto_sources(ctx.clone())?;
             ctx.eval::<(), _>(bootstrap.as_str())
                 .map_err(|_| NativeEngineError::Worker {
                     operation: "install JavaScript host view".into(),
@@ -7038,7 +7040,7 @@ impl NativeJavaScriptRuntime {
     }
 }
 
-fn install_native_random_source<'js>(ctx: rquickjs::Ctx<'js>) -> Result<(), NativeEngineError> {
+fn install_native_crypto_sources<'js>(ctx: rquickjs::Ctx<'js>) -> Result<(), NativeEngineError> {
     let random_source = Function::new(
         ctx.clone(),
         |count: usize| -> std::result::Result<Vec<u8>, Error> {
@@ -7054,11 +7056,41 @@ fn install_native_random_source<'js>(ctx: rquickjs::Ctx<'js>) -> Result<(), Nati
         operation: "install native random source".into(),
         reason: "native random source could not be installed".into(),
     })?;
+    let digest_source = Function::new(
+        ctx.clone(),
+        |algorithm: String, encoded: String| -> std::result::Result<String, Error> {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .map_err(|_| Error::Unknown)?;
+            if bytes.len() > MAX_NATIVE_FORM_BODY_BYTES {
+                return Err(Error::Unknown);
+            }
+            let algorithm = algorithm.trim().to_ascii_uppercase();
+            let digest = match algorithm.as_str() {
+                "SHA-1" => Sha1::digest(&bytes).to_vec(),
+                "SHA-256" => Sha256::digest(&bytes).to_vec(),
+                "SHA-384" => Sha384::digest(&bytes).to_vec(),
+                "SHA-512" => Sha512::digest(&bytes).to_vec(),
+                _ => return Err(Error::Unknown),
+            };
+            Ok(base64::engine::general_purpose::STANDARD.encode(digest))
+        },
+    )
+    .map_err(|_| NativeEngineError::Worker {
+        operation: "install native crypto digest".into(),
+        reason: "native crypto digest could not be installed".into(),
+    })?;
     ctx.globals()
         .set("__glassNativeRandomBytes", random_source)
         .map_err(|_| NativeEngineError::Worker {
             operation: "install native random source".into(),
             reason: "native random source could not be published".into(),
+        })?;
+    ctx.globals()
+        .set("__glassNativeCryptoDigest", digest_source)
+        .map_err(|_| NativeEngineError::Worker {
+            operation: "install native crypto digest".into(),
+            reason: "native crypto digest could not be published".into(),
         })
 }
 
@@ -8401,8 +8433,43 @@ fn worker_bootstrap(
   }};
   globalThis.__glassWorkerCryptoPool = workerCryptoPool;
   globalThis.__glassWorkerCryptoObject = workerCrypto;
+  const workerCryptoDigestSource = typeof globalThis.__glassNativeCryptoDigest === "function"
+    ? globalThis.__glassNativeCryptoDigest
+    : null;
+  const workerCryptoBufferInput = (input) => {{
+    if (input instanceof ArrayBuffer) return Array.from(new Uint8Array(input));
+    if (typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(input))
+      return Array.from(new Uint8Array(input.buffer, input.byteOffset, input.byteLength));
+    throw new TypeError("native Worker crypto digest data must be an ArrayBuffer or view");
+  }};
+  const workerSubtle = globalThis.__glassWorkerSubtleCrypto instanceof Object
+    ? globalThis.__glassWorkerSubtleCrypto
+    : {{}};
+  workerSubtle.digest = (algorithm, data) => {{
+    const name = algorithm && typeof algorithm === "object"
+      ? String(algorithm.name || "")
+      : String(algorithm || "");
+    if (!["SHA-1", "SHA-256", "SHA-384", "SHA-512"].includes(name.toUpperCase()))
+      return Promise.reject(new WorkerDOMExceptionNative("native Worker crypto digest algorithm is unsupported", "NotSupportedError"));
+    let bytes;
+    try {{ bytes = workerCryptoBufferInput(data); }} catch (error) {{ return Promise.reject(error); }}
+    if (bytes.length > {fetch_body_limit})
+      return Promise.reject(new WorkerDOMExceptionNative("native Worker crypto digest data is too large", "DataError"));
+    if (!workerCryptoDigestSource)
+      return Promise.reject(new WorkerDOMExceptionNative("native Worker crypto digest is unavailable", "OperationError"));
+    try {{
+      const encoded = encodeWorkerBase64(bytes, {fetch_body_limit});
+      const digest = workerCryptoDigestSource(name.toUpperCase(), encoded);
+      return Promise.resolve(new Uint8Array(decodeWorkerBase64(digest, {fetch_body_limit})).buffer);
+    }} catch (error) {{
+      return Promise.reject(error);
+    }}
+  }};
+  globalThis.__glassWorkerSubtleCrypto = workerSubtle;
+  workerCrypto.subtle = workerSubtle;
   globalThis.crypto = workerCrypto;
   try {{ delete globalThis.__glassNativeRandomBytes; }} catch (_error) {{}}
+  try {{ delete globalThis.__glassNativeCryptoDigest; }} catch (_error) {{}}
   const workerBlobBytes = (part) => {{
     if (part && part.__glassWorkerBlob === true) return part._bytes.slice();
     if (typeof part === "string") return workerUtf8Bytes(part);
@@ -19577,8 +19644,51 @@ fn document_bootstrap(
   }};
   globalThis.__glassPageCryptoPool = pageCryptoPool;
   globalThis.__glassPageCryptoObject = pageCrypto;
+  const pageCryptoDigestSource = typeof globalThis.__glassNativeCryptoDigest === "function"
+    ? globalThis.__glassNativeCryptoDigest
+    : null;
+  const pageCryptoBufferInput = (input) => {{
+    if (input instanceof ArrayBuffer) return Array.from(new Uint8Array(input));
+    if (typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(input))
+      return Array.from(new Uint8Array(input.buffer, input.byteOffset, input.byteLength));
+    throw new TypeError("native crypto digest data must be an ArrayBuffer or view");
+  }};
+  const pageCryptoDigestError = (message, name) => {{
+    const Constructor = globalThis.DOMException;
+    if (typeof Constructor === "function") return new Constructor(message, name);
+    const error = new Error(message);
+    error.name = name;
+    return error;
+  }};
+  const pageSubtle = globalThis.__glassPageSubtleCrypto instanceof Object
+    ? globalThis.__glassPageSubtleCrypto
+    : {{}};
+  pageSubtle.digest = (algorithm, data) => {{
+    const name = algorithm && typeof algorithm === "object"
+      ? String(algorithm.name || "")
+      : String(algorithm || "");
+    const normalizedName = name.toUpperCase();
+    if (!["SHA-1", "SHA-256", "SHA-384", "SHA-512"].includes(normalizedName))
+      return Promise.reject(pageCryptoDigestError("native crypto digest algorithm is unsupported", "NotSupportedError"));
+    let bytes;
+    try {{ bytes = pageCryptoBufferInput(data); }} catch (error) {{ return Promise.reject(error); }}
+    if (bytes.length > {native_form_body_bytes})
+      return Promise.reject(pageCryptoDigestError("native crypto digest data is too large", "DataError"));
+    if (!pageCryptoDigestSource)
+      return Promise.reject(pageCryptoDigestError("native crypto digest is unavailable", "OperationError"));
+    try {{
+      const encoded = encodeBase64(bytes, {native_form_body_bytes});
+      const digest = pageCryptoDigestSource(normalizedName, encoded);
+      return Promise.resolve(new Uint8Array(decodeBase64(digest, {native_form_body_bytes})).buffer);
+    }} catch (error) {{
+      return Promise.reject(error);
+    }}
+  }};
+  globalThis.__glassPageSubtleCrypto = pageSubtle;
+  pageCrypto.subtle = pageSubtle;
   globalThis.crypto = pageCrypto;
   try {{ delete globalThis.__glassNativeRandomBytes; }} catch (_error) {{}}
+  try {{ delete globalThis.__glassNativeCryptoDigest; }} catch (_error) {{}}
   const nativeStorageUsage = () => {{
     const encoded = (value) => {{
       try {{ return JSON.stringify(value); }} catch (_error) {{ return ""; }}

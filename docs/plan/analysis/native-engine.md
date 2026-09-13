@@ -4364,6 +4364,13 @@ user code; Web Crypto `subtle`/key operations and final native/CDP parity stay
 open. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-300.md`.
 
+The completed native-engine-browser-301 Web Crypto digest slice adds
+page and worker `crypto.subtle.digest()` over bounded BufferSource bytes,
+delegating SHA-1/SHA-256/SHA-384/SHA-512 to Rust digest implementations and
+returning Promise-backed ArrayBuffers. `CryptoKey` and key-operation parity
+remain open. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-301.md`.
+
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame
 realms. `document.createAttribute()` creates persistent `Attr` objects;

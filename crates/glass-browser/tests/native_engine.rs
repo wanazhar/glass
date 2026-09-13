@@ -1441,6 +1441,87 @@ async fn native_local_page_exposes_standard_runtime_primitives() {
 }
 
 #[tokio::test]
+async fn native_local_page_and_worker_expose_subtle_digest() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://subtle-digest-page",
+            "<html><body><main>Native</main></body></html>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://subtle-digest-worker",
+            "(async () => { const digest = await crypto.subtle.digest({ name: 'SHA-256' }, new TextEncoder().encode('hello')); postMessage({ digest: Array.from(new Uint8Array(digest)).map(value => value.toString(16).padStart(2, '0')).join('') }); })().catch(error => postMessage({ error: error.name }));",
+        )
+        .unwrap()
+        .with_initial_url("fixture://subtle-digest-page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"await (async () => {
+                    const hex = bytes => Array.from(new Uint8Array(bytes))
+                        .map(value => value.toString(16).padStart(2, '0')).join('');
+                    const results = {};
+                    for (const algorithm of ['SHA-1', 'SHA-256', 'SHA-384', 'SHA-512']) {
+                        const digest = await crypto.subtle.digest(algorithm, new TextEncoder().encode('hello'));
+                        results[algorithm] = hex(digest);
+                    }
+                    const objectAlgorithm = await crypto.subtle.digest(
+                        { name: 'sha-256' }, new TextEncoder().encode('hello')
+                    );
+                    let unsupported = '';
+                    try { await crypto.subtle.digest('MD5', new Uint8Array()); } catch (error) {
+                        unsupported = error.name;
+                    }
+                    globalThis.subtleDigestState = {
+                        results,
+                        objectAlgorithm: hex(objectAlgorithm),
+                        unsupported,
+                        identity: crypto.subtle === globalThis.crypto.subtle,
+                    };
+                    return globalThis.subtleDigestState;
+                })()"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "results": {
+                "SHA-1": "aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d",
+                "SHA-256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+                "SHA-384": "59e1748777448c69de6b800d7a33bbfb9ff1b463e44354c3553bcdb9c666fa90125a3c79f90397bdf5f6a13de828684f",
+                "SHA-512": "9b71d224bd62f3785d96d46ad3ea3d73319bfbc2890caadae2dff72519673ca72323c3d99ba5c11d7c7acc6e14b8c5da0c4663475c2e5c3adef46f73bcdec043",
+            },
+            "objectAlgorithm": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+            "unsupported": "NotSupportedError",
+            "identity": true,
+        })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "globalThis.workerMessages = []; globalThis.workerErrors = []; globalThis.worker = new Worker('fixture://subtle-digest-worker'); worker.onmessage = event => workerMessages.push(event.data); worker.onerror = event => workerErrors.push(event.message); true",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("({ messages: workerMessages, errors: workerErrors })")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "messages": [{
+                "digest": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+            }],
+            "errors": [],
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_runs_worker_created_during_page_load() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

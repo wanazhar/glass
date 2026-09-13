@@ -1486,6 +1486,7 @@ impl NativeEngine {
             .set_cookie_state(cookie);
         self.sync_javascript_scroll_offset();
         self.sync_javascript_history();
+        self.workers.run_due_timers()?;
         let worker_messages = self.workers.take_messages();
         let source = match worker_message_script(&worker_messages)? {
             Some(prefix) => format!("{prefix}{source}"),

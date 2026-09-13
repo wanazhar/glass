@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-283` slice; the bounded foundation below remains
+`native-engine-browser-284` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 
 Slice 283 adds a bounded dedicated-worker bridge after the page-facing
@@ -12,6 +12,16 @@ both local and HTTP(S) content-process paths. The bridge preserves the
 two-crate boundary and does not change backend selection. Task-source fairness,
 transferables, module/shared/service workers, worker network/timer APIs, and
 complete Worker Web IDL semantics remain expansion work.
+
+Slice 284 adds bounded timer ownership to those dedicated-worker realms.
+Worker `setTimeout` and `setInterval` callbacks use the worker runtime's
+monotonic clock, support cancellation, and expose worker-local
+`performance.now()`. The local engine and HTTP(S) content process pump due
+worker callbacks before constructing the next page-turn script prefix, so
+worker messages are not stranded at the process boundary. Continuous browser
+task-source fairness, automatic delivery while unrelated page work is pending,
+worker network APIs, and complete Worker Web IDL semantics remain expansion
+work.
 
 Slice 282 adds a bounded page-facing computed-style and media-query bridge:
 the JavaScript realm reads the native cascade/layout snapshot through a

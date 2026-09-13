@@ -52,6 +52,7 @@ pub(crate) const MAX_NATIVE_INLINE_SCRIPTS: usize = 32;
 pub(crate) const MAX_NATIVE_MODULE_IMPORTS: usize = 128;
 pub(crate) const MAX_NATIVE_WORKERS: usize = 32;
 pub(crate) const MAX_NATIVE_WORKER_MESSAGES: usize = 64;
+pub(crate) const MAX_NATIVE_WORKER_TIMERS: usize = 64;
 const NATIVE_SCRIPT_MEMORY_BYTES: usize = 32 * 1024 * 1024;
 const NATIVE_SCRIPT_STACK_BYTES: usize = 1024 * 1024;
 const NATIVE_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -418,6 +419,42 @@ impl NativeWorkerRegistry {
 
     pub(crate) fn take_messages(&mut self) -> Vec<NativeWorkerMessage> {
         self.pending_messages.drain(..).collect()
+    }
+
+    /// Run one due timer turn for each worker that has work ready. Worker
+    /// callbacks stay inside their isolated realm and can only emit the
+    /// existing bounded worker message/lifecycle commands.
+    pub(crate) fn run_due_timers(&mut self) -> Result<(), NativeEngineError> {
+        let due_workers = self
+            .workers
+            .iter()
+            .map(|(worker_id, worker)| {
+                let delay = worker.runtime.next_worker_timer_delay_ms()?;
+                Ok::<_, NativeEngineError>((worker_id.to_owned(), delay))
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter_map(|(worker_id, delay)| (delay == Some(0)).then_some(worker_id))
+            .collect::<Vec<_>>();
+        for worker_id in due_workers {
+            let Some(worker) = self.workers.get(&worker_id) else {
+                continue;
+            };
+            let evaluation = worker.runtime.run_worker_timer_turn(worker_id, &worker.url);
+            match evaluation {
+                Ok(evaluation) => self.collect_worker_evaluation(worker_id, evaluation)?,
+                Err(error) => {
+                    let worker_url = self
+                        .workers
+                        .get(&worker_id)
+                        .map(|worker| worker.url.clone())
+                        .unwrap_or_default();
+                    self.workers.remove(&worker_id);
+                    self.queue_error(worker_id, &worker_url, &error.to_string())?;
+                }
+            }
+        }
+        Ok(())
     }
 
     pub(crate) async fn apply_commands(
@@ -4894,6 +4931,38 @@ impl NativeJavaScriptRuntime {
         })
     }
 
+    /// Return the delay until the next timer in a dedicated worker realm.
+    /// Worker queues use a separate namespace from page timers, but share the
+    /// same monotonic host clock and bounded inspection contract.
+    pub(crate) fn next_worker_timer_delay_ms(&self) -> Result<Option<u64>, NativeEngineError> {
+        let now_ms = self.now_ms();
+        let source = format!(
+            "JSON.stringify((() => {{ let next = null; const timers = globalThis.__glassWorkerTimers instanceof Map ? globalThis.__glassWorkerTimers.values() : []; for (const timer of timers) {{ const dueAt = Number(timer && timer.dueAt); if (!Number.isFinite(dueAt)) continue; const delay = Math.max(0, Math.ceil(dueAt - {now_ms})); if (next === null || delay < next) next = delay; }} return next; }})())"
+        );
+        self.context.with(|ctx| {
+            let json: String =
+                ctx.eval(source.as_str())
+                    .map_err(|error| NativeEngineError::Worker {
+                        operation: "inspect native Worker timer queue".into(),
+                        reason: format!(
+                            "native Worker timer queue could not be inspected: {}",
+                            CaughtError::from_error(&ctx, error)
+                        ),
+                    })?;
+            if json.len() > MAX_NATIVE_SCRIPT_RESULT_BYTES {
+                return Err(NativeEngineError::limit(
+                    "native Worker timer queue",
+                    MAX_NATIVE_SCRIPT_RESULT_BYTES,
+                    json.len(),
+                ));
+            }
+            serde_json::from_str(&json).map_err(|_| NativeEngineError::Worker {
+                operation: "decode native Worker timer queue".into(),
+                reason: "native Worker timer queue returned an invalid delay".into(),
+            })
+        })
+    }
+
     /// Execute one host event-loop turn for page timers and animation frames.
     ///
     /// The bootstrap timer pump is disabled for this call so each turn runs
@@ -5761,7 +5830,7 @@ impl NativeJavaScriptRuntime {
                 source.len(),
             ));
         }
-        let bootstrap = worker_bootstrap(worker_id, worker_url)?;
+        let bootstrap = worker_bootstrap(worker_id, worker_url, self.now_ms())?;
         let deadline = Instant::now() + NATIVE_SCRIPT_TIMEOUT;
         if let Ok(mut current) = self.deadline.lock() {
             *current = Some(deadline);
@@ -5864,6 +5933,18 @@ impl NativeJavaScriptRuntime {
             worker_id,
             worker_url,
             &format!("globalThis.__glassDispatchWorkerMessage({serialized});"),
+        )
+    }
+
+    pub(crate) fn run_worker_timer_turn(
+        &self,
+        worker_id: u32,
+        worker_url: &str,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        self.evaluate_worker(
+            worker_id,
+            worker_url,
+            "globalThis.__glassRunWorkerTimers(performance.now());",
         )
     }
 
@@ -6520,7 +6601,11 @@ fn window_proxy_update_script(
     Ok(Some(source))
 }
 
-fn worker_bootstrap(worker_id: u32, worker_url: &str) -> Result<String, NativeEngineError> {
+fn worker_bootstrap(
+    worker_id: u32,
+    worker_url: &str,
+    now_ms: u64,
+) -> Result<String, NativeEngineError> {
     let worker_url = serde_json::to_string(worker_url).map_err(|_| NativeEngineError::Worker {
         operation: "serialize native Worker URL".into(),
         reason: "native Worker URL could not be serialized".into(),
@@ -6529,6 +6614,7 @@ fn worker_bootstrap(worker_id: u32, worker_url: &str) -> Result<String, NativeEn
         r###"(() => {{
   const workerId = {worker_id};
   const workerUrl = {worker_url};
+  const nowMs = {now_ms};
   const commands = [];
   const activeCommands = () => Array.isArray(globalThis.__glassWorkerCommandBuffer)
     ? globalThis.__glassWorkerCommandBuffer
@@ -6549,13 +6635,55 @@ fn worker_bootstrap(worker_id: u32, worker_url: &str) -> Result<String, NativeEn
       throw new TypeError("Worker message could not be cloned");
     }}
   }};
+  const timers = globalThis.__glassWorkerTimers instanceof Map
+    ? globalThis.__glassWorkerTimers
+    : new Map();
+  const runningTimers = globalThis.__glassWorkerRunningTimers instanceof Map
+    ? globalThis.__glassWorkerRunningTimers
+    : new Map();
+  let nextTimerId = Number.isSafeInteger(globalThis.__glassWorkerNextTimerId)
+    ? globalThis.__glassWorkerNextTimerId
+    : 1;
+  globalThis.__glassWorkerNowMs = nowMs;
+  globalThis.performance = {{
+    now() {{ return Number(globalThis.__glassWorkerNowMs) || 0; }},
+  }};
+  const scheduleTimer = (callback, delay, args, repeating) => {{
+    if (typeof callback !== "function") throw new TypeError("timer callback must be callable");
+    if (timers.size >= {max_timers}) throw new RangeError("native Worker timer limit exceeded");
+    const id = nextTimerId;
+    nextTimerId += 1;
+    globalThis.__glassWorkerNextTimerId = nextTimerId;
+    const numericDelay = Number(delay);
+    const normalizedDelay = Number.isFinite(numericDelay)
+      ? Math.max(0, Math.min(2147483647, numericDelay))
+      : 0;
+    timers.set(id, {{
+      callback,
+      args,
+      dueAt: nowMs + normalizedDelay,
+      intervalMs: repeating ? Math.max(1, normalizedDelay) : 0,
+      cancelled: false,
+    }});
+    return id;
+  }};
+  const setTimeoutNative = (callback, delay, ...args) =>
+    scheduleTimer(callback, delay, args, false);
+  const setIntervalNative = (callback, delay, ...args) =>
+    scheduleTimer(callback, delay, args, true);
+  const clearTimer = (id) => {{
+    const timerId = Number(id);
+    const timer = timers.get(timerId) || runningTimers.get(timerId);
+    if (timer) timer.cancelled = true;
+    timers.delete(timerId);
+  }};
   const listeners = globalThis.__glassWorkerListeners instanceof Map
     ? globalThis.__glassWorkerListeners
     : new Map();
   let onMessage = typeof globalThis.__glassWorkerOnMessage === "function"
     ? globalThis.__glassWorkerOnMessage
     : null;
-  let closed = false;
+  let closed = globalThis.__glassWorkerClosed === true;
   const dispatch = (type, event) => {{
     const handler = type === "message" ? onMessage : null;
     if (typeof handler === "function") {{
@@ -6589,6 +6717,7 @@ fn worker_bootstrap(worker_id: u32, worker_url: &str) -> Result<String, NativeEn
   globalThis.close = () => {{
     if (closed) return;
     closed = true;
+    globalThis.__glassWorkerClosed = true;
     pushCommand({{ kind: "workerClose", worker_id: workerId }});
   }};
   globalThis.__glassDispatchWorkerMessage = (data) => {{
@@ -6605,10 +6734,40 @@ fn worker_bootstrap(worker_id: u32, worker_url: &str) -> Result<String, NativeEn
     get() {{ return onMessage; }},
     set(value) {{ onMessage = typeof value === "function" ? value : null; globalThis.__glassWorkerOnMessage = onMessage; }},
   }});
+  globalThis.__glassWorkerTimers = timers;
+  globalThis.__glassWorkerRunningTimers = runningTimers;
+  globalThis.setTimeout = setTimeoutNative;
+  globalThis.setInterval = setIntervalNative;
+  globalThis.clearTimeout = clearTimer;
+  globalThis.clearInterval = clearTimer;
+  globalThis.__glassRunWorkerTimers = (currentNow) => {{
+    if (closed) return null;
+    const now = Number.isFinite(Number(currentNow)) ? Number(currentNow) : nowMs;
+    const pending = Array.from(timers.entries())
+      .filter(([, timer]) => Number(timer.dueAt) <= now)
+      .sort((left, right) => Number(left[1].dueAt) - Number(right[1].dueAt) || left[0] - right[0]);
+    for (const [id, timer] of pending) {{
+      if (!timers.has(id)) continue;
+      timers.delete(id);
+      runningTimers.set(id, timer);
+      try {{
+        timer.callback(...timer.args);
+      }} finally {{
+        runningTimers.delete(id);
+        if (timer.intervalMs > 0 && !timer.cancelled && !closed) {{
+          timer.dueAt = now + timer.intervalMs;
+          timers.set(id, timer);
+        }}
+      }}
+    }}
+    return null;
+  }};
   globalThis.__glassWorkerCommandBuffer = commands;
 }})()"###,
         max_commands = MAX_NATIVE_WORKER_MESSAGES,
+        max_timers = MAX_NATIVE_WORKER_TIMERS,
         post_message_bytes_limit = MAX_NATIVE_POST_MESSAGE_BYTES,
+        now_ms = now_ms,
     ))
 }
 

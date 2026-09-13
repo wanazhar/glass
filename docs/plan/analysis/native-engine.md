@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-283`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-284`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -4198,6 +4198,17 @@ testing and process ownership while leaving task-source fairness, transferables,
 module/shared/service workers, worker network/timer APIs, and complete Worker
 Web IDL semantics for later Issue #40 work. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-283.md`.
+
+The completed native-engine-browser-284 slice adds bounded timer ownership to
+dedicated worker realms. Worker `setTimeout` and `setInterval` queues use the
+realm's monotonic clock, support cancellation, expose a bounded worker-local
+`performance.now()`, and execute due callbacks before the next page evaluation
+in both the local owner and the HTTP(S) content process. Timer output is
+collected through the existing worker command/message boundary; continuous
+task-source fairness, timer delivery while unrelated page work is pending,
+worker network APIs, and complete Worker Web IDL semantics remain issue #40
+work. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-284.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

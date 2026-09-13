@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-283` locally. The versioned
+`native-engine-browser-284` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -57,6 +57,16 @@ are delivered at explicit native page turns so local and content-process
 execution remain deterministic. Module/shared/service workers, transferables,
 worker import graphs and worker-side network/timer parity remain open on issue
 #40.
+
+The completed dedicated-worker timer slice is
+[native-engine-browser-284](tasks/native-engine-browser-284.md). It adds
+bounded `setTimeout`, `setInterval`, cancellation, and worker-local
+`performance.now()` scheduling to the isolated dedicated-worker realms. Due
+worker callbacks are pumped before the next page evaluation in both the local
+owner and HTTP(S) content process, and their messages/lifecycle effects use the
+existing bounded worker queue. Continuous task-source fairness, automatic
+delivery while a page is awaiting unrelated work, and complete worker timer
+Web IDL semantics remain open on issue #40.
 
 The completed EventSource/SSE slice is
 [native-engine-browser-253](tasks/native-engine-browser-253.md). It adds a

@@ -13465,6 +13465,21 @@ async fn native_local_canvas_2d_script_and_raster_pipeline() {
     assert_eq!(drawn["imageData"], serde_json::json!([true, true]));
     assert_eq!(drawn["png"], serde_json::json!(true));
 
+    let bitmap = engine
+        .evaluate_async(
+            "await (async () => { const source = document.getElementById('source'); const bitmap = await createImageBitmap(source, 0, 0, 1, 1, { resizeWidth: 2, resizeHeight: 2 }); const context = nativeCanvas.getContext('2d'); context.drawImage(bitmap, 6, 4); const pixel = Array.from(context.getImageData(6, 4, 1, 1).data); const identity = [bitmap instanceof ImageBitmap, bitmap.width, bitmap.height]; bitmap.close(); let closed = ''; try { context.drawImage(bitmap, 0, 0); } catch (error) { closed = error.name; } return { identity, pixel, closed: [closed, bitmap.width, bitmap.height] }; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        bitmap,
+        serde_json::json!({
+            "identity": [true, 2, 2],
+            "pixel": [255, 0, 0, 255],
+            "closed": ["InvalidStateError", 0, 0]
+        })
+    );
+
     let advanced = engine
         .evaluate_async(
             "(() => { const canvas = document.createElement('canvas'); canvas.width = 4; canvas.height = 4; document.body.appendChild(canvas); const context = canvas.getContext('2d'); context.strokeStyle = '#00ff00'; context.strokeRect(0.5, 0.5, 3, 3); const border = Array.from(context.getImageData(0, 0, 1, 1).data); context.save(); context.globalAlpha = 0.25; context.lineWidth = 4; context.restore(); const gradient = context.createLinearGradient(0, 0, 4, 0); gradient.addColorStop(0, '#ff0000'); gradient.addColorStop(1, '#0000ff'); context.fillStyle = gradient; context.fillRect(0, 1, 4, 1); const left = Array.from(context.getImageData(0, 1, 1, 1).data); const right = Array.from(context.getImageData(3, 1, 1, 1).data); canvas.width = canvas.width; const reset = Array.from(canvas.getContext('2d').getImageData(0, 0, 1, 1).data); const state = [context.globalAlpha, context.lineWidth, gradient instanceof CanvasGradient]; canvas.remove(); return { border, left, right, reset, state }; })()",

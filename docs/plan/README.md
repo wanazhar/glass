@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-311` locally. The versioned
+`native-engine-browser-312` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -289,8 +289,18 @@ argument forms. It transfers and persists canvas origin-clean state, allowing
 same-origin drawing while correctly blocking `SecurityError` readback after a
 different-origin image is drawn. Its focused evidence is recorded in
 [tasks/native-engine-browser-311.md](tasks/native-engine-browser-311.md);
-ImageBitmap/media sources, full CORS image semantics, complete Canvas/Web IDL
-breadth, and the remaining issue #40 production gates remain open.
+full CORS image semantics, complete Canvas/Web IDL breadth, and the remaining
+issue #40 production gates remain open.
+
+The completed native-engine-browser-312 ImageBitmap slice adds bounded native
+`ImageBitmap` wrappers and Promise-backed `createImageBitmap()` for the
+supported image, canvas, ImageData, and ImageBitmap sources. Crop/resize
+sampling, Canvas `drawImage()` integration, `instanceof` identity,
+`close()` lifecycle errors, and origin-clean propagation are covered by the
+focused Canvas witness. Video/media sources, OffscreenCanvas, complete CORS
+image semantics, full Canvas/Web IDL breadth, and the remaining issue #40
+production gates remain open; exact evidence is recorded in
+[tasks/native-engine-browser-312.md](tasks/native-engine-browser-312.md).
 
 The completed native-engine-browser-299 page-runtime-primitives slice adds
 page `TextEncoder`/`TextDecoder`, bounded `atob`/`btoa`,

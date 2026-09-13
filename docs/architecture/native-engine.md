@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-318` slice. The native runtime is now the primary
+`native-engine-browser-319` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -12,6 +12,13 @@ incognito profile maps to Rust-owned storage at
 not persist storage. This state is deliberately separate from Chromium
 profiles. Persistent session ownership, complete storage semantics, and the
 remaining browser parity gates still require issue #40 work.
+
+Slice 319 extends the native ownership boundary to session snapshots. CLI and
+MCP snapshot creation use the same atomic native semantic observation and
+existing redaction/store contract, while MCP profile initialization now uses
+the selected Rust-owned native profile (or volatile storage for incognito).
+Task execution, workflow resume, and cross-process persistent sessions remain
+explicit issue #40 integration work.
 
 Slice 283 adds a bounded dedicated-worker bridge after the page-facing
 computed-style/media-query bridge in slice 282. Page-created classic workers

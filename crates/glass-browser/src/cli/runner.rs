@@ -92,7 +92,7 @@ pub(crate) fn native_config_from_cli(cli: &Cli) -> BrowserResult<NativeEngineCon
 }
 
 #[cfg(feature = "native-engine")]
-fn native_profile_storage_path(profile: &str) -> BrowserResult<std::path::PathBuf> {
+pub(crate) fn native_profile_storage_path(profile: &str) -> BrowserResult<std::path::PathBuf> {
     ProfileManager::validate_name(profile)?;
     let root = std::env::var_os("GLASS_CONFIG_HOME")
         .map(std::path::PathBuf::from)
@@ -468,7 +468,14 @@ async fn dispatch_alternative_runtime(cli: &Cli, policy: &mut BrowserPolicy) -> 
     };
     let result = match context_result {
         Ok(()) => {
-            run_alternative_runtime_command(&session, command, policy, cli.response_mode).await
+            run_alternative_runtime_command(
+                &session,
+                command,
+                policy,
+                &cli.profile,
+                cli.response_mode,
+            )
+            .await
         }
         Err(error) => Err(error),
     };
@@ -629,6 +636,9 @@ fn validate_alternative_runtime_command(
         Commands::AcceptDialog | Commands::DismissDialog if native => Ok(()),
         Commands::Download { .. } if native => Ok(()),
         Commands::Upload { .. } if native => Ok(()),
+        Commands::Snapshot {
+            action: SnapshotCommand::Create,
+        } if native => Ok(()),
         Commands::Navigate { .. }
         | Commands::Click { .. }
         | Commands::Type { .. }
@@ -668,9 +678,31 @@ async fn run_alternative_runtime_command(
     session: &BrowserRuntimeSession,
     command: &Commands,
     policy: &BrowserPolicy,
+    profile: &str,
     response_mode: ResponseMode,
 ) -> BrowserResult<()> {
+    #[cfg(not(feature = "native-engine"))]
+    let _ = profile;
     match command {
+        Commands::Snapshot {
+            action: SnapshotCommand::Create,
+        } if session.runtime().is_native() => {
+            #[cfg(feature = "native-engine")]
+            {
+                let observation = session.native_observe().await?;
+                let snapshot = crate::browser::session::SessionSnapshot::from_observation(
+                    profile.to_owned(),
+                    observation,
+                );
+                let store = SessionSnapshotStore::new(
+                    crate::browser::session::default_session_snapshot_path(profile),
+                );
+                store.save(&snapshot)?;
+                print_json_mode(&snapshot, response_mode)
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
+        }
         Commands::Navigate {
             url,
             expected_revision,

@@ -1359,6 +1359,78 @@ async fn native_local_page_exposes_os_seeded_crypto() {
 }
 
 #[tokio::test]
+async fn native_local_page_exposes_standard_runtime_primitives() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://page-primitives",
+            "<html><body><main>Native</main></body></html>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://page-primitives");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"(() => {
+                    const bytes = new TextEncoder().encode('hé');
+                    const destination = new Uint8Array(4);
+                    const encoded = new TextEncoder().encodeInto('hi', destination);
+                    const decoded = new TextDecoder().decode(bytes);
+                    const target = new EventTarget();
+                    const seen = [];
+                    const listener = { handleEvent(event) {
+                        seen.push([event.type, event.target === target, event.currentTarget === target]);
+                        event.preventDefault();
+                    }};
+                    target.addEventListener('ping', listener);
+                    const dispatched = target.dispatchEvent(new Event('ping', { cancelable: true }));
+                    target.removeEventListener('ping', listener);
+                    target.dispatchEvent(new Event('ping', { cancelable: true }));
+                    const clone = structuredClone({ nested: ['ok'] });
+                    const base64 = btoa('hello');
+                    let decoderRejected = false;
+                    try { new TextDecoder('iso-8859-1'); } catch (error) {
+                        decoderRejected = error instanceof RangeError;
+                    }
+                    globalThis.pagePrimitiveState = {
+                        bytes: Array.from(bytes),
+                        decoded,
+                        encoded: [encoded.read, encoded.written, Array.from(destination)],
+                        events: [seen, dispatched],
+                        clone: clone.nested[0],
+                        base64: [base64, atob(base64)],
+                        constructors: [typeof TextEncoder, typeof TextDecoder, typeof EventTarget, typeof Event, typeof structuredClone, typeof queueMicrotask],
+                        decoderRejected,
+                    };
+                    queueMicrotask(() => { globalThis.pagePrimitiveState.microtask = true; });
+                })()"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.pagePrimitiveState")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "bytes": [104, 195, 169],
+            "decoded": "hé",
+            "encoded": [2, 2, [104, 105, 0, 0]],
+            "events": [[["ping", true, true]], false],
+            "clone": "ok",
+            "base64": ["aGVsbG8=", "hello"],
+            "constructors": ["function", "function", "function", "function", "function", "function"],
+            "decoderRejected": true,
+            "microtask": true,
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_runs_worker_created_during_page_load() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

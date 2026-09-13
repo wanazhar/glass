@@ -198,6 +198,13 @@ across bootstrap re-entry. Web Crypto `subtle` operations, key objects,
 cross-realm transfer, pool replenishment, and the remaining native replacement
 gates remain open on issue #40.
 
+The completed native-engine-browser-299 page-runtime-primitives slice adds
+page `TextEncoder`/`TextDecoder`, bounded `atob`/`btoa`,
+`structuredClone`, and public `EventTarget` support through the existing page
+event and byte helpers, including object `handleEvent` listener identity.
+Its focused witness and final local validation are recorded in
+[tasks/native-engine-browser-299.md](tasks/native-engine-browser-299.md).
+
 The completed EventSource/SSE slice is
 [native-engine-browser-253](tasks/native-engine-browser-253.md). It adds a
 bounded persistent HTTP(S) event-stream owner with shared URL/security policy,

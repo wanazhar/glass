@@ -14416,14 +14416,25 @@ fn document_bootstrap(
     if (!options || typeof options !== "object") return {{ capture: false, once: false }};
     return {{ capture: Boolean(options.capture), once: Boolean(options.once) }};
   }};
+  const normalizeEventListener = (callback) => {{
+    if (typeof callback === "function") return callback;
+    if (callback && typeof callback.handleEvent === "function") {{
+      return event => callback.handleEvent(event);
+    }}
+    throw new TypeError("event listener must be callable");
+  }};
   const addListener = (owner, type, callback, options) => {{
-    if (typeof callback !== "function") throw new TypeError("event listener must be callable");
+    if (callback === null || callback === undefined) return;
+    const listener = normalizeEventListener(callback);
     const key = listenerKey(owner, type);
     const callbacks = listeners.get(key) || [];
     const settings = listenerOptions(options);
-    if (callbacks.some((record) => record.callback === callback && record.capture === settings.capture)) return;
+    if (callbacks.some((record) =>
+      (record.listener === callback || record.callback === callback)
+        && record.capture === settings.capture
+    )) return;
     if (listenerCount() >= {max_listeners}) throw new RangeError("native event listener limit exceeded");
-    callbacks.push({{ callback, capture: settings.capture, once: settings.once }});
+    callbacks.push({{ callback: listener, listener: callback, capture: settings.capture, once: settings.once }});
     listeners.set(key, callbacks);
   }};
   const removeListener = (owner, type, callback, options) => {{
@@ -14431,7 +14442,9 @@ fn document_bootstrap(
     const callbacks = listeners.get(key);
     if (!callbacks) return;
     const capture = listenerOptions(options).capture;
-    const index = callbacks.findIndex((record) => record.callback === callback && record.capture === capture);
+    const index = callbacks.findIndex((record) =>
+      (record.listener === callback || record.callback === callback) && record.capture === capture
+    );
     if (index < 0) return;
     callbacks.splice(index, 1);
     if (callbacks.length === 0) listeners.delete(key);
@@ -14571,6 +14584,106 @@ fn document_bootstrap(
     eventState.dispatching = false;
     return !event.defaultPrevented;
   }};
+  const nativeTextDecoderBytes = (input) => {{
+    if (input === undefined || input === null) return [];
+    if (input instanceof ArrayBuffer) return Array.from(new Uint8Array(input));
+    if (typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(input))
+      return Array.from(new Uint8Array(input.buffer, input.byteOffset, input.byteLength));
+    throw new TypeError("native TextDecoder input must be an ArrayBuffer or view");
+  }};
+  const TextEncoderNative = typeof globalThis.__glassTextEncoderConstructor === "function"
+    ? globalThis.__glassTextEncoderConstructor
+    : function TextEncoder() {{
+        if (!(this instanceof TextEncoderNative)) throw new TypeError("TextEncoder requires new");
+        this.encoding = "utf-8";
+      }};
+  TextEncoderNative.prototype.encode = function(input) {{
+    return new Uint8Array(blobUtf8Bytes(String(input === undefined ? "" : input)));
+  }};
+  TextEncoderNative.prototype.encodeInto = function(input, destination) {{
+    if (!destination || typeof ArrayBuffer.isView !== "function" || !ArrayBuffer.isView(destination)
+        || destination.BYTES_PER_ELEMENT === undefined)
+      throw new TypeError("native TextEncoder destination must be a typed array");
+    const source = String(input === undefined ? "" : input);
+    const target = new Uint8Array(destination.buffer, destination.byteOffset, destination.byteLength);
+    let read = 0;
+    const bytes = [];
+    for (const character of Array.from(source)) {{
+      const encoded = blobUtf8Bytes(character);
+      if (bytes.length + encoded.length > target.length) break;
+      bytes.push(...encoded);
+      read += character.length;
+    }}
+    target.set(bytes);
+    return {{ read, written: bytes.length }};
+  }};
+  globalThis.__glassTextEncoderConstructor = TextEncoderNative;
+  globalThis.TextEncoder = TextEncoderNative;
+  const TextDecoderNative = typeof globalThis.__glassTextDecoderConstructor === "function"
+    ? globalThis.__glassTextDecoderConstructor
+    : function TextDecoder(label, options) {{
+        if (!(this instanceof TextDecoderNative)) throw new TypeError("TextDecoder requires new");
+        const normalized = label === undefined ? "utf-8" : String(label).toLowerCase();
+        if (!["utf-8", "utf8", "unicode-1-1-utf-8"].includes(normalized))
+          throw new RangeError("native TextDecoder only supports UTF-8");
+        const settings = options && typeof options === "object" ? options : {{}};
+        this.encoding = "utf-8";
+        this.fatal = settings.fatal === true;
+        this.ignoreBOM = settings.ignoreBOM === true;
+      }};
+  TextDecoderNative.prototype.decode = function(input) {{
+    const bytes = nativeTextDecoderBytes(input);
+    if (bytes.length > {native_form_body_bytes}) throw new RangeError("native TextDecoder input exceeds its limit");
+    const decoded = utf8TextFromBytes(bytes);
+    if (this.fatal && decoded.includes("\ufffd")) throw new TypeError("native TextDecoder encountered invalid UTF-8");
+    return decoded;
+  }};
+  globalThis.__glassTextDecoderConstructor = TextDecoderNative;
+  globalThis.TextDecoder = TextDecoderNative;
+  const nativeBinaryString = (bytes) => {{
+    let value = "";
+    for (const byte of bytes) value += String.fromCharCode(byte);
+    return value;
+  }};
+  globalThis.atob = (value) => nativeBinaryString(decodeBase64(String(value), {native_form_body_bytes}));
+  globalThis.btoa = (value) => {{
+    const text = String(value);
+    const bytes = [];
+    for (let index = 0; index < text.length; index += 1) {{
+      const code = text.charCodeAt(index);
+      if (code > 255) throw new TypeError("native btoa input contains a non-Latin-1 character");
+      bytes.push(code);
+    }}
+    return encodeBase64(bytes, {native_form_body_bytes});
+  }};
+  globalThis.structuredClone = (value) => value === undefined ? undefined : cloneMessageData(value);
+  let nextEventTargetId = Number.isSafeInteger(globalThis.__glassNextEventTargetId)
+    ? globalThis.__glassNextEventTargetId
+    : 1;
+  const EventTargetNative = typeof globalThis.__glassEventTargetConstructor === "function"
+    ? globalThis.__glassEventTargetConstructor
+    : function EventTarget() {{
+        if (!(this instanceof EventTargetNative)) throw new TypeError("EventTarget requires new");
+        const owner = "event-target:" + nextEventTargetId;
+        nextEventTargetId += 1;
+        globalThis.__glassNextEventTargetId = nextEventTargetId;
+        Object.defineProperty(this, "__glassEventOwner", {{
+          configurable: false,
+          enumerable: false,
+          value: owner,
+        }});
+      }};
+  EventTargetNative.prototype.addEventListener = function(type, callback, options) {{
+    addListener(ownerFor(this), type, callback, options);
+  }};
+  EventTargetNative.prototype.removeEventListener = function(type, callback, options) {{
+    removeListener(ownerFor(this), type, callback, options);
+  }};
+  EventTargetNative.prototype.dispatchEvent = function(event) {{
+    return dispatchTarget(this, event);
+  }};
+  globalThis.__glassEventTargetConstructor = EventTargetNative;
+  globalThis.EventTarget = EventTargetNative;
   const mutationObservers = globalThis.__glassMutationObservers instanceof Set
     ? globalThis.__glassMutationObservers
     : new Set();

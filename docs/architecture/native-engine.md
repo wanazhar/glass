@@ -67,6 +67,17 @@ engine. Richer semantic regions/Web IR, complete Core Web Profile
 certification, recovery/cancellation evidence, and cross-platform release
 promotion remain issue #40 gates.
 
+Slice 324 promotes semantic observation through every native adapter. Direct
+and persistent CLI plus MCP now expose summary, interactive, structured,
+detailed, and raw levels, with revision-checked expansion for the named main
+and embedded-frame regions. Detailed and raw responses include the bounded
+native accessibility projection; all responses retain explicit level, route,
+revision, viewport, and omission metadata. Form-value observation is shared
+with native batches, capped at sixteen controls, and remains policy-gated with
+password redaction by default. The next expansion is the native Web IR
+projection and its conformance corpus before final Core Web Profile and
+release promotion gates.
+
 Slice 283 adds a bounded dedicated-worker bridge after the page-facing
 computed-style/media-query bridge in slice 282. Page-created classic workers
 load through the shared resource policy, execute in isolated QuickJS realms,

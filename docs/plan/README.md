@@ -75,7 +75,12 @@ batch/workflow slice is
 [native-engine-browser-323](tasks/native-engine-browser-323.md): typed batch
 execution, declarative workflow state, bounded checkpoints, safe resume, and
 TUI/owner workflow IPC now use the native runtime. Richer semantic/Web IR
-projection and final profile certification remain active issue #40 work.
+projection and final profile certification remain active issue #40 work. The
+completed native semantic observation slice is
+[native-engine-browser-324](tasks/native-engine-browser-324.md): every native
+CLI, persistent-owner, and MCP observation surface now exposes the shared
+summary through raw levels, revision-checked region expansion, and bounded
+policy-gated form values.
 
 The completed computed-style/media-query slice is
 [native-engine-browser-282](tasks/native-engine-browser-282.md). It exposes a

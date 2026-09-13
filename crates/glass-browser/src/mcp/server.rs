@@ -3847,15 +3847,30 @@ async fn call_native_tool_on_session(
             level,
             region,
         } => {
-            if include_form_values || level.is_some() || region.is_some() {
-                return Err(
-                    "native MCP observation supports compact evidence, optional DOM nodes, and PNG only"
-                        .into(),
-                );
+            if let Some(level) = level {
+                if include_dom || include_screenshot || include_form_values {
+                    return Err(
+                        "semantic observation cannot be combined with DOM, screenshot, or form values"
+                            .into(),
+                    );
+                }
+                let observation = if let Some(region_id) = region {
+                    let page = session.native_semantic_observe(level).await?;
+                    session
+                        .native_semantic_expand_region(region_id, page.revision, level)
+                        .await?
+                } else {
+                    session.native_semantic_observe(level).await?
+                };
+                return serialized_result_mode(&observation, response_mode);
             }
-            let evidence = session
-                .evidence(crate::browser_backend::EvidenceLevel::Compact)
-                .await?;
+            if region.is_some() {
+                return Err("semantic region expansion requires an explicit level".into());
+            }
+            if include_form_values {
+                policy.require(crate::browser::policy::PolicyCapability::ReadFormValues)?;
+            }
+            let observation = session.native_observe().await?;
             let nodes = include_dom
                 .then(|| session.native_semantic_nodes())
                 .transpose()?;
@@ -3864,13 +3879,25 @@ async fn call_native_tool_on_session(
             } else {
                 None
             };
+            let form_values = if include_form_values {
+                Some(
+                    crate::browser::native_batch::read_form_values(
+                        session,
+                        policy.allow_sensitive_form_values(),
+                    )
+                    .await?,
+                )
+            } else {
+                None
+            };
             let payload = json!({
-                "contextId": evidence.context_id,
-                "revision": evidence.revision,
-                "url": evidence.url,
-                "title": evidence.title,
-                "visibleText": evidence.visible_text,
+                "contextId": observation.route.target_id,
+                "revision": observation.revision,
+                "url": observation.page.url,
+                "title": observation.page.title,
+                "visibleText": observation.text.unwrap_or_default(),
                 "nodes": nodes,
+                "formValues": form_values,
             });
             let payload =
                 project_and_store(payload, response_mode, "mcp", default_result_store_path())?;

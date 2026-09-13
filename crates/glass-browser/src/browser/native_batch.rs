@@ -14,7 +14,7 @@ use crate::browser::session::{
 };
 use crate::browser_backend::{PromptDecision, SemanticAction};
 use base64::Engine as _;
-use serde_json::json;
+use serde_json::{Value, json};
 use std::time::Duration;
 
 /// Preflight all policy-sensitive operations before dispatching any batch
@@ -57,6 +57,22 @@ pub(crate) async fn check_policy(policy: &BrowserPolicy, steps: &[BatchStep]) ->
         })?;
     }
     Ok(())
+}
+
+/// Read the bounded form-value projection used by direct observations and
+/// batch observations. The caller must perform the policy capability check;
+/// the sensitive variant is selected only when that caller explicitly allows
+/// it.
+pub(crate) async fn read_form_values(
+    session: &BrowserRuntimeSession,
+    allow_sensitive: bool,
+) -> BrowserResult<Value> {
+    let script = if allow_sensitive {
+        NATIVE_SENSITIVE_FORM_VALUES_SCRIPT
+    } else {
+        NATIVE_FORM_VALUES_SCRIPT
+    };
+    Ok(session.script(script).await?.value)
 }
 
 /// Execute a bounded ordered native batch.
@@ -271,7 +287,7 @@ async fn execute_step(
                 None
             };
             let form_values = if *include_form_values {
-                Some(session.script(NATIVE_FORM_VALUES_SCRIPT).await?.value)
+                Some(read_form_values(session, false).await?)
             } else {
                 None
             };
@@ -395,13 +411,43 @@ fn bounded_text(value: &str, max_bytes: usize) -> String {
 // performed by the caller before the batch is dispatched; password controls
 // never leave the engine in clear text.
 const NATIVE_FORM_VALUES_SCRIPT: &str = r#"(() => {
-  const controls = Array.from(document.querySelectorAll('input,textarea,select')).slice(0, 32);
+  const controls = Array.from(document.querySelectorAll('input,textarea,select')).slice(0, 16);
   return controls.map((element, index) => {
     const type = String(element.type || '').toLowerCase();
+    const value = type === 'password' ? '[redacted]' : String(element.value || '').slice(0, 256);
     return {
       index,
       type,
-      value: type === 'password' ? '[redacted]' : String(element.value || '')
+      value,
+      checked: ['checkbox', 'radio'].includes(type) ? !!element.checked : undefined,
+      selectedOption: type === 'select-one' && element.selectedIndex >= 0
+        ? String(element.options[element.selectedIndex].text || '').slice(0, 128)
+        : undefined,
+      empty: !value,
+      disabled: !!element.disabled,
+      readOnly: !!element.readOnly,
+      required: !!element.required
+    };
+  });
+})()"#;
+
+const NATIVE_SENSITIVE_FORM_VALUES_SCRIPT: &str = r#"(() => {
+  const controls = Array.from(document.querySelectorAll('input,textarea,select')).slice(0, 16);
+  return controls.map((element, index) => {
+    const type = String(element.type || '').toLowerCase();
+    const value = String(element.value || '').slice(0, 256);
+    return {
+      index,
+      type,
+      value,
+      checked: ['checkbox', 'radio'].includes(type) ? !!element.checked : undefined,
+      selectedOption: type === 'select-one' && element.selectedIndex >= 0
+        ? String(element.options[element.selectedIndex].text || '').slice(0, 128)
+        : undefined,
+      empty: !value,
+      disabled: !!element.disabled,
+      readOnly: !!element.readOnly,
+      required: !!element.required
     };
   });
 })()"#;

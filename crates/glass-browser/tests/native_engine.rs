@@ -16,8 +16,8 @@ use glass_browser::browser::native_engine::{
 };
 use glass_browser::browser::session::{
     Cookie, IntentConfidence, IntentConstraints, SemanticIntentAction,
-    SemanticIntentExecutionRequest, SemanticIntentRequest, SemanticResolutionPolicy,
-    VerificationPredicate, WaitCondition,
+    SemanticIntentExecutionRequest, SemanticIntentRequest, SemanticObservationLevel,
+    SemanticResolutionPolicy, VerificationPredicate, WaitCondition,
 };
 use glass_browser::browser_backend::{
     ActionRequest, BROWSER_BACKEND_SCHEMA_VERSION, BackendSelectionRequest,
@@ -325,6 +325,85 @@ async fn native_runtime_session_uses_explicit_local_constructor() {
         .await
         .unwrap();
     assert_eq!(stored.entries.get("answer"), Some(&"one".to_owned()));
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_semantic_levels_and_region_expansion_are_revision_scoped() {
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(
+            "data:text/html,%3Ctitle%3ESemantic%3C%2Ftitle%3E%3Cmain%3E%3Clabel%20for%3D%22email%22%3EEmail%3C%2Flabel%3E%3Cinput%20id%3D%22email%22%20type%3D%22email%22%3E%3Cbutton%3ESend%3C%2Fbutton%3E%3C%2Fmain%3E",
+        ),
+    )
+    .await
+    .unwrap();
+
+    let summary = session
+        .native_semantic_observe(SemanticObservationLevel::Summary)
+        .await
+        .unwrap();
+    assert_eq!(summary.level, SemanticObservationLevel::Summary);
+    assert!(summary.text.is_none());
+    assert!(
+        summary
+            .regions
+            .iter()
+            .all(|region| region.targets.is_empty())
+    );
+
+    let interactive = session
+        .native_semantic_observe(SemanticObservationLevel::Interactive)
+        .await
+        .unwrap();
+    assert_eq!(interactive.level, SemanticObservationLevel::Interactive);
+    assert!(interactive.text.is_none());
+    assert!(
+        interactive
+            .regions
+            .iter()
+            .flat_map(|region| region.targets.iter())
+            .any(|target| target.role == "button")
+    );
+
+    let detailed = session
+        .native_semantic_observe(SemanticObservationLevel::Detailed)
+        .await
+        .unwrap();
+    assert!(detailed.text.is_some());
+    assert!(detailed.accessibility.is_some());
+    assert!(detailed.raw_accessibility.is_none());
+
+    let raw = session
+        .native_semantic_observe(SemanticObservationLevel::Raw)
+        .await
+        .unwrap();
+    assert!(raw.accessibility.is_some());
+    assert!(raw.raw_accessibility.is_some());
+
+    let expanded = session
+        .native_semantic_expand_region(
+            "region_main",
+            detailed.revision,
+            SemanticObservationLevel::Detailed,
+        )
+        .await
+        .unwrap();
+    assert_eq!(expanded.regions.len(), 1);
+    assert_eq!(expanded.regions[0].id, "region_main");
+    assert_eq!(expanded.revision, detailed.revision);
+
+    let stale = session
+        .native_semantic_expand_region(
+            "region_main",
+            detailed.revision.saturating_add(1),
+            SemanticObservationLevel::Detailed,
+        )
+        .await;
+    assert!(stale.is_err());
+
+    let form_values = session.native_form_values(false).await.unwrap();
+    assert_eq!(form_values[0]["type"], "email");
+    assert_eq!(form_values[0]["value"], "");
     session.close().await.unwrap();
 }
 

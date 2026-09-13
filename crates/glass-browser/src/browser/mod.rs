@@ -45,12 +45,18 @@ pub mod mouse;
 /// Feature-gated Glass-owned native browser engine backend.
 #[cfg(feature = "native-engine")]
 pub mod native_backend;
+/// Native execution of the shared ordered batch contract.
+#[cfg(feature = "native-engine")]
+pub(crate) mod native_batch;
 /// Feature-gated Glass-owned native browser engine kernel.
 #[cfg(feature = "native-engine")]
 pub mod native_engine;
 /// Native-owned Task Protocol execution adapter.
 #[cfg(feature = "native-engine")]
 mod native_task;
+/// Native execution of the shared declarative workflow contract.
+#[cfg(feature = "native-engine")]
+pub(crate) mod native_workflow;
 /// Named local browser sessions that outlive one-shot CLI invocations.
 pub mod persistent;
 /// Security policy engine with capability-based operation gating.

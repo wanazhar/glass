@@ -27,6 +27,7 @@ use super::herdr_graphics::{HerdrEnvironment, HerdrEvent, HerdrFrame, HerdrGraph
 use super::live_view::{
     AnsiPane, VisualPath, decide_path, frame_fit, frame_interval_ms, pane_size,
 };
+use crate::browser::policy::BrowserPolicy;
 use crate::browser::session::{
     BrowserResult, BrowserSession, PageTargetInfo, SessionOptions, WorkflowCheckpoint,
     WorkflowDefinition, WorkflowRunResult,
@@ -601,21 +602,23 @@ impl BrowserTuiSession {
 
     async fn run_workflow(
         &self,
+        _policy: &BrowserPolicy,
         workflow: &WorkflowDefinition,
         inputs: &BTreeMap<String, serde_json::Value>,
     ) -> BrowserResult<WorkflowRunResult> {
         match self {
             Self::Chromium(session) => session.run_workflow(workflow, inputs).await,
             #[cfg(feature = "native-engine")]
-            Self::Native(_) => Err(
-                "native workflow execution is not wired through the TUI session yet; use explicit native commands"
-                    .into(),
-            ),
+            Self::Native(session) => session.native_run_workflow(_policy, workflow, inputs).await,
             #[cfg(feature = "native-engine")]
-            Self::NativePersistent(_) => Err(
-                "native workflow execution is not wired through the TUI session yet; use explicit native commands"
-                    .into(),
-            ),
+            Self::NativePersistent(session) => {
+                crate::browser::persistent::run_native_workflow(
+                    &session.name,
+                    workflow.clone(),
+                    inputs.clone(),
+                )
+                .await
+            }
         }
     }
 
@@ -627,18 +630,26 @@ impl BrowserTuiSession {
         match self {
             Self::Chromium(session) => session.export_workflow_checkpoint(workflow, result).await,
             #[cfg(feature = "native-engine")]
-            Self::Native(_) => {
-                Err("native workflow checkpoints are not wired through the TUI session yet".into())
+            Self::Native(session) => {
+                session
+                    .native_export_workflow_checkpoint(workflow, result)
+                    .await
             }
             #[cfg(feature = "native-engine")]
-            Self::NativePersistent(_) => {
-                Err("native workflow checkpoints are not wired through the TUI session yet".into())
+            Self::NativePersistent(session) => {
+                crate::browser::persistent::export_native_workflow_checkpoint(
+                    &session.name,
+                    workflow.clone(),
+                    result.clone(),
+                )
+                .await
             }
         }
     }
 
     async fn resume_workflow(
         &self,
+        _policy: &BrowserPolicy,
         workflow: &WorkflowDefinition,
         inputs: &BTreeMap<String, serde_json::Value>,
         checkpoint: &WorkflowCheckpoint,
@@ -646,12 +657,20 @@ impl BrowserTuiSession {
         match self {
             Self::Chromium(session) => session.resume_workflow(workflow, inputs, checkpoint).await,
             #[cfg(feature = "native-engine")]
-            Self::Native(_) => {
-                Err("native workflow resume is not wired through the TUI session yet".into())
+            Self::Native(session) => {
+                session
+                    .native_resume_workflow(_policy, workflow, inputs, checkpoint)
+                    .await
             }
             #[cfg(feature = "native-engine")]
-            Self::NativePersistent(_) => {
-                Err("native workflow resume is not wired through the TUI session yet".into())
+            Self::NativePersistent(session) => {
+                crate::browser::persistent::resume_native_workflow(
+                    &session.name,
+                    workflow.clone(),
+                    inputs.clone(),
+                    checkpoint.clone(),
+                )
+                .await
             }
         }
     }
@@ -1037,7 +1056,10 @@ impl BrowserTui {
             let document: serde_json::Value = serde_json::from_slice(&std::fs::read(path.trim())?)?;
             let definition = WorkflowDefinition::from_value(document)?;
             let session = self.session.as_ref().ok_or("browser is detached")?;
-            let result = session.run_workflow(&definition, &BTreeMap::new()).await?;
+            let policy = crate::cli::runner::policy_from_cli(cli)?;
+            let result = session
+                .run_workflow(&policy, &definition, &BTreeMap::new())
+                .await?;
             self.workspace.state_mut().browser_revision = Some(result.final_revision);
             self.workspace.state_mut().workflow = result.status.label().to_string();
             self.page = format!(
@@ -1074,8 +1096,9 @@ impl BrowserTui {
                 .as_ref()
                 .ok_or("no workflow checkpoint to resume")?;
             let session = self.session.as_ref().ok_or("browser is detached")?;
+            let policy = crate::cli::runner::policy_from_cli(cli)?;
             let result = session
-                .resume_workflow(&definition, &BTreeMap::new(), checkpoint)
+                .resume_workflow(&policy, &definition, &BTreeMap::new(), checkpoint)
                 .await?;
             self.workspace.state_mut().browser_revision = Some(result.final_revision);
             self.workspace.state_mut().workflow = result.status.label().to_string();

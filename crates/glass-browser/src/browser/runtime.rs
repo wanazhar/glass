@@ -618,6 +618,56 @@ impl BrowserRuntimeSession {
         super::native_task::execute(self, task, expected_revision, confirmed).await
     }
 
+    /// Execute one ordered batch through the native owner. CLI, MCP, and
+    /// persistent-session callers all enter through this method so revision
+    /// chaining and action dispatch cannot diverge between surfaces.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_run_batch(
+        &self,
+        steps: &[super::session::BatchStep],
+        atomic: bool,
+        mode: super::session::BatchMode,
+        expected_revision: Option<u64>,
+    ) -> BrowserResult<super::session::BatchOutcome> {
+        super::native_batch::run(self, steps, atomic, mode, expected_revision).await
+    }
+
+    /// Execute a declarative workflow through the native engine and its
+    /// caller's policy boundary.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_run_workflow(
+        &self,
+        policy: &super::policy::BrowserPolicy,
+        workflow: &super::session::WorkflowDefinition,
+        inputs: &std::collections::BTreeMap<String, serde_json::Value>,
+    ) -> BrowserResult<super::session::WorkflowRunResult> {
+        super::native_workflow::run(self, policy, workflow, inputs).await
+    }
+
+    /// Export a native workflow result using the shared bounded checkpoint
+    /// schema.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_export_workflow_checkpoint(
+        &self,
+        workflow: &super::session::WorkflowDefinition,
+        result: &super::session::WorkflowRunResult,
+    ) -> BrowserResult<super::session::WorkflowCheckpoint> {
+        super::native_workflow::export_checkpoint(self, workflow, result).await
+    }
+
+    /// Reconcile and resume only the safe pending suffix of a native
+    /// workflow checkpoint.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_resume_workflow(
+        &self,
+        policy: &super::policy::BrowserPolicy,
+        workflow: &super::session::WorkflowDefinition,
+        inputs: &std::collections::BTreeMap<String, serde_json::Value>,
+        checkpoint: &super::session::WorkflowCheckpoint,
+    ) -> BrowserResult<super::session::WorkflowRunResult> {
+        super::native_workflow::resume(self, policy, workflow, inputs, checkpoint).await
+    }
+
     /// Resolve native candidates through the same pure intent resolver used by
     /// the Chromium session, backed by one current native observation.
     #[cfg(feature = "native-engine")]
@@ -881,6 +931,18 @@ impl BrowserRuntimeSession {
                 },
             }),
         }
+    }
+
+    /// Evaluate one verification predicate once for workflow branches and
+    /// retry effect markers. Unlike `native_verify`, this never waits or
+    /// converts a false result into a timeout error.
+    #[cfg(feature = "native-engine")]
+    pub(crate) async fn native_verify_once(
+        &self,
+        predicate: &VerificationPredicate,
+    ) -> BrowserResult<(bool, String)> {
+        predicate.validate(0)?;
+        self.native_check_verification_predicate(predicate).await
     }
 
     #[cfg(feature = "native-engine")]
@@ -1289,7 +1351,7 @@ impl BrowserRuntimeSession {
     }
 
     #[cfg(feature = "native-engine")]
-    fn next_native_execution_id(&self) -> String {
+    pub(crate) fn next_native_execution_id(&self) -> String {
         format!(
             "act_native_{}",
             self.next_execution_id.fetch_add(1, Ordering::Relaxed)

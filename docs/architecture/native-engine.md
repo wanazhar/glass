@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-322` slice. The native runtime is now the primary
+`native-engine-browser-323` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -47,8 +47,25 @@ owner. A native MCP process with `--session` forwards browser tool parameters
 to the owner, which invokes the same native MCP dispatcher against its live
 session; browser-free protocol tools remain local. This prevents duplicate
 engines and preserves the owner's profile, storage, viewport, policy, and
-revision authority. Native workflow resume, richer semantic regions/Web IR,
-and final certification remain issue #40 work.
+revision authority. Richer semantic regions/Web IR and final certification
+remain issue #40 work.
+
+Slice 323 completes the native batch/workflow seam across the product
+surfaces. Typed native batches share the `BatchStep`/`BatchOutcome` contract
+and cover navigation, semantic input/form actions, scrolling, waits,
+observation, screenshots, evaluation, and dialog controls under bounded
+revision and policy checks. The native workflow runner adds preconditions,
+branches, repetition, transaction-aware pre-dispatch retry, effect markers,
+postconditions, terminal proofs, typed output extraction, and explicit
+failure/budget/resume statuses while retaining the shared workflow trace.
+Native checkpoints validate definition hash, route identity, step state
+history, and safe resume boundaries before running only the uncommitted
+suffix. Named native owners expose run/checkpoint/resume as typed local IPC;
+the TUI uses that protocol when attached and uses the same runtime methods for
+an in-process session. No persistent workflow operation starts a second
+engine. Richer semantic regions/Web IR, complete Core Web Profile
+certification, recovery/cancellation evidence, and cross-platform release
+promotion remain issue #40 gates.
 
 Slice 283 adds a bounded dedicated-worker bridge after the page-facing
 computed-style/media-query bridge in slice 282. Page-created classic workers

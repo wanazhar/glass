@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-312` locally. The versioned
+`native-engine-browser-313` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -297,10 +297,20 @@ The completed native-engine-browser-312 ImageBitmap slice adds bounded native
 supported image, canvas, ImageData, and ImageBitmap sources. Crop/resize
 sampling, Canvas `drawImage()` integration, `instanceof` identity,
 `close()` lifecycle errors, and origin-clean propagation are covered by the
-focused Canvas witness. Video/media sources, OffscreenCanvas, complete CORS
-image semantics, full Canvas/Web IDL breadth, and the remaining issue #40
-production gates remain open; exact evidence is recorded in
+focused Canvas witness. Video/media sources, complete CORS image semantics,
+full Canvas/Web IDL breadth, and the remaining issue #40 production gates
+remain open; exact evidence is recorded in
 [tasks/native-engine-browser-312.md](tasks/native-engine-browser-312.md).
+
+The completed native-engine-browser-313 OffscreenCanvas slice adds page-realm
+constructable and transferred OffscreenCanvas surfaces on top of the retained
+Canvas 2D owner. Placeholder transfer, standalone rendering, ImageBitmap
+snapshots, Promise-backed PNG export, transfer-state errors, bounded dimension
+reset, and cross-turn retained-pixel rehydration are covered by the focused
+Canvas witness. Worker-realm installation, video/media sources, complete
+Canvas/Web IDL breadth, and the remaining issue #40 production gates remain
+open; exact evidence is recorded in
+[tasks/native-engine-browser-313.md](tasks/native-engine-browser-313.md).
 
 The completed native-engine-browser-299 page-runtime-primitives slice adds
 page `TextEncoder`/`TextDecoder`, bounded `atob`/`btoa`,

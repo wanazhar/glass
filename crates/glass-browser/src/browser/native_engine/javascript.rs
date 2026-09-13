@@ -476,6 +476,7 @@ pub(crate) struct NativePageNavigation {
     pub(crate) replace_history: bool,
 }
 
+#[derive(Default)]
 pub(crate) struct NativePageScriptResult {
     pub(crate) pending_fetches: Vec<NativeScriptCommand>,
     pub(crate) websocket_commands: Vec<NativeScriptCommand>,

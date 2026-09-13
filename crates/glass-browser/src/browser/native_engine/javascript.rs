@@ -7823,6 +7823,114 @@ fn worker_bootstrap(
       }});
   globalThis.__glassWorkerNavigator = workerNavigator;
   globalThis.navigator = workerNavigator;
+  const nativeWorkerAbortError = () => {{
+    const error = new Error("The operation was aborted");
+    error.name = "AbortError";
+    return error;
+  }};
+  const nativeWorkerTimeoutError = () => {{
+    const error = new Error("The operation timed out");
+    error.name = "TimeoutError";
+    return error;
+  }};
+  const AbortSignalNative = typeof globalThis.__glassWorkerAbortSignalConstructor === "function"
+    ? globalThis.__glassWorkerAbortSignalConstructor
+    : function() {{
+        this.aborted = false;
+        this.reason = undefined;
+        this.onabort = null;
+        this._abortListeners = [];
+      }};
+  AbortSignalNative.prototype.addEventListener = function(type, listener) {{
+    if (String(type) !== "abort" || typeof listener !== "function" || this.aborted) return;
+    if (!this._abortListeners.includes(listener)) this._abortListeners.push(listener);
+  }};
+  AbortSignalNative.prototype.removeEventListener = function(type, listener) {{
+    if (String(type) !== "abort") return;
+    this._abortListeners = this._abortListeners.filter(candidate => candidate !== listener);
+  }};
+  AbortSignalNative.prototype.throwIfAborted = function() {{
+    if (this.aborted) throw this.reason;
+  }};
+  const dispatchWorkerAbort = (signal) => {{
+    const event = {{ type: "abort", target: signal, currentTarget: signal }};
+    const listeners = signal._abortListeners.slice();
+    signal._abortListeners = [];
+    for (const listener of listeners) {{
+      try {{ listener.call(signal, event); }} catch (_) {{}}
+    }}
+    if (typeof signal.onabort === "function") {{
+      try {{ signal.onabort.call(signal, event); }} catch (_) {{}}
+    }}
+  }};
+  AbortSignalNative.timeout = function(delay) {{
+    const numeric = Number(delay);
+    if (!Number.isFinite(numeric) || numeric < 0 || numeric > 2147483647)
+      throw new RangeError("native Worker AbortSignal timeout is outside the bounded range");
+    const signal = new AbortSignalNative();
+    scheduleTimer(() => {{
+      if (signal.aborted) return;
+      signal.aborted = true;
+      signal.reason = nativeWorkerTimeoutError();
+      dispatchWorkerAbort(signal);
+    }}, Math.trunc(numeric), [], false);
+    return signal;
+  }};
+  AbortSignalNative.abort = function(reason) {{
+    const signal = new AbortSignalNative();
+    signal.aborted = true;
+    signal.reason = reason === undefined ? nativeWorkerAbortError() : reason;
+    return signal;
+  }};
+  AbortSignalNative.any = function(signals) {{
+    if (!signals || typeof signals[Symbol.iterator] !== "function")
+      throw new TypeError("native Worker AbortSignal.any requires an iterable");
+    const inputs = [];
+    for (const signal of signals) {{
+      if (inputs.length >= {max_commands})
+        throw new RangeError("native Worker AbortSignal.any signal limit exceeded");
+      if (!signal || typeof signal !== "object" || typeof signal.aborted !== "boolean"
+          || typeof signal.addEventListener !== "function"
+          || typeof signal.removeEventListener !== "function")
+        throw new TypeError("native Worker AbortSignal.any input is invalid");
+      inputs.push(signal);
+    }}
+    const combined = new AbortSignalNative();
+    const alreadyAborted = inputs.find(signal => signal.aborted);
+    if (alreadyAborted) {{
+      combined.aborted = true;
+      combined.reason = alreadyAborted.reason === undefined
+        ? nativeWorkerAbortError() : alreadyAborted.reason;
+      return combined;
+    }}
+    const listeners = [];
+    const abortFrom = (source) => {{
+      if (combined.aborted) return;
+      combined.aborted = true;
+      combined.reason = source.reason === undefined ? nativeWorkerAbortError() : source.reason;
+      dispatchWorkerAbort(combined);
+      for (const [input, listener] of listeners) input.removeEventListener("abort", listener);
+    }};
+    for (const input of inputs) {{
+      const listener = () => abortFrom(input);
+      listeners.push([input, listener]);
+      input.addEventListener("abort", listener);
+    }}
+    return combined;
+  }};
+  globalThis.__glassWorkerAbortSignalConstructor = AbortSignalNative;
+  globalThis.AbortSignal = AbortSignalNative;
+  const AbortControllerNative = typeof globalThis.__glassWorkerAbortControllerConstructor === "function"
+    ? globalThis.__glassWorkerAbortControllerConstructor
+    : function() {{ this.signal = new AbortSignalNative(); }};
+  AbortControllerNative.prototype.abort = function(reason) {{
+    if (this.signal.aborted) return;
+    this.signal.aborted = true;
+    this.signal.reason = reason === undefined ? nativeWorkerAbortError() : reason;
+    dispatchWorkerAbort(this.signal);
+  }};
+  globalThis.__glassWorkerAbortControllerConstructor = AbortControllerNative;
+  globalThis.AbortController = AbortControllerNative;
   const importScriptCounts = globalThis.__glassWorkerImportScriptCounts instanceof Map
     ? globalThis.__glassWorkerImportScriptCounts
     : new Map(Object.entries(initialImportScriptCounts).map(([url, count]) => [url, Number(count)]));
@@ -8432,6 +8540,12 @@ fn worker_bootstrap(
     settings.redirect = redirect;
     settings.credentials = credentials;
     settings.headers = headers;
+    const signal = settings.signal === undefined ? new AbortSignalNative() : settings.signal;
+    if (!signal || typeof signal !== "object" || typeof signal.aborted !== "boolean"
+        || typeof signal.addEventListener !== "function"
+        || typeof signal.removeEventListener !== "function")
+      throw new TypeError("native Worker Request signal is invalid");
+    settings.signal = signal;
     Object.defineProperty(this, "__glassWorkerRequest", {{ value: true }});
     Object.defineProperty(this, "_settings", {{ value: settings }});
     Object.defineProperty(this, "__glassWorkerRequestBodyPayload", {{ value: payload }});
@@ -8442,7 +8556,7 @@ fn worker_bootstrap(
     this.mode = mode;
     this.redirect = redirect;
     this.credentials = credentials;
-    this.signal = settings.signal === undefined ? null : settings.signal;
+    this.signal = signal;
     const bodyState = this.__glassWorkerRequestBodyState;
     const body = payload.bodyNull
       ? null
@@ -8640,6 +8754,12 @@ fn worker_bootstrap(
     const optionsObject = options && typeof options === "object" ? options : {{}};
     const hasBodyOverride = Object.prototype.hasOwnProperty.call(optionsObject, "body");
     const settings = Object.assign({{}}, sourceRequest ? sourceRequest._settings : {{}}, optionsObject);
+    const signal = settings.signal === undefined ? null : settings.signal;
+    if (signal !== null && (!signal || typeof signal !== "object" || typeof signal.aborted !== "boolean"
+        || typeof signal.addEventListener !== "function" || typeof signal.removeEventListener !== "function"))
+      return Promise.reject(new TypeError("native Worker fetch signal is invalid"));
+    if (signal && signal.aborted)
+      return Promise.reject(signal.reason === undefined ? nativeWorkerAbortError() : signal.reason);
     let timeoutMs = null;
     if (settings.__glassTimeoutMs !== undefined) {{
       const numericTimeout = Number(settings.__glassTimeoutMs);
@@ -8682,7 +8802,18 @@ fn worker_bootstrap(
     nextWorkerFetchRequestId += 1;
     globalThis.__glassNextWorkerFetchRequestId = nextWorkerFetchRequestId;
     return new Promise((resolve, reject) => {{
-      workerFetchRequests.set(requestId, {{ resolve, reject }});
+      const pending = {{ resolve, reject, signal, abortListener: null }};
+      const abort = () => {{
+        if (workerFetchRequests.get(requestId) !== pending) return;
+        workerFetchRequests.delete(requestId);
+        if (pending.signal && pending.abortListener)
+          pending.signal.removeEventListener("abort", pending.abortListener);
+        reject(pending.signal.reason === undefined ? nativeWorkerAbortError() : pending.signal.reason);
+      }};
+      pending.abortListener = abort;
+      workerFetchRequests.set(requestId, pending);
+      if (signal) signal.addEventListener("abort", abort);
+      if (!workerFetchRequests.has(requestId)) return;
       pushCommand({{
         kind: "fetch",
         request_id: requestId,
@@ -8889,6 +9020,8 @@ fn worker_bootstrap(
     const pending = workerFetchRequests.get(Number(requestId));
     if (!pending) return null;
     workerFetchRequests.delete(Number(requestId));
+    if (pending.signal && pending.abortListener)
+      pending.signal.removeEventListener("abort", pending.abortListener);
     if (payload && payload.error) {{
       const error = new Error(String(payload.error));
       error.name = payload.timeout === true ? "TimeoutError" : "TypeError";

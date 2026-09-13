@@ -8,7 +8,7 @@ use super::policy::BrowserPolicy;
 use super::runtime::BrowserRuntime;
 use super::session::{BrowserResult, BrowserSession, SessionOptions};
 #[cfg(feature = "native-engine")]
-use super::{BrowserRuntimeSession, NativeEngineConfig};
+use super::{BrowserRuntimeSession, NativeEngineConfig, NativeHistoryDirection};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -98,6 +98,17 @@ struct SessionRequest {
     op: String,
     #[serde(default)]
     argv: Vec<String>,
+    #[serde(default)]
+    control: Option<NativeControlRequest>,
+    #[serde(default)]
+    mcp_params: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeControlRequest {
+    action: String,
+    expected_revision: u64,
 }
 
 fn default_runtime() -> BrowserRuntime {
@@ -602,6 +613,81 @@ async fn serve_native_unix(config: PersistentSessionServeConfig) -> BrowserResul
                             Err(error) => json!({"ok": false, "error": error.to_string()}),
                         }
                     }
+                    "control" => {
+                        let request = request
+                            .control
+                            .ok_or("native control request is missing its payload")?;
+                        let session = session
+                            .as_ref()
+                            .ok_or("native persistent session is stopping")?;
+                        let actual_revision = session
+                            .evidence(crate::browser_backend::EvidenceLevel::Compact)
+                            .await?
+                            .revision;
+                        if actual_revision != request.expected_revision {
+                            return Err(format!(
+                                "stale browser revision: expected {}, observed {actual_revision}",
+                                request.expected_revision
+                            )
+                            .into());
+                        }
+                        let outcome = match request.action.as_str() {
+                            "back" => session
+                                .native_navigate_history(NativeHistoryDirection::Back)
+                                .await?,
+                            "forward" => session
+                                .native_navigate_history(NativeHistoryDirection::Forward)
+                                .await?,
+                            "reload" => {
+                                session.script("location.reload()").await?;
+                                let revision = session
+                                    .evidence(crate::browser_backend::EvidenceLevel::Compact)
+                                    .await?
+                                    .revision;
+                                crate::browser::session::NavigationControlOutcome {
+                                    action: "reload".into(),
+                                    previous_revision: request.expected_revision,
+                                    current_revision: revision,
+                                }
+                            }
+                            "stopLoading" => crate::browser::session::NavigationControlOutcome {
+                                action: "stopLoading".into(),
+                                previous_revision: request.expected_revision,
+                                current_revision: actual_revision,
+                            },
+                            _ => {
+                                return Err(format!(
+                                    "unsupported native session control `{}`",
+                                    request.action
+                                )
+                                .into());
+                            }
+                        };
+                        json!({
+                            "ok": true,
+                            "action": outcome.action,
+                            "currentRevision": outcome.current_revision,
+                        })
+                    }
+                    "mcp" => {
+                        let params = request
+                            .mcp_params
+                            .ok_or("native MCP request is missing its params")?;
+                        let session = session
+                            .as_ref()
+                            .ok_or("native persistent session is stopping")?;
+                        match crate::mcp::server::run_native_persistent_tool(
+                            params,
+                            session,
+                            &record.profile,
+                            &policy,
+                        )
+                        .await
+                        {
+                            Ok(result) => json!({"ok": true, "result": result}),
+                            Err(error) => json!({"ok": false, "error": error.to_string()}),
+                        }
+                    }
                     _ => json!({"ok": false, "error": "unknown session operation"}),
                 };
                 write.write_all(serde_json::to_string(&response)?.as_bytes()).await?;
@@ -626,6 +712,8 @@ async fn send_request(socket: &Path, op: &str) -> BrowserResult<serde_json::Valu
         &SessionRequest {
             op: op.to_owned(),
             argv: Vec::new(),
+            control: None,
+            mcp_params: None,
         },
     )
     .await
@@ -648,11 +736,77 @@ pub async fn execute_native(name: &str, argv: Vec<String>) -> BrowserResult<serd
         &SessionRequest {
             op: "execute".into(),
             argv,
+            control: None,
+            mcp_params: None,
         },
     )
     .await
 }
 
+#[cfg(feature = "native-engine")]
+pub async fn control_native(
+    name: &str,
+    action: &str,
+    expected_revision: u64,
+) -> BrowserResult<serde_json::Value> {
+    if !matches!(action, "back" | "forward" | "reload" | "stopLoading") {
+        return Err(format!("unsupported native session control `{action}`").into());
+    }
+    let Some(record) = read_record(name)? else {
+        return Err(format!("persistent session `{name}` is not running; start it first").into());
+    };
+    if !record.runtime.is_native() {
+        return Err(format!("persistent session `{name}` is not a native session").into());
+    }
+    if !process_is_alive(record.pid) {
+        return Err(format!("persistent session `{name}` is stale; restart it first").into());
+    }
+    send_request_payload(
+        &record.socket,
+        &SessionRequest {
+            op: "control".into(),
+            argv: Vec::new(),
+            control: Some(NativeControlRequest {
+                action: action.into(),
+                expected_revision,
+            }),
+            mcp_params: None,
+        },
+    )
+    .await
+}
+
+#[cfg(feature = "native-engine")]
+pub async fn execute_native_mcp(
+    name: &str,
+    params: serde_json::Value,
+) -> BrowserResult<serde_json::Value> {
+    let Some(record) = read_record(name)? else {
+        return Err(format!("persistent session `{name}` is not running; start it first").into());
+    };
+    if !record.runtime.is_native() {
+        return Err(format!("persistent session `{name}` is not a native session").into());
+    }
+    if !process_is_alive(record.pid) {
+        return Err(format!("persistent session `{name}` is stale; restart it first").into());
+    }
+    let response = send_request_payload(
+        &record.socket,
+        &SessionRequest {
+            op: "mcp".into(),
+            argv: Vec::new(),
+            control: None,
+            mcp_params: Some(params),
+        },
+    )
+    .await?;
+    response
+        .get("result")
+        .cloned()
+        .ok_or_else(|| "native persistent MCP request returned no result".into())
+}
+
+#[cfg(feature = "native-engine")]
 fn with_owner_profile(mut argv: Vec<String>, owner_profile: &str) -> Vec<String> {
     let has_profile = argv
         .iter()
@@ -791,82 +945,123 @@ mod tests {
     }
 
     #[cfg(all(unix, feature = "native-engine"))]
-    #[tokio::test(flavor = "current_thread")]
-    async fn native_owner_keeps_one_engine_alive_for_multiple_ipc_commands() {
-        tokio::task::LocalSet::new()
-            .run_until(async {
-                let root = std::env::temp_dir().join(format!(
-                    "glass-native-session-test-{}-{}",
-                    std::process::id(),
-                    chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
-                ));
-                std::fs::create_dir_all(&root).unwrap();
-                let socket = root.join("session.sock");
-                let status_path = root.join("session.json");
-                let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
-                let server = tokio::task::spawn_local(serve(PersistentSessionServeConfig {
-                    name: "native-test".into(),
-                    socket: socket.clone(),
-                    status_path: status_path.clone(),
-                    runtime: BrowserRuntime::Native,
-                    port: 0,
-                    profile: "native-test".into(),
-                    headed: false,
-                    chrome_path: None,
-                    policy,
-                    native_config: Some(
-                        NativeEngineConfig::default().with_storage_path(root.join("storage.json")),
-                    ),
-                }));
+    #[test]
+    fn native_owner_keeps_one_engine_alive_for_multiple_ipc_commands() {
+        std::thread::Builder::new()
+            .name("glass-native-session-test".into())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("native persistent test runtime should build");
+                runtime.block_on(tokio::task::LocalSet::new().run_until(async {
+                    let root = std::env::temp_dir().join(format!(
+                        "glass-native-session-test-{}-{}",
+                        std::process::id(),
+                        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+                    ));
+                    std::fs::create_dir_all(&root).unwrap();
+                    let socket = root.join("session.sock");
+                    let status_path = root.join("session.json");
+                    let policy =
+                        BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
+                    let server = tokio::task::spawn_local(serve(PersistentSessionServeConfig {
+                        name: "native-test".into(),
+                        socket: socket.clone(),
+                        status_path: status_path.clone(),
+                        runtime: BrowserRuntime::Native,
+                        port: 0,
+                        profile: "native-test".into(),
+                        headed: false,
+                        chrome_path: None,
+                        policy,
+                        native_config: Some(
+                            NativeEngineConfig::default()
+                                .with_storage_path(root.join("storage.json")),
+                        ),
+                    }));
 
-                let record = tokio::time::timeout(Duration::from_secs(10), async {
-                    loop {
-                        if let Ok(bytes) = tokio::fs::read(&status_path).await {
-                            let record: PersistentSessionRecord =
-                                serde_json::from_slice(&bytes).unwrap();
-                            if record.state == "running" {
-                                break record;
+                    let record = tokio::time::timeout(Duration::from_secs(10), async {
+                        loop {
+                            if let Ok(bytes) = tokio::fs::read(&status_path).await {
+                                let record: PersistentSessionRecord =
+                                    serde_json::from_slice(&bytes).unwrap();
+                                if record.state == "running" {
+                                    break record;
+                                }
                             }
+                            tokio::time::sleep(Duration::from_millis(25)).await;
                         }
-                        tokio::time::sleep(Duration::from_millis(25)).await;
-                    }
-                })
-                .await
-                .expect("native persistent owner did not become ready");
-                assert_eq!(record.runtime, BrowserRuntime::Native);
-                assert_eq!(record.browser_pid, 0);
-
-                let request = SessionRequest {
-                    op: "execute".into(),
-                    argv: vec![
-                        "--browser-runtime".into(),
-                        "native".into(),
-                        "--profile".into(),
-                        "native-test".into(),
-                        "observe".into(),
-                    ],
-                };
-                let first = send_request_payload(&socket, &request).await.unwrap();
-                assert_eq!(first["ok"], true);
-                assert_eq!(first["output"]["kind"], "json");
-                let owner_pid = record.pid;
-
-                let second = send_request_payload(&socket, &request).await.unwrap();
-                assert_eq!(second["ok"], true);
-                assert_eq!(read_record_from_path(&status_path).unwrap().pid, owner_pid);
-
-                let stopped = send_request(&socket, "stop").await.unwrap();
-                assert_eq!(stopped["state"], "stopping");
-                tokio::time::timeout(Duration::from_secs(10), server)
+                    })
                     .await
-                    .expect("native persistent owner did not stop")
-                    .expect("native persistent owner task panicked")
-                    .expect("native persistent owner failed");
-                assert!(!status_path.exists());
-                assert!(!socket.exists());
-                std::fs::remove_dir_all(root).unwrap();
+                    .expect("native persistent owner did not become ready");
+                    assert_eq!(record.runtime, BrowserRuntime::Native);
+                    assert_eq!(record.browser_pid, 0);
+
+                    let request = SessionRequest {
+                        op: "execute".into(),
+                        argv: vec![
+                            "--browser-runtime".into(),
+                            "native".into(),
+                            "--profile".into(),
+                            "native-test".into(),
+                            "observe".into(),
+                        ],
+                        control: None,
+                        mcp_params: None,
+                    };
+                    let first = send_request_payload(&socket, &request).await.unwrap();
+                    assert_eq!(first["ok"], true);
+                    assert_eq!(first["output"]["kind"], "json");
+                    let revision = first["output"]["value"]["revision"]
+                        .as_u64()
+                        .expect("native owner observation should expose a revision");
+                    let control = SessionRequest {
+                        op: "control".into(),
+                        argv: Vec::new(),
+                        control: Some(NativeControlRequest {
+                            action: "stopLoading".into(),
+                            expected_revision: revision,
+                        }),
+                        mcp_params: None,
+                    };
+                    let control_result = send_request_payload(&socket, &control).await.unwrap();
+                    assert_eq!(control_result["ok"], true);
+                    assert_eq!(control_result["currentRevision"], revision);
+                    let mcp_request = SessionRequest {
+                        op: "mcp".into(),
+                        argv: Vec::new(),
+                        control: None,
+                        mcp_params: Some(json!({
+                            "name": "observe",
+                            "arguments": {}
+                        })),
+                    };
+                    let mcp_result = send_request_payload(&socket, &mcp_request).await.unwrap();
+                    assert_eq!(mcp_result["ok"], true);
+                    assert!(mcp_result["result"]["content"].is_array());
+                    let owner_pid = record.pid;
+
+                    let second = send_request_payload(&socket, &request).await.unwrap();
+                    assert_eq!(second["ok"], true);
+                    assert_eq!(read_record_from_path(&status_path).unwrap().pid, owner_pid);
+
+                    let stopped = send_request(&socket, "stop").await.unwrap();
+                    assert_eq!(stopped["state"], "stopping");
+                    tokio::time::timeout(Duration::from_secs(10), server)
+                        .await
+                        .expect("native persistent owner did not stop")
+                        .expect("native persistent owner task panicked")
+                        .expect("native persistent owner failed");
+                    assert!(!status_path.exists());
+                    assert!(!socket.exists());
+                    std::fs::remove_dir_all(root).unwrap();
+                }))
             })
-            .await;
+            .expect("native persistent test thread should join")
+            .join()
+            .expect("native persistent test thread should not panic");
     }
 
     #[cfg(all(unix, feature = "native-engine"))]

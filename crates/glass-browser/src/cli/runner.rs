@@ -270,13 +270,9 @@ async fn dispatch_product(mut cli: Cli, _development_enabled: bool) -> BrowserRe
             return Ok(());
         }
         Some(Commands::Browser { action }) if cli.prompt.is_none() => {
-            if let Some(name) = cli.session.clone() {
-                if cli.browser_runtime.is_native() {
-                    return Err(
-                        "native persistent sessions currently attach through explicit commands; use `glass --browser-runtime native --session NAME observe`"
-                            .into(),
-                    );
-                }
+            if let Some(name) = cli.session.clone()
+                && !cli.browser_runtime.is_native()
+            {
                 cli.port = persistent_session_port(&name)?;
                 cli.attach = true;
             }
@@ -292,12 +288,6 @@ async fn dispatch_product(mut cli: Cli, _development_enabled: bool) -> BrowserRe
             return Ok(());
         }
         Some(Commands::Tui) | None if cli.prompt.is_none() => {
-            if cli.browser_runtime.is_native() && cli.session.is_some() {
-                return Err(
-                    "native persistent sessions currently attach through explicit commands; use `glass --browser-runtime native --session NAME observe`"
-                        .into(),
-                );
-            }
             if should_run_tui(
                 std::io::stdin().is_terminal(),
                 std::io::stdout().is_terminal(),
@@ -381,7 +371,7 @@ async fn dispatch_alternative_runtime(cli: &Cli, policy: &mut BrowserPolicy) -> 
     }
     let native = cli.browser_runtime.is_native();
     #[cfg(feature = "native-engine")]
-    if native && cli.session.is_some() {
+    if native && cli.session.is_some() && !cli.mcp {
         return dispatch_native_persistent_command(cli).await;
     }
     validate_alternative_runtime_flags(cli, cli.browser_runtime)?;
@@ -512,7 +502,7 @@ fn validate_alternative_runtime_flags(cli: &Cli, runtime: BrowserRuntime) -> Bro
         Some("--incognito is only available on the full Chromium session")
     } else if cli.attach {
         Some("alternative runtimes are already externally managed; omit --attach")
-    } else if cli.session.is_some() {
+    } else if cli.session.is_some() && !(runtime.is_native() && cli.mcp) {
         Some("--session is only available on the full Chromium session")
     } else if cli.target_id.is_some() {
         Some("--target-id is only available on the full Chromium session")

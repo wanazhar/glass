@@ -40,6 +40,8 @@ use crate::browser_workspace::{
     BrowserWorkspaceEntity, BrowserWorkspaceIntent, BrowserWorkspaceLayout,
 };
 use crate::cli::args::{Cli, TuiLiveFit, TuiLiveMode, TuiLiveQuality};
+#[cfg(feature = "native-engine")]
+use crate::cli::runner::AlternativeRuntimeOutput;
 use crate::presentation::{
     BrowserFrame, CaptureScale, FrameDamage, FrameDropCounts, FrameEncoding,
     PRESENTATION_CONTRACT_SCHEMA_VERSION, PixelSize, TargetResourceIdentity,
@@ -94,12 +96,180 @@ enum BrowserTuiSession {
     Chromium(Box<BrowserSession>),
     #[cfg(feature = "native-engine")]
     Native(Box<BrowserRuntimeSession>),
+    #[cfg(feature = "native-engine")]
+    NativePersistent(NativePersistentSession),
+}
+
+#[cfg(feature = "native-engine")]
+#[derive(Debug, Clone)]
+struct NativePersistentSession {
+    name: String,
+}
+
+#[cfg(feature = "native-engine")]
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistentEvidence {
+    title: String,
+    url: String,
+    visible_text: String,
+    revision: u64,
+    complete: bool,
+}
+
+#[cfg(feature = "native-engine")]
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistentSemanticNode {
+    reference: String,
+    role: String,
+    name: String,
+    hidden: bool,
+    disabled: bool,
+}
+
+#[cfg(feature = "native-engine")]
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistentTarget {
+    id: String,
+    url: String,
+    title: String,
+    active: bool,
+}
+
+#[cfg(feature = "native-engine")]
+impl NativePersistentSession {
+    async fn execute(&self, command: Vec<String>) -> BrowserResult<AlternativeRuntimeOutput> {
+        let mut args = vec![
+            "--browser-runtime".to_owned(),
+            "native".to_owned(),
+            "--response-mode".to_owned(),
+            "normal".to_owned(),
+        ];
+        args.extend(command);
+        let response = crate::browser::persistent::execute_native(&self.name, args).await?;
+        let output = response
+            .get("output")
+            .cloned()
+            .ok_or("native persistent session returned no command output")?;
+        Ok(serde_json::from_value(output)?)
+    }
+
+    async fn json(&self, command: Vec<String>) -> BrowserResult<serde_json::Value> {
+        match self.execute(command).await? {
+            AlternativeRuntimeOutput::Json(value) => Ok(value),
+            AlternativeRuntimeOutput::Text(value) => {
+                serde_json::from_str(&value).map_err(Into::into)
+            }
+            AlternativeRuntimeOutput::Combined(outputs) => outputs
+                .into_iter()
+                .rev()
+                .find_map(|output| match output {
+                    AlternativeRuntimeOutput::Json(value) => Some(Ok(value)),
+                    AlternativeRuntimeOutput::Text(_) | AlternativeRuntimeOutput::Combined(_) => {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| Err("native persistent command returned no JSON output".into())),
+        }
+    }
+
+    async fn observe(&self) -> BrowserResult<TuiObservation> {
+        let value = self
+            .json(vec!["observe".into(), "--deep-dom".into()])
+            .await?;
+        parse_persistent_observation(value)
+    }
+
+    async fn targets(&self) -> BrowserResult<Vec<PageTargetInfo>> {
+        let value = self.json(vec!["targets".into()]).await?;
+        parse_persistent_targets(value)
+    }
+
+    async fn screenshot_png(&self) -> BrowserResult<Vec<u8>> {
+        use base64::Engine;
+
+        let value = self
+            .json(vec!["observe".into(), "--screenshot".into()])
+            .await?;
+        let encoded = value
+            .get("screenshotPngBase64")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("native persistent screenshot returned no PNG payload")?;
+        Ok(base64::engine::general_purpose::STANDARD.decode(encoded)?)
+    }
+
+    async fn control(
+        &self,
+        action: &str,
+        expected_revision: u64,
+    ) -> BrowserResult<TuiControlOutcome> {
+        let response =
+            crate::browser::persistent::control_native(&self.name, action, expected_revision)
+                .await?;
+        Ok(TuiControlOutcome {
+            action: response
+                .get("action")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(action)
+                .to_owned(),
+            current_revision: response
+                .get("currentRevision")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or("native persistent control returned no revision")?,
+        })
+    }
+}
+
+#[cfg(feature = "native-engine")]
+fn parse_persistent_observation(value: serde_json::Value) -> BrowserResult<TuiObservation> {
+    let evidence: PersistentEvidence = serde_json::from_value(value.clone())?;
+    let nodes = value
+        .get("nodes")
+        .cloned()
+        .unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
+    let nodes: Vec<PersistentSemanticNode> = serde_json::from_value(nodes)?;
+    let revision = evidence.revision;
+    Ok(TuiObservation {
+        title: evidence.title,
+        url: evidence.url,
+        loading: !evidence.complete,
+        revision,
+        visible_text: evidence.visible_text,
+        entities: nodes
+            .into_iter()
+            .map(|node| BrowserWorkspaceEntity {
+                reference: node.reference,
+                role: node.role,
+                name: node.name,
+                actionable: !node.hidden && !node.disabled,
+                revision,
+            })
+            .collect(),
+    })
+}
+
+#[cfg(feature = "native-engine")]
+fn parse_persistent_targets(value: serde_json::Value) -> BrowserResult<Vec<PageTargetInfo>> {
+    let targets = value.get("result").cloned().unwrap_or(value);
+    let targets: Vec<PersistentTarget> = serde_json::from_value(targets)?;
+    Ok(targets
+        .into_iter()
+        .map(|target| PageTargetInfo {
+            id: target.id,
+            url: target.url,
+            title: target.title,
+            opener_id: None,
+            active: target.active,
+        })
+        .collect())
 }
 
 impl BrowserTuiSession {
     #[cfg(feature = "native-engine")]
     const fn is_native(&self) -> bool {
-        matches!(self, Self::Native(_))
+        matches!(self, Self::Native(_) | Self::NativePersistent(_))
     }
 
     async fn close(self) -> BrowserResult<()> {
@@ -107,6 +277,8 @@ impl BrowserTuiSession {
             Self::Chromium(session) => session.close().await,
             #[cfg(feature = "native-engine")]
             Self::Native(session) => session.close().await,
+            #[cfg(feature = "native-engine")]
+            Self::NativePersistent(_) => Ok(()),
         }
     }
 }
@@ -134,6 +306,12 @@ impl BrowserTuiSession {
             #[cfg(feature = "native-engine")]
             Self::Native(session) => {
                 session.navigate(url).await?;
+            }
+            #[cfg(feature = "native-engine")]
+            Self::NativePersistent(session) => {
+                session
+                    .execute(vec!["navigate".into(), url.to_owned()])
+                    .await?;
             }
         }
         self.observe().await
@@ -188,6 +366,8 @@ impl BrowserTuiSession {
                     entities,
                 })
             }
+            #[cfg(feature = "native-engine")]
+            Self::NativePersistent(session) => session.observe().await,
         }
     }
 
@@ -216,6 +396,20 @@ impl BrowserTuiSession {
                     )
                     .await?;
             }
+            #[cfg(feature = "native-engine")]
+            Self::NativePersistent(session) => {
+                let target = target.ok_or("native type requires a selected semantic target")?;
+                session
+                    .execute(vec![
+                        "type".into(),
+                        text.to_owned(),
+                        "--target".into(),
+                        target.to_owned(),
+                        "--expected-revision".into(),
+                        expected_revision.to_string(),
+                    ])
+                    .await?;
+            }
         }
         Ok(())
     }
@@ -237,6 +431,20 @@ impl BrowserTuiSession {
                     )
                     .await?;
             }
+            #[cfg(feature = "native-engine")]
+            Self::NativePersistent(session) => {
+                session
+                    .execute(vec![
+                        "scroll".into(),
+                        "--dx".into(),
+                        dx.to_string(),
+                        "--dy".into(),
+                        dy.to_string(),
+                        "--expected-revision".into(),
+                        expected_revision.to_string(),
+                    ])
+                    .await?;
+            }
         }
         Ok(())
     }
@@ -246,6 +454,8 @@ impl BrowserTuiSession {
             Self::Chromium(session) => session.list_targets().await,
             #[cfg(feature = "native-engine")]
             Self::Native(session) => session.native_list_targets().await,
+            #[cfg(feature = "native-engine")]
+            Self::NativePersistent(session) => session.targets().await,
         }
     }
 
@@ -257,6 +467,12 @@ impl BrowserTuiSession {
             #[cfg(feature = "native-engine")]
             Self::Native(session) => {
                 session.native_select_target(target_id).await?;
+            }
+            #[cfg(feature = "native-engine")]
+            Self::NativePersistent(session) => {
+                session
+                    .execute(vec!["select-target".into(), target_id.to_owned()])
+                    .await?;
             }
         }
         Ok(())
@@ -280,6 +496,17 @@ impl BrowserTuiSession {
                     )
                     .await?;
             }
+            #[cfg(feature = "native-engine")]
+            Self::NativePersistent(session) => {
+                session
+                    .execute(vec![
+                        "click".into(),
+                        target.to_owned(),
+                        "--expected-revision".into(),
+                        expected_revision.to_string(),
+                    ])
+                    .await?;
+            }
         }
         Ok(())
     }
@@ -300,6 +527,14 @@ impl BrowserTuiSession {
                     action: outcome.action,
                     current_revision: outcome.current_revision,
                 })
+            }
+            #[cfg(feature = "native-engine")]
+            Self::NativePersistent(session) => {
+                let action = match direction {
+                    NativeHistoryDirection::Back => "back",
+                    NativeHistoryDirection::Forward => "forward",
+                };
+                session.control(action, expected_revision).await
             }
         }
     }
@@ -323,6 +558,8 @@ impl BrowserTuiSession {
                     current_revision: observation.revision,
                 })
             }
+            #[cfg(feature = "native-engine")]
+            Self::NativePersistent(session) => session.control("reload", expected_revision).await,
         }
     }
 
@@ -345,6 +582,10 @@ impl BrowserTuiSession {
                     current_revision,
                 })
             }
+            #[cfg(feature = "native-engine")]
+            Self::NativePersistent(session) => {
+                session.control("stopLoading", expected_revision).await
+            }
         }
     }
 
@@ -353,6 +594,8 @@ impl BrowserTuiSession {
             Self::Chromium(session) => session.screenshot_png().await,
             #[cfg(feature = "native-engine")]
             Self::Native(session) => session.native_capture_png_async().await,
+            #[cfg(feature = "native-engine")]
+            Self::NativePersistent(session) => session.screenshot_png().await,
         }
     }
 
@@ -365,6 +608,11 @@ impl BrowserTuiSession {
             Self::Chromium(session) => session.run_workflow(workflow, inputs).await,
             #[cfg(feature = "native-engine")]
             Self::Native(_) => Err(
+                "native workflow execution is not wired through the TUI session yet; use explicit native commands"
+                    .into(),
+            ),
+            #[cfg(feature = "native-engine")]
+            Self::NativePersistent(_) => Err(
                 "native workflow execution is not wired through the TUI session yet; use explicit native commands"
                     .into(),
             ),
@@ -382,6 +630,10 @@ impl BrowserTuiSession {
             Self::Native(_) => {
                 Err("native workflow checkpoints are not wired through the TUI session yet".into())
             }
+            #[cfg(feature = "native-engine")]
+            Self::NativePersistent(_) => {
+                Err("native workflow checkpoints are not wired through the TUI session yet".into())
+            }
         }
     }
 
@@ -395,6 +647,10 @@ impl BrowserTuiSession {
             Self::Chromium(session) => session.resume_workflow(workflow, inputs, checkpoint).await,
             #[cfg(feature = "native-engine")]
             Self::Native(_) => {
+                Err("native workflow resume is not wired through the TUI session yet".into())
+            }
+            #[cfg(feature = "native-engine")]
+            Self::NativePersistent(_) => {
                 Err("native workflow resume is not wired through the TUI session yet".into())
             }
         }
@@ -881,8 +1137,25 @@ impl BrowserTui {
                 if attach {
                     return Err(
                         "the native browser is process-owned; use Chromium explicitly for DevTools attach"
-                            .into(),
+                        .into(),
                     );
+                }
+                if let Some(name) = cli.session.as_deref() {
+                    let status = crate::browser::persistent::status(name)?;
+                    if status.get("state").and_then(serde_json::Value::as_str) != Some("running") {
+                        return Err(format!(
+                            "native persistent session `{name}` is not running; start it with `glass session start {name}`"
+                        )
+                        .into());
+                    }
+                    self.session = Some(BrowserTuiSession::NativePersistent(
+                        NativePersistentSession {
+                            name: name.to_owned(),
+                        },
+                    ));
+                    self.workspace
+                        .connected(false, Some(format!("native session {name}")), None);
+                    return Ok(());
                 }
                 let config = crate::cli::runner::native_config_from_cli(cli)?;
                 self.session = Some(BrowserTuiSession::Native(Box::new(
@@ -1004,6 +1277,10 @@ impl BrowserTui {
                         BrowserTuiSession::Native(_) => {
                             unreachable!("native history handled above")
                         }
+                        #[cfg(feature = "native-engine")]
+                        BrowserTuiSession::NativePersistent(_) => {
+                            unreachable!("native history handled above")
+                        }
                     }
                 }
                 #[cfg(not(feature = "native-engine"))]
@@ -1038,6 +1315,10 @@ impl BrowserTui {
                             }
                         }
                         BrowserTuiSession::Native(_) => {
+                            unreachable!("native history handled above")
+                        }
+                        #[cfg(feature = "native-engine")]
+                        BrowserTuiSession::NativePersistent(_) => {
                             unreachable!("native history handled above")
                         }
                     }
@@ -1746,6 +2027,49 @@ mod tests {
         assert!(app.page.contains("[l] start the Glass native engine"));
         assert!(!app.page.contains("attach an existing Chrome"));
         assert!(app.page.contains("[n] enter an address"));
+    }
+
+    #[cfg(feature = "native-engine")]
+    #[test]
+    fn native_persistent_observation_rehydrates_tui_semantics() {
+        let observation = parse_persistent_observation(serde_json::json!({
+            "title": "Checkout",
+            "url": "https://example.test/checkout",
+            "visibleText": "Pay now",
+            "revision": 11,
+            "complete": true,
+            "nodes": [{
+                "reference": "r11:b3",
+                "role": "button",
+                "name": "Pay now",
+                "hidden": false,
+                "disabled": false,
+                "tagName": "button"
+            }],
+            "detailAvailability": {"resultId": "cli-test", "detailsAvailable": true, "detailsTruncated": false}
+        }))
+        .expect("persistent observation should decode");
+        assert_eq!(observation.revision, 11);
+        assert_eq!(observation.title, "Checkout");
+        assert_eq!(observation.entities.len(), 1);
+        assert_eq!(observation.entities[0].reference, "r11:b3");
+        assert!(observation.entities[0].actionable);
+    }
+
+    #[cfg(feature = "native-engine")]
+    #[test]
+    fn native_persistent_tui_attachment_is_non_owning() {
+        let session = BrowserTuiSession::NativePersistent(NativePersistentSession {
+            name: "checkout".into(),
+        });
+        assert!(session.is_native());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("TUI attachment test runtime should build");
+        runtime
+            .block_on(session.close())
+            .expect("detaching the TUI should not stop the owner");
     }
 
     #[test]

@@ -74,7 +74,8 @@ pub struct Cli {
     pub attach: bool,
 
     /// Attach browser operations to a named persistent local session.
-    /// The session's verified loopback port is resolved before the operation starts.
+    /// Chromium resolves its verified loopback port; native attaches through
+    /// the owner's private local command socket and keeps the owner's engine alive.
     #[arg(long, global = true, value_name = "NAME")]
     pub session: Option<String>,
 

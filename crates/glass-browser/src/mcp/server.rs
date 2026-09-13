@@ -643,6 +643,11 @@ where
     });
     let mut lifecycle = Lifecycle::Uninitialized;
     let native_session = Arc::new(Mutex::new(None));
+    let persistent_native_session = if native_runtime {
+        cli.session.clone()
+    } else {
+        None
+    };
 
     while let Some((body, format)) = read_message(&mut reader).await? {
         let body_bytes = body.len();
@@ -915,6 +920,7 @@ where
         let task_knowledge_store = cli.knowledge_store.clone();
         let task_development_sessions = ();
         let task_host_backend = host_backend.clone();
+        let task_persistent_native_session = persistent_native_session.clone();
         let task_outbound = outbound_tx.clone();
         let task_cancellations = Arc::clone(&cancellations);
         tokio::task::spawn_local(async move {
@@ -931,6 +937,7 @@ where
                     &mut session,
                     &mut native_session,
                     native_runtime,
+                    task_persistent_native_session.as_deref(),
                     &task_options,
                     &task_policy,
                     task_viewport,
@@ -1458,6 +1465,7 @@ async fn handle_request(
         session,
         &mut native_session,
         false,
+        None,
         options,
         policy,
         None,
@@ -1474,6 +1482,7 @@ async fn handle_request_with_viewport(
     session: &mut Option<BrowserSession>,
     native_session: &mut Option<BrowserRuntimeSession>,
     native_runtime: bool,
+    persistent_native_session: Option<&str>,
     options: &SessionOptions,
     policy: &BrowserPolicy,
     viewport: Option<(i64, i64)>,
@@ -1603,6 +1612,7 @@ async fn handle_request_with_viewport(
             session,
             native_session,
             native_runtime,
+            persistent_native_session,
             options,
             policy,
             viewport,
@@ -1830,6 +1840,7 @@ async fn call_tool(
     session: &mut Option<BrowserSession>,
     _native_session: &mut Option<BrowserRuntimeSession>,
     native_runtime: bool,
+    _persistent_native_session: Option<&str>,
     options: &SessionOptions,
     policy: &BrowserPolicy,
     viewport: Option<(i64, i64)>,
@@ -1965,6 +1976,13 @@ async fn call_tool(
     if native_runtime {
         #[cfg(feature = "native-engine")]
         {
+            if let Some(name) = _persistent_native_session {
+                return crate::browser::persistent::execute_native_mcp(
+                    name,
+                    request.params.clone(),
+                )
+                .await;
+            }
             return call_native_tool(
                 invocation,
                 _native_session,
@@ -3380,6 +3398,17 @@ async fn call_native_tool(
     response_mode: ResponseMode,
 ) -> BrowserResult<Value> {
     let session = ensure_native_session(native_session, viewport, profile, incognito).await?;
+    call_native_tool_on_session(invocation, session, profile, policy, response_mode).await
+}
+
+#[cfg(feature = "native-engine")]
+async fn call_native_tool_on_session(
+    invocation: ToolInvocation<'_>,
+    session: &BrowserRuntimeSession,
+    profile: &str,
+    policy: &BrowserPolicy,
+    response_mode: ResponseMode,
+) -> BrowserResult<Value> {
     match invocation {
         ToolInvocation::SessionSnapshot {
             operation,
@@ -3940,6 +3969,18 @@ async fn call_native_tool(
             "native MCP does not implement this tool in the current native session slice".into(),
         ),
     }
+}
+
+#[cfg(feature = "native-engine")]
+pub(crate) async fn run_native_persistent_tool(
+    params: Value,
+    session: &BrowserRuntimeSession,
+    profile: &str,
+    policy: &BrowserPolicy,
+) -> BrowserResult<Value> {
+    let response_mode = response_mode_from_params(&params)?;
+    let invocation = parse_tool_invocation(&params)?;
+    call_native_tool_on_session(invocation, session, profile, policy, response_mode).await
 }
 
 #[cfg(feature = "native-engine")]
@@ -6098,6 +6139,7 @@ mod tests {
             session,
             native_session,
             true,
+            None,
             options,
             policy,
             None,

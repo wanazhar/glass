@@ -28,13 +28,24 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-281` locally. The versioned
+`native-engine-browser-282` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
 module decomposition, integration enumeration, and tradeoffs are in the
 [native-engine architecture](../architecture/native-engine.md) and
 [native-engine analysis](analysis/native-engine.md).
+
+The completed computed-style/media-query slice is
+[native-engine-browser-282](tasks/native-engine-browser-282.md). It exposes a
+bounded read-only `getComputedStyle` surface backed by the native cascade and
+layout snapshot, including common box, color, text, flex, overflow, and
+geometry values, plus bounded `matchMedia` width/height/orientation queries.
+Inline style mutations are reflected immediately and the style snapshot is
+refreshed with the existing realm update path. This is an incremental page
+runtime capability; full CSSOM, pseudo-elements, dynamic viewport-change
+media delivery, and the wider native parity and production-promotion gates
+remain open on issue #40.
 
 The completed EventSource/SSE slice is
 [native-engine-browser-253](tasks/native-engine-browser-253.md). It adds a

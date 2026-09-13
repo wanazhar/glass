@@ -5,7 +5,10 @@
 //! port; the owner is the only process allowed to close the owned browser.
 
 use super::policy::BrowserPolicy;
+use super::runtime::BrowserRuntime;
 use super::session::{BrowserResult, BrowserSession, SessionOptions};
+#[cfg(feature = "native-engine")]
+use super::{BrowserRuntimeSession, NativeEngineConfig};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -15,6 +18,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 const SESSION_SCHEMA_VERSION: u32 = 1;
 const MAX_SESSION_NAME_BYTES: usize = 64;
 const MAX_STATUS_BYTES: usize = 32 * 1024;
+const MAX_SESSION_REQUEST_BYTES: usize = 256 * 1024;
 const START_TIMEOUT: Duration = Duration::from_secs(20);
 const START_POLL: Duration = Duration::from_millis(25);
 
@@ -23,6 +27,10 @@ const START_POLL: Duration = Duration::from_millis(25);
 pub struct PersistentSessionRecord {
     pub schema_version: u32,
     pub name: String,
+    /// Runtime owned by this session. Missing values in schema-v1 records are
+    /// treated as Chromium for backwards-compatible status inspection.
+    #[serde(default = "default_runtime")]
+    pub runtime: BrowserRuntime,
     pub state: String,
     pub pid: u32,
     pub browser_pid: u32,
@@ -39,11 +47,14 @@ pub struct PersistentSessionRecord {
 #[derive(Debug, Clone)]
 pub struct PersistentSessionConfig {
     pub name: String,
+    pub runtime: BrowserRuntime,
     pub port: u16,
     pub profile: String,
     pub headed: bool,
     pub chrome_path: Option<PathBuf>,
     pub policy_args: Vec<String>,
+    #[cfg(feature = "native-engine")]
+    pub native_config: Option<NativeEngineConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -56,17 +67,21 @@ pub struct PersistentSessionServeConfig {
     pub name: String,
     pub socket: PathBuf,
     pub status_path: PathBuf,
+    pub runtime: BrowserRuntime,
     pub port: u16,
     pub profile: String,
     pub headed: bool,
     pub chrome_path: Option<PathBuf>,
     pub policy: BrowserPolicy,
+    #[cfg(feature = "native-engine")]
+    pub native_config: Option<NativeEngineConfig>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SessionStatusView {
     name: String,
+    runtime: String,
     state: String,
     port: Option<u16>,
     profile: Option<String>,
@@ -78,9 +93,15 @@ struct SessionStatusView {
     error: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct SessionRequest {
     op: String,
+    #[serde(default)]
+    argv: Vec<String>,
+}
+
+fn default_runtime() -> BrowserRuntime {
+    BrowserRuntime::Chromium
 }
 
 pub fn validate_name(name: &str) -> BrowserResult<()> {
@@ -140,7 +161,13 @@ pub fn status(name: &str) -> BrowserResult<serde_json::Value> {
     let view = match record {
         Some(record) => {
             let server_alive = process_is_alive(record.pid);
-            let browser_alive = process_is_alive(record.browser_pid);
+            let browser_alive = if record.runtime.is_native() {
+                // Native sessions keep their browser state in the owner
+                // process; they do not have a Chrome child PID.
+                server_alive
+            } else {
+                process_is_alive(record.browser_pid)
+            };
             let state = if record.state == "running" && server_alive && browser_alive {
                 "running"
             } else if record.state == "failed" {
@@ -150,11 +177,12 @@ pub fn status(name: &str) -> BrowserResult<serde_json::Value> {
             };
             SessionStatusView {
                 name: record.name,
+                runtime: record.runtime.browser_family().into(),
                 state: state.into(),
-                port: Some(record.port),
+                port: (record.port != 0).then_some(record.port),
                 profile: Some(record.profile),
                 pid: Some(record.pid),
-                browser_pid: Some(record.browser_pid),
+                browser_pid: (record.browser_pid != 0).then_some(record.browser_pid),
                 headed: Some(record.headed),
                 started_at: Some(record.started_at),
                 socket: Some(record.socket),
@@ -163,6 +191,7 @@ pub fn status(name: &str) -> BrowserResult<serde_json::Value> {
         }
         None => SessionStatusView {
             name: name.into(),
+            runtime: default_runtime().browser_family().into(),
             state: "stopped".into(),
             port: None,
             profile: None,
@@ -179,15 +208,20 @@ pub fn status(name: &str) -> BrowserResult<serde_json::Value> {
 
 pub async fn start(config: PersistentSessionConfig) -> BrowserResult<PersistentSessionRecord> {
     validate_name(&config.name)?;
-    if config.port == 0 {
+    if config.runtime == BrowserRuntime::Chromium && config.port == 0 {
         return Err("persistent session port must be non-zero".into());
+    }
+    if !matches!(config.runtime, BrowserRuntime::Chromium) && !config.runtime.is_native() {
+        return Err("persistent sessions support only Chromium and native runtimes".into());
     }
     let paths = paths(&config.name)?;
     if let Some(existing) = read_record(&config.name)? {
         if process_is_alive(existing.pid) {
             return Err(format!(
-                "persistent session `{}` is already running as pid {} on port {}",
-                existing.name, existing.pid, existing.port
+                "persistent session `{}` is already running as pid {} ({})",
+                existing.name,
+                existing.pid,
+                existing.runtime.browser_family()
             )
             .into());
         }
@@ -210,6 +244,21 @@ pub async fn start(config: PersistentSessionConfig) -> BrowserResult<PersistentS
         .arg(&config.profile)
         .arg("--port")
         .arg(config.port.to_string());
+    if config.runtime != BrowserRuntime::Chromium {
+        command
+            .arg("--browser-runtime")
+            .arg(config.runtime.browser_family());
+    }
+    #[cfg(feature = "native-engine")]
+    if let Some(native_config) = &config.native_config {
+        if native_config.storage_path.is_none() {
+            command.arg("--incognito");
+        }
+        command.arg("--viewport").arg(format!(
+            "{}x{}",
+            native_config.viewport.width, native_config.viewport.height
+        ));
+    }
     if config.headed {
         command.arg("--headed");
     }
@@ -287,6 +336,11 @@ pub fn open_message(name: &str) -> BrowserResult<String> {
         )
         .into());
     }
+    if value.get("runtime").and_then(serde_json::Value::as_str) == Some("native") {
+        return Ok(format!(
+            "Native session `{name}` is ready.\n\nAttach one command:\n  glass --browser-runtime native --session {name} observe\n\nThe owner keeps the native browser state alive between commands."
+        ));
+    }
     let port = value
         .get("port")
         .and_then(serde_json::Value::as_u64)
@@ -298,8 +352,11 @@ pub fn open_message(name: &str) -> BrowserResult<String> {
 
 pub async fn serve(config: PersistentSessionServeConfig) -> BrowserResult<()> {
     validate_name(&config.name)?;
-    if config.port == 0 {
+    if config.runtime == BrowserRuntime::Chromium && config.port == 0 {
         return Err("persistent session port must be non-zero".into());
+    }
+    if !matches!(config.runtime, BrowserRuntime::Chromium) && !config.runtime.is_native() {
+        return Err("persistent sessions support only Chromium and native runtimes".into());
     }
     #[cfg(not(unix))]
     {
@@ -308,12 +365,22 @@ pub async fn serve(config: PersistentSessionServeConfig) -> BrowserResult<()> {
     }
     #[cfg(unix)]
     {
-        serve_unix(config).await
+        if config.runtime.is_native() {
+            #[cfg(feature = "native-engine")]
+            {
+                return serve_native_unix(config).await;
+            }
+            #[cfg(not(feature = "native-engine"))]
+            {
+                return Err("native runtime support is not enabled in this build".into());
+            }
+        }
+        serve_chromium_unix(config).await
     }
 }
 
 #[cfg(unix)]
-async fn serve_unix(config: PersistentSessionServeConfig) -> BrowserResult<()> {
+async fn serve_chromium_unix(config: PersistentSessionServeConfig) -> BrowserResult<()> {
     use std::os::unix::fs::PermissionsExt;
     use tokio::net::UnixListener;
 
@@ -321,11 +388,14 @@ async fn serve_unix(config: PersistentSessionServeConfig) -> BrowserResult<()> {
         name,
         socket,
         status_path,
+        runtime,
         port,
         profile,
         headed,
         chrome_path,
         policy,
+        #[cfg(feature = "native-engine")]
+            native_config: _,
     } = config;
 
     remove_socket_if_safe(&socket)?;
@@ -353,6 +423,7 @@ async fn serve_unix(config: PersistentSessionServeConfig) -> BrowserResult<()> {
             let failed = PersistentSessionRecord {
                 schema_version: SESSION_SCHEMA_VERSION,
                 name,
+                runtime,
                 state: "failed".into(),
                 pid: std::process::id(),
                 browser_pid: 0,
@@ -371,6 +442,7 @@ async fn serve_unix(config: PersistentSessionServeConfig) -> BrowserResult<()> {
     let record = PersistentSessionRecord {
         schema_version: SESSION_SCHEMA_VERSION,
         name,
+        runtime,
         state: "running".into(),
         pid: std::process::id(),
         browser_pid: session.owned_chrome_pid().unwrap_or_default(),
@@ -395,6 +467,9 @@ async fn serve_unix(config: PersistentSessionServeConfig) -> BrowserResult<()> {
                 let mut reader = BufReader::new(read);
                 lines.clear();
                 reader.read_line(&mut lines).await?;
+                if lines.len() > MAX_SESSION_REQUEST_BYTES {
+                    return Err("persistent session request exceeds its size bound".into());
+                }
                 let request = serde_json::from_str::<SessionRequest>(lines.trim())
                     .map_err(|error| format!("invalid session request: {error}"))?;
                 let response = match request.op.as_str() {
@@ -421,10 +496,180 @@ async fn serve_unix(config: PersistentSessionServeConfig) -> BrowserResult<()> {
     Ok(())
 }
 
+#[cfg(all(unix, feature = "native-engine"))]
+async fn serve_native_unix(config: PersistentSessionServeConfig) -> BrowserResult<()> {
+    use std::os::unix::fs::PermissionsExt;
+    use tokio::net::UnixListener;
+
+    let PersistentSessionServeConfig {
+        name,
+        socket,
+        status_path,
+        runtime,
+        port,
+        policy,
+        native_config,
+        profile,
+        headed,
+        chrome_path: _,
+    } = config;
+    let native_config =
+        native_config.ok_or("native persistent session is missing its engine configuration")?;
+
+    remove_socket_if_safe(&socket)?;
+    if let Some(parent) = socket.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    if let Some(parent) = status_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let listener = UnixListener::bind(&socket)?;
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
+
+    let session = match BrowserRuntimeSession::connect_native(native_config).await {
+        Ok(session) => session,
+        Err(error) => {
+            let failed = PersistentSessionRecord {
+                schema_version: SESSION_SCHEMA_VERSION,
+                name,
+                runtime,
+                state: "failed".into(),
+                pid: std::process::id(),
+                browser_pid: 0,
+                port,
+                profile: profile.clone(),
+                headed,
+                socket: socket.to_path_buf(),
+                status_path: status_path.to_path_buf(),
+                started_at: chrono::Utc::now().to_rfc3339(),
+                error: Some(error.to_string()),
+            };
+            write_record(&status_path, &failed)?;
+            return Err(error);
+        }
+    };
+    let record = PersistentSessionRecord {
+        schema_version: SESSION_SCHEMA_VERSION,
+        name,
+        runtime,
+        state: "running".into(),
+        pid: std::process::id(),
+        browser_pid: 0,
+        port,
+        profile,
+        headed,
+        socket: socket.to_path_buf(),
+        status_path: status_path.to_path_buf(),
+        started_at: chrono::Utc::now().to_rfc3339(),
+        error: None,
+    };
+    write_record(&status_path, &record)?;
+
+    let mut session = Some(session);
+    let mut shutdown = false;
+    while !shutdown {
+        tokio::select! {
+            accepted = listener.accept() => {
+                let (stream, _) = accepted?;
+                let (read, mut write) = stream.into_split();
+                let mut reader = BufReader::new(read);
+                let mut line = String::new();
+                reader.read_line(&mut line).await?;
+                if line.len() > MAX_SESSION_REQUEST_BYTES {
+                    return Err("persistent session request exceeds its size bound".into());
+                }
+                let request = serde_json::from_str::<SessionRequest>(line.trim())
+                    .map_err(|error| format!("invalid session request: {error}"))?;
+                let response = match request.op.as_str() {
+                    "status" => serde_json::to_value(&record)?,
+                    "stop" => {
+                        shutdown = true;
+                        json!({"ok": true, "state": "stopping"})
+                    }
+                    "execute" => {
+                        let session = session
+                            .as_ref()
+                            .ok_or("native persistent session is stopping")?;
+                        match crate::cli::runner::run_native_persistent_request(
+                            session,
+                            request.argv,
+                            &record.profile,
+                            &policy,
+                        )
+                        .await
+                        {
+                            Ok(output) => json!({"ok": true, "output": output}),
+                            Err(error) => json!({"ok": false, "error": error.to_string()}),
+                        }
+                    }
+                    _ => json!({"ok": false, "error": "unknown session operation"}),
+                };
+                write.write_all(serde_json::to_string(&response)?.as_bytes()).await?;
+                write.write_all(b"\n").await?;
+            }
+            _ = tokio::signal::ctrl_c() => {
+                shutdown = true;
+            }
+        }
+    }
+    if let Some(session) = session.take() {
+        let _ = session.close().await;
+    }
+    let _ = std::fs::remove_file(status_path);
+    remove_socket_if_safe(&socket)?;
+    Ok(())
+}
+
 async fn send_request(socket: &Path, op: &str) -> BrowserResult<serde_json::Value> {
+    send_request_payload(
+        socket,
+        &SessionRequest {
+            op: op.to_owned(),
+            argv: Vec::new(),
+        },
+    )
+    .await
+}
+
+#[cfg(feature = "native-engine")]
+pub async fn execute_native(name: &str, argv: Vec<String>) -> BrowserResult<serde_json::Value> {
+    let Some(record) = read_record(name)? else {
+        return Err(format!("persistent session `{name}` is not running; start it first").into());
+    };
+    if !record.runtime.is_native() {
+        return Err(format!("persistent session `{name}` is not a native session").into());
+    }
+    if !process_is_alive(record.pid) {
+        return Err(format!("persistent session `{name}` is stale; restart it first").into());
+    }
+    let argv = with_owner_profile(argv, &record.profile);
+    send_request_payload(
+        &record.socket,
+        &SessionRequest {
+            op: "execute".into(),
+            argv,
+        },
+    )
+    .await
+}
+
+fn with_owner_profile(mut argv: Vec<String>, owner_profile: &str) -> Vec<String> {
+    let has_profile = argv
+        .iter()
+        .any(|argument| argument == "--profile" || argument.starts_with("--profile="));
+    if !has_profile {
+        argv.splice(0..0, ["--profile".to_owned(), owner_profile.to_owned()]);
+    }
+    argv
+}
+
+async fn send_request_payload(
+    socket: &Path,
+    request: &SessionRequest,
+) -> BrowserResult<serde_json::Value> {
     #[cfg(not(unix))]
     {
-        let _ = (socket, op);
+        let _ = (socket, request);
         return Err("persistent browser sessions require a Unix local socket".into());
     }
     #[cfg(unix)]
@@ -432,9 +677,11 @@ async fn send_request(socket: &Path, op: &str) -> BrowserResult<serde_json::Valu
         use tokio::net::UnixStream;
         let stream = UnixStream::connect(socket).await?;
         let (read, mut write) = stream.into_split();
-        write
-            .write_all(serde_json::to_string(&json!({"op": op}))?.as_bytes())
-            .await?;
+        let payload = serde_json::to_vec(request)?;
+        if payload.len() > MAX_SESSION_REQUEST_BYTES {
+            return Err("persistent session request exceeds its size bound".into());
+        }
+        write.write_all(&payload).await?;
         write.write_all(b"\n").await?;
         let mut reader = BufReader::new(read);
         let mut line = String::new();
@@ -521,5 +768,109 @@ mod tests {
         assert_eq!(value["state"], "stopped");
         assert_eq!(value["name"], "missing-test-session");
         assert!(value.get("port").is_none_or(serde_json::Value::is_null));
+    }
+
+    #[cfg(feature = "native-engine")]
+    #[test]
+    fn native_owner_profile_is_injected_only_when_not_explicit() {
+        assert_eq!(
+            with_owner_profile(vec!["observe".into()], "work"),
+            vec!["--profile", "work", "observe"]
+        );
+        assert_eq!(
+            with_owner_profile(
+                vec!["--profile".into(), "other".into(), "observe".into()],
+                "work"
+            ),
+            vec!["--profile", "other", "observe"]
+        );
+        assert_eq!(
+            with_owner_profile(vec!["--profile=other".into(), "observe".into()], "work"),
+            vec!["--profile=other", "observe"]
+        );
+    }
+
+    #[cfg(all(unix, feature = "native-engine"))]
+    #[tokio::test(flavor = "current_thread")]
+    async fn native_owner_keeps_one_engine_alive_for_multiple_ipc_commands() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let root = std::env::temp_dir().join(format!(
+                    "glass-native-session-test-{}-{}",
+                    std::process::id(),
+                    chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+                ));
+                std::fs::create_dir_all(&root).unwrap();
+                let socket = root.join("session.sock");
+                let status_path = root.join("session.json");
+                let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
+                let server = tokio::task::spawn_local(serve(PersistentSessionServeConfig {
+                    name: "native-test".into(),
+                    socket: socket.clone(),
+                    status_path: status_path.clone(),
+                    runtime: BrowserRuntime::Native,
+                    port: 0,
+                    profile: "native-test".into(),
+                    headed: false,
+                    chrome_path: None,
+                    policy,
+                    native_config: Some(
+                        NativeEngineConfig::default().with_storage_path(root.join("storage.json")),
+                    ),
+                }));
+
+                let record = tokio::time::timeout(Duration::from_secs(10), async {
+                    loop {
+                        if let Ok(bytes) = tokio::fs::read(&status_path).await {
+                            let record: PersistentSessionRecord =
+                                serde_json::from_slice(&bytes).unwrap();
+                            if record.state == "running" {
+                                break record;
+                            }
+                        }
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                    }
+                })
+                .await
+                .expect("native persistent owner did not become ready");
+                assert_eq!(record.runtime, BrowserRuntime::Native);
+                assert_eq!(record.browser_pid, 0);
+
+                let request = SessionRequest {
+                    op: "execute".into(),
+                    argv: vec![
+                        "--browser-runtime".into(),
+                        "native".into(),
+                        "--profile".into(),
+                        "native-test".into(),
+                        "observe".into(),
+                    ],
+                };
+                let first = send_request_payload(&socket, &request).await.unwrap();
+                assert_eq!(first["ok"], true);
+                assert_eq!(first["output"]["kind"], "json");
+                let owner_pid = record.pid;
+
+                let second = send_request_payload(&socket, &request).await.unwrap();
+                assert_eq!(second["ok"], true);
+                assert_eq!(read_record_from_path(&status_path).unwrap().pid, owner_pid);
+
+                let stopped = send_request(&socket, "stop").await.unwrap();
+                assert_eq!(stopped["state"], "stopping");
+                tokio::time::timeout(Duration::from_secs(10), server)
+                    .await
+                    .expect("native persistent owner did not stop")
+                    .expect("native persistent owner task panicked")
+                    .expect("native persistent owner failed");
+                assert!(!status_path.exists());
+                assert!(!socket.exists());
+                std::fs::remove_dir_all(root).unwrap();
+            })
+            .await;
+    }
+
+    #[cfg(all(unix, feature = "native-engine"))]
+    fn read_record_from_path(path: &Path) -> BrowserResult<PersistentSessionRecord> {
+        Ok(serde_json::from_slice(&std::fs::read(path)?)?)
     }
 }

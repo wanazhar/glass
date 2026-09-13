@@ -58,8 +58,13 @@ The completed native Task Protocol slice is
 task execution now share native revision guards, target preflight, confirmation
 gates, form fill/read/validate/submit, navigation controls, bounded extraction,
 dialog handling, pagination, and postcondition receipts. Workflow resume,
-persistent session IPC, richer native region/Web IR projection, and complete
-profile certification remain open issue #40 gates.
+persistent session TUI/MCP multiplexing, richer native region/Web IR projection,
+and complete profile certification remain open issue #40 gates. The completed
+native persistent-owner slice is
+[native-engine-browser-321](tasks/native-engine-browser-321.md): named native
+sessions now own one in-memory runtime across CLI commands, with bounded
+private-socket forwarding, fixed profile/storage/viewport policy, and explicit
+native status/stop lifecycle semantics.
 
 The completed computed-style/media-query slice is
 [native-engine-browser-282](tasks/native-engine-browser-282.md). It exposes a

@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-304` locally. The versioned
+`native-engine-browser-305` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -230,6 +230,14 @@ realm pool. It validates default/explicit lengths and usages, preserves
 opaque key identity and exportability, and proves generated keys through real
 page/worker sign and encrypt/decrypt operations. Its focused evidence is
 recorded in [tasks/native-engine-browser-304.md](tasks/native-engine-browser-304.md).
+
+The completed native-engine-browser-305 Web Crypto derivation slice adds raw
+HKDF/PBKDF2 base keys, RFC 5869/RFC 8018-style `deriveBits()`, and derived HMAC
+or AES-GCM keys in page and dedicated-worker realms. The implementation keeps
+base material non-extractable and realm-local, bounds input/output/iterations
+and total input-byte work, and proves page/worker vectors plus real derived-key
+operations. Its focused evidence is recorded in
+[tasks/native-engine-browser-305.md](tasks/native-engine-browser-305.md).
 
 The completed native-engine-browser-299 page-runtime-primitives slice adds
 page `TextEncoder`/`TextDecoder`, bounded `atob`/`btoa`,

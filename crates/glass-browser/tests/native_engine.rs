@@ -1082,6 +1082,55 @@ async fn native_content_process_runs_worker_created_during_page_load() {
 }
 
 #[tokio::test]
+async fn native_content_process_worker_fetch_resolves_inside_worker_realm() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for (path, content_type, body) in [
+            (
+                "/worker-fetch-page",
+                "text/html",
+                "<script>globalThis.workerMessages = []; globalThis.worker = new Worker('/worker-fetch.js'); worker.onmessage = event => workerMessages.push(event.data);</script>",
+            ),
+            (
+                "/worker-fetch.js",
+                "text/javascript",
+                "fetch('/worker-data').then(response => response.text().then(text => postMessage({ kind: 'fetched', text, status: response.status, url: response.url }))).catch(error => postMessage({ kind: 'error', message: String(error) }));",
+            ),
+            ("/worker-data", "text/plain", "hello from worker fetch"),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/worker-fetch-page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine.evaluate_async("workerMessages").await.unwrap(),
+        serde_json::json!([{
+            "kind": "fetched",
+            "text": "hello from worker fetch",
+            "status": 200,
+            "url": format!("http://{address}/worker-data"),
+        }])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_script_exposes_web_idl_identity() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

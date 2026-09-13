@@ -99,6 +99,10 @@ impl NativeImage {
         self.frame_pixels_at(animation_elapsed_ms())
     }
 
+    pub(crate) fn animation_elapsed_ms(&self) -> Option<u64> {
+        (!self.frames.is_empty()).then(animation_elapsed_ms)
+    }
+
     pub(crate) fn decoded_bytes(&self) -> Option<usize> {
         if self.frames.is_empty() {
             return Some(self.pixels.len());

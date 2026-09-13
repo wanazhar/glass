@@ -215,6 +215,19 @@ pub(crate) struct NativeScriptImageResourceSnapshot {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) pixels_base64: String,
+    #[serde(default)]
+    pub(crate) frames: Vec<NativeScriptImageFrameSnapshot>,
+    #[serde(default)]
+    pub(crate) loop_count: Option<u32>,
+    #[serde(default)]
+    pub(crate) animation_elapsed_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NativeScriptImageFrameSnapshot {
+    pub(crate) delay_ms: u32,
+    pub(crate) pixels_base64: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2162,6 +2175,26 @@ impl NativeDocument {
     }
 
     fn script_image_resources(&self, viewport: Viewport) -> Vec<NativeScriptImageResourceSnapshot> {
+        let snapshot =
+            |node_index, source: String, image: &NativeImage| NativeScriptImageResourceSnapshot {
+                node_index,
+                source,
+                width: image.width,
+                height: image.height,
+                pixels_base64: base64::engine::general_purpose::STANDARD
+                    .encode(image.current_pixels()),
+                frames: image
+                    .frames
+                    .iter()
+                    .map(|frame| NativeScriptImageFrameSnapshot {
+                        delay_ms: frame.delay_ms,
+                        pixels_base64: base64::engine::general_purpose::STANDARD
+                            .encode(&frame.pixels),
+                    })
+                    .collect(),
+                loop_count: image.loop_count,
+                animation_elapsed_ms: image.animation_elapsed_ms(),
+            };
         let mut resources = Vec::new();
         let mut included = BTreeSet::new();
         for (node_index, resource) in &self.image_resources {
@@ -2174,14 +2207,11 @@ impl NativeDocument {
             {
                 continue;
             }
-            resources.push(NativeScriptImageResourceSnapshot {
-                node_index: *node_index,
-                source: resource.source.clone(),
-                width: resource.image.width,
-                height: resource.image.height,
-                pixels_base64: base64::engine::general_purpose::STANDARD
-                    .encode(resource.image.current_pixels()),
-            });
+            resources.push(snapshot(
+                *node_index,
+                resource.source.clone(),
+                &resource.image,
+            ));
             included.insert(*node_index);
         }
         for node in &self.nodes {
@@ -2193,14 +2223,7 @@ impl NativeDocument {
             let Some(image) = decode_data_image(&source) else {
                 continue;
             };
-            resources.push(NativeScriptImageResourceSnapshot {
-                node_index,
-                source,
-                width: image.width,
-                height: image.height,
-                pixels_base64: base64::engine::general_purpose::STANDARD
-                    .encode(image.current_pixels()),
-            });
+            resources.push(snapshot(node_index, source, &image));
         }
         resources
     }

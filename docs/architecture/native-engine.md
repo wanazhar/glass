@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-314` slice; the bounded foundation below remains
+`native-engine-browser-315` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 
 Slice 283 adds a bounded dedicated-worker bridge after the page-facing
@@ -328,6 +328,17 @@ Worker-realm installation, the rest of SVG path grammar, exact winding and
 stroke metrics, complete Canvas/Web IDL semantics, and the final native/CDP
 replacement gates remain Issue #40 work. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-314.md`.
+
+Slice 315 carries the existing bounded animated GIF/APNG/WebP frame owners
+through the page-facing Canvas source adapter. Image snapshots now include
+validated frame pixels, delays, loop metadata, and the Rust animation clock;
+the persistent JavaScript source selector computes the active frame at draw
+time, so a page-held `<img>` does not become a static bitmap after its first
+host bootstrap. The compositor and page source use the same frame timing
+contract. Video/media decoding, worker-realm Canvas installation, complete
+Image/Canvas Web IDL semantics, and the final native/CDP replacement gates
+remain Issue #40 work. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-315.md`.
 
 Slice 282 adds a bounded page-facing computed-style and media-query bridge:
 the JavaScript realm reads the native cascade/layout snapshot through a

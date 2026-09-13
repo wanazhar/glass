@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-314` locally. The versioned
+`native-engine-browser-315` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -321,6 +321,16 @@ fill, stroke, clear, text, and image writes and is preserved by
 complete Canvas/Web IDL breadth, and the remaining issue #40 production gates
 remain open; exact evidence is recorded in
 [tasks/native-engine-browser-314.md](tasks/native-engine-browser-314.md).
+
+The completed native-engine-browser-315 animated-image bridge carries bounded
+GIF/APNG/WebP frame pixels, delays, loop metadata, and a synchronized
+animation clock into the persistent page Canvas image-source adapter. Rust
+compositor animation was already advancing frames; this slice keeps
+`drawImage(img, ...)` in a retained page realm from freezing at one bootstrap
+bitmap. Unsupported media/video sources, worker-realm Canvas installation,
+complete Canvas/Image/Web IDL breadth, and the remaining issue #40 production
+gates remain open; exact evidence is recorded in
+[tasks/native-engine-browser-315.md](tasks/native-engine-browser-315.md).
 
 The completed native-engine-browser-299 page-runtime-primitives slice adds
 page `TextEncoder`/`TextDecoder`, bounded `atob`/`btoa`,

@@ -1,8 +1,9 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-316` slice; the bounded foundation below remains
-experimental until the issue #40 production gates pass.
+`native-engine-browser-317` slice. The native runtime is now the primary
+feature-enabled product path; issue #40 still owns Core Web Profile
+conformance and production certification gates.
 
 Slice 283 adds a bounded dedicated-worker bridge after the page-facing
 computed-style/media-query bridge in slice 282. Page-created classic workers
@@ -351,6 +352,20 @@ complete geometry Web IDL descriptors, and the final native/CDP replacement
 gates remain Issue #40 work. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-316.md`.
 
+Slice 317 makes the native runtime the primary feature-enabled product path.
+`glass-browser` enables `native-engine` by default, `glass-dev` enables it at
+the dependency boundary, and feature-enabled CLI parsing selects `native`
+unless Chromium is explicitly requested. Browser dispatch leaves administrative
+commands browser-free while native CLI/MCP browser operations remain local and
+do not fall back to CDP. The standalone browser TUI now uses one boxed session
+adapter for native and explicit Chromium paths, covering first navigation,
+compact semantic observation, revisioned type/click/scroll actions, target
+listing/selection, guarded history/reload controls, and PNG presentation.
+Native workflow TUI execution, complete Web IDL/HTML/CSS/media coverage,
+security/process isolation, and final Core Web Profile certification remain
+issue #40 work. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-317.md`.
+
 Slice 282 adds a bounded page-facing computed-style and media-query bridge:
 the JavaScript realm reads the native cascade/layout snapshot through a
 read-only `getComputedStyle` object, and receives width/height/orientation
@@ -493,15 +508,15 @@ including bounded style
 inheritance, paint clipping, solid/dashed/dotted border painting, rounded
 fill/border masks, inline-box line placement, fixed pixel line-height floors,
 and content-box geometry,
-bounded base64 data-URL loading, plus feature-gated
-runtime/CLI integration; not a stable browser compatibility or security
+bounded base64 data-URL loading, plus native runtime/CLI integration; not a
+stable browser compatibility or security
 boundary.
 This document is the repository contract for the Glass-owned native browser
 engine described by [issue #40](https://github.com/wanazhar/glass/issues/40).
-The current implementation is an experimental backend inside `glass-browser`;
-the expanded goal is a production-capable native browser engine that can
-replace the CDP path for the declared Glass Core Web Profile. It is not a
-third crate, a protocol adapter, or an embedded copy of another browser.
+The current implementation is the primary local backend inside
+`glass-browser`; it is undergoing production conformance work toward replacing
+the CDP path for the declared Glass Core Web Profile. It is not a third crate,
+a protocol adapter, or an embedded copy of another browser.
 
 ## Browser-complete expansion target
 
@@ -2199,9 +2214,10 @@ delivery, and browser-wide parity remain separate promotion work.
 
 The engine remains inside the existing two-crate workspace. Internal modules,
 helper binaries, and an out-of-process content worker are allowed; a third
-installable crate is not. Until the production gates pass, the native feature
-and backend remain explicitly experimental/default-off and Chromium/CDP
-remains available as the production compatibility path.
+installable crate is not. The native feature and backend are now the
+feature-enabled product default while the remaining Core Web Profile and
+security gates are completed. Chromium/CDP remains an explicit compatibility
+path during that work, with no silent fallback.
 
 ## Purpose and boundary
 
@@ -4458,23 +4474,28 @@ NativeEngine              <- the only mutable page-state owner
    bounded URL/title/text evidence
 ```
 
-Chromium/CDP remains the production full-session path. Firefox BiDi and Safari
-WebDriver remain externally managed experimental adapters. The native engine
-is selected only by an explicit backend preference; it is never an automatic
-fallback or an implicit replacement for Chromium.
+The native engine is the primary local runtime in feature-enabled products.
+Chromium/CDP remains the explicit full-session migration path for operations
+that are not yet certified in the Glass Core Web Profile. Firefox BiDi and
+Safari WebDriver remain externally managed experimental adapters. Native
+selection does not fall back to Chromium, and explicit Chromium selection
+never silently becomes native.
 
 ## Cargo and public entry points
 
-The implementation is behind the default-off `native-engine` feature:
+The implementation is enabled by default in feature-enabled products through
+the `native-engine` feature:
 
 ```console
-cargo check -p glass-browser --features native-engine --locked
-cargo test -p glass-browser --features native-engine --test native_engine --locked
+cargo check -p glass-browser --locked
+cargo test -p glass-browser --test native_engine --locked
+cargo check -p glass-browser --no-default-features --locked
 ```
 
-The default feature set does not compile or enable the native engine. The
-feature adds the optional `rquickjs` dependency and enables it only for
-native-engine builds. The first public construction path is:
+The feature adds the optional `rquickjs` dependency to the native-first
+product build. An explicit `--no-default-features` check keeps the Chromium
+migration surface observable without changing the product default. The first
+public construction path is:
 
 ```rust,no_run
 use glass_browser::browser::native_engine::NativeEngineConfig;
@@ -5374,7 +5395,8 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
   download-start verification;
 - deterministic scheduler ordering and queue bounds;
 - failed navigation preserving the previous state;
-- dispatcher capability denial and explicit-only backend selection;
+- dispatcher capability denial and explicit Chromium/no-fallback backend
+  selection;
 - supported semantic roles, associated labels, attributes, and revision-bound
   references;
 - duplicate and stale semantic targets plus supported control metadata;

@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-316`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-317`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -4540,6 +4540,18 @@ parsing, exact geometry descriptors, complete Canvas/Web IDL semantics, and
 final native/CDP replacement remain issue #40 gates. Exact evidence is
 recorded in `docs/plan/tasks/native-engine-browser-316.md`.
 
+The completed native-engine-browser-317 slice changes runtime selection rather
+than adding a new browser primitive. Feature-enabled products enable the
+native backend by default, CLI dispatch selects native for browser operations,
+and the explicit Chromium/CDP path remains available as a migration runtime.
+The browser TUI now adapts native and Chromium sessions behind a boxed session
+owner for navigation, observation, revisioned actions, targets, history,
+reload, and PNG presentation. Administrative commands remain browser-free and
+no runtime fallback is introduced. Native workflow TUI coverage, complete
+Glass Core Web Profile conformance, and release certification remain open
+issue #40 gates. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-317.md`.
+
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame
 realms. `document.createAttribute()` creates persistent `Attr` objects;
@@ -4756,15 +4768,16 @@ and complete Headers/Fetch/XHR Web IDL parity remain open.
 ## Baseline and constraints
 
 The current checkout has exactly two installable crates. The native engine
-must stay inside `glass-browser`, remain default-off until its complete
-promotion gates pass, and keep native-only dependencies optional behind the
-`native-engine` feature. Chromium/CDP remains the production path at this
-checkpoint; native selection is explicit-only.
+stays inside `glass-browser` and is enabled by default in feature-enabled
+products; native-only dependencies remain optional behind the
+`native-engine` feature. Chromium/CDP is an explicit migration path at this
+checkpoint, and runtime selection never silently falls back between engines.
 
-The normal browser-free platform matrix uses `--no-default-features`; a
-dedicated Linux `Native engine core` job owns the explicit `native-engine`
-feature checks, tests, and strict Clippy. The two jobs use separate cache keys
-so experimental compilation does not become an unobserved default-build cost.
+The normal Chromium compatibility matrix uses `--no-default-features`; the
+dedicated Linux `Native engine core` job owns feature-enabled native checks,
+tests, and strict Clippy. The two jobs use separate cache keys because native
+dependencies have a different build cost, not because the native runtime is
+experimental or hidden from the product default.
 
 Baseline captured on the working machine before the change:
 
@@ -4815,7 +4828,7 @@ real edit touching the native module, and target-directory growth separately.
 | `native_engine::engine` | sole mutable page-state coordinator | lifecycle/navigation/action requests | snapshots/context/history/effects | all engine modules |
 | `browser::native_backend` | semantic adapter/profile | backend requests | typed backend responses/errors | engine + `browser_backend` |
 | `browser::runtime` | explicit native session construction | `NativeEngineConfig`, runtime choice | initialized `BrowserRuntimeSession` | backend factory + dispatcher |
-| `cli::runner` | feature-gated native one-shot dispatch | local command and semantic target | bounded CLI result or typed denial | runtime session + policy boundary |
+| `cli::runner` | native-first one-shot dispatch with explicit Chromium migration | local command and semantic target | bounded CLI result or typed denial | runtime session + policy boundary |
 
 The completed 094 extension makes the `css` direction state explicit as
 `row|row-reverse|column|column-reverse`. The `layout` owner now consumes
@@ -5372,7 +5385,7 @@ visual stacking.
 | bounded visibility gate | keeps semantic text/actionability consistent without a CSS dependency | no cascade, layout, opacity, or paint semantics | recognize only explicit hidden signals and document the boundary |
 | bounded raw-text/RCDATA modes | prevents fake semantic nodes in embedded text while preserving the small parser | no full HTML5 insertion-mode or foreign-content recovery | keep the mode set explicit and cover unterminated content with fixtures |
 | bounded CSS presentation seed | makes stylesheet-driven hiding observable without adding a rendering stack | no general CSS, inheritance, layout, or paint semantics | keep selectors/properties explicit and reject unsupported syntax by omission |
-| feature-gated runtime/CLI entry | makes the experiment runnable through the same explicit one-shot contract | native CLI cannot register fixtures, start a browser, or accept remote URLs; feature builds have another compile path | keep default builds unchanged, use the Rust constructor for fixtures, and validate native/default matrices separately |
+| native-first runtime/CLI entry | makes the primary engine runnable through the same one-shot contract while retaining an explicit Chromium migration path | native CLI still cannot register every fixture, start every browser workflow, or accept every remote URL; native builds have a heavier compile path | keep unsupported operations typed and fail-closed, use the Rust constructor for fixtures, and validate native plus `--no-default-features` matrices separately |
 | bounded normal-flow layout and point hit testing | exercises geometry ownership and input validation without a renderer | no browser line metrics, scrolling, stacking contexts, or fractional CSS | keep rectangles Rust-only, use integer pixels, and reject unsupported dimensions/points explicitly |
 | derived display-list seed | establishes a renderer-owned immutable artifact without pixel dependencies | no rasterization, fonts, image decode, clipping, or visual evidence | require a matching layout revision, bound commands, and keep the list Rust-only |
 | bounded software surface | makes the display-list contract executable with no graphics dependency | no font fidelity, Unicode shaping, images, screenshots, or physical-pixel guarantees | cap logical pixels, use fixed glyphs, clip writes, and keep the surface Rust-only |
@@ -5578,7 +5591,9 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-234.md` is the latest completed task;
+`docs/plan/tasks/native-engine-browser-317.md` is the latest completed browser
+task;
+`docs/plan/tasks/native-engine-234.md` is the latest completed foundation task;
 `docs/plan/tasks/native-engine-233.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-232.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-231.md` is the preceding completed task;
@@ -5616,7 +5631,8 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-198.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-197.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-196.md` is the preceding completed task;
-The current browser-slice evidence chain is `native-engine-browser-316`,
+The current browser-slice evidence chain is `native-engine-browser-317`,
+`native-engine-browser-316`,
 `native-engine-browser-315`,
 `native-engine-browser-314`,
 `native-engine-browser-313`,

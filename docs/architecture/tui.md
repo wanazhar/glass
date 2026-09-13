@@ -75,8 +75,8 @@ this standalone product (Glass Dev uses a quit confirmation).
 
 | Input | Behavior |
 |---|---|
-| `l` with empty command | prefill `launch auto` and launch/recover on a free port |
-| `a` with empty command | prefill `attach ` for a verified DevTools port |
+| `l` with empty command | prefill `launch auto` and start the selected runtime; native starts Glass-owned browsing, Chromium launches on a free port |
+| `a` with empty command | prefill `attach ` only for an explicit `--browser-runtime chromium` session |
 | `n` with empty command | prefill `navigate ` for a URL/domain (`https://` optional) |
 | `t` with empty command | prefill `type ` for selected semantic input |
 | `Enter` with empty command | activate the selected semantic target |
@@ -104,7 +104,7 @@ The prompt accepts the following commands without requiring raw JSON:
 
 | Area | Commands |
 |---|---|
-| Lifecycle | `launch auto`, `launch PORT`, `attach PORT`, `reconnect`, `stop` |
+| Lifecycle | `launch auto`, `launch PORT`, `reconnect`, `stop`; `attach PORT` is available only for explicit Chromium/CDP mode |
 | Navigation | `navigate URL`; Back/Forward/Reload/Stop-loading are guarded keyboard intents |
 | Observation | `observe`, `semantic`, `screenshot`, `state` |
 | Selection | `targets`, `select ID` |
@@ -113,7 +113,9 @@ The prompt accepts the following commands without requiring raw JSON:
 | Presentation | `live on`, `live off` |
 | Exit/help | `help`, `quit`, `exit`, `q` |
 
-`observe` refreshes the bounded accessibility `PageContext`; `semantic`
+`observe` refreshes the bounded accessibility/semantic page projection;
+native and Chromium sessions use the same workspace revision contract.
+`semantic`
 selects the semantic presentation. Target discovery, frame selection, storage,
 downloads/uploads, diagnostics, policy, certification, and extension
 administration remain explicit CLI/MCP/library contracts rather than a second
@@ -129,8 +131,8 @@ standalone command strings.
 
 - **Loading:** retain the previous bounded page when available and show the
   operation in the header/footer.
-- **Empty/detached:** show `No browser session` and the START HERE routes for
-  launch, attach, navigate, and help.
+- **Empty/detached:** show the selected runtime's START HERE routes. Native
+  shows launch, navigate, and help; explicit Chromium also shows attach.
 - **Busy:** the event loop is awaiting the selected browser operation; status
   remains visible, but standalone commands do not provide a universal
   cancellation-token action. Use the browser's explicit stop/reconnect command

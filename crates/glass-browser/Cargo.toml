@@ -34,7 +34,7 @@ path = "src/lib.rs"
 all-features = true
 
 [features]
-default = []
+default = ["native-engine"]
 visual-compare = []
 fuzzing = []
 native-engine = ["dep:regex", "dep:rquickjs"]

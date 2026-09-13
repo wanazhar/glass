@@ -5,13 +5,12 @@ Status: Accepted
 ## Purpose
 
 Define the lowest-cost correct browser contract shared by CLI, MCP, and TUI.
-This document describes the full Chromium BrowserSession/CDP data plane;
-the bounded Firefox and Safari path is specified in the
-[Browser Host RFC](../browser-host-rfc.md#current-browser-runtime-mapping).
-The feature-gated Glass-owned native engine is a separate experimental,
-local-content backend; its current Phase 2 semantic and initial Phase 3
-presentation contract is defined in [Native browser engine](native-engine.md)
-and does not provide this CDP data plane.
+Feature-enabled products route browser operations through the Glass-owned
+native runtime by default; its current semantic, layout, rendering, and
+resource contract is specified in [Native browser engine](native-engine.md).
+This document describes the full Chromium `BrowserSession`/CDP migration data
+plane, selected with `--browser-runtime chromium`. The bounded Firefox and
+Safari path is specified in the [Browser Host RFC](../browser-host-rfc.md#current-browser-runtime-mapping).
 
 ## Observation contract
 

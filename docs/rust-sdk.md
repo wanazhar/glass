@@ -62,15 +62,17 @@ APIs.
 |---|---:|---|
 | `visual-compare` | no | PNG comparison helpers for explicit screenshot checks |
 | `fuzzing` | no | Fuzz-only hooks; do not enable in normal applications |
-| `native-engine` | no | Experimental Glass-owned fixture/data-URL browser engine; explicit Rust API and local CLI runtime |
+| `native-engine` | yes | Glass-owned native browser runtime; enabled by default for the current CLI/session path and available through the explicit Rust API |
 
-docs.rs builds all features. The default `glass-browser` library remains
-browser-focused; development runtime dependencies such as PTY integration are
+docs.rs builds all features. The native engine remains inside
+`glass-browser`; development runtime dependencies such as PTY integration are
 in `glass-dev`, not optional browser features.
 
-### Native engine (experimental)
+### Native engine
 
-The native engine is an explicit, default-off backend inside `glass-browser`.
+The native engine is the default local backend inside `glass-browser` for
+feature-enabled builds. Chromium/CDP remains an explicit migration backend;
+there is no silent fallback between the two.
 It currently supports only local `about:blank`, bounded percent-decoded or
 standard padded-base64 `data:text/html`, registered `fixture://` documents, and
 bounded fragment navigation with UTF-8 percent-decoded exact-id or legacy
@@ -84,8 +86,9 @@ Rust callers can also activate fragment-only, fixture-relative, and absolute loc
 existing semantic click path; empty hrefs remain click-only. Rust callers can
 construct it through the
 backend factory or `BrowserRuntimeSession::connect_native`; a feature-enabled
-binary also exposes the local one-shot `--browser-runtime native` path. Do not
-treat it as a replacement for `BrowserSession` or Chromium:
+binary also exposes the local one-shot `--browser-runtime native` path.
+`BrowserSession` remains the explicit Chromium/CDP migration API while the
+native implementation completes the versioned Glass Core Web Profile:
 
 ```rust,no_run
 #[cfg(feature = "native-engine")]

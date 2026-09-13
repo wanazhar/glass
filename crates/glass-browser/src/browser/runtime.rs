@@ -17,8 +17,8 @@ use super::native_engine::{
 use crate::browser_backend::{
     ActionRequest, ActionResult, BackendProfile, BrowserBackendDispatcher, BrowsingContext,
     ContextRequest, EffectsRequest, EffectsResult, EvidenceLevel, EvidenceRequest, EvidenceResult,
-    NavigationRequest, NavigationResult, PromptDecision, PromptResult, ScriptRequest, ScriptResult,
-    SemanticAction, StorageRequest, StorageResult,
+    NavigationRequest, NavigationResult, ScriptRequest, ScriptResult, SemanticAction,
+    StorageRequest, StorageResult,
 };
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
@@ -35,6 +35,8 @@ use super::session::{
     WaitCondition, WaitOutcome, WaitTimeout,
 };
 use super::session::{ActionContractError, BrowserResult};
+#[cfg(feature = "native-engine")]
+use crate::browser_backend::{PromptDecision, PromptResult};
 #[cfg(feature = "native-engine")]
 use crate::protocol::{RetryClassification, RetryGuidance};
 #[cfg(feature = "native-engine")]
@@ -57,13 +59,13 @@ const NATIVE_SEMANTIC_TEXT_LIMIT: usize = 8 * 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum BrowserRuntime {
-    /// Full production Chrome/Chromium session through CDP.
+    /// Explicit Chrome/Chromium migration session through CDP.
     Chromium,
     /// Experimental direct WebDriver BiDi session.
     Firefox,
     /// Experimental W3C WebDriver session through SafariDriver.
     Safari,
-    /// Experimental Glass-owned local-content engine.
+    /// Glass-owned native browser runtime.
     #[cfg(feature = "native-engine")]
     Native,
 }

@@ -91,10 +91,13 @@ install. It never installs both packages or guesses between `glass-dev` and
 `glass-browser`; see the [update contract and recovery
 steps](docs/installation.md#update-a-cargo-installation).
 
-Chrome or Chromium is required only for the full CDP browser session. The
-portable semantic session can attach to a Firefox WebDriver BiDi endpoint or a
-SafariDriver W3C WebDriver endpoint. Project inspection, file operations, task
-validation, Web IR inspection, policy preflight, capability inspection, and many
+Feature-enabled Glass builds use the Glass-owned native browser runtime as the
+default for browser operations, so ordinary local navigation does not require a
+separate browser process. Chromium/CDP remains available as an explicit
+migration runtime with `--browser-runtime chromium`. The portable semantic
+session can also attach to a Firefox WebDriver BiDi endpoint or a SafariDriver
+W3C WebDriver endpoint. Project inspection, file operations, task validation,
+Web IR inspection, policy preflight, capability inspection, and many
 diagnostics are browser-free.
 
 Use `glass install-chromium` when the platform has a supported Chrome for
@@ -297,9 +300,11 @@ design](docs/architecture/mobile-cockpit.md).
 
 ## Browser verification
 
-Glass drives local Chrome or Chromium through the full `BrowserSession` and raw
-Chrome DevTools Protocol (CDP). Firefox and Safari are available through the
-bounded portable semantic session; unsupported operations fail closed.
+Glass uses the Glass-owned native runtime by default for browser operations.
+The full `BrowserSession` and raw Chrome DevTools Protocol (CDP) are an
+explicit migration runtime selected with `--browser-runtime chromium`.
+Firefox and Safari are available through the bounded portable semantic
+session; unsupported operations fail closed.
 
 Start Firefox with its BiDi endpoint and use the portable command set:
 
@@ -319,13 +324,16 @@ glass --browser-runtime safari \
   navigate https://example.com
 ```
 
-The portable command set is `navigate`, `click`, `type`, `text`, `observe`,
-`targets`, and `evaluate`. Full Web IR, screenshots, profiles, storage,
-downloads, prompts, workflows, TUI, MCP, and revision-aware high-level
-operations remain on the Chromium session until independently certified.
+The portable endpoint command set is `navigate`, `click`, `type`, `text`,
+`observe`, `targets`, and `evaluate`. Native browser operations additionally
+share the local TUI, MCP, target, history, screenshot, storage, and revision
+contracts as their implementation slices land. Chromium remains the explicit
+route for any capability not yet certified in the Glass Core Web Profile; the
+runtime never silently falls back between engines.
 
-The feature-gated Glass-owned native engine is an experimental Rust backend
-inside `glass-browser`. Its current slices include deterministic local
+The Glass-owned native engine is the primary Rust backend inside
+`glass-browser` for feature-enabled builds. Its current slices include
+deterministic local
 resources and bounded external HTTP(S) HTML navigation, with bounded
 presentation, normal-flow geometry, point
 hit-testing, bounded physical four-side padding/margin shorthands and
@@ -602,9 +610,10 @@ bounded inherited `direction:ltr|rtl` with case-insensitive 15-layer/unlayered
 mapping, wrapped-line placement, source/semantic order, and shared artifacts,
 plus bounded revisioned Rust
 diagnostics for unsupported CSS without raw stylesheet echo. A
-`native-engine` feature build exposes the explicit local
-`--browser-runtime native` one-shot path; its default CLI configuration does
-not register fixture files or contact endpoints. Native anchor downloads now
+`native-engine` feature build exposes the local
+`--browser-runtime native` one-shot path, and feature-enabled CLI configuration
+selects it by default without registering fixture files or contacting an
+endpoint. Native anchor downloads now
 have a bounded parent-owned HTTP(S) transfer path through the runtime, CLI,
 and MCP, with existing-directory file writes and completion evidence. Native
 target lifecycle now also supports up to 32 independently owned page targets
@@ -943,7 +952,7 @@ workflows.
 | Chrome / Chromium | Supported browser families on environments with native evidence |
 | Firefox automation | Experimental portable semantic session over Firefox WebDriver BiDi |
 | Safari automation | Experimental portable semantic session over SafariDriver W3C WebDriver |
-| Native engine | Experimental default-off Glass-owned Rust backend with bounded local and external HTTP(S) HTML navigation, layout/display-list/software-surface artifacts, parent-owned anchor downloads with completion evidence, initialized `_blank` and named `window.open` target creation/reuse, and bounded response-CSP frame-source enforcement. Its current Flexbox slice includes stable visual `order`, integer `flex-grow`/`flex-shrink` allocation, `flex-basis:auto|Npx` base-size selection, finite `flex` expansion, and case-insensitive 15-layer/unlayered `revert-layer` rollback for those non-inherited owners including standalone `flex:revert-layer`, `flex-flow:revert-layer`, and `place-content:revert-layer` shorthand rollback with native fallbacks and finite expansion, plus independent finite-pixel gap-family rollback for `gap`, `row-gap`, and `column-gap`; inherited text presentation also has bounded case-insensitive 15-layer/unlayered rollback for `text-transform`, `font-weight`, `font-style`, and `word-break` with finite parent/root fallbacks; the bounded horizontal-tb logical border family maps block start/end to top/bottom and direction-aware inline start/end for `ltr`/`rtl` through the existing physical border consumers; explicit Rust or feature-gated local CLI path. See the [native-engine architecture](docs/architecture/native-engine.md) for the bounded contract and exclusions. |
+| Native engine | Primary default runtime in feature-enabled `glass-browser` and `glass-dev` builds. It owns the current local/HTTP(S) navigation, DOM/script, layout/display-list/software-surface, semantic action, target/frame, storage/download, and PNG slices; Chromium/CDP is an explicit migration runtime and there is no silent engine fallback. The versioned Glass Core Web Profile and cross-platform certification remain tracked in [issue #40](https://github.com/wanazhar/glass/issues/40) and the [native-engine architecture](docs/architecture/native-engine.md). |
 The native engine also accepts bounded case-insensitive 15-layer/unlayered
 `revert-layer` for local `display` and `visibility`. Rollback resolves through
 lower concrete candidates or the established normal-flow `display:auto` and
@@ -1040,8 +1049,7 @@ GLASS_E2E=1 cargo test -p glass-browser --all-features \
   --test browser_smoke --locked -- --nocapture --test-threads=1
 ```
 
-Run the feature-gated native-engine kernel separately; it does not require a
-browser process:
+Run the native-engine kernel separately; it does not require a browser process:
 
 ```console
 cargo test -p glass-browser --features native-engine --test native_engine --locked

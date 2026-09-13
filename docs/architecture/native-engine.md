@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-297` slice; the bounded foundation below remains
+`native-engine-browser-298` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 
 Slice 283 adds a bounded dedicated-worker bridge after the page-facing
@@ -161,6 +161,14 @@ are bounded, and no insecure `Math.random()` substitute is used. Web Crypto
 `subtle` operations, key objects, cross-realm transfer, and complete
 native/CDP replacement remain Issue #40 gates. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-297.md`.
+
+Slice 298 adds the same OS-seeded random contract to ordinary document realms.
+`document_bootstrap()` keeps a bounded page pool and stable `crypto` object
+across host re-entry, validates integer typed-array writes and quota errors,
+and formats UUID v4 values with the RFC variant bits. The existing same-origin
+WindowProxy guard includes `crypto`; Web Crypto `subtle`, `CryptoKey`, pool
+replenishment, and full Web IDL parity remain explicit issue #40 work. Exact
+evidence is recorded in `docs/plan/tasks/native-engine-browser-298.md`.
 
 Slice 282 adds a bounded page-facing computed-style and media-query bridge:
 the JavaScript realm reads the native cascade/layout snapshot through a
@@ -5095,8 +5103,8 @@ responses, response streams, `Headers`/`Request`/`Response` identity, URL and
 URLSearchParams parsing/mutation, structured worker `location`, bounded
 `navigator` identity, signal-aware worker Fetch cancellation with late-result
 suppression, worker text/byte encoding, structured cloning, EventTarget/Event
-identity, OS-seeded worker `crypto`, and body ownership inside the worker
-realm. Asynchronous
+identity, OS-seeded worker and page `crypto`, and body ownership inside the
+worker realm. Asynchronous
 worker XHR, persistent worker WebSocket, and worker EventSource/SSE use the
 same owner-tagged content-process boundary and bounded page-turn delivery.
 Shared/service/worklet

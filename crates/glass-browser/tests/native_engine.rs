@@ -1298,6 +1298,67 @@ async fn native_local_worker_exposes_os_seeded_crypto() {
 }
 
 #[tokio::test]
+async fn native_local_page_exposes_os_seeded_crypto() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://page-crypto",
+            "<html><body><main>Native</main></body></html>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://page-crypto");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"(() => {
+                    const values = new Uint8Array(8);
+                    crypto.getRandomValues(values);
+                    const uuid = crypto.randomUUID();
+                    let floatRejected = false;
+                    try { crypto.getRandomValues(new Float32Array(1)); } catch (error) {
+                        floatRejected = error instanceof TypeError;
+                    }
+                    let largeRejected = false;
+                    try { crypto.getRandomValues(new Uint8Array(16 * 1024 + 1)); } catch (error) {
+                        largeRejected = error.name === 'QuotaExceededError';
+                    }
+                    globalThis.pageCryptoState = {
+                        byteLength: values.byteLength,
+                        changed: values.some(value => value !== 0),
+                        uuidValid: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(uuid),
+                        uuidVersion: uuid[14],
+                        uuidVariant: ['8', '9', 'a', 'b'].includes(uuid[19]),
+                        floatRejected,
+                        largeRejected,
+                        cryptoIdentity: crypto === globalThis.crypto,
+                    };
+                })()"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.pageCryptoState")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "byteLength": 8,
+            "changed": true,
+            "uuidValid": true,
+            "uuidVersion": "4",
+            "uuidVariant": true,
+            "floatRejected": true,
+            "largeRejected": true,
+            "cryptoIdentity": true,
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_runs_worker_created_during_page_load() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

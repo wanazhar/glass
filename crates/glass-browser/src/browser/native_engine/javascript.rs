@@ -4442,7 +4442,11 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
   for (const nodeIndex of Array.from(nativeCanvasSurfaces.keys())) {
     if (!nativeCanvasLiveIndexes.has(Number(nodeIndex))) nativeCanvasSurfaces.delete(nodeIndex);
   }
-  const nativeCanvasResources = new Map();
+  const nativeCanvasResources = globalThis.__glassCanvasResources instanceof Map
+    ? globalThis.__glassCanvasResources
+    : new Map();
+  nativeCanvasResources.clear();
+  globalThis.__glassCanvasResources = nativeCanvasResources;
   for (const resource of Array.isArray(state.canvasResources) ? state.canvasResources : []) {
     if (!resource || !Number.isSafeInteger(Number(resource.node_index))) continue;
     const width = Number(resource.width);
@@ -4462,7 +4466,11 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
       }
     } catch (_error) {}
   }
-  const nativeCanvasImageResources = new Map();
+  const nativeCanvasImageResources = globalThis.__glassCanvasImageResources instanceof Map
+    ? globalThis.__glassCanvasImageResources
+    : new Map();
+  nativeCanvasImageResources.clear();
+  globalThis.__glassCanvasImageResources = nativeCanvasImageResources;
   for (const resource of Array.isArray(state.imageResources) ? state.imageResources : []) {
     if (!resource || !Number.isSafeInteger(Number(resource.nodeIndex))) continue;
     const width = Number(resource.width);
@@ -4725,11 +4733,13 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
     }
   };
   const nativeCanvasCommit = (canvas, surface) => {
+    const nodeIndex = canvas && Number.isSafeInteger(canvas.nodeIndex) ? canvas.nodeIndex : null;
+    if (nodeIndex === null) return;
     const encoded = encodeBase64(surface.pixels, nativeCanvasByteLimit);
     const commandsTarget = activeCommands();
     for (let index = commandsTarget.length - 1; index >= 0; index -= 1) {
       const command = commandsTarget[index];
-      if (command && command.kind === "canvasCommit" && Number(command.node_index) === Number(canvas.nodeIndex)) {
+      if (command && command.kind === "canvasCommit" && Number(command.node_index) === nodeIndex) {
         command.width = surface.width;
         command.height = surface.height;
         command.pixels_base64 = encoded;
@@ -4737,7 +4747,7 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
         return;
       }
     }
-    pushCommand({ kind: "canvasCommit", node_index: Number(canvas.nodeIndex), width: surface.width, height: surface.height, pixels_base64: encoded, origin_clean: surface.originClean !== false });
+    pushCommand({ kind: "canvasCommit", node_index: nodeIndex, width: surface.width, height: surface.height, pixels_base64: encoded, origin_clean: surface.originClean !== false });
   };
   const nativeCanvasError = (message, name = "IndexSizeError") => {
     const Constructor = globalThis.DOMException;
@@ -4888,7 +4898,7 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
   };
   globalThis.__glassCanvasRenderingContext2DConstructor = CanvasRenderingContext2DNative;
   globalThis.CanvasRenderingContext2D = CanvasRenderingContext2DNative;
-  const nativeCanvasContextSurface = (context) => nativeCanvasSurfaceForEntry(context.__glassCanvas.__glassCanvasEntry());
+  const nativeCanvasContextSurface = (context) => nativeCanvasContextSurfaceFor(context.__glassCanvas);
   const nativeCanvasImageOriginClean = (source) => {
     const current = String(source && (source.currentSrc || source.src) || "");
     if (!current || /^(?:data|fixture):/i.test(current)) return true;
@@ -5166,6 +5176,27 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
       return nativeCanvasGetImageData.call(this, ...args);
     },
   });
+  const nativeCanvasContextSurfaceFor = (canvas) => {
+    if (canvas && canvas.__glassCanvasSurface) return canvas.__glassCanvasSurface;
+    if (canvas && typeof canvas.__glassCanvasEntry === "function") {
+      return nativeCanvasSurfaceForEntry(canvas.__glassCanvasEntry());
+    }
+    throw nativeCanvasError("canvas context has no backing surface", "InvalidStateError");
+  };
+  const nativeCanvasResizeSurface = (surface, width, height) => {
+    surface.width = width;
+    surface.height = height;
+    surface.pixels = nativeCanvasBlankPixels(width, height);
+    surface.originClean = true;
+  };
+  const nativeCanvasSyncOffscreenDimension = (canvas, name, value) => {
+    if (!canvas || !Number.isSafeInteger(canvas.nodeIndex) || typeof canvas.__glassCanvasEntry !== "function") return;
+    const entry = canvas.__glassCanvasEntry();
+    if (!entry || !entry.attributes) return;
+    const stringValue = String(value);
+    entry.attributes[name] = stringValue;
+    pushCommand({ kind: "setAttribute", node_index: canvas.nodeIndex, name, value: stringValue, namespace_uri: "" });
+  };
   const nativeCanvasMakeContext = (canvas) => {
     const context = Object.create(CanvasRenderingContext2DNative.prototype);
     Object.defineProperties(context, {
@@ -5174,9 +5205,108 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
     });
     return context;
   };
+  const nativeCanvasOffscreenDimension = (value) => {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || Math.trunc(numeric) !== numeric || numeric < 0 || numeric > nativeCanvasDimensionLimit) {
+      throw nativeCanvasError("OffscreenCanvas dimension is outside the native limit", "IndexSizeError");
+    }
+    return numeric;
+  };
+  const OffscreenCanvasNative = globalThis.__glassOffscreenCanvasConstructor || function OffscreenCanvas(width, height) {
+    if (!new.target) throw new TypeError("OffscreenCanvas must be constructed with new");
+    const normalizedWidth = nativeCanvasOffscreenDimension(width);
+    const normalizedHeight = nativeCanvasOffscreenDimension(height);
+    if (normalizedWidth * normalizedHeight > nativeCanvasPixelLimit) {
+      throw nativeCanvasError("OffscreenCanvas exceeds the native pixel limit", "QuotaExceededError");
+    }
+    Object.defineProperty(this, "__glassCanvasSurface", {
+      configurable: false,
+      enumerable: false,
+      value: {
+        width: normalizedWidth,
+        height: normalizedHeight,
+        pixels: nativeCanvasBlankPixels(normalizedWidth, normalizedHeight),
+        originClean: true,
+      },
+    });
+    Object.defineProperty(this, "nodeIndex", {
+      configurable: false,
+      enumerable: false,
+      value: null,
+    });
+  };
+  globalThis.__glassOffscreenCanvasConstructor = OffscreenCanvasNative;
+  globalThis.OffscreenCanvas = OffscreenCanvasNative;
+  Object.defineProperties(OffscreenCanvasNative.prototype, {
+    width: {
+      configurable: true,
+      enumerable: true,
+      get() { return this.__glassCanvasSurface.width; },
+      set(value) {
+        const width = nativeCanvasOffscreenDimension(value);
+        const surface = this.__glassCanvasSurface;
+        if (width * surface.height > nativeCanvasPixelLimit) throw nativeCanvasError("OffscreenCanvas exceeds the native pixel limit", "QuotaExceededError");
+        nativeCanvasResizeSurface(surface, width, surface.height);
+        if (this.__glassCanvasContext) this.__glassCanvasContext.__glassCanvasState = nativeCanvasState();
+        nativeCanvasSyncOffscreenDimension(this, "width", width);
+        nativeCanvasCommit(this, surface);
+      },
+    },
+    height: {
+      configurable: true,
+      enumerable: true,
+      get() { return this.__glassCanvasSurface.height; },
+      set(value) {
+        const height = nativeCanvasOffscreenDimension(value);
+        const surface = this.__glassCanvasSurface;
+        if (surface.width * height > nativeCanvasPixelLimit) throw nativeCanvasError("OffscreenCanvas exceeds the native pixel limit", "QuotaExceededError");
+        nativeCanvasResizeSurface(surface, surface.width, height);
+        if (this.__glassCanvasContext) this.__glassCanvasContext.__glassCanvasState = nativeCanvasState();
+        nativeCanvasSyncOffscreenDimension(this, "height", height);
+        nativeCanvasCommit(this, surface);
+      },
+    },
+    getContext: {
+      configurable: true,
+      enumerable: true,
+      value(type) {
+        if (String(type).toLowerCase() !== "2d") return null;
+        if (!this.__glassCanvasContext) {
+          Object.defineProperty(this, "__glassCanvasContext", {
+            configurable: false,
+            enumerable: false,
+            value: nativeCanvasMakeContext(this),
+          });
+        }
+        return this.__glassCanvasContext;
+      },
+    },
+    convertToBlob: {
+      configurable: true,
+      enumerable: true,
+      value(options = {}) {
+        return new Promise((resolve, reject) => {
+          try {
+            const type = String(options && options.type || "image/png").toLowerCase();
+            if (type !== "image/png") throw nativeCanvasError("only image/png is supported", "NotSupportedError");
+            const bytes = nativeCanvasPngBytes(this.__glassCanvasSurface);
+            resolve(new BlobNative([new Uint8Array(bytes)], { type }));
+          } catch (error) {
+            reject(error);
+          }
+        });
+      },
+    },
+    transferToImageBitmap: {
+      configurable: true,
+      enumerable: true,
+      value() { return nativeCanvasImageBitmap({ ...this.__glassCanvasSurface, pixels: this.__glassCanvasSurface.pixels.slice() }); },
+    },
+  });
   const nativeCanvasInstallElement = (element, entry) => {
     if (element.localName !== "canvas") return null;
     let context = null;
+    let transferred = null;
     Object.defineProperty(element, "__glassCanvasEntry", { configurable: false, enumerable: false, value: () => entry });
     Object.defineProperty(element, "__glassCanvasSurface", { configurable: false, enumerable: false, get() { return nativeCanvasSurfaceForEntry(entry); } });
     const reset = () => nativeCanvasResetSurface(element);
@@ -5187,9 +5317,10 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
     Object.defineProperties(element, {
       width: { configurable: false, enumerable: true, get() { return nativeCanvasSurfaceForEntry(entry).width; }, set(value) { const numeric = nativeCanvasDimensionSetter(value); if (numeric * nativeCanvasDimension(entry, "height", 150) > nativeCanvasPixelLimit) throw nativeCanvasError("canvas exceeds the native pixel limit", "QuotaExceededError"); element.setAttribute("width", String(numeric)); } },
       height: { configurable: false, enumerable: true, get() { return nativeCanvasSurfaceForEntry(entry).height; }, set(value) { const numeric = nativeCanvasDimensionSetter(value); if (nativeCanvasDimension(entry, "width", 300) * numeric > nativeCanvasPixelLimit) throw nativeCanvasError("canvas exceeds the native pixel limit", "QuotaExceededError"); element.setAttribute("height", String(numeric)); } },
-      getContext: { configurable: false, enumerable: true, value(type) { if (String(type).toLowerCase() !== "2d") return null; if (!context) context = nativeCanvasMakeContext(element); element.__glassCanvasContext = context; return context; } },
-      toDataURL: { configurable: false, enumerable: true, value(type = "image/png") { const normalized = String(type).toLowerCase(); if (normalized !== "image/png") return "data:,"; const surface = nativeCanvasSurfaceForEntry(entry); const bytes = nativeCanvasPngBytes(surface); return "data:image/png;base64," + encodeBase64(bytes, nativeCanvasByteLimit); } },
-      toBlob: { configurable: false, enumerable: true, value(callback, type = "image/png") { if (typeof callback !== "function") throw new TypeError("toBlob callback must be callable"); const normalized = String(type).toLowerCase(); const result = normalized === "image/png" ? new BlobNative([new Uint8Array(nativeCanvasPngBytes(nativeCanvasSurfaceForEntry(entry)))], { type: normalized }) : null; setTimeoutNative(() => callback(result), 0); } },
+      getContext: { configurable: false, enumerable: true, value(type) { if (transferred) throw nativeCanvasError("canvas control has been transferred", "InvalidStateError"); if (String(type).toLowerCase() !== "2d") return null; if (!context) context = nativeCanvasMakeContext(element); element.__glassCanvasContext = context; return context; } },
+      toDataURL: { configurable: false, enumerable: true, value(type = "image/png") { if (transferred) throw nativeCanvasError("canvas control has been transferred", "InvalidStateError"); const normalized = String(type).toLowerCase(); if (normalized !== "image/png") return "data:,"; const surface = nativeCanvasSurfaceForEntry(entry); const bytes = nativeCanvasPngBytes(surface); return "data:image/png;base64," + encodeBase64(bytes, nativeCanvasByteLimit); } },
+      toBlob: { configurable: false, enumerable: true, value(callback, type = "image/png") { if (transferred) throw nativeCanvasError("canvas control has been transferred", "InvalidStateError"); if (typeof callback !== "function") throw new TypeError("toBlob callback must be callable"); const normalized = String(type).toLowerCase(); const result = normalized === "image/png" ? new BlobNative([new Uint8Array(nativeCanvasPngBytes(nativeCanvasSurfaceForEntry(entry)))], { type: normalized }) : null; setTimeoutNative(() => callback(result), 0); } },
+      transferControlToOffscreen: { configurable: false, enumerable: true, value() { if (transferred || context) throw nativeCanvasError("canvas control is already in use", "InvalidStateError"); const offscreen = Object.create(OffscreenCanvasNative.prototype); Object.defineProperties(offscreen, { __glassCanvasEntry: { configurable: false, enumerable: false, value: () => entry }, __glassCanvasSurface: { configurable: false, enumerable: false, get() { return nativeCanvasSurfaceForEntry(entry); } }, nodeIndex: { configurable: false, enumerable: false, value: Number(element.nodeIndex) } }); transferred = offscreen; return offscreen; } },
       getContextAttributes: { configurable: false, enumerable: true, value() { return { alpha: true, desynchronized: false, willReadFrequently: false }; } },
     });
     return reset;

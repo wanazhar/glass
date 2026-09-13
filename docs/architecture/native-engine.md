@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-312` slice; the bounded foundation below remains
+`native-engine-browser-313` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 
 Slice 283 adds a bounded dedicated-worker bridge after the page-facing
@@ -303,9 +303,19 @@ Slice 312 adds bounded native `ImageBitmap` wrappers and Promise-backed
 ImageData, and ImageBitmap sources share one bounded crop/resize sampler;
 bitmap identity, dimensions, `close()`, closed-source errors, and origin-clean
 state are preserved through Canvas `drawImage()`. Video/VideoFrame/media
-sources, OffscreenCanvas, complete ImageBitmap/Web IDL semantics, and the final
-native/CDP replacement gates remain Issue #40 work. Exact evidence is recorded
-in `docs/plan/tasks/native-engine-browser-312.md`.
+sources, complete ImageBitmap/Web IDL semantics, and the final native/CDP
+replacement gates remain Issue #40 work. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-312.md`.
+
+Slice 313 extends the retained Canvas 2D owner to page-realm OffscreenCanvas.
+Constructable standalone surfaces and HTML placeholder transfer share the
+same bounded RGBA storage; transferred drawing commits through the native
+canvas resource used by layout and capture, while bitmap snapshots and PNG
+export reuse the existing security guards. In-place resource-map refresh keeps
+persistent DOM/context closures coherent across host snapshots. Worker-realm
+installation, video/media sources, complete OffscreenCanvas/Canvas Web IDL
+semantics, and the final native/CDP replacement gates remain Issue #40 work.
+Exact evidence is recorded in `docs/plan/tasks/native-engine-browser-313.md`.
 
 Slice 282 adds a bounded page-facing computed-style and media-query bridge:
 the JavaScript realm reads the native cascade/layout snapshot through a

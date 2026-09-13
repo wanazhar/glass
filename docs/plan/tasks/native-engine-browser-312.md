@@ -52,7 +52,7 @@ authority for raster persistence and security.
 
 This slice keeps bitmap creation deterministic and dependency-free by copying
 bounded RGBA pixels in the page realm. It intentionally does not claim
-`Blob`/`File`, video/VideoFrame, SVG, OffscreenCanvas, decode metadata,
+`Blob`/`File`, video/VideoFrame, SVG, decode metadata,
 `imageOrientation`, `premultiplyAlpha`, `colorSpaceConversion`,
 `resizeQuality`, transfer/structured-clone ownership, color management, or
 complete ImageBitmap/Web IDL descriptor semantics. Those sources and the wider

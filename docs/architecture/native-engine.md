@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-294` slice; the bounded foundation below remains
+`native-engine-browser-295` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 
 Slice 283 adds a bounded dedicated-worker bridge after the page-facing
@@ -133,6 +133,15 @@ security owner. Full URL/Web IDL conformance, live URL/search-parameter
 synchronization, shared/service/worklet workers, automatic background task
 delivery, and complete native/CDP replacement remain Issue #40 gates. Exact
 evidence is recorded in `docs/plan/tasks/native-engine-browser-294.md`.
+
+Slice 295 adds worker `AbortController` and `AbortSignal` identity. Signals
+support abort listeners and reasons, static `abort()`, bounded `timeout()` and
+`any()` composition, and `throwIfAborted()`. Worker Fetch validates a supplied
+signal, rejects immediately when already aborted, removes listeners when a
+request settles, and suppresses a late response after abort; the existing
+shared loader remains the sole transport and policy owner. Host transport
+cancellation and complete abort Web IDL semantics remain Issue #40 gates.
+Exact evidence is recorded in `docs/plan/tasks/native-engine-browser-295.md`.
 
 Slice 282 adds a bounded page-facing computed-style and media-query bridge:
 the JavaScript realm reads the native cascade/layout snapshot through a
@@ -5065,7 +5074,8 @@ queue, due timers are pumped at that boundary, and bounded static
 uses the shared HTTP(S) loader with owner-tagged requests, bounded raw-byte
 responses, response streams, `Headers`/`Request`/`Response` identity, URL and
 URLSearchParams parsing/mutation, structured worker `location`, bounded
-`navigator` identity, and body ownership inside the worker realm. Asynchronous
+`navigator` identity, signal-aware worker Fetch cancellation with late-result
+suppression, and body ownership inside the worker realm. Asynchronous
 worker XHR, persistent worker WebSocket, and worker EventSource/SSE use the
 same owner-tagged content-process boundary and bounded page-turn delivery.
 Shared/service/worklet

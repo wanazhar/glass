@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-294` locally. The versioned
+`native-engine-browser-295` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -165,6 +165,15 @@ parameters, sorting, host/hostname/port decomposition, and worker-global
 identity. Full URL and Web IDL conformance, live URL/search-parameter
 synchronization, shared/service/worklet workers, automatic background task
 delivery, and the wider native replacement gates remain open on issue #40.
+
+The completed native-engine-browser-295 slice is
+[native-engine-browser-295](tasks/native-engine-browser-295.md). It adds
+worker `AbortController`/`AbortSignal` identity, abort listeners, abort
+reasons, `AbortSignal.abort()`, bounded `timeout()` and `any()` composition,
+and signal-aware worker Fetch rejection with late-result suppression. The
+shared loader remains the transport/security owner; host transport
+cancellation, full abort-event Web IDL behavior, and the wider native
+replacement gates remain open on issue #40.
 
 The completed EventSource/SSE slice is
 [native-engine-browser-253](tasks/native-engine-browser-253.md). It adds a

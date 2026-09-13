@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-294`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-295`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -4306,6 +4306,18 @@ conformance, live URL/search-parameter synchronization, automatic background
 task scheduling, shared/service/worklet workers, and final native/CDP parity
 remain issue #40 work. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-294.md`.
+
+The completed native-engine-browser-295 slice adds worker abort semantics over
+the existing Fetch owner. Dedicated workers receive stable
+`AbortController`/`AbortSignal` constructors, abort listeners and reasons,
+`AbortSignal.abort()`, bounded `timeout()` and `any()` composition, and
+`throwIfAborted()`. Worker Fetch validates the signal, rejects pre-aborted
+requests, detaches listeners on settlement, and removes a pending worker
+promise before rejecting on abort so late host results are ignored. The
+current slice does not yet cancel an already-running host transport; host
+cancellation, full abort Web IDL behavior, background task scheduling, and
+final native/CDP parity remain issue #40 work. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-295.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

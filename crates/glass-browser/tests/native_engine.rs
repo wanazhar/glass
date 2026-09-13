@@ -1150,6 +1150,56 @@ async fn native_local_worker_exposes_url_search_params_and_navigator() {
 }
 
 #[tokio::test]
+async fn native_local_worker_fetch_honors_abort_signal() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://worker-abort-page",
+            "<html><body><main>Native</main></body></html>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://worker-abort-script",
+            "const controller = new AbortController(); const events = []; controller.signal.onabort = event => events.push(event.type); const reason = new Error('cancelled'); controller.abort(reason); const combined = AbortSignal.any([controller.signal, new AbortController().signal]); fetch('fixture://worker-abort-page', { signal: controller.signal }).then(() => postMessage({ kind: 'unexpected' })).catch(error => postMessage({ kind: 'fetch', name: error.name, sameReason: error === reason, aborted: controller.signal.aborted })); postMessage({ kind: 'state', constructors: [typeof AbortController, typeof AbortSignal, typeof AbortSignal.timeout, typeof AbortSignal.any], state: [controller.signal.aborted, controller.signal.reason === reason, events, combined.aborted, combined.reason === reason, new Request('fixture://worker-abort-page').signal.aborted] });",
+        )
+        .unwrap()
+        .with_initial_url("fixture://worker-abort-page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "globalThis.workerMessages = []; globalThis.workerErrors = []; globalThis.worker = new Worker('fixture://worker-abort-script'); worker.onmessage = event => workerMessages.push(event.data); worker.onerror = event => workerErrors.push(event.message); true",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("({ messages: workerMessages, errors: workerErrors })")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "messages": [
+                {
+                    "kind": "state",
+                    "constructors": ["function", "function", "function", "function"],
+                    "state": [true, true, ["abort"], true, true, false],
+                },
+                {
+                    "kind": "fetch",
+                    "name": "Error",
+                    "sameReason": true,
+                    "aborted": true,
+                },
+            ],
+            "errors": [],
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_runs_worker_created_during_page_load() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

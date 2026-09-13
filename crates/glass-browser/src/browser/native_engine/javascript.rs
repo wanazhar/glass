@@ -9016,6 +9016,83 @@ fn worker_bootstrap(
     }}
     throw new WorkerDOMExceptionNative("native derived key algorithm is unsupported", "NotSupportedError");
   }};
+  const workerCryptoJwkDecode = (value) => {{
+    if (typeof value !== "string" || value.length > Math.ceil({fetch_body_limit} / 3) * 4
+        || !/^[A-Za-z0-9_-]*$/.test(value) || value.length % 4 === 1)
+      throw new WorkerDOMExceptionNative("native Worker JWK key material is invalid", "DataError");
+    const remainder = value.length % 4;
+    const standard = value.replace(/-/g, "+").replace(/_/g, "/")
+      + (remainder === 0 ? "" : "=".repeat(4 - remainder));
+    return decodeWorkerBase64(standard, {fetch_body_limit});
+  }};
+  const workerCryptoJwkEncode = (bytes) =>
+    encodeWorkerBase64(bytes, {fetch_body_limit})
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  const workerCryptoJwkUsages = (jwk, usages) => {{
+    if (jwk.key_ops === undefined) return usages;
+    if (!Array.isArray(jwk.key_ops))
+      throw new WorkerDOMExceptionNative("native Worker JWK key_ops is invalid", "DataError");
+    const operations = [];
+    for (const value of jwk.key_ops) {{
+      const operation = String(value);
+      if (!["sign", "verify", "encrypt", "decrypt"].includes(operation)
+          || operations.includes(operation))
+        throw new WorkerDOMExceptionNative("native Worker JWK key_ops is invalid", "DataError");
+      operations.push(operation);
+    }}
+    if (usages.some(usage => !operations.includes(usage)))
+      throw new WorkerDOMExceptionNative("native Worker JWK key_ops does not permit usage", "DataError");
+    return usages;
+  }};
+  const workerCryptoImportJwk = (jwk, algorithm, extractable, keyUsages) => {{
+    if (!jwk || typeof jwk !== "object" || Array.isArray(jwk)
+        || jwk.kty !== "oct" || typeof jwk.k !== "string")
+      throw new WorkerDOMExceptionNative("native Worker JWK is invalid", "DataError");
+    if (jwk.ext !== undefined && typeof jwk.ext !== "boolean")
+      throw new WorkerDOMExceptionNative("native Worker JWK ext is invalid", "DataError");
+    if (jwk.ext === false && extractable)
+      throw new WorkerDOMExceptionNative("native Worker JWK is not extractable", "DataError");
+    const bytes = workerCryptoJwkDecode(jwk.k);
+    const algorithmName = algorithm && typeof algorithm === "object"
+      ? String(algorithm.name || "").toUpperCase()
+      : "";
+    if (algorithmName === "HMAC") {{
+      if (bytes.length === 0)
+        throw new WorkerDOMExceptionNative("native Worker HMAC JWK key is empty", "DataError");
+      const hashName = workerCryptoHashName(algorithm.hash);
+      const expectedAlgorithm = ({{ "SHA-1": "HS1", "SHA-256": "HS256", "SHA-384": "HS384", "SHA-512": "HS512" }})[hashName];
+      if (jwk.alg !== undefined && jwk.alg !== expectedAlgorithm)
+        throw new WorkerDOMExceptionNative("native Worker HMAC JWK algorithm does not match", "DataError");
+      return workerCryptoMakeKey(
+        bytes,
+        hashName,
+        extractable,
+        workerCryptoJwkUsages(jwk, workerCryptoUsages(keyUsages)),
+      );
+    }}
+    if (algorithmName === "AES-GCM") {{
+      const expectedAlgorithm = ({{ 16: "A128GCM", 24: "A192GCM", 32: "A256GCM" }})[bytes.length];
+      if (!expectedAlgorithm || (jwk.alg !== undefined && jwk.alg !== expectedAlgorithm))
+        throw new WorkerDOMExceptionNative("native Worker AES-GCM JWK key length or algorithm is invalid", "DataError");
+      return workerCryptoMakeAesKey(
+        bytes,
+        extractable,
+        workerCryptoJwkUsages(jwk, workerCryptoAesUsages(keyUsages)),
+      );
+    }}
+    throw new WorkerDOMExceptionNative("native Worker JWK algorithm is unsupported", "NotSupportedError");
+  }};
+  const workerCryptoExportJwk = (state) => {{
+    if (state.kind === "HMAC") {{
+      const alg = ({{ "SHA-1": "HS1", "SHA-256": "HS256", "SHA-384": "HS384", "SHA-512": "HS512" }})[state.hashName];
+      return {{ kty: "oct", k: workerCryptoJwkEncode(state.bytes), alg, ext: Boolean(state.extractable), key_ops: Array.from(state.usages) }};
+    }}
+    if (state.kind === "AES-GCM") {{
+      const alg = ({{ 16: "A128GCM", 24: "A192GCM", 32: "A256GCM" }})[state.bytes.length];
+      return {{ kty: "oct", k: workerCryptoJwkEncode(state.bytes), alg, ext: Boolean(state.extractable), key_ops: Array.from(state.usages) }};
+    }}
+    throw new WorkerDOMExceptionNative("native Worker JWK key kind is unsupported", "NotSupportedError");
+  }};
   const workerCryptoAesBytes = (operation, state, algorithm, data) => {{
     if (!workerCryptoAesSource)
       throw new WorkerDOMExceptionNative("native Worker AES-GCM is unavailable", "OperationError");
@@ -9091,7 +9168,10 @@ fn worker_bootstrap(
   }};
   workerSubtle.importKey = (format, keyData, algorithm, extractable = false, keyUsages = []) => {{
     try {{
-      if (String(format).toLowerCase() !== "raw")
+      const normalizedFormat = String(format).toLowerCase();
+      if (normalizedFormat === "jwk")
+        return Promise.resolve(workerCryptoImportJwk(keyData, algorithm, extractable, keyUsages));
+      if (normalizedFormat !== "raw")
         throw new WorkerDOMExceptionNative("native Worker crypto key format is unsupported", "NotSupportedError");
       const bytes = workerCryptoBufferInput(keyData);
       if (bytes.length > {fetch_body_limit})
@@ -9121,9 +9201,15 @@ fn worker_bootstrap(
   }};
   workerSubtle.exportKey = (format, key) => {{
     try {{
-      if (String(format).toLowerCase() !== "raw")
-        throw new WorkerDOMExceptionNative("native Worker crypto key format is unsupported", "NotSupportedError");
+      const normalizedFormat = String(format).toLowerCase();
       const state = workerCryptoKeyState(key);
+      if (normalizedFormat === "jwk") {{
+        if (!state.extractable)
+          throw new WorkerDOMExceptionNative("native Worker CryptoKey is not extractable", "InvalidAccessError");
+        return Promise.resolve(workerCryptoExportJwk(state));
+      }}
+      if (normalizedFormat !== "raw")
+        throw new WorkerDOMExceptionNative("native Worker crypto key format is unsupported", "NotSupportedError");
       if (!state.extractable)
         throw new WorkerDOMExceptionNative("native Worker CryptoKey is not extractable", "InvalidAccessError");
       return Promise.resolve(new Uint8Array(state.bytes.slice()).buffer);
@@ -20757,6 +20843,83 @@ fn document_bootstrap(
     }}
     throw pageCryptoDigestError("native derived key algorithm is unsupported", "NotSupportedError");
   }};
+  const pageCryptoJwkDecode = (value) => {{
+    if (typeof value !== "string" || value.length > Math.ceil({native_form_body_bytes} / 3) * 4
+        || !/^[A-Za-z0-9_-]*$/.test(value) || value.length % 4 === 1)
+      throw pageCryptoDigestError("native JWK key material is invalid", "DataError");
+    const remainder = value.length % 4;
+    const standard = value.replace(/-/g, "+").replace(/_/g, "/")
+      + (remainder === 0 ? "" : "=".repeat(4 - remainder));
+    return decodeBase64(standard, {native_form_body_bytes});
+  }};
+  const pageCryptoJwkEncode = (bytes) =>
+    encodeBase64(bytes, {native_form_body_bytes})
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  const pageCryptoJwkUsages = (jwk, usages) => {{
+    if (jwk.key_ops === undefined) return usages;
+    if (!Array.isArray(jwk.key_ops))
+      throw pageCryptoDigestError("native JWK key_ops is invalid", "DataError");
+    const operations = [];
+    for (const value of jwk.key_ops) {{
+      const operation = String(value);
+      if (!["sign", "verify", "encrypt", "decrypt"].includes(operation)
+          || operations.includes(operation))
+        throw pageCryptoDigestError("native JWK key_ops is invalid", "DataError");
+      operations.push(operation);
+    }}
+    if (usages.some(usage => !operations.includes(usage)))
+      throw pageCryptoDigestError("native JWK key_ops does not permit usage", "DataError");
+    return usages;
+  }};
+  const pageCryptoImportJwk = (jwk, algorithm, extractable, keyUsages) => {{
+    if (!jwk || typeof jwk !== "object" || Array.isArray(jwk)
+        || jwk.kty !== "oct" || typeof jwk.k !== "string")
+      throw pageCryptoDigestError("native JWK is invalid", "DataError");
+    if (jwk.ext !== undefined && typeof jwk.ext !== "boolean")
+      throw pageCryptoDigestError("native JWK ext is invalid", "DataError");
+    if (jwk.ext === false && extractable)
+      throw pageCryptoDigestError("native JWK is not extractable", "DataError");
+    const bytes = pageCryptoJwkDecode(jwk.k);
+    const algorithmName = algorithm && typeof algorithm === "object"
+      ? String(algorithm.name || "").toUpperCase()
+      : "";
+    if (algorithmName === "HMAC") {{
+      if (bytes.length === 0)
+        throw pageCryptoDigestError("native HMAC JWK key is empty", "DataError");
+      const hashName = pageCryptoHashName(algorithm.hash);
+      const expectedAlgorithm = ({{ "SHA-1": "HS1", "SHA-256": "HS256", "SHA-384": "HS384", "SHA-512": "HS512" }})[hashName];
+      if (jwk.alg !== undefined && jwk.alg !== expectedAlgorithm)
+        throw pageCryptoDigestError("native HMAC JWK algorithm does not match", "DataError");
+      return pageCryptoMakeKey(
+        bytes,
+        hashName,
+        extractable,
+        pageCryptoJwkUsages(jwk, pageCryptoUsages(keyUsages)),
+      );
+    }}
+    if (algorithmName === "AES-GCM") {{
+      const expectedAlgorithm = ({{ 16: "A128GCM", 24: "A192GCM", 32: "A256GCM" }})[bytes.length];
+      if (!expectedAlgorithm || (jwk.alg !== undefined && jwk.alg !== expectedAlgorithm))
+        throw pageCryptoDigestError("native AES-GCM JWK key length or algorithm is invalid", "DataError");
+      return pageCryptoMakeAesKey(
+        bytes,
+        extractable,
+        pageCryptoJwkUsages(jwk, pageCryptoAesUsages(keyUsages)),
+      );
+    }}
+    throw pageCryptoDigestError("native JWK algorithm is unsupported", "NotSupportedError");
+  }};
+  const pageCryptoExportJwk = (state) => {{
+    if (state.kind === "HMAC") {{
+      const alg = ({{ "SHA-1": "HS1", "SHA-256": "HS256", "SHA-384": "HS384", "SHA-512": "HS512" }})[state.hashName];
+      return {{ kty: "oct", k: pageCryptoJwkEncode(state.bytes), alg, ext: Boolean(state.extractable), key_ops: Array.from(state.usages) }};
+    }}
+    if (state.kind === "AES-GCM") {{
+      const alg = ({{ 16: "A128GCM", 24: "A192GCM", 32: "A256GCM" }})[state.bytes.length];
+      return {{ kty: "oct", k: pageCryptoJwkEncode(state.bytes), alg, ext: Boolean(state.extractable), key_ops: Array.from(state.usages) }};
+    }}
+    throw pageCryptoDigestError("native JWK key kind is unsupported", "NotSupportedError");
+  }};
   const pageCryptoAesBytes = (operation, state, algorithm, data) => {{
     if (!pageCryptoAesSource)
       throw pageCryptoDigestError("native AES-GCM is unavailable", "OperationError");
@@ -20833,7 +20996,10 @@ fn document_bootstrap(
   }};
   pageSubtle.importKey = (format, keyData, algorithm, extractable = false, keyUsages = []) => {{
     try {{
-      if (String(format).toLowerCase() !== "raw")
+      const normalizedFormat = String(format).toLowerCase();
+      if (normalizedFormat === "jwk")
+        return Promise.resolve(pageCryptoImportJwk(keyData, algorithm, extractable, keyUsages));
+      if (normalizedFormat !== "raw")
         throw pageCryptoDigestError("native crypto key format is unsupported", "NotSupportedError");
       const bytes = pageCryptoBufferInput(keyData);
       if (bytes.length > {native_form_body_bytes})
@@ -20863,9 +21029,15 @@ fn document_bootstrap(
   }};
   pageSubtle.exportKey = (format, key) => {{
     try {{
-      if (String(format).toLowerCase() !== "raw")
-        throw pageCryptoDigestError("native crypto key format is unsupported", "NotSupportedError");
+      const normalizedFormat = String(format).toLowerCase();
       const state = pageCryptoKeyState(key);
+      if (normalizedFormat === "jwk") {{
+        if (!state.extractable)
+          throw pageCryptoDigestError("native CryptoKey is not extractable", "InvalidAccessError");
+        return Promise.resolve(pageCryptoExportJwk(state));
+      }}
+      if (normalizedFormat !== "raw")
+        throw pageCryptoDigestError("native crypto key format is unsupported", "NotSupportedError");
       if (!state.extractable)
         throw pageCryptoDigestError("native CryptoKey is not extractable", "InvalidAccessError");
       return Promise.resolve(new Uint8Array(state.bytes.slice()).buffer);

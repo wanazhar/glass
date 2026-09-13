@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-306` slice; the bounded foundation below remains
+`native-engine-browser-307` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 
 Slice 283 adds a bounded dedicated-worker bridge after the page-facing
@@ -246,6 +246,15 @@ usages, and unsupported formats fail before publication. Exact evidence is
 recorded in `docs/plan/tasks/native-engine-browser-306.md`; JWK/PKCS and
 asymmetric key profiles, complete Web IDL semantics, and final native/CDP
 replacement gates remain issue #40 work.
+
+Slice 307 adds bounded symmetric JWK import/export for HMAC and AES-GCM in
+page and dedicated-worker realms. `oct` key material uses strict base64url
+decoding, standard `HS*`/`A*GCM` algorithm labels, and validated `ext` and
+`key_ops` metadata before entering the existing opaque key stores; only
+extractable keys can export JWK bytes. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-307.md`; asymmetric JWK/PKCS profiles,
+complete Web IDL semantics, and final native/CDP replacement gates remain
+issue #40 work.
 
 Slice 282 adds a bounded page-facing computed-style and media-query bridge:
 the JavaScript realm reads the native cascade/layout snapshot through a

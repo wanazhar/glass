@@ -2328,6 +2328,162 @@ async fn native_local_page_and_worker_wrap_crypto_keys() {
 }
 
 #[tokio::test]
+async fn native_local_page_and_worker_jwk_crypto_keys() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://jwk-crypto-page",
+            "<html><body><main>Native</main></body></html>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://jwk-crypto-worker",
+            "(async () => { const key = await crypto.subtle.importKey('jwk', { kty: 'oct', k: 'CQgHBg', alg: 'HS256', ext: true, key_ops: ['sign', 'verify'] }, { name: 'HMAC', hash: 'SHA-256' }, true, ['sign', 'verify']); const exported = await crypto.subtle.exportKey('jwk', key); const data = new TextEncoder().encode('worker JWK'); const signature = await crypto.subtle.sign('HMAC', key, data); postMessage({ jwk: [exported.kty, exported.k, exported.alg, exported.ext, Array.from(exported.key_ops)], verified: await crypto.subtle.verify('HMAC', key, signature, data), signatureLength: signature.byteLength, identity: key instanceof CryptoKey }); })().catch(error => postMessage({ error: error.name }));",
+        )
+        .unwrap()
+        .with_initial_url("fixture://jwk-crypto-page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"await (async () => {
+                    const hmac = await crypto.subtle.importKey(
+                        'jwk',
+                        { kty: 'oct', k: 'AQIDBA', alg: 'HS256', ext: true, key_ops: ['sign', 'verify'] },
+                        { name: 'HMAC', hash: 'SHA-256' },
+                        true,
+                        ['sign', 'verify'],
+                    );
+                    const exportedHmac = await crypto.subtle.exportKey('jwk', hmac);
+                    const hmacData = new TextEncoder().encode('JWK HMAC');
+                    const hmacSignature = await crypto.subtle.sign('HMAC', hmac, hmacData);
+                    const aes = await crypto.subtle.importKey(
+                        'jwk',
+                        { kty: 'oct', k: 'EBESExQVFhcYGRobHB0eHw', alg: 'A128GCM', ext: true, key_ops: ['encrypt', 'decrypt'] },
+                        { name: 'AES-GCM' },
+                        true,
+                        ['encrypt', 'decrypt'],
+                    );
+                    const exportedAes = await crypto.subtle.exportKey('jwk', aes);
+                    const iv = new Uint8Array(12);
+                    const ciphertext = await crypto.subtle.encrypt(
+                        { name: 'AES-GCM', iv }, aes, new TextEncoder().encode('JWK AES'),
+                    );
+                    const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, aes, ciphertext);
+                    const locked = await crypto.subtle.importKey(
+                        'jwk',
+                        { kty: 'oct', k: 'AQIDBA', alg: 'HS256', ext: false, key_ops: ['sign'] },
+                        { name: 'HMAC', hash: 'SHA-256' },
+                        false,
+                        ['sign'],
+                    );
+                    let lockedExportError = '';
+                    try { await crypto.subtle.exportKey('jwk', locked); } catch (error) { lockedExportError = error.name; }
+                    let algorithmError = '';
+                    try {
+                        await crypto.subtle.importKey(
+                            'jwk', { kty: 'oct', k: 'AQIDBA', alg: 'HS512' },
+                            { name: 'HMAC', hash: 'SHA-256' }, true, ['sign'],
+                        );
+                    } catch (error) { algorithmError = error.name; }
+                    let keyOpsError = '';
+                    try {
+                        await crypto.subtle.importKey(
+                            'jwk', { kty: 'oct', k: 'AQIDBA', key_ops: ['sign'] },
+                            { name: 'HMAC', hash: 'SHA-256' }, true, ['verify'],
+                        );
+                    } catch (error) { keyOpsError = error.name; }
+                    let ktyError = '';
+                    try {
+                        await crypto.subtle.importKey(
+                            'jwk', { kty: 'RSA', k: 'AQIDBA' },
+                            { name: 'HMAC', hash: 'SHA-256' }, true, ['sign'],
+                        );
+                    } catch (error) { ktyError = error.name; }
+                    let extError = '';
+                    try {
+                        await crypto.subtle.importKey(
+                            'jwk', { kty: 'oct', k: 'AQIDBA', ext: false },
+                            { name: 'HMAC', hash: 'SHA-256' }, true, ['sign'],
+                        );
+                    } catch (error) { extError = error.name; }
+                    globalThis.jwkCryptoState = {
+                        hmac: {
+                            exported: [exportedHmac.kty, exportedHmac.k, exportedHmac.alg, exportedHmac.ext, Array.from(exportedHmac.key_ops)],
+                            algorithm: [hmac.algorithm.name, hmac.algorithm.hash.name, hmac.algorithm.length],
+                            verified: await crypto.subtle.verify('HMAC', hmac, hmacSignature, hmacData),
+                            signatureLength: hmacSignature.byteLength,
+                        },
+                        aes: {
+                            exported: [exportedAes.kty, exportedAes.k, exportedAes.alg, exportedAes.ext, Array.from(exportedAes.key_ops)],
+                            algorithm: [aes.algorithm.name, aes.algorithm.length],
+                            plaintext: new TextDecoder().decode(plaintext),
+                            ciphertextLength: ciphertext.byteLength,
+                        },
+                        errors: { lockedExportError, algorithmError, keyOpsError, ktyError, extError },
+                    };
+                    return globalThis.jwkCryptoState;
+                })()"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "hmac": {
+                "exported": ["oct", "AQIDBA", "HS256", true, ["sign", "verify"]],
+                "algorithm": ["HMAC", "SHA-256", 32],
+                "verified": true,
+                "signatureLength": 32,
+            },
+            "aes": {
+                "exported": ["oct", "EBESExQVFhcYGRobHB0eHw", "A128GCM", true, ["encrypt", "decrypt"]],
+                "algorithm": ["AES-GCM", 128],
+                "plaintext": "JWK AES",
+                "ciphertextLength": 23,
+            },
+            "errors": {
+                "lockedExportError": "InvalidAccessError",
+                "algorithmError": "DataError",
+                "keyOpsError": "DataError",
+                "ktyError": "DataError",
+                "extError": "DataError",
+            },
+        })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("({ hmacKey: jwkCryptoState.hmac.exported[1], aesKey: jwkCryptoState.aes.exported[1] })")
+            .await
+            .unwrap(),
+        serde_json::json!({ "hmacKey": "AQIDBA", "aesKey": "EBESExQVFhcYGRobHB0eHw" })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "globalThis.workerMessages = []; globalThis.workerErrors = []; globalThis.worker = new Worker('fixture://jwk-crypto-worker'); worker.onmessage = event => workerMessages.push(event.data); worker.onerror = event => workerErrors.push(event.message); true",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("({ messages: workerMessages, errors: workerErrors })")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "messages": [{
+                "jwk": ["oct", "CQgHBg", "HS256", true, ["sign", "verify"]],
+                "verified": true,
+                "signatureLength": 32,
+                "identity": true,
+            }],
+            "errors": [],
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_runs_worker_created_during_page_load() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

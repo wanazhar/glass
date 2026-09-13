@@ -400,6 +400,51 @@ struct NativeDedicatedWorker {
     url: String,
     runtime: NativeJavaScriptRuntime,
     import_script_counts: BTreeMap<String, usize>,
+    module_sources: BTreeMap<String, String>,
+    is_module: bool,
+    next_module_turn: AtomicU64,
+}
+
+impl NativeDedicatedWorker {
+    fn evaluate_initial(
+        &self,
+        worker_id: u32,
+        source: &str,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        if self.is_module {
+            self.runtime.evaluate_worker_module(
+                worker_id,
+                &self.url,
+                &self.url,
+                source,
+                &self.module_sources,
+            )
+        } else {
+            self.runtime
+                .evaluate_worker(worker_id, &self.url, source, &self.import_script_counts)
+        }
+    }
+
+    fn evaluate_turn(
+        &self,
+        worker_id: u32,
+        source: &str,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        if self.is_module {
+            let turn = self.next_module_turn.fetch_add(1, Ordering::Relaxed);
+            let module_name = format!("{}#glass-worker-turn-{turn}", self.url);
+            self.runtime.evaluate_worker_module(
+                worker_id,
+                &self.url,
+                &module_name,
+                source,
+                &self.module_sources,
+            )
+        } else {
+            self.runtime
+                .evaluate_worker(worker_id, &self.url, source, &self.import_script_counts)
+        }
+    }
 }
 
 /// Owns dedicated-worker realms and the bounded messages waiting for their
@@ -450,10 +495,9 @@ impl NativeWorkerRegistry {
             let Some(worker) = self.workers.get(&worker_id) else {
                 continue;
             };
-            let evaluation = worker.runtime.run_worker_timer_turn(
+            let evaluation = worker.evaluate_turn(
                 worker_id,
-                &worker.url,
-                &worker.import_script_counts,
+                "globalThis.__glassRunWorkerTimers(performance.now());",
             );
             match evaluation {
                 Ok(evaluation) => {
@@ -543,9 +587,10 @@ impl NativeWorkerRegistry {
             ));
         }
         validate_url_text("native Worker URL", &href)?;
-        if !worker_type.is_empty() && !worker_type.eq_ignore_ascii_case("classic") {
+        let is_module = worker_type.eq_ignore_ascii_case("module");
+        if !worker_type.is_empty() && !worker_type.eq_ignore_ascii_case("classic") && !is_module {
             return Err(NativeEngineError::UnsupportedUrl {
-                reason: "native Worker supports classic scripts only".into(),
+                reason: "native Worker type must be classic or module".into(),
             });
         }
 
@@ -563,9 +608,17 @@ impl NativeWorkerRegistry {
                 return Ok(());
             }
         };
-        let (source, import_script_counts) = self
-            .load_worker_script_graph(loader, resource.clone())
-            .await?;
+        let (source, import_script_counts, module_sources) = if is_module {
+            let module_sources = self
+                .load_worker_module_graph(loader, owner_url, resource.clone())
+                .await?;
+            (resource.body.clone(), BTreeMap::new(), module_sources)
+        } else {
+            let (source, import_script_counts) = self
+                .load_worker_script_graph(loader, resource.clone())
+                .await?;
+            (source, import_script_counts, BTreeMap::new())
+        };
         let runtime =
             match NativeJavaScriptRuntime::new_with_context_id(format!("glass-worker-{worker_id}"))
             {
@@ -580,17 +633,15 @@ impl NativeWorkerRegistry {
             NativeDedicatedWorker {
                 url: resource.url.clone(),
                 import_script_counts,
+                module_sources,
+                is_module,
+                next_module_turn: AtomicU64::new(1),
                 runtime,
             },
         );
         let evaluation = {
             let worker = self.workers.get(&worker_id).expect("worker was inserted");
-            worker.runtime.evaluate_worker(
-                worker_id,
-                &resource.url,
-                &source,
-                &worker.import_script_counts,
-            )
+            worker.evaluate_initial(worker_id, &source)
         };
         match evaluation {
             Ok(evaluation) => {
@@ -613,16 +664,25 @@ impl NativeWorkerRegistry {
         if !self.workers.contains_key(&worker_id) {
             return Ok(());
         }
+        let serialized = serde_json::to_string(&data).map_err(|_| NativeEngineError::Worker {
+            operation: "serialize native Worker message".into(),
+            reason: "native Worker message could not be serialized".into(),
+        })?;
+        if serialized.len() > MAX_NATIVE_POST_MESSAGE_BYTES {
+            return Err(NativeEngineError::limit(
+                "native Worker message",
+                MAX_NATIVE_POST_MESSAGE_BYTES,
+                serialized.len(),
+            ));
+        }
         let evaluation = {
             let worker = self
                 .workers
                 .get(&worker_id)
                 .expect("worker presence was checked");
-            worker.runtime.dispatch_worker_message_to_worker(
+            worker.evaluate_turn(
                 worker_id,
-                &worker.url,
-                &data,
-                &worker.import_script_counts,
+                &format!("globalThis.__glassDispatchWorkerMessage({serialized});"),
             )
         };
         match evaluation {
@@ -802,13 +862,29 @@ impl NativeWorkerRegistry {
                 "worker terminated while its fetch was in flight",
             )
         })?;
-        worker.runtime.resolve_worker_fetch(
-            worker_id,
-            &worker_url,
-            request_id,
-            &payload,
-            &import_script_counts,
-        )
+        if worker.is_module {
+            let serialized =
+                serde_json::to_string(&payload).map_err(|_| NativeEngineError::Worker {
+                    operation: "serialize native Worker fetch response".into(),
+                    reason: "native Worker fetch response could not be serialized".into(),
+                })?;
+            let source = if serialized.len() > MAX_NATIVE_SCRIPT_BYTES {
+                format!(
+                    "globalThis.__glassResolveWorkerFetch({request_id}, {{ error: \"worker fetch response exceeded the script transfer limit\" }});"
+                )
+            } else {
+                format!("globalThis.__glassResolveWorkerFetch({request_id}, {serialized});")
+            };
+            worker.evaluate_turn(worker_id, &source)
+        } else {
+            worker.runtime.resolve_worker_fetch(
+                worker_id,
+                &worker_url,
+                request_id,
+                &payload,
+                &import_script_counts,
+            )
+        }
     }
 
     fn queue_error(
@@ -945,6 +1021,121 @@ impl NativeWorkerRegistry {
         }
         Ok((combined_source, import_script_counts))
     }
+
+    async fn load_worker_module_graph(
+        &self,
+        loader: &mut NativeResourceLoader,
+        owner_url: &str,
+        root: NativeScriptResource,
+    ) -> Result<BTreeMap<String, String>, NativeEngineError> {
+        if root.body.is_empty() {
+            return Err(NativeEngineError::invalid(
+                "worker module source",
+                "must not be empty",
+            ));
+        }
+        let mut sources = BTreeMap::from([(root.url.clone(), root.body.clone())]);
+        let mut pending = VecDeque::from([(root.url, root.body)]);
+        let mut total_bytes = sources.values().map(String::len).sum::<usize>();
+        let mut import_edges = 0usize;
+        while let Some((module_url, module_source)) = pending.pop_front() {
+            let mut specifiers = static_module_specifiers(&module_source)?;
+            specifiers.extend(literal_dynamic_module_specifiers(&module_source));
+            for specifier in specifiers {
+                import_edges = import_edges.saturating_add(1);
+                if import_edges > MAX_NATIVE_MODULE_IMPORTS {
+                    return Err(NativeEngineError::limit(
+                        "native Worker module imports",
+                        MAX_NATIVE_MODULE_IMPORTS,
+                        import_edges,
+                    ));
+                }
+                let target = resolve_worker_module_specifier(&module_url, &specifier)?;
+                if sources.contains_key(&target) {
+                    continue;
+                }
+                if sources.len() >= MAX_NATIVE_MODULE_IMPORTS {
+                    return Err(NativeEngineError::limit(
+                        "native Worker module graph entries",
+                        MAX_NATIVE_MODULE_IMPORTS,
+                        sources.len().saturating_add(1),
+                    ));
+                }
+                let resource = loader
+                    .load_worker_async(owner_url, &target, MAX_NATIVE_SCRIPT_BYTES)
+                    .await?
+                    .ok_or_else(|| NativeEngineError::Network {
+                        operation: "native Worker module dependency".into(),
+                        reason: format!(
+                            "Worker module dependency {specifier:?} was blocked or unavailable"
+                        ),
+                    })?;
+                if resource.body.is_empty() {
+                    return Err(NativeEngineError::invalid(
+                        "worker module source",
+                        "must not be empty",
+                    ));
+                }
+                total_bytes = total_bytes.saturating_add(resource.body.len());
+                if total_bytes > MAX_NATIVE_SCRIPT_BYTES.saturating_mul(MAX_NATIVE_MODULE_IMPORTS) {
+                    return Err(NativeEngineError::limit(
+                        "native Worker module graph bytes",
+                        MAX_NATIVE_SCRIPT_BYTES.saturating_mul(MAX_NATIVE_MODULE_IMPORTS),
+                        total_bytes,
+                    ));
+                }
+                let name = resource.url;
+                let source = resource.body;
+                if sources.insert(name.clone(), source.clone()).is_none() {
+                    pending.push_back((name, source));
+                }
+            }
+        }
+        Ok(sources)
+    }
+}
+
+fn resolve_worker_module_specifier(
+    module_url: &str,
+    specifier: &str,
+) -> Result<String, NativeEngineError> {
+    let is_absolute = specifier.starts_with("http://")
+        || specifier.starts_with("https://")
+        || specifier.starts_with("fixture://");
+    if !is_absolute
+        && !specifier.starts_with("./")
+        && !specifier.starts_with("../")
+        && !specifier.starts_with('/')
+        && !specifier.starts_with("//")
+    {
+        return Err(NativeEngineError::UnsupportedUrl {
+            reason: "bare Worker module specifiers require an import map".into(),
+        });
+    }
+    let mut base = Url::parse(module_url).map_err(|_| NativeEngineError::UnsupportedUrl {
+        reason: "Worker module owner URL is not valid URL syntax".into(),
+    })?;
+    base.set_fragment(None);
+    let mut target = if is_absolute {
+        Url::parse(specifier)
+    } else {
+        base.join(specifier)
+    }
+    .map_err(|_| NativeEngineError::UnsupportedUrl {
+        reason: "Worker module specifier could not be resolved against its owner".into(),
+    })?;
+    if !target.username().is_empty() || target.password().is_some() {
+        return Err(NativeEngineError::UnsupportedUrl {
+            reason: "Worker module URL must not contain credentials".into(),
+        });
+    }
+    target.set_fragment(None);
+    if !matches!(target.scheme(), "http" | "https" | "fixture") {
+        return Err(NativeEngineError::UnsupportedUrl {
+            reason: "Worker module URL must use HTTP(S) or a registered fixture".into(),
+        });
+    }
+    Ok(target.to_string())
 }
 
 fn worker_fetch_response_payload(
@@ -5663,9 +5854,13 @@ impl NativeJavaScriptRuntime {
                     ));
                 }
                 validate_url_text("native Worker URL", href)?;
-                if !worker_type.is_empty() && !worker_type.eq_ignore_ascii_case("classic") {
+                let is_module = worker_type.eq_ignore_ascii_case("module");
+                if !worker_type.is_empty()
+                    && !worker_type.eq_ignore_ascii_case("classic")
+                    && !is_module
+                {
                     return Err(NativeEngineError::UnsupportedUrl {
-                        reason: "native Worker supports classic scripts only".into(),
+                        reason: "native Worker type must be classic or module".into(),
                     });
                 }
             }
@@ -6097,6 +6292,43 @@ impl NativeJavaScriptRuntime {
         source: &str,
         import_script_counts: &BTreeMap<String, usize>,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        self.evaluate_worker_source(worker_id, worker_url, None, source, import_script_counts)
+    }
+
+    /// Evaluate one module dedicated-worker turn using the prefetched module
+    /// graph installed in the runtime's native module loader.
+    pub(crate) fn evaluate_worker_module(
+        &self,
+        worker_id: u32,
+        worker_url: &str,
+        module_name: &str,
+        source: &str,
+        module_sources: &BTreeMap<String, String>,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        if module_name.is_empty() {
+            return Err(NativeEngineError::invalid(
+                "worker module name",
+                "must not be empty",
+            ));
+        }
+        self.set_module_sources(module_sources.clone());
+        self.evaluate_worker_source(
+            worker_id,
+            worker_url,
+            Some(module_name),
+            source,
+            &BTreeMap::new(),
+        )
+    }
+
+    fn evaluate_worker_source(
+        &self,
+        worker_id: u32,
+        worker_url: &str,
+        module_name: Option<&str>,
+        source: &str,
+        import_script_counts: &BTreeMap<String, usize>,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
         if worker_id == 0 {
             return Err(NativeEngineError::invalid(
                 "native Worker id",
@@ -6117,8 +6349,13 @@ impl NativeJavaScriptRuntime {
                 source.len(),
             ));
         }
-        let bootstrap =
-            worker_bootstrap(worker_id, worker_url, self.now_ms(), import_script_counts)?;
+        let bootstrap = worker_bootstrap(
+            worker_id,
+            worker_url,
+            self.now_ms(),
+            import_script_counts,
+            module_name.is_some(),
+        )?;
         let deadline = Instant::now() + NATIVE_SCRIPT_TIMEOUT;
         if let Ok(mut current) = self.deadline.lock() {
             *current = Some(deadline);
@@ -6132,15 +6369,34 @@ impl NativeJavaScriptRuntime {
                         CaughtError::from_error(&ctx, error)
                     ),
                 })?;
-            let value: Value = ctx
-                .eval(source)
-                .map_err(|error| NativeEngineError::Worker {
-                    operation: "evaluate native Worker script".into(),
-                    reason: format!(
-                        "native Worker script evaluation failed: {}",
-                        CaughtError::from_error(&ctx, error)
-                    ),
-                })?;
+            let value: Value = if let Some(module_name) = module_name {
+                Module::evaluate(ctx.clone(), module_name, source)
+                    .and_then(|promise| promise.finish::<()>())
+                    .map_err(|error| NativeEngineError::Worker {
+                        operation: "evaluate native Worker module".into(),
+                        reason: format!(
+                            "native Worker module evaluation failed: {}",
+                            CaughtError::from_error(&ctx, error)
+                        ),
+                    })?;
+                ctx.eval("undefined")
+                    .map_err(|error| NativeEngineError::Worker {
+                        operation: "serialize native Worker result".into(),
+                        reason: format!(
+                            "native Worker result could not be created: {}",
+                            CaughtError::from_error(&ctx, error)
+                        ),
+                    })?
+            } else {
+                ctx.eval(source)
+                    .map_err(|error| NativeEngineError::Worker {
+                        operation: "evaluate native Worker script".into(),
+                        reason: format!(
+                            "native Worker script evaluation failed: {}",
+                            CaughtError::from_error(&ctx, error)
+                        ),
+                    })?
+            };
             for _ in 0..MAX_NATIVE_MODULE_IMPORTS {
                 if !ctx.execute_pending_job() {
                     break;
@@ -6203,46 +6459,6 @@ impl NativeJavaScriptRuntime {
             *current = None;
         }
         result
-    }
-
-    pub(crate) fn dispatch_worker_message_to_worker(
-        &self,
-        worker_id: u32,
-        worker_url: &str,
-        data: &serde_json::Value,
-        import_script_counts: &BTreeMap<String, usize>,
-    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
-        let serialized = serde_json::to_string(data).map_err(|_| NativeEngineError::Worker {
-            operation: "serialize native Worker message".into(),
-            reason: "native Worker message could not be serialized".into(),
-        })?;
-        if serialized.len() > MAX_NATIVE_POST_MESSAGE_BYTES {
-            return Err(NativeEngineError::limit(
-                "native Worker message",
-                MAX_NATIVE_POST_MESSAGE_BYTES,
-                serialized.len(),
-            ));
-        }
-        self.evaluate_worker(
-            worker_id,
-            worker_url,
-            &format!("globalThis.__glassDispatchWorkerMessage({serialized});"),
-            import_script_counts,
-        )
-    }
-
-    pub(crate) fn run_worker_timer_turn(
-        &self,
-        worker_id: u32,
-        worker_url: &str,
-        import_script_counts: &BTreeMap<String, usize>,
-    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
-        self.evaluate_worker(
-            worker_id,
-            worker_url,
-            "globalThis.__glassRunWorkerTimers(performance.now());",
-            import_script_counts,
-        )
     }
 
     pub(crate) fn resolve_worker_fetch(
@@ -7014,6 +7230,7 @@ fn worker_bootstrap(
     worker_url: &str,
     now_ms: u64,
     import_script_counts: &BTreeMap<String, usize>,
+    is_module: bool,
 ) -> Result<String, NativeEngineError> {
     let worker_url = serde_json::to_string(worker_url).map_err(|_| NativeEngineError::Worker {
         operation: "serialize native Worker URL".into(),
@@ -7024,12 +7241,14 @@ fn worker_bootstrap(
             operation: "serialize native Worker importScripts map".into(),
             reason: "native Worker importScripts map could not be serialized".into(),
         })?;
+    let is_module = if is_module { "true" } else { "false" };
     Ok(format!(
         r###"(() => {{
   const workerId = {worker_id};
   const workerUrl = {worker_url};
   const nowMs = {now_ms};
   const initialImportScriptCounts = {import_script_counts};
+  const isModuleWorker = {is_module};
   const commands = [];
   const activeCommands = () => Array.isArray(globalThis.__glassWorkerCommandBuffer)
     ? globalThis.__glassWorkerCommandBuffer
@@ -8196,7 +8415,9 @@ fn worker_bootstrap(
     }} else pending.resolve(responseFromWorkerFetch(payload));
     return null;
   }};
-  globalThis.importScripts = importScriptsNative;
+  globalThis.importScripts = isModuleWorker
+    ? (() => {{ throw new TypeError("importScripts is unavailable in module workers"); }})
+    : importScriptsNative;
   globalThis.addEventListener = addEventListener;
   globalThis.removeEventListener = removeEventListener;
   globalThis.postMessage = (message) => {{
@@ -17750,7 +17971,8 @@ fn document_bootstrap(
     const workerType = options && options.type !== undefined
       ? String(options.type).toLowerCase()
       : "classic";
-    if (workerType !== "classic") throw new TypeError("native Worker supports classic scripts only");
+    if (workerType !== "classic" && workerType !== "module")
+      throw new TypeError("native Worker type must be classic or module");
     const source = input && input.__glassUrl === true ? input.href : input;
     const resolved = new URLNative(String(source), locationUrl.href);
     if (!["http:", "https:", "fixture:"].includes(resolved.protocol)

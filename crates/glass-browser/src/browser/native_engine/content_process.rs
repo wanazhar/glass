@@ -4085,6 +4085,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 runtime.set_indexed_db_state(
                     indexed_db_state.origin(&storage_key(&committed_url, document_origin)),
                 );
+                workers.run_due_timers()?;
+                pending_worker_messages.extend(workers.take_messages());
                 let worker_messages = std::mem::take(&mut pending_worker_messages)
                     .into_iter()
                     .collect::<Vec<_>>();

@@ -941,6 +941,49 @@ async fn native_local_script_runs_dedicated_worker_and_delivers_messages() {
 }
 
 #[tokio::test]
+async fn native_local_worker_timers_run_on_the_next_page_turn() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://worker-timer-page",
+            "<html><body><main id='output'>Native</main></body></html>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://worker-timer-script",
+            "const interval = setInterval(() => postMessage({ kind: 'interval' }), 0); clearInterval(interval); setTimeout(() => postMessage({ kind: 'timeout', finite: Number.isFinite(performance.now()) }), 0); postMessage({ kind: 'ready' });",
+        )
+        .unwrap()
+        .with_initial_url("fixture://worker-timer-page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "globalThis.workerMessages = []; globalThis.worker = new Worker('fixture://worker-timer-script'); worker.onmessage = event => workerMessages.push(event.data); true",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine.evaluate_async("workerMessages").await.unwrap(),
+        serde_json::json!([
+            {"kind": "ready"},
+            {"kind": "timeout", "finite": true},
+        ])
+    );
+    assert_eq!(
+        engine.evaluate_async("workerMessages").await.unwrap(),
+        serde_json::json!([
+            {"kind": "ready"},
+            {"kind": "timeout", "finite": true},
+        ])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_runs_worker_created_during_page_load() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -953,7 +996,7 @@ async fn native_content_process_runs_worker_created_during_page_load() {
             ),
             (
                 "/worker.js",
-                "self.onmessage = event => postMessage({ kind: 'reply', value: event.data + 1, href: self.location.href }); postMessage({ kind: 'ready' });",
+                "self.onmessage = event => postMessage({ kind: 'reply', value: event.data + 1, href: self.location.href }); setTimeout(() => postMessage({ kind: 'timer' }), 0); postMessage({ kind: 'ready' });",
             ),
         ] {
             let (mut stream, _) = listener.accept().await.unwrap();
@@ -982,12 +1025,14 @@ async fn native_content_process_runs_worker_created_during_page_load() {
             .evaluate_async("worker.postMessage(4); workerMessages")
             .await
             .unwrap(),
-        serde_json::json!([{"kind": "ready"}])
+        serde_json::json!([{"kind": "ready"}, {"kind": "timer"}])
     );
     assert_eq!(
         engine.evaluate_async("workerMessages").await.unwrap(),
         serde_json::json!([{
             "kind": "ready"
+        }, {
+            "kind": "timer"
         }, {
             "kind": "reply",
             "value": 5,

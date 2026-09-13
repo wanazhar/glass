@@ -55,8 +55,8 @@ content-process pages, including isolated QuickJS realms, shared resource and
 startup/runtime failure events, and terminate/close ownership. Worker events
 are delivered at explicit native page turns so local and content-process
 execution remain deterministic. Module/shared/service workers, transferables,
-worker import graphs and worker-side network/timer parity remain open on issue
-#40.
+worker import graphs and worker-side network parity remain open on issue #40;
+bounded worker timers are covered by slice 284 below.
 
 The completed dedicated-worker timer slice is
 [native-engine-browser-284](tasks/native-engine-browser-284.md). It adds

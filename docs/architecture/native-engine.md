@@ -6072,8 +6072,9 @@ Initial page scripts, ordinary evaluations, and dynamically attached scripts
 are covered in both the local owner and the out-of-process HTTP(S) content
 worker. Delivery is serialized at explicit page turns, preserving deterministic
 testing and process ownership while leaving task-source fairness, transferables,
-module/shared/service workers, worker network/timer APIs, and complete Worker
-Web IDL semantics for later Issue #40 work. Exact evidence is recorded in
+module/shared/service workers, worker network APIs, and complete Worker Web IDL
+semantics for later Issue #40 work. Bounded worker timers are covered by the
+following 284 slice. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-283.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node

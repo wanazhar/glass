@@ -45,7 +45,7 @@ pub(crate) fn prepare_worker_command(
 ) -> Result<(Command, NativeContentSandbox), NativeEngineError> {
     #[cfg(target_os = "linux")]
     {
-        return prepare_linux(worker_path, storage_path);
+        prepare_linux(worker_path, storage_path)
     }
     #[cfg(target_os = "macos")]
     {

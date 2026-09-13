@@ -3,6 +3,12 @@
 //! The adapter is intentionally small: the native engine owns DOM and
 //! lifecycle state, while this module translates only the stable
 //! `browser_backend` contract.
+//!
+//! The synchronous guards intentionally span content-worker awaits. The
+//! backend's operation boundary keeps the active target, frame registry, and
+//! engine transactionally aligned; splitting these guards would permit a
+//! second request to observe or mutate a half-reconciled frame topology.
+#![allow(clippy::await_holding_lock)]
 
 use super::native_engine::{
     MAX_NATIVE_EFFECTS, MAX_NATIVE_VIEWPORT_DIMENSION, NativeAction, NativeEffect, NativeEngine,
@@ -2744,15 +2750,14 @@ impl NativeEngineBackend {
         for (_, mut parked) in parked {
             if parked.engine.lifecycle() == super::native_engine::NativeLifecycleState::Running
                 && let Err(error) = parked.engine.close_async().await.map_err(native_error)
+                && first_error.is_none()
             {
-                if first_error.is_none() {
-                    first_error = Some(error);
-                }
+                first_error = Some(error);
             }
-            if let Err(error) = close_parked_frames(&mut parked.frames).await {
-                if first_error.is_none() {
-                    first_error = Some(error);
-                }
+            if let Err(error) = close_parked_frames(&mut parked.frames).await
+                && first_error.is_none()
+            {
+                first_error = Some(error);
             }
         }
         first_error.map_or(Ok(()), Err)
@@ -3548,12 +3553,12 @@ fn native_window_name(name: &str) -> Option<String> {
 }
 
 fn native_popup_name(target: &str) -> Option<String> {
-    if matches!(
-        target.to_ascii_lowercase().as_str(),
-        "_blank" | "_self" | "_parent" | "_top" | "_unfencedtop"
-    ) {
-        None
-    } else if target.is_empty() {
+    if target.is_empty()
+        || matches!(
+            target.to_ascii_lowercase().as_str(),
+            "_blank" | "_self" | "_parent" | "_top" | "_unfencedtop"
+        )
+    {
         None
     } else {
         Some(target.to_owned())
@@ -3907,13 +3912,11 @@ fn native_frame_viewport(
     let width = owner
         .content_rect
         .width
-        .max(1)
-        .min(MAX_NATIVE_VIEWPORT_DIMENSION);
+        .clamp(1, MAX_NATIVE_VIEWPORT_DIMENSION);
     let height = owner
         .content_rect
         .height
-        .max(1)
-        .min(MAX_NATIVE_VIEWPORT_DIMENSION);
+        .clamp(1, MAX_NATIVE_VIEWPORT_DIMENSION);
     Ok(Some(Viewport {
         width,
         height,

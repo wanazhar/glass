@@ -654,6 +654,7 @@ impl NativeSurface {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_image(
         &mut self,
         viewport_rect: NativeRect,
@@ -847,6 +848,7 @@ impl NativeSurface {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn svg_polyline(
         &mut self,
         rect: NativeRect,

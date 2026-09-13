@@ -13431,7 +13431,7 @@ async fn native_local_canvas_2d_script_and_raster_pipeline() {
         })
         .with_fixture(
             "fixture://canvas",
-            &format!("<html><body><canvas id='canvas' width='8' height='6' style='display:block;width:8px;height:6px'></canvas><img id='source' src='{image_url}' style='display:none'></body></html>"),
+            format!("<html><body><canvas id='canvas' width='8' height='6' style='display:block;width:8px;height:6px'></canvas><img id='source' src='{image_url}' style='display:none'></body></html>"),
         )
         .unwrap()
         .with_initial_url("fixture://canvas");
@@ -13579,7 +13579,7 @@ async fn native_canvas_image_source_preserves_animated_frames() {
         })
         .with_fixture(
             "fixture://animated-canvas-image",
-            &format!(
+            format!(
                 "<canvas id='canvas' width='1' height='1' style='display:block;width:1px;height:1px'></canvas><img id='source' src='{source}' style='display:none'>"
             ),
         )
@@ -38906,7 +38906,7 @@ async fn native_gif_data_images_expose_intrinsic_dimensions_and_paint() {
                 source_height: 1,
                 pixels,
                 ..
-            } if *node_id == image_id && pixels.len() == 1 * 1 * 4
+            } if *node_id == image_id && pixels.len() == 4
         )
     }));
     engine.close_async().await.unwrap();
@@ -39649,9 +39649,7 @@ async fn native_content_process_loads_external_png_through_document_wire() {
                 stream.write_all(headers.as_bytes()).await.unwrap();
                 stream.write_all(&png).await.unwrap();
             } else {
-                let body = format!(
-                    "<title>External image</title><div style='width:16px'><img id='image' src='/image.png' width='8'></div><script>globalThis.imageLoaded = 0; document.getElementById('image').addEventListener('load', () => {{ globalThis.imageLoaded = 1; }});</script>"
-                );
+                let body = "<title>External image</title><div style='width:16px'><img id='image' src='/image.png' width='8'></div><script>globalThis.imageLoaded = 0; document.getElementById('image').addEventListener('load', () => { globalThis.imageLoaded = 1; });</script>".to_string();
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
@@ -43295,9 +43293,11 @@ async fn native_content_process_persists_cookie_profile_through_restart() {
                 assert_eq!(cookie_header, Some("session=one; theme=dark"));
             }
             let body = "<p>Cookie profile</p>";
-            let set_cookie = (request_index == 0)
-                .then_some("Set-Cookie: theme=dark; Path=/\r\n")
-                .unwrap_or_default();
+            let set_cookie = if request_index == 0 {
+                "Set-Cookie: theme=dark; Path=/\r\n"
+            } else {
+                Default::default()
+            };
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n{set_cookie}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
@@ -44999,9 +44999,7 @@ async fn native_content_process_drives_websocket_text_binary_and_close_events() 
     );
     assert_eq!(
         engine
-            .evaluate_async(&format!(
-                "await new Promise((resolve, reject) => {{ const socket = globalThis.pageSocket; socket.binaryType = 'arraybuffer'; socket.onopen = () => {{ socket.send('client-text'); socket.send(new Uint8Array([1, 2, 3])); }}; const messages = []; socket.onmessage = event => {{ if (typeof event.data === 'string') messages.push(event.data); else messages.push(Array.from(new Uint8Array(event.data)).join(',')); if (messages.length === 2) {{ document.getElementById('result').value = messages.join('|'); socket.close(1000, 'done'); resolve(messages.join('|')); }} }}; socket.onerror = () => reject(new Error('websocket failed')); }})"
-            ))
+            .evaluate_async(&"await new Promise((resolve, reject) => { const socket = globalThis.pageSocket; socket.binaryType = 'arraybuffer'; socket.onopen = () => { socket.send('client-text'); socket.send(new Uint8Array([1, 2, 3])); }; const messages = []; socket.onmessage = event => { if (typeof event.data === 'string') messages.push(event.data); else messages.push(Array.from(new Uint8Array(event.data)).join(',')); if (messages.length === 2) { document.getElementById('result').value = messages.join('|'); socket.close(1000, 'done'); resolve(messages.join('|')); } }; socket.onerror = () => reject(new Error('websocket failed')); })".to_string())
             .await
             .unwrap(),
         serde_json::json!("server-text|7,8,255")

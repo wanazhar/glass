@@ -793,6 +793,7 @@ fn background_source_range(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn background_source_rect(
     tile_left: i64,
     tile_top: i64,
@@ -982,16 +983,16 @@ fn svg_paint_commands(
                     clip,
                 });
             }
-        } else if shape == "path" {
-            if let Some(subpaths) = subpaths.as_ref() {
-                commands.push(NativeDisplayCommand::SvgPathFill {
-                    node_id,
-                    rect: bounds,
-                    subpaths: subpaths.clone(),
-                    color,
-                    clip,
-                });
-            }
+        } else if shape == "path"
+            && let Some(subpaths) = subpaths.as_ref()
+        {
+            commands.push(NativeDisplayCommand::SvgPathFill {
+                node_id,
+                rect: bounds,
+                subpaths: subpaths.clone(),
+                color,
+                clip,
+            });
         }
     }
 

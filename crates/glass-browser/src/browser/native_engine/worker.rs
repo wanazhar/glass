@@ -199,18 +199,16 @@ impl NativeRuntimeWorker {
     }
 
     pub async fn start(&self) -> Result<(), NativeEngineError> {
-        self.request(|reply| NativeRuntimeWorkerCommand::Start(reply))
-            .await
+        self.request(NativeRuntimeWorkerCommand::Start).await
     }
 
     pub async fn rollback_start(&self) -> Result<(), NativeEngineError> {
-        self.request(|reply| NativeRuntimeWorkerCommand::RollbackStart(reply))
+        self.request(NativeRuntimeWorkerCommand::RollbackStart)
             .await
     }
 
     pub async fn close(&self) -> Result<(), NativeEngineError> {
-        self.request(|reply| NativeRuntimeWorkerCommand::Close(reply))
-            .await
+        self.request(NativeRuntimeWorkerCommand::Close).await
     }
 
     pub async fn schedule(
@@ -232,8 +230,7 @@ impl NativeRuntimeWorker {
     }
 
     pub async fn pop_ready(&self) -> Result<Option<ScheduledTask>, NativeEngineError> {
-        self.request(|reply| NativeRuntimeWorkerCommand::PopReady(reply))
-            .await
+        self.request(NativeRuntimeWorkerCommand::PopReady).await
     }
 
     pub async fn advance_by(&self, duration_ms: u64) -> Result<(), NativeEngineError> {
@@ -261,18 +258,15 @@ impl NativeRuntimeWorker {
     }
 
     pub async fn pop_microtask(&self) -> Result<Option<NativeMicrotask>, NativeEngineError> {
-        self.request(|reply| NativeRuntimeWorkerCommand::PopMicrotask(reply))
-            .await
+        self.request(NativeRuntimeWorkerCommand::PopMicrotask).await
     }
 
     pub async fn request_cancellation(&self) -> Result<(), NativeEngineError> {
-        self.request(|reply| NativeRuntimeWorkerCommand::Cancel(reply))
-            .await
+        self.request(NativeRuntimeWorkerCommand::Cancel).await
     }
 
     pub async fn trace(&self) -> Result<Vec<NativeRuntimeTraceEvent>, NativeEngineError> {
-        self.request(|reply| NativeRuntimeWorkerCommand::Trace(reply))
-            .await
+        self.request(NativeRuntimeWorkerCommand::Trace).await
     }
 
     async fn request<T>(

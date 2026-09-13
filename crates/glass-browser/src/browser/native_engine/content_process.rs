@@ -1,3 +1,9 @@
+// This module passes one explicit, bounded content-process turn through a
+// set of ownership queues. The argument count and tuple-shaped response
+// helpers preserve that protocol boundary; aliases or a mutable context
+// object would obscure which state crosses the process boundary.
+#![allow(clippy::too_many_arguments, clippy::type_complexity)]
+
 use super::browsing_context::NATIVE_CONTEXT_ID;
 use super::config::{
     MAX_NATIVE_NODES, NativeEngineLimits, Viewport, is_network_url, validate_context_id,
@@ -2966,13 +2972,13 @@ fn decode_script_response(
         None
     };
     let has_mutation = mutation.is_some();
-    let post_messages = decode_post_message_requests(&response, "decode content process script")?;
-    let window_closes = decode_window_close_requests(&response, "decode content process script")?;
+    let post_messages = decode_post_message_requests(response, "decode content process script")?;
+    let window_closes = decode_window_close_requests(response, "decode content process script")?;
     let window_navigations =
-        decode_window_navigation_requests(&response, "decode content process script")?;
-    let frame_scripts = decode_frame_script_requests(&response, "decode content process script")?;
-    let window_name = decode_window_name(&response, "decode content process script")?;
-    let history = decode_history_commands(&response, "decode content process script")?;
+        decode_window_navigation_requests(response, "decode content process script")?;
+    let frame_scripts = decode_frame_script_requests(response, "decode content process script")?;
+    let window_name = decode_window_name(response, "decode content process script")?;
+    let history = decode_history_commands(response, "decode content process script")?;
     Ok(NativeContentScriptResult {
         value,
         storage_events: if has_mutation {
@@ -2988,7 +2994,7 @@ fn decode_script_response(
         popups: if has_mutation {
             Vec::new()
         } else {
-            decode_popup_requests(&response, "decode content process script")?
+            decode_popup_requests(response, "decode content process script")?
         },
         post_messages: if has_mutation {
             Vec::new()
@@ -5531,7 +5537,7 @@ async fn load_content_resource(
                 NativeEngineError::invalid("content-process POST body", "must be present")
             })?,
             content_type
-                .unwrap_or_else(|| "application/x-www-form-urlencoded".into())
+                .unwrap_or("application/x-www-form-urlencoded")
                 .to_owned(),
         )?,
         _ => {
@@ -5724,11 +5730,8 @@ async fn load_external_images(
         {
             continue;
         }
-        match loader.load_image_async(document_url, &source).await {
-            Ok(Some(image)) => {
-                document.set_background_image_resource(node_index, source, image)?;
-            }
-            Ok(None) | Err(_) => {}
+        if let Ok(Some(image)) = loader.load_image_async(document_url, &source).await {
+            document.set_background_image_resource(node_index, source, image)?;
         }
     }
     Ok(image_events)
@@ -6937,7 +6940,11 @@ fn dispatch_scroll_events(
             cursor += 1;
             continue;
         };
-        let event_node_index = (node_index != 0).then_some(node_index).unwrap_or(u32::MAX);
+        let event_node_index = if node_index != 0 {
+            node_index
+        } else {
+            u32::MAX
+        };
         let source = host_event_script(&[(event_node_index, NativeEventKind::Scroll)])?
             .ok_or_else(|| NativeEngineError::Worker {
                 operation: "content process scroll event".into(),
@@ -7537,7 +7544,7 @@ async fn mutate_script_document(
         scroll_commands.extend(extract_scroll_commands(&evaluation.commands));
         events.extend(next.apply_script_commands(&evaluation.commands)?);
     }
-    let image_events = if let Some(loader) = loader.as_deref_mut() {
+    let image_events = if let Some(loader) = loader {
         load_external_images(&mut next, loader, &document_url, viewport).await?
     } else {
         Vec::new()
@@ -8722,17 +8729,19 @@ async fn resolve_script_fetches(
                 .await;
             let payload = match opened {
                 Ok(opened) if !opened.response.opaque && !opened.response.opaque_redirect => {
-                    if fetch_stream_connections.contains_key(&request_id) {
+                    if let std::collections::btree_map::Entry::Vacant(e) =
+                        fetch_stream_connections.entry(request_id)
+                    {
+                        let response = opened.response;
+                        let stream =
+                            spawn_native_fetch_stream(opened.body, opened.max_response_bytes);
+                        e.insert(stream);
+                        fetch_stream_response_payload(response, request_id)
+                    } else {
                         fetch_response_payload(Err(NativeEngineError::Network {
                             operation: "fetch response stream".into(),
                             reason: "fetch response stream identifier is already active".into(),
                         }))
-                    } else {
-                        let response = opened.response;
-                        let stream =
-                            spawn_native_fetch_stream(opened.body, opened.max_response_bytes);
-                        fetch_stream_connections.insert(request_id, stream);
-                        fetch_stream_response_payload(response, request_id)
                     }
                 }
                 Ok(opened) => fetch_response_payload(collect_native_fetch_response(opened).await),
@@ -9443,10 +9452,10 @@ fn protocol_matches(request: &Value) -> bool {
 }
 
 fn worker_binary_path() -> Result<PathBuf, NativeEngineError> {
-    if let Ok(path) = std::env::var("GLASS_NATIVE_CONTENT_WORKER") {
-        if !path.is_empty() {
-            return Ok(PathBuf::from(path));
-        }
+    if let Ok(path) = std::env::var("GLASS_NATIVE_CONTENT_WORKER")
+        && !path.is_empty()
+    {
+        return Ok(PathBuf::from(path));
     }
     let current = std::env::current_exe().map_err(|_| {
         NativeEngineError::worker_failure(

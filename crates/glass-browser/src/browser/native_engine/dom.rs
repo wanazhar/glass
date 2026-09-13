@@ -2038,13 +2038,9 @@ impl NativeDocument {
             return;
         };
         let children = node.children().to_vec();
-        let namespace = if parent_namespace == SVG_NAMESPACE_URI {
+        let namespace = if parent_namespace == SVG_NAMESPACE_URI || name == "svg" {
             SVG_NAMESPACE_URI
-        } else if name == "svg" {
-            SVG_NAMESPACE_URI
-        } else if name == "math" {
-            MATHML_NAMESPACE_URI
-        } else if parent_namespace == MATHML_NAMESPACE_URI {
+        } else if name == "math" || parent_namespace == MATHML_NAMESPACE_URI {
             MATHML_NAMESPACE_URI
         } else {
             HTML_NAMESPACE_URI
@@ -5131,7 +5127,7 @@ impl NativeDocument {
         });
         let empty = matches!(role.as_str(), "textbox" | "combobox")
             .then(|| self.current_value(id).is_none_or(|value| value.is_empty()))
-            .or_else(|| (role == "file").then(|| node.state.files.is_empty()));
+            .or_else(|| (role == "file").then_some(node.state.files.is_empty()));
         let checked = matches!(role.as_str(), "checkbox" | "radio").then(|| node.state.checked);
         let selected = (role == "option").then_some(node.state.selected);
         Some(NativeSemanticNode {
@@ -5643,10 +5639,15 @@ impl NativeDocument {
         if node.element_name() == Some("form") {
             let valid = self
                 .invalid_form_controls_for_api(id)
-                .map_or(false, |invalid| invalid.is_empty());
-            let mut validity = NativeValiditySnapshot::default();
-            validity.valid = valid;
-            return (validity, String::new(), false);
+                .is_ok_and(|invalid| invalid.is_empty());
+            return (
+                NativeValiditySnapshot {
+                    valid,
+                    ..NativeValiditySnapshot::default()
+                },
+                String::new(),
+                false,
+            );
         }
         let (validity, will_validate, message) = self.control_validity(id);
         (validity, message, will_validate)
@@ -5670,26 +5671,32 @@ impl NativeDocument {
             _ => false,
         };
         if !will_validate {
-            let mut validity = NativeValiditySnapshot::default();
-            validity.valid = true;
-            return (validity, false, String::new());
+            return (
+                NativeValiditySnapshot {
+                    valid: true,
+                    ..NativeValiditySnapshot::default()
+                },
+                false,
+                String::new(),
+            );
         }
         let mut validity = match node.element_name() {
             Some("input") => {
                 let input_type = node.attribute("type").unwrap_or("text");
                 if input_type.eq_ignore_ascii_case("checkbox") {
-                    let mut validity = NativeValiditySnapshot::default();
-                    validity.value_missing =
-                        node.attribute("required").is_some() && !node.state.checked;
-                    validity
+                    NativeValiditySnapshot {
+                        value_missing: node.attribute("required").is_some() && !node.state.checked,
+                        ..NativeValiditySnapshot::default()
+                    }
                 } else if input_type.eq_ignore_ascii_case("radio") {
-                    let mut validity = NativeValiditySnapshot::default();
                     let checked = self
                         .form_owner(id)
                         .is_some_and(|form_id| self.radio_group_has_checked(form_id, id))
                         || node.state.checked;
-                    validity.value_missing = node.attribute("required").is_some() && !checked;
-                    validity
+                    NativeValiditySnapshot {
+                        value_missing: node.attribute("required").is_some() && !checked,
+                        ..NativeValiditySnapshot::default()
+                    }
                 } else {
                     let value = self.current_value(id).unwrap_or_default();
                     text_input_validity(node, &value)
@@ -5699,12 +5706,11 @@ impl NativeDocument {
                 let value = self.current_value(id).unwrap_or_default();
                 textarea_validity(node, &value)
             }
-            Some("select") => {
-                let mut validity = NativeValiditySnapshot::default();
-                validity.value_missing = node.attribute("required").is_some()
-                    && self.current_value(id).is_none_or(|value| value.is_empty());
-                validity
-            }
+            Some("select") => NativeValiditySnapshot {
+                value_missing: node.attribute("required").is_some()
+                    && self.current_value(id).is_none_or(|value| value.is_empty()),
+                ..NativeValiditySnapshot::default()
+            },
             _ => NativeValiditySnapshot::default(),
         };
         validity.custom_error = !node.state.custom_validity.is_empty();
@@ -6359,8 +6365,10 @@ fn text_input_validity(node: &NativeNode, value: &str) -> NativeValiditySnapshot
 }
 
 fn textarea_validity(node: &NativeNode, value: &str) -> NativeValiditySnapshot {
-    let mut validity = NativeValiditySnapshot::default();
-    validity.value_missing = node.attribute("required").is_some() && value.is_empty();
+    let mut validity = NativeValiditySnapshot {
+        value_missing: node.attribute("required").is_some() && value.is_empty(),
+        ..NativeValiditySnapshot::default()
+    };
     merge_validity(&mut validity, length_validity(node, value));
     finalize_validity(validity)
 }
@@ -6395,9 +6403,10 @@ fn pattern_validity(node: &NativeNode, value: &str) -> NativeValiditySnapshot {
     let Ok(regex) = regex::Regex::new(&expression) else {
         return NativeValiditySnapshot::default();
     };
-    let mut validity = NativeValiditySnapshot::default();
-    validity.pattern_mismatch = !regex.is_match(value);
-    finalize_validity(validity)
+    finalize_validity(NativeValiditySnapshot {
+        pattern_mismatch: !regex.is_match(value),
+        ..NativeValiditySnapshot::default()
+    })
 }
 
 fn finalize_validity(mut validity: NativeValiditySnapshot) -> NativeValiditySnapshot {
@@ -6482,10 +6491,11 @@ fn length_validity(node: &NativeNode, value: &str) -> NativeValiditySnapshot {
     let max_length = node
         .attribute("maxlength")
         .and_then(|value| value.parse::<usize>().ok());
-    let mut validity = NativeValiditySnapshot::default();
-    validity.too_short = min_length.is_some_and(|minimum| !value.is_empty() && length < minimum);
-    validity.too_long = max_length.is_some_and(|maximum| length > maximum);
-    finalize_validity(validity)
+    finalize_validity(NativeValiditySnapshot {
+        too_short: min_length.is_some_and(|minimum| !value.is_empty() && length < minimum),
+        too_long: max_length.is_some_and(|maximum| length > maximum),
+        ..NativeValiditySnapshot::default()
+    })
 }
 
 fn numeric_validity(node: &NativeNode, value: &str) -> NativeValiditySnapshot {
@@ -7668,10 +7678,9 @@ fn parse_image_source_length(value: &str, viewport: Viewport) -> Option<u32> {
     let value = value.trim();
     let (number, unit) = if let Some(number) = value.strip_suffix("px") {
         (number, "px")
-    } else if let Some(number) = value.strip_suffix("vw") {
-        (number, "vw")
     } else {
-        return None;
+        let number = value.strip_suffix("vw")?;
+        (number, "vw")
     };
     let number = number.trim().parse::<f64>().ok()?;
     if !number.is_finite() || number < 0.0 {

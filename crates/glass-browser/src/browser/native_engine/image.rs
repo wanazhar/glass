@@ -355,6 +355,7 @@ fn decode_apng_frames(
     (image.decoded_bytes()? <= max_decoded_bytes).then_some(image)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn composite_apng_frame(
     canvas: &mut [u8],
     canvas_width: usize,
@@ -652,7 +653,7 @@ fn decode_jpeg_bytes(bytes: &[u8], max_decoded_bytes: usize) -> Option<NativeIma
     let mut decoder = JpegDecoder::new_with_options(ZCursor::new(bytes), options);
     decoder.decode_headers().ok()?;
     let (width, height) = decoder.dimensions()?;
-    let pixel_count = usize::try_from(width).ok()?.checked_mul(height)?;
+    let pixel_count = width.checked_mul(height)?;
     if width == 0 || height == 0 || pixel_count > max_pixels {
         return None;
     }
@@ -764,7 +765,7 @@ fn decode_animated_webp(
 }
 
 fn normalized_webp_delay_ms(delay_ms: u32) -> u32 {
-    delay_ms.max(1).min(MAX_NATIVE_IMAGE_FRAME_DELAY_MS)
+    delay_ms.clamp(1, MAX_NATIVE_IMAGE_FRAME_DELAY_MS)
 }
 
 fn decode_gif_bytes(bytes: &[u8], max_decoded_bytes: usize) -> Option<NativeImage> {

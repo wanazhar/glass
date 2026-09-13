@@ -3813,6 +3813,7 @@ pub(crate) fn execute_inline_scripts(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_page_scripts(
     document: &mut NativeDocument,
     runtime: &mut Option<NativeJavaScriptRuntime>,
@@ -5821,6 +5822,7 @@ fn apply_page_script_evaluation(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn dispatch_page_scroll_events(
     document: &mut NativeDocument,
     runtime: &NativeJavaScriptRuntime,
@@ -5841,7 +5843,11 @@ fn dispatch_page_scroll_events(
             cursor += 1;
             continue;
         };
-        let event_node_index = (node_index != 0).then_some(node_index).unwrap_or(u32::MAX);
+        let event_node_index = if node_index != 0 {
+            node_index
+        } else {
+            u32::MAX
+        };
         let source = host_event_script(&[(event_node_index, NativeEventKind::Scroll)])?
             .ok_or_else(|| NativeEngineError::Worker {
                 operation: "native page scroll event".into(),
@@ -7207,23 +7213,23 @@ impl NativeJavaScriptRuntime {
         };
         let origin_key = storage_key(document_url, origin);
         let entries = storage.entry(origin_key.clone()).or_default();
-        if let Some(entry_key) = entry_key {
-            if entry_key.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES {
-                return Err(NativeEngineError::limit(
-                    "native Web Storage key",
-                    crate::browser_backend::MAX_BACKEND_ID_BYTES,
-                    entry_key.len(),
-                ));
-            }
+        if let Some(entry_key) = entry_key
+            && entry_key.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES
+        {
+            return Err(NativeEngineError::limit(
+                "native Web Storage key",
+                crate::browser_backend::MAX_BACKEND_ID_BYTES,
+                entry_key.len(),
+            ));
         }
-        if let Some(value) = value {
-            if value.len() > crate::browser_backend::MAX_TEXT_BYTES {
-                return Err(NativeEngineError::limit(
-                    "native Web Storage value",
-                    crate::browser_backend::MAX_TEXT_BYTES,
-                    value.len(),
-                ));
-            }
+        if let Some(value) = value
+            && value.len() > crate::browser_backend::MAX_TEXT_BYTES
+        {
+            return Err(NativeEngineError::limit(
+                "native Web Storage value",
+                crate::browser_backend::MAX_TEXT_BYTES,
+                value.len(),
+            ));
         }
         let change = match operation {
             "set" => {
@@ -9005,7 +9011,7 @@ fn install_native_crypto_sources<'js>(ctx: rquickjs::Ctx<'js>) -> Result<(), Nat
          iterations: usize,
          output_bits: usize|
          -> std::result::Result<String, Error> {
-            if output_bits % 8 != 0 {
+            if !output_bits.is_multiple_of(8) {
                 return Err(Error::Unknown);
             }
             let key = base64::engine::general_purpose::STANDARD
@@ -12689,6 +12695,7 @@ pub(crate) fn worker_message_script(
     Ok(Some(source))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn document_bootstrap(
     document: &NativeDocument,
     document_url: &str,

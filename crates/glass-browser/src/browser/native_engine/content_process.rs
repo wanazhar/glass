@@ -4104,15 +4104,6 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             continue;
                         }
                         let script_url = document_url.clone().unwrap_or(committed_url.clone());
-                        let fetches = match fetch_commands(&commands) {
-                            Ok(fetches) => fetches,
-                            Err(error) => {
-                                let response = content_error_response(id, error);
-                                write_value_frame(&mut stdout, &response).await?;
-                                continue;
-                            }
-                        };
-                        let has_fetch = !fetches.is_empty();
                         let has_websocket = commands.iter().any(|command| {
                             matches!(
                                 command,
@@ -4128,44 +4119,24 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                     | NativeScriptCommand::EventSourceClose { .. }
                             )
                         });
-                        let result = if has_fetch
-                            || has_websocket
-                            || has_event_source
-                            || top_level_await_pending
-                            || !websocket_connections.is_empty()
-                            || !event_source_connections.is_empty()
-                        {
-                            resolve_script_fetches(
-                                current,
-                                runtime,
-                                resource_loader.as_mut(),
-                                &mut websocket_connections,
-                                &mut fetch_stream_connections,
-                                &mut event_source_connections,
-                                &script_url,
-                                document_origin,
-                                viewport,
-                                top_level_await_pending || has_websocket || has_event_source,
-                                NativeScriptEvaluation {
-                                    value: value.clone(),
-                                    commands,
-                                    top_level_await_pending,
-                                },
-                            )
-                            .await
-                        } else {
-                            mutate_script_document(
-                                current,
-                                runtime,
-                                &script_url,
-                                document_origin,
-                                viewport,
-                                &commands,
-                                resource_loader.as_mut(),
-                            )
-                            .await
-                            .map(|(next, mutation)| (next, mutation, None))
-                        };
+                        let result = resolve_script_fetches(
+                            current,
+                            runtime,
+                            resource_loader.as_mut(),
+                            &mut websocket_connections,
+                            &mut fetch_stream_connections,
+                            &mut event_source_connections,
+                            &script_url,
+                            document_origin,
+                            viewport,
+                            top_level_await_pending || has_websocket || has_event_source,
+                            NativeScriptEvaluation {
+                                value: value.clone(),
+                                commands,
+                                top_level_await_pending,
+                            },
+                        )
+                        .await;
                         match result {
                             Ok((next, mutation, resolved_value)) => {
                                 let value = resolved_value.unwrap_or(value);
@@ -7333,12 +7304,20 @@ async fn mutate_script_document(
     viewport: Viewport,
     commands: &[NativeScriptCommand],
     mut loader: Option<&mut NativeResourceLoader>,
-) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
+) -> Result<
+    (
+        NativeDocument,
+        NativeContentMutation,
+        NativePageScriptResult,
+    ),
+    NativeEngineError,
+> {
     let mut document_url = document_url.to_owned();
     let mut history = Vec::new();
     let mut scroll_commands = extract_scroll_commands(commands);
     let mut dialogs = Vec::new();
     let mut dynamic_navigation = None;
+    let mut dynamic_result = NativePageScriptResult::default();
     let mut next = current.clone();
     let mut events = next.apply_script_commands_allowing_links(commands)?;
     next.refresh_image_loads(viewport);
@@ -7349,7 +7328,7 @@ async fn mutate_script_document(
         MAX_NATIVE_SCRIPT_BYTES,
     );
     if !dynamic_sources.is_empty() {
-        let dynamic_result = if let Some(loader) = loader.as_deref_mut() {
+        dynamic_result = if let Some(loader) = loader.as_deref_mut() {
             execute_dynamic_page_scripts_with_loader(
                 &mut next,
                 runtime,
@@ -7394,24 +7373,15 @@ async fn mutate_script_document(
                 reason: "dynamic external/module script loader handoff was unavailable".into(),
             });
         }
-        if !dynamic_result.pending_fetches.is_empty()
-            || !dynamic_result.websocket_commands.is_empty()
-            || !dynamic_result.event_source_commands.is_empty()
-        {
-            return Err(NativeEngineError::Worker {
-                operation: "dynamic page script".into(),
-                reason: "dynamic script network operations require event-loop handoff".into(),
-            });
-        }
-        events.extend(dynamic_result.events.into_iter().map(|(node_index, kind)| {
+        events.extend(dynamic_result.events.drain(..).map(|(node_index, kind)| {
             (
                 NativeNodeId::from_parts(next.generation(), node_index),
                 kind,
             )
         }));
-        scroll_commands.extend(dynamic_result.scroll_commands);
-        dialogs.extend(dynamic_result.dialogs);
-        if let Some(page_navigation) = dynamic_result.navigation {
+        scroll_commands.extend(std::mem::take(&mut dynamic_result.scroll_commands));
+        dialogs.extend(std::mem::take(&mut dynamic_result.dialogs));
+        if let Some(page_navigation) = dynamic_result.navigation.take() {
             dynamic_navigation = Some(ScriptNavigationTarget::Location {
                 href: page_navigation.href,
                 replace_history: page_navigation.replace_history,
@@ -7590,7 +7560,7 @@ async fn mutate_script_document(
         dialogs,
         window_name: String::new(),
     };
-    Ok((next, mutation))
+    Ok((next, mutation, dynamic_result))
 }
 
 fn process_websocket_commands(
@@ -8127,6 +8097,54 @@ async fn collect_native_fetch_response(
     Ok(response)
 }
 
+/// Activate network commands emitted by a dynamically attached script. The
+/// DOM/event effects are already committed by `mutate_script_document`; this
+/// handoff only installs persistent transports and returns fetches to the
+/// existing resolver queue.
+fn activate_dynamic_page_script_network(
+    result: NativePageScriptResult,
+    websocket_connections: &mut BTreeMap<u32, NativeWebSocketConnection>,
+    event_source_connections: &mut BTreeMap<u32, NativeEventSourceConnection>,
+    loader: Option<&NativeResourceLoader>,
+    document_url: &str,
+    document_origin: &NativeOrigin,
+) -> Result<(Vec<NativeScriptCommand>, bool), NativeEngineError> {
+    if !result.pending_script_sources.is_empty() {
+        return Err(NativeEngineError::Worker {
+            operation: "dynamic page script".into(),
+            reason: "dynamic external/module script sources were not fully loaded".into(),
+        });
+    }
+    let has_background_transport =
+        !result.websocket_commands.is_empty() || !result.event_source_commands.is_empty();
+    let retained_websocket = process_websocket_commands(
+        result.websocket_commands,
+        websocket_connections,
+        loader,
+        document_url,
+        document_origin,
+    )?;
+    if !retained_websocket.is_empty() {
+        return Err(NativeEngineError::Worker {
+            operation: "dynamic page script WebSocket commands".into(),
+            reason: "dynamic WebSocket command handoff retained an unexpected command".into(),
+        });
+    }
+    let retained_event_source = process_event_source_commands(
+        result.event_source_commands,
+        event_source_connections,
+        loader,
+        document_url,
+    )?;
+    if !retained_event_source.is_empty() {
+        return Err(NativeEngineError::Worker {
+            operation: "dynamic page script EventSource commands".into(),
+            reason: "dynamic EventSource command handoff retained an unexpected command".into(),
+        });
+    }
+    Ok((result.pending_fetches, has_background_transport))
+}
+
 async fn resolve_script_fetches(
     current: &NativeDocument,
     runtime: &NativeJavaScriptRuntime,
@@ -8137,7 +8155,7 @@ async fn resolve_script_fetches(
     document_url: &str,
     document_origin: &NativeOrigin,
     viewport: Viewport,
-    pump_background_events: bool,
+    mut pump_background_events: bool,
     evaluation: NativeScriptEvaluation,
 ) -> Result<(NativeDocument, NativeContentMutation, Option<Value>), NativeEngineError> {
     let NativeScriptEvaluation {
@@ -8161,7 +8179,7 @@ async fn resolve_script_fetches(
     )?;
     let initial_commands =
         process_fetch_stream_commands(initial_commands, fetch_stream_connections)?;
-    let (mut next, mut mutation) = mutate_script_document(
+    let (mut next, mut mutation, dynamic_result) = mutate_script_document(
         current,
         runtime,
         &current_url,
@@ -8176,6 +8194,16 @@ async fn resolve_script_fetches(
             resolve_content_history_document_url(&mutation.history, &current_url, document_origin)?;
     }
     let mut pending = fetch_commands(&initial_commands)?;
+    let (dynamic_fetches, dynamic_background) = activate_dynamic_page_script_network(
+        dynamic_result,
+        websocket_connections,
+        event_source_connections,
+        loader.as_deref(),
+        &current_url,
+        document_origin,
+    )?;
+    pending.extend(fetch_commands(&dynamic_fetches)?);
+    pump_background_events |= dynamic_background;
     let mut resolved_count = 0usize;
     let mut resolved_value = None;
     let mut event_loop_turns = 0usize;
@@ -8280,14 +8308,14 @@ async fn resolve_script_fetches(
                     reason: "fetch callback history lost its document URL".into(),
                 })?;
             }
-            let (resolved_next, resolved_mutation) = mutate_script_document(
+            let (resolved_next, resolved_mutation, dynamic_result) = mutate_script_document(
                 &next,
                 runtime,
                 &current_url,
                 document_origin,
                 viewport,
                 &resolved_commands,
-                Some(loader),
+                Some(&mut *loader),
             )
             .await?;
             next = resolved_next;
@@ -8313,7 +8341,17 @@ async fn resolve_script_fetches(
                             .into(),
                 });
             }
+            let (dynamic_fetches, dynamic_background) = activate_dynamic_page_script_network(
+                dynamic_result,
+                websocket_connections,
+                event_source_connections,
+                Some(&*loader),
+                &current_url,
+                document_origin,
+            )?;
             pending.extend(fetch_commands(&resolved_commands)?);
+            pending.extend(fetch_commands(&dynamic_fetches)?);
+            pump_background_events |= dynamic_background;
         }
         if top_level_await_pending && resolved_value.is_some() {
             break;
@@ -8365,7 +8403,7 @@ async fn resolve_script_fetches(
                 })?;
                 mutation.history.extend(event_history);
             }
-            let (event_next, event_mutation) = mutate_script_document(
+            let (event_next, event_mutation, dynamic_result) = mutate_script_document(
                 &next,
                 runtime,
                 &current_url,
@@ -8395,7 +8433,17 @@ async fn resolve_script_fetches(
                     reason: "one WebSocket event batch cannot activate multiple navigations".into(),
                 });
             }
+            let (dynamic_fetches, dynamic_background) = activate_dynamic_page_script_network(
+                dynamic_result,
+                websocket_connections,
+                event_source_connections,
+                loader.as_deref(),
+                &current_url,
+                document_origin,
+            )?;
             pending.extend(fetch_commands(&event_commands)?);
+            pending.extend(fetch_commands(&dynamic_fetches)?);
+            pump_background_events |= dynamic_background;
             if remove_after_dispatch {
                 websocket_connections.remove(&socket_id);
             }
@@ -8452,7 +8500,7 @@ async fn resolve_script_fetches(
                 })?;
                 mutation.history.extend(event_history);
             }
-            let (event_next, event_mutation) = mutate_script_document(
+            let (event_next, event_mutation, dynamic_result) = mutate_script_document(
                 &next,
                 runtime,
                 &current_url,
@@ -8483,7 +8531,17 @@ async fn resolve_script_fetches(
                         .into(),
                 });
             }
+            let (dynamic_fetches, dynamic_background) = activate_dynamic_page_script_network(
+                dynamic_result,
+                websocket_connections,
+                event_source_connections,
+                loader.as_deref(),
+                &current_url,
+                document_origin,
+            )?;
             pending.extend(fetch_commands(&event_commands)?);
+            pending.extend(fetch_commands(&dynamic_fetches)?);
+            pump_background_events |= dynamic_background;
             if remove_after_dispatch {
                 fetch_stream_connections.remove(&stream_id);
             }
@@ -8555,7 +8613,7 @@ async fn resolve_script_fetches(
                 })?;
                 mutation.history.extend(event_history);
             }
-            let (event_next, event_mutation) = mutate_script_document(
+            let (event_next, event_mutation, dynamic_result) = mutate_script_document(
                 &next,
                 runtime,
                 &current_url,
@@ -8586,7 +8644,17 @@ async fn resolve_script_fetches(
                         .into(),
                 });
             }
+            let (dynamic_fetches, dynamic_background) = activate_dynamic_page_script_network(
+                dynamic_result,
+                websocket_connections,
+                event_source_connections,
+                loader.as_deref(),
+                &current_url,
+                document_origin,
+            )?;
             pending.extend(fetch_commands(&event_commands)?);
+            pending.extend(fetch_commands(&dynamic_fetches)?);
+            pump_background_events |= dynamic_background;
             if remove_after_dispatch {
                 event_source_connections.remove(&source_id);
             }
@@ -8658,7 +8726,7 @@ async fn resolve_script_fetches(
             })?;
             mutation.history.extend(timer_history);
         }
-        let (timer_next, timer_mutation) = mutate_script_document(
+        let (timer_next, timer_mutation, dynamic_result) = mutate_script_document(
             &next,
             runtime,
             &current_url,
@@ -8688,7 +8756,17 @@ async fn resolve_script_fetches(
                 reason: "one script event-loop batch cannot activate multiple navigations".into(),
             });
         }
+        let (dynamic_fetches, dynamic_background) = activate_dynamic_page_script_network(
+            dynamic_result,
+            websocket_connections,
+            event_source_connections,
+            loader.as_deref(),
+            &current_url,
+            document_origin,
+        )?;
         pending.extend(fetch_commands(&timer_commands)?);
+        pending.extend(fetch_commands(&dynamic_fetches)?);
+        pump_background_events |= dynamic_background;
     }
     if mutation.events.len() > MAX_NATIVE_EFFECTS {
         return Err(NativeEngineError::limit(

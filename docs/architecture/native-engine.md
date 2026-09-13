@@ -170,6 +170,15 @@ WindowProxy guard includes `crypto`; Web Crypto `subtle`, `CryptoKey`, pool
 replenishment, and full Web IDL parity remain explicit issue #40 work. Exact
 evidence is recorded in `docs/plan/tasks/native-engine-browser-298.md`.
 
+Slice 299 adds common page runtime primitives through the existing document
+realm. UTF-8 `TextEncoder`/`TextDecoder`, bounded base64 helpers,
+JSON-backed `structuredClone`, and public `EventTarget` construction now use
+the page's existing byte, clone, listener, and dispatch owners. Object
+`handleEvent` listeners retain removable original identity, while transferables,
+cycles, complete clone semantics, non-UTF-8 labels, and full Web IDL
+descriptors remain explicit follow-up work. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-299.md`.
+
 Slice 282 adds a bounded page-facing computed-style and media-query bridge:
 the JavaScript realm reads the native cascade/layout snapshot through a
 read-only `getComputedStyle` object, and receives width/height/orientation

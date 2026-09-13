@@ -4348,6 +4348,14 @@ cross-realm transfer, pool replenishment, background task scheduling, and
 final native/CDP parity remain issue #40 work. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-298.md`.
 
+The completed native-engine-browser-299 page-runtime-primitives slice installs
+page UTF-8 text encoders/decoders, bounded base64 helpers,
+JSON-backed structured cloning, and independently owned public `EventTarget`
+instances. The page listener registry now retains original `handleEvent`
+objects for correct removal. Transferable/cyclic clone semantics, non-UTF-8
+labels, and final native/CDP parity remain open. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-299.md`.
+
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame
 realms. `document.createAttribute()` creates persistent `Attr` objects;

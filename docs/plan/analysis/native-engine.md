@@ -4356,6 +4356,14 @@ objects for correct removal. Transferable/cyclic clone semantics, non-UTF-8
 labels, and final native/CDP parity remain open. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-299.md`.
 
+The completed native-engine-browser-300 crypto-replenishment slice
+adds a captured per-turn QuickJS random source backed by Rust `getrandom`,
+allowing page and worker pools to refill only their missing bounded capacity
+after repeated calls. The helper is removed from the public global before
+user code; Web Crypto `subtle`/key operations and final native/CDP parity stay
+open. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-300.md`.
+
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame
 realms. `document.createAttribute()` creates persistent `Attr` objects;

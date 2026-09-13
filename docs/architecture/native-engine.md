@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-289` slice; the bounded foundation below remains
+`native-engine-browser-290` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 
 Slice 283 adds a bounded dedicated-worker bridge after the page-facing
@@ -75,6 +75,15 @@ bounded body bytes through the existing owner-tagged shared loader. The
 bootstrap is re-entrant across host round-trips, and response `bodyUsed`
 remains live after stream or convenience-method consumption. Exact evidence is
 recorded in `docs/plan/tasks/native-engine-browser-289.md`.
+
+Slice 290 adds asynchronous worker XMLHttpRequest over the same owner-tagged
+Fetch command. Worker XHR exposes stable constructor identity, ready-state
+transitions, request headers and bodies, text/ArrayBuffer/Blob responses,
+response-header lookup, abort-token late-result suppression, bounded timeouts,
+and load/error/timeout events across content-process turns. It does not add a
+second transport policy or claim synchronous, upload-progress, XML, or complete
+XHR parity. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-290.md`.
 
 Slice 282 adds a bounded page-facing computed-style and media-query bridge:
 the JavaScript realm reads the native cascade/layout snapshot through a

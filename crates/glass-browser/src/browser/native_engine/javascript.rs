@@ -964,6 +964,10 @@ fn worker_fetch_response_payload(
         }),
         Err(error) => serde_json::json!({
             "error": error.to_string(),
+            "timeout": matches!(
+                &error,
+                NativeEngineError::Network { reason, .. } if reason == "request timed out"
+            ),
         }),
     }
 }
@@ -7137,6 +7141,7 @@ fn worker_bootstrap(
   let nextWorkerFetchRequestId = Number.isSafeInteger(globalThis.__glassNextWorkerFetchRequestId)
     ? globalThis.__glassNextWorkerFetchRequestId
     : 1;
+  const workerRequestMethods = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
   const workerRequestHeaderName = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
   const forbiddenWorkerRequestHeader = (name) => [
     "accept-charset", "accept-encoding", "access-control-request-headers",
@@ -7935,6 +7940,13 @@ fn worker_bootstrap(
     const optionsObject = options && typeof options === "object" ? options : {{}};
     const hasBodyOverride = Object.prototype.hasOwnProperty.call(optionsObject, "body");
     const settings = Object.assign({{}}, sourceRequest ? sourceRequest._settings : {{}}, optionsObject);
+    let timeoutMs = null;
+    if (settings.__glassTimeoutMs !== undefined) {{
+      const numericTimeout = Number(settings.__glassTimeoutMs);
+      if (!Number.isFinite(numericTimeout) || numericTimeout < 0 || numericTimeout > {max_native_xhr_timeout_ms})
+        return Promise.reject(new RangeError("native Worker XMLHttpRequest timeout is outside the bounded range"));
+      timeoutMs = numericTimeout === 0 ? null : Math.trunc(numericTimeout);
+    }}
     let payload;
     try {{
       if (sourceRequest && !hasBodyOverride) {{
@@ -7943,7 +7955,7 @@ fn worker_bootstrap(
       }} else payload = workerRequestBodyPayload(settings.body);
     }} catch (error) {{ return Promise.reject(error); }}
     const method = settings.method === undefined ? "GET" : String(settings.method).toUpperCase();
-    if (!["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"].includes(method))
+    if (!workerRequestMethods.includes(method))
       return Promise.reject(new TypeError("native Worker fetch method is unsupported"));
     const mode = settings.mode === undefined ? "cors" : String(settings.mode).toLowerCase();
     if (!["cors", "no-cors", "same-origin"].includes(mode))
@@ -7984,10 +7996,192 @@ fn worker_bootstrap(
         content_type: contentType,
         mode,
         redirect,
-        timeout_ms: null,
+        timeout_ms: timeoutMs,
       }});
     }});
   }};
+  const workerXhrDispatch = (xhr, type, extra) => {{
+    const event = Object.assign({{ type, target: xhr, currentTarget: xhr }}, extra || {{}});
+    const handler = xhr["on" + type];
+    if (typeof handler === "function") {{
+      try {{ handler.call(xhr, event); }} catch (_) {{}}
+    }}
+    const callbacks = xhr._listeners.get(type) || [];
+    for (const callback of callbacks.slice()) {{
+      try {{
+        if (typeof callback === "function") callback.call(xhr, event);
+        else if (callback && typeof callback.handleEvent === "function") callback.handleEvent(event);
+      }} catch (_) {{}}
+    }}
+  }};
+  const WorkerXMLHttpRequestNative = typeof globalThis.__glassWorkerXmlHttpRequestConstructor === "function"
+    ? globalThis.__glassWorkerXmlHttpRequestConstructor
+    : function() {{
+    if (!(this instanceof WorkerXMLHttpRequestNative))
+      throw new TypeError("native Worker XMLHttpRequest requires new");
+    this.readyState = 0;
+    this.status = 0;
+    this.statusText = "";
+    this.responseText = "";
+    this.responseURL = "";
+    this.response = "";
+    this.responseType = "";
+    this.responseXML = null;
+    this.withCredentials = false;
+    this.onreadystatechange = null;
+    this.onload = null;
+    this.onerror = null;
+    this.onabort = null;
+    this.ontimeout = null;
+    this.onloadend = null;
+    this._method = "GET";
+    this._url = "";
+    this._headers = new WorkerHeadersNative();
+    this._responseHeaders = new WorkerHeadersNative();
+    this._listeners = new Map();
+    this._aborted = false;
+    this._sent = false;
+    this._token = 0;
+    this._timeout = 0;
+  }};
+  WorkerXMLHttpRequestNative.prototype._notifyReadyState = function() {{
+    workerXhrDispatch(this, "readystatechange", {{}});
+  }};
+  WorkerXMLHttpRequestNative.prototype.addEventListener = function(type, callback) {{
+    if (typeof callback !== "function" && !(callback && typeof callback.handleEvent === "function")) return;
+    const name = String(type);
+    const callbacks = this._listeners.get(name) || [];
+    if (!callbacks.includes(callback)) callbacks.push(callback);
+    this._listeners.set(name, callbacks);
+  }};
+  WorkerXMLHttpRequestNative.prototype.removeEventListener = function(type, callback) {{
+    const name = String(type);
+    const callbacks = this._listeners.get(name) || [];
+    this._listeners.set(name, callbacks.filter(candidate => candidate !== callback));
+  }};
+  Object.defineProperty(WorkerXMLHttpRequestNative.prototype, "timeout", {{
+    configurable: true,
+    get() {{ return this._timeout; }},
+    set(value) {{
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric) || numeric < 0 || numeric > {max_native_xhr_timeout_ms})
+        throw new RangeError("native Worker XMLHttpRequest timeout is outside the bounded range");
+      this._timeout = Math.trunc(numeric);
+    }},
+  }});
+  WorkerXMLHttpRequestNative.prototype.open = function(method, url, async) {{
+    if (async === false) throw new TypeError("native Worker XMLHttpRequest requires async mode");
+    const normalizedMethod = String(method).toUpperCase();
+    if (!workerRequestMethods.includes(normalizedMethod))
+      throw new TypeError("native Worker XMLHttpRequest method is unsupported");
+    const source = url && url.__glassUrl === true ? url.href : url;
+    if (typeof source !== "string") throw new TypeError("native Worker XMLHttpRequest URL must be text");
+    this._method = normalizedMethod;
+    this._url = source;
+    this._headers = new WorkerHeadersNative();
+    this._responseHeaders = new WorkerHeadersNative();
+    this._aborted = false;
+    this._sent = false;
+    this._token += 1;
+    this.readyState = 1;
+    this._notifyReadyState();
+  }};
+  WorkerXMLHttpRequestNative.prototype.setRequestHeader = function(name, value) {{
+    if (this.readyState !== 1 || this._sent)
+      throw new TypeError("native Worker XMLHttpRequest is not open");
+    this._headers.append(name, value);
+  }};
+  WorkerXMLHttpRequestNative.prototype.getResponseHeader = function(name) {{
+    if (this.readyState < 2 || this.readyState === 0) return null;
+    return this._responseHeaders.get(name);
+  }};
+  WorkerXMLHttpRequestNative.prototype.getAllResponseHeaders = function() {{
+    if (this.readyState < 2 || this.readyState === 0) return "";
+    return Array.from(this._responseHeaders.entries())
+      .map(entry => entry[0] + ": " + entry[1] + "\r\n")
+      .join("");
+  }};
+  WorkerXMLHttpRequestNative.prototype.abort = function() {{
+    const active = this._sent && this.readyState !== 0 && this.readyState !== 4;
+    this._token += 1;
+    this._aborted = true;
+    if (!active) return;
+    this._sent = false;
+    this.readyState = 0;
+    this.status = 0;
+    this.statusText = "";
+    this.responseText = "";
+    this.responseURL = "";
+    this.response = "";
+    this.responseXML = null;
+    this._responseHeaders = new WorkerHeadersNative();
+    this._notifyReadyState();
+    workerXhrDispatch(this, "abort", {{}});
+    workerXhrDispatch(this, "loadend", {{}});
+  }};
+  WorkerXMLHttpRequestNative.prototype.send = function(body) {{
+    if (this.readyState !== 1 || this._sent)
+      throw new TypeError("native Worker XMLHttpRequest is not open");
+    const responseType = String(this.responseType || "").toLowerCase();
+    if (!["", "text", "arraybuffer", "blob"].includes(responseType))
+      throw new TypeError("native Worker XMLHttpRequest responseType is unsupported");
+    const token = this._token + 1;
+    this._token = token;
+    this._sent = true;
+    this._aborted = false;
+    const requestBody = body === undefined ? null : body;
+    workerFetchNative(this._url, {{
+      method: this._method,
+      body: requestBody,
+      headers: this._headers,
+      credentials: this.withCredentials ? "include" : "omit",
+      __glassTimeoutMs: this._timeout,
+    }}).then(response => {{
+      if (this._token !== token || this._aborted) return null;
+      this.status = response.status;
+      this.statusText = response.statusText;
+      this.responseURL = response.url;
+      this._responseHeaders = response.headers;
+      this.readyState = 2;
+      this._notifyReadyState();
+      if (responseType === "arraybuffer") return response.arrayBuffer();
+      if (responseType === "blob") return response.blob();
+      return response.text();
+    }}).then(value => {{
+      if (value === null || this._token !== token || this._aborted) return;
+      this.readyState = 3;
+      this._notifyReadyState();
+      this.responseText = typeof value === "string" ? value : "";
+      this.response = value;
+      this._sent = false;
+      this.readyState = 4;
+      this._notifyReadyState();
+      workerXhrDispatch(this, "load", {{}});
+      workerXhrDispatch(this, "loadend", {{}});
+    }}).catch(error => {{
+      if (this._token !== token || this._aborted) return;
+      this._sent = false;
+      this.status = 0;
+      this.statusText = "";
+      this.responseText = "";
+      this.responseURL = "";
+      this.response = "";
+      this.responseXML = null;
+      this._responseHeaders = new WorkerHeadersNative();
+      this.readyState = 4;
+      this._notifyReadyState();
+      if (error && error.name === "TimeoutError") workerXhrDispatch(this, "timeout", {{}});
+      else workerXhrDispatch(this, "error", {{ error }});
+      workerXhrDispatch(this, "loadend", {{}});
+    }});
+  }};
+  WorkerXMLHttpRequestNative.UNSENT = 0;
+  WorkerXMLHttpRequestNative.OPENED = 1;
+  WorkerXMLHttpRequestNative.HEADERS_RECEIVED = 2;
+  WorkerXMLHttpRequestNative.LOADING = 3;
+  WorkerXMLHttpRequestNative.DONE = 4;
+  globalThis.__glassWorkerXmlHttpRequestConstructor = WorkerXMLHttpRequestNative;
+  globalThis.XMLHttpRequest = WorkerXMLHttpRequestNative;
   globalThis.__glassWorkerFetchRequests = workerFetchRequests;
   globalThis.__glassNextWorkerFetchRequestId = nextWorkerFetchRequestId;
   globalThis.fetch = workerFetchNative;
@@ -7995,9 +8189,11 @@ fn worker_bootstrap(
     const pending = workerFetchRequests.get(Number(requestId));
     if (!pending) return null;
     workerFetchRequests.delete(Number(requestId));
-    if (payload && payload.error)
-      pending.reject(new Error(String(payload.error)));
-    else pending.resolve(responseFromWorkerFetch(payload));
+    if (payload && payload.error) {{
+      const error = new Error(String(payload.error));
+      error.name = payload.timeout === true ? "TimeoutError" : "TypeError";
+      pending.reject(error);
+    }} else pending.resolve(responseFromWorkerFetch(payload));
     return null;
   }};
   globalThis.importScripts = importScriptsNative;
@@ -8066,6 +8262,7 @@ fn worker_bootstrap(
         fetch_header_value_limit = MAX_NATIVE_FETCH_HEADER_VALUE_BYTES,
         fetch_header_bytes_limit = MAX_NATIVE_FETCH_HEADER_BYTES,
         fetch_body_limit = MAX_NATIVE_FORM_BODY_BYTES,
+        max_native_xhr_timeout_ms = MAX_NATIVE_XHR_TIMEOUT_MS,
         now_ms = now_ms,
         import_script_counts = import_script_counts,
     ))

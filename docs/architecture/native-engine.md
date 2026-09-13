@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-320` slice. The native runtime is now the primary
+`native-engine-browser-322` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -36,9 +36,19 @@ argument requests through its mode-0600 local Unix socket. The owner reparses
 and validates each request, fixes profile/storage/viewport configuration, and
 reuses the existing native command dispatcher so persistent and one-shot
 commands cannot diverge. Native liveness is owned by the session process
-itself; no CDP port or Chrome child is invented. TUI attachment through a
-named native session, MCP owner multiplexing, richer semantic regions/Web IR,
-workflow resume, and final certification remain issue #40 work.
+itself; no CDP port or Chrome child is invented.
+
+Slice 322 extends that owner across the remaining first-class persistent
+surfaces. The browser TUI attaches through a non-owning proxy, forwards native
+navigation/actions/observation/targets/screenshots over the owner socket, and
+uses revision-checked owner controls for history, reload, and stop-loading.
+Exiting or stopping the attached TUI detaches the client without closing the
+owner. A native MCP process with `--session` forwards browser tool parameters
+to the owner, which invokes the same native MCP dispatcher against its live
+session; browser-free protocol tools remain local. This prevents duplicate
+engines and preserves the owner's profile, storage, viewport, policy, and
+revision authority. Native workflow resume, richer semantic regions/Web IR,
+and final certification remain issue #40 work.
 
 Slice 283 adds a bounded dedicated-worker bridge after the page-facing
 computed-style/media-query bridge in slice 282. Page-created classic workers

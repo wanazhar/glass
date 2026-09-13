@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-284` slice; the bounded foundation below remains
+`native-engine-browser-285` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 
 Slice 283 adds a bounded dedicated-worker bridge after the page-facing
@@ -10,8 +10,10 @@ load through the shared resource policy, execute in isolated QuickJS realms,
 and exchange bounded messages/errors through an explicit page-turn queue in
 both local and HTTP(S) content-process paths. The bridge preserves the
 two-crate boundary and does not change backend selection. Task-source fairness,
-transferables, module/shared/service workers, worker network/timer APIs, and
-complete Worker Web IDL semantics remain expansion work.
+transferables, module/shared/service workers, worker network APIs, dynamic and
+exact `importScripts()` timing, and complete Worker Web IDL semantics remain
+expansion work; bounded worker timers and static `importScripts()` dependencies
+are covered by slices 284 and 285 below.
 
 Slice 284 adds bounded timer ownership to those dedicated-worker realms.
 Worker `setTimeout` and `setInterval` callbacks use the worker runtime's
@@ -22,6 +24,15 @@ worker messages are not stranded at the process boundary. Continuous browser
 task-source fairness, automatic delivery while unrelated page work is pending,
 worker network APIs, and complete Worker Web IDL semantics remain expansion
 work.
+
+Slice 285 adds bounded static `importScripts()` dependency ownership. The
+worker resource owner discovers string-literal dependency calls, loads nested
+dependencies through the same URL/security/MIME/byte boundary, evaluates them
+before the root source, and tracks each preloaded call in the worker realm.
+Calls whose expressions or arguments were not preloaded fail explicitly, so
+the bridge does not create an implicit worker network capability. Dynamic call
+position semantics, worker network APIs, module/shared/service workers, and
+complete Worker Web IDL semantics remain expansion work.
 
 Slice 282 adds a bounded page-facing computed-style and media-query bridge:
 the JavaScript realm reads the native cascade/layout snapshot through a
@@ -4948,10 +4959,11 @@ The native profile is `experimental` and declares:
 Within the available script profile, classic dedicated `Worker` creation is
 available for local fixtures and HTTP(S) pages. Worker source uses the shared
 resource and `worker-src` policy path, each worker has an isolated bounded
-QuickJS realm, and messages/errors/termination cross an explicit page-turn
-queue. Module/shared/service workers, transferables, worker network/timer
-surfaces, and complete Worker Web IDL semantics remain outside the current
-profile.
+QuickJS realm, messages/errors/termination cross an explicit page-turn queue,
+due timers are pumped at that boundary, and bounded static `importScripts()`
+dependencies preload through the same owner. Module/shared/service workers,
+transferables, worker network APIs, dynamic/exact `importScripts()` timing, and
+complete Worker Web IDL semantics remain outside the current profile.
 
 Within the available script profile, native Fetch `Response.clone()` creates a
 bounded fresh response/header/body owner; full disturbance and Web IDL

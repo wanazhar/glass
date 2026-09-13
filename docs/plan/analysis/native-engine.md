@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-284`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-285`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -4210,6 +4210,18 @@ task-source fairness, timer delivery while unrelated page work is pending,
 worker network APIs, and complete Worker Web IDL semantics remain issue #40
 work. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-284.md`.
+
+The completed native-engine-browser-285 slice adds bounded static worker
+`importScripts()` dependency loading. The worker owner lexically discovers
+string-literal dependencies, loads nested resources through the existing
+worker URL/MIME/redirect/cookie/mixed-content/policy boundary, evaluates the
+dependency graph before the root script, and tracks each preloaded call so
+unseen dynamic calls fail explicitly. The isolated worker realm remains the
+sole JavaScript owner and the existing message/timer command boundary is
+unchanged. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-285.md`; dynamic importScripts call
+position, worker network APIs, module/shared/service workers, and complete
+Worker Web IDL semantics remain issue #40 work.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

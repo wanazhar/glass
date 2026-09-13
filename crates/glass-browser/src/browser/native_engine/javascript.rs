@@ -19,7 +19,7 @@ use super::interaction::{
 };
 use super::layout::NativePoint;
 use super::origin::NativeOrigin;
-use super::resource_loader::NativeResourceLoader;
+use super::resource_loader::{NativeResourceLoader, NativeScriptResource};
 use fs2::FileExt;
 use rquickjs::function::This;
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
@@ -393,6 +393,7 @@ pub(crate) struct NativeWorkerMessage {
 struct NativeDedicatedWorker {
     url: String,
     runtime: NativeJavaScriptRuntime,
+    import_script_counts: BTreeMap<String, usize>,
 }
 
 /// Owns dedicated-worker realms and the bounded messages waiting for their
@@ -440,7 +441,11 @@ impl NativeWorkerRegistry {
             let Some(worker) = self.workers.get(&worker_id) else {
                 continue;
             };
-            let evaluation = worker.runtime.run_worker_timer_turn(worker_id, &worker.url);
+            let evaluation = worker.runtime.run_worker_timer_turn(
+                worker_id,
+                &worker.url,
+                &worker.import_script_counts,
+            );
             match evaluation {
                 Ok(evaluation) => self.collect_worker_evaluation(worker_id, evaluation)?,
                 Err(error) => {
@@ -546,6 +551,9 @@ impl NativeWorkerRegistry {
                 return Ok(());
             }
         };
+        let (source, import_script_counts) = self
+            .load_worker_script_graph(loader, resource.clone())
+            .await?;
         let runtime =
             match NativeJavaScriptRuntime::new_with_context_id(format!("glass-worker-{worker_id}"))
             {
@@ -559,15 +567,19 @@ impl NativeWorkerRegistry {
             worker_id,
             NativeDedicatedWorker {
                 url: resource.url.clone(),
+                import_script_counts,
                 runtime,
             },
         );
-        let evaluation = self
-            .workers
-            .get(&worker_id)
-            .expect("worker was inserted")
-            .runtime
-            .evaluate_worker(worker_id, &resource.url, &resource.body);
+        let evaluation = {
+            let worker = self.workers.get(&worker_id).expect("worker was inserted");
+            worker.runtime.evaluate_worker(
+                worker_id,
+                &resource.url,
+                &source,
+                &worker.import_script_counts,
+            )
+        };
         match evaluation {
             Ok(evaluation) => self.collect_worker_evaluation(worker_id, evaluation),
             Err(error) => {
@@ -590,9 +602,12 @@ impl NativeWorkerRegistry {
                 .workers
                 .get(&worker_id)
                 .expect("worker presence was checked");
-            worker
-                .runtime
-                .dispatch_worker_message_to_worker(worker_id, &worker.url, &data)
+            worker.runtime.dispatch_worker_message_to_worker(
+                worker_id,
+                &worker.url,
+                &data,
+                &worker.import_script_counts,
+            )
         };
         match evaluation {
             Ok(evaluation) => self.collect_worker_evaluation(worker_id, evaluation),
@@ -683,6 +698,94 @@ impl NativeWorkerRegistry {
         }
         self.pending_messages.push_back(message);
         Ok(())
+    }
+
+    async fn load_worker_script_graph(
+        &self,
+        loader: &mut NativeResourceLoader,
+        root: NativeScriptResource,
+    ) -> Result<(String, BTreeMap<String, usize>), NativeEngineError> {
+        struct PendingWorkerScript {
+            resource: NativeScriptResource,
+            imports: Vec<String>,
+            next_import: usize,
+        }
+
+        if root.body.is_empty() {
+            return Err(NativeEngineError::invalid(
+                "worker script source",
+                "must not be empty",
+            ));
+        }
+        let root_imports = static_worker_import_specifiers(&root.body)?;
+        let mut stack = vec![PendingWorkerScript {
+            resource: root,
+            imports: root_imports,
+            next_import: 0,
+        }];
+        let mut import_script_counts = BTreeMap::<String, usize>::new();
+        let mut import_edges = 0usize;
+        let mut combined_source = String::new();
+        while !stack.is_empty() {
+            let next_import = stack.last_mut().and_then(|frame| {
+                if frame.next_import >= frame.imports.len() {
+                    return None;
+                }
+                let specifier = frame.imports[frame.next_import].clone();
+                frame.next_import += 1;
+                Some((frame.resource.url.clone(), specifier))
+            });
+            if let Some((parent_url, specifier)) = next_import {
+                import_edges = import_edges.saturating_add(1);
+                if import_edges > MAX_NATIVE_MODULE_IMPORTS {
+                    return Err(NativeEngineError::limit(
+                        "native worker importScripts graph",
+                        MAX_NATIVE_MODULE_IMPORTS,
+                        import_edges,
+                    ));
+                }
+                let imported = loader
+                    .load_worker_async(&parent_url, &specifier, MAX_NATIVE_SCRIPT_BYTES)
+                    .await?
+                    .ok_or_else(|| NativeEngineError::Network {
+                        operation: "worker importScripts".into(),
+                        reason: format!(
+                            "worker importScripts dependency {specifier:?} was blocked or unavailable"
+                        ),
+                    })?;
+                if stack.iter().any(|entry| entry.resource.url == imported.url) {
+                    return Err(NativeEngineError::Network {
+                        operation: "worker importScripts".into(),
+                        reason: "worker importScripts dependency graph contains a cycle".into(),
+                    });
+                }
+                import_script_counts
+                    .entry(specifier)
+                    .and_modify(|count| *count = count.saturating_add(1))
+                    .or_insert(1);
+                let imports = static_worker_import_specifiers(&imported.body)?;
+                stack.push(PendingWorkerScript {
+                    resource: imported,
+                    imports,
+                    next_import: 0,
+                });
+                continue;
+            }
+            let frame = stack.pop().expect("worker script stack was non-empty");
+            let next_length = combined_source
+                .len()
+                .saturating_add(frame.resource.body.len());
+            if next_length > MAX_NATIVE_SCRIPT_BYTES {
+                return Err(NativeEngineError::limit(
+                    "combined worker importScripts source",
+                    MAX_NATIVE_SCRIPT_BYTES,
+                    next_length,
+                ));
+            }
+            combined_source.push_str(&frame.resource.body);
+            combined_source.push_str("\n;");
+        }
+        Ok((combined_source, import_script_counts))
     }
 }
 
@@ -5809,6 +5912,7 @@ impl NativeJavaScriptRuntime {
         worker_id: u32,
         worker_url: &str,
         source: &str,
+        import_script_counts: &BTreeMap<String, usize>,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
         if worker_id == 0 {
             return Err(NativeEngineError::invalid(
@@ -5830,7 +5934,8 @@ impl NativeJavaScriptRuntime {
                 source.len(),
             ));
         }
-        let bootstrap = worker_bootstrap(worker_id, worker_url, self.now_ms())?;
+        let bootstrap =
+            worker_bootstrap(worker_id, worker_url, self.now_ms(), import_script_counts)?;
         let deadline = Instant::now() + NATIVE_SCRIPT_TIMEOUT;
         if let Ok(mut current) = self.deadline.lock() {
             *current = Some(deadline);
@@ -5917,6 +6022,7 @@ impl NativeJavaScriptRuntime {
         worker_id: u32,
         worker_url: &str,
         data: &serde_json::Value,
+        import_script_counts: &BTreeMap<String, usize>,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
         let serialized = serde_json::to_string(data).map_err(|_| NativeEngineError::Worker {
             operation: "serialize native Worker message".into(),
@@ -5933,6 +6039,7 @@ impl NativeJavaScriptRuntime {
             worker_id,
             worker_url,
             &format!("globalThis.__glassDispatchWorkerMessage({serialized});"),
+            import_script_counts,
         )
     }
 
@@ -5940,11 +6047,13 @@ impl NativeJavaScriptRuntime {
         &self,
         worker_id: u32,
         worker_url: &str,
+        import_script_counts: &BTreeMap<String, usize>,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
         self.evaluate_worker(
             worker_id,
             worker_url,
             "globalThis.__glassRunWorkerTimers(performance.now());",
+            import_script_counts,
         )
     }
 
@@ -6452,6 +6561,89 @@ pub(crate) fn literal_dynamic_module_specifiers(source: &str) -> Vec<String> {
     specifiers
 }
 
+/// Extract statically declared `importScripts()` string arguments. The host
+/// preloads these dependencies before evaluating the worker root source, so a
+/// normal top-level import remains synchronous from the worker's perspective.
+/// Non-literal calls fail explicitly in the worker bootstrap instead of
+/// receiving an implicit network capability.
+pub(crate) fn static_worker_import_specifiers(
+    source: &str,
+) -> Result<Vec<String>, NativeEngineError> {
+    let bytes = source.as_bytes();
+    let mut index = 0;
+    let mut specifiers = Vec::new();
+    while index < bytes.len() {
+        index = skip_javascript_space_and_comments(bytes, index);
+        if index >= bytes.len() {
+            break;
+        }
+        if matches!(bytes[index], b'\'' | b'"' | b'`') {
+            index = skip_javascript_string(bytes, index);
+            continue;
+        }
+        if !is_javascript_identifier_start(bytes[index]) {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        index += 1;
+        while index < bytes.len() && is_javascript_identifier_continue(bytes[index]) {
+            index += 1;
+        }
+        if &bytes[start..index] != b"importScripts"
+            || bytes.get(start.wrapping_sub(1)) == Some(&b'.')
+        {
+            continue;
+        }
+        let open = skip_javascript_space_and_comments(bytes, index);
+        if bytes.get(open) != Some(&b'(') {
+            continue;
+        }
+        let mut cursor = skip_javascript_space_and_comments(bytes, open + 1);
+        if bytes.get(cursor) == Some(&b')') {
+            index = cursor + 1;
+            continue;
+        }
+        loop {
+            let Some((specifier, next)) = read_javascript_string(bytes, cursor) else {
+                return Err(NativeEngineError::UnsupportedUrl {
+                    reason: "native Worker importScripts requires string literal URLs".into(),
+                });
+            };
+            if specifier.is_empty() {
+                return Err(NativeEngineError::invalid(
+                    "Worker importScripts URL",
+                    "must not be empty",
+                ));
+            }
+            specifiers.push(specifier);
+            if specifiers.len() > MAX_NATIVE_MODULE_IMPORTS {
+                return Err(NativeEngineError::limit(
+                    "Worker importScripts dependencies",
+                    MAX_NATIVE_MODULE_IMPORTS,
+                    specifiers.len(),
+                ));
+            }
+            cursor = skip_javascript_space_and_comments(bytes, next);
+            match bytes.get(cursor) {
+                Some(&b',') => {
+                    cursor = skip_javascript_space_and_comments(bytes, cursor + 1);
+                }
+                Some(&b')') => {
+                    index = cursor + 1;
+                    break;
+                }
+                _ => {
+                    return Err(NativeEngineError::UnsupportedUrl {
+                        reason: "native Worker importScripts call has invalid arguments".into(),
+                    });
+                }
+            }
+        }
+    }
+    Ok(specifiers)
+}
+
 fn module_specifier_after_keyword(
     bytes: &[u8],
     keyword_end: usize,
@@ -6605,16 +6797,23 @@ fn worker_bootstrap(
     worker_id: u32,
     worker_url: &str,
     now_ms: u64,
+    import_script_counts: &BTreeMap<String, usize>,
 ) -> Result<String, NativeEngineError> {
     let worker_url = serde_json::to_string(worker_url).map_err(|_| NativeEngineError::Worker {
         operation: "serialize native Worker URL".into(),
         reason: "native Worker URL could not be serialized".into(),
     })?;
+    let import_script_counts =
+        serde_json::to_string(import_script_counts).map_err(|_| NativeEngineError::Worker {
+            operation: "serialize native Worker importScripts map".into(),
+            reason: "native Worker importScripts map could not be serialized".into(),
+        })?;
     Ok(format!(
         r###"(() => {{
   const workerId = {worker_id};
   const workerUrl = {worker_url};
   const nowMs = {now_ms};
+  const initialImportScriptCounts = {import_script_counts};
   const commands = [];
   const activeCommands = () => Array.isArray(globalThis.__glassWorkerCommandBuffer)
     ? globalThis.__glassWorkerCommandBuffer
@@ -6708,6 +6907,19 @@ fn worker_bootstrap(
   }};
   globalThis.self = globalThis;
   globalThis.location = Object.freeze({{ href: workerUrl, toString() {{ return workerUrl; }} }});
+  const importScriptCounts = globalThis.__glassWorkerImportScriptCounts instanceof Map
+    ? globalThis.__glassWorkerImportScriptCounts
+    : new Map(Object.entries(initialImportScriptCounts).map(([url, count]) => [url, Number(count)]));
+  const importScriptsNative = (...urls) => {{
+    const values = urls.map((value) => String(value));
+    for (const value of values) {{
+      if (!value || Number(importScriptCounts.get(value) || 0) < 1) {{
+        throw new TypeError("native Worker importScripts requires a preloaded string URL");
+      }}
+    }}
+    for (const value of values) importScriptCounts.set(value, Number(importScriptCounts.get(value)) - 1);
+  }};
+  globalThis.importScripts = importScriptsNative;
   globalThis.addEventListener = addEventListener;
   globalThis.removeEventListener = removeEventListener;
   globalThis.postMessage = (message) => {{
@@ -6736,6 +6948,7 @@ fn worker_bootstrap(
   }});
   globalThis.__glassWorkerTimers = timers;
   globalThis.__glassWorkerRunningTimers = runningTimers;
+  globalThis.__glassWorkerImportScriptCounts = importScriptCounts;
   globalThis.setTimeout = setTimeoutNative;
   globalThis.setInterval = setIntervalNative;
   globalThis.clearTimeout = clearTimer;
@@ -6768,6 +6981,7 @@ fn worker_bootstrap(
         max_timers = MAX_NATIVE_WORKER_TIMERS,
         post_message_bytes_limit = MAX_NATIVE_POST_MESSAGE_BYTES,
         now_ms = now_ms,
+        import_script_counts = import_script_counts,
     ))
 }
 

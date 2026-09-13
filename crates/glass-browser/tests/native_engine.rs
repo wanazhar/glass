@@ -13530,6 +13530,25 @@ async fn native_local_canvas_2d_script_and_raster_pipeline() {
         })
     );
 
+    let matrices = engine
+        .evaluate_async(
+            "(() => { const matrix = new DOMMatrix([1, 0, 0, 1, 2, 1]); const product = matrix.multiply(new DOMMatrix().scale(2)); const point = new DOMPoint(1, 2).matrixTransform(matrix); const translated = matrix.translate(1, 1); const canvas = document.createElement('canvas'); canvas.width = 4; canvas.height = 3; document.body.appendChild(canvas); const context = canvas.getContext('2d'); context.setTransform(matrix); context.fillStyle = '#ff0000'; context.fillRect(0, 0, 1, 1); const transform = context.getTransform(); return { identity: [matrix instanceof DOMMatrix, matrix instanceof DOMMatrixReadOnly, point instanceof DOMPoint, point instanceof DOMPointReadOnly, transform instanceof DOMMatrixReadOnly], values: [matrix.a, matrix.b, matrix.c, matrix.d, matrix.e, matrix.f], product: [product.a, product.d, product.e, product.f], translated: [translated.e, translated.f], point: [point.x, point.y], arrays: [matrix.toFloat32Array().length, matrix.toFloat64Array().length], pixel: Array.from(context.getImageData(2, 1, 1, 1).data) }; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        matrices,
+        serde_json::json!({
+            "identity": [true, true, true, true, true],
+            "values": [1, 0, 0, 1, 2, 1],
+            "product": [2, 2, 2, 1],
+            "translated": [3, 2],
+            "point": [3, 3],
+            "arrays": [6, 6],
+            "pixel": [255, 0, 0, 255]
+        })
+    );
+
     let persisted = engine
         .evaluate_async(
             "(() => { const canvas = nativeCanvas; const context = canvas.getContext('2d'); const sample = context.getImageData(5, 2, 1, 1); return [canvas.getContext('2d') === nativeCanvasContext, Array.from(sample.data), canvas.width, canvas.height]; })()",

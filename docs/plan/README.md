@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-305` locally. The versioned
+`native-engine-browser-306` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -238,6 +238,14 @@ base material non-extractable and realm-local, bounds input/output/iterations
 and total input-byte work, and proves page/worker vectors plus real derived-key
 operations. Its focused evidence is recorded in
 [tasks/native-engine-browser-305.md](tasks/native-engine-browser-305.md).
+
+The completed native-engine-browser-306 Web Crypto wrapping slice adds raw
+HMAC/AES-GCM `wrapKey()` and `unwrapKey()` over the existing authenticated
+AES-GCM owner in page and dedicated-worker realms. It preserves key bytes and
+target hash/length/usages, rejects tampering and non-extractable sources, and
+proves restored keys through real sign/verify and encrypt/decrypt operations.
+Its focused evidence is recorded in
+[tasks/native-engine-browser-306.md](tasks/native-engine-browser-306.md).
 
 The completed native-engine-browser-299 page-runtime-primitives slice adds
 page `TextEncoder`/`TextDecoder`, bounded `atob`/`btoa`,

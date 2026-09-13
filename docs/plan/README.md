@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-279` locally. The versioned
+`native-engine-browser-280` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -278,6 +278,16 @@ external/module sources enter the existing process-backed loader path. Nested
 external/module discovery from a dynamically executing script still needs
 event-loop loader handoff, as do dynamic network effects; full script,
 parser-streaming, and Web IDL semantics remain open on issue #40.
+
+The completed nested dynamic-script loader slice is
+[native-engine-browser-280](tasks/native-engine-browser-280.md). External and
+module sources discovered by an executing dynamic script now return to the
+content owner, pass through the existing resource/module policy, and execute
+recursively under a bounded loader-turn limit. The witness covers a dynamic
+external module that attaches a second external classic script. Dynamic
+Fetch/WebSocket/EventSource handoff, parser streaming, network completion
+timing, and complete script/lifecycle/Web IDL semantics remain open on issue
+#40.
 
 The completed profile/contract task is
 [native-engine-browser-000](tasks/native-engine-browser-000.md). It freezes

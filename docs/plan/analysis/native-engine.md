@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-278`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-279`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -4144,6 +4144,20 @@ It is not yet a background scheduler: browser task-source fairness, real idle
 budget arbitration, throttling, visibility/background policy, and complete
 animation/idle Web IDL semantics remain issue #40 work. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-278.md`.
+
+The completed native-engine-browser-279 slice closes the first dynamic
+page-script gap. Connected classic inline scripts created by page JavaScript
+now execute synchronously in the same realm, including create-now/attach-later
+sequences; the Rust document wire carries a bounded started-script ledger so
+the same element is not replayed after movement or text mutation. Directly
+attached dynamic external and module sources use the existing process-backed
+resource loader and bounded event delivery. The shared scheduler also carries
+dynamic script error, navigation, dialog, scroll, and event effects. Nested
+external/module scripts created by a dynamically executing script still need
+an asynchronous loader handoff, and dynamic network commands currently fail
+explicitly at that boundary. Parser streaming, network completion ordering,
+and complete script/lifecycle/Web IDL semantics remain issue #40 work. Exact
+evidence is in `docs/plan/tasks/native-engine-browser-279.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

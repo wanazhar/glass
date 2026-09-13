@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-278` slice; the bounded foundation below remains
+`native-engine-browser-279` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5984,6 +5984,21 @@ provide background-page scheduling, visibility throttling, fair task-source
 arbitration, or complete animation/idle Web IDL semantics; those remain issue
 #40 work. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-278.md`.
+
+The completed native-engine-browser-279 slice adds the dynamic page-script
+owner. A connected classic inline script inserted by page JavaScript executes
+synchronously in the persistent realm; scripts created before attachment are
+picked up when a later host mutation connects them, while a started element is
+never replayed after movement or text changes. The document wire transfers a
+validated bounded started-script ledger between the owner and content process.
+Direct dynamic external/module sources are resolved by the existing
+process-backed loader and their bounded load/error effects are dispatched by
+the shared scheduler. Nested external/module discovery from a dynamically
+executing script still requires asynchronous loader handoff, and dynamic
+Fetch/WebSocket/EventSource effects fail explicitly at that boundary. Parser
+streaming, network completion scheduling, and complete script/lifecycle/Web IDL
+semantics remain issue #40 promotion gates. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-279.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

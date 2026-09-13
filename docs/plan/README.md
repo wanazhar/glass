@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-278` locally. The versioned
+`native-engine-browser-279` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -268,6 +268,16 @@ bounded `timeRemaining()` budget, and run after due timers and animation frames
 on the shared local/content-process realm. Full background scheduling,
 task-source fairness, and browser idle-budget arbitration remain open on issue
 #40.
+
+The completed dynamically attached script slice is
+[native-engine-browser-279](tasks/native-engine-browser-279.md). Newly
+connected classic inline scripts now execute synchronously in the page realm,
+including elements created before a later attachment, and a bounded
+single-shot ledger prevents reruns after moves or text changes. Direct dynamic
+external/module sources enter the existing process-backed loader path. Nested
+external/module discovery from a dynamically executing script still needs
+event-loop loader handoff, as do dynamic network effects; full script,
+parser-streaming, and Web IDL semantics remain open on issue #40.
 
 The completed profile/contract task is
 [native-engine-browser-000](tasks/native-engine-browser-000.md). It freezes

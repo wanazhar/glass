@@ -196,6 +196,8 @@ pub(crate) enum NativeScriptCommand {
         href: String,
         #[serde(default)]
         protocols: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worker_id: Option<u32>,
     },
     WebSocketSend {
         socket_id: u32,
@@ -203,11 +205,15 @@ pub(crate) enum NativeScriptCommand {
         data: Option<String>,
         #[serde(default)]
         data_base64: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worker_id: Option<u32>,
     },
     WebSocketClose {
         socket_id: u32,
         code: u16,
         reason: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worker_id: Option<u32>,
     },
     EventSourceOpen {
         source_id: u32,
@@ -396,6 +402,12 @@ pub(crate) struct NativeWorkerMessage {
     pub(crate) error: Option<String>,
 }
 
+pub(crate) struct NativeWorkerWebSocketCommand {
+    pub(crate) worker_id: u32,
+    pub(crate) worker_url: String,
+    pub(crate) command: NativeScriptCommand,
+}
+
 struct NativeDedicatedWorker {
     url: String,
     runtime: NativeJavaScriptRuntime,
@@ -445,6 +457,28 @@ impl NativeDedicatedWorker {
                 .evaluate_worker(worker_id, &self.url, source, &self.import_script_counts)
         }
     }
+
+    fn evaluate_websocket_event(
+        &self,
+        worker_id: u32,
+        socket_id: u32,
+        event: &serde_json::Value,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        let serialized = serde_json::to_string(event).map_err(|_| NativeEngineError::Worker {
+            operation: "serialize native Worker WebSocket event".into(),
+            reason: "native Worker WebSocket event could not be serialized".into(),
+        })?;
+        let source =
+            format!("globalThis.__glassDispatchWorkerWebSocketEvent({socket_id}, {serialized});");
+        if source.len() > MAX_NATIVE_SCRIPT_BYTES {
+            return Err(NativeEngineError::limit(
+                "native Worker WebSocket event",
+                MAX_NATIVE_SCRIPT_BYTES,
+                source.len(),
+            ));
+        }
+        self.evaluate_turn(worker_id, &source)
+    }
 }
 
 /// Owns dedicated-worker realms and the bounded messages waiting for their
@@ -454,6 +488,7 @@ impl NativeDedicatedWorker {
 pub(crate) struct NativeWorkerRegistry {
     workers: BTreeMap<u32, NativeDedicatedWorker>,
     pending_messages: VecDeque<NativeWorkerMessage>,
+    pending_websocket_commands: VecDeque<NativeWorkerWebSocketCommand>,
 }
 
 impl NativeWorkerRegistry {
@@ -461,16 +496,22 @@ impl NativeWorkerRegistry {
         Self {
             workers: BTreeMap::new(),
             pending_messages: VecDeque::new(),
+            pending_websocket_commands: VecDeque::new(),
         }
     }
 
     pub(crate) fn clear(&mut self) {
         self.workers.clear();
         self.pending_messages.clear();
+        self.pending_websocket_commands.clear();
     }
 
     pub(crate) fn take_messages(&mut self) -> Vec<NativeWorkerMessage> {
         self.pending_messages.drain(..).collect()
+    }
+
+    pub(crate) fn take_websocket_commands(&mut self) -> Vec<NativeWorkerWebSocketCommand> {
+        self.pending_websocket_commands.drain(..).collect()
     }
 
     /// Run one due timer turn for each worker that has work ready. Worker
@@ -739,6 +780,20 @@ impl NativeWorkerRegistry {
                             .await?;
                         evaluations.push_back((current_worker_id, resolved));
                     }
+                    command @ NativeScriptCommand::WebSocketOpen {
+                        worker_id: Some(command_worker_id),
+                        ..
+                    }
+                    | command @ NativeScriptCommand::WebSocketSend {
+                        worker_id: Some(command_worker_id),
+                        ..
+                    }
+                    | command @ NativeScriptCommand::WebSocketClose {
+                        worker_id: Some(command_worker_id),
+                        ..
+                    } if command_worker_id == current_worker_id => {
+                        self.queue_websocket_command(current_worker_id, command)?;
+                    }
                     _ => {
                         return Err(NativeEngineError::invalid(
                             "native Worker command",
@@ -751,6 +806,65 @@ impl NativeWorkerRegistry {
                 self.workers.remove(&current_worker_id);
             }
         }
+        Ok(())
+    }
+
+    pub(crate) async fn dispatch_websocket_event(
+        &mut self,
+        worker_id: u32,
+        socket_id: u32,
+        event: &serde_json::Value,
+        loader: &mut NativeResourceLoader,
+    ) -> Result<(), NativeEngineError> {
+        let Some(worker) = self.workers.get(&worker_id) else {
+            return Ok(());
+        };
+        let evaluation = worker.evaluate_websocket_event(worker_id, socket_id, event);
+        match evaluation {
+            Ok(evaluation) => {
+                self.collect_worker_evaluation(worker_id, evaluation, loader)
+                    .await
+            }
+            Err(error) => {
+                let worker_url = self
+                    .workers
+                    .get(&worker_id)
+                    .map(|worker| worker.url.clone())
+                    .unwrap_or_default();
+                self.workers.remove(&worker_id);
+                self.queue_error(worker_id, &worker_url, &error.to_string())
+            }
+        }
+    }
+
+    fn queue_websocket_command(
+        &mut self,
+        worker_id: u32,
+        command: NativeScriptCommand,
+    ) -> Result<(), NativeEngineError> {
+        let worker_url = self
+            .workers
+            .get(&worker_id)
+            .map(|worker| worker.url.clone())
+            .ok_or_else(|| {
+                NativeEngineError::invalid(
+                    "native Worker WebSocket command",
+                    "worker no longer exists",
+                )
+            })?;
+        if self.pending_websocket_commands.len() >= MAX_NATIVE_WORKER_MESSAGES {
+            return Err(NativeEngineError::limit(
+                "native Worker WebSocket commands",
+                MAX_NATIVE_WORKER_MESSAGES,
+                self.pending_websocket_commands.len().saturating_add(1),
+            ));
+        }
+        self.pending_websocket_commands
+            .push_back(NativeWorkerWebSocketCommand {
+                worker_id,
+                worker_url,
+                command,
+            });
         Ok(())
     }
 
@@ -6411,6 +6525,18 @@ impl NativeJavaScriptRuntime {
                         worker_id: Some(command_worker_id),
                         ..
                     } => *command_worker_id == worker_id,
+                    NativeScriptCommand::WebSocketOpen {
+                        worker_id: Some(command_worker_id),
+                        ..
+                    }
+                    | NativeScriptCommand::WebSocketSend {
+                        worker_id: Some(command_worker_id),
+                        ..
+                    }
+                    | NativeScriptCommand::WebSocketClose {
+                        worker_id: Some(command_worker_id),
+                        ..
+                    } => *command_worker_id == worker_id,
                     _ => false,
                 };
                 if !valid {
@@ -8415,6 +8541,169 @@ fn worker_bootstrap(
     }} else pending.resolve(responseFromWorkerFetch(payload));
     return null;
   }};
+  const workerWebSocketMessageLimit = {websocket_message_limit};
+  const workerWebSocketProtocolLimit = {websocket_protocol_limit};
+  const workerWebSocketProtocolCountLimit = {websocket_protocol_count_limit};
+  const workerWebSocketCloseReasonLimit = {websocket_close_reason_limit};
+  const workerWebSocketSockets = globalThis.__glassWorkerWebSocketSockets instanceof Map
+    ? globalThis.__glassWorkerWebSocketSockets
+    : new Map();
+  let nextWorkerWebSocketId = Number.isSafeInteger(globalThis.__glassNextWorkerWebSocketId)
+    ? globalThis.__glassNextWorkerWebSocketId
+    : 1;
+  const workerWebSocketProtocolToken = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+  const normalizeWorkerWebSocketProtocols = (value) => {{
+    if (value === undefined) return [];
+    const values = typeof value === "string"
+      ? [value]
+      : value && typeof value[Symbol.iterator] === "function"
+        ? Array.from(value)
+        : (() => {{ throw new TypeError("native Worker WebSocket protocols must be a string or iterable"); }})();
+    if (values.length > workerWebSocketProtocolCountLimit)
+      throw new RangeError("native Worker WebSocket protocol count limit exceeded");
+    const seen = new Set();
+    return values.map((protocol) => {{
+      const text = String(protocol);
+      if (!text || text.length > workerWebSocketProtocolLimit
+          || !workerWebSocketProtocolToken.test(text) || seen.has(text))
+        throw new SyntaxError("native Worker WebSocket protocol is invalid or duplicated");
+      seen.add(text);
+      return text;
+    }});
+  }};
+  const workerWebSocketDispatch = (socket, type, event) => {{
+    const handler = socket["on" + type];
+    if (typeof handler === "function") {{
+      try {{ handler.call(socket, event); }} catch (_) {{}}
+    }}
+    const listeners = socket.__glassWorkerWebSocketListeners[type] || [];
+    for (const listener of listeners.slice()) {{
+      try {{ listener.call(socket, event); }} catch (_) {{}}
+    }}
+  }};
+  globalThis.__glassWorkerWebSocketSockets = workerWebSocketSockets;
+  globalThis.__glassNextWorkerWebSocketId = nextWorkerWebSocketId;
+  globalThis.__glassDispatchWorkerWebSocketEvent = (socketId, payload) => {{
+    const socket = workerWebSocketSockets.get(Number(socketId));
+    if (!socket || !payload || typeof payload !== "object") return null;
+    const type = String(payload.type || "");
+    if (!["open", "message", "error", "close"].includes(type)) return null;
+    if (type === "open") {{
+      socket.readyState = WorkerWebSocketNative.OPEN;
+      socket.protocol = String(payload.protocol || "");
+      workerWebSocketDispatch(socket, "open", {{ type: "open", target: socket, currentTarget: socket }});
+    }} else if (type === "message") {{
+      let data = String(payload.data || "");
+      if (payload.binary === true) {{
+        const bytes = decodeWorkerBase64(String(payload.dataBase64 || ""), workerWebSocketMessageLimit);
+        if (socket.binaryType === "arraybuffer") data = new Uint8Array(bytes).buffer;
+        else data = new WorkerBlob([new Uint8Array(bytes)], {{ type: "application/octet-stream" }});
+      }}
+      workerWebSocketDispatch(socket, "message", {{
+        type: "message",
+        data,
+        origin: String(payload.origin || ""),
+        target: socket,
+        currentTarget: socket,
+      }});
+    }} else if (type === "error") {{
+      workerWebSocketDispatch(socket, "error", {{
+        type: "error",
+        message: String(payload.message || ""),
+        target: socket,
+        currentTarget: socket,
+      }});
+    }} else {{
+      socket.readyState = WorkerWebSocketNative.CLOSED;
+      workerWebSocketDispatch(socket, "close", {{
+        type: "close",
+        code: Number(payload.code) || 1006,
+        reason: String(payload.reason || ""),
+        wasClean: payload.wasClean === true,
+        target: socket,
+        currentTarget: socket,
+      }});
+      workerWebSocketSockets.delete(Number(socketId));
+    }}
+    return null;
+  }};
+  const WorkerWebSocketNative = typeof globalThis.__glassWorkerWebSocketConstructor === "function"
+    ? globalThis.__glassWorkerWebSocketConstructor
+    : function(input, protocols) {{
+    if (!(this instanceof WorkerWebSocketNative)) throw new TypeError("native Worker WebSocket requires new");
+    const source = input && input.__glassUrl === true ? input.href : input;
+    const href = String(source);
+    if (!/^(ws|wss):\/\/[^\s/]+(?:\/[^\s]*)?$/i.test(href) || href.includes("@"))
+      throw new SyntaxError("native Worker WebSocket URL must use ws or wss without credentials");
+    const normalizedProtocols = normalizeWorkerWebSocketProtocols(protocols);
+    const socketId = nextWorkerWebSocketId;
+    nextWorkerWebSocketId += 1;
+    globalThis.__glassNextWorkerWebSocketId = nextWorkerWebSocketId;
+    this.url = href;
+    this.readyState = WorkerWebSocketNative.CONNECTING;
+    this.bufferedAmount = 0;
+    this.extensions = "";
+    this.protocol = "";
+    this.binaryType = "blob";
+    this.onopen = null;
+    this.onmessage = null;
+    this.onerror = null;
+    this.onclose = null;
+    this.__glassSocketId = socketId;
+    this.__glassWorkerWebSocketListeners = {{ open: [], message: [], error: [], close: [] }};
+    workerWebSocketSockets.set(socketId, this);
+    pushCommand({{ kind: "webSocketOpen", worker_id: workerId, socket_id: socketId, href, protocols: normalizedProtocols }});
+  }};
+  WorkerWebSocketNative.CONNECTING = 0;
+  WorkerWebSocketNative.OPEN = 1;
+  WorkerWebSocketNative.CLOSING = 2;
+  WorkerWebSocketNative.CLOSED = 3;
+  WorkerWebSocketNative.prototype.addEventListener = function(type, listener) {{
+    const name = String(type);
+    if (!this.__glassWorkerWebSocketListeners[name] || typeof listener !== "function") return;
+    if (!this.__glassWorkerWebSocketListeners[name].includes(listener)) this.__glassWorkerWebSocketListeners[name].push(listener);
+  }};
+  WorkerWebSocketNative.prototype.removeEventListener = function(type, listener) {{
+    const name = String(type);
+    if (!this.__glassWorkerWebSocketListeners[name]) return;
+    this.__glassWorkerWebSocketListeners[name] = this.__glassWorkerWebSocketListeners[name].filter(candidate => candidate !== listener);
+  }};
+  WorkerWebSocketNative.prototype.dispatchEvent = function(event) {{
+    if (!event || !event.type) throw new TypeError("native Worker WebSocket event is invalid");
+    workerWebSocketDispatch(this, String(event.type), event);
+    return true;
+  }};
+  WorkerWebSocketNative.prototype.send = function(data) {{
+    if (this.readyState !== WorkerWebSocketNative.OPEN) throw new Error("native Worker WebSocket is not open");
+    if (typeof data === "string") {{
+      if (data.length > workerWebSocketMessageLimit) throw new RangeError("native Worker WebSocket message exceeds its limit");
+      pushCommand({{ kind: "webSocketSend", worker_id: workerId, socket_id: this.__glassSocketId, data, data_base64: null }});
+      return;
+    }}
+    let bytes = null;
+    if (data && data.__glassWorkerBlob === true) bytes = data._bytes.slice();
+    else if (data instanceof ArrayBuffer) bytes = Array.from(new Uint8Array(data));
+    else if (typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(data))
+      bytes = Array.from(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+    if (!bytes) throw new TypeError("native Worker WebSocket data must be text, Blob, or an ArrayBuffer view");
+    pushCommand({{ kind: "webSocketSend", worker_id: workerId, socket_id: this.__glassSocketId, data: null, data_base64: encodeWorkerBase64(bytes, workerWebSocketMessageLimit) }});
+  }};
+  WorkerWebSocketNative.prototype.close = function(code, reason) {{
+    if (this.readyState === WorkerWebSocketNative.CLOSING || this.readyState === WorkerWebSocketNative.CLOSED) return;
+    const normalizedCode = code === undefined ? 1000 : Number(code);
+    if (!Number.isInteger(normalizedCode) || (normalizedCode !== 1000 && (normalizedCode < 3000 || normalizedCode > 4999)))
+      throw new RangeError("native Worker WebSocket close code is invalid");
+    const normalizedReason = reason === undefined ? "" : String(reason);
+    if (normalizedReason.length > workerWebSocketCloseReasonLimit)
+      throw new SyntaxError("native Worker WebSocket close reason exceeds its limit");
+    this.readyState = WorkerWebSocketNative.CLOSING;
+    pushCommand({{ kind: "webSocketClose", worker_id: workerId, socket_id: this.__glassSocketId, code: normalizedCode, reason: normalizedReason }});
+  }};
+  Object.defineProperties(WorkerWebSocketNative.prototype, {{
+    CONNECTING: {{ value: 0 }}, OPEN: {{ value: 1 }}, CLOSING: {{ value: 2 }}, CLOSED: {{ value: 3 }},
+  }});
+  globalThis.__glassWorkerWebSocketConstructor = WorkerWebSocketNative;
+  globalThis.WebSocket = WorkerWebSocketNative;
   globalThis.importScripts = isModuleWorker
     ? (() => {{ throw new TypeError("importScripts is unavailable in module workers"); }})
     : importScriptsNative;
@@ -8484,6 +8773,10 @@ fn worker_bootstrap(
         fetch_header_bytes_limit = MAX_NATIVE_FETCH_HEADER_BYTES,
         fetch_body_limit = MAX_NATIVE_FORM_BODY_BYTES,
         max_native_xhr_timeout_ms = MAX_NATIVE_XHR_TIMEOUT_MS,
+        websocket_message_limit = MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES,
+        websocket_protocol_limit = MAX_NATIVE_WEBSOCKET_PROTOCOL_BYTES,
+        websocket_protocol_count_limit = MAX_NATIVE_WEBSOCKET_PROTOCOLS,
+        websocket_close_reason_limit = MAX_NATIVE_WEBSOCKET_CLOSE_REASON_BYTES,
         now_ms = now_ms,
         import_script_counts = import_script_counts,
     ))

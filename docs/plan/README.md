@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-291` locally. The versioned
+`native-engine-browser-292` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -133,6 +133,17 @@ semantics, and message/timer/network turns on the existing isolated worker
 boundary. Shared/service/worklet workers, import maps, transferables, complete
 worker Web IDL parity, and the wider native replacement gates remain open on
 issue #40.
+
+The completed native-engine-browser-292 slice is
+[native-engine-browser-292](tasks/native-engine-browser-292.md). It adds a
+worker-owned WebSocket bridge in the HTTP(S) content process: worker commands
+are owner-tagged, persistent connections use the existing bounded WebSocket
+transport and resource-policy target validation, and open/message/error/close
+events plus text/binary sends cross the isolated worker boundary. Ping/pong
+and clean close are covered end to end. The native local fixture owner reports
+an explicit process-backed-network requirement rather than dropping a worker
+connection command; shared/service/worklet workers, automatic background task
+delivery, and the wider native replacement gates remain open on issue #40.
 
 The completed EventSource/SSE slice is
 [native-engine-browser-253](tasks/native-engine-browser-253.md). It adds a

@@ -1512,6 +1512,11 @@ impl NativeEngine {
         self.workers
             .apply_commands(worker_commands, &mut self.loader, &owner_url)
             .await?;
+        if !self.workers.take_websocket_commands().is_empty() {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "worker WebSocket requires a process-backed HTTP(S) document".into(),
+            });
+        }
         if evaluation.top_level_await_pending {
             return Err(NativeEngineError::Worker {
                 operation: "evaluate JavaScript".into(),
@@ -1529,6 +1534,11 @@ impl NativeEngine {
         self.workers
             .apply_commands(dynamic_worker_commands, &mut self.loader, &owner_url)
             .await?;
+        if !self.workers.take_websocket_commands().is_empty() {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "worker WebSocket requires a process-backed HTTP(S) document".into(),
+            });
+        }
         let frame_scripts = self
             .javascript
             .as_ref()

@@ -43074,6 +43074,110 @@ async fn native_content_process_drives_websocket_text_binary_and_close_events() 
 }
 
 #[tokio::test]
+async fn native_content_process_worker_drives_websocket_text_binary_and_close_events() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(
+            request.split_whitespace().nth(1),
+            Some("/worker-websocket-page")
+        );
+        let body = "<script>globalThis.workerMessages = []; globalThis.worker = new Worker('/worker-websocket.js'); worker.onmessage = event => workerMessages.push(event.data);</script>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(
+            request.split_whitespace().nth(1),
+            Some("/worker-websocket.js")
+        );
+        let body = format!(
+            "const values = []; const socket = new WebSocket('ws://{address}/socket'); socket.binaryType = 'arraybuffer'; socket.onopen = () => {{ socket.send('worker-text'); socket.send(new Uint8Array([1, 2, 3])); }}; socket.onmessage = event => {{ values.push(typeof event.data === 'string' ? event.data : Array.from(new Uint8Array(event.data)).join(',')); if (values.length === 2) {{ postMessage(values); socket.close(1000, 'done'); }} }}; socket.onerror = () => postMessage(['error']);"
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/javascript\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut websocket = accept_async(stream).await.unwrap();
+        websocket
+            .send(Message::Ping(b"worker-keepalive".to_vec().into()))
+            .await
+            .unwrap();
+        websocket
+            .send(Message::Text("server-text".into()))
+            .await
+            .unwrap();
+        websocket
+            .send(Message::Binary(vec![7_u8, 8, 255].into()))
+            .await
+            .unwrap();
+        let mut received = Vec::new();
+        let mut pong_received = false;
+        while received.len() < 2 || !pong_received {
+            match tokio::time::timeout(Duration::from_secs(2), websocket.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+            {
+                Message::Text(value) => received.push(("text", value.to_string().into_bytes())),
+                Message::Binary(value) => received.push(("binary", value.to_vec())),
+                Message::Close(_) => break,
+                Message::Pong(value) => {
+                    assert_eq!(value.as_ref(), b"worker-keepalive");
+                    pong_received = true;
+                }
+                Message::Ping(_) => {}
+                _ => {}
+            }
+        }
+        assert_eq!(
+            received,
+            vec![("text", b"worker-text".to_vec()), ("binary", vec![1, 2, 3]),]
+        );
+        assert!(pong_received);
+        let close = tokio::time::timeout(Duration::from_secs(2), websocket.next())
+            .await
+            .expect("worker WebSocket close timed out")
+            .expect("worker WebSocket closed without a frame")
+            .expect("worker WebSocket close frame failed");
+        assert!(matches!(
+            close,
+            Message::Close(Some(frame))
+                if u16::from(frame.code) == 1000 && frame.reason == "done"
+        ));
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/worker-websocket-page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let mut messages = serde_json::Value::Null;
+    for _ in 0..20 {
+        messages = engine.evaluate_async("workerMessages").await.unwrap();
+        if messages == serde_json::json!([["server-text", "7,8,255"]]) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(messages, serde_json::json!([["server-text", "7,8,255"]]));
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_drives_event_source_named_multiline_events() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

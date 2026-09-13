@@ -24,13 +24,13 @@ use super::javascript::{
     NativeJavaScriptRuntime, NativePageScript, NativePageScriptResult, NativePopupRequest,
     NativePostMessageRequest, NativeScriptCommand, NativeScriptEvaluation, NativeStorageEvent,
     NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
-    NativeWindowProxyUpdate, NativeWorkerMessage, NativeWorkerRegistry,
-    NativeWorkerWebSocketCommand, diff_indexed_db_changes, execute_dynamic_page_scripts,
-    execute_page_scripts, host_event_script, host_hash_change_event_script, host_key_event_script,
-    host_key_event_script_with_modifiers, host_submit_event_script,
-    literal_dynamic_module_specifiers, load_indexed_db_profile, load_web_storage_profile,
-    order_page_scripts, page_script_sources_to_scripts, save_web_storage_profile,
-    static_module_specifiers, storage_key, worker_message_script,
+    NativeWindowProxyUpdate, NativeWorkerEventSourceCommand, NativeWorkerMessage,
+    NativeWorkerRegistry, NativeWorkerWebSocketCommand, diff_indexed_db_changes,
+    execute_dynamic_page_scripts, execute_page_scripts, host_event_script,
+    host_hash_change_event_script, host_key_event_script, host_key_event_script_with_modifiers,
+    host_submit_event_script, literal_dynamic_module_specifiers, load_indexed_db_profile,
+    load_web_storage_profile, order_page_scripts, page_script_sources_to_scripts,
+    save_web_storage_profile, static_module_specifiers, storage_key, worker_message_script,
 };
 use super::layout::NativePoint;
 use super::origin::NativeOrigin;
@@ -3372,6 +3372,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut worker_websocket_connections = BTreeMap::new();
     let mut fetch_stream_connections = BTreeMap::new();
     let mut event_source_connections = BTreeMap::new();
+    let mut worker_event_source_connections = BTreeMap::new();
     let mut storage_state = NativeWebStorageState::default();
     let mut indexed_db_state = NativeIndexedDbState::default();
     let mut storage_profile_path: Option<PathBuf> = None;
@@ -3759,6 +3760,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 worker_websocket_connections.clear();
                 fetch_stream_connections.clear();
                 event_source_connections.clear();
+                worker_event_source_connections.clear();
                 workers.clear();
                 pending_worker_messages.clear();
                 if let Some(runtime) = javascript_runtime.as_ref() {
@@ -3927,6 +3929,11 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                     process_worker_websocket_commands(
                                         workers.take_websocket_commands(),
                                         &mut worker_websocket_connections,
+                                        Some(&*loader),
+                                    )?;
+                                    process_worker_event_source_commands(
+                                        workers.take_event_source_commands(),
+                                        &mut worker_event_source_connections,
                                         Some(&*loader),
                                     )?;
                                     pending_worker_messages.extend(workers.take_messages());
@@ -4105,9 +4112,20 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     &mut worker_websocket_connections,
                     Some(&*loader),
                 )?;
+                process_worker_event_source_commands(
+                    workers.take_event_source_commands(),
+                    &mut worker_event_source_connections,
+                    Some(&*loader),
+                )?;
                 pump_worker_websocket_event(
                     &mut workers,
                     &mut worker_websocket_connections,
+                    loader,
+                )
+                .await?;
+                pump_worker_event_source_event(
+                    &mut workers,
+                    &mut worker_event_source_connections,
                     loader,
                 )
                 .await?;
@@ -4134,6 +4152,11 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 process_worker_websocket_commands(
                     workers.take_websocket_commands(),
                     &mut worker_websocket_connections,
+                    Some(&*loader),
+                )?;
+                process_worker_event_source_commands(
+                    workers.take_event_source_commands(),
+                    &mut worker_event_source_connections,
                     Some(&*loader),
                 )?;
                 pending_worker_messages.extend(workers.take_messages());
@@ -4233,6 +4256,11 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 process_worker_websocket_commands(
                                     workers.take_websocket_commands(),
                                     &mut worker_websocket_connections,
+                                    Some(&*loader),
+                                )?;
+                                process_worker_event_source_commands(
+                                    workers.take_event_source_commands(),
+                                    &mut worker_event_source_connections,
                                     Some(&*loader),
                                 )?;
                                 pending_worker_messages.extend(workers.take_messages());
@@ -7957,6 +7985,81 @@ fn process_worker_websocket_commands(
     Ok(())
 }
 
+fn process_worker_event_source_commands(
+    commands: Vec<NativeWorkerEventSourceCommand>,
+    connections: &mut BTreeMap<(u32, u32), NativeEventSourceConnection>,
+    loader: Option<&NativeResourceLoader>,
+) -> Result<(), NativeEngineError> {
+    for request in commands {
+        let NativeWorkerEventSourceCommand {
+            worker_id,
+            worker_url,
+            command,
+        } = request;
+        match command {
+            NativeScriptCommand::EventSourceOpen {
+                source_id,
+                href,
+                with_credentials,
+                worker_id: Some(command_worker_id),
+            } => {
+                if command_worker_id != worker_id {
+                    return Err(NativeEngineError::invalid(
+                        "native Worker EventSource command",
+                        "EventSource command worker id does not match its owner",
+                    ));
+                }
+                let key = (worker_id, source_id);
+                if connections.contains_key(&key) {
+                    return Err(NativeEngineError::Network {
+                        operation: "Worker EventSource open".into(),
+                        reason: "EventSource identifier is already active".into(),
+                    });
+                }
+                if connections.len() >= MAX_NATIVE_EVENTSOURCE_CONNECTIONS {
+                    return Err(NativeEngineError::limit(
+                        "native Worker EventSource connections",
+                        MAX_NATIVE_EVENTSOURCE_CONNECTIONS,
+                        connections.len().saturating_add(1),
+                    ));
+                }
+                let loader = loader.ok_or_else(|| NativeEngineError::Worker {
+                    operation: "Worker EventSource open".into(),
+                    reason: "content process has no resource loader".into(),
+                })?;
+                validate_url_text("native Worker EventSource URL", &href)?;
+                connections.insert(
+                    key,
+                    spawn_native_event_source(loader, &worker_url, &href, with_credentials),
+                );
+            }
+            NativeScriptCommand::EventSourceClose {
+                source_id,
+                worker_id: Some(command_worker_id),
+            } => {
+                if command_worker_id != worker_id {
+                    return Err(NativeEngineError::invalid(
+                        "native Worker EventSource command",
+                        "EventSource command worker id does not match its owner",
+                    ));
+                }
+                if let Some(connection) = connections.remove(&(worker_id, source_id)) {
+                    let _ = connection
+                        .commands
+                        .try_send(NativeEventSourceCommand::Close);
+                }
+            }
+            _ => {
+                return Err(NativeEngineError::invalid(
+                    "native Worker EventSource command",
+                    "command is not a worker-owned EventSource operation",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn process_fetch_stream_commands(
     commands: Vec<NativeScriptCommand>,
     connections: &mut BTreeMap<u32, NativeFetchStreamConnection>,
@@ -8006,6 +8109,7 @@ fn process_event_source_commands(
                 source_id,
                 href,
                 with_credentials,
+                worker_id: None,
             } => {
                 if connections.contains_key(&source_id) {
                     return Err(NativeEngineError::Network {
@@ -8030,7 +8134,10 @@ fn process_event_source_commands(
                     spawn_native_event_source(loader, document_url, &href, with_credentials),
                 );
             }
-            NativeScriptCommand::EventSourceClose { source_id } => {
+            NativeScriptCommand::EventSourceClose {
+                source_id,
+                worker_id: None,
+            } => {
                 if let Some(connection) = connections.remove(&source_id) {
                     let _ = connection
                         .commands
@@ -8081,6 +8188,25 @@ fn take_worker_websocket_event(
     None
 }
 
+fn take_worker_event_source_event(
+    connections: &mut BTreeMap<(u32, u32), NativeEventSourceConnection>,
+) -> Option<((u32, u32), NativeEventSourceEvent)> {
+    let source_ids = connections.keys().copied().collect::<Vec<_>>();
+    for key in source_ids {
+        let Some(connection) = connections.get_mut(&key) else {
+            continue;
+        };
+        match connection.events.try_recv() {
+            Ok(event) => return Some((key, event)),
+            Err(mpsc::error::TryRecvError::Empty) => {}
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                connections.remove(&key);
+            }
+        }
+    }
+    None
+}
+
 async fn pump_worker_websocket_event(
     workers: &mut NativeWorkerRegistry,
     connections: &mut BTreeMap<(u32, u32), NativeWebSocketConnection>,
@@ -8105,6 +8231,39 @@ async fn pump_worker_websocket_event(
     )?;
     if remove_after_dispatch {
         connections.remove(&(worker_id, socket_id));
+    }
+    Ok(true)
+}
+
+async fn pump_worker_event_source_event(
+    workers: &mut NativeWorkerRegistry,
+    connections: &mut BTreeMap<(u32, u32), NativeEventSourceConnection>,
+    loader: &mut NativeResourceLoader,
+) -> Result<bool, NativeEngineError> {
+    let Some(((worker_id, source_id), event)) = take_worker_event_source_event(connections) else {
+        return Ok(false);
+    };
+    if let NativeEventSourceEvent::Open { cookie_changes, .. } = &event
+        && !cookie_changes.is_empty()
+    {
+        loader.apply_cookie_changes(cookie_changes)?;
+    }
+    let remove_after_dispatch = matches!(&event, NativeEventSourceEvent::Close);
+    workers
+        .dispatch_event_source_event(
+            worker_id,
+            source_id,
+            &event_source_event_payload(&event),
+            loader,
+        )
+        .await?;
+    process_worker_event_source_commands(
+        workers.take_event_source_commands(),
+        connections,
+        Some(&*loader),
+    )?;
+    if remove_after_dispatch {
+        connections.remove(&(worker_id, source_id));
     }
     Ok(true)
 }

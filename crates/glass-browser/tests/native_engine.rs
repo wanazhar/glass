@@ -43178,6 +43178,87 @@ async fn native_content_process_worker_drives_websocket_text_binary_and_close_ev
 }
 
 #[tokio::test]
+async fn native_content_process_worker_drives_event_source_named_events() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for (path, content_type, body) in [
+            (
+                "/worker-eventsource-page",
+                "text/html",
+                "<script>globalThis.workerMessages = []; globalThis.worker = new Worker('/worker-eventsource.js'); worker.onmessage = event => workerMessages.push(event.data);</script>",
+            ),
+            (
+                "/worker-eventsource.js",
+                "text/javascript",
+                "const source = new EventSource('/worker-events'); const events = []; source.addEventListener('open', () => events.push(['open', source.readyState])); source.addEventListener('greeting', event => { events.push([event.type, event.data, event.lastEventId, event.origin]); postMessage(events); source.close(); }); source.onerror = event => postMessage(['error', String(event.message || '')]);",
+            ),
+            (
+                "/worker-events",
+                "text/event-stream",
+                "retry: 5\r\nid: 42\r\nevent: greeting\r\ndata: hello\r\ndata: worker\r\n\r\n",
+            ),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(path));
+            if path == "/worker-events" {
+                assert!(request.lines().any(|line| {
+                    line.split_once(':').is_some_and(|(name, value)| {
+                        name.eq_ignore_ascii_case("accept") && value.trim() == "text/event-stream"
+                    })
+                }));
+            }
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/worker-eventsource-page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let mut messages = serde_json::Value::Null;
+    for _ in 0..20 {
+        messages = engine.evaluate_async("workerMessages").await.unwrap();
+        if messages
+            == serde_json::json!([[
+                ["open", 1],
+                [
+                    "greeting",
+                    "hello\nworker",
+                    "42",
+                    format!("http://{address}")
+                ]
+            ]])
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        messages,
+        serde_json::json!([[
+            ["open", 1],
+            [
+                "greeting",
+                "hello\nworker",
+                "42",
+                format!("http://{address}")
+            ]
+        ]])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_drives_event_source_named_multiline_events() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

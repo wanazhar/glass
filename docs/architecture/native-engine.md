@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-292` slice; the bounded foundation below remains
+`native-engine-browser-293` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 
 Slice 283 adds a bounded dedicated-worker bridge after the page-facing
@@ -108,6 +108,20 @@ Shared/service/worklet workers, automatic background task delivery, complete
 worker Web IDL parity, and complete native/CDP replacement remain Issue #40
 gates. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-292.md`.
+
+Slice 293 adds persistent EventSource/SSE ownership to dedicated workers in
+the HTTP(S) content process. Worker EventSource commands carry their owner
+through the existing script boundary; the content process keys live streams
+by `(worker_id, source_id)`, starts the existing policy-owned event-stream
+transport with the worker URL as its base, applies response-cookie changes to
+the shared loader, and dispatches open, named/multiline message, error, and
+close events back into the isolated worker realm. One bounded stream event is
+dispatched per page turn, and worker close commands terminate the owned stream.
+The local fixture owner fails explicitly when process-backed transport is
+required. Shared/service/worklet workers, automatic background task delivery,
+complete worker Web IDL parity, and complete native/CDP replacement remain
+Issue #40 gates. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-293.md`.
 
 Slice 282 adds a bounded page-facing computed-style and media-query bridge:
 the JavaScript realm reads the native cascade/layout snapshot through a

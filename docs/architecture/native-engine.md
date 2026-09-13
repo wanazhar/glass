@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-319` slice. The native runtime is now the primary
+`native-engine-browser-320` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -19,6 +19,15 @@ existing redaction/store contract, while MCP profile initialization now uses
 the selected Rust-owned native profile (or volatile storage for incognito).
 Task execution, workflow resume, and cross-process persistent sessions remain
 explicit issue #40 integration work.
+
+Slice 320 extends the same ownership boundary to the Task Protocol. Native
+CLI and MCP execution use one revision-guarded adapter for forms, field reads,
+navigation controls, extraction, dialogs, and pagination. Target resolution and
+actionability remain native-engine operations; value and extraction projections
+come from the native document realm and are bounded by the authored task
+limits. Results preserve the shared task receipt and postcondition contract.
+Workflow resume, persistent cross-process sessions, richer region/Web IR
+projection, and final Core Web Profile certification remain issue #40 work.
 
 Slice 283 adds a bounded dedicated-worker bridge after the page-facing
 computed-style/media-query bridge in slice 282. Page-created classic workers

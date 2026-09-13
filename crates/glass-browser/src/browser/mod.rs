@@ -48,6 +48,9 @@ pub mod native_backend;
 /// Feature-gated Glass-owned native browser engine kernel.
 #[cfg(feature = "native-engine")]
 pub mod native_engine;
+/// Native-owned Task Protocol execution adapter.
+#[cfg(feature = "native-engine")]
+mod native_task;
 /// Named local browser sessions that outlive one-shot CLI invocations.
 pub mod persistent;
 /// Security policy engine with capability-based operation gating.

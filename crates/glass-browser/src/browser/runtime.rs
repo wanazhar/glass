@@ -605,6 +605,19 @@ impl BrowserRuntimeSession {
         self.native_semantic_observation().await
     }
 
+    /// Execute one authored Glass Task Protocol request entirely in the
+    /// native runtime. The adapter preserves the task envelope and revision
+    /// contract used by the CDP session without creating a CDP session.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_execute_task(
+        &self,
+        task: &crate::task_protocol::GlassTask,
+        expected_revision: u64,
+        confirmed: bool,
+    ) -> BrowserResult<super::session::TaskExecutionResult> {
+        super::native_task::execute(self, task, expected_revision, confirmed).await
+    }
+
     /// Resolve native candidates through the same pure intent resolver used by
     /// the Chromium session, backed by one current native observation.
     #[cfg(feature = "native-engine")]

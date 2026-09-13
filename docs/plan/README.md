@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-307` locally. The versioned
+`native-engine-browser-308` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -253,6 +253,14 @@ realms. It preserves base64url key bytes and standard algorithm/usage metadata,
 rejects contradictory `ext`/`key_ops` or algorithm fields, and proves the
 restored keys with real crypto operations. Its focused evidence is recorded in
 [tasks/native-engine-browser-307.md](tasks/native-engine-browser-307.md).
+
+The completed native-engine-browser-308 Web Crypto block-mode slice adds
+bounded AES-CBC and AES-CTR operations in page and dedicated-worker realms.
+Raw import, generation, and derived-key targets support 128/192/256-bit keys;
+CBC enforces a 16-byte IV and PKCS#7 padding, while CTR enforces a 16-byte
+counter and 1..128-bit low-order counter length. Its NIST vectors, typed
+errors, page/worker parity, and key-size coverage are recorded in
+[tasks/native-engine-browser-308.md](tasks/native-engine-browser-308.md).
 
 The completed native-engine-browser-299 page-runtime-primitives slice adds
 page `TextEncoder`/`TextDecoder`, bounded `atob`/`btoa`,

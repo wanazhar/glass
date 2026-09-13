@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-307` slice; the bounded foundation below remains
+`native-engine-browser-308` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 
 Slice 283 adds a bounded dedicated-worker bridge after the page-facing
@@ -255,6 +255,18 @@ extractable keys can export JWK bytes. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-307.md`; asymmetric JWK/PKCS profiles,
 complete Web IDL semantics, and final native/CDP replacement gates remain
 issue #40 work.
+
+Slice 308 adds bounded AES-CBC and AES-CTR Web Crypto secret-key operations
+to page and dedicated-worker realms. Raw import, generation, and derived-key
+targets accept 128/192/256-bit keys; CBC uses a required 16-byte IV with
+PKCS#7 padding and strict padding rejection, while CTR validates a 16-byte
+counter and increments only its declared 1..128 low-order bits. RustCrypto
+owns the block operation and the existing realm-local key, input, and output
+limits remain in force. CBC/CTR keys remain outside the GCM-only JWK and
+wrapping paths until their serialization and authenticated-wrapping contracts
+are defined. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-308.md`; complete Web Crypto/Web IDL
+semantics and final native/CDP replacement gates remain issue #40 work.
 
 Slice 282 adds a bounded page-facing computed-style and media-query bridge:
 the JavaScript realm reads the native cascade/layout snapshot through a

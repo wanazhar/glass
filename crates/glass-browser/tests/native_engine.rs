@@ -505,6 +505,161 @@ async fn native_runtime_exposes_shared_semantic_session_contracts() {
 }
 
 #[tokio::test]
+async fn native_runtime_reconciles_references_and_applies_environment_overrides() {
+    let session =
+        BrowserRuntimeSession::connect_native(NativeEngineConfig::default().with_initial_url(
+            "data:text/html,%3Ctitle%3EParity%3C%2Ftitle%3E%3Cbutton%3ESave%3C%2Fbutton%3E",
+        ))
+        .await
+        .unwrap();
+    let observation = session
+        .native_semantic_observe(SemanticObservationLevel::Structured)
+        .await
+        .unwrap();
+    let button = observation
+        .regions
+        .iter()
+        .flat_map(|region| region.targets.iter())
+        .find(|target| target.role == "button")
+        .unwrap();
+    let reconciled = session
+        .native_reconcile_references(
+            observation.revision,
+            std::slice::from_ref(&button.reference),
+            &Default::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(reconciled.preserved, 1);
+    assert_eq!(reconciled.relocated, 0);
+    assert!(matches!(
+        reconciled.mappings.as_slice(),
+        [glass_browser::browser::session::ReferenceMapping::Preserved { .. }]
+    ));
+
+    session
+        .native_set_user_agent(
+            Some("GlassTest/1.0"),
+            Some("fr-FR,fr;q=0.8"),
+            Some("GlassTestOS"),
+        )
+        .await
+        .unwrap();
+    let identity = session
+        .script("({ ua: navigator.userAgent, language: navigator.language, platform: navigator.platform })")
+        .await
+        .unwrap();
+    assert_eq!(
+        identity.value,
+        serde_json::json!({
+            "ua": "GlassTest/1.0",
+            "language": "fr-FR",
+            "platform": "GlassTestOS",
+        })
+    );
+
+    session
+        .native_set_geolocation(Some(&glass_browser::browser::session::GeoLocation {
+            latitude: 51.5,
+            longitude: -0.1,
+            accuracy: Some(5.0),
+        }))
+        .await
+        .unwrap();
+    let location = session
+        .script(
+            "(() => { let value = null; navigator.geolocation.getCurrentPosition(position => value = position.coords); return value; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(location.value["latitude"], 51.5);
+    assert_eq!(location.value["longitude"], -0.1);
+
+    session
+        .native_set_timezone(Some("America/New_York"))
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("globalThis.__glassTimezoneId")
+            .await
+            .unwrap()
+            .value,
+        "America/New_York"
+    );
+    session.native_set_cpu_throttling(Some(2.0)).await.unwrap();
+    session.native_set_cpu_throttling(None).await.unwrap();
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_supports_form_pdf_clipboard_and_consent_surfaces() {
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default()
+            .with_fixture(
+                "fixture://native-surfaces",
+                "<form><label for='name'>Name</label><input id='name' type='text'><label><input id='remember' type='checkbox'>Remember</label><select id='country'><option value='uk'>United Kingdom</option><option value='us'>United States</option></select></form><div id='onetrust-banner-sdk'><button id='onetrust-accept-btn-handler'>Accept</button></div>",
+            )
+            .unwrap()
+            .with_initial_url("fixture://native-surfaces"),
+    )
+    .await
+    .unwrap();
+    let revision = session.native_observe().await.unwrap().revision;
+    let fields = [
+        ("id=name", "Ada"),
+        ("id=remember", "true"),
+        ("id=country", "us"),
+    ];
+    let outcome = session
+        .native_fill_form(&fields, Some(revision))
+        .await
+        .unwrap();
+    assert_eq!(outcome.filled, 3);
+    assert_eq!(outcome.total, 3);
+    assert!(outcome.fields.iter().all(|field| field.success));
+    let values = session
+        .script(
+            "({ name: document.getElementById('name').value, remember: document.getElementById('remember').checked, country: document.getElementById('country').value })",
+        )
+        .await
+        .unwrap()
+        .value;
+    assert_eq!(values["name"], "Ada");
+    assert_eq!(values["remember"], true);
+    assert_eq!(values["country"], "us");
+
+    let pdf = session
+        .native_print_to_pdf(&glass_browser::browser::session::PdfOptions::letter())
+        .await
+        .unwrap();
+    let pdf = base64::engine::general_purpose::STANDARD
+        .decode(pdf)
+        .unwrap();
+    assert!(pdf.starts_with(b"%PDF-1.4"));
+    assert!(
+        pdf.windows(b"United States".len())
+            .any(|window| window == b"United States")
+    );
+
+    session
+        .native_clipboard_write("native clipboard")
+        .await
+        .unwrap();
+    assert_eq!(
+        session.native_clipboard_read().await.unwrap(),
+        "native clipboard"
+    );
+
+    let consent = session.native_dismiss_consent().await.unwrap();
+    assert!(matches!(
+        consent,
+        glass_browser::browser::session::ConsentDismissalOutcome::Dismissed
+    ));
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_runtime_extracts_validated_live_web_ir() {
     let session = BrowserRuntimeSession::connect_native(
         NativeEngineConfig::default().with_initial_url(

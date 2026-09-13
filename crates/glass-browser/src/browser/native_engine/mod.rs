@@ -13,6 +13,7 @@ mod css;
 mod diagnostics;
 mod dom;
 mod engine;
+mod environment;
 mod error;
 mod history;
 mod image;

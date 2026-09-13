@@ -12,6 +12,7 @@ use super::dom::{
     NativeDocument, NativePageScriptSource, NativePageScriptTiming, NativeScriptDocumentSnapshot,
     NativeScriptElementSnapshot,
 };
+use super::environment::NativeEnvironmentOverrides;
 use super::error::NativeEngineError;
 use super::interaction::{
     MAX_NATIVE_FILE_BYTES, MAX_NATIVE_FORM_BODY_BYTES, MAX_NATIVE_SCRIPT_COMMAND_BYTES,
@@ -6277,6 +6278,7 @@ pub(crate) struct NativeJavaScriptRuntime {
     runtime: Runtime,
     context: Context,
     deadline: Arc<Mutex<Option<Instant>>>,
+    environment: Arc<Mutex<NativeEnvironmentOverrides>>,
     module_sources: Arc<Mutex<BTreeMap<String, String>>>,
     timer_pump_enabled: Arc<Mutex<bool>>,
     storage: Arc<Mutex<NativeWebStorageState>>,
@@ -6405,6 +6407,7 @@ impl NativeJavaScriptRuntime {
             runtime,
             context,
             deadline,
+            environment: Arc::new(Mutex::new(NativeEnvironmentOverrides::default())),
             module_sources,
             timer_pump_enabled: Arc::new(Mutex::new(true)),
             storage: Arc::new(Mutex::new(NativeWebStorageState::default())),
@@ -6437,6 +6440,19 @@ impl NativeJavaScriptRuntime {
             ready_state: "complete".into(),
             clock_origin: Instant::now(),
         })
+    }
+
+    pub(crate) fn set_environment(&self, environment: NativeEnvironmentOverrides) {
+        if let Ok(mut current) = self.environment.lock() {
+            *current = environment;
+        }
+    }
+
+    fn environment(&self) -> NativeEnvironmentOverrides {
+        self.environment
+            .lock()
+            .map(|environment| environment.clone())
+            .unwrap_or_default()
     }
 
     pub(crate) fn window_name(&self) -> String {
@@ -7640,6 +7656,7 @@ impl NativeJavaScriptRuntime {
             self.frame_script_context().as_ref(),
             self.timer_pump_enabled(),
             include_layout,
+            &self.environment(),
         )?;
         let deadline = Instant::now() + NATIVE_SCRIPT_TIMEOUT;
         if let Ok(mut current) = self.deadline.lock() {
@@ -8287,6 +8304,7 @@ impl NativeJavaScriptRuntime {
             self.frame_script_context().as_ref(),
             self.timer_pump_enabled(),
             true,
+            &self.environment(),
         )?;
         let deadline = Instant::now() + NATIVE_SCRIPT_TIMEOUT;
         if let Ok(mut current) = self.deadline.lock() {
@@ -12742,6 +12760,7 @@ fn document_bootstrap(
     frame_context: Option<&NativeFrameScriptContext>,
     run_timers: bool,
     include_layout: bool,
+    environment: &NativeEnvironmentOverrides,
 ) -> Result<String, NativeEngineError> {
     let native_file_bytes = MAX_NATIVE_FILE_BYTES;
     let native_form_body_bytes = MAX_NATIVE_FORM_BODY_BYTES;
@@ -12785,6 +12804,12 @@ fn document_bootstrap(
         "frames": frame_bindings,
         "frame_context": frame_context,
         "device_scale_factor_milli": viewport.device_scale_factor_milli,
+        "user_agent": environment.user_agent(),
+        "accept_language": environment.accept_language(),
+        "platform": environment.platform(),
+        "geolocation": &environment.geolocation,
+        "timezone_id": &environment.timezone_id,
+        "cpu_throttling_rate": environment.cpu_throttling_rate,
     }))
     .map_err(|_| NativeEngineError::Worker {
         operation: "serialize JavaScript host view".into(),
@@ -13055,6 +13080,9 @@ fn document_bootstrap(
   const idleCallbacks = globalThis.__glassIdleCallbacks instanceof Map
     ? globalThis.__glassIdleCallbacks
     : new Map();
+  const cpuThrottleRate = Number(host.cpu_throttling_rate) > 0
+    ? Number(host.cpu_throttling_rate)
+    : 1;
   let nextAnimationFrameId = Number.isSafeInteger(globalThis.__glassNextAnimationFrameId)
     ? globalThis.__glassNextAnimationFrameId
     : 1;
@@ -13077,8 +13105,8 @@ fn document_bootstrap(
     timers.set(id, {{
       callback,
       args,
-      dueAt: host.now_ms + normalizedDelay,
-      intervalMs: repeating ? Math.max(1, normalizedDelay) : 0,
+      dueAt: host.now_ms + (normalizedDelay * cpuThrottleRate),
+      intervalMs: repeating ? Math.max(1, normalizedDelay * cpuThrottleRate) : 0,
       cancelled: false,
     }});
     return id;
@@ -13101,7 +13129,7 @@ fn document_bootstrap(
     globalThis.__glassNextAnimationFrameId = nextAnimationFrameId;
     animationFrames.set(id, {{
       callback,
-      dueAt: host.now_ms + 16,
+      dueAt: host.now_ms + (16 * cpuThrottleRate),
     }});
     return id;
   }};
@@ -22489,7 +22517,47 @@ fn document_bootstrap(
     }}
   }};
   globalThis.scroll = globalThis.scrollTo;
-  globalThis.navigator = globalThis.navigator || {{ userAgent: "GlassNative" }};
+  const nativeNavigator = globalThis.navigator && typeof globalThis.navigator === "object"
+    ? globalThis.navigator
+    : {{}};
+  const navigatorLanguages = String(host.accept_language || "en-US")
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+  const setNavigatorProperty = (name, value) => {{
+    try {{ nativeNavigator[name] = value; }} catch (_) {{
+      try {{ Object.defineProperty(nativeNavigator, name, {{ value, configurable: true }}); }} catch (_) {{}}
+    }}
+  }};
+  setNavigatorProperty("userAgent", String(host.user_agent || "GlassNative"));
+  setNavigatorProperty("platform", String(host.platform || "GlassNative"));
+  setNavigatorProperty("language", navigatorLanguages[0] || "en-US");
+  setNavigatorProperty("languages", navigatorLanguages.length > 0 ? navigatorLanguages : ["en-US"]);
+  const locationOverride = host.geolocation && typeof host.geolocation === "object"
+    ? host.geolocation
+    : null;
+  const geolocation = {{
+    getCurrentPosition(success, error) {{
+      if (locationOverride && typeof success === "function") {{
+        success({{ coords: {{
+          latitude: Number(locationOverride.latitude),
+          longitude: Number(locationOverride.longitude),
+          accuracy: Number(locationOverride.accuracy),
+          altitude: null, altitudeAccuracy: null, heading: null, speed: null,
+        }}, timestamp: Date.now() }});
+      }} else if (typeof error === "function") {{
+        error({{ code: 1, message: "User denied Geolocation" }});
+      }}
+    }},
+    watchPosition(success, error) {{
+      this.getCurrentPosition(success, error);
+      return 1;
+    }},
+    clearWatch(_) {{}},
+  }};
+  setNavigatorProperty("geolocation", geolocation);
+  globalThis.__glassTimezoneId = host.timezone_id ? String(host.timezone_id) : "UTC";
+  try {{ globalThis.navigator = nativeNavigator; }} catch (_) {{}}
   const pageCryptoPool = globalThis.__glassPageCryptoPool instanceof Array
     ? globalThis.__glassPageCryptoPool
     : [];

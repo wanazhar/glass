@@ -619,6 +619,7 @@ fn validate_alternative_runtime_command(
         {
             Ok(())
         }
+        Commands::ReconcileRefs { .. } if native => Ok(()),
         Commands::ClickExpectPopup { .. } if native => Ok(()),
         Commands::DoubleClick { .. } | Commands::Hover { .. } | Commands::Drag { .. } if native => {
             Ok(())
@@ -654,6 +655,15 @@ fn validate_alternative_runtime_command(
             Ok(())
         }
         Commands::AcceptDialog | Commands::DismissDialog if native => Ok(()),
+        Commands::DismissConsent
+        | Commands::Pdf { .. }
+        | Commands::FillForm { .. }
+        | Commands::ClipboardRead
+        | Commands::ClipboardWrite { .. }
+            if native =>
+        {
+            Ok(())
+        }
         Commands::Download { .. } if native => Ok(()),
         Commands::Upload { .. } if native => Ok(()),
         Commands::Snapshot {
@@ -1116,6 +1126,31 @@ async fn run_alternative_runtime_command(
                     &read_json_input(Some(input))?,
                 )?)?;
                 alternative_json_output(&session.native_find_target(&request).await?, response_mode)
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
+        }
+        Commands::ReconcileRefs {
+            from_revision,
+            hints,
+            scope,
+            refs,
+        } if session.runtime().is_native() => {
+            #[cfg(feature = "native-engine")]
+            {
+                let options = ReconciliationOptions {
+                    hints: hints
+                        .iter()
+                        .map(|hint| Locator::parse(hint))
+                        .collect::<BrowserResult<Vec<_>>>()?,
+                    scope_ref: scope.clone(),
+                };
+                alternative_json_output(
+                    &session
+                        .native_reconcile_references(*from_revision, refs, &options)
+                        .await?,
+                    response_mode,
+                )
             }
             #[cfg(not(feature = "native-engine"))]
             unreachable!("native runtime is feature-gated")
@@ -1621,6 +1656,86 @@ async fn run_alternative_runtime_command(
                     .native_resolve_dialog(crate::browser_backend::PromptDecision::Dismiss)
                     .await?;
                 alternative_json_output(&result, response_mode)
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
+        }
+        Commands::DismissConsent if session.runtime().is_native() => {
+            policy.require(PolicyCapability::ConsentDismissal)?;
+            #[cfg(feature = "native-engine")]
+            {
+                alternative_json_output(&session.native_dismiss_consent().await?, response_mode)
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
+        }
+        Commands::Pdf { output, background } if session.runtime().is_native() => {
+            #[cfg(feature = "native-engine")]
+            {
+                let output = policy.require_output_path(std::path::Path::new(output))?;
+                let mut options = PdfOptions::letter();
+                options.print_background = Some(*background);
+                let data = session.native_print_to_pdf(&options).await?;
+                let bytes = base64::engine::general_purpose::STANDARD.decode(data)?;
+                tokio::fs::write(&output, &bytes).await?;
+                Ok(AlternativeRuntimeOutput::Text(format!(
+                    "PDF saved to {} ({} bytes)",
+                    output.display(),
+                    bytes.len()
+                )))
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
+        }
+        Commands::FillForm {
+            fields,
+            expected_revision,
+        } if session.runtime().is_native() => {
+            #[cfg(feature = "native-engine")]
+            {
+                let parsed: Vec<serde_json::Value> = serde_json::from_str(fields)?;
+                let field_refs = parsed
+                    .iter()
+                    .map(|value| {
+                        let target = value["target"]
+                            .as_str()
+                            .ok_or("fill-form field target is required")?;
+                        let field_value = value["value"]
+                            .as_str()
+                            .ok_or("fill-form field value is required")?;
+                        Ok((target.to_owned(), field_value.to_owned()))
+                    })
+                    .collect::<BrowserResult<Vec<_>>>()?;
+                let field_refs = field_refs
+                    .iter()
+                    .map(|(target, value)| (target.as_str(), value.as_str()))
+                    .collect::<Vec<_>>();
+                alternative_json_output(
+                    &session
+                        .native_fill_form(&field_refs, *expected_revision)
+                        .await?,
+                    response_mode,
+                )
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
+        }
+        Commands::ClipboardRead if session.runtime().is_native() => {
+            #[cfg(feature = "native-engine")]
+            {
+                alternative_json_output(
+                    &serde_json::json!({"text": session.native_clipboard_read().await?}),
+                    response_mode,
+                )
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
+        }
+        Commands::ClipboardWrite { text } if session.runtime().is_native() => {
+            #[cfg(feature = "native-engine")]
+            {
+                session.native_clipboard_write(text).await?;
+                alternative_json_output(&serde_json::json!({"ok": true}), response_mode)
             }
             #[cfg(not(feature = "native-engine"))]
             unreachable!("native runtime is feature-gated")

@@ -1075,6 +1075,81 @@ async fn native_local_module_worker_imports_dependencies_and_handles_messages() 
 }
 
 #[tokio::test]
+async fn native_local_worker_exposes_url_search_params_and_navigator() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://worker-runtime-page",
+            "<html><body><main>Native</main></body></html>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://worker-runtime-script",
+            "const url = new URL('https://example.test:8443/data?x=1&x=2#frag'); const relative = new URL('../asset?mode=1', 'https://example.test:8443/path/worker.js'); const params = new URLSearchParams('b=2&a=1&a=3'); params.sort(); params.append('space', 'hello world'); params.set('b', '4'); params.delete('missing'); postMessage({ sameGlobal: self === globalThis, hasDocument: typeof document !== 'undefined', location: [location.href, location.protocol, location.host, location.hostname, location.port, location.pathname], url: [url.href, url.origin, url.host, url.hostname, url.port, url.pathname, url.search, url.hash, url.searchParams.getAll('x')], relative: [relative.href, relative.pathname, relative.search], params: [params.toString(), params.getAll('a'), params.get('b'), params.has('space', 'hello world'), params.size, typeof URL, typeof URLSearchParams], navigator: [navigator.userAgent, navigator.language, navigator.languages[0], navigator.onLine, navigator.cookieEnabled, navigator.hardwareConcurrency] });",
+        )
+        .unwrap()
+        .with_initial_url("fixture://worker-runtime-page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+        "globalThis.workerMessages = []; globalThis.workerErrors = []; globalThis.worker = new Worker('fixture://worker-runtime-script'); worker.onmessage = event => workerMessages.push(event.data); worker.onerror = event => workerErrors.push(event.message); true",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("({ messages: workerMessages, errors: workerErrors })")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "messages": [{
+                "sameGlobal": true,
+                "hasDocument": false,
+                "location": [
+                    "fixture://worker-runtime-script",
+                "fixture:",
+                "worker-runtime-script",
+                "worker-runtime-script",
+                "",
+                "",
+            ],
+            "url": [
+                    "https://example.test:8443/data?x=1&x=2#frag",
+                    "https://example.test:8443",
+                    "example.test:8443",
+                    "example.test",
+                    "8443",
+                    "/data",
+                    "?x=1&x=2",
+                    "#frag",
+                    ["1", "2"],
+                ],
+                "relative": [
+                    "https://example.test:8443/asset?mode=1",
+                    "/asset",
+                    "?mode=1",
+                ],
+                "params": [
+                    "a=1&a=3&b=4&space=hello+world",
+                    ["1", "3"],
+                    "4",
+                    true,
+                    4,
+                    "function",
+                    "function",
+                ],
+                "navigator": ["GlassNative", "en-US", "en-US", true, true, 1],
+            }],
+            "errors": [],
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_runs_worker_created_during_page_load() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

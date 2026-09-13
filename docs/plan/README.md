@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-293` locally. The versioned
+`native-engine-browser-294` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -154,6 +154,17 @@ control, cookie-change propagation, and owner-tagged close commands. Shared,
 service, and worklet workers, automatic background task delivery, complete
 worker Web IDL parity, and the wider native replacement gates remain open on
 issue #40.
+
+The completed native-engine-browser-294 slice is
+[native-engine-browser-294](tasks/native-engine-browser-294.md). It adds the
+worker runtime identity ordinary scripts expect: bounded `URL` parsing and
+relative resolution, `URLSearchParams` construction/mutation/iteration, a
+structured worker `location`, and a stable bounded `navigator` snapshot. The
+local isolated-worker contract covers query decoding/encoding, duplicate
+parameters, sorting, host/hostname/port decomposition, and worker-global
+identity. Full URL and Web IDL conformance, live URL/search-parameter
+synchronization, shared/service/worklet workers, automatic background task
+delivery, and the wider native replacement gates remain open on issue #40.
 
 The completed EventSource/SSE slice is
 [native-engine-browser-253](tasks/native-engine-browser-253.md). It adds a

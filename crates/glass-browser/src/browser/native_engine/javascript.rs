@@ -29,6 +29,10 @@ use aes_gcm::aead::consts::U12;
 use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::{AesGcm, Nonce};
 use base64::Engine as _;
+use ed25519_dalek::{
+    Signature as Ed25519Signature, Signer as Ed25519Signer, SigningKey,
+    Verifier as Ed25519Verifier, VerifyingKey,
+};
 use fs2::FileExt;
 use hmac::{Hmac, Mac};
 use rquickjs::function::This;
@@ -7074,6 +7078,36 @@ fn native_hmac_bytes(hash: &str, key: &[u8], data: &[u8]) -> Result<Vec<u8>, Err
     }
 }
 
+fn native_ed25519_public_bytes(private_key: &[u8]) -> Result<Vec<u8>, Error> {
+    let private_key: &[u8; 32] = private_key.try_into().map_err(|_| Error::Unknown)?;
+    Ok(SigningKey::from_bytes(private_key)
+        .verifying_key()
+        .to_bytes()
+        .to_vec())
+}
+
+fn native_ed25519_validate_public_bytes(public_key: &[u8]) -> Result<(), Error> {
+    let public_key: &[u8; 32] = public_key.try_into().map_err(|_| Error::Unknown)?;
+    VerifyingKey::from_bytes(public_key)
+        .map(|_| ())
+        .map_err(|_| Error::Unknown)
+}
+
+fn native_ed25519_sign(private_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Error> {
+    let private_key: &[u8; 32] = private_key.try_into().map_err(|_| Error::Unknown)?;
+    Ok(SigningKey::from_bytes(private_key)
+        .sign(data)
+        .to_bytes()
+        .to_vec())
+}
+
+fn native_ed25519_verify(public_key: &[u8], signature: &[u8], data: &[u8]) -> Result<bool, Error> {
+    let public_key: &[u8; 32] = public_key.try_into().map_err(|_| Error::Unknown)?;
+    let verifying_key = VerifyingKey::from_bytes(public_key).map_err(|_| Error::Unknown)?;
+    let signature = Ed25519Signature::from_slice(signature).map_err(|_| Error::Unknown)?;
+    Ok(verifying_key.verify(data, &signature).is_ok())
+}
+
 fn native_hash_length(hash: &str) -> Option<usize> {
     match hash.trim().to_ascii_uppercase().as_str() {
         "SHA-1" => Some(20),
@@ -7342,6 +7376,33 @@ mod native_aes_tests {
     }
 }
 
+#[cfg(test)]
+mod native_ed25519_tests {
+    use super::*;
+
+    fn hex(value: &str) -> Vec<u8> {
+        (0..value.len())
+            .step_by(2)
+            .map(|index| u8::from_str_radix(&value[index..index + 2], 16).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn ed25519_matches_rfc8032_vector() {
+        let private_key = hex("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60");
+        let public_key = hex("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a");
+        let signature = hex(
+            "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b",
+        );
+        assert_eq!(
+            native_ed25519_public_bytes(&private_key).unwrap(),
+            public_key
+        );
+        assert_eq!(native_ed25519_sign(&private_key, &[]).unwrap(), signature);
+        assert!(native_ed25519_verify(&public_key, &signature, &[]).unwrap());
+    }
+}
+
 fn install_native_crypto_sources<'js>(ctx: rquickjs::Ctx<'js>) -> Result<(), NativeEngineError> {
     let random_source = Function::new(
         ctx.clone(),
@@ -7404,6 +7465,52 @@ fn install_native_crypto_sources<'js>(ctx: rquickjs::Ctx<'js>) -> Result<(), Nat
     .map_err(|_| NativeEngineError::Worker {
         operation: "install native crypto HMAC".into(),
         reason: "native crypto HMAC could not be installed".into(),
+    })?;
+    let ed25519_source = Function::new(
+        ctx.clone(),
+        |operation: String,
+         key_encoded: String,
+         data_encoded: String,
+         signature_encoded: String|
+         -> std::result::Result<String, Error> {
+            let key = base64::engine::general_purpose::STANDARD
+                .decode(key_encoded)
+                .map_err(|_| Error::Unknown)?;
+            let data = base64::engine::general_purpose::STANDARD
+                .decode(data_encoded)
+                .map_err(|_| Error::Unknown)?;
+            let signature = base64::engine::general_purpose::STANDARD
+                .decode(signature_encoded)
+                .map_err(|_| Error::Unknown)?;
+            if key.len() != 32
+                || data.len() > MAX_NATIVE_FORM_BODY_BYTES
+                || signature.len() > MAX_NATIVE_FORM_BODY_BYTES
+            {
+                return Err(Error::Unknown);
+            }
+            match operation.trim().to_ascii_lowercase().as_str() {
+                "public" => Ok(base64::engine::general_purpose::STANDARD
+                    .encode(native_ed25519_public_bytes(&key)?)),
+                "validate" if data.is_empty() && signature.is_empty() => {
+                    native_ed25519_validate_public_bytes(&key)?;
+                    Ok("1".into())
+                }
+                "sign" if signature.is_empty() => Ok(base64::engine::general_purpose::STANDARD
+                    .encode(native_ed25519_sign(&key, &data)?)),
+                "verify" if signature.len() == 64 => {
+                    Ok(if native_ed25519_verify(&key, &signature, &data)? {
+                        "1".into()
+                    } else {
+                        "0".into()
+                    })
+                }
+                _ => Err(Error::Unknown),
+            }
+        },
+    )
+    .map_err(|_| NativeEngineError::Worker {
+        operation: "install native Ed25519 source".into(),
+        reason: "native Ed25519 source could not be installed".into(),
     })?;
     let aes_gcm_source = Function::new(
         ctx.clone(),
@@ -7592,6 +7699,12 @@ fn install_native_crypto_sources<'js>(ctx: rquickjs::Ctx<'js>) -> Result<(), Nat
         .map_err(|_| NativeEngineError::Worker {
             operation: "install native crypto HMAC".into(),
             reason: "native crypto HMAC could not be published".into(),
+        })?;
+    ctx.globals()
+        .set("__glassNativeCryptoEd25519", ed25519_source)
+        .map_err(|_| NativeEngineError::Worker {
+            operation: "install native Ed25519 source".into(),
+            reason: "native Ed25519 source could not be published".into(),
         })?;
     ctx.globals()
         .set("__glassNativeCryptoAesGcm", aes_gcm_source)
@@ -9062,6 +9175,100 @@ fn worker_bootstrap(
     );
     return decodeWorkerBase64(encoded, {fetch_body_limit});
   }};
+  const workerCryptoEd25519Source = typeof globalThis.__glassNativeCryptoEd25519 === "function"
+    ? globalThis.__glassNativeCryptoEd25519
+    : null;
+  const workerCryptoEd25519Algorithm = (algorithm) => {{
+    const name = algorithm && typeof algorithm === "object" ? algorithm.name : algorithm;
+    if (String(name || "").toUpperCase() !== "ED25519")
+      throw new WorkerDOMExceptionNative("native Worker crypto algorithm is unsupported", "NotSupportedError");
+  }};
+  const workerCryptoEd25519Usages = (values) => {{
+    if (!Array.isArray(values)) throw new TypeError("native Worker Ed25519 usages must be an array");
+    const usages = [];
+    for (const value of values) {{
+      const usage = String(value);
+      if (!["sign", "verify"].includes(usage) || usages.includes(usage))
+        throw new SyntaxError("native Worker Ed25519 usage is invalid or duplicated");
+      usages.push(usage);
+    }}
+    return usages;
+  }};
+  const workerCryptoEd25519PublicKey = (privateBytes) => {{
+    if (!workerCryptoEd25519Source)
+      throw new WorkerDOMExceptionNative("native Worker Ed25519 is unavailable", "OperationError");
+    const encoded = workerCryptoEd25519Source(
+      "public",
+      encodeWorkerBase64(privateBytes, {fetch_body_limit}),
+      "",
+      "",
+    );
+    const bytes = decodeWorkerBase64(encoded, {fetch_body_limit});
+    if (bytes.length !== 32)
+      throw new WorkerDOMExceptionNative("native Worker Ed25519 public key is invalid", "OperationError");
+    return bytes;
+  }};
+  const workerCryptoEd25519Bytes = (operation, state, data, signature = []) => {{
+    if (!workerCryptoEd25519Source)
+      throw new WorkerDOMExceptionNative("native Worker Ed25519 is unavailable", "OperationError");
+    const encoded = workerCryptoEd25519Source(
+      operation,
+      encodeWorkerBase64(state.bytes, {fetch_body_limit}),
+      encodeWorkerBase64(data, {fetch_body_limit}),
+      encodeWorkerBase64(signature, {fetch_body_limit}),
+    );
+    if (operation === "verify") return encoded === "1";
+    return decodeWorkerBase64(encoded, {fetch_body_limit});
+  }};
+  const workerCryptoMakeEd25519PublicKey = (bytes, extractable, usages) => {{
+    if (!workerCryptoEd25519Source)
+      throw new WorkerDOMExceptionNative("native Worker Ed25519 is unavailable", "OperationError");
+    try {{
+      if (workerCryptoEd25519Source(
+        "validate",
+        encodeWorkerBase64(bytes, {fetch_body_limit}),
+        "",
+        "",
+      ) !== "1") throw new Error("invalid public key");
+    }} catch (_error) {{
+      throw new WorkerDOMExceptionNative("native Worker Ed25519 public key is invalid", "DataError");
+    }}
+    const key = Object.create(WorkerCryptoKeyNative.prototype);
+    const algorithm = Object.freeze({{ name: "Ed25519" }});
+    const normalizedUsages = Object.freeze(usages.slice());
+    Object.defineProperties(key, {{
+      type: {{ configurable: false, enumerable: true, value: "public" }},
+      extractable: {{ configurable: false, enumerable: true, value: Boolean(extractable) }},
+      algorithm: {{ configurable: false, enumerable: true, value: algorithm }},
+      usages: {{ configurable: false, enumerable: true, value: normalizedUsages }},
+    }});
+    workerCryptoKeyStore.set(key, {{
+      kind: "ED25519-PUBLIC",
+      bytes: bytes.slice(),
+      extractable: Boolean(extractable),
+      usages: normalizedUsages,
+    }});
+    return Object.freeze(key);
+  }};
+  const workerCryptoMakeEd25519PrivateKey = (privateBytes, publicBytes, extractable, usages) => {{
+    const key = Object.create(WorkerCryptoKeyNative.prototype);
+    const algorithm = Object.freeze({{ name: "Ed25519" }});
+    const normalizedUsages = Object.freeze(usages.slice());
+    Object.defineProperties(key, {{
+      type: {{ configurable: false, enumerable: true, value: "private" }},
+      extractable: {{ configurable: false, enumerable: true, value: Boolean(extractable) }},
+      algorithm: {{ configurable: false, enumerable: true, value: algorithm }},
+      usages: {{ configurable: false, enumerable: true, value: normalizedUsages }},
+    }});
+    workerCryptoKeyStore.set(key, {{
+      kind: "ED25519-PRIVATE",
+      bytes: privateBytes.slice(),
+      publicBytes: publicBytes.slice(),
+      extractable: Boolean(extractable),
+      usages: normalizedUsages,
+    }});
+    return Object.freeze(key);
+  }};
   const workerCryptoDeriveSource = typeof globalThis.__glassNativeCryptoDerive === "function"
     ? globalThis.__glassNativeCryptoDerive
     : null;
@@ -9180,6 +9387,24 @@ fn worker_bootstrap(
     if (!algorithm || typeof algorithm !== "object")
       throw new WorkerDOMExceptionNative("native crypto key algorithm is required", "TypeError");
     const algorithmName = String(algorithm.name || "").toUpperCase();
+    if (algorithmName === "ED25519") {{
+      const usages = workerCryptoEd25519Usages(keyUsages);
+      const privateBytes = workerCryptoTake(32);
+      const publicBytes = workerCryptoEd25519PublicKey(privateBytes);
+      return Object.freeze({{
+        privateKey: workerCryptoMakeEd25519PrivateKey(
+          privateBytes,
+          publicBytes,
+          extractable,
+          usages.filter(usage => usage === "sign"),
+        ),
+        publicKey: workerCryptoMakeEd25519PublicKey(
+          publicBytes,
+          true,
+          usages.filter(usage => usage === "verify"),
+        ),
+      }});
+    }}
     if (algorithmName === "HMAC") {{
       const hashName = workerCryptoHashName(algorithm.hash);
       const length = algorithm.length === undefined
@@ -9320,17 +9545,47 @@ fn worker_bootstrap(
     return usages;
   }};
   const workerCryptoImportJwk = (jwk, algorithm, extractable, keyUsages) => {{
-    if (!jwk || typeof jwk !== "object" || Array.isArray(jwk)
-        || jwk.kty !== "oct" || typeof jwk.k !== "string")
+    if (!jwk || typeof jwk !== "object" || Array.isArray(jwk))
       throw new WorkerDOMExceptionNative("native Worker JWK is invalid", "DataError");
     if (jwk.ext !== undefined && typeof jwk.ext !== "boolean")
       throw new WorkerDOMExceptionNative("native Worker JWK ext is invalid", "DataError");
     if (jwk.ext === false && extractable)
       throw new WorkerDOMExceptionNative("native Worker JWK is not extractable", "DataError");
-    const bytes = workerCryptoJwkDecode(jwk.k);
     const algorithmName = algorithm && typeof algorithm === "object"
       ? String(algorithm.name || "").toUpperCase()
       : "";
+    if (algorithmName === "ED25519") {{
+      if (jwk.kty !== "OKP" || jwk.crv !== "Ed25519" || typeof jwk.x !== "string"
+          || (jwk.alg !== undefined && jwk.alg !== "EdDSA"))
+        throw new WorkerDOMExceptionNative("native Worker Ed25519 JWK is invalid", "DataError");
+      const publicBytes = workerCryptoJwkDecode(jwk.x);
+      if (publicBytes.length !== 32)
+        throw new WorkerDOMExceptionNative("native Worker Ed25519 JWK public key is invalid", "DataError");
+      const usages = workerCryptoJwkUsages(jwk, workerCryptoEd25519Usages(keyUsages));
+      if (jwk.d !== undefined) {{
+        if (typeof jwk.d !== "string" || usages.some(usage => usage !== "sign"))
+          throw new WorkerDOMExceptionNative("native Worker Ed25519 private JWK usage is invalid", "DataError");
+        const privateBytes = workerCryptoJwkDecode(jwk.d);
+        if (privateBytes.length !== 32)
+          throw new WorkerDOMExceptionNative("native Worker Ed25519 JWK private key is invalid", "DataError");
+        const derivedPublicBytes = workerCryptoEd25519PublicKey(privateBytes);
+        if (derivedPublicBytes.length !== publicBytes.length
+            || derivedPublicBytes.some((value, index) => value !== publicBytes[index]))
+          throw new WorkerDOMExceptionNative("native Worker Ed25519 JWK key pair does not match", "DataError");
+        return workerCryptoMakeEd25519PrivateKey(
+          privateBytes,
+          publicBytes,
+          extractable,
+          usages,
+        );
+      }}
+      if (usages.some(usage => usage !== "verify"))
+        throw new WorkerDOMExceptionNative("native Worker Ed25519 public JWK usage is invalid", "DataError");
+      return workerCryptoMakeEd25519PublicKey(publicBytes, extractable, usages);
+    }}
+    if (jwk.kty !== "oct" || typeof jwk.k !== "string")
+      throw new WorkerDOMExceptionNative("native Worker JWK is invalid", "DataError");
+    const bytes = workerCryptoJwkDecode(jwk.k);
     if (algorithmName === "HMAC") {{
       if (bytes.length === 0)
         throw new WorkerDOMExceptionNative("native Worker HMAC JWK key is empty", "DataError");
@@ -9358,6 +9613,12 @@ fn worker_bootstrap(
     throw new WorkerDOMExceptionNative("native Worker JWK algorithm is unsupported", "NotSupportedError");
   }};
   const workerCryptoExportJwk = (state) => {{
+    if (state.kind === "ED25519-PUBLIC") {{
+      return {{ kty: "OKP", crv: "Ed25519", x: workerCryptoJwkEncode(state.bytes), alg: "EdDSA", ext: Boolean(state.extractable), key_ops: Array.from(state.usages) }};
+    }}
+    if (state.kind === "ED25519-PRIVATE") {{
+      return {{ kty: "OKP", crv: "Ed25519", x: workerCryptoJwkEncode(state.publicBytes), d: workerCryptoJwkEncode(state.bytes), alg: "EdDSA", ext: Boolean(state.extractable), key_ops: Array.from(state.usages) }};
+    }}
     if (state.kind === "HMAC") {{
       const alg = ({{ "SHA-1": "HS1", "SHA-256": "HS256", "SHA-384": "HS384", "SHA-512": "HS512" }})[state.hashName];
       return {{ kty: "oct", k: workerCryptoJwkEncode(state.bytes), alg, ext: Boolean(state.extractable), key_ops: Array.from(state.usages) }};
@@ -9483,6 +9744,14 @@ fn worker_bootstrap(
           algorithmName, bytes, workerCryptoDeriveUsages(keyUsages)
         ));
       }}
+      if (algorithmName === "ED25519") {{
+        if (bytes.length !== 32)
+          throw new WorkerDOMExceptionNative("native Worker Ed25519 public key length is invalid", "DataError");
+        const usages = workerCryptoEd25519Usages(keyUsages);
+        if (usages.some(usage => usage !== "verify"))
+          throw new WorkerDOMExceptionNative("native Worker Ed25519 public key usage is invalid", "SyntaxError");
+        return Promise.resolve(workerCryptoMakeEd25519PublicKey(bytes, extractable, usages));
+      }}
       if (bytes.length === 0)
         throw new WorkerDOMExceptionNative("native Worker crypto key data is invalid", "DataError");
       if (["AES-GCM", "AES-CBC", "AES-CTR"].includes(algorithmName)) {{
@@ -9511,6 +9780,9 @@ fn worker_bootstrap(
         throw new WorkerDOMExceptionNative("native Worker crypto key format is unsupported", "NotSupportedError");
       if (!state.extractable)
         throw new WorkerDOMExceptionNative("native Worker CryptoKey is not extractable", "InvalidAccessError");
+      if (state.kind !== "HMAC" && !["AES-GCM", "AES-CBC", "AES-CTR"].includes(state.kind)
+          && state.kind !== "ED25519-PUBLIC")
+        throw new WorkerDOMExceptionNative("native Worker crypto raw export is unsupported", "NotSupportedError");
       return Promise.resolve(new Uint8Array(state.bytes.slice()).buffer);
     }} catch (error) {{
       return Promise.reject(error);
@@ -9519,6 +9791,17 @@ fn worker_bootstrap(
   workerSubtle.sign = (algorithm, key, data) => {{
     try {{
       const state = workerCryptoKeyState(key);
+      if (state.kind === "ED25519-PRIVATE") {{
+        workerCryptoEd25519Algorithm(algorithm);
+        if (!state.usages.includes("sign"))
+          throw new WorkerDOMExceptionNative("native Worker Ed25519 private key cannot sign", "InvalidAccessError");
+        const bytes = workerCryptoBufferInput(data);
+        if (bytes.length > {fetch_body_limit})
+          throw new WorkerDOMExceptionNative("native Worker Ed25519 data is too large", "DataError");
+        return Promise.resolve(new Uint8Array(
+          workerCryptoEd25519Bytes("sign", state, bytes)
+        ).buffer);
+      }}
       if (state.kind !== "HMAC")
         throw new WorkerDOMExceptionNative("native Worker crypto algorithm is unsupported", "NotSupportedError");
       workerCryptoOperationHash(algorithm, state);
@@ -9532,6 +9815,16 @@ fn worker_bootstrap(
   workerSubtle.verify = (algorithm, key, signature, data) => {{
     try {{
       const state = workerCryptoKeyState(key);
+      if (state.kind === "ED25519-PUBLIC") {{
+        workerCryptoEd25519Algorithm(algorithm);
+        if (!state.usages.includes("verify"))
+          throw new WorkerDOMExceptionNative("native Worker Ed25519 public key cannot verify", "InvalidAccessError");
+        const expected = workerCryptoBufferInput(signature);
+        const bytes = workerCryptoBufferInput(data);
+        if (expected.length !== 64 || bytes.length > {fetch_body_limit})
+          throw new WorkerDOMExceptionNative("native Worker Ed25519 signature or data is invalid", "DataError");
+        return Promise.resolve(workerCryptoEd25519Bytes("verify", state, bytes, expected));
+      }}
       if (state.kind !== "HMAC")
         throw new WorkerDOMExceptionNative("native Worker crypto algorithm is unsupported", "NotSupportedError");
       workerCryptoOperationHash(algorithm, state);
@@ -9705,6 +9998,7 @@ fn worker_bootstrap(
   try {{ delete globalThis.__glassNativeRandomBytes; }} catch (_error) {{}}
   try {{ delete globalThis.__glassNativeCryptoDigest; }} catch (_error) {{}}
   try {{ delete globalThis.__glassNativeCryptoHmac; }} catch (_error) {{}}
+  try {{ delete globalThis.__glassNativeCryptoEd25519; }} catch (_error) {{}}
   try {{ delete globalThis.__glassNativeCryptoAesGcm; }} catch (_error) {{}}
   try {{ delete globalThis.__glassNativeCryptoAesCbc; }} catch (_error) {{}}
   try {{ delete globalThis.__glassNativeCryptoAesCtr; }} catch (_error) {{}}
@@ -20994,6 +21288,100 @@ fn document_bootstrap(
     );
     return decodeBase64(encoded, {native_form_body_bytes});
   }};
+  const pageCryptoEd25519Source = typeof globalThis.__glassNativeCryptoEd25519 === "function"
+    ? globalThis.__glassNativeCryptoEd25519
+    : null;
+  const pageCryptoEd25519Algorithm = (algorithm) => {{
+    const name = algorithm && typeof algorithm === "object" ? algorithm.name : algorithm;
+    if (String(name || "").toUpperCase() !== "ED25519")
+      throw pageCryptoDigestError("native crypto algorithm is unsupported", "NotSupportedError");
+  }};
+  const pageCryptoEd25519Usages = (values) => {{
+    if (!Array.isArray(values)) throw new TypeError("native Ed25519 usages must be an array");
+    const usages = [];
+    for (const value of values) {{
+      const usage = String(value);
+      if (!["sign", "verify"].includes(usage) || usages.includes(usage))
+        throw new SyntaxError("native Ed25519 usage is invalid or duplicated");
+      usages.push(usage);
+    }}
+    return usages;
+  }};
+  const pageCryptoEd25519PublicKey = (privateBytes) => {{
+    if (!pageCryptoEd25519Source)
+      throw pageCryptoDigestError("native Ed25519 is unavailable", "OperationError");
+    const encoded = pageCryptoEd25519Source(
+      "public",
+      encodeBase64(privateBytes, {native_form_body_bytes}),
+      "",
+      "",
+    );
+    const bytes = decodeBase64(encoded, {native_form_body_bytes});
+    if (bytes.length !== 32)
+      throw pageCryptoDigestError("native Ed25519 public key is invalid", "OperationError");
+    return bytes;
+  }};
+  const pageCryptoEd25519Bytes = (operation, state, data, signature = []) => {{
+    if (!pageCryptoEd25519Source)
+      throw pageCryptoDigestError("native Ed25519 is unavailable", "OperationError");
+    const encoded = pageCryptoEd25519Source(
+      operation,
+      encodeBase64(state.bytes, {native_form_body_bytes}),
+      encodeBase64(data, {native_form_body_bytes}),
+      encodeBase64(signature, {native_form_body_bytes}),
+    );
+    if (operation === "verify") return encoded === "1";
+    return decodeBase64(encoded, {native_form_body_bytes});
+  }};
+  const pageCryptoMakeEd25519PublicKey = (bytes, extractable, usages) => {{
+    if (!pageCryptoEd25519Source)
+      throw pageCryptoDigestError("native Ed25519 is unavailable", "OperationError");
+    try {{
+      if (pageCryptoEd25519Source(
+        "validate",
+        encodeBase64(bytes, {native_form_body_bytes}),
+        "",
+        "",
+      ) !== "1") throw new Error("invalid public key");
+    }} catch (_error) {{
+      throw pageCryptoDigestError("native Ed25519 public key is invalid", "DataError");
+    }}
+    const key = Object.create(PageCryptoKeyNative.prototype);
+    const algorithm = Object.freeze({{ name: "Ed25519" }});
+    const normalizedUsages = Object.freeze(usages.slice());
+    Object.defineProperties(key, {{
+      type: {{ configurable: false, enumerable: true, value: "public" }},
+      extractable: {{ configurable: false, enumerable: true, value: Boolean(extractable) }},
+      algorithm: {{ configurable: false, enumerable: true, value: algorithm }},
+      usages: {{ configurable: false, enumerable: true, value: normalizedUsages }},
+    }});
+    pageCryptoKeyStore.set(key, {{
+      kind: "ED25519-PUBLIC",
+      bytes: bytes.slice(),
+      extractable: Boolean(extractable),
+      usages: normalizedUsages,
+    }});
+    return Object.freeze(key);
+  }};
+  const pageCryptoMakeEd25519PrivateKey = (privateBytes, publicBytes, extractable, usages) => {{
+    const key = Object.create(PageCryptoKeyNative.prototype);
+    const algorithm = Object.freeze({{ name: "Ed25519" }});
+    const normalizedUsages = Object.freeze(usages.slice());
+    Object.defineProperties(key, {{
+      type: {{ configurable: false, enumerable: true, value: "private" }},
+      extractable: {{ configurable: false, enumerable: true, value: Boolean(extractable) }},
+      algorithm: {{ configurable: false, enumerable: true, value: algorithm }},
+      usages: {{ configurable: false, enumerable: true, value: normalizedUsages }},
+    }});
+    pageCryptoKeyStore.set(key, {{
+      kind: "ED25519-PRIVATE",
+      bytes: privateBytes.slice(),
+      publicBytes: publicBytes.slice(),
+      extractable: Boolean(extractable),
+      usages: normalizedUsages,
+    }});
+    return Object.freeze(key);
+  }};
   const pageCryptoDeriveSource = typeof globalThis.__glassNativeCryptoDerive === "function"
     ? globalThis.__glassNativeCryptoDerive
     : null;
@@ -21112,6 +21500,24 @@ fn document_bootstrap(
     if (!algorithm || typeof algorithm !== "object")
       throw pageCryptoDigestError("native crypto key algorithm is required", "TypeError");
     const algorithmName = String(algorithm.name || "").toUpperCase();
+    if (algorithmName === "ED25519") {{
+      const usages = pageCryptoEd25519Usages(keyUsages);
+      const privateBytes = pageCryptoTake(32);
+      const publicBytes = pageCryptoEd25519PublicKey(privateBytes);
+      return Object.freeze({{
+        privateKey: pageCryptoMakeEd25519PrivateKey(
+          privateBytes,
+          publicBytes,
+          extractable,
+          usages.filter(usage => usage === "sign"),
+        ),
+        publicKey: pageCryptoMakeEd25519PublicKey(
+          publicBytes,
+          true,
+          usages.filter(usage => usage === "verify"),
+        ),
+      }});
+    }}
     if (algorithmName === "HMAC") {{
       const hashName = pageCryptoHashName(algorithm.hash);
       const length = algorithm.length === undefined
@@ -21252,17 +21658,47 @@ fn document_bootstrap(
     return usages;
   }};
   const pageCryptoImportJwk = (jwk, algorithm, extractable, keyUsages) => {{
-    if (!jwk || typeof jwk !== "object" || Array.isArray(jwk)
-        || jwk.kty !== "oct" || typeof jwk.k !== "string")
+    if (!jwk || typeof jwk !== "object" || Array.isArray(jwk))
       throw pageCryptoDigestError("native JWK is invalid", "DataError");
     if (jwk.ext !== undefined && typeof jwk.ext !== "boolean")
       throw pageCryptoDigestError("native JWK ext is invalid", "DataError");
     if (jwk.ext === false && extractable)
       throw pageCryptoDigestError("native JWK is not extractable", "DataError");
-    const bytes = pageCryptoJwkDecode(jwk.k);
     const algorithmName = algorithm && typeof algorithm === "object"
       ? String(algorithm.name || "").toUpperCase()
       : "";
+    if (algorithmName === "ED25519") {{
+      if (jwk.kty !== "OKP" || jwk.crv !== "Ed25519" || typeof jwk.x !== "string"
+          || (jwk.alg !== undefined && jwk.alg !== "EdDSA"))
+        throw pageCryptoDigestError("native Ed25519 JWK is invalid", "DataError");
+      const publicBytes = pageCryptoJwkDecode(jwk.x);
+      if (publicBytes.length !== 32)
+        throw pageCryptoDigestError("native Ed25519 JWK public key is invalid", "DataError");
+      const usages = pageCryptoJwkUsages(jwk, pageCryptoEd25519Usages(keyUsages));
+      if (jwk.d !== undefined) {{
+        if (typeof jwk.d !== "string" || usages.some(usage => usage !== "sign"))
+          throw pageCryptoDigestError("native Ed25519 private JWK usage is invalid", "DataError");
+        const privateBytes = pageCryptoJwkDecode(jwk.d);
+        if (privateBytes.length !== 32)
+          throw pageCryptoDigestError("native Ed25519 JWK private key is invalid", "DataError");
+        const derivedPublicBytes = pageCryptoEd25519PublicKey(privateBytes);
+        if (derivedPublicBytes.length !== publicBytes.length
+            || derivedPublicBytes.some((value, index) => value !== publicBytes[index]))
+          throw pageCryptoDigestError("native Ed25519 JWK key pair does not match", "DataError");
+        return pageCryptoMakeEd25519PrivateKey(
+          privateBytes,
+          publicBytes,
+          extractable,
+          usages,
+        );
+      }}
+      if (usages.some(usage => usage !== "verify"))
+        throw pageCryptoDigestError("native Ed25519 public JWK usage is invalid", "DataError");
+      return pageCryptoMakeEd25519PublicKey(publicBytes, extractable, usages);
+    }}
+    if (jwk.kty !== "oct" || typeof jwk.k !== "string")
+      throw pageCryptoDigestError("native JWK is invalid", "DataError");
+    const bytes = pageCryptoJwkDecode(jwk.k);
     if (algorithmName === "HMAC") {{
       if (bytes.length === 0)
         throw pageCryptoDigestError("native HMAC JWK key is empty", "DataError");
@@ -21290,6 +21726,12 @@ fn document_bootstrap(
     throw pageCryptoDigestError("native JWK algorithm is unsupported", "NotSupportedError");
   }};
   const pageCryptoExportJwk = (state) => {{
+    if (state.kind === "ED25519-PUBLIC") {{
+      return {{ kty: "OKP", crv: "Ed25519", x: pageCryptoJwkEncode(state.bytes), alg: "EdDSA", ext: Boolean(state.extractable), key_ops: Array.from(state.usages) }};
+    }}
+    if (state.kind === "ED25519-PRIVATE") {{
+      return {{ kty: "OKP", crv: "Ed25519", x: pageCryptoJwkEncode(state.publicBytes), d: pageCryptoJwkEncode(state.bytes), alg: "EdDSA", ext: Boolean(state.extractable), key_ops: Array.from(state.usages) }};
+    }}
     if (state.kind === "HMAC") {{
       const alg = ({{ "SHA-1": "HS1", "SHA-256": "HS256", "SHA-384": "HS384", "SHA-512": "HS512" }})[state.hashName];
       return {{ kty: "oct", k: pageCryptoJwkEncode(state.bytes), alg, ext: Boolean(state.extractable), key_ops: Array.from(state.usages) }};
@@ -21416,6 +21858,14 @@ fn document_bootstrap(
           algorithmName, bytes, pageCryptoDeriveUsages(keyUsages)
         ));
       }}
+      if (algorithmName === "ED25519") {{
+        if (bytes.length !== 32)
+          throw pageCryptoDigestError("native Ed25519 public key length is invalid", "DataError");
+        const usages = pageCryptoEd25519Usages(keyUsages);
+        if (usages.some(usage => usage !== "verify"))
+          throw pageCryptoDigestError("native Ed25519 public key usage is invalid", "SyntaxError");
+        return Promise.resolve(pageCryptoMakeEd25519PublicKey(bytes, extractable, usages));
+      }}
       if (bytes.length === 0)
         throw pageCryptoDigestError("native crypto key data is invalid", "DataError");
       if (["AES-GCM", "AES-CBC", "AES-CTR"].includes(algorithmName)) {{
@@ -21444,6 +21894,9 @@ fn document_bootstrap(
         throw pageCryptoDigestError("native crypto key format is unsupported", "NotSupportedError");
       if (!state.extractable)
         throw pageCryptoDigestError("native CryptoKey is not extractable", "InvalidAccessError");
+      if (state.kind !== "HMAC" && !["AES-GCM", "AES-CBC", "AES-CTR"].includes(state.kind)
+          && state.kind !== "ED25519-PUBLIC")
+        throw pageCryptoDigestError("native crypto raw export is unsupported", "NotSupportedError");
       return Promise.resolve(new Uint8Array(state.bytes.slice()).buffer);
     }} catch (error) {{
       return Promise.reject(error);
@@ -21452,6 +21905,17 @@ fn document_bootstrap(
   pageSubtle.sign = (algorithm, key, data) => {{
     try {{
       const state = pageCryptoKeyState(key);
+      if (state.kind === "ED25519-PRIVATE") {{
+        pageCryptoEd25519Algorithm(algorithm);
+        if (!state.usages.includes("sign"))
+          throw pageCryptoDigestError("native Ed25519 private key cannot sign", "InvalidAccessError");
+        const bytes = pageCryptoBufferInput(data);
+        if (bytes.length > {native_form_body_bytes})
+          throw pageCryptoDigestError("native Ed25519 data is too large", "DataError");
+        return Promise.resolve(new Uint8Array(
+          pageCryptoEd25519Bytes("sign", state, bytes)
+        ).buffer);
+      }}
       if (state.kind !== "HMAC")
         throw pageCryptoDigestError("native crypto algorithm is unsupported", "NotSupportedError");
       pageCryptoOperationHash(algorithm, state);
@@ -21465,6 +21929,16 @@ fn document_bootstrap(
   pageSubtle.verify = (algorithm, key, signature, data) => {{
     try {{
       const state = pageCryptoKeyState(key);
+      if (state.kind === "ED25519-PUBLIC") {{
+        pageCryptoEd25519Algorithm(algorithm);
+        if (!state.usages.includes("verify"))
+          throw pageCryptoDigestError("native Ed25519 public key cannot verify", "InvalidAccessError");
+        const expected = pageCryptoBufferInput(signature);
+        const bytes = pageCryptoBufferInput(data);
+        if (expected.length !== 64 || bytes.length > {native_form_body_bytes})
+          throw pageCryptoDigestError("native Ed25519 signature or data is invalid", "DataError");
+        return Promise.resolve(pageCryptoEd25519Bytes("verify", state, bytes, expected));
+      }}
       if (state.kind !== "HMAC")
         throw pageCryptoDigestError("native crypto algorithm is unsupported", "NotSupportedError");
       pageCryptoOperationHash(algorithm, state);
@@ -21638,6 +22112,7 @@ fn document_bootstrap(
   try {{ delete globalThis.__glassNativeRandomBytes; }} catch (_error) {{}}
   try {{ delete globalThis.__glassNativeCryptoDigest; }} catch (_error) {{}}
   try {{ delete globalThis.__glassNativeCryptoHmac; }} catch (_error) {{}}
+  try {{ delete globalThis.__glassNativeCryptoEd25519; }} catch (_error) {{}}
   try {{ delete globalThis.__glassNativeCryptoAesGcm; }} catch (_error) {{}}
   try {{ delete globalThis.__glassNativeCryptoAesCbc; }} catch (_error) {{}}
   try {{ delete globalThis.__glassNativeCryptoAesCtr; }} catch (_error) {{}}

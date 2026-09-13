@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-308` slice; the bounded foundation below remains
+`native-engine-browser-309` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 
 Slice 283 adds a bounded dedicated-worker bridge after the page-facing
@@ -267,6 +267,16 @@ wrapping paths until their serialization and authenticated-wrapping contracts
 are defined. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-308.md`; complete Web Crypto/Web IDL
 semantics and final native/CDP replacement gates remain issue #40 work.
+
+Slice 309 adds a bounded asymmetric Web Crypto path to page and
+dedicated-worker realms. Ed25519 key-pair generation, validated raw public-key
+import, OKP/Ed25519 JWK import/export, and Rust-owned sign/verify operations
+reuse the existing per-turn host boundary and opaque realm-local key stores.
+Private/public usage partitioning, RFC 8032 output, point validation, and JWK
+pair consistency are covered by the focused witness. RSA/EC algorithms,
+PKCS#8/SPKI codecs, key transfer, complete Web Crypto/Web IDL semantics, and
+the final native/CDP replacement gates remain issue #40 work. Exact evidence
+is recorded in `docs/plan/tasks/native-engine-browser-309.md`.
 
 Slice 282 adds a bounded page-facing computed-style and media-query bridge:
 the JavaScript realm reads the native cascade/layout snapshot through a

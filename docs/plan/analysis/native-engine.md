@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-282`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-283`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -4184,6 +4184,20 @@ are green. Parser streaming, true network completion ordering, complete
 stream/body Web IDL semantics, worker/service-worker ownership, and full
 native/CDP parity remain issue #40 work. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-281.md`.
+
+The completed native-engine-browser-283 slice adds the first executable
+dedicated-worker owner. Page-created classic `Worker` objects emit typed
+create/post/terminate/close commands; the shared native registry loads local
+fixture or HTTP(S) worker source through the existing resource and
+`worker-src` policy path, executes each worker in an isolated bounded QuickJS
+realm, and queues bounded JSON-backed message/error events for the owning page.
+Initial page scripts, ordinary evaluations, and dynamically attached scripts
+are covered in both the local owner and the out-of-process HTTP(S) content
+worker. Delivery is serialized at explicit page turns, preserving deterministic
+testing and process ownership while leaving task-source fairness, transferables,
+module/shared/service workers, worker network/timer APIs, and complete Worker
+Web IDL semantics for later Issue #40 work. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-283.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

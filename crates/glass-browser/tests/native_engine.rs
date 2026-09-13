@@ -871,6 +871,134 @@ async fn native_local_script_exposes_computed_style_and_media_queries() {
 }
 
 #[tokio::test]
+async fn native_local_script_runs_dedicated_worker_and_delivers_messages() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://worker-page",
+            "<html><body><main id='output'>Native</main></body></html>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://worker-script",
+            "self.onmessage = event => postMessage({ kind: 'reply', value: event.data + 1, href: self.location.href, hasDocument: typeof document !== 'undefined' }); postMessage({ kind: 'ready' });",
+        )
+        .unwrap()
+        .with_initial_url("fixture://worker-page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "globalThis.workerMessages = []; globalThis.worker = new Worker('fixture://worker-script'); worker.onmessage = event => workerMessages.push(event.data); [worker instanceof Worker, worker.url]",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, "fixture://worker-script"])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("worker.postMessage(4); workerMessages",)
+            .await
+            .unwrap(),
+        serde_json::json!([{"kind": "ready"}])
+    );
+    assert_eq!(
+        engine.evaluate_async("workerMessages").await.unwrap(),
+        serde_json::json!([{
+            "kind": "ready"
+        }, {
+            "kind": "reply",
+            "value": 5,
+            "href": "fixture://worker-script",
+            "hasDocument": false,
+        }])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "globalThis.dynamicWorkerMessages = []; globalThis.dynamicScript = document.createElement('script'); dynamicScript.textContent = \"globalThis.dynamicWorker = new Worker('fixture://worker-script'); dynamicWorker.onmessage = event => dynamicWorkerMessages.push(event.data);\"; document.documentElement.appendChild(dynamicScript); true",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("dynamicWorkerMessages")
+            .await
+            .unwrap(),
+        serde_json::json!([{"kind": "ready"}])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("worker.terminate(); worker.postMessage(99); workerMessages.length",)
+            .await
+            .unwrap(),
+        serde_json::json!(2)
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_runs_worker_created_during_page_load() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for (path, body) in [
+            (
+                "/worker-page",
+                "<script>globalThis.workerMessages = []; globalThis.worker = new Worker('/worker.js'); worker.onmessage = event => workerMessages.push(event.data);</script><main>Native</main>",
+            ),
+            (
+                "/worker.js",
+                "self.onmessage = event => postMessage({ kind: 'reply', value: event.data + 1, href: self.location.href }); postMessage({ kind: 'ready' });",
+            ),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(path));
+            let content_type = if path.ends_with(".js") {
+                "text/javascript"
+            } else {
+                "text/html"
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/worker-page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("worker.postMessage(4); workerMessages")
+            .await
+            .unwrap(),
+        serde_json::json!([{"kind": "ready"}])
+    );
+    assert_eq!(
+        engine.evaluate_async("workerMessages").await.unwrap(),
+        serde_json::json!([{
+            "kind": "ready"
+        }, {
+            "kind": "reply",
+            "value": 5,
+            "href": format!("http://{address}/worker.js"),
+        }])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_script_exposes_web_idl_identity() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

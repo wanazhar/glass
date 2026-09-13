@@ -1995,8 +1995,46 @@ impl NativeResourceLoader {
         href: &str,
         max_source_bytes: usize,
     ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
+        self.load_script_like_async(
+            document_url,
+            href,
+            max_source_bytes,
+            NativeSubresourceKind::Script,
+        )
+        .await
+    }
+
+    pub(crate) async fn load_worker_async(
+        &mut self,
+        document_url: &str,
+        href: &str,
+        max_source_bytes: usize,
+    ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
+        self.load_script_like_async(
+            document_url,
+            href,
+            max_source_bytes,
+            NativeSubresourceKind::Worker,
+        )
+        .await
+    }
+
+    async fn load_script_like_async(
+        &mut self,
+        document_url: &str,
+        href: &str,
+        max_source_bytes: usize,
+        subresource_kind: NativeSubresourceKind,
+    ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
         validate_url_text("document URL", document_url)?;
-        validate_url_text("script URL", href)?;
+        validate_url_text(
+            if subresource_kind == NativeSubresourceKind::Worker {
+                "worker URL"
+            } else {
+                "script URL"
+            },
+            href,
+        )?;
         if max_source_bytes == 0 {
             return Err(NativeEngineError::invalid(
                 "script source limit",
@@ -2008,13 +2046,40 @@ impl NativeResourceLoader {
                 reason: "script owner URL is not valid HTTP(S) syntax".into(),
             }
         })?;
-        if !is_network_url(document_url.as_str()) {
-            return Ok(None);
-        }
         reject_credentials(&document_url)?;
-        let Some(target_url) = resolve_subresource_url(&document_url, href)? else {
+        let target_url = if subresource_kind == NativeSubresourceKind::Worker
+            && !is_network_url(document_url.as_str())
+        {
+            let target_url = Url::parse(href)
+                .or_else(|_| document_url.join(href))
+                .map_err(|_| NativeEngineError::UnsupportedUrl {
+                    reason: "worker URL could not be resolved against the document".into(),
+                })?;
+            (target_url.scheme() == "fixture").then_some(target_url)
+        } else {
+            resolve_subresource_url(&document_url, href)?
+        };
+        let Some(target_url) = target_url else {
             return Ok(None);
         };
+        if !is_network_url(document_url.as_str()) {
+            if subresource_kind == NativeSubresourceKind::Worker && target_url.scheme() == "fixture"
+            {
+                let resource = self.load(target_url.as_str())?;
+                if resource.body.len() > max_source_bytes {
+                    return Err(NativeEngineError::limit(
+                        "worker source",
+                        max_source_bytes,
+                        resource.body.len(),
+                    ));
+                }
+                return Ok(Some(NativeScriptResource {
+                    url: resource.url,
+                    body: resource.body,
+                }));
+            }
+            return Ok(None);
+        }
         if !mixed_content_allowed(&document_url, &target_url) {
             return Ok(None);
         }
@@ -2024,7 +2089,7 @@ impl NativeResourceLoader {
             .get(&cache_key(&document_url))
             .cloned()
             .unwrap_or_default();
-        if !policy.allows(NativeSubresourceKind::Script, &document_url, &target_url) {
+        if !policy.allows(subresource_kind, &document_url, &target_url) {
             return Ok(None);
         }
 
@@ -2090,7 +2155,7 @@ impl NativeResourceLoader {
             reject_credentials(&next_url)?;
             if !is_network_url(without_fragment(next_url.as_str()))
                 || !mixed_content_allowed(&document_url, &next_url)
-                || !policy.allows(NativeSubresourceKind::Script, &document_url, &next_url)
+                || !policy.allows(subresource_kind, &document_url, &next_url)
             {
                 return Ok(None);
             }

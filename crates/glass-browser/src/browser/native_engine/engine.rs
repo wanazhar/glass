@@ -24,13 +24,13 @@ use super::javascript::{
     NativeIndexedDbState, NativeJavaScriptRuntime, NativePageNavigation, NativePopupRequest,
     NativePostMessageRequest, NativeScriptCommand, NativeScriptEvaluation, NativeStorageEvent,
     NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
-    NativeWindowProxyUpdate, append_storage_changes, apply_indexed_db_changes,
-    diff_indexed_db_changes, execute_dynamic_page_scripts, execute_inline_scripts,
-    frame_event_script, host_event_script, host_hash_change_event_script,
+    NativeWindowProxyUpdate, NativeWorkerRegistry, append_storage_changes,
+    apply_indexed_db_changes, diff_indexed_db_changes, execute_dynamic_page_scripts,
+    execute_inline_scripts, frame_event_script, host_event_script, host_hash_change_event_script,
     host_message_event_script, host_submit_event_script, load_indexed_db_profile,
     load_web_storage_profile, new_storage_writer_id, page_script_sources_to_scripts,
     read_storage_event_journal, register_storage_reader, save_web_storage_profile,
-    storage_event_cursor, storage_key, unregister_storage_reader,
+    storage_event_cursor, storage_key, unregister_storage_reader, worker_message_script,
 };
 use super::layout::{NativeLayoutSnapshot, NativePoint, NativeRect};
 use super::lifecycle::NativeLifecycleState;
@@ -337,6 +337,7 @@ pub struct NativeEngine {
     runtime_worker: Option<NativeRuntimeWorker>,
     content_process: Option<NativeContentProcess>,
     javascript: Option<NativeJavaScriptRuntime>,
+    workers: NativeWorkerRegistry,
     web_storage: NativeWebStorageState,
     indexed_db: NativeIndexedDbState,
     storage_writer_id: String,
@@ -414,6 +415,7 @@ impl NativeEngine {
             runtime_worker: None,
             content_process: None,
             javascript: None,
+            workers: NativeWorkerRegistry::new(),
             web_storage,
             indexed_db,
             storage_writer_id,
@@ -1484,6 +1486,11 @@ impl NativeEngine {
             .set_cookie_state(cookie);
         self.sync_javascript_scroll_offset();
         self.sync_javascript_history();
+        let worker_messages = self.workers.take_messages();
+        let source = match worker_message_script(&worker_messages)? {
+            Some(prefix) => format!("{prefix}{source}"),
+            None => source,
+        };
         let evaluation = self
             .javascript
             .as_ref()
@@ -1495,6 +1502,15 @@ impl NativeEngine {
                 &self.origin,
                 self.config.viewport,
             )?;
+        let worker_commands = self
+            .javascript
+            .as_ref()
+            .expect("local JavaScript runtime initialized")
+            .take_worker_commands();
+        let owner_url = self.url.clone();
+        self.workers
+            .apply_commands(worker_commands, &mut self.loader, &owner_url)
+            .await?;
         if evaluation.top_level_await_pending {
             return Err(NativeEngineError::Worker {
                 operation: "evaluate JavaScript".into(),
@@ -1503,6 +1519,15 @@ impl NativeEngine {
         }
         self.drain_local_popups()?;
         let navigation = self.apply_local_script_commands(&evaluation.commands, true)?;
+        let dynamic_worker_commands = self
+            .javascript
+            .as_ref()
+            .expect("local JavaScript runtime initialized")
+            .take_worker_commands();
+        let owner_url = self.url.clone();
+        self.workers
+            .apply_commands(dynamic_worker_commands, &mut self.loader, &owner_url)
+            .await?;
         let frame_scripts = self
             .javascript
             .as_ref()
@@ -5250,6 +5275,7 @@ impl NativeEngine {
         self.run_commit_task(NativeTask::CommitNavigation, "navigation")?;
         let revision = prepared.document.revision();
         self.document = prepared.document;
+        self.workers.clear();
         self.javascript = javascript;
         self.nested_scroll_offsets.clear();
         self.url = prepared.resource.url;
@@ -5379,6 +5405,7 @@ impl NativeEngine {
             .await?;
         let revision = prepared.document.revision();
         self.document = prepared.document;
+        self.workers.clear();
         self.javascript = javascript;
         self.nested_scroll_offsets.clear();
         self.url = prepared.resource.url;

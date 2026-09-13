@@ -9199,6 +9199,73 @@ fn worker_bootstrap(
       return Promise.reject(error);
     }}
   }};
+  workerSubtle.wrapKey = (format, key, wrappingKey, wrapAlgorithm) => {{
+    try {{
+      if (String(format).toLowerCase() !== "raw")
+        throw new WorkerDOMExceptionNative("native Worker crypto key format is unsupported", "NotSupportedError");
+      const source = workerCryptoKeyState(key);
+      if (!source.extractable)
+        throw new WorkerDOMExceptionNative("native Worker CryptoKey is not extractable", "InvalidAccessError");
+      if (!["HMAC", "AES-GCM"].includes(source.kind))
+        throw new WorkerDOMExceptionNative("native Worker crypto key kind is unsupported", "NotSupportedError");
+      const wrapping = workerCryptoKeyState(wrappingKey);
+      if (wrapping.kind !== "AES-GCM")
+        throw new WorkerDOMExceptionNative("native Worker wrapping key is unsupported", "NotSupportedError");
+      if (!wrapping.usages.includes("encrypt"))
+        throw new WorkerDOMExceptionNative("native Worker wrapping key cannot encrypt", "InvalidAccessError");
+      const normalized = workerCryptoAesAlgorithm(wrapAlgorithm);
+      if (source.bytes.length > {fetch_body_limit} - 16)
+        throw new WorkerDOMExceptionNative("native Worker wrapped key is too large", "DataError");
+      return Promise.resolve(new Uint8Array(
+        workerCryptoAesBytes("encrypt", wrapping, normalized, source.bytes.slice())
+      ).buffer);
+    }} catch (error) {{
+      return Promise.reject(error);
+    }}
+  }};
+  workerSubtle.unwrapKey = (format, wrappedKey, unwrappedKeyAlgorithm, unwrappingKey, unwrapAlgorithm, extractable = false, keyUsages = []) => {{
+    try {{
+      if (String(format).toLowerCase() !== "raw")
+        throw new WorkerDOMExceptionNative("native Worker crypto key format is unsupported", "NotSupportedError");
+      const unwrapping = workerCryptoKeyState(unwrappingKey);
+      if (unwrapping.kind !== "AES-GCM")
+        throw new WorkerDOMExceptionNative("native Worker unwrapping key is unsupported", "NotSupportedError");
+      if (!unwrapping.usages.includes("decrypt"))
+        throw new WorkerDOMExceptionNative("native Worker unwrapping key cannot decrypt", "InvalidAccessError");
+      const normalized = workerCryptoAesAlgorithm(unwrapAlgorithm);
+      const wrapped = workerCryptoBufferInput(wrappedKey);
+      if (wrapped.length < 16 || wrapped.length > {fetch_body_limit})
+        throw new WorkerDOMExceptionNative("native Worker wrapped key is invalid", "DataError");
+      let bytes;
+      try {{
+        bytes = workerCryptoAesBytes("decrypt", unwrapping, normalized, wrapped);
+      }} catch (_error) {{
+        throw new WorkerDOMExceptionNative("native Worker wrapped key authentication failed", "OperationError");
+      }}
+      const algorithmName = unwrappedKeyAlgorithm && typeof unwrappedKeyAlgorithm === "object"
+        ? String(unwrappedKeyAlgorithm.name || "").toUpperCase()
+        : "";
+      if (algorithmName === "HMAC") {{
+        if (bytes.length === 0)
+          throw new WorkerDOMExceptionNative("native Worker unwrapped HMAC key is invalid", "DataError");
+        const hashName = workerCryptoHmacHash(unwrappedKeyAlgorithm);
+        return Promise.resolve(workerCryptoMakeKey(
+          bytes, hashName, extractable, workerCryptoUsages(keyUsages)
+        ));
+      }}
+      if (algorithmName === "AES-GCM") {{
+        const length = Number(unwrappedKeyAlgorithm.length);
+        if (![128, 192, 256].includes(length) || bytes.length !== length / 8)
+          throw new WorkerDOMExceptionNative("native Worker unwrapped AES-GCM key length is invalid", "DataError");
+        return Promise.resolve(workerCryptoMakeAesKey(
+          bytes, extractable, workerCryptoAesUsages(keyUsages)
+        ));
+      }}
+      throw new WorkerDOMExceptionNative("native Worker unwrapped key algorithm is unsupported", "NotSupportedError");
+    }} catch (error) {{
+      return Promise.reject(error);
+    }}
+  }};
   globalThis.__glassWorkerSubtleCrypto = workerSubtle;
   workerCrypto.subtle = workerSubtle;
   globalThis.crypto = workerCrypto;
@@ -20870,6 +20937,73 @@ fn document_bootstrap(
       }} catch (_error) {{
         return Promise.reject(pageCryptoDigestError("native AES-GCM authentication failed", "OperationError"));
       }}
+    }} catch (error) {{
+      return Promise.reject(error);
+    }}
+  }};
+  pageSubtle.wrapKey = (format, key, wrappingKey, wrapAlgorithm) => {{
+    try {{
+      if (String(format).toLowerCase() !== "raw")
+        throw pageCryptoDigestError("native crypto key format is unsupported", "NotSupportedError");
+      const source = pageCryptoKeyState(key);
+      if (!source.extractable)
+        throw pageCryptoDigestError("native CryptoKey is not extractable", "InvalidAccessError");
+      if (!["HMAC", "AES-GCM"].includes(source.kind))
+        throw pageCryptoDigestError("native crypto key kind is unsupported", "NotSupportedError");
+      const wrapping = pageCryptoKeyState(wrappingKey);
+      if (wrapping.kind !== "AES-GCM")
+        throw pageCryptoDigestError("native wrapping key is unsupported", "NotSupportedError");
+      if (!wrapping.usages.includes("encrypt"))
+        throw pageCryptoDigestError("native wrapping key cannot encrypt", "InvalidAccessError");
+      const normalized = pageCryptoAesAlgorithm(wrapAlgorithm);
+      if (source.bytes.length > {native_form_body_bytes} - 16)
+        throw pageCryptoDigestError("native wrapped key is too large", "DataError");
+      return Promise.resolve(new Uint8Array(
+        pageCryptoAesBytes("encrypt", wrapping, normalized, source.bytes.slice())
+      ).buffer);
+    }} catch (error) {{
+      return Promise.reject(error);
+    }}
+  }};
+  pageSubtle.unwrapKey = (format, wrappedKey, unwrappedKeyAlgorithm, unwrappingKey, unwrapAlgorithm, extractable = false, keyUsages = []) => {{
+    try {{
+      if (String(format).toLowerCase() !== "raw")
+        throw pageCryptoDigestError("native crypto key format is unsupported", "NotSupportedError");
+      const unwrapping = pageCryptoKeyState(unwrappingKey);
+      if (unwrapping.kind !== "AES-GCM")
+        throw pageCryptoDigestError("native unwrapping key is unsupported", "NotSupportedError");
+      if (!unwrapping.usages.includes("decrypt"))
+        throw pageCryptoDigestError("native unwrapping key cannot decrypt", "InvalidAccessError");
+      const normalized = pageCryptoAesAlgorithm(unwrapAlgorithm);
+      const wrapped = pageCryptoBufferInput(wrappedKey);
+      if (wrapped.length < 16 || wrapped.length > {native_form_body_bytes})
+        throw pageCryptoDigestError("native wrapped key is invalid", "DataError");
+      let bytes;
+      try {{
+        bytes = pageCryptoAesBytes("decrypt", unwrapping, normalized, wrapped);
+      }} catch (_error) {{
+        throw pageCryptoDigestError("native wrapped key authentication failed", "OperationError");
+      }}
+      const algorithmName = unwrappedKeyAlgorithm && typeof unwrappedKeyAlgorithm === "object"
+        ? String(unwrappedKeyAlgorithm.name || "").toUpperCase()
+        : "";
+      if (algorithmName === "HMAC") {{
+        if (bytes.length === 0)
+          throw pageCryptoDigestError("native unwrapped HMAC key is invalid", "DataError");
+        const hashName = pageCryptoHmacHash(unwrappedKeyAlgorithm);
+        return Promise.resolve(pageCryptoMakeKey(
+          bytes, hashName, extractable, pageCryptoUsages(keyUsages)
+        ));
+      }}
+      if (algorithmName === "AES-GCM") {{
+        const length = Number(unwrappedKeyAlgorithm.length);
+        if (![128, 192, 256].includes(length) || bytes.length !== length / 8)
+          throw pageCryptoDigestError("native unwrapped AES-GCM key length is invalid", "DataError");
+        return Promise.resolve(pageCryptoMakeAesKey(
+          bytes, extractable, pageCryptoAesUsages(keyUsages)
+        ));
+      }}
+      throw pageCryptoDigestError("native unwrapped key algorithm is unsupported", "NotSupportedError");
     }} catch (error) {{
       return Promise.reject(error);
     }}

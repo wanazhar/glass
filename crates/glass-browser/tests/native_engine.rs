@@ -2159,6 +2159,175 @@ async fn native_local_page_and_worker_derive_crypto_keys() {
 }
 
 #[tokio::test]
+async fn native_local_page_and_worker_wrap_crypto_keys() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://wrap-crypto-page",
+            "<html><body><main>Native</main></body></html>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://wrap-crypto-worker",
+            "(async () => { const wrapper = await crypto.subtle.importKey('raw', new Uint8Array(16).fill(0x33), { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']); const source = await crypto.subtle.importKey('raw', new Uint8Array([9, 8, 7, 6]), { name: 'HMAC', hash: 'SHA-256' }, true, ['sign', 'verify']); const iv = new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]); const wrapped = await crypto.subtle.wrapKey('raw', source, wrapper, { name: 'AES-GCM', iv }); const restored = await crypto.subtle.unwrapKey('raw', wrapped, { name: 'HMAC', hash: 'SHA-256' }, wrapper, { name: 'AES-GCM', iv }, true, ['sign', 'verify']); const data = new TextEncoder().encode('worker wrapped'); const signature = await crypto.subtle.sign('HMAC', restored, data); postMessage({ wrappedLength: wrapped.byteLength, exported: Array.from(new Uint8Array(await crypto.subtle.exportKey('raw', restored))), algorithm: [restored.algorithm.name, restored.algorithm.hash.name, restored.algorithm.length], verified: await crypto.subtle.verify('HMAC', restored, signature, data), extractable: restored.extractable }); })().catch(error => postMessage({ error: error.name }));",
+        )
+        .unwrap()
+        .with_initial_url("fixture://wrap-crypto-page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"await (async () => {
+                    const wrappingKey = await crypto.subtle.importKey(
+                        'raw', new Uint8Array(32).fill(0x5a), { name: 'AES-GCM' }, false,
+                        ['encrypt', 'decrypt'],
+                    );
+                    const sourceBytes = new Uint8Array(32);
+                    for (let index = 0; index < sourceBytes.length; index += 1) sourceBytes[index] = index + 1;
+                    const sourceHmac = await crypto.subtle.importKey(
+                        'raw', sourceBytes, { name: 'HMAC', hash: 'SHA-256' }, true,
+                        ['sign', 'verify'],
+                    );
+                    const wrapAlgorithm = {
+                        name: 'AES-GCM',
+                        iv: new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]),
+                        additionalData: new Uint8Array([21, 22, 23]),
+                    };
+                    const wrappedHmac = await crypto.subtle.wrapKey(
+                        'raw', sourceHmac, wrappingKey, wrapAlgorithm,
+                    );
+                    const restoredHmac = await crypto.subtle.unwrapKey(
+                        'raw', wrappedHmac, { name: 'HMAC', hash: 'SHA-256' },
+                        wrappingKey, wrapAlgorithm, true, ['sign', 'verify'],
+                    );
+                    const hmacData = new TextEncoder().encode('wrapped HMAC');
+                    const hmacSignature = await crypto.subtle.sign('HMAC', restoredHmac, hmacData);
+                    const restoredHmacExport = await crypto.subtle.exportKey('raw', restoredHmac);
+                    const sourceAes = await crypto.subtle.importKey(
+                        'raw', new Uint8Array([16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]),
+                        { name: 'AES-GCM' }, true, ['encrypt', 'decrypt'],
+                    );
+                    const wrappedAes = await crypto.subtle.wrapKey(
+                        'raw', sourceAes, wrappingKey, { name: 'AES-GCM', iv: wrapAlgorithm.iv },
+                    );
+                    const restoredAes = await crypto.subtle.unwrapKey(
+                        'raw', wrappedAes, { name: 'AES-GCM', length: 128 },
+                        wrappingKey, { name: 'AES-GCM', iv: wrapAlgorithm.iv }, true,
+                        ['encrypt', 'decrypt'],
+                    );
+                    const encrypted = await crypto.subtle.encrypt(
+                        { name: 'AES-GCM', iv: new Uint8Array(12) },
+                        restoredAes,
+                        new TextEncoder().encode('wrapped AES'),
+                    );
+                    const decrypted = await crypto.subtle.decrypt(
+                        { name: 'AES-GCM', iv: new Uint8Array(12) }, restoredAes, encrypted,
+                    );
+                    const tampered = new Uint8Array(wrappedHmac).slice();
+                    tampered[tampered.length - 1] ^= 1;
+                    let tamperError = '';
+                    try {
+                        await crypto.subtle.unwrapKey(
+                            'raw', tampered, { name: 'HMAC', hash: 'SHA-256' },
+                            wrappingKey, wrapAlgorithm, false, ['sign'],
+                        );
+                    } catch (error) { tamperError = error.name; }
+                    const lockedHmac = await crypto.subtle.importKey(
+                        'raw', new Uint8Array([1, 2, 3]), { name: 'HMAC', hash: 'SHA-256' }, false,
+                        ['sign'],
+                    );
+                    let lockedError = '';
+                    try { await crypto.subtle.wrapKey('raw', lockedHmac, wrappingKey, wrapAlgorithm); } catch (error) { lockedError = error.name; }
+                    const decryptOnlyWrapper = await crypto.subtle.importKey(
+                        'raw', new Uint8Array(16).fill(0x44), { name: 'AES-GCM' }, false, ['decrypt'],
+                    );
+                    let usageError = '';
+                    try { await crypto.subtle.wrapKey('raw', sourceHmac, decryptOnlyWrapper, wrapAlgorithm); } catch (error) { usageError = error.name; }
+                    let formatError = '';
+                    try { await crypto.subtle.wrapKey('jwk', sourceHmac, wrappingKey, wrapAlgorithm); } catch (error) { formatError = error.name; }
+                    globalThis.wrappedCryptoState = {
+                        hmac: {
+                            wrappedLength: wrappedHmac.byteLength,
+                            exported: Array.from(new Uint8Array(restoredHmacExport)),
+                            algorithm: [restoredHmac.algorithm.name, restoredHmac.algorithm.hash.name, restoredHmac.algorithm.length],
+                            verified: await crypto.subtle.verify('HMAC', restoredHmac, hmacSignature, hmacData),
+                            extractable: restoredHmac.extractable,
+                            signatureLength: hmacSignature.byteLength,
+                        },
+                        aes: {
+                            wrappedLength: wrappedAes.byteLength,
+                            algorithm: [restoredAes.algorithm.name, restoredAes.algorithm.length],
+                            plaintext: new TextDecoder().decode(decrypted),
+                            extractable: restoredAes.extractable,
+                            ciphertextLength: encrypted.byteLength,
+                        },
+                        errors: { tamperError, lockedError, usageError, formatError },
+                    };
+                    return globalThis.wrappedCryptoState;
+                })()"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "hmac": {
+                "wrappedLength": 48,
+                "exported": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32],
+                "algorithm": ["HMAC", "SHA-256", 256],
+                "verified": true,
+                "extractable": true,
+                "signatureLength": 32,
+            },
+            "aes": {
+                "wrappedLength": 32,
+                "algorithm": ["AES-GCM", 128],
+                "plaintext": "wrapped AES",
+                "extractable": true,
+                "ciphertextLength": 27,
+            },
+            "errors": {
+                "tamperError": "OperationError",
+                "lockedError": "InvalidAccessError",
+                "usageError": "InvalidAccessError",
+                "formatError": "NotSupportedError",
+            },
+        })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("({ hmacLength: wrappedCryptoState.hmac.algorithm[2], aesLength: wrappedCryptoState.aes.algorithm[1] })")
+            .await
+            .unwrap(),
+        serde_json::json!({ "hmacLength": 256, "aesLength": 128 })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "globalThis.workerMessages = []; globalThis.workerErrors = []; globalThis.worker = new Worker('fixture://wrap-crypto-worker'); worker.onmessage = event => workerMessages.push(event.data); worker.onerror = event => workerErrors.push(event.message); true",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("({ messages: workerMessages, errors: workerErrors })")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "messages": [{
+                "wrappedLength": 20,
+                "exported": [9, 8, 7, 6],
+                "algorithm": ["HMAC", "SHA-256", 32],
+                "verified": true,
+                "extractable": true,
+            }],
+            "errors": [],
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_runs_worker_created_during_page_load() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

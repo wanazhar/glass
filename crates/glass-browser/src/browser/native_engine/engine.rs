@@ -6352,6 +6352,7 @@ fn frame_script_command_source(command: &NativeScriptCommand) -> Result<String, 
                 | NativeScriptCommand::ClearFileInput { .. }
                 | NativeScriptCommand::SetValue { .. }
                 | NativeScriptCommand::SetSelection { .. }
+                | NativeScriptCommand::CanvasCommit { .. }
                 | NativeScriptCommand::SetChecked { .. }
                 | NativeScriptCommand::SetSelected { .. }
                 | NativeScriptCommand::SetAttribute { .. }
@@ -6405,6 +6406,7 @@ fn is_frame_script_batch_command(command: &NativeScriptCommand) -> bool {
         NativeScriptCommand::SetValue { .. }
             | NativeScriptCommand::ClearFileInput { .. }
             | NativeScriptCommand::SetSelection { .. }
+            | NativeScriptCommand::CanvasCommit { .. }
             | NativeScriptCommand::SetChecked { .. }
             | NativeScriptCommand::SetSelected { .. }
             | NativeScriptCommand::SetAttribute { .. }

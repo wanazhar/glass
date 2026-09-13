@@ -39,6 +39,10 @@ const MAX_FORM_CONTROLS: usize = 128;
 const MAX_IMAGE_SRCSET_CANDIDATES: usize = 32;
 const MAX_IMAGE_DENSITY_MILLI: u32 = 64_000;
 const DEFAULT_IMAGE_DENSITY_MILLI: u32 = 1_000;
+/// Maximum logical pixels retained for one script-backed canvas.
+pub(crate) const MAX_NATIVE_CANVAS_PIXELS: usize = 1_024 * 1_024;
+pub(crate) const MAX_NATIVE_CANVAS_BYTES: usize = MAX_NATIVE_CANVAS_PIXELS * 4;
+pub(crate) const MAX_NATIVE_CANVAS_DIMENSION: u32 = 4_096;
 pub(crate) const HTML_NAMESPACE_URI: &str = "http://www.w3.org/1999/xhtml";
 pub(crate) const SVG_NAMESPACE_URI: &str = "http://www.w3.org/2000/svg";
 pub(crate) const MATHML_NAMESPACE_URI: &str = "http://www.w3.org/1998/Math/MathML";
@@ -177,6 +181,8 @@ pub(crate) struct NativeDocumentWire {
     pub(crate) background_image_resources: Vec<NativeImageResourceWire>,
     #[serde(default)]
     pub(crate) image_loads: Vec<NativeImageLoadWire>,
+    #[serde(default)]
+    pub(crate) canvas_resources: Vec<NativeCanvasResourceWire>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -189,6 +195,14 @@ pub(crate) struct NativeBackgroundImageSourceWire {
 pub(crate) struct NativeImageLoadWire {
     pub(crate) node_index: u32,
     pub(crate) source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct NativeCanvasResourceWire {
+    pub(crate) node_index: u32,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) pixels_base64: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -357,6 +371,8 @@ pub struct NativeSemanticNode {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct NativeScriptDocumentSnapshot {
+    #[serde(default)]
+    pub(crate) revision: u64,
     pub(crate) title: String,
     pub(crate) visible_text: String,
     pub(crate) elements: Vec<NativeScriptElementSnapshot>,
@@ -374,6 +390,8 @@ pub(crate) struct NativeScriptDocumentSnapshot {
     pub(crate) scroll_height: u32,
     #[serde(default)]
     pub(crate) script_nodes: Vec<NativeScriptNodeIdentity>,
+    #[serde(default)]
+    pub(crate) canvas_resources: Vec<NativeCanvasResourceWire>,
 }
 
 /// Layout-backed geometry transferred to one JavaScript document realm.
@@ -537,6 +555,14 @@ pub struct NativeDocument {
     image_loads: BTreeMap<u32, String>,
     background_image_sources: BTreeMap<u32, String>,
     background_image_resources: BTreeMap<u32, NativeImageResource>,
+    canvas_resources: BTreeMap<u32, NativeCanvasResource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeCanvasResource {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) pixels: Vec<u8>,
 }
 
 fn image_from_wire(
@@ -722,6 +748,7 @@ impl NativeDocument {
             image_loads: BTreeMap::new(),
             background_image_sources: BTreeMap::new(),
             background_image_resources: BTreeMap::new(),
+            canvas_resources: BTreeMap::new(),
         };
         let mut stack = vec![root];
         let mut document_type_seen = false;
@@ -1088,6 +1115,16 @@ impl NativeDocument {
         .then_some(&resource.image)
     }
 
+    pub(crate) fn canvas_resource_for_node(
+        &self,
+        node_id: NativeNodeId,
+    ) -> Option<&NativeCanvasResource> {
+        let node = self.node(node_id)?;
+        (node.element_name() == Some("canvas"))
+            .then(|| self.canvas_resources.get(&node_id.index()))
+            .flatten()
+    }
+
     pub(crate) fn set_image_resource(
         &mut self,
         node_index: u32,
@@ -1307,6 +1344,20 @@ impl NativeDocument {
                 })
             })
             .collect();
+        let canvas_resources = self
+            .canvas_resources
+            .iter()
+            .filter_map(|(node_index, resource)| {
+                let node = self.node(NativeNodeId::from_parts(self.generation, *node_index))?;
+                (node.element_name() == Some("canvas")).then(|| NativeCanvasResourceWire {
+                    node_index: *node_index,
+                    width: resource.width,
+                    height: resource.height,
+                    pixels_base64: base64::engine::general_purpose::STANDARD
+                        .encode(&resource.pixels),
+                })
+            })
+            .collect();
         let background_image_sources = self
             .background_image_sources
             .iter()
@@ -1359,6 +1410,7 @@ impl NativeDocument {
             background_image_sources,
             background_image_resources,
             image_loads,
+            canvas_resources,
         }
     }
 
@@ -1748,6 +1800,104 @@ impl NativeDocument {
                 });
             }
         }
+        if wire.canvas_resources.len() > limits.max_nodes {
+            return Err(NativeEngineError::limit(
+                "content-process canvas resources",
+                limits.max_nodes,
+                wire.canvas_resources.len(),
+            ));
+        }
+        let max_canvas_encoded_bytes =
+            (MAX_NATIVE_CANVAS_BYTES.saturating_add(2).saturating_div(3)).saturating_mul(4);
+        let mut canvas_resources = BTreeMap::new();
+        for resource in wire.canvas_resources {
+            if resource.width == 0
+                || resource.height == 0
+                || resource.width > MAX_NATIVE_CANVAS_DIMENSION
+                || resource.height > MAX_NATIVE_CANVAS_DIMENSION
+            {
+                return Err(NativeEngineError::invalid(
+                    "content-process canvas dimensions",
+                    format!("must be between 1 and {MAX_NATIVE_CANVAS_DIMENSION} pixels per axis"),
+                ));
+            }
+            if resource.pixels_base64.len() > max_canvas_encoded_bytes {
+                return Err(NativeEngineError::limit(
+                    "content-process canvas pixels",
+                    max_canvas_encoded_bytes,
+                    resource.pixels_base64.len(),
+                ));
+            }
+            let expected_bytes = usize::try_from(resource.width)
+                .ok()
+                .and_then(|width| {
+                    usize::try_from(resource.height)
+                        .ok()
+                        .and_then(|height| width.checked_mul(height))
+                })
+                .and_then(|pixels| pixels.checked_mul(4))
+                .ok_or_else(|| {
+                    NativeEngineError::limit(
+                        "content-process canvas pixels",
+                        MAX_NATIVE_CANVAS_BYTES,
+                        usize::MAX,
+                    )
+                })?;
+            if expected_bytes > MAX_NATIVE_CANVAS_BYTES {
+                return Err(NativeEngineError::limit(
+                    "content-process canvas pixels",
+                    MAX_NATIVE_CANVAS_BYTES,
+                    expected_bytes,
+                ));
+            }
+            let node_index =
+                usize::try_from(resource.node_index).map_err(|_| NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned an invalid canvas node index".into(),
+                })?;
+            let node = nodes
+                .get(node_index)
+                .ok_or_else(|| NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned an out-of-range canvas node index".into(),
+                })?;
+            if node.element_name() != Some("canvas") {
+                return Err(NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned a canvas resource for a different node"
+                        .into(),
+                });
+            }
+            let pixels = base64::engine::general_purpose::STANDARD
+                .decode(&resource.pixels_base64)
+                .map_err(|_| NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned invalid canvas pixels".into(),
+                })?;
+            if pixels.len() != expected_bytes {
+                return Err(NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned canvas pixels with the wrong dimensions"
+                        .into(),
+                });
+            }
+            if canvas_resources
+                .insert(
+                    resource.node_index,
+                    NativeCanvasResource {
+                        width: resource.width,
+                        height: resource.height,
+                        pixels,
+                    },
+                )
+                .is_some()
+            {
+                return Err(NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned duplicate canvas resources".into(),
+                });
+            }
+        }
         let root = NativeNodeId {
             generation,
             index: 0,
@@ -1829,6 +1979,7 @@ impl NativeDocument {
             image_loads,
             background_image_sources,
             background_image_resources,
+            canvas_resources,
         };
         document.normalize_select_defaults();
         Ok(document)
@@ -1905,6 +2056,7 @@ impl NativeDocument {
             image_loads: BTreeMap::new(),
             background_image_sources: BTreeMap::new(),
             background_image_resources: BTreeMap::new(),
+            canvas_resources: BTreeMap::new(),
         }
     }
 
@@ -2094,7 +2246,22 @@ impl NativeDocument {
                 })
             })
             .collect();
+        let canvas_resources = self
+            .canvas_resources
+            .iter()
+            .filter_map(|(node_index, resource)| {
+                let node = self.node(NativeNodeId::from_parts(self.generation, *node_index))?;
+                (node.element_name() == Some("canvas")).then(|| NativeCanvasResourceWire {
+                    node_index: *node_index,
+                    width: resource.width,
+                    height: resource.height,
+                    pixels_base64: base64::engine::general_purpose::STANDARD
+                        .encode(&resource.pixels),
+                })
+            })
+            .collect();
         NativeScriptDocumentSnapshot {
+            revision: self.revision,
             title,
             visible_text,
             elements,
@@ -2113,6 +2280,7 @@ impl NativeDocument {
                     node_index: id.index,
                 })
                 .collect(),
+            canvas_resources,
         }
     }
 
@@ -3388,6 +3556,20 @@ impl NativeDocument {
                     let id = NativeNodeId::from_parts(self.generation, *node_index);
                     self.set_selection_state(id, *start, *end, direction)?;
                 }
+                NativeScriptCommand::CanvasCommit {
+                    node_index,
+                    width,
+                    height,
+                    pixels_base64,
+                } => {
+                    self.apply_script_canvas(
+                        *node_index,
+                        *width,
+                        *height,
+                        pixels_base64,
+                        &script_nodes,
+                    )?;
+                }
                 NativeScriptCommand::SetChecked {
                     node_index,
                     checked,
@@ -3599,6 +3781,84 @@ impl NativeDocument {
             .filter(|(node_index, _)| *node_index >= SCRIPT_TEMP_NODE_BASE)
             .collect();
         Ok(events)
+    }
+
+    fn apply_script_canvas(
+        &mut self,
+        node_index: u32,
+        width: u32,
+        height: u32,
+        pixels_base64: &str,
+        script_nodes: &BTreeMap<u32, NativeNodeId>,
+    ) -> Result<(), NativeEngineError> {
+        if width == 0
+            || height == 0
+            || width > MAX_NATIVE_CANVAS_DIMENSION
+            || height > MAX_NATIVE_CANVAS_DIMENSION
+        {
+            return Err(NativeEngineError::invalid(
+                "script canvas dimensions",
+                format!("must be between 1 and {MAX_NATIVE_CANVAS_DIMENSION} pixels per axis"),
+            ));
+        }
+        let expected_bytes = usize::try_from(width)
+            .ok()
+            .and_then(|width| {
+                usize::try_from(height)
+                    .ok()
+                    .and_then(|height| width.checked_mul(height))
+            })
+            .and_then(|pixels| pixels.checked_mul(4))
+            .ok_or_else(|| {
+                NativeEngineError::limit(
+                    "script canvas pixels",
+                    MAX_NATIVE_CANVAS_BYTES,
+                    usize::MAX,
+                )
+            })?;
+        if expected_bytes > MAX_NATIVE_CANVAS_BYTES {
+            return Err(NativeEngineError::limit(
+                "script canvas pixels",
+                MAX_NATIVE_CANVAS_BYTES,
+                expected_bytes,
+            ));
+        }
+        let encoded_limit =
+            (MAX_NATIVE_CANVAS_BYTES.saturating_add(2).saturating_div(3)).saturating_mul(4);
+        if pixels_base64.len() > encoded_limit {
+            return Err(NativeEngineError::limit(
+                "script canvas pixels",
+                encoded_limit,
+                pixels_base64.len(),
+            ));
+        }
+        let pixels = base64::engine::general_purpose::STANDARD
+            .decode(pixels_base64)
+            .map_err(|_| NativeEngineError::invalid("script canvas pixels", "invalid base64"))?;
+        if pixels.len() != expected_bytes {
+            return Err(NativeEngineError::invalid(
+                "script canvas pixels",
+                "pixel data does not match the canvas dimensions",
+            ));
+        }
+        let id = self.resolve_script_node_id(node_index, script_nodes);
+        let node = self
+            .script_node(id, script_nodes)
+            .ok_or(NativeEngineError::DetachedTarget)?;
+        if node.element_name() != Some("canvas") {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "canvas commit requires a canvas element".into(),
+            });
+        }
+        self.canvas_resources.insert(
+            id.index(),
+            NativeCanvasResource {
+                width,
+                height,
+                pixels,
+            },
+        );
+        Ok(())
     }
 
     fn apply_script_custom_validity(
@@ -4508,6 +4768,9 @@ impl NativeDocument {
                 .clone();
             pending.extend(children);
             detached.push(current);
+        }
+        for current in &detached {
+            self.canvas_resources.remove(&current.index());
         }
         for current in detached {
             let node = self

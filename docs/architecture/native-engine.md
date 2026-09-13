@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-309` slice; the bounded foundation below remains
+`native-engine-browser-310` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 
 Slice 283 adds a bounded dedicated-worker bridge after the page-facing
@@ -277,6 +277,16 @@ pair consistency are covered by the focused witness. RSA/EC algorithms,
 PKCS#8/SPKI codecs, key transfer, complete Web Crypto/Web IDL semantics, and
 the final native/CDP replacement gates remain issue #40 work. Exact evidence
 is recorded in `docs/plan/tasks/native-engine-browser-309.md`.
+
+Slice 310 adds a persistent bounded Canvas 2D surface to the page realm. The
+JavaScript surface owns only the current realm state; a coalesced
+`CanvasCommit` crosses the existing script boundary, where Rust validates the
+RGBA dimensions and retains the resource on the canvas node. Layout supplies
+intrinsic dimensions and the existing software display list paints the
+resource, so screenshots and content snapshots observe the same pixels.
+Canvas/Web IDL breadth, image/bitmap/video sources, font shaping, GPU paths,
+and full native/CDP replacement remain Issue #40 gates. Exact evidence is
+recorded in `docs/plan/tasks/native-engine-browser-310.md`.
 
 Slice 282 adds a bounded page-facing computed-style and media-query bridge:
 the JavaScript realm reads the native cascade/layout snapshot through a

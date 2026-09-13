@@ -297,6 +297,11 @@ impl NativeDisplayList {
                     {
                         push_command(&mut commands, command)?;
                     }
+                    if let Some(command) =
+                        canvas_paint_command(document, layout_box.node_id, rect, clip)
+                    {
+                        push_command(&mut commands, command)?;
+                    }
                     for command in svg_paint_commands(document, layout_box.node_id, rect, clip) {
                         push_command(&mut commands, command)?;
                     }
@@ -453,6 +458,33 @@ fn image_paint_command(
         source_width: image.width,
         source_height: image.height,
         pixels: Arc::from(image.current_pixels()),
+        clip,
+    })
+}
+
+fn canvas_paint_command(
+    document: &NativeDocument,
+    node_id: NativeNodeId,
+    bounds: NativeRect,
+    clip: Option<NativeRect>,
+) -> Option<NativeDisplayCommand> {
+    let node = document.node(node_id)?;
+    if node.element_name() != Some("canvas") || bounds.width == 0 || bounds.height == 0 {
+        return None;
+    }
+    let canvas = document.canvas_resource_for_node(node_id)?;
+    Some(NativeDisplayCommand::Image {
+        node_id,
+        rect: bounds,
+        source_rect: NativeRect {
+            x: 0,
+            y: 0,
+            width: canvas.width,
+            height: canvas.height,
+        },
+        source_width: canvas.width,
+        source_height: canvas.height,
+        pixels: Arc::from(canvas.pixels.as_slice()),
         clip,
     })
 }

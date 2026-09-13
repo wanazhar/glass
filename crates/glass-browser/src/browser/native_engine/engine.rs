@@ -1517,6 +1517,11 @@ impl NativeEngine {
                 reason: "worker WebSocket requires a process-backed HTTP(S) document".into(),
             });
         }
+        if !self.workers.take_event_source_commands().is_empty() {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "worker EventSource requires a process-backed HTTP(S) document".into(),
+            });
+        }
         if evaluation.top_level_await_pending {
             return Err(NativeEngineError::Worker {
                 operation: "evaluate JavaScript".into(),
@@ -1537,6 +1542,11 @@ impl NativeEngine {
         if !self.workers.take_websocket_commands().is_empty() {
             return Err(NativeEngineError::UnsupportedUrl {
                 reason: "worker WebSocket requires a process-backed HTTP(S) document".into(),
+            });
+        }
+        if !self.workers.take_event_source_commands().is_empty() {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "worker EventSource requires a process-backed HTTP(S) document".into(),
             });
         }
         let frame_scripts = self

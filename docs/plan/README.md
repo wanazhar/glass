@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-292` locally. The versioned
+`native-engine-browser-293` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -144,6 +144,16 @@ and clean close are covered end to end. The native local fixture owner reports
 an explicit process-backed-network requirement rather than dropping a worker
 connection command; shared/service/worklet workers, automatic background task
 delivery, and the wider native replacement gates remain open on issue #40.
+
+The completed native-engine-browser-293 slice is
+[native-engine-browser-293](tasks/native-engine-browser-293.md). It adds
+dedicated-worker EventSource/SSE through the shared HTTP(S) event-stream
+transport, including relative worker resource URLs, open/error/close and
+named-message dispatch, multiline data, `lastEventId`, origin, reconnect
+control, cookie-change propagation, and owner-tagged close commands. Shared,
+service, and worklet workers, automatic background task delivery, complete
+worker Web IDL parity, and the wider native replacement gates remain open on
+issue #40.
 
 The completed EventSource/SSE slice is
 [native-engine-browser-253](tasks/native-engine-browser-253.md). It adds a

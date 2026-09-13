@@ -219,9 +219,13 @@ pub(crate) enum NativeScriptCommand {
         source_id: u32,
         href: String,
         with_credentials: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worker_id: Option<u32>,
     },
     EventSourceClose {
         source_id: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worker_id: Option<u32>,
     },
     FetchStreamRead {
         stream_id: u32,
@@ -408,6 +412,12 @@ pub(crate) struct NativeWorkerWebSocketCommand {
     pub(crate) command: NativeScriptCommand,
 }
 
+pub(crate) struct NativeWorkerEventSourceCommand {
+    pub(crate) worker_id: u32,
+    pub(crate) worker_url: String,
+    pub(crate) command: NativeScriptCommand,
+}
+
 struct NativeDedicatedWorker {
     url: String,
     runtime: NativeJavaScriptRuntime,
@@ -479,6 +489,28 @@ impl NativeDedicatedWorker {
         }
         self.evaluate_turn(worker_id, &source)
     }
+
+    fn evaluate_event_source_event(
+        &self,
+        worker_id: u32,
+        source_id: u32,
+        event: &serde_json::Value,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        let serialized = serde_json::to_string(event).map_err(|_| NativeEngineError::Worker {
+            operation: "serialize native Worker EventSource event".into(),
+            reason: "native Worker EventSource event could not be serialized".into(),
+        })?;
+        let source =
+            format!("globalThis.__glassDispatchWorkerEventSourceEvent({source_id}, {serialized});");
+        if source.len() > MAX_NATIVE_SCRIPT_BYTES {
+            return Err(NativeEngineError::limit(
+                "native Worker EventSource event",
+                MAX_NATIVE_SCRIPT_BYTES,
+                source.len(),
+            ));
+        }
+        self.evaluate_turn(worker_id, &source)
+    }
 }
 
 /// Owns dedicated-worker realms and the bounded messages waiting for their
@@ -489,6 +521,7 @@ pub(crate) struct NativeWorkerRegistry {
     workers: BTreeMap<u32, NativeDedicatedWorker>,
     pending_messages: VecDeque<NativeWorkerMessage>,
     pending_websocket_commands: VecDeque<NativeWorkerWebSocketCommand>,
+    pending_event_source_commands: VecDeque<NativeWorkerEventSourceCommand>,
 }
 
 impl NativeWorkerRegistry {
@@ -497,6 +530,7 @@ impl NativeWorkerRegistry {
             workers: BTreeMap::new(),
             pending_messages: VecDeque::new(),
             pending_websocket_commands: VecDeque::new(),
+            pending_event_source_commands: VecDeque::new(),
         }
     }
 
@@ -504,6 +538,7 @@ impl NativeWorkerRegistry {
         self.workers.clear();
         self.pending_messages.clear();
         self.pending_websocket_commands.clear();
+        self.pending_event_source_commands.clear();
     }
 
     pub(crate) fn take_messages(&mut self) -> Vec<NativeWorkerMessage> {
@@ -512,6 +547,10 @@ impl NativeWorkerRegistry {
 
     pub(crate) fn take_websocket_commands(&mut self) -> Vec<NativeWorkerWebSocketCommand> {
         self.pending_websocket_commands.drain(..).collect()
+    }
+
+    pub(crate) fn take_event_source_commands(&mut self) -> Vec<NativeWorkerEventSourceCommand> {
+        self.pending_event_source_commands.drain(..).collect()
     }
 
     /// Run one due timer turn for each worker that has work ready. Worker
@@ -794,6 +833,16 @@ impl NativeWorkerRegistry {
                     } if command_worker_id == current_worker_id => {
                         self.queue_websocket_command(current_worker_id, command)?;
                     }
+                    command @ NativeScriptCommand::EventSourceOpen {
+                        worker_id: Some(command_worker_id),
+                        ..
+                    }
+                    | command @ NativeScriptCommand::EventSourceClose {
+                        worker_id: Some(command_worker_id),
+                        ..
+                    } if command_worker_id == current_worker_id => {
+                        self.queue_event_source_command(current_worker_id, command)?;
+                    }
                     _ => {
                         return Err(NativeEngineError::invalid(
                             "native Worker command",
@@ -837,6 +886,34 @@ impl NativeWorkerRegistry {
         }
     }
 
+    pub(crate) async fn dispatch_event_source_event(
+        &mut self,
+        worker_id: u32,
+        source_id: u32,
+        event: &serde_json::Value,
+        loader: &mut NativeResourceLoader,
+    ) -> Result<(), NativeEngineError> {
+        let Some(worker) = self.workers.get(&worker_id) else {
+            return Ok(());
+        };
+        let evaluation = worker.evaluate_event_source_event(worker_id, source_id, event);
+        match evaluation {
+            Ok(evaluation) => {
+                self.collect_worker_evaluation(worker_id, evaluation, loader)
+                    .await
+            }
+            Err(error) => {
+                let worker_url = self
+                    .workers
+                    .get(&worker_id)
+                    .map(|worker| worker.url.clone())
+                    .unwrap_or_default();
+                self.workers.remove(&worker_id);
+                self.queue_error(worker_id, &worker_url, &error.to_string())
+            }
+        }
+    }
+
     fn queue_websocket_command(
         &mut self,
         worker_id: u32,
@@ -861,6 +938,37 @@ impl NativeWorkerRegistry {
         }
         self.pending_websocket_commands
             .push_back(NativeWorkerWebSocketCommand {
+                worker_id,
+                worker_url,
+                command,
+            });
+        Ok(())
+    }
+
+    fn queue_event_source_command(
+        &mut self,
+        worker_id: u32,
+        command: NativeScriptCommand,
+    ) -> Result<(), NativeEngineError> {
+        let worker_url = self
+            .workers
+            .get(&worker_id)
+            .map(|worker| worker.url.clone())
+            .ok_or_else(|| {
+                NativeEngineError::invalid(
+                    "native Worker EventSource command",
+                    "worker no longer exists",
+                )
+            })?;
+        if self.pending_event_source_commands.len() >= MAX_NATIVE_WORKER_MESSAGES {
+            return Err(NativeEngineError::limit(
+                "native Worker EventSource commands",
+                MAX_NATIVE_WORKER_MESSAGES,
+                self.pending_event_source_commands.len().saturating_add(1),
+            ));
+        }
+        self.pending_event_source_commands
+            .push_back(NativeWorkerEventSourceCommand {
                 worker_id,
                 worker_url,
                 command,
@@ -6537,6 +6645,14 @@ impl NativeJavaScriptRuntime {
                         worker_id: Some(command_worker_id),
                         ..
                     } => *command_worker_id == worker_id,
+                    NativeScriptCommand::EventSourceOpen {
+                        worker_id: Some(command_worker_id),
+                        ..
+                    }
+                    | NativeScriptCommand::EventSourceClose {
+                        worker_id: Some(command_worker_id),
+                        ..
+                    } => *command_worker_id == worker_id,
                     _ => false,
                 };
                 if !valid {
@@ -8704,6 +8820,116 @@ fn worker_bootstrap(
   }});
   globalThis.__glassWorkerWebSocketConstructor = WorkerWebSocketNative;
   globalThis.WebSocket = WorkerWebSocketNative;
+  const workerEventSourceMessageLimit = {eventsource_message_limit};
+  const workerEventSourceFieldLimit = {eventsource_field_limit};
+  const workerEventSources = globalThis.__glassWorkerEventSources instanceof Map
+    ? globalThis.__glassWorkerEventSources
+    : new Map();
+  let nextWorkerEventSourceId = Number.isSafeInteger(globalThis.__glassNextWorkerEventSourceId)
+    ? globalThis.__glassNextWorkerEventSourceId
+    : 1;
+  const workerEventSourceDispatch = (source, type, event) => {{
+    const handler = source["on" + type];
+    if (typeof handler === "function") {{
+      try {{ handler.call(source, event); }} catch (_) {{}}
+    }}
+    const listeners = source.__glassWorkerEventSourceListeners[type] || [];
+    for (const listener of listeners.slice()) {{
+      try {{ listener.call(source, event); }} catch (_) {{}}
+    }}
+  }};
+  globalThis.__glassWorkerEventSources = workerEventSources;
+  globalThis.__glassNextWorkerEventSourceId = nextWorkerEventSourceId;
+  globalThis.__glassDispatchWorkerEventSourceEvent = (sourceId, payload) => {{
+    const source = workerEventSources.get(Number(sourceId));
+    if (!source || !payload || typeof payload !== "object") return null;
+    const type = String(payload.type || "");
+    if (type === "open") {{
+      source.readyState = WorkerEventSourceNative.OPEN;
+      workerEventSourceDispatch(source, "open", {{ type: "open", target: source, currentTarget: source }});
+    }} else if (type === "message") {{
+      const data = String(payload.data || "");
+      if (data.length > workerEventSourceMessageLimit) return null;
+      const eventType = String(payload.event || "message");
+      if (!eventType || eventType.length > workerEventSourceFieldLimit) return null;
+      workerEventSourceDispatch(source, eventType, {{
+        type: eventType,
+        data,
+        origin: String(payload.origin || ""),
+        lastEventId: String(payload.lastEventId || ""),
+        target: source,
+        currentTarget: source,
+      }});
+    }} else if (type === "error") {{
+      source.readyState = WorkerEventSourceNative.CONNECTING;
+      workerEventSourceDispatch(source, "error", {{
+        type: "error",
+        message: String(payload.message || ""),
+        target: source,
+        currentTarget: source,
+      }});
+    }} else if (type === "close") {{
+      source.readyState = WorkerEventSourceNative.CLOSED;
+      workerEventSourceDispatch(source, "close", {{ type: "close", target: source, currentTarget: source }});
+      workerEventSources.delete(Number(sourceId));
+    }}
+    return null;
+  }};
+  const WorkerEventSourceNative = typeof globalThis.__glassWorkerEventSourceConstructor === "function"
+    ? globalThis.__glassWorkerEventSourceConstructor
+    : function(input, options) {{
+    if (!(this instanceof WorkerEventSourceNative)) throw new TypeError("native Worker EventSource requires new");
+    const source = input && input.__glassUrl === true ? input.href : input;
+    const href = String(source);
+    if (!href || href.includes("\\u0000"))
+      throw new SyntaxError("native Worker EventSource URL must be a non-empty URL");
+    if (options !== undefined && (options === null || typeof options !== "object"))
+      throw new TypeError("native Worker EventSource options must be an object");
+    const withCredentials = options !== undefined && options.withCredentials === true;
+    const sourceId = nextWorkerEventSourceId;
+    nextWorkerEventSourceId += 1;
+    globalThis.__glassNextWorkerEventSourceId = nextWorkerEventSourceId;
+    this.url = href;
+    this.readyState = WorkerEventSourceNative.CONNECTING;
+    this.withCredentials = withCredentials;
+    this.onopen = null;
+    this.onmessage = null;
+    this.onerror = null;
+    this.__glassSourceId = sourceId;
+    this.__glassWorkerEventSourceListeners = {{}};
+    workerEventSources.set(sourceId, this);
+    pushCommand({{ kind: "eventSourceOpen", worker_id: workerId, source_id: sourceId, href, with_credentials: withCredentials }});
+  }};
+  WorkerEventSourceNative.CONNECTING = 0;
+  WorkerEventSourceNative.OPEN = 1;
+  WorkerEventSourceNative.CLOSED = 2;
+  WorkerEventSourceNative.prototype.addEventListener = function(type, listener) {{
+    const name = String(type);
+    if (!name || name.length > workerEventSourceFieldLimit || typeof listener !== "function") return;
+    if (!this.__glassWorkerEventSourceListeners[name]) this.__glassWorkerEventSourceListeners[name] = [];
+    if (!this.__glassWorkerEventSourceListeners[name].includes(listener)) this.__glassWorkerEventSourceListeners[name].push(listener);
+  }};
+  WorkerEventSourceNative.prototype.removeEventListener = function(type, listener) {{
+    const name = String(type);
+    if (!this.__glassWorkerEventSourceListeners[name]) return;
+    this.__glassWorkerEventSourceListeners[name] = this.__glassWorkerEventSourceListeners[name].filter(candidate => candidate !== listener);
+  }};
+  WorkerEventSourceNative.prototype.dispatchEvent = function(event) {{
+    if (!event || !event.type) throw new TypeError("native Worker EventSource event is invalid");
+    workerEventSourceDispatch(this, String(event.type), event);
+    return true;
+  }};
+  WorkerEventSourceNative.prototype.close = function() {{
+    if (this.readyState === WorkerEventSourceNative.CLOSED) return;
+    this.readyState = WorkerEventSourceNative.CLOSED;
+    workerEventSources.delete(this.__glassSourceId);
+    pushCommand({{ kind: "eventSourceClose", worker_id: workerId, source_id: this.__glassSourceId }});
+  }};
+  Object.defineProperties(WorkerEventSourceNative.prototype, {{
+    CONNECTING: {{ value: 0 }}, OPEN: {{ value: 1 }}, CLOSED: {{ value: 2 }},
+  }});
+  globalThis.__glassWorkerEventSourceConstructor = WorkerEventSourceNative;
+  globalThis.EventSource = WorkerEventSourceNative;
   globalThis.importScripts = isModuleWorker
     ? (() => {{ throw new TypeError("importScripts is unavailable in module workers"); }})
     : importScriptsNative;
@@ -8777,6 +9003,8 @@ fn worker_bootstrap(
         websocket_protocol_limit = MAX_NATIVE_WEBSOCKET_PROTOCOL_BYTES,
         websocket_protocol_count_limit = MAX_NATIVE_WEBSOCKET_PROTOCOLS,
         websocket_close_reason_limit = MAX_NATIVE_WEBSOCKET_CLOSE_REASON_BYTES,
+        eventsource_message_limit = MAX_NATIVE_EVENTSOURCE_MESSAGE_BYTES,
+        eventsource_field_limit = MAX_NATIVE_EVENTSOURCE_FIELD_BYTES,
         now_ms = now_ms,
         import_script_counts = import_script_counts,
     ))

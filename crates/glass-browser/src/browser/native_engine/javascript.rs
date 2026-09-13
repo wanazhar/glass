@@ -4223,7 +4223,7 @@ impl NativeJavaScriptRuntime {
     pub(crate) fn next_timer_delay_ms(&self) -> Result<Option<u64>, NativeEngineError> {
         let now_ms = self.now_ms();
         let source = format!(
-            "JSON.stringify((() => {{ let next = null; const consider = values => {{ for (const timer of values) {{ const dueAt = Number(timer && timer.dueAt); if (!Number.isFinite(dueAt)) continue; const delay = Math.max(0, Math.ceil(dueAt - {now_ms})); if (next === null || delay < next) next = delay; }} }}; consider(globalThis.__glassTimers instanceof Map ? globalThis.__glassTimers.values() : []); consider(globalThis.__glassAnimationFrames instanceof Map ? globalThis.__glassAnimationFrames.values() : []); return next; }})())"
+            "JSON.stringify((() => {{ let next = null; const consider = values => {{ for (const timer of values) {{ const dueAt = Number(timer && (timer.dueAt === undefined ? timer.timeoutAt : timer.dueAt)); if (!Number.isFinite(dueAt)) continue; const delay = Math.max(0, Math.ceil(dueAt - {now_ms})); if (next === null || delay < next) next = delay; }} }}; consider(globalThis.__glassTimers instanceof Map ? globalThis.__glassTimers.values() : []); consider(globalThis.__glassAnimationFrames instanceof Map ? globalThis.__glassAnimationFrames.values() : []); consider(globalThis.__glassIdleCallbacks instanceof Map ? globalThis.__glassIdleCallbacks.values() : []); return next; }})())"
         );
         self.context.with(|ctx| {
             let json: String =
@@ -5972,8 +5972,14 @@ fn document_bootstrap(
   const animationFrames = globalThis.__glassAnimationFrames instanceof Map
     ? globalThis.__glassAnimationFrames
     : new Map();
+  const idleCallbacks = globalThis.__glassIdleCallbacks instanceof Map
+    ? globalThis.__glassIdleCallbacks
+    : new Map();
   let nextAnimationFrameId = Number.isSafeInteger(globalThis.__glassNextAnimationFrameId)
     ? globalThis.__glassNextAnimationFrameId
+    : 1;
+  let nextIdleCallbackId = Number.isSafeInteger(globalThis.__glassNextIdleCallbackId)
+    ? globalThis.__glassNextIdleCallbackId
     : 1;
   let nextTimerId = Number.isSafeInteger(globalThis.__glassNextTimerId)
     ? globalThis.__glassNextTimerId
@@ -6021,6 +6027,28 @@ fn document_bootstrap(
   }};
   const cancelAnimationFrameNative = (id) => {{
     animationFrames.delete(Number(id));
+  }};
+  const requestIdleCallbackNative = (callback, options) => {{
+    if (typeof callback !== "function") throw new TypeError("idle callback must be callable");
+    if (options !== undefined && (options === null || typeof options !== "object"))
+      throw new TypeError("idle callback options must be an object");
+    if (idleCallbacks.size >= {max_timers}) throw new RangeError("native idle callback limit exceeded");
+    const timeoutValue = options && options.timeout !== undefined ? Number(options.timeout) : null;
+    const timeout = timeoutValue === null
+      ? null
+      : Number.isFinite(timeoutValue) ? Math.max(0, Math.min(2147483647, timeoutValue)) : null;
+    const id = nextIdleCallbackId;
+    nextIdleCallbackId += 1;
+    globalThis.__glassNextIdleCallbackId = nextIdleCallbackId;
+    idleCallbacks.set(id, {{
+      callback,
+      scheduledAt: host.now_ms,
+      timeoutAt: timeout === null ? null : host.now_ms + timeout,
+    }});
+    return id;
+  }};
+  const cancelIdleCallbackNative = (id) => {{
+    idleCallbacks.delete(Number(id));
   }};
   const storageEntryLimit = {storage_entry_limit};
   const storageKeyLimit = {storage_key_limit};
@@ -7055,12 +7083,16 @@ fn document_bootstrap(
   globalThis.__glassNextTimerId = nextTimerId;
   globalThis.__glassAnimationFrames = animationFrames;
   globalThis.__glassNextAnimationFrameId = nextAnimationFrameId;
+  globalThis.__glassIdleCallbacks = idleCallbacks;
+  globalThis.__glassNextIdleCallbackId = nextIdleCallbackId;
   globalThis.setTimeout = setTimeoutNative;
   globalThis.setInterval = setIntervalNative;
   globalThis.clearTimeout = clearTimer;
   globalThis.clearInterval = clearTimer;
   globalThis.requestAnimationFrame = requestAnimationFrameNative;
   globalThis.cancelAnimationFrame = cancelAnimationFrameNative;
+  globalThis.requestIdleCallback = requestIdleCallbackNative;
+  globalThis.cancelIdleCallback = cancelIdleCallbackNative;
   const fetchRequests = globalThis.__glassFetchRequests instanceof Map
     ? globalThis.__glassFetchRequests
     : new Map();
@@ -10298,6 +10330,26 @@ fn document_bootstrap(
       if (!animationFrames.has(id)) continue;
       animationFrames.delete(id);
       frame.callback.call(globalThis, now);
+    }}
+    const idles = Array.from(idleCallbacks.entries())
+      .filter(([, idle]) => idle.timeoutAt === null || Number(idle.timeoutAt) <= now)
+      .sort((left, right) => {{
+        const leftAt = left[1].timeoutAt === null ? Number.MAX_SAFE_INTEGER : Number(left[1].timeoutAt);
+        const rightAt = right[1].timeoutAt === null ? Number.MAX_SAFE_INTEGER : Number(right[1].timeoutAt);
+        return leftAt - rightAt || left[0] - right[0];
+      }});
+    for (const [id, idle] of idles) {{
+      if (!idleCallbacks.has(id)) continue;
+      idleCallbacks.delete(id);
+      const startedAt = performance.now();
+      const didTimeout = idle.timeoutAt !== null && Number(idle.timeoutAt) <= now;
+      const deadline = {{
+        didTimeout,
+        timeRemaining() {{
+          return Math.max(0, 50 - (performance.now() - startedAt));
+        }},
+      }};
+      idle.callback.call(globalThis, deadline);
     }}
   }};
   const listeners = globalThis.__glassHostListeners instanceof Map

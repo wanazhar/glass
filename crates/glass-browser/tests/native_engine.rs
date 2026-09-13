@@ -1159,8 +1159,10 @@ async fn native_content_process_worker_fetch_preserves_binary_request_and_respon
                     let body = r#"(async () => {
   try {
     const bytes = new Uint8Array([0, 255, 1, 254]);
-    const request = new File([bytes], 'payload.bin', { type: 'application/octet-stream' });
-    const response = await fetch('/worker-binary-echo', { method: 'POST', body: request });
+    const requestBody = new File([bytes], 'payload.bin', { type: 'application/octet-stream' });
+    const request = new Request('/worker-binary-echo', { method: 'POST', body: requestBody });
+    const requestClone = request.clone();
+    const response = await fetch(request);
     const bufferResponse = response.clone();
     const blobResponse = response.clone();
     const streamResponse = response.clone();
@@ -1188,6 +1190,10 @@ async fn native_content_process_worker_fetch_preserves_binary_request_and_respon
     const iterator = iteratorResponse.body[Symbol.asyncIterator]();
     const iteratorFirst = await iterator.next();
     const iteratorEnd = await iterator.next();
+    const requestCloneBytes = await requestClone.bytes();
+    const responseObject = new Response(new Uint8Array([9, 8, 7]), { status: 201, headers: { 'X-Worker-Response': 'yes' } });
+    const responseClone = responseObject.clone();
+    const responseObjectBytes = await responseClone.bytes();
     postMessage({
       kind: 'binary',
       requestBytes: Array.from(bytes),
@@ -1213,6 +1219,8 @@ async fn native_content_process_worker_fetch_preserves_binary_request_and_respon
       iteratorFirstDone: iteratorFirst.done,
       iteratorEndDone: iteratorEnd.done,
       iteratorBodyUsed: iteratorResponse.bodyUsed,
+      requestIdentity: [request instanceof Request, request.headers instanceof Headers, request.method, request.headers.get('content-type'), request.bodyUsed, Array.from(requestCloneBytes), requestClone.bodyUsed],
+      responseIdentity: [responseObject instanceof Response, responseObject.headers instanceof Headers, responseObject.status, responseObject.headers.get('x-worker-response'), Array.from(responseObjectBytes), responseObject.bodyUsed, responseClone.bodyUsed],
       bodyUsed: response.bodyUsed,
       bufferBodyUsed: bufferResponse.bodyUsed,
       blobBodyUsed: blobResponse.bodyUsed,
@@ -1275,6 +1283,8 @@ async fn native_content_process_worker_fetch_preserves_binary_request_and_respon
             "iteratorFirstDone": false,
             "iteratorEndDone": true,
             "iteratorBodyUsed": true,
+            "requestIdentity": [true, true, "POST", "application/octet-stream", true, [0, 255, 1, 254], true],
+            "responseIdentity": [true, true, 201, "yes", [9, 8, 7], false, true],
             "bodyUsed": true,
             "bufferBodyUsed": true,
             "blobBodyUsed": true,

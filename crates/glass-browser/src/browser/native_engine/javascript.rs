@@ -61,6 +61,8 @@ const MAX_NATIVE_WORKER_URLSEARCHPARAMS_ENTRIES: usize = 128;
 const MAX_NATIVE_WORKER_URLSEARCHPARAMS_BYTES: usize = MAX_NATIVE_POST_MESSAGE_BYTES;
 const MAX_NATIVE_WORKER_CRYPTO_POOL_BYTES: usize = 16 * 1024;
 const MAX_NATIVE_WORKER_CRYPTO_VALUES_BYTES: usize = 16 * 1024;
+const MAX_NATIVE_PAGE_CRYPTO_POOL_BYTES: usize = 16 * 1024;
+const MAX_NATIVE_PAGE_CRYPTO_VALUES_BYTES: usize = 16 * 1024;
 const NATIVE_SCRIPT_MEMORY_BYTES: usize = 32 * 1024 * 1024;
 const NATIVE_SCRIPT_STACK_BYTES: usize = 1024 * 1024;
 const NATIVE_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -9711,6 +9713,16 @@ fn document_bootstrap(
 ) -> Result<String, NativeEngineError> {
     let native_file_bytes = MAX_NATIVE_FILE_BYTES;
     let native_form_body_bytes = MAX_NATIVE_FORM_BODY_BYTES;
+    let mut random_bytes = vec![0_u8; MAX_NATIVE_PAGE_CRYPTO_POOL_BYTES];
+    getrandom::fill(&mut random_bytes).map_err(|_| NativeEngineError::Worker {
+        operation: "seed native page crypto".into(),
+        reason: "the operating system did not provide page crypto seed bytes".into(),
+    })?;
+    let initial_random_bytes =
+        serde_json::to_string(&random_bytes).map_err(|_| NativeEngineError::Worker {
+            operation: "serialize native page crypto seed".into(),
+            reason: "native page crypto seed bytes could not be serialized".into(),
+        })?;
     let state = document.script_snapshot_with_layout(
         crate::browser_backend::MAX_TEXT_BYTES,
         viewport,
@@ -9750,6 +9762,7 @@ fn document_bootstrap(
     Ok(format!(
         r###"(() => {{
   const host = {serialized};
+  const initialPageCryptoBytes = {initial_page_crypto_bytes};
   const state = host.state;
   const geometryByIndex = globalThis.__glassHostGeometry instanceof Map
     ? globalThis.__glassHostGeometry
@@ -19326,6 +19339,69 @@ fn document_bootstrap(
   }};
   globalThis.scroll = globalThis.scrollTo;
   globalThis.navigator = globalThis.navigator || {{ userAgent: "GlassNative" }};
+  const pageCryptoPool = globalThis.__glassPageCryptoPool instanceof Array
+    ? globalThis.__glassPageCryptoPool
+    : [];
+  let pageCryptoOffset = Number.isSafeInteger(globalThis.__glassPageCryptoOffset)
+    ? globalThis.__glassPageCryptoOffset
+    : 0;
+  if (pageCryptoOffset > 0) {{
+    pageCryptoPool.splice(0, pageCryptoOffset);
+    pageCryptoOffset = 0;
+  }}
+  pageCryptoPool.push(...initialPageCryptoBytes);
+  if (pageCryptoPool.length > {page_crypto_pool_limit})
+    pageCryptoPool.splice(0, pageCryptoPool.length - {page_crypto_pool_limit});
+  const pageCryptoTake = (count) => {{
+    if (!Number.isSafeInteger(count) || count < 0 || count > {page_crypto_values_limit})
+      throw new RangeError("native page crypto value is outside the bounded range");
+    if (pageCryptoOffset + count > pageCryptoPool.length) {{
+      const Constructor = globalThis.DOMException;
+      if (typeof Constructor === "function")
+        throw new Constructor("native page crypto pool exhausted", "QuotaExceededError");
+      const error = new Error("native page crypto pool exhausted");
+      error.name = "QuotaExceededError";
+      throw error;
+    }}
+    const bytes = pageCryptoPool.slice(pageCryptoOffset, pageCryptoOffset + count);
+    pageCryptoOffset += count;
+    globalThis.__glassPageCryptoOffset = pageCryptoOffset;
+    return bytes;
+  }};
+  const pageCryptoIntegerArray = (value) => {{
+    const tag = Object.prototype.toString.call(value);
+    return ["[object Int8Array]", "[object Uint8Array]", "[object Uint8ClampedArray]",
+      "[object Int16Array]", "[object Uint16Array]", "[object Int32Array]",
+      "[object Uint32Array]", "[object BigInt64Array]", "[object BigUint64Array]"].includes(tag);
+  }};
+  const pageCrypto = globalThis.__glassPageCryptoObject instanceof Object
+    ? globalThis.__glassPageCryptoObject
+    : (globalThis.crypto instanceof Object ? globalThis.crypto : {{}});
+  pageCrypto.getRandomValues = (value) => {{
+    if (!pageCryptoIntegerArray(value))
+      throw new TypeError("native page crypto requires an integer typed array");
+    if (value.byteLength > {page_crypto_values_limit}) {{
+      const Constructor = globalThis.DOMException;
+      if (typeof Constructor === "function")
+        throw new Constructor("native page crypto value is too large", "QuotaExceededError");
+      const error = new Error("native page crypto value is too large");
+      error.name = "QuotaExceededError";
+      throw error;
+    }}
+    new Uint8Array(value.buffer, value.byteOffset, value.byteLength).set(pageCryptoTake(value.byteLength));
+    return value;
+  }};
+  pageCrypto.randomUUID = () => {{
+    const bytes = pageCryptoTake(16);
+    bytes[6] = (bytes[6] & 15) | 64;
+    bytes[8] = (bytes[8] & 63) | 128;
+    const hex = bytes.map(byte => byte.toString(16).padStart(2, "0")).join("");
+    return hex.slice(0, 8) + "-" + hex.slice(8, 12) + "-" + hex.slice(12, 16)
+      + "-" + hex.slice(16, 20) + "-" + hex.slice(20);
+  }};
+  globalThis.__glassPageCryptoPool = pageCryptoPool;
+  globalThis.__glassPageCryptoObject = pageCrypto;
+  globalThis.crypto = pageCrypto;
   const nativeStorageUsage = () => {{
     const encoded = (value) => {{
       try {{ return JSON.stringify(value); }} catch (_error) {{ return ""; }}
@@ -22058,5 +22134,8 @@ fn document_bootstrap(
         ready_state = ready_state,
         history_state_bytes_limit = MAX_NATIVE_HISTORY_STATE_BYTES,
         history_length_limit = MAX_NATIVE_HISTORY_DELTA,
+        initial_page_crypto_bytes = initial_random_bytes,
+        page_crypto_pool_limit = MAX_NATIVE_PAGE_CRYPTO_POOL_BYTES,
+        page_crypto_values_limit = MAX_NATIVE_PAGE_CRYPTO_VALUES_BYTES,
     ))
 }

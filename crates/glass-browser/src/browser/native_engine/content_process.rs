@@ -4085,7 +4085,13 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 runtime.set_indexed_db_state(
                     indexed_db_state.origin(&storage_key(&committed_url, document_origin)),
                 );
-                workers.run_due_timers()?;
+                let Some(loader) = resource_loader.as_mut() else {
+                    return Err(NativeEngineError::Worker {
+                        operation: "content process Worker scheduling".into(),
+                        reason: "content process resource loader is unavailable".into(),
+                    });
+                };
+                workers.run_due_timers(loader).await?;
                 pending_worker_messages.extend(workers.take_messages());
                 let worker_messages = std::mem::take(&mut pending_worker_messages)
                     .into_iter()
@@ -7999,6 +8005,7 @@ fn fetch_commands(
                 mode,
                 redirect,
                 timeout_ms,
+                ..
             } => Some((
                 *request_id,
                 href.clone(),

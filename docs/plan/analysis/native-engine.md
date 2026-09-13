@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-285`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-286`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -4195,8 +4195,8 @@ Initial page scripts, ordinary evaluations, and dynamically attached scripts
 are covered in both the local owner and the out-of-process HTTP(S) content
 worker. Delivery is serialized at explicit page turns, preserving deterministic
 testing and process ownership while leaving task-source fairness, transferables,
-module/shared/service workers, worker network APIs, and complete Worker Web IDL
-semantics for later Issue #40 work. Bounded worker timers are covered by the
+module/shared/service workers, full worker-side network/Web IDL parity, and
+complete Worker Web IDL semantics for later Issue #40 work. Bounded worker timers are covered by the
 following 284 slice. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-283.md`.
 
@@ -4206,9 +4206,9 @@ realm's monotonic clock, support cancellation, expose a bounded worker-local
 `performance.now()`, and execute due callbacks before the next page evaluation
 in both the local owner and the HTTP(S) content process. Timer output is
 collected through the existing worker command/message boundary; continuous
-task-source fairness, timer delivery while unrelated page work is pending,
-worker network APIs, and complete Worker Web IDL semantics remain issue #40
-work. Exact evidence is recorded in
+task-source fairness, timer delivery while unrelated page work is pending, full
+worker-side network/Web IDL parity, and complete Worker Web IDL semantics remain
+issue #40 work. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-284.md`.
 
 The completed native-engine-browser-285 slice adds bounded static worker
@@ -4220,8 +4220,21 @@ unseen dynamic calls fail explicitly. The isolated worker realm remains the
 sole JavaScript owner and the existing message/timer command boundary is
 unchanged. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-285.md`; dynamic importScripts call
-position, worker network APIs, module/shared/service workers, and complete
-Worker Web IDL semantics remain issue #40 work.
+position, full worker Fetch/XHR/streaming parity, module/shared/service workers,
+and complete Worker Web IDL semantics remain issue #40 work.
+
+The completed native-engine-browser-286 slice adds a real worker-side Fetch
+boundary. Classic dedicated workers emit owner-tagged `fetch()` commands with
+bounded methods, string bodies, custom headers, credentials, CORS mode, and
+redirect mode. The worker registry sends those requests through the shared
+HTTP(S) loader, which owns relative URL resolution, cookies, CSP/connect policy,
+CORS, redirects, response limits, and response metadata. Bounded text/JSON
+`Response` consumers are resolved back into the isolated worker promise realm,
+and the same path is used by startup, message, and timer turns. Worker streams,
+binary response/request bodies, full Request/Response Web IDL identity, XHR,
+module/shared service workers, and complete native/CDP parity remain issue #40
+promotion work. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-286.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

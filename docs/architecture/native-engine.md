@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-285` slice; the bounded foundation below remains
+`native-engine-browser-286` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 
 Slice 283 adds a bounded dedicated-worker bridge after the page-facing
@@ -10,10 +10,10 @@ load through the shared resource policy, execute in isolated QuickJS realms,
 and exchange bounded messages/errors through an explicit page-turn queue in
 both local and HTTP(S) content-process paths. The bridge preserves the
 two-crate boundary and does not change backend selection. Task-source fairness,
-transferables, module/shared/service workers, worker network APIs, dynamic and
-exact `importScripts()` timing, and complete Worker Web IDL semantics remain
-expansion work; bounded worker timers and static `importScripts()` dependencies
-are covered by slices 284 and 285 below.
+transferables, module/shared/service workers, full worker-side network/Web IDL
+parity, dynamic and exact `importScripts()` timing, and complete Worker Web IDL
+semantics remain expansion work; bounded worker timers, static `importScripts()`
+dependencies, and worker Fetch are covered by slices 284 through 286 below.
 
 Slice 284 adds bounded timer ownership to those dedicated-worker realms.
 Worker `setTimeout` and `setInterval` callbacks use the worker runtime's
@@ -22,17 +22,30 @@ monotonic clock, support cancellation, and expose worker-local
 worker callbacks before constructing the next page-turn script prefix, so
 worker messages are not stranded at the process boundary. Continuous browser
 task-source fairness, automatic delivery while unrelated page work is pending,
-worker network APIs, and complete Worker Web IDL semantics remain expansion
-work.
+full worker-side network/Web IDL parity, and complete Worker Web IDL semantics
+remain expansion work.
 
 Slice 285 adds bounded static `importScripts()` dependency ownership. The
 worker resource owner discovers string-literal dependency calls, loads nested
 dependencies through the same URL/security/MIME/byte boundary, evaluates them
 before the root source, and tracks each preloaded call in the worker realm.
 Calls whose expressions or arguments were not preloaded fail explicitly, so
-the bridge does not create an implicit worker network capability. Dynamic call
-position semantics, worker network APIs, module/shared/service workers, and
-complete Worker Web IDL semantics remain expansion work.
+the importScripts bridge does not create an implicit dependency-loading
+capability. Dynamic call position semantics, full worker Fetch/XHR/streaming
+parity, module/shared/service workers, and complete Worker Web IDL semantics
+remain expansion work.
+
+Slice 286 adds a real worker-side Fetch boundary for classic dedicated workers.
+Worker `fetch()` emits an owner-tagged typed request; the worker registry routes
+it through the shared HTTP(S) loader, preserving relative URL resolution,
+request headers and string bodies, credentials, CORS mode, redirect mode,
+cookies, connect policy, redirect handling, and bounded response limits. The
+loader's response metadata and text body are resolved back into the isolated
+worker promise realm, where bounded `text()` and `json()` consumers can post
+results to the owning page. Startup, message, and timer turns use the same
+serialized path. Worker streams, binary bodies, full Request/Response Web IDL
+identity, XHR, module/shared service workers, and complete native/CDP parity
+remain Issue #40 expansion gates.
 
 Slice 282 adds a bounded page-facing computed-style and media-query bridge:
 the JavaScript realm reads the native cascade/layout snapshot through a
@@ -4961,9 +4974,12 @@ available for local fixtures and HTTP(S) pages. Worker source uses the shared
 resource and `worker-src` policy path, each worker has an isolated bounded
 QuickJS realm, messages/errors/termination cross an explicit page-turn queue,
 due timers are pumped at that boundary, and bounded static `importScripts()`
-dependencies preload through the same owner. Module/shared/service workers,
-transferables, worker network APIs, dynamic/exact `importScripts()` timing, and
-complete Worker Web IDL semantics remain outside the current profile.
+dependencies preload through the same owner. Classic worker `fetch()` also uses
+the shared HTTP(S) loader with owner-tagged requests and bounded response
+metadata plus `text()`/`json()` consumers inside the worker realm.
+Module/shared/service workers, transferables, worker streaming/binary Fetch
+parity, worker XHR, dynamic/exact `importScripts()` timing, and complete Worker
+Web IDL semantics remain outside the current profile.
 
 Within the available script profile, native Fetch `Response.clone()` creates a
 bounded fresh response/header/body owner; full disturbance and Web IDL
@@ -6084,10 +6100,20 @@ Initial page scripts, ordinary evaluations, and dynamically attached scripts
 are covered in both the local owner and the out-of-process HTTP(S) content
 worker. Delivery is serialized at explicit page turns, preserving deterministic
 testing and process ownership while leaving task-source fairness, transferables,
-module/shared/service workers, worker network APIs, and complete Worker Web IDL
-semantics for later Issue #40 work. Bounded worker timers are covered by the
-following 284 slice. Exact evidence is recorded in
+module/shared/service workers, full worker-side network/Web IDL parity, and
+complete Worker Web IDL semantics for later Issue #40 work. Bounded worker
+timers, static importScripts dependencies, and worker Fetch are covered by the
+following 284 through 286 slices. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-283.md`.
+
+The completed native-engine-browser-286 slice adds a real worker-side Fetch
+boundary. Classic dedicated workers emit owner-tagged `fetch()` commands with
+bounded methods, string bodies, custom headers, credentials, CORS mode, and
+redirect mode. The worker registry routes those requests through the shared
+HTTP(S) loader and resolves bounded response metadata plus text/JSON consumers
+back into the isolated worker promise realm. Worker streams, binary bodies,
+full Request/Response Web IDL identity, XHR, module/shared service workers, and
+complete native/CDP parity remain Issue #40 promotion gates.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

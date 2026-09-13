@@ -19,7 +19,11 @@ use super::interaction::{
 };
 use super::layout::NativePoint;
 use super::origin::NativeOrigin;
-use super::resource_loader::{NativeResourceLoader, NativeScriptResource};
+use super::resource_loader::{
+    NativeCorsMode, NativeFetchRedirectMode, NativeFetchRequest, NativeFetchResponse,
+    NativeNavigationMethod, NativeRequestBody, NativeResourceLoader, NativeScriptResource,
+};
+use base64::Engine as _;
 use fs2::FileExt;
 use rquickjs::function::This;
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
@@ -167,6 +171,8 @@ pub(crate) enum NativeScriptCommand {
     },
     Fetch {
         request_id: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worker_id: Option<u32>,
         href: String,
         credentials: bool,
         method: String,
@@ -424,8 +430,11 @@ impl NativeWorkerRegistry {
 
     /// Run one due timer turn for each worker that has work ready. Worker
     /// callbacks stay inside their isolated realm and can only emit the
-    /// existing bounded worker message/lifecycle commands.
-    pub(crate) fn run_due_timers(&mut self) -> Result<(), NativeEngineError> {
+    /// bounded worker message/lifecycle/fetch commands.
+    pub(crate) async fn run_due_timers(
+        &mut self,
+        loader: &mut NativeResourceLoader,
+    ) -> Result<(), NativeEngineError> {
         let due_workers = self
             .workers
             .iter()
@@ -447,7 +456,10 @@ impl NativeWorkerRegistry {
                 &worker.import_script_counts,
             );
             match evaluation {
-                Ok(evaluation) => self.collect_worker_evaluation(worker_id, evaluation)?,
+                Ok(evaluation) => {
+                    self.collect_worker_evaluation(worker_id, evaluation, loader)
+                        .await?
+                }
                 Err(error) => {
                     let worker_url = self
                         .workers
@@ -486,7 +498,7 @@ impl NativeWorkerRegistry {
                         .await?;
                 }
                 NativeScriptCommand::WorkerPostMessage { worker_id, data } => {
-                    self.post_message(worker_id, data)?;
+                    self.post_message(worker_id, data, loader).await?;
                 }
                 NativeScriptCommand::WorkerTerminate { worker_id }
                 | NativeScriptCommand::WorkerClose { worker_id } => {
@@ -581,7 +593,10 @@ impl NativeWorkerRegistry {
             )
         };
         match evaluation {
-            Ok(evaluation) => self.collect_worker_evaluation(worker_id, evaluation),
+            Ok(evaluation) => {
+                self.collect_worker_evaluation(worker_id, evaluation, loader)
+                    .await
+            }
             Err(error) => {
                 self.workers.remove(&worker_id);
                 self.queue_error(worker_id, &resource.url, &error.to_string())
@@ -589,10 +604,11 @@ impl NativeWorkerRegistry {
         }
     }
 
-    fn post_message(
+    async fn post_message(
         &mut self,
         worker_id: u32,
         data: serde_json::Value,
+        loader: &mut NativeResourceLoader,
     ) -> Result<(), NativeEngineError> {
         if !self.workers.contains_key(&worker_id) {
             return Ok(());
@@ -610,7 +626,10 @@ impl NativeWorkerRegistry {
             )
         };
         match evaluation {
-            Ok(evaluation) => self.collect_worker_evaluation(worker_id, evaluation),
+            Ok(evaluation) => {
+                self.collect_worker_evaluation(worker_id, evaluation, loader)
+                    .await
+            }
             Err(error) => {
                 self.workers.remove(&worker_id);
                 self.queue_error(worker_id, "", &error.to_string())
@@ -618,39 +637,178 @@ impl NativeWorkerRegistry {
         }
     }
 
-    fn collect_worker_evaluation(
+    async fn collect_worker_evaluation(
         &mut self,
         worker_id: u32,
         evaluation: NativeScriptEvaluation,
+        loader: &mut NativeResourceLoader,
     ) -> Result<(), NativeEngineError> {
-        let mut closed = false;
-        for command in evaluation.commands {
-            match command {
-                NativeScriptCommand::WorkerPostMessage {
-                    worker_id: command_worker_id,
-                    data,
-                } if command_worker_id == worker_id => {
-                    self.queue_message(NativeWorkerMessage {
-                        worker_id,
+        let mut evaluations = VecDeque::from([(worker_id, evaluation)]);
+        let mut evaluation_count = 0usize;
+        while let Some((current_worker_id, evaluation)) = evaluations.pop_front() {
+            evaluation_count = evaluation_count.saturating_add(1);
+            if evaluation_count > MAX_NATIVE_WORKER_MESSAGES {
+                return Err(NativeEngineError::limit(
+                    "native Worker event-loop turns",
+                    MAX_NATIVE_WORKER_MESSAGES,
+                    evaluation_count,
+                ));
+            }
+            let mut closed = false;
+            for command in evaluation.commands {
+                match command {
+                    NativeScriptCommand::WorkerPostMessage {
+                        worker_id: command_worker_id,
                         data,
-                        error: None,
-                    })?;
-                }
-                NativeScriptCommand::WorkerClose {
-                    worker_id: command_worker_id,
-                } if command_worker_id == worker_id => closed = true,
-                _ => {
-                    return Err(NativeEngineError::invalid(
-                        "native Worker command",
-                        "worker emitted an invalid host command",
-                    ));
+                    } if command_worker_id == current_worker_id => {
+                        self.queue_message(NativeWorkerMessage {
+                            worker_id: current_worker_id,
+                            data,
+                            error: None,
+                        })?;
+                    }
+                    NativeScriptCommand::WorkerClose {
+                        worker_id: command_worker_id,
+                    } if command_worker_id == current_worker_id => closed = true,
+                    NativeScriptCommand::Fetch {
+                        worker_id: Some(command_worker_id),
+                        ..
+                    } if command_worker_id == current_worker_id => {
+                        let resolved = self
+                            .resolve_worker_fetch(current_worker_id, command, loader)
+                            .await?;
+                        evaluations.push_back((current_worker_id, resolved));
+                    }
+                    _ => {
+                        return Err(NativeEngineError::invalid(
+                            "native Worker command",
+                            "worker emitted an invalid host command",
+                        ));
+                    }
                 }
             }
-        }
-        if closed {
-            self.workers.remove(&worker_id);
+            if closed {
+                self.workers.remove(&current_worker_id);
+            }
         }
         Ok(())
+    }
+
+    async fn resolve_worker_fetch(
+        &mut self,
+        worker_id: u32,
+        command: NativeScriptCommand,
+        loader: &mut NativeResourceLoader,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        let NativeScriptCommand::Fetch {
+            request_id,
+            worker_id: Some(command_worker_id),
+            href,
+            credentials,
+            method,
+            headers,
+            body,
+            body_base64,
+            content_type,
+            mode,
+            redirect,
+            timeout_ms,
+        } = command
+        else {
+            return Err(NativeEngineError::invalid(
+                "native Worker fetch command",
+                "command was not a worker fetch",
+            ));
+        };
+        if command_worker_id != worker_id {
+            return Err(NativeEngineError::invalid(
+                "native Worker fetch command",
+                "worker id does not match the owning worker",
+            ));
+        }
+        if request_id == 0 {
+            return Err(NativeEngineError::invalid(
+                "native Worker fetch request id",
+                "must be positive",
+            ));
+        }
+        if timeout_ms.is_some_and(|value| value > MAX_NATIVE_XHR_TIMEOUT_MS) {
+            return Err(NativeEngineError::invalid(
+                "native Worker fetch timeout",
+                "must not exceed the native XHR timeout limit",
+            ));
+        }
+        let method = NativeNavigationMethod::from_fetch_method(&method)?;
+        let cors_mode = match mode.as_deref().unwrap_or("cors") {
+            "cors" => NativeCorsMode::Cors,
+            "no-cors" => NativeCorsMode::NoCors,
+            "same-origin" => NativeCorsMode::SameOrigin,
+            _ => {
+                return Err(NativeEngineError::invalid(
+                    "native Worker fetch mode",
+                    "must be cors, no-cors, or same-origin",
+                ));
+            }
+        };
+        let redirect_mode = match redirect.as_deref().unwrap_or("follow") {
+            "follow" => NativeFetchRedirectMode::Follow,
+            "error" => NativeFetchRedirectMode::Error,
+            "manual" => NativeFetchRedirectMode::Manual,
+            _ => {
+                return Err(NativeEngineError::invalid(
+                    "native Worker fetch redirect mode",
+                    "must be follow, error, or manual",
+                ));
+            }
+        };
+        let body = match body_base64 {
+            Some(encoded) => Some(NativeRequestBody::Bytes(
+                base64::engine::general_purpose::STANDARD
+                    .decode(encoded)
+                    .map_err(|_| {
+                        NativeEngineError::invalid(
+                            "native Worker fetch binary body",
+                            "must be valid base64",
+                        )
+                    })?,
+            )),
+            None => body.map(NativeRequestBody::Text),
+        };
+        let (worker_url, import_script_counts) = {
+            let worker = self.workers.get(&worker_id).ok_or_else(|| {
+                NativeEngineError::invalid("native Worker fetch", "worker no longer exists")
+            })?;
+            (worker.url.clone(), worker.import_script_counts.clone())
+        };
+        let result = loader
+            .fetch_request_with_headers_async(NativeFetchRequest {
+                document_url: &worker_url,
+                href: &href,
+                method,
+                body,
+                content_type,
+                request_headers: headers,
+                credentials,
+                cors_mode,
+                redirect_mode,
+                timeout: timeout_ms.map(|value| Duration::from_millis(u64::from(value))),
+                max_response_bytes: None,
+            })
+            .await;
+        let payload = worker_fetch_response_payload(result);
+        let worker = self.workers.get(&worker_id).ok_or_else(|| {
+            NativeEngineError::invalid(
+                "native Worker fetch",
+                "worker terminated while its fetch was in flight",
+            )
+        })?;
+        worker.runtime.resolve_worker_fetch(
+            worker_id,
+            &worker_url,
+            request_id,
+            &payload,
+            &import_script_counts,
+        )
     }
 
     fn queue_error(
@@ -786,6 +944,26 @@ impl NativeWorkerRegistry {
             combined_source.push_str("\n;");
         }
         Ok((combined_source, import_script_counts))
+    }
+}
+
+fn worker_fetch_response_payload(
+    result: Result<NativeFetchResponse, NativeEngineError>,
+) -> serde_json::Value {
+    match result {
+        Ok(response) => serde_json::json!({
+            "url": response.url,
+            "status": response.status,
+            "contentType": response.content_type,
+            "headers": response.headers,
+            "body": String::from_utf8_lossy(&response.body),
+            "redirected": response.redirected,
+            "opaque": response.opaque,
+            "opaqueRedirect": response.opaque_redirect,
+        }),
+        Err(error) => serde_json::json!({
+            "error": error.to_string(),
+        }),
     }
 }
 
@@ -5965,14 +6143,19 @@ impl NativeJavaScriptRuntime {
             }
             let commands = read_script_commands(ctx.clone())?;
             for command in &commands {
-                if !matches!(
-                    command,
+                let valid = match command {
                     NativeScriptCommand::WorkerPostMessage { .. }
-                        | NativeScriptCommand::WorkerClose { .. }
-                ) {
+                    | NativeScriptCommand::WorkerClose { .. } => true,
+                    NativeScriptCommand::Fetch {
+                        worker_id: Some(command_worker_id),
+                        ..
+                    } => *command_worker_id == worker_id,
+                    _ => false,
+                };
+                if !valid {
                     return Err(NativeEngineError::invalid(
                         "native Worker host command",
-                        "worker scripts may only post messages or close themselves",
+                        "worker command has an invalid owner or unsupported operation",
                     ));
                 }
             }
@@ -6055,6 +6238,34 @@ impl NativeJavaScriptRuntime {
             "globalThis.__glassRunWorkerTimers(performance.now());",
             import_script_counts,
         )
+    }
+
+    pub(crate) fn resolve_worker_fetch(
+        &self,
+        worker_id: u32,
+        worker_url: &str,
+        request_id: u32,
+        payload: &serde_json::Value,
+        import_script_counts: &BTreeMap<String, usize>,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        if request_id == 0 {
+            return Err(NativeEngineError::invalid(
+                "native Worker fetch request id",
+                "must be positive",
+            ));
+        }
+        let serialized = serde_json::to_string(payload).map_err(|_| NativeEngineError::Worker {
+            operation: "serialize native Worker fetch response".into(),
+            reason: "native Worker fetch response could not be serialized".into(),
+        })?;
+        let source = if serialized.len() > MAX_NATIVE_SCRIPT_BYTES {
+            format!(
+                "globalThis.__glassResolveWorkerFetch({request_id}, {{ error: \"worker fetch response exceeded the script transfer limit\" }});"
+            )
+        } else {
+            format!("globalThis.__glassResolveWorkerFetch({request_id}, {serialized});")
+        };
+        self.evaluate_worker(worker_id, worker_url, &source, import_script_counts)
     }
 
     pub(crate) fn resolve_fetch(
@@ -6919,6 +7130,170 @@ fn worker_bootstrap(
     }}
     for (const value of values) importScriptCounts.set(value, Number(importScriptCounts.get(value)) - 1);
   }};
+  const workerFetchRequests = globalThis.__glassWorkerFetchRequests instanceof Map
+    ? globalThis.__glassWorkerFetchRequests
+    : new Map();
+  let nextWorkerFetchRequestId = Number.isSafeInteger(globalThis.__glassNextWorkerFetchRequestId)
+    ? globalThis.__glassNextWorkerFetchRequestId
+    : 1;
+  const workerRequestHeaderName = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+  const forbiddenWorkerRequestHeader = (name) => [
+    "accept-charset", "accept-encoding", "access-control-request-headers",
+    "access-control-request-method", "connection", "content-length",
+    "cookie", "cookie2", "date", "dnt", "expect", "host", "keep-alive",
+    "origin", "referer", "te", "trailer", "transfer-encoding", "upgrade",
+    "user-agent", "via",
+  ].includes(name) || name.startsWith("proxy-") || name.startsWith("sec-");
+  const normalizeWorkerRequestHeaders = (input) => {{
+    if (input === undefined || input === null) return {{}};
+    if (typeof input !== "object") throw new TypeError("native Worker fetch headers must be an object");
+    const normalized = {{}};
+    let count = 0;
+    let totalBytes = 0;
+    for (const name of Object.keys(input)) {{
+      const normalizedName = String(name).toLowerCase();
+      if (!workerRequestHeaderName.test(String(name)) || normalizedName.length > {fetch_header_name_limit})
+        throw new TypeError("native Worker fetch header name is invalid");
+      if (forbiddenWorkerRequestHeader(normalizedName))
+        throw new TypeError("native Worker fetch header is forbidden");
+      const value = String(input[name]);
+      if (value.length > {fetch_header_value_limit} || /[\u0000-\u001f\u007f]/.test(value))
+        throw new TypeError("native Worker fetch header value is invalid");
+      if (Object.prototype.hasOwnProperty.call(normalized, normalizedName))
+        normalized[normalizedName] += ", " + value;
+      else {{
+        count += 1;
+        if (count > {fetch_header_count_limit}) throw new RangeError("native Worker fetch header limit exceeded");
+        normalized[normalizedName] = value;
+      }}
+      totalBytes += normalizedName.length + value.length;
+      if (totalBytes > {fetch_header_bytes_limit}) throw new RangeError("native Worker fetch headers exceed their limit");
+    }}
+    return normalized;
+  }};
+  const workerResponseHeaders = (rawEntries, contentType) => {{
+    const entries = [];
+    const byName = new Map();
+    if (Array.isArray(rawEntries)) for (const rawEntry of rawEntries) {{
+      if (!Array.isArray(rawEntry) || rawEntry.length !== 2) continue;
+      const name = String(rawEntry[0]).toLowerCase();
+      if (!name) continue;
+      const value = String(rawEntry[1]);
+      const existing = byName.get(name);
+      if (existing) existing[1] += ", " + value;
+      else {{
+        const entry = [name, value];
+        byName.set(name, entry);
+        entries.push(entry);
+      }}
+    }}
+    if (!byName.has("content-type") && contentType !== null && contentType !== undefined)
+      entries.push(["content-type", String(contentType)]);
+    const iterator = values => values.map(entry => [entry[0], entry[1]])[Symbol.iterator]();
+    return Object.freeze({{
+      get(name) {{
+        const key = String(name).toLowerCase();
+        const entry = entries.find(candidate => candidate[0] === key);
+        return entry ? entry[1] : null;
+      }},
+      has(name) {{ return this.get(name) !== null; }},
+      entries() {{ return iterator(entries); }},
+      keys() {{ return entries.map(entry => entry[0])[Symbol.iterator](); }},
+      values() {{ return entries.map(entry => entry[1])[Symbol.iterator](); }},
+      forEach(callback, thisArg) {{
+        if (typeof callback !== "function") throw new TypeError("native Worker response header callback must be callable");
+        entries.slice().forEach(entry => callback.call(thisArg, entry[1], entry[0], this));
+      }},
+      [Symbol.iterator]() {{ return this.entries(); }},
+    }});
+  }};
+  const responseFromWorkerFetch = (payload) => {{
+    const body = payload && typeof payload.body === "string" ? payload.body : "";
+    let bodyUsed = false;
+    const consume = transform => {{
+      if (bodyUsed) return Promise.reject(new TypeError("native Worker Response body is unusable"));
+      bodyUsed = true;
+      return Promise.resolve().then(() => transform(body));
+    }};
+    const response = {{
+      type: payload && payload.opaqueRedirect === true ? "opaqueredirect" : payload && payload.opaque === true ? "opaque" : "basic",
+      ok: Boolean(payload) && Number(payload.status) >= 200 && Number(payload.status) < 300,
+      status: payload && Number.isFinite(Number(payload.status)) ? Number(payload.status) : 0,
+      statusText: payload && payload.statusText !== undefined ? String(payload.statusText) : String(payload && payload.status || ""),
+      url: payload && typeof payload.url === "string" ? payload.url : "",
+      redirected: payload && payload.redirected === true,
+      headers: workerResponseHeaders(payload && payload.headers, payload && payload.contentType),
+      body: null,
+      get bodyUsed() {{ return bodyUsed; }},
+      text() {{ return consume(value => value); }},
+      json() {{ return consume(value => JSON.parse(value)); }},
+      clone() {{
+        if (bodyUsed) throw new TypeError("native Worker Response body is unusable");
+        return responseFromWorkerFetch(payload);
+      }},
+    }};
+    return Object.freeze(response);
+  }};
+  const workerFetchNative = (input, options) => {{
+    const href = typeof input === "string"
+      ? input
+      : input && typeof input.url === "string" ? input.url : null;
+    if (href === null) return Promise.reject(new TypeError("native Worker fetch requires a URL string"));
+    const settings = options && typeof options === "object" ? options : {{}};
+    const method = settings.method === undefined ? "GET" : String(settings.method).toUpperCase();
+    if (!["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"].includes(method))
+      return Promise.reject(new TypeError("native Worker fetch method is unsupported"));
+    const mode = settings.mode === undefined ? "cors" : String(settings.mode).toLowerCase();
+    if (!["cors", "no-cors", "same-origin"].includes(mode))
+      return Promise.reject(new TypeError("native Worker fetch mode is unsupported"));
+    const redirect = settings.redirect === undefined ? "follow" : String(settings.redirect).toLowerCase();
+    if (!["follow", "error", "manual"].includes(redirect))
+      return Promise.reject(new TypeError("native Worker fetch redirect mode is unsupported"));
+    const requestHeaders = normalizeWorkerRequestHeaders(settings.headers);
+    let contentType = null;
+    if (Object.prototype.hasOwnProperty.call(requestHeaders, "content-type")) {{
+      contentType = requestHeaders["content-type"];
+      delete requestHeaders["content-type"];
+    }}
+    let body = settings.body === undefined || settings.body === null ? null : String(settings.body);
+    if (body !== null && body.length > {fetch_body_limit})
+      return Promise.reject(new RangeError("native Worker fetch body exceeds its limit"));
+    if (["GET", "HEAD"].includes(method) && body !== null)
+      return Promise.reject(new TypeError(method + " Worker fetch requests must not have a body"));
+    const requestId = nextWorkerFetchRequestId;
+    nextWorkerFetchRequestId += 1;
+    globalThis.__glassNextWorkerFetchRequestId = nextWorkerFetchRequestId;
+    return new Promise((resolve, reject) => {{
+      workerFetchRequests.set(requestId, {{ resolve, reject }});
+      pushCommand({{
+        kind: "fetch",
+        request_id: requestId,
+        worker_id: workerId,
+        href,
+        credentials: settings.credentials !== "omit",
+        method,
+        headers: requestHeaders,
+        body,
+        body_base64: null,
+        content_type: contentType,
+        mode,
+        redirect,
+        timeout_ms: null,
+      }});
+    }});
+  }};
+  globalThis.__glassWorkerFetchRequests = workerFetchRequests;
+  globalThis.__glassNextWorkerFetchRequestId = nextWorkerFetchRequestId;
+  globalThis.fetch = workerFetchNative;
+  globalThis.__glassResolveWorkerFetch = (requestId, payload) => {{
+    const pending = workerFetchRequests.get(Number(requestId));
+    if (!pending) return null;
+    workerFetchRequests.delete(Number(requestId));
+    if (payload && payload.error)
+      pending.reject(new Error(String(payload.error)));
+    else pending.resolve(responseFromWorkerFetch(payload));
+    return null;
+  }};
   globalThis.importScripts = importScriptsNative;
   globalThis.addEventListener = addEventListener;
   globalThis.removeEventListener = removeEventListener;
@@ -6980,6 +7355,11 @@ fn worker_bootstrap(
         max_commands = MAX_NATIVE_WORKER_MESSAGES,
         max_timers = MAX_NATIVE_WORKER_TIMERS,
         post_message_bytes_limit = MAX_NATIVE_POST_MESSAGE_BYTES,
+        fetch_header_count_limit = MAX_NATIVE_FETCH_HEADERS,
+        fetch_header_name_limit = MAX_NATIVE_FETCH_HEADER_NAME_BYTES,
+        fetch_header_value_limit = MAX_NATIVE_FETCH_HEADER_VALUE_BYTES,
+        fetch_header_bytes_limit = MAX_NATIVE_FETCH_HEADER_BYTES,
+        fetch_body_limit = MAX_NATIVE_FORM_BODY_BYTES,
         now_ms = now_ms,
         import_script_counts = import_script_counts,
     ))

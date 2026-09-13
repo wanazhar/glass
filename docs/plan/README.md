@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-295` locally. The versioned
+`native-engine-browser-296` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -174,6 +174,14 @@ and signal-aware worker Fetch rejection with late-result suppression. The
 shared loader remains the transport/security owner; host transport
 cancellation, full abort-event Web IDL behavior, and the wider native
 replacement gates remain open on issue #40.
+
+The completed native-engine-browser-296 slice is
+[native-engine-browser-296](tasks/native-engine-browser-296.md). It adds
+worker-standard runtime primitives for UTF-8 `TextEncoder`/`TextDecoder`,
+bounded `atob`/`btoa`, `structuredClone`, `queueMicrotask`, `DOMException`,
+`EventTarget`, `Event`, `CustomEvent`, `MessageEvent`, and `ErrorEvent`. The
+native replacement gates remain open for transferable cross-realm ports,
+complete Web IDL descriptors, and the remaining browser platform surface.
 
 The completed EventSource/SSE slice is
 [native-engine-browser-253](tasks/native-engine-browser-253.md). It adds a

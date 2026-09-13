@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-295`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-296`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -4318,6 +4318,17 @@ current slice does not yet cancel an already-running host transport; host
 cancellation, full abort Web IDL behavior, background task scheduling, and
 final native/CDP parity remain issue #40 work. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-295.md`.
+
+The completed native-engine-browser-296 slice adds worker-standard runtime
+primitives without introducing a second host boundary. Dedicated workers now
+have bounded UTF-8 `TextEncoder`/`TextDecoder`, `atob`/`btoa`,
+`structuredClone`, `queueMicrotask`, `DOMException`, and stable
+`EventTarget`, `Event`, `CustomEvent`, `MessageEvent`, and `ErrorEvent`
+constructors. Local evidence covers encoding, decoding, event dispatch,
+default prevention, clone output, and constructor identity. Transferable
+cross-realm ports, complete Web IDL descriptors, background task scheduling,
+and final native/CDP parity remain issue #40 work. Exact evidence is recorded
+in `docs/plan/tasks/native-engine-browser-296.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

@@ -1200,6 +1200,59 @@ async fn native_local_worker_fetch_honors_abort_signal() {
 }
 
 #[tokio::test]
+async fn native_local_worker_exposes_standard_runtime_primitives() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://worker-primitives-page",
+            "<html><body><main>Native</main></body></html>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://worker-primitives-script",
+            "const bytes = new TextEncoder().encode('hé'); const decoded = new TextDecoder().decode(bytes); const destination = new Uint8Array(4); const encoded = new TextEncoder().encodeInto('hi', destination); const target = new EventTarget(); const seen = []; target.addEventListener('ping', event => { seen.push([event.type, event.detail.ok, event.target === target, event.currentTarget === target]); event.preventDefault(); }); const dispatched = target.dispatchEvent(new CustomEvent('ping', { detail: { ok: true }, cancelable: true })); const clone = structuredClone({ nested: ['ok'] }); const message = new MessageEvent('message', { data: { value: 4 }, origin: 'https://example.test', lastEventId: 'event-1' }); const error = new ErrorEvent('error', { message: 'bad', filename: 'worker.js', lineno: 3, colno: 4 }); const exception = new DOMException('cancelled', 'AbortError'); const base64 = btoa('hello'); queueMicrotask(() => postMessage({ kind: 'microtask' })); postMessage({ kind: 'primitives', bytes: Array.from(bytes), decoded, encoded: [encoded.read, encoded.written, Array.from(destination)], base64: [base64, atob(base64)], events: [seen, dispatched], clone: clone.nested[0], message: [message.data.value, message.origin, message.lastEventId, message instanceof MessageEvent], error: [error.message, error.filename, error.lineno, error.colno, error instanceof ErrorEvent], exception: [exception.name, exception.message, exception.toString(), exception instanceof DOMException], constructors: [typeof TextEncoder, typeof TextDecoder, typeof EventTarget, typeof Event, typeof CustomEvent, typeof MessageEvent, typeof ErrorEvent, typeof DOMException, typeof structuredClone, typeof queueMicrotask] });",
+        )
+        .unwrap()
+        .with_initial_url("fixture://worker-primitives-page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "globalThis.workerMessages = []; globalThis.workerErrors = []; globalThis.worker = new Worker('fixture://worker-primitives-script'); worker.onmessage = event => workerMessages.push(event.data); worker.onerror = event => workerErrors.push(event.message); true",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("({ messages: workerMessages, errors: workerErrors })")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "messages": [
+                {
+                    "kind": "primitives",
+                    "bytes": [104, 195, 169],
+                    "decoded": "hé",
+                    "encoded": [2, 2, [104, 105, 0, 0]],
+                    "base64": ["aGVsbG8=", "hello"],
+                    "events": [[["ping", true, true, true]], false],
+                    "clone": "ok",
+                    "message": [4, "https://example.test", "event-1", true],
+                    "error": ["bad", "worker.js", 3, 4, true],
+                    "exception": ["AbortError", "cancelled", "AbortError: cancelled", true],
+                    "constructors": ["function", "function", "function", "function", "function", "function", "function", "function", "function", "function"],
+                },
+                { "kind": "microtask" },
+            ],
+            "errors": [],
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_runs_worker_created_during_page_load() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

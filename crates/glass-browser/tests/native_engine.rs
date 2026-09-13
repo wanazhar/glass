@@ -1663,6 +1663,154 @@ async fn native_local_page_and_worker_expose_hmac_crypto_keys() {
 }
 
 #[tokio::test]
+async fn native_local_page_and_worker_expose_aes_gcm_crypto_keys() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://aes-gcm-page",
+            "<html><body><main>Native</main></body></html>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://aes-gcm-worker",
+            "(async () => { const key = await crypto.subtle.importKey('raw', new Uint8Array(32).fill(0x42), { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']); const iv = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]); const aad = new TextEncoder().encode('worker-aad'); const plaintext = new TextEncoder().encode('worker plaintext'); const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: aad }, key, plaintext); const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv, additionalData: aad }, key, ciphertext); const tampered = new Uint8Array(ciphertext).slice(); tampered[tampered.length - 1] ^= 1; let tamperError = ''; try { await crypto.subtle.decrypt({ name: 'AES-GCM', iv, additionalData: aad }, key, tampered); } catch (error) { tamperError = error.name; } postMessage({ plaintext: new TextDecoder().decode(decrypted), ciphertextLength: ciphertext.byteLength, tamperError, algorithm: [key.algorithm.name, key.algorithm.length], extractable: key.extractable, usages: Array.from(key.usages) }); })().catch(error => postMessage({ error: error.name }));",
+        )
+        .unwrap()
+        .with_initial_url("fixture://aes-gcm-page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"await (async () => {
+                    const hex = bytes => Array.from(new Uint8Array(bytes))
+                        .map(value => value.toString(16).padStart(2, '0')).join('');
+                    const ivStorage = new Uint8Array(14);
+                    ivStorage.set(new Uint8Array([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), 1);
+                    const ivView = new Uint8Array(ivStorage.buffer, 1, 12);
+                    const aadStorage = new TextEncoder().encode('xGlass AADy');
+                    const aadView = new Uint8Array(aadStorage.buffer, 1, 9);
+                    const plaintextStorage = new TextEncoder().encode('xNative plaintexty');
+                    const plaintextView = new Uint8Array(plaintextStorage.buffer, 1, 16);
+                    const results = {};
+                    for (const length of [16, 24, 32]) {
+                        const rawStorage = new Uint8Array(length + 2);
+                        const raw = new Uint8Array(rawStorage.buffer, 1, length);
+                        for (let index = 0; index < raw.length; index += 1) raw[index] = length === 16 ? 0 : index + 1;
+                        const key = await crypto.subtle.importKey(
+                            'raw', raw, { name: 'AES-GCM' }, true, ['encrypt', 'decrypt']
+                        );
+                        const algorithm = { name: 'AES-GCM', iv: ivView, additionalData: length === 16 ? undefined : aadView };
+                        const encrypted = await crypto.subtle.encrypt(algorithm, key, length === 16 ? new Uint8Array(16) : plaintextView);
+                        const decrypted = await crypto.subtle.decrypt(algorithm, key, encrypted);
+                        const exported = await crypto.subtle.exportKey('raw', key);
+                        const tampered = new Uint8Array(encrypted).slice();
+                        tampered[tampered.length - 1] ^= 1;
+                        let tamperError = '';
+                        try { await crypto.subtle.decrypt(algorithm, key, tampered); } catch (error) { tamperError = error.name; }
+                        results[length * 8] = {
+                            algorithm: [key.algorithm.name, key.algorithm.length],
+                            encrypted: hex(encrypted),
+                            decrypted: hex(decrypted),
+                            exported: Array.from(new Uint8Array(exported)),
+                            identity: key instanceof CryptoKey,
+                            tamperError,
+                            usages: Array.from(key.usages),
+                        };
+                        if (length === 16) globalThis.aesKey = key;
+                    }
+                    const locked = await crypto.subtle.importKey(
+                        'raw', new Uint8Array(16), { name: 'AES-GCM' }, false, ['encrypt']
+                    );
+                    let exportError = '';
+                    try { await crypto.subtle.exportKey('raw', locked); } catch (error) { exportError = error.name; }
+                    let ivError = '';
+                    try { await crypto.subtle.encrypt({ name: 'AES-GCM', iv: new Uint8Array(11) }, locked, new Uint8Array()); } catch (error) { ivError = error.name; }
+                    let tagError = '';
+                    try { await crypto.subtle.encrypt({ name: 'AES-GCM', iv: new Uint8Array(12), tagLength: 96 }, locked, new Uint8Array()); } catch (error) { tagError = error.name; }
+                    let keyError = '';
+                    try { await crypto.subtle.importKey('raw', new Uint8Array(15), { name: 'AES-GCM' }, true, ['encrypt']); } catch (error) { keyError = error.name; }
+                    globalThis.aesState = { results, exportError, ivError, tagError, keyError, cryptoKey: typeof CryptoKey };
+                    return globalThis.aesState;
+                })()"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "results": {
+                "128": {
+                    "algorithm": ["AES-GCM", 128],
+                    "encrypted": "0388dace60b6a392f328c2b971b2fe78ab6e47d42cec13bdf53a67b21257bddf",
+                    "decrypted": "00000000000000000000000000000000",
+                    "exported": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                    "identity": true,
+                    "tamperError": "OperationError",
+                    "usages": ["encrypt", "decrypt"],
+                },
+                "192": {
+                    "algorithm": ["AES-GCM", 192],
+                    "encrypted": "358dffa808b8ec9efa7089120c69d985ebbdaa8ad8fe205b56615be0c60401cd",
+                    "decrypted": "4e617469766520706c61696e74657874",
+                    "exported": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24],
+                    "identity": true,
+                    "tamperError": "OperationError",
+                    "usages": ["encrypt", "decrypt"],
+                },
+                "256": {
+                    "algorithm": ["AES-GCM", 256],
+                    "encrypted": "8818af70cb303595734b8d620355d28e23843642613f33d22a7d5810feb4d67b",
+                    "decrypted": "4e617469766520706c61696e74657874",
+                    "exported": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32],
+                    "identity": true,
+                    "tamperError": "OperationError",
+                    "usages": ["encrypt", "decrypt"],
+                },
+            },
+            "exportError": "InvalidAccessError",
+            "ivError": "DataError",
+            "tagError": "NotSupportedError",
+            "keyError": "DataError",
+            "cryptoKey": "function",
+        })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({ sameKey: aesKey === globalThis.aesKey, length: aesKey.algorithm.length })"
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({ "sameKey": true, "length": 128 })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "globalThis.workerMessages = []; globalThis.workerErrors = []; globalThis.worker = new Worker('fixture://aes-gcm-worker'); worker.onmessage = event => workerMessages.push(event.data); worker.onerror = event => workerErrors.push(event.message); true",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("({ messages: workerMessages, errors: workerErrors })")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "messages": [{
+                "plaintext": "worker plaintext",
+                "ciphertextLength": 32,
+                "tamperError": "OperationError",
+                "algorithm": ["AES-GCM", 256],
+                "extractable": false,
+                "usages": ["encrypt", "decrypt"],
+            }],
+            "errors": [],
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_runs_worker_created_during_page_load() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

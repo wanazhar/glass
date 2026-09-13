@@ -41,6 +41,8 @@ native-engine = ["dep:regex", "dep:rquickjs"]
 
 [dependencies]
 base64 = "0.22"
+aes = "0.8"
+aes-gcm = "0.10"
 tokio = {
     version = "1",
     features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"],

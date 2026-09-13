@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-302` slice; the bounded foundation below remains
+`native-engine-browser-303` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 
 Slice 283 adds a bounded dedicated-worker bridge after the page-facing
@@ -206,6 +206,16 @@ realms or navigation. Key generation, AES, derivation, asymmetric operations,
 transfer, and complete Web IDL semantics remain issue #40 work. The focused
 page/worker known-vector witness passes locally; exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-302.md`.
+
+Slice 303 adds bounded AES-GCM Web Crypto keys and authenticated encryption to
+page and dedicated-worker realms. Raw AES-128/AES-192/AES-256 keys support
+extractable export plus Promise-backed encrypt/decrypt with 12-byte IVs,
+optional additional data, and the 128-bit authentication tag; RustCrypto owns
+the cryptographic operation and keys remain realm-local. Variable tag/IV
+profiles, wrap/unwrap, generation, and the remaining Web Crypto/Web IDL
+surface remain issue #40 work. The focused page/worker vector witness passes
+locally; exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-303.md`.
 
 Slice 282 adds a bounded page-facing computed-style and media-query bridge:
 the JavaScript realm reads the native cascade/layout snapshot through a

@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-302` locally. The versioned
+`native-engine-browser-303` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -212,10 +212,17 @@ BufferSource/Promise surfaces. Its known-vector witness and local validation
 are recorded in [tasks/native-engine-browser-301.md](tasks/native-engine-browser-301.md).
 
 The completed native-engine-browser-302 Web Crypto HMAC-key slice adds
-adds opaque page and dedicated-worker `CryptoKey` lifecycle plus bounded raw
+opaque page and dedicated-worker `CryptoKey` lifecycle plus bounded raw
 HMAC `importKey()`, extractable `exportKey()`, `sign()`, and `verify()` for
 SHA-1, SHA-256, SHA-384, and SHA-512. Its page/worker known-vector witness and
 local evidence are recorded in [tasks/native-engine-browser-302.md](tasks/native-engine-browser-302.md).
+
+The completed native-engine-browser-303 Web Crypto AES-GCM slice adds raw
+AES-128/192/256 key lifecycle plus bounded page/worker encrypt/decrypt,
+additional authenticated data, view-range preservation, and authentication
+failure handling over the existing native host boundary. Its NIST vector,
+round-trip, worker, and typed-error evidence are recorded in
+[tasks/native-engine-browser-303.md](tasks/native-engine-browser-303.md).
 
 The completed native-engine-browser-299 page-runtime-primitives slice adds
 page `TextEncoder`/`TextDecoder`, bounded `atob`/`btoa`,

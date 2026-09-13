@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-302`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-303`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -4372,7 +4372,7 @@ remain open. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-301.md`.
 
 The completed native-engine-browser-302 Web Crypto HMAC-key slice adds
-adds opaque realm-owned `CryptoKey` values and bounded raw HMAC
+opaque realm-owned `CryptoKey` values and bounded raw HMAC
 `importKey()`/`exportKey()`/`sign()`/`verify()` for SHA-1/SHA-256/SHA-384/SHA-512
 in page and dedicated-worker realms. The implementation retains key material
 outside enumerable key-object properties and keeps keys realm-local; key
@@ -4380,6 +4380,16 @@ generation, AES, derivation, asymmetric operations, and complete Web
 Crypto/Web IDL parity remain issue #40 work. Its page/worker known-vector
 witness passes locally; exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-302.md`.
+
+The completed native-engine-browser-303 Web Crypto AES-GCM slice adds bounded
+raw AES-128/AES-192/AES-256 key lifecycle and page/worker Promise-backed
+encrypt/decrypt with 12-byte IVs, optional AAD, and 128-bit authentication
+tags. RustCrypto owns the operation, key objects remain realm-local, and the
+focused witness covers the NIST vector, all key sizes, view ranges, round
+trips, tamper rejection, worker execution, and typed errors. Variable IV/tag
+profiles, wrap/unwrap, generation, and full Web Crypto/Web IDL parity remain
+issue #40 work. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-303.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame
@@ -5457,8 +5467,8 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-198.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-197.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-196.md` is the preceding completed task;
-The current browser-slice evidence chain is `native-engine-browser-302`,
-`native-engine-browser-301`, `native-engine-browser-300`, `native-engine-browser-299`,
+The current browser-slice evidence chain is `native-engine-browser-303`,
+`native-engine-browser-302`, `native-engine-browser-301`, `native-engine-browser-300`, `native-engine-browser-299`,
 `native-engine-browser-298`, and `native-engine-browser-297`; each task file
 is the authoritative contract and validation record for that slice. The
 historical index below begins with older browser records and is retained as an

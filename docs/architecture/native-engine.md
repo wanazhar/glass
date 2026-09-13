@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-301` slice; the bounded foundation below remains
+`native-engine-browser-302` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 
 Slice 283 adds a bounded dedicated-worker bridge after the page-facing
@@ -196,6 +196,16 @@ behind a captured per-turn host function. Unsupported algorithms and
 invalid/oversized data reject explicitly; key operations and full Web
 Crypto/Web IDL parity remain issue #40 work. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-301.md`.
+
+Slice 302 adds the next Web Crypto boundary: opaque realm-owned
+`CryptoKey` objects and bounded raw HMAC `importKey()`, extractable
+`exportKey()`, `sign()`, and `verify()` for SHA-1/SHA-256/SHA-384/SHA-512 in
+page and dedicated-worker realms. Key material remains outside enumerable
+key-object properties, host HMAC processing is bounded, and keys do not cross
+realms or navigation. Key generation, AES, derivation, asymmetric operations,
+transfer, and complete Web IDL semantics remain issue #40 work. The focused
+page/worker known-vector witness passes locally; exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-302.md`.
 
 Slice 282 adds a bounded page-facing computed-style and media-query bridge:
 the JavaScript realm reads the native cascade/layout snapshot through a

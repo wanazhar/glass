@@ -1522,6 +1522,147 @@ async fn native_local_page_and_worker_expose_subtle_digest() {
 }
 
 #[tokio::test]
+async fn native_local_page_and_worker_expose_hmac_crypto_keys() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://hmac-page",
+            "<html><body><main>Native</main></body></html>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://hmac-worker",
+            "(async () => { const key = await crypto.subtle.importKey('raw', new Uint8Array([107, 101, 121]), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']); const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode('The quick brown fox jumps over the lazy dog')); postMessage({ signature: Array.from(new Uint8Array(signature)).map(value => value.toString(16).padStart(2, '0')).join(''), extractable: key.extractable, type: key.type, usage: key.usages[0] }); })().catch(error => postMessage({ error: error.name }));",
+        )
+        .unwrap()
+        .with_initial_url("fixture://hmac-page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"await (async () => {
+                    const hex = bytes => Array.from(new Uint8Array(bytes))
+                        .map(value => value.toString(16).padStart(2, '0')).join('');
+                    const keyBytes = new Uint8Array([0, 107, 101, 121, 0]);
+                    const keyView = new Uint8Array(keyBytes.buffer, 1, 3);
+                    const messageBytes = new TextEncoder().encode('The quick brown fox jumps over the lazy dog');
+                    const messageStorage = new Uint8Array(messageBytes.length + 2);
+                    messageStorage.set(messageBytes, 1);
+                    const messageView = new Uint8Array(messageStorage.buffer, 1, messageBytes.length);
+                    const results = {};
+                    for (const hash of ['SHA-1', 'SHA-256', 'SHA-384', 'SHA-512']) {
+                        const key = await crypto.subtle.importKey(
+                            'raw', keyView, { name: 'HMAC', hash }, true, ['sign', 'verify']
+                        );
+                        const signature = await crypto.subtle.sign({ name: 'HMAC' }, key, messageView);
+                        const exported = await crypto.subtle.exportKey('raw', key);
+                        const verified = await crypto.subtle.verify('HMAC', key, signature, messageView);
+                        const tampered = new Uint8Array(signature).slice();
+                        tampered[0] ^= 1;
+                        const rejected = await crypto.subtle.verify('HMAC', key, tampered, messageView);
+                        results[hash] = {
+                            signature: hex(signature),
+                            exported: Array.from(new Uint8Array(exported)),
+                            verified,
+                            rejected,
+                            identity: key instanceof CryptoKey,
+                            algorithm: [key.algorithm.name, key.algorithm.hash.name, key.algorithm.length],
+                            usages: Array.from(key.usages),
+                        };
+                    }
+                    const locked = await crypto.subtle.importKey(
+                        'raw', keyView, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+                    );
+                    let exportError = '';
+                    try { await crypto.subtle.exportKey('raw', locked); } catch (error) { exportError = error.name; }
+                    let usageError = '';
+                    try { await crypto.subtle.verify('HMAC', locked, new Uint8Array(32), messageView); } catch (error) { usageError = error.name; }
+                    globalThis.hmacKey = locked;
+                    globalThis.hmacState = { results, exportError, usageError, cryptoKey: typeof CryptoKey };
+                    return globalThis.hmacState;
+                })()"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "results": {
+                "SHA-1": {
+                    "signature": "de7c9b85b8b78aa6bc8a7a36f70a90701c9db4d9",
+                    "exported": [107, 101, 121],
+                    "verified": true,
+                    "rejected": false,
+                    "identity": true,
+                    "algorithm": ["HMAC", "SHA-1", 24],
+                    "usages": ["sign", "verify"],
+                },
+                "SHA-256": {
+                    "signature": "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8",
+                    "exported": [107, 101, 121],
+                    "verified": true,
+                    "rejected": false,
+                    "identity": true,
+                    "algorithm": ["HMAC", "SHA-256", 24],
+                    "usages": ["sign", "verify"],
+                },
+                "SHA-384": {
+                    "signature": "d7f4727e2c0b39ae0f1e40cc96f60242d5b7801841cea6fc592c5d3e1ae50700582a96cf35e1e554995fe4e03381c237",
+                    "exported": [107, 101, 121],
+                    "verified": true,
+                    "rejected": false,
+                    "identity": true,
+                    "algorithm": ["HMAC", "SHA-384", 24],
+                    "usages": ["sign", "verify"],
+                },
+                "SHA-512": {
+                    "signature": "b42af09057bac1e2d41708e48a902e09b5ff7f12ab428a4fe86653c73dd248fb82f948a549f7b791a5b41915ee4d1ec3935357e4e2317250d0372afa2ebeeb3a",
+                    "exported": [107, 101, 121],
+                    "verified": true,
+                    "rejected": false,
+                    "identity": true,
+                    "algorithm": ["HMAC", "SHA-512", 24],
+                    "usages": ["sign", "verify"],
+                },
+            },
+            "exportError": "InvalidAccessError",
+            "usageError": "InvalidAccessError",
+            "cryptoKey": "function",
+        })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("({ sameKey: hmacKey === globalThis.hmacKey, locked: hmacKey.extractable === false })")
+            .await
+            .unwrap(),
+        serde_json::json!({ "sameKey": true, "locked": true })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "globalThis.workerMessages = []; globalThis.workerErrors = []; globalThis.worker = new Worker('fixture://hmac-worker'); worker.onmessage = event => workerMessages.push(event.data); worker.onerror = event => workerErrors.push(event.message); true",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("({ messages: workerMessages, errors: workerErrors })")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "messages": [{
+                "signature": "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8",
+                "extractable": false,
+                "type": "secret",
+                "usage": "sign",
+            }],
+            "errors": [],
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_runs_worker_created_during_page_load() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

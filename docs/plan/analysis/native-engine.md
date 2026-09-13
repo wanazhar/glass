@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-298`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-301`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -5447,30 +5447,12 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-198.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-197.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-196.md` is the preceding completed task;
-`docs/plan/tasks/native-engine-browser-215.md` is the latest completed browser
-task;
-`docs/plan/tasks/native-engine-browser-214.md` is the preceding completed
-browser task;
-`docs/plan/tasks/native-engine-browser-213.md` is the preceding completed
-browser task;
-`docs/plan/tasks/native-engine-browser-212.md` is the preceding completed
-browser task;
-`docs/plan/tasks/native-engine-browser-211.md` is the preceding completed
-browser task;
-`docs/plan/tasks/native-engine-browser-210.md` is the preceding completed
-browser task;
-`docs/plan/tasks/native-engine-browser-209.md` is the preceding completed
-browser task;
-`docs/plan/tasks/native-engine-browser-208.md` is the preceding completed
-browser task;
-`docs/plan/tasks/native-engine-browser-207.md` is the preceding completed
-browser task;
-`docs/plan/tasks/native-engine-browser-206.md` is the preceding completed
-browser task;
-`docs/plan/tasks/native-engine-browser-205.md` is the preceding completed
-browser task;
-`docs/plan/tasks/native-engine-browser-204.md` is the preceding completed
-browser task;
+The current browser-slice evidence chain is `native-engine-browser-301`,
+`native-engine-browser-300`, `native-engine-browser-299`,
+`native-engine-browser-298`, and `native-engine-browser-297`; each task file
+is the authoritative contract and validation record for that slice. The
+historical index below begins with older browser records and is retained as an
+archive rather than a current-checkpoint declaration.
 `docs/plan/tasks/native-engine-browser-197.md` is the preceding completed
 browser task;
 `docs/plan/tasks/native-engine-browser-195.md` is the preceding completed task;

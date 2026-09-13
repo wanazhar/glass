@@ -62,8 +62,9 @@ The current scheduler is deliberately page-turn driven and bounded. It gives
 deterministic testable delivery and preserves the two-crate ownership model,
 but it is not yet a continuously running browser task-source scheduler. Timer
 delivery while a page waits on unrelated asynchronous work, task-source
-fairness, background throttling, worker Fetch/XHR, module/shared/service
-workers, transferables, and complete Worker/Web IDL semantics remain issue #40
+fairness, background throttling, dynamic/exact `importScripts()` call timing,
+worker Fetch/XHR, module/shared/service workers, transferables, and complete
+Worker/Web IDL semantics remain issue #40
 expansion work.
 
 ## Verification

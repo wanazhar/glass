@@ -188,6 +188,15 @@ global surface before user code runs. A single request follows the Web Crypto
 semantics remain separate issue #40 work. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-300.md`.
 
+The completed Slice 301 adds bounded `crypto.subtle.digest()` to page and
+dedicated-worker realms. Algorithm strings or `{ name }` objects are
+normalized, ArrayBuffer and view inputs retain their byte ranges, and
+SHA-1/SHA-256/SHA-384/SHA-512 are computed by Rust digest implementations
+behind a captured per-turn host function. Unsupported algorithms and
+invalid/oversized data reject explicitly; key operations and full Web
+Crypto/Web IDL parity remain issue #40 work. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-301.md`.
+
 Slice 282 adds a bounded page-facing computed-style and media-query bridge:
 the JavaScript realm reads the native cascade/layout snapshot through a
 read-only `getComputedStyle` object, and receives width/height/orientation

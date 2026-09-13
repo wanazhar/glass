@@ -205,6 +205,12 @@ fail merely because the bootstrap seed was consumed. The per-request Web
 Crypto 65,536-byte bound and explicit validation remain. Its contract is in
 [tasks/native-engine-browser-300.md](tasks/native-engine-browser-300.md).
 
+The completed native-engine-browser-301 Web Crypto digest slice adds
+page and dedicated-worker `crypto.subtle.digest()` for SHA-1, SHA-256, SHA-384,
+and SHA-512 using Rust digest implementations and the existing bounded
+BufferSource/Promise surfaces. Its known-vector witness and local validation
+are recorded in [tasks/native-engine-browser-301.md](tasks/native-engine-browser-301.md).
+
 The completed native-engine-browser-299 page-runtime-primitives slice adds
 page `TextEncoder`/`TextDecoder`, bounded `atob`/`btoa`,
 `structuredClone`, and public `EventTarget` support through the existing page

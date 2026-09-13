@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-288` slice; the bounded foundation below remains
+`native-engine-browser-289` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 
 Slice 283 adds a bounded dedicated-worker bridge after the page-facing
@@ -65,6 +65,16 @@ Transport-demand streaming, full Request/Response Web IDL identity, XHR,
 module/shared service workers, and complete native/CDP parity remain Issue #40
 expansion gates. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-288.md`.
+
+Slice 289 adds worker-realm Fetch object identity. Classic dedicated workers
+can construct and mutate bounded `Headers`, construct `Request` objects from
+URL/string input or clone existing requests, and construct/clone `Response`
+objects while preserving status metadata, headers, body streams, and one-shot
+body ownership. Worker Fetch accepts a `Request` instance and carries its
+bounded body bytes through the existing owner-tagged shared loader. The
+bootstrap is re-entrant across host round-trips, and response `bodyUsed`
+remains live after stream or convenience-method consumption. Exact evidence is
+recorded in `docs/plan/tasks/native-engine-browser-289.md`.
 
 Slice 282 adds a bounded page-facing computed-style and media-query bridge:
 the JavaScript realm reads the native cascade/layout snapshot through a

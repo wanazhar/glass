@@ -7151,13 +7151,16 @@ fn worker_bootstrap(
     const normalized = {{}};
     let count = 0;
     let totalBytes = 0;
-    for (const name of Object.keys(input)) {{
+    const entries = input.__glassWorkerHeaders === true
+      ? input._entries.map(entry => [entry[0], entry[1]])
+      : Object.keys(input).map(name => [name, input[name]]);
+    for (const [name, rawValue] of entries) {{
       const normalizedName = String(name).toLowerCase();
       if (!workerRequestHeaderName.test(String(name)) || normalizedName.length > {fetch_header_name_limit})
         throw new TypeError("native Worker fetch header name is invalid");
       if (forbiddenWorkerRequestHeader(normalizedName))
         throw new TypeError("native Worker fetch header is forbidden");
-      const value = String(input[name]);
+      const value = String(rawValue);
       if (value.length > {fetch_header_value_limit} || /[\u0000-\u001f\u007f]/.test(value))
         throw new TypeError("native Worker fetch header value is invalid");
       if (Object.prototype.hasOwnProperty.call(normalized, normalizedName))
@@ -7355,24 +7358,120 @@ fn worker_bootstrap(
     }}
     if (!byName.has("content-type") && contentType !== null && contentType !== undefined)
       entries.push(["content-type", String(contentType)]);
-    const iterator = values => values.map(entry => [entry[0], entry[1]])[Symbol.iterator]();
-    return Object.freeze({{
-      get(name) {{
-        const key = String(name).toLowerCase();
-        const entry = entries.find(candidate => candidate[0] === key);
-        return entry ? entry[1] : null;
-      }},
-      has(name) {{ return this.get(name) !== null; }},
-      entries() {{ return iterator(entries); }},
-      keys() {{ return entries.map(entry => entry[0])[Symbol.iterator](); }},
-      values() {{ return entries.map(entry => entry[1])[Symbol.iterator](); }},
-      forEach(callback, thisArg) {{
-        if (typeof callback !== "function") throw new TypeError("native Worker response header callback must be callable");
-        entries.slice().forEach(entry => callback.call(thisArg, entry[1], entry[0], this));
-      }},
-      [Symbol.iterator]() {{ return this.entries(); }},
-    }});
+    const headers = new WorkerHeadersNative();
+    headers._entries = entries;
+    Object.defineProperty(headers, "__glassWorkerHeadersImmutable", {{ value: true }});
+    Object.freeze(headers);
+    return headers;
   }};
+  const workerHeaderNameForRead = (name) => {{
+    const value = String(name);
+    const normalized = value.toLowerCase();
+    if (!workerRequestHeaderName.test(value) || normalized.length > {fetch_header_name_limit})
+      throw new TypeError("native Worker Headers name is invalid");
+    return normalized;
+  }};
+  const workerHeaderEntryForRequest = (name, value) => {{
+    const normalizedName = workerHeaderNameForRead(name);
+    if (forbiddenWorkerRequestHeader(normalizedName))
+      throw new TypeError("native Worker Headers name is forbidden");
+    const normalizedValue = String(value);
+    if (normalizedValue.length > {fetch_header_value_limit}
+        || /[\u0000-\u001f\u007f]/.test(normalizedValue))
+      throw new TypeError("native Worker Headers value is invalid");
+    return [normalizedName, normalizedValue];
+  }};
+  const workerHeadersInputPairs = (input) => {{
+    if (input === undefined || input === null) return [];
+    if (input.__glassWorkerHeaders === true)
+      return input._entries.map(entry => [entry[0], entry[1]]);
+    if (Array.isArray(input)) return input.map(entry => {{
+      if (!Array.isArray(entry) || entry.length !== 2)
+        throw new TypeError("native Worker Headers pairs must contain two values");
+      return [entry[0], entry[1]];
+    }});
+    if (typeof input !== "object")
+      throw new TypeError("native Worker Headers accepts records, pairs, or Headers");
+    return Object.keys(input).map(name => [name, input[name]]);
+  }};
+  const WorkerHeadersNative = typeof globalThis.__glassWorkerHeadersConstructor === "function"
+    ? globalThis.__glassWorkerHeadersConstructor
+    : function(init) {{
+    if (!(this instanceof WorkerHeadersNative)) throw new TypeError("native Worker Headers requires new");
+    Object.defineProperty(this, "__glassWorkerHeaders", {{ value: true }});
+    this._entries = [];
+    for (const [name, value] of workerHeadersInputPairs(init)) this.append(name, value);
+  }};
+  const workerHeadersEnsureMutable = (headers) => {{
+    if (headers.__glassWorkerHeadersImmutable === true)
+      throw new TypeError("native Worker response Headers are immutable");
+  }};
+  WorkerHeadersNative.prototype.append = function(name, value) {{
+    workerHeadersEnsureMutable(this);
+    const normalized = workerHeaderEntryForRequest(name, value);
+    const existing = this._entries.find(entry => entry[0] === normalized[0]);
+    const nextValue = existing ? existing[1] + ", " + normalized[1] : normalized[1];
+    const nextEntries = existing
+      ? this._entries.map(entry => entry[0] === normalized[0] ? [entry[0], nextValue] : entry)
+      : this._entries.concat([[normalized[0], normalized[1]]]);
+    if (nextEntries.length > {fetch_header_count_limit})
+      throw new RangeError("native Worker Headers limit exceeded");
+    const totalBytes = nextEntries.reduce((total, entry) => total + entry[0].length + entry[1].length, 0);
+    if (totalBytes > {fetch_header_bytes_limit})
+      throw new RangeError("native Worker Headers exceed their limit");
+    this._entries = nextEntries;
+  }};
+  WorkerHeadersNative.prototype.set = function(name, value) {{
+    workerHeadersEnsureMutable(this);
+    const normalized = workerHeaderEntryForRequest(name, value);
+    const nextEntries = this._entries.filter(entry => entry[0] !== normalized[0]);
+    nextEntries.push(normalized);
+    if (nextEntries.length > {fetch_header_count_limit})
+      throw new RangeError("native Worker Headers limit exceeded");
+    const totalBytes = nextEntries.reduce((total, entry) => total + entry[0].length + entry[1].length, 0);
+    if (totalBytes > {fetch_header_bytes_limit})
+      throw new RangeError("native Worker Headers exceed their limit");
+    this._entries = nextEntries;
+  }};
+  WorkerHeadersNative.prototype.delete = function(name) {{
+    workerHeadersEnsureMutable(this);
+    const normalizedName = workerHeaderNameForRead(name);
+    this._entries = this._entries.filter(entry => entry[0] !== normalizedName);
+  }};
+  WorkerHeadersNative.prototype.get = function(name) {{
+    const normalizedName = workerHeaderNameForRead(name);
+    const entry = this._entries.find(candidate => candidate[0] === normalizedName);
+    return entry ? entry[1] : null;
+  }};
+  WorkerHeadersNative.prototype.has = function(name) {{ return this.get(name) !== null; }};
+  const workerHeaderIterator = (owner, kind) => {{
+    const entries = owner._entries.map(entry => [entry[0], entry[1]]);
+    let index = 0;
+    return {{
+      next() {{
+        if (index >= entries.length) return {{ value: undefined, done: true }};
+        const entry = entries[index++];
+        if (kind === "keys") return {{ value: entry[0], done: false }};
+        if (kind === "values") return {{ value: entry[1], done: false }};
+        return {{ value: entry, done: false }};
+      }},
+      [Symbol.iterator]() {{ return this; }},
+    }};
+  }};
+  WorkerHeadersNative.prototype.entries = function() {{ return workerHeaderIterator(this, "entries"); }};
+  WorkerHeadersNative.prototype.keys = function() {{ return workerHeaderIterator(this, "keys"); }};
+  WorkerHeadersNative.prototype.values = function() {{ return workerHeaderIterator(this, "values"); }};
+  WorkerHeadersNative.prototype.forEach = function(callback, thisArg) {{
+    if (typeof callback !== "function") throw new TypeError("native Worker Headers callback must be callable");
+    this._entries.slice().forEach(entry => callback.call(thisArg, entry[1], entry[0], this));
+  }};
+  Object.defineProperty(WorkerHeadersNative.prototype, "size", {{
+    configurable: true,
+    get() {{ return this._entries.length; }},
+  }});
+  WorkerHeadersNative.prototype[Symbol.iterator] = WorkerHeadersNative.prototype.entries;
+  globalThis.__glassWorkerHeadersConstructor = WorkerHeadersNative;
+  globalThis.Headers = WorkerHeadersNative;
   const workerReadableStreamState = (stream) => {{
     if (!stream || stream.__glassWorkerReadableStream !== true || !stream._state)
       throw new TypeError("native Worker ReadableStream receiver is invalid");
@@ -7462,7 +7561,8 @@ fn worker_bootstrap(
     }};
     const read = (view) => {{
       if (released) return Promise.reject(new TypeError("native Worker ReadableStream reader is released"));
-      if (state.consumedByResponse) return Promise.reject(new TypeError("native Worker Response body is unusable"));
+      if (state.consumedByResponse || state.consumedByRequest)
+        return Promise.reject(new TypeError("native Worker body is unusable"));
       if (byob) {{
         if (!view || typeof ArrayBuffer.isView !== "function" || !ArrayBuffer.isView(view) || view.byteLength === 0)
           throw new TypeError("native Worker BYOB read requires a non-empty view");
@@ -7541,19 +7641,213 @@ fn worker_bootstrap(
   }};
   globalThis.__glassWorkerReadableStreamConstructor = WorkerReadableStreamNative;
   globalThis.ReadableStream = WorkerReadableStreamNative;
+  const workerRequestBodyPayload = (input) => {{
+    if (input === undefined || input === null)
+      return {{ bodyNull: true, bytes: [], contentType: null }};
+    if (input.__glassWorkerReadableStream === true) {{
+      const state = workerReadableStreamState(input);
+      if (state.locked || state.disturbed || state.consumedByResponse || state.consumedByRequest)
+        throw new TypeError("native Worker body stream is unusable");
+      const bytes = state.bytes.slice(state.offset);
+      workerReadableStreamDisturb(state);
+      state.consumedByRequest = true;
+      state.offset = state.bytes.length;
+      workerReadableStreamSetDone(state);
+      return {{ bodyNull: false, bytes, contentType: null }};
+    }}
+    if (input.__glassWorkerBlob === true)
+      return {{ bodyNull: false, bytes: input._bytes.slice(), contentType: input.type || null }};
+    if (input instanceof ArrayBuffer)
+      return {{ bodyNull: false, bytes: Array.from(new Uint8Array(input)), contentType: null }};
+    if (typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(input))
+      return {{ bodyNull: false, bytes: Array.from(new Uint8Array(input.buffer, input.byteOffset, input.byteLength)), contentType: null }};
+    const text = String(input);
+    return {{ bodyNull: false, bytes: workerUtf8Bytes(text), contentType: null }};
+  }};
+  const workerRequestBodyIsUsed = (request) => request.__glassWorkerRequestBodyState.used === true
+    || Boolean(request.body && workerReadableStreamState(request.body).disturbed);
+  const workerRequestBodyUse = (request) => {{
+    const body = request.body;
+    if (workerRequestBodyIsUsed(request) || (body && workerReadableStreamState(body).locked)) return false;
+    request.__glassWorkerRequestBodyState.used = true;
+    if (body) {{
+      const state = workerReadableStreamState(body);
+      state.consumedByRequest = true;
+      workerReadableStreamDisturb(state);
+      state.offset = state.bytes.length;
+      workerReadableStreamSetDone(state);
+    }}
+    return true;
+  }};
+  const workerRequestBodyUnusable = () => Promise.reject(new TypeError("native Worker Request body is unusable"));
+  const workerRequestBodyPromise = (request, transform) => {{
+    if (!workerRequestBodyUse(request)) return workerRequestBodyUnusable();
+    const payload = request.__glassWorkerRequestBodyPayload;
+    try {{ return Promise.resolve(transform(payload.bytes.slice(), payload)); }}
+    catch (error) {{ return Promise.reject(error); }}
+  }};
+  const WorkerRequestNative = typeof globalThis.__glassWorkerRequestConstructor === "function"
+    ? globalThis.__glassWorkerRequestConstructor
+    : function(input, init) {{
+    if (!(this instanceof WorkerRequestNative)) throw new TypeError("native Worker Request requires new");
+    const source = input && input.__glassWorkerRequest === true ? input : null;
+    const sourceUrl = input && input.__glassUrl === true ? input : null;
+    const overrides = init && typeof init === "object" ? init : {{}};
+    const hasBodyOverride = Object.prototype.hasOwnProperty.call(overrides, "body");
+    if (source && !hasBodyOverride && (source.bodyUsed || source.body && workerReadableStreamState(source.body).locked))
+      throw new TypeError("native Worker Request body is unusable");
+    const href = source ? source.url : sourceUrl ? sourceUrl.href : input;
+    if (typeof href !== "string") throw new TypeError("native Worker Request URL must be a string");
+    const settings = Object.assign({{}}, source ? source._settings : {{}}, overrides);
+    const payload = source && !hasBodyOverride
+      ? {{
+          bodyNull: source.__glassWorkerRequestBodyPayload.bodyNull,
+          bytes: source.__glassWorkerRequestBodyPayload.bytes.slice(),
+          contentType: source.__glassWorkerRequestBodyPayload.contentType,
+        }}
+      : workerRequestBodyPayload(settings.body);
+    const method = settings.method === undefined ? "GET" : String(settings.method).toUpperCase();
+    if (!["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"].includes(method))
+      throw new TypeError("native Worker Request method is unsupported");
+    if (["GET", "HEAD"].includes(method) && !payload.bodyNull)
+      throw new TypeError("native Worker " + method + " Requests must not have a body");
+    const mode = settings.mode === undefined ? "cors" : String(settings.mode).toLowerCase();
+    if (!["cors", "no-cors", "same-origin"].includes(mode))
+      throw new TypeError("native Worker Request mode is unsupported");
+    const redirect = settings.redirect === undefined ? "follow" : String(settings.redirect).toLowerCase();
+    if (!["follow", "error", "manual"].includes(redirect))
+      throw new TypeError("native Worker Request redirect mode is unsupported");
+    const credentials = settings.credentials === undefined ? "same-origin" : String(settings.credentials);
+    if (!["omit", "same-origin", "include"].includes(credentials))
+      throw new TypeError("native Worker Request credentials are unsupported");
+    const headers = new WorkerHeadersNative(settings.headers);
+    if (payload.contentType && !headers.has("content-type")) headers.set("content-type", payload.contentType);
+    settings.method = method;
+    settings.mode = mode;
+    settings.redirect = redirect;
+    settings.credentials = credentials;
+    settings.headers = headers;
+    Object.defineProperty(this, "__glassWorkerRequest", {{ value: true }});
+    Object.defineProperty(this, "_settings", {{ value: settings }});
+    Object.defineProperty(this, "__glassWorkerRequestBodyPayload", {{ value: payload }});
+    Object.defineProperty(this, "__glassWorkerRequestBodyState", {{ value: {{ used: false }} }});
+    this.method = method;
+    this.url = href;
+    this.headers = headers;
+    this.mode = mode;
+    this.redirect = redirect;
+    this.credentials = credentials;
+    this.signal = settings.signal === undefined ? null : settings.signal;
+    const bodyState = this.__glassWorkerRequestBodyState;
+    const body = payload.bodyNull
+      ? null
+      : new WorkerReadableStreamNative(payload.bytes, () => {{ bodyState.used = true; }});
+    Object.defineProperty(this, "body", {{
+      configurable: true,
+      enumerable: true,
+      get() {{ return body; }},
+    }});
+    Object.defineProperty(this, "bodyUsed", {{
+      configurable: true,
+      enumerable: true,
+      get() {{ return workerRequestBodyIsUsed(this); }},
+    }});
+    Object.freeze(this);
+  }};
+  WorkerRequestNative.prototype.clone = function() {{
+    if (this.bodyUsed || this.body && workerReadableStreamState(this.body).locked)
+      throw new TypeError("native Worker Request body is unusable");
+    return new WorkerRequestNative(this);
+  }};
+  WorkerRequestNative.prototype.text = function() {{
+    return workerRequestBodyPromise(this, bytes => workerUtf8Text(bytes));
+  }};
+  WorkerRequestNative.prototype.json = function() {{
+    return workerRequestBodyPromise(this, bytes => JSON.parse(workerUtf8Text(bytes)));
+  }};
+  WorkerRequestNative.prototype.arrayBuffer = function() {{
+    return workerRequestBodyPromise(this, bytes => new Uint8Array(bytes).buffer);
+  }};
+  WorkerRequestNative.prototype.bytes = function() {{
+    return workerRequestBodyPromise(this, bytes => new Uint8Array(bytes));
+  }};
+  WorkerRequestNative.prototype.blob = function() {{
+    return workerRequestBodyPromise(this, (bytes, payload) => {{
+      const blob = new WorkerBlob([], {{ type: payload.contentType || this.headers.get("content-type") || "" }});
+      blob._bytes = bytes;
+      blob.size = bytes.length;
+      return blob;
+    }});
+  }};
+  globalThis.__glassWorkerRequestConstructor = WorkerRequestNative;
+  globalThis.Request = WorkerRequestNative;
+  const workerResponseBodyPayload = (body) => {{
+    if (body === undefined || body === null)
+      return {{ bodyNull: true, body: "", bytes: [], contentType: null }};
+    if (body.__glassWorkerReadableStream === true) {{
+      const state = workerReadableStreamState(body);
+      if (state.locked || state.disturbed || state.consumedByResponse || state.consumedByRequest)
+        throw new TypeError("native Worker Response body stream is unusable");
+      const bytes = state.bytes.slice(state.offset);
+      workerReadableStreamDisturb(state);
+      state.offset = state.bytes.length;
+      workerReadableStreamSetDone(state);
+      return {{ bodyNull: false, body: workerUtf8Text(bytes), bytes, contentType: null }};
+    }}
+    const payload = workerRequestBodyPayload(body);
+    return {{
+      bodyNull: payload.bodyNull,
+      body: workerUtf8Text(payload.bytes),
+      bytes: payload.bytes,
+      contentType: payload.contentType,
+    }};
+  }};
+  const WorkerResponseNative = typeof globalThis.__glassWorkerResponseConstructor === "function"
+    ? globalThis.__glassWorkerResponseConstructor
+    : function(body, options) {{
+    if (!(this instanceof WorkerResponseNative)) throw new TypeError("native Worker Response requires new");
+    const settings = options && typeof options === "object" ? options : {{}};
+    const bodyPayload = workerResponseBodyPayload(body);
+    const status = settings.status === undefined ? 200 : Number(settings.status);
+    if (!Number.isInteger(status) || status < 200 || status > 599)
+      throw new RangeError("native Worker Response status is outside the bounded range");
+    const headers = new WorkerHeadersNative(settings.headers);
+    const contentType = headers.get("content-type") || bodyPayload.contentType;
+    return responseFromWorkerFetch({{
+      url: "",
+      status,
+      statusText: settings.statusText === undefined ? "" : String(settings.statusText),
+      headers: headers._entries,
+      contentType,
+      body: bodyPayload.body,
+      bodyBase64: encodeWorkerBase64(bodyPayload.bytes, {fetch_body_limit}),
+      bodyNull: bodyPayload.bodyNull,
+      redirected: false,
+      opaque: false,
+      opaqueRedirect: false,
+    }});
+  }};
+  WorkerResponseNative.prototype.constructor = WorkerResponseNative;
   const responseFromWorkerFetch = (payload) => {{
     const bytes = workerResponseBytes(payload);
     let bodyUsed = false;
-    const body = new WorkerReadableStreamNative(bytes, () => {{ bodyUsed = true; }});
-    const bodyState = workerReadableStreamState(body);
+    const body = payload && payload.bodyNull === true
+      ? null
+      : new WorkerReadableStreamNative(bytes, () => {{ bodyUsed = true; }});
+    const bodyState = body ? workerReadableStreamState(body) : null;
     const consume = transform => {{
-      if (bodyUsed || bodyState.locked || !workerReadableStreamConsume(bodyState))
+      if (bodyUsed || bodyState && bodyState.locked)
+        return Promise.reject(new TypeError("native Worker Response body is unusable"));
+      if (bodyState && !workerReadableStreamConsume(bodyState))
         return Promise.reject(new TypeError("native Worker Response body is unusable"));
       bodyUsed = true;
       return Promise.resolve().then(() => transform(bytes.slice()));
     }};
-    const response = {{
-      type: payload && payload.opaqueRedirect === true ? "opaqueredirect" : payload && payload.opaque === true ? "opaque" : "basic",
+    const response = Object.create(WorkerResponseNative.prototype);
+    Object.assign(response, {{
+      type: payload && typeof payload.responseType === "string"
+        ? payload.responseType
+        : payload && payload.opaqueRedirect === true ? "opaqueredirect" : payload && payload.opaque === true ? "opaque" : "basic",
       ok: Boolean(payload) && Number(payload.status) >= 200 && Number(payload.status) < 300,
       status: payload && Number.isFinite(Number(payload.status)) ? Number(payload.status) : 0,
       statusText: payload && payload.statusText !== undefined ? String(payload.statusText) : String(payload && payload.status || ""),
@@ -7575,18 +7869,79 @@ fn worker_bootstrap(
         }});
       }},
       clone() {{
-        if (bodyUsed || bodyState.locked) throw new TypeError("native Worker Response body is unusable");
+        if (bodyUsed || bodyState && bodyState.locked) throw new TypeError("native Worker Response body is unusable");
         return responseFromWorkerFetch(payload);
       }},
-    }};
+    }});
+    Object.defineProperty(response, "bodyUsed", {{
+      configurable: true,
+      enumerable: true,
+      get() {{ return bodyUsed; }},
+    }});
     return Object.freeze(response);
   }};
+  WorkerResponseNative.json = function(data, options) {{
+    const settings = options && typeof options === "object" ? Object.assign({{}}, options) : {{}};
+    const headers = new WorkerHeadersNative(settings.headers);
+    if (!headers.has("content-type")) headers.set("content-type", "application/json");
+    settings.headers = headers;
+    return new WorkerResponseNative(JSON.stringify(data), settings);
+  }};
+  WorkerResponseNative.error = function() {{
+    const response = Object.create(WorkerResponseNative.prototype);
+    Object.assign(response, {{
+      type: "error",
+      ok: false,
+      status: 0,
+      statusText: "",
+      url: "",
+      headers: new WorkerHeadersNative(),
+      body: null,
+      bodyUsed: false,
+      clone() {{ return WorkerResponseNative.error(); }},
+      text() {{ return Promise.reject(new TypeError("native Worker error Response has no body")); }},
+      json() {{ return Promise.reject(new TypeError("native Worker error Response has no body")); }},
+      arrayBuffer() {{ return Promise.reject(new TypeError("native Worker error Response has no body")); }},
+      bytes() {{ return Promise.reject(new TypeError("native Worker error Response has no body")); }},
+      blob() {{ return Promise.reject(new TypeError("native Worker error Response has no body")); }},
+    }});
+    return Object.freeze(response);
+  }};
+  WorkerResponseNative.redirect = function(url, status) {{
+    const code = status === undefined ? 302 : Number(status);
+    if (![301, 302, 303, 307, 308].includes(code))
+      throw new RangeError("native Worker Response redirect status is unsupported");
+    return responseFromWorkerFetch({{
+      url: "",
+      status: code,
+      statusText: "",
+      headers: [["location", String(url)]],
+      contentType: null,
+      body: "",
+      bodyBase64: encodeWorkerBase64([], {fetch_body_limit}),
+      bodyNull: true,
+      redirected: false,
+      opaque: false,
+      opaqueRedirect: false,
+    }});
+  }};
+  globalThis.__glassWorkerResponseConstructor = WorkerResponseNative;
+  globalThis.Response = WorkerResponseNative;
   const workerFetchNative = (input, options) => {{
-    const href = typeof input === "string"
-      ? input
-      : input && typeof input.url === "string" ? input.url : null;
-    if (href === null) return Promise.reject(new TypeError("native Worker fetch requires a URL string"));
-    const settings = options && typeof options === "object" ? options : {{}};
+    const sourceRequest = input && input.__glassWorkerRequest === true ? input : null;
+    const sourceUrl = input && input.__glassUrl === true ? input : null;
+    const href = sourceRequest ? sourceRequest.url : sourceUrl ? sourceUrl.href : input;
+    if (typeof href !== "string") return Promise.reject(new TypeError("native Worker fetch requires a URL string or Request"));
+    const optionsObject = options && typeof options === "object" ? options : {{}};
+    const hasBodyOverride = Object.prototype.hasOwnProperty.call(optionsObject, "body");
+    const settings = Object.assign({{}}, sourceRequest ? sourceRequest._settings : {{}}, optionsObject);
+    let payload;
+    try {{
+      if (sourceRequest && !hasBodyOverride) {{
+        if (!workerRequestBodyUse(sourceRequest)) return workerRequestBodyUnusable();
+        payload = sourceRequest.__glassWorkerRequestBodyPayload;
+      }} else payload = workerRequestBodyPayload(settings.body);
+    }} catch (error) {{ return Promise.reject(error); }}
     const method = settings.method === undefined ? "GET" : String(settings.method).toUpperCase();
     if (!["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"].includes(method))
       return Promise.reject(new TypeError("native Worker fetch method is unsupported"));
@@ -7596,34 +7951,21 @@ fn worker_bootstrap(
     const redirect = settings.redirect === undefined ? "follow" : String(settings.redirect).toLowerCase();
     if (!["follow", "error", "manual"].includes(redirect))
       return Promise.reject(new TypeError("native Worker fetch redirect mode is unsupported"));
-    const requestHeaders = normalizeWorkerRequestHeaders(settings.headers);
+    let requestHeaders;
+    try {{ requestHeaders = normalizeWorkerRequestHeaders(settings.headers); }}
+    catch (error) {{ return Promise.reject(error); }}
     let contentType = null;
     if (Object.prototype.hasOwnProperty.call(requestHeaders, "content-type")) {{
       contentType = requestHeaders["content-type"];
       delete requestHeaders["content-type"];
     }}
-    const rawBody = settings.body;
-    let body = rawBody === undefined || rawBody === null ? null : String(rawBody);
-    let bodyBase64 = null;
-    if (rawBody !== undefined && rawBody !== null) {{
-      let bytes;
-      if (rawBody && rawBody.__glassWorkerBlob === true) {{
-        bytes = rawBody._bytes.slice();
-        if (contentType === null && rawBody.type) contentType = rawBody.type;
-      }} else if (rawBody instanceof ArrayBuffer) {{
-        bytes = Array.from(new Uint8Array(rawBody));
-      }} else if (typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(rawBody)) {{
-        bytes = Array.from(new Uint8Array(rawBody.buffer, rawBody.byteOffset, rawBody.byteLength));
-      }} else {{
-        bytes = workerUtf8Bytes(body);
-      }}
-      if (bytes.length > {fetch_body_limit})
-        return Promise.reject(new RangeError("native Worker fetch body exceeds its limit"));
-      bodyBase64 = encodeWorkerBase64(bytes, {fetch_body_limit});
-      if (body === null) body = workerUtf8Text(bytes);
-    }}
-    if (["GET", "HEAD"].includes(method) && body !== null)
+    if (contentType === null && payload.contentType) contentType = payload.contentType;
+    if (["GET", "HEAD"].includes(method) && !payload.bodyNull)
       return Promise.reject(new TypeError(method + " Worker fetch requests must not have a body"));
+    if (payload.bytes.length > {fetch_body_limit})
+      return Promise.reject(new RangeError("native Worker fetch body exceeds its limit"));
+    const body = payload.bodyNull ? null : workerUtf8Text(payload.bytes);
+    const bodyBase64 = payload.bodyNull ? null : encodeWorkerBase64(payload.bytes, {fetch_body_limit});
     const requestId = nextWorkerFetchRequestId;
     nextWorkerFetchRequestId += 1;
     globalThis.__glassNextWorkerFetchRequestId = nextWorkerFetchRequestId;

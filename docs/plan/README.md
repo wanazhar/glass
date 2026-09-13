@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-288` locally. The versioned
+`native-engine-browser-289` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -106,6 +106,15 @@ bounded cancellation, BYOB reads, async iteration, and independent cloned
 responses. Transport-demand streaming, full Request/Response Web IDL
 identity, XHR, module/shared service workers, and the wider native parity
 gates remain open on issue #40.
+
+The completed native-engine-browser-289 slice is
+[native-engine-browser-289](tasks/native-engine-browser-289.md). It adds
+worker-realm `Headers`, `Request`, and `Response` constructor identity,
+bounded mutable request headers, read-only response headers, request/response
+clones, and one-shot body ownership across text, JSON, bytes, ArrayBuffer,
+Blob, and stream consumers. The worker Fetch transport remains host-buffered;
+XHR, module/shared/service workers, complete Web IDL parity, and the wider
+native replacement gates remain open on issue #40.
 
 The completed EventSource/SSE slice is
 [native-engine-browser-253](tasks/native-engine-browser-253.md). It adds a

@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-301` locally. The versioned
+`native-engine-browser-302` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -210,6 +210,12 @@ page and dedicated-worker `crypto.subtle.digest()` for SHA-1, SHA-256, SHA-384,
 and SHA-512 using Rust digest implementations and the existing bounded
 BufferSource/Promise surfaces. Its known-vector witness and local validation
 are recorded in [tasks/native-engine-browser-301.md](tasks/native-engine-browser-301.md).
+
+The completed native-engine-browser-302 Web Crypto HMAC-key slice adds
+adds opaque page and dedicated-worker `CryptoKey` lifecycle plus bounded raw
+HMAC `importKey()`, extractable `exportKey()`, `sign()`, and `verify()` for
+SHA-1, SHA-256, SHA-384, and SHA-512. Its page/worker known-vector witness and
+local evidence are recorded in [tasks/native-engine-browser-302.md](tasks/native-engine-browser-302.md).
 
 The completed native-engine-browser-299 page-runtime-primitives slice adds
 page `TextEncoder`/`TextDecoder`, bounded `atob`/`btoa`,

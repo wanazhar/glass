@@ -25,6 +25,7 @@ use super::resource_loader::{
 };
 use base64::Engine as _;
 use fs2::FileExt;
+use hmac::{Hmac, Mac};
 use rquickjs::function::This;
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::{CaughtError, Coerced, Context, Error, FromJs, Function, Module, Runtime, Value};
@@ -7080,6 +7081,54 @@ fn install_native_crypto_sources<'js>(ctx: rquickjs::Ctx<'js>) -> Result<(), Nat
         operation: "install native crypto digest".into(),
         reason: "native crypto digest could not be installed".into(),
     })?;
+    let hmac_source = Function::new(
+        ctx.clone(),
+        |algorithm: String, key_encoded: String, data_encoded: String| {
+            let key = base64::engine::general_purpose::STANDARD
+                .decode(key_encoded)
+                .map_err(|_| Error::Unknown)?;
+            let data = base64::engine::general_purpose::STANDARD
+                .decode(data_encoded)
+                .map_err(|_| Error::Unknown)?;
+            if key.is_empty()
+                || key.len() > MAX_NATIVE_FORM_BODY_BYTES
+                || data.len() > MAX_NATIVE_FORM_BODY_BYTES
+            {
+                return Err(Error::Unknown);
+            }
+            let digest = match algorithm.trim().to_ascii_uppercase().as_str() {
+                "SHA-1" => {
+                    let mut mac = Hmac::<Sha1>::new_from_slice(&key).map_err(|_| Error::Unknown)?;
+                    mac.update(&data);
+                    mac.finalize().into_bytes().to_vec()
+                }
+                "SHA-256" => {
+                    let mut mac =
+                        Hmac::<Sha256>::new_from_slice(&key).map_err(|_| Error::Unknown)?;
+                    mac.update(&data);
+                    mac.finalize().into_bytes().to_vec()
+                }
+                "SHA-384" => {
+                    let mut mac =
+                        Hmac::<Sha384>::new_from_slice(&key).map_err(|_| Error::Unknown)?;
+                    mac.update(&data);
+                    mac.finalize().into_bytes().to_vec()
+                }
+                "SHA-512" => {
+                    let mut mac =
+                        Hmac::<Sha512>::new_from_slice(&key).map_err(|_| Error::Unknown)?;
+                    mac.update(&data);
+                    mac.finalize().into_bytes().to_vec()
+                }
+                _ => return Err(Error::Unknown),
+            };
+            Ok(base64::engine::general_purpose::STANDARD.encode(digest))
+        },
+    )
+    .map_err(|_| NativeEngineError::Worker {
+        operation: "install native crypto HMAC".into(),
+        reason: "native crypto HMAC could not be installed".into(),
+    })?;
     ctx.globals()
         .set("__glassNativeRandomBytes", random_source)
         .map_err(|_| NativeEngineError::Worker {
@@ -7091,6 +7140,12 @@ fn install_native_crypto_sources<'js>(ctx: rquickjs::Ctx<'js>) -> Result<(), Nat
         .map_err(|_| NativeEngineError::Worker {
             operation: "install native crypto digest".into(),
             reason: "native crypto digest could not be published".into(),
+        })?;
+    ctx.globals()
+        .set("__glassNativeCryptoHmac", hmac_source)
+        .map_err(|_| NativeEngineError::Worker {
+            operation: "install native crypto HMAC".into(),
+            reason: "native crypto HMAC could not be published".into(),
         })
 }
 
@@ -8445,6 +8500,97 @@ fn worker_bootstrap(
   const workerSubtle = globalThis.__glassWorkerSubtleCrypto instanceof Object
     ? globalThis.__glassWorkerSubtleCrypto
     : {{}};
+  let workerCryptoKeyStore = workerSubtle.__glassNativeKeyStore;
+  if (!(workerCryptoKeyStore instanceof WeakMap)) {{
+    workerCryptoKeyStore = new WeakMap();
+    Object.defineProperty(workerSubtle, "__glassNativeKeyStore", {{
+      configurable: false,
+      enumerable: false,
+      value: workerCryptoKeyStore,
+    }});
+  }}
+  const WorkerCryptoKeyNative = typeof globalThis.__glassWorkerCryptoKeyConstructor === "function"
+    ? globalThis.__glassWorkerCryptoKeyConstructor
+    : function CryptoKey() {{ throw new TypeError("Illegal constructor"); }};
+  WorkerCryptoKeyNative.prototype.constructor = WorkerCryptoKeyNative;
+  globalThis.__glassWorkerCryptoKeyConstructor = WorkerCryptoKeyNative;
+  globalThis.CryptoKey = WorkerCryptoKeyNative;
+  const workerCryptoHashName = (value) => {{
+    const candidate = value && typeof value === "object" ? value.name : value;
+    const name = String(candidate || "").toUpperCase();
+    if (!["SHA-1", "SHA-256", "SHA-384", "SHA-512"].includes(name))
+      throw new WorkerDOMExceptionNative("native Worker crypto hash is unsupported", "NotSupportedError");
+    return name;
+  }};
+  const workerCryptoHmacHash = (algorithm) => {{
+    const name = algorithm && typeof algorithm === "object" ? algorithm.name : algorithm;
+    if (String(name || "").toUpperCase() !== "HMAC")
+      throw new WorkerDOMExceptionNative("native Worker crypto algorithm is unsupported", "NotSupportedError");
+    if (!algorithm || typeof algorithm !== "object")
+      throw new WorkerDOMExceptionNative("native Worker HMAC hash is required", "DataError");
+    return workerCryptoHashName(algorithm.hash);
+  }};
+  const workerCryptoUsages = (values) => {{
+    if (!Array.isArray(values)) throw new TypeError("native Worker crypto usages must be an array");
+    const usages = [];
+    for (const value of values) {{
+      const usage = String(value);
+      if (!["sign", "verify"].includes(usage) || usages.includes(usage))
+        throw new SyntaxError("native Worker crypto usage is invalid or duplicated");
+      usages.push(usage);
+    }}
+    return usages;
+  }};
+  const workerCryptoKeyState = (key) => {{
+    const state = workerCryptoKeyStore.get(key);
+    if (!state)
+      throw new WorkerDOMExceptionNative("native Worker CryptoKey is not recognized", "InvalidAccessError");
+    return state;
+  }};
+  const workerCryptoMakeKey = (bytes, hashName, extractable, usages) => {{
+    const key = Object.create(WorkerCryptoKeyNative.prototype);
+    const algorithm = Object.freeze({{
+      name: "HMAC",
+      hash: Object.freeze({{ name: hashName }}),
+      length: bytes.length * 8,
+    }});
+    const normalizedUsages = Object.freeze(usages.slice());
+    Object.defineProperties(key, {{
+      type: {{ configurable: false, enumerable: true, value: "secret" }},
+      extractable: {{ configurable: false, enumerable: true, value: Boolean(extractable) }},
+      algorithm: {{ configurable: false, enumerable: true, value: algorithm }},
+      usages: {{ configurable: false, enumerable: true, value: normalizedUsages }},
+    }});
+    workerCryptoKeyStore.set(key, {{
+      bytes: bytes.slice(),
+      extractable: Boolean(extractable),
+      hashName,
+      usages: normalizedUsages,
+    }});
+    return Object.freeze(key);
+  }};
+  const workerCryptoOperationHash = (algorithm, state) => {{
+    const name = algorithm && typeof algorithm === "object" ? algorithm.name : algorithm;
+    if (String(name || "").toUpperCase() !== "HMAC")
+      throw new WorkerDOMExceptionNative("native Worker crypto algorithm is unsupported", "NotSupportedError");
+    if (algorithm && typeof algorithm === "object" && algorithm.hash !== undefined
+        && workerCryptoHashName(algorithm.hash) !== state.hashName)
+      throw new WorkerDOMExceptionNative("native Worker CryptoKey hash does not match", "InvalidAccessError");
+    return state.hashName;
+  }};
+  const workerCryptoHmacSource = typeof globalThis.__glassNativeCryptoHmac === "function"
+    ? globalThis.__glassNativeCryptoHmac
+    : null;
+  const workerCryptoHmacBytes = (state, data) => {{
+    if (!workerCryptoHmacSource)
+      throw new WorkerDOMExceptionNative("native Worker crypto HMAC is unavailable", "OperationError");
+    const encoded = workerCryptoHmacSource(
+      state.hashName,
+      encodeWorkerBase64(state.bytes, {fetch_body_limit}),
+      encodeWorkerBase64(data, {fetch_body_limit}),
+    );
+    return decodeWorkerBase64(encoded, {fetch_body_limit});
+  }};
   workerSubtle.digest = (algorithm, data) => {{
     const name = algorithm && typeof algorithm === "object"
       ? String(algorithm.name || "")
@@ -8465,11 +8611,65 @@ fn worker_bootstrap(
       return Promise.reject(error);
     }}
   }};
+  workerSubtle.importKey = (format, keyData, algorithm, extractable = false, keyUsages = []) => {{
+    try {{
+      if (String(format).toLowerCase() !== "raw")
+        throw new WorkerDOMExceptionNative("native Worker crypto key format is unsupported", "NotSupportedError");
+      const bytes = workerCryptoBufferInput(keyData);
+      if (bytes.length === 0 || bytes.length > {fetch_body_limit})
+        throw new WorkerDOMExceptionNative("native Worker crypto key data is invalid", "DataError");
+      const hashName = workerCryptoHmacHash(algorithm);
+      return Promise.resolve(workerCryptoMakeKey(bytes, hashName, extractable, workerCryptoUsages(keyUsages)));
+    }} catch (error) {{
+      return Promise.reject(error);
+    }}
+  }};
+  workerSubtle.exportKey = (format, key) => {{
+    try {{
+      if (String(format).toLowerCase() !== "raw")
+        throw new WorkerDOMExceptionNative("native Worker crypto key format is unsupported", "NotSupportedError");
+      const state = workerCryptoKeyState(key);
+      if (!state.extractable)
+        throw new WorkerDOMExceptionNative("native Worker CryptoKey is not extractable", "InvalidAccessError");
+      return Promise.resolve(new Uint8Array(state.bytes.slice()).buffer);
+    }} catch (error) {{
+      return Promise.reject(error);
+    }}
+  }};
+  workerSubtle.sign = (algorithm, key, data) => {{
+    try {{
+      const state = workerCryptoKeyState(key);
+      workerCryptoOperationHash(algorithm, state);
+      if (!state.usages.includes("sign"))
+        throw new WorkerDOMExceptionNative("native Worker CryptoKey cannot sign", "InvalidAccessError");
+      return Promise.resolve(new Uint8Array(workerCryptoHmacBytes(state, workerCryptoBufferInput(data))).buffer);
+    }} catch (error) {{
+      return Promise.reject(error);
+    }}
+  }};
+  workerSubtle.verify = (algorithm, key, signature, data) => {{
+    try {{
+      const state = workerCryptoKeyState(key);
+      workerCryptoOperationHash(algorithm, state);
+      if (!state.usages.includes("verify"))
+        throw new WorkerDOMExceptionNative("native Worker CryptoKey cannot verify", "InvalidAccessError");
+      const expected = workerCryptoBufferInput(signature);
+      const actual = workerCryptoHmacBytes(state, workerCryptoBufferInput(data));
+      let difference = actual.length === expected.length ? 0 : 1;
+      const length = Math.max(actual.length, expected.length);
+      for (let index = 0; index < length; index += 1)
+        difference |= (actual[index] || 0) ^ (expected[index] || 0);
+      return Promise.resolve(difference === 0);
+    }} catch (error) {{
+      return Promise.reject(error);
+    }}
+  }};
   globalThis.__glassWorkerSubtleCrypto = workerSubtle;
   workerCrypto.subtle = workerSubtle;
   globalThis.crypto = workerCrypto;
   try {{ delete globalThis.__glassNativeRandomBytes; }} catch (_error) {{}}
   try {{ delete globalThis.__glassNativeCryptoDigest; }} catch (_error) {{}}
+  try {{ delete globalThis.__glassNativeCryptoHmac; }} catch (_error) {{}}
   const workerBlobBytes = (part) => {{
     if (part && part.__glassWorkerBlob === true) return part._bytes.slice();
     if (typeof part === "string") return workerUtf8Bytes(part);
@@ -19663,6 +19863,96 @@ fn document_bootstrap(
   const pageSubtle = globalThis.__glassPageSubtleCrypto instanceof Object
     ? globalThis.__glassPageSubtleCrypto
     : {{}};
+  let pageCryptoKeyStore = pageSubtle.__glassNativeKeyStore;
+  if (!(pageCryptoKeyStore instanceof WeakMap)) {{
+    pageCryptoKeyStore = new WeakMap();
+    Object.defineProperty(pageSubtle, "__glassNativeKeyStore", {{
+      configurable: false,
+      enumerable: false,
+      value: pageCryptoKeyStore,
+    }});
+  }}
+  const PageCryptoKeyNative = typeof globalThis.__glassPageCryptoKeyConstructor === "function"
+    ? globalThis.__glassPageCryptoKeyConstructor
+    : function CryptoKey() {{ throw new TypeError("Illegal constructor"); }};
+  PageCryptoKeyNative.prototype.constructor = PageCryptoKeyNative;
+  globalThis.__glassPageCryptoKeyConstructor = PageCryptoKeyNative;
+  globalThis.CryptoKey = PageCryptoKeyNative;
+  const pageCryptoHashName = (value) => {{
+    const candidate = value && typeof value === "object" ? value.name : value;
+    const name = String(candidate || "").toUpperCase();
+    if (!["SHA-1", "SHA-256", "SHA-384", "SHA-512"].includes(name))
+      throw pageCryptoDigestError("native crypto hash is unsupported", "NotSupportedError");
+    return name;
+  }};
+  const pageCryptoHmacHash = (algorithm) => {{
+    const name = algorithm && typeof algorithm === "object" ? algorithm.name : algorithm;
+    if (String(name || "").toUpperCase() !== "HMAC")
+      throw pageCryptoDigestError("native crypto algorithm is unsupported", "NotSupportedError");
+    if (!algorithm || typeof algorithm !== "object")
+      throw pageCryptoDigestError("native HMAC hash is required", "DataError");
+    return pageCryptoHashName(algorithm.hash);
+  }};
+  const pageCryptoUsages = (values) => {{
+    if (!Array.isArray(values)) throw new TypeError("native crypto usages must be an array");
+    const usages = [];
+    for (const value of values) {{
+      const usage = String(value);
+      if (!["sign", "verify"].includes(usage) || usages.includes(usage))
+        throw new SyntaxError("native crypto usage is invalid or duplicated");
+      usages.push(usage);
+    }}
+    return usages;
+  }};
+  const pageCryptoKeyState = (key) => {{
+    const state = pageCryptoKeyStore.get(key);
+    if (!state) throw pageCryptoDigestError("native CryptoKey is not recognized", "InvalidAccessError");
+    return state;
+  }};
+  const pageCryptoMakeKey = (bytes, hashName, extractable, usages) => {{
+    const key = Object.create(PageCryptoKeyNative.prototype);
+    const algorithm = Object.freeze({{
+      name: "HMAC",
+      hash: Object.freeze({{ name: hashName }}),
+      length: bytes.length * 8,
+    }});
+    const normalizedUsages = Object.freeze(usages.slice());
+    Object.defineProperties(key, {{
+      type: {{ configurable: false, enumerable: true, value: "secret" }},
+      extractable: {{ configurable: false, enumerable: true, value: Boolean(extractable) }},
+      algorithm: {{ configurable: false, enumerable: true, value: algorithm }},
+      usages: {{ configurable: false, enumerable: true, value: normalizedUsages }},
+    }});
+    pageCryptoKeyStore.set(key, {{
+      bytes: bytes.slice(),
+      extractable: Boolean(extractable),
+      hashName,
+      usages: normalizedUsages,
+    }});
+    return Object.freeze(key);
+  }};
+  const pageCryptoOperationHash = (algorithm, state) => {{
+    const name = algorithm && typeof algorithm === "object" ? algorithm.name : algorithm;
+    if (String(name || "").toUpperCase() !== "HMAC")
+      throw pageCryptoDigestError("native crypto algorithm is unsupported", "NotSupportedError");
+    if (algorithm && typeof algorithm === "object" && algorithm.hash !== undefined
+        && pageCryptoHashName(algorithm.hash) !== state.hashName)
+      throw pageCryptoDigestError("native CryptoKey hash does not match", "InvalidAccessError");
+    return state.hashName;
+  }};
+  const pageCryptoHmacSource = typeof globalThis.__glassNativeCryptoHmac === "function"
+    ? globalThis.__glassNativeCryptoHmac
+    : null;
+  const pageCryptoHmacBytes = (state, data) => {{
+    if (!pageCryptoHmacSource)
+      throw pageCryptoDigestError("native crypto HMAC is unavailable", "OperationError");
+    const encoded = pageCryptoHmacSource(
+      state.hashName,
+      encodeBase64(state.bytes, {native_form_body_bytes}),
+      encodeBase64(data, {native_form_body_bytes}),
+    );
+    return decodeBase64(encoded, {native_form_body_bytes});
+  }};
   pageSubtle.digest = (algorithm, data) => {{
     const name = algorithm && typeof algorithm === "object"
       ? String(algorithm.name || "")
@@ -19684,11 +19974,65 @@ fn document_bootstrap(
       return Promise.reject(error);
     }}
   }};
+  pageSubtle.importKey = (format, keyData, algorithm, extractable = false, keyUsages = []) => {{
+    try {{
+      if (String(format).toLowerCase() !== "raw")
+        throw pageCryptoDigestError("native crypto key format is unsupported", "NotSupportedError");
+      const bytes = pageCryptoBufferInput(keyData);
+      if (bytes.length === 0 || bytes.length > {native_form_body_bytes})
+        throw pageCryptoDigestError("native crypto key data is invalid", "DataError");
+      const hashName = pageCryptoHmacHash(algorithm);
+      return Promise.resolve(pageCryptoMakeKey(bytes, hashName, extractable, pageCryptoUsages(keyUsages)));
+    }} catch (error) {{
+      return Promise.reject(error);
+    }}
+  }};
+  pageSubtle.exportKey = (format, key) => {{
+    try {{
+      if (String(format).toLowerCase() !== "raw")
+        throw pageCryptoDigestError("native crypto key format is unsupported", "NotSupportedError");
+      const state = pageCryptoKeyState(key);
+      if (!state.extractable)
+        throw pageCryptoDigestError("native CryptoKey is not extractable", "InvalidAccessError");
+      return Promise.resolve(new Uint8Array(state.bytes.slice()).buffer);
+    }} catch (error) {{
+      return Promise.reject(error);
+    }}
+  }};
+  pageSubtle.sign = (algorithm, key, data) => {{
+    try {{
+      const state = pageCryptoKeyState(key);
+      pageCryptoOperationHash(algorithm, state);
+      if (!state.usages.includes("sign"))
+        throw pageCryptoDigestError("native CryptoKey cannot sign", "InvalidAccessError");
+      return Promise.resolve(new Uint8Array(pageCryptoHmacBytes(state, pageCryptoBufferInput(data))).buffer);
+    }} catch (error) {{
+      return Promise.reject(error);
+    }}
+  }};
+  pageSubtle.verify = (algorithm, key, signature, data) => {{
+    try {{
+      const state = pageCryptoKeyState(key);
+      pageCryptoOperationHash(algorithm, state);
+      if (!state.usages.includes("verify"))
+        throw pageCryptoDigestError("native CryptoKey cannot verify", "InvalidAccessError");
+      const expected = pageCryptoBufferInput(signature);
+      const actual = pageCryptoHmacBytes(state, pageCryptoBufferInput(data));
+      let difference = actual.length === expected.length ? 0 : 1;
+      const length = Math.max(actual.length, expected.length);
+      for (let index = 0; index < length; index += 1)
+        difference |= (actual[index] || 0) ^ (expected[index] || 0);
+      return Promise.resolve(difference === 0);
+    }} catch (error) {{
+      return Promise.reject(error);
+    }}
+  }};
   globalThis.__glassPageSubtleCrypto = pageSubtle;
   pageCrypto.subtle = pageSubtle;
   globalThis.crypto = pageCrypto;
   try {{ delete globalThis.__glassNativeRandomBytes; }} catch (_error) {{}}
   try {{ delete globalThis.__glassNativeCryptoDigest; }} catch (_error) {{}}
+  try {{ delete globalThis.__glassNativeCryptoHmac; }} catch (_error) {{}}
   const nativeStorageUsage = () => {{
     const encoded = (value) => {{
       try {{ return JSON.stringify(value); }} catch (_error) {{ return ""; }}

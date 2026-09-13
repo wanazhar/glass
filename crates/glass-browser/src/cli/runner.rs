@@ -73,6 +73,37 @@ pub(crate) fn parse_viewport(value: &str) -> BrowserResult<(i64, i64)> {
     }
     Ok((width, height))
 }
+
+#[cfg(feature = "native-engine")]
+pub(crate) fn native_config_from_cli(cli: &Cli) -> BrowserResult<NativeEngineConfig> {
+    let mut config = NativeEngineConfig::default();
+    if let Some(viewport) = cli.viewport.as_deref() {
+        let (width, height) = parse_viewport(viewport)?;
+        config = config.with_viewport(crate::browser::Viewport {
+            width: u32::try_from(width)?,
+            height: u32::try_from(height)?,
+            device_scale_factor_milli: 1000,
+        });
+    }
+    if !cli.incognito {
+        config = config.with_storage_path(native_profile_storage_path(&cli.profile)?);
+    }
+    Ok(config)
+}
+
+#[cfg(feature = "native-engine")]
+fn native_profile_storage_path(profile: &str) -> BrowserResult<std::path::PathBuf> {
+    ProfileManager::validate_name(profile)?;
+    let root = std::env::var_os("GLASS_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(dirs::config_dir)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    Ok(root
+        .join("glass")
+        .join("native-profiles")
+        .join(profile)
+        .join("storage.json"))
+}
 fn should_run_tui(stdin_is_terminal: bool, stdout_is_terminal: bool) -> bool {
     stdin_is_terminal && stdout_is_terminal
 }
@@ -410,7 +441,7 @@ async fn dispatch_alternative_runtime(cli: &Cli, policy: &mut BrowserPolicy) -> 
 
     #[cfg(feature = "native-engine")]
     let session = if native {
-        BrowserRuntimeSession::connect_native(NativeEngineConfig::default()).await?
+        BrowserRuntimeSession::connect_native(native_config_from_cli(cli)?).await?
     } else {
         let endpoint = cli.browser_endpoint.as_deref().ok_or_else(|| {
             format!(
@@ -449,9 +480,9 @@ async fn dispatch_alternative_runtime(cli: &Cli, policy: &mut BrowserPolicy) -> 
 fn validate_alternative_runtime_flags(cli: &Cli, runtime: BrowserRuntime) -> BrowserResult<()> {
     let unsupported = if runtime.is_native() && cli.browser_endpoint.is_some() {
         Some("--browser-endpoint is not available with --browser-runtime native")
-    } else if cli.profile != "default" {
+    } else if !runtime.is_native() && cli.profile != "default" {
         Some("--profile is only available on the full Chromium session")
-    } else if cli.incognito {
+    } else if !runtime.is_native() && cli.incognito {
         Some("--incognito is only available on the full Chromium session")
     } else if cli.attach {
         Some("alternative runtimes are already externally managed; omit --attach")
@@ -3793,6 +3824,51 @@ mod tests {
             Cli::try_parse_from(["glass", "--browser-runtime", "native", "evaluate", "1 + 1"])
                 .unwrap();
         validate_alternative_runtime_command(cli.command.as_ref().unwrap(), cli.browser_runtime)
+            .unwrap();
+    }
+
+    #[cfg(feature = "native-engine")]
+    #[test]
+    fn native_cli_config_owns_profile_storage_and_viewport() {
+        std::thread::Builder::new()
+            .name("native-cli-config-test".into())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let cli = Cli::try_parse_from([
+                    "glass",
+                    "--browser-runtime",
+                    "native",
+                    "--profile",
+                    "work",
+                    "--viewport",
+                    "640x480",
+                    "observe",
+                ])
+                .unwrap();
+                let config = native_config_from_cli(&cli).unwrap();
+                assert_eq!(config.viewport.width, 640);
+                assert_eq!(config.viewport.height, 480);
+                assert!(config.storage_path.unwrap().ends_with(std::path::Path::new(
+                    "glass/native-profiles/work/storage.json"
+                )));
+
+                let incognito = Cli::try_parse_from([
+                    "glass",
+                    "--browser-runtime",
+                    "native",
+                    "--incognito",
+                    "observe",
+                ])
+                .unwrap();
+                assert!(
+                    native_config_from_cli(&incognito)
+                        .unwrap()
+                        .storage_path
+                        .is_none()
+                );
+            })
+            .unwrap()
+            .join()
             .unwrap();
     }
 

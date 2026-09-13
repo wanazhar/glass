@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-317` locally. Native is now the default runtime for
+`native-engine-browser-318` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -38,6 +38,15 @@ the authoritative epic is
 module decomposition, integration enumeration, and tradeoffs are in the
 [native-engine architecture](../architecture/native-engine.md) and
 [native-engine analysis](analysis/native-engine.md).
+
+The completed profile and viewport ownership slice is
+[native-engine-browser-318](tasks/native-engine-browser-318.md). Native CLI
+and TUI startup now share one configuration adapter: `--viewport` reaches the
+native viewport contract, non-incognito profiles use Rust-owned storage under
+`glass/native-profiles/<profile>/storage.json`, and `--incognito` keeps storage
+volatile. Native profile state remains separate from Chromium state; persistent
+session ownership and complete storage/profile conformance are still open
+issue #40 gates.
 
 The completed computed-style/media-query slice is
 [native-engine-browser-282](tasks/native-engine-browser-282.md). It exposes a

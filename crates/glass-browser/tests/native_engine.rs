@@ -1295,6 +1295,143 @@ async fn native_content_process_worker_fetch_preserves_binary_request_and_respon
 }
 
 #[tokio::test]
+async fn native_content_process_worker_exposes_xhr_fetch_bridge() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in [
+            "/worker-xhr-page",
+            "/worker-xhr.js",
+            "/worker-xhr",
+            "/worker-xhr-binary",
+            "/worker-xhr-timeout",
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request_bytes = read_http_request_bytes(&mut stream).await;
+            assert!(
+                !request_bytes.is_empty(),
+                "expected request for {expected_path}, received an empty connection"
+            );
+            let header_end = request_bytes
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .map(|index| index + 4)
+                .unwrap();
+            let request = String::from_utf8_lossy(&request_bytes);
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            if expected_path == "/worker-xhr" {
+                assert_eq!(request.split_whitespace().next(), Some("POST"));
+                assert!(request.lines().any(|line| {
+                    line.split_once(':').is_some_and(|(name, value)| {
+                        name.eq_ignore_ascii_case("content-type")
+                            && value.trim() == "application/json"
+                    })
+                }));
+                assert_eq!(&request_bytes[header_end..], br#"{"name":"worker"}"#);
+            }
+            let (content_type, body) = match expected_path {
+                "/worker-xhr-page" => (
+                    "text/html",
+                    "<script>globalThis.workerMessages = []; globalThis.worker = new Worker('/worker-xhr.js'); worker.onmessage = event => workerMessages.push(event.data);</script>",
+                ),
+                "/worker-xhr.js" => (
+                    "text/javascript",
+                    r#"(() => {
+  const xhr = new XMLHttpRequest();
+  const states = [];
+  xhr.onreadystatechange = () => states.push(xhr.readyState);
+  xhr.open('POST', '/worker-xhr');
+  xhr.setRequestHeader('Content-Type', 'application/json');
+  xhr.onload = () => {
+    const binary = new XMLHttpRequest();
+    binary.responseType = 'arraybuffer';
+    binary.open('GET', '/worker-xhr-binary');
+    binary.onload = () => {
+      const timeout = new XMLHttpRequest();
+      const timeoutStates = [];
+      timeout.onreadystatechange = () => timeoutStates.push(timeout.readyState);
+      timeout.ontimeout = () => postMessage({
+        kind: 'xhr',
+        identity: xhr instanceof XMLHttpRequest,
+        states,
+        status: xhr.status,
+        statusText: xhr.statusText,
+        responseText: xhr.responseText,
+        responseURL: xhr.responseURL,
+        responseHeader: xhr.getResponseHeader('x-worker-response'),
+        binaryIdentity: binary.response instanceof ArrayBuffer,
+        binaryBytes: Array.from(new Uint8Array(binary.response)),
+        binaryStatus: binary.status,
+        binaryURL: binary.responseURL,
+        timeout: [timeout.timeout, timeoutStates, timeout.readyState, timeout.status, timeout.responseText]
+      });
+      timeout.onerror = error => postMessage({ kind: 'error', stage: 'timeout', message: String(error) });
+      timeout.open('GET', '/worker-xhr-timeout');
+      timeout.timeout = 20;
+      timeout.send();
+    };
+    binary.onerror = error => postMessage({ kind: 'error', stage: 'binary', message: String(error) });
+    binary.send();
+  };
+  xhr.onerror = () => postMessage({ kind: 'error', stage: 'text' });
+  xhr.send('{"name":"worker"}');
+})();"#,
+                ),
+                "/worker-xhr" => ("text/plain", "worker-xhr-response"),
+                "/worker-xhr-binary" => ("application/octet-stream", "\u{0000}\u{00ff}\u{0080}A"),
+                "/worker-xhr-timeout" => ("text/plain", "late-response"),
+                _ => unreachable!(),
+            };
+            if expected_path == "/worker-xhr-timeout" {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            if expected_path == "/worker-xhr-binary" {
+                let binary_body = [0_u8, 255, 128, b'A'];
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nX-Worker-Response: binary\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    binary_body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.write_all(&binary_body).await.unwrap();
+            } else {
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nX-Worker-Response: text\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/worker-xhr-page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine.evaluate_async("workerMessages").await.unwrap(),
+        serde_json::json!([{
+            "kind": "xhr",
+            "identity": true,
+            "states": [1, 2, 3, 4],
+            "status": 200,
+            "statusText": "200",
+            "responseText": "worker-xhr-response",
+            "responseURL": format!("http://{address}/worker-xhr"),
+            "responseHeader": "text",
+            "binaryIdentity": true,
+            "binaryBytes": [0, 255, 128, 65],
+            "binaryStatus": 200,
+            "binaryURL": format!("http://{address}/worker-xhr-binary"),
+            "timeout": [20, [1, 4], 4, 0, ""],
+        }])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_script_exposes_web_idl_identity() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

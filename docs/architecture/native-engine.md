@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-315` slice; the bounded foundation below remains
+`native-engine-browser-316` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 
 Slice 283 adds a bounded dedicated-worker bridge after the page-facing
@@ -339,6 +339,17 @@ contract. Video/media decoding, worker-realm Canvas installation, complete
 Image/Canvas Web IDL semantics, and the final native/CDP replacement gates
 remain Issue #40 work. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-315.md`.
+
+Slice 316 adds the bounded 2D geometry objects used by modern Canvas code:
+`DOMMatrix`/`DOMMatrixReadOnly` expose matrix fields, immutable and mutable
+composition/inversion helpers, typed-array export, and identity; `DOMPoint`
+and `DOMPointReadOnly` expose finite point construction and matrix transforms.
+Canvas transform methods, `getTransform()`, and `Path2D.addPath()` share the
+same six-value owner, so the page no longer needs private plain-object matrix
+shims. Three-dimensional/perspective matrices, full matrix-string parsing,
+complete geometry Web IDL descriptors, and the final native/CDP replacement
+gates remain Issue #40 work. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-316.md`.
 
 Slice 282 adds a bounded page-facing computed-style and media-query bridge:
 the JavaScript realm reads the native cascade/layout snapshot through a

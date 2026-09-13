@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-315`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-316`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -4527,6 +4527,19 @@ decoding, worker-realm Canvas installation, complete Image/Canvas Web IDL
 semantics, and final native/CDP replacement remain issue #40 gates. Exact
 evidence is recorded in `docs/plan/tasks/native-engine-browser-315.md`.
 
+The completed native-engine-browser-316 slice closes the page geometry-object
+handoff for the retained Canvas owner. It adds persistent 2D
+`DOMMatrix`/`DOMMatrixReadOnly` objects with composition, inversion,
+translation/scale/rotation/skew, typed-array export, and identity fields;
+`DOMPoint`/`DOMPointReadOnly` transform through the same matrix. Canvas
+`setTransform()` and object-form `transform()`, `getTransform()`, and
+`Path2D.addPath()` now use this shared owner. The focused witness covers Web
+IDL identity, matrix products, point transforms, typed arrays, and translated
+raster output. Three-dimensional/perspective matrices, complete matrix-string
+parsing, exact geometry descriptors, complete Canvas/Web IDL semantics, and
+final native/CDP replacement remain issue #40 gates. Exact evidence is
+recorded in `docs/plan/tasks/native-engine-browser-316.md`.
+
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame
 realms. `document.createAttribute()` creates persistent `Attr` objects;
@@ -5603,7 +5616,8 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-198.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-197.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-196.md` is the preceding completed task;
-The current browser-slice evidence chain is `native-engine-browser-315`,
+The current browser-slice evidence chain is `native-engine-browser-316`,
+`native-engine-browser-315`,
 `native-engine-browser-314`,
 `native-engine-browser-313`,
 `native-engine-browser-312`,

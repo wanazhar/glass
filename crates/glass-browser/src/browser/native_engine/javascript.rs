@@ -4574,14 +4574,126 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
       (matrix[1] * matrix[4] - matrix[0] * matrix[5]) * inverse,
     ];
   };
-  const nativeCanvasTransformObject = (matrix) => ({
+  const nativeDomMatrixValues = (value) => {
+    if (value && Array.isArray(value.__glassMatrix)) return value.__glassMatrix.slice();
+    if (value && typeof value !== "string" && Number(value.length) === 6) {
+      const values = Array.from(value).map(Number);
+      if (values.every(Number.isFinite)) return values;
+    }
+    if (value && typeof value === "object") {
+      const values = [value.a, value.b, value.c, value.d, value.e, value.f].map(Number);
+      if (values.every(Number.isFinite)) return values;
+    }
+    throw new TypeError("DOMMatrix requires six finite 2D values");
+  };
+  const nativeDomMatrixJson = (matrix) => ({
     a: matrix[0], b: matrix[1], c: matrix[2], d: matrix[3], e: matrix[4], f: matrix[5],
     m11: matrix[0], m12: matrix[1], m21: matrix[2], m22: matrix[3], m41: matrix[4], m42: matrix[5],
     is2D: true,
     isIdentity: matrix[0] === 1 && matrix[1] === 0 && matrix[2] === 0
       && matrix[3] === 1 && matrix[4] === 0 && matrix[5] === 0,
-    toJSON() { return nativeCanvasTransformObject(matrix.slice()); },
   });
+  const DOMPointReadOnlyNative = globalThis.__glassDOMPointReadOnlyConstructor || function DOMPointReadOnly(x = 0, y = 0, z = 0, w = 1) {
+    if (!new.target) throw new TypeError("DOMPointReadOnly requires new");
+    const values = [x, y, z, w].map(Number);
+    if (!values.every(Number.isFinite)) throw new TypeError("DOMPoint values must be finite");
+    Object.defineProperties(this, {
+      x: { configurable: false, enumerable: true, value: values[0] },
+      y: { configurable: false, enumerable: true, value: values[1] },
+      z: { configurable: false, enumerable: true, value: values[2] },
+      w: { configurable: false, enumerable: true, value: values[3] },
+    });
+  };
+  const DOMPointNative = globalThis.__glassDOMPointConstructor || function DOMPoint(x = 0, y = 0, z = 0, w = 1) {
+    if (!new.target) throw new TypeError("DOMPoint requires new");
+    const values = [x, y, z, w].map(Number);
+    if (!values.every(Number.isFinite)) throw new TypeError("DOMPoint values must be finite");
+    Object.defineProperties(this, {
+      x: { configurable: true, enumerable: true, writable: true, value: values[0] },
+      y: { configurable: true, enumerable: true, writable: true, value: values[1] },
+      z: { configurable: true, enumerable: true, writable: true, value: values[2] },
+      w: { configurable: true, enumerable: true, writable: true, value: values[3] },
+    });
+  };
+  if (Object.getPrototypeOf(DOMPointNative.prototype) !== DOMPointReadOnlyNative.prototype) {
+    try { Object.setPrototypeOf(DOMPointNative.prototype, DOMPointReadOnlyNative.prototype); } catch (_error) {}
+  }
+  const nativeDomPointTransform = (point, matrix) => new DOMPointNative(
+    matrix[0] * point.x + matrix[2] * point.y + matrix[4],
+    matrix[1] * point.x + matrix[3] * point.y + matrix[5],
+    point.z,
+    point.w,
+  );
+  DOMPointReadOnlyNative.prototype.matrixTransform = function(matrix) {
+    return nativeDomPointTransform(this, nativeDomMatrixValues(matrix));
+  };
+  DOMPointNative.prototype.matrixTransform = DOMPointReadOnlyNative.prototype.matrixTransform;
+  globalThis.__glassDOMPointReadOnlyConstructor = DOMPointReadOnlyNative;
+  globalThis.__glassDOMPointConstructor = DOMPointNative;
+  globalThis.DOMPointReadOnly = DOMPointReadOnlyNative;
+  globalThis.DOMPoint = DOMPointNative;
+  const DOMMatrixReadOnlyNative = globalThis.__glassDOMMatrixReadOnlyConstructor || function DOMMatrixReadOnly(init) {
+    if (!new.target) throw new TypeError("DOMMatrixReadOnly requires new");
+    Object.defineProperty(this, "__glassMatrix", {
+      configurable: false,
+      enumerable: false,
+      value: init === undefined ? nativeCanvasMatrixIdentity() : nativeDomMatrixValues(init),
+    });
+  };
+  const DOMMatrixNative = globalThis.__glassDOMMatrixConstructor || function DOMMatrix(init) {
+    if (!new.target) throw new TypeError("DOMMatrix requires new");
+    Object.defineProperty(this, "__glassMatrix", {
+      configurable: false,
+      enumerable: false,
+      writable: true,
+      value: init === undefined ? nativeCanvasMatrixIdentity() : nativeDomMatrixValues(init),
+    });
+  };
+  if (Object.getPrototypeOf(DOMMatrixNative.prototype) !== DOMMatrixReadOnlyNative.prototype) {
+    try { Object.setPrototypeOf(DOMMatrixNative.prototype, DOMMatrixReadOnlyNative.prototype); } catch (_error) {}
+  }
+  const nativeDomMatrixProperty = (name, index) => ({
+    configurable: true,
+    enumerable: true,
+    get() { return this.__glassMatrix[index]; },
+  });
+  Object.defineProperties(DOMMatrixReadOnlyNative.prototype, {
+    a: nativeDomMatrixProperty("a", 0), b: nativeDomMatrixProperty("b", 1),
+    c: nativeDomMatrixProperty("c", 2), d: nativeDomMatrixProperty("d", 3),
+    e: nativeDomMatrixProperty("e", 4), f: nativeDomMatrixProperty("f", 5),
+    m11: nativeDomMatrixProperty("m11", 0), m12: nativeDomMatrixProperty("m12", 1),
+    m21: nativeDomMatrixProperty("m21", 2), m22: nativeDomMatrixProperty("m22", 3),
+    m41: nativeDomMatrixProperty("m41", 4), m42: nativeDomMatrixProperty("m42", 5),
+    is2D: { configurable: true, enumerable: true, get() { return true; } },
+    isIdentity: { configurable: true, enumerable: true, get() { return nativeDomMatrixJson(this.__glassMatrix).isIdentity; } },
+    toJSON: { configurable: true, value() { return nativeDomMatrixJson(this.__glassMatrix); } },
+    toString: { configurable: true, value() { return "matrix(" + this.a + ", " + this.b + ", " + this.c + ", " + this.d + ", " + this.e + ", " + this.f + ")"; } },
+    toFloat32Array: { configurable: true, value() { return new Float32Array(this.__glassMatrix); } },
+    toFloat64Array: { configurable: true, value() { return new Float64Array(this.__glassMatrix); } },
+    multiply: { configurable: true, value(other) { return new DOMMatrixReadOnlyNative(nativeCanvasMatrixMultiply(this.__glassMatrix, nativeDomMatrixValues(other))); } },
+    translate: { configurable: true, value(x = 0, y = 0) { return new DOMMatrixReadOnlyNative(nativeCanvasMatrixMultiply(this.__glassMatrix, [1, 0, 0, 1, Number(x), Number(y)])); } },
+    scale: { configurable: true, value(x, y = x, originX = 0, originY = 0) { const first = [1, 0, 0, 1, Number(originX), Number(originY)]; const scaling = [Number(x), 0, 0, Number(y), 0, 0]; const last = [1, 0, 0, 1, -Number(originX), -Number(originY)]; return new DOMMatrixReadOnlyNative(nativeCanvasMatrixMultiply(nativeCanvasMatrixMultiply(nativeCanvasMatrixMultiply(this.__glassMatrix, first), scaling), last)); } },
+    rotate: { configurable: true, value(angle = 0, originX = 0, originY = 0) { const radians = Number(angle) * Math.PI / 180; const first = [1, 0, 0, 1, Number(originX), Number(originY)]; const rotation = [Math.cos(radians), Math.sin(radians), -Math.sin(radians), Math.cos(radians), 0, 0]; const last = [1, 0, 0, 1, -Number(originX), -Number(originY)]; return new DOMMatrixReadOnlyNative(nativeCanvasMatrixMultiply(nativeCanvasMatrixMultiply(nativeCanvasMatrixMultiply(this.__glassMatrix, first), rotation), last)); } },
+    skewX: { configurable: true, value(angle = 0) { return new DOMMatrixReadOnlyNative(nativeCanvasMatrixMultiply(this.__glassMatrix, [1, 0, Math.tan(Number(angle) * Math.PI / 180), 1, 0, 0])); } },
+    skewY: { configurable: true, value(angle = 0) { return new DOMMatrixReadOnlyNative(nativeCanvasMatrixMultiply(this.__glassMatrix, [1, Math.tan(Number(angle) * Math.PI / 180), 0, 1, 0, 0])); } },
+    inverse: { configurable: true, value() { const inverse = nativeCanvasMatrixInverse(this.__glassMatrix); if (!inverse) throw nativeCanvasError("matrix is not invertible", "InvalidStateError"); return new DOMMatrixReadOnlyNative(inverse); } },
+    transformPoint: { configurable: true, value(point = {}) { return nativeDomPointTransform(new DOMPointReadOnlyNative(point.x, point.y, point.z, point.w), this.__glassMatrix); } },
+  });
+  Object.defineProperties(DOMMatrixNative.prototype, {
+    multiplySelf: { configurable: true, value(other) { this.__glassMatrix = nativeCanvasMatrixMultiply(this.__glassMatrix, nativeDomMatrixValues(other)); return this; } },
+    preMultiplySelf: { configurable: true, value(other) { this.__glassMatrix = nativeCanvasMatrixMultiply(nativeDomMatrixValues(other), this.__glassMatrix); return this; } },
+    translateSelf: { configurable: true, value(x = 0, y = 0) { this.__glassMatrix = nativeCanvasMatrixMultiply(this.__glassMatrix, [1, 0, 0, 1, Number(x), Number(y)]); return this; } },
+    scaleSelf: { configurable: true, value(x, y = x, originX = 0, originY = 0) { this.__glassMatrix = this.scale(x, y, originX, originY).__glassMatrix.slice(); return this; } },
+    rotateSelf: { configurable: true, value(angle = 0, originX = 0, originY = 0) { this.__glassMatrix = this.rotate(angle, originX, originY).__glassMatrix.slice(); return this; } },
+    skewXSelf: { configurable: true, value(angle = 0) { this.__glassMatrix = this.skewX(angle).__glassMatrix.slice(); return this; } },
+    skewYSelf: { configurable: true, value(angle = 0) { this.__glassMatrix = this.skewY(angle).__glassMatrix.slice(); return this; } },
+    invertSelf: { configurable: true, value() { const inverse = nativeCanvasMatrixInverse(this.__glassMatrix); if (!inverse) throw nativeCanvasError("matrix is not invertible", "InvalidStateError"); this.__glassMatrix = inverse; return this; } },
+  });
+  globalThis.__glassDOMMatrixReadOnlyConstructor = DOMMatrixReadOnlyNative;
+  globalThis.__glassDOMMatrixConstructor = DOMMatrixNative;
+  globalThis.DOMMatrixReadOnly = DOMMatrixReadOnlyNative;
+  globalThis.DOMMatrix = DOMMatrixNative;
+  const nativeCanvasTransformObject = (matrix) => new DOMMatrixReadOnlyNative(matrix);
   const nativeCanvasNamedColors = {
     transparent: [0, 0, 0, 0], black: [0, 0, 0, 255], white: [255, 255, 255, 255],
     red: [255, 0, 0, 255], green: [0, 128, 0, 255], blue: [0, 0, 255, 255],
@@ -4971,10 +5083,7 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
   };
   const nativeCanvasPathMatrix = (value) => {
     if (value === undefined || value === null) return nativeCanvasMatrixIdentity();
-    if (typeof value !== "object") throw new TypeError("path transform must be a matrix");
-    const matrix = [value.a, value.b, value.c, value.d, value.e, value.f].map(Number);
-    if (!matrix.every(Number.isFinite)) throw new TypeError("path transform must be a finite matrix");
-    return matrix;
+    return nativeDomMatrixValues(value);
   };
   const nativeCanvasPathData = (value) => {
     const text = String(value);
@@ -5384,8 +5493,8 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
       translate: { configurable: true, value(x, y) { this.__glassCanvasState.transform = nativeCanvasMatrixMultiply(this.__glassCanvasState.transform, [1, 0, 0, 1, Number(x), Number(y)]); } },
       scale: { configurable: true, value(x, y = x) { this.__glassCanvasState.transform = nativeCanvasMatrixMultiply(this.__glassCanvasState.transform, [Number(x), 0, 0, Number(y), 0, 0]); } },
       rotate: { configurable: true, value(angle) { const radians = Number(angle); this.__glassCanvasState.transform = nativeCanvasMatrixMultiply(this.__glassCanvasState.transform, [Math.cos(radians), Math.sin(radians), -Math.sin(radians), Math.cos(radians), 0, 0]); } },
-      transform: { configurable: true, value(a, b, c, d, e, f) { this.__glassCanvasState.transform = nativeCanvasMatrixMultiply(this.__glassCanvasState.transform, [Number(a), Number(b), Number(c), Number(d), Number(e), Number(f)]); } },
-      setTransform: { configurable: true, value(a, b, c, d, e, f) { if (a && typeof a === "object") this.__glassCanvasState.transform = [Number(a.a), Number(a.b), Number(a.c), Number(a.d), Number(a.e), Number(a.f)]; else this.__glassCanvasState.transform = [Number(a === undefined ? 1 : a), Number(b || 0), Number(c || 0), Number(d === undefined ? 1 : d), Number(e || 0), Number(f || 0)]; } },
+      transform: { configurable: true, value(a, b, c, d, e, f) { const matrix = a && typeof a === "object" ? nativeDomMatrixValues(a) : [Number(a), Number(b), Number(c), Number(d), Number(e), Number(f)]; if (!matrix.every(Number.isFinite)) throw new TypeError("transform values must be finite"); this.__glassCanvasState.transform = nativeCanvasMatrixMultiply(this.__glassCanvasState.transform, matrix); } },
+      setTransform: { configurable: true, value(a, b, c, d, e, f) { if (a && typeof a === "object") this.__glassCanvasState.transform = nativeDomMatrixValues(a); else { const matrix = [Number(a === undefined ? 1 : a), Number(b || 0), Number(c || 0), Number(d === undefined ? 1 : d), Number(e || 0), Number(f || 0)]; if (!matrix.every(Number.isFinite)) throw new TypeError("transform values must be finite"); this.__glassCanvasState.transform = matrix; } } },
       resetTransform: { configurable: true, value() { this.__glassCanvasState.transform = nativeCanvasMatrixIdentity(); } },
       getTransform: { configurable: true, value() { return nativeCanvasTransformObject(this.__glassCanvasState.transform.slice()); } },
       getContextAttributes: { configurable: true, value() { return { alpha: true, desynchronized: false, willReadFrequently: false }; } },

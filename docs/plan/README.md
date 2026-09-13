@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-315` locally. The versioned
+`native-engine-browser-316` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -331,6 +331,16 @@ bitmap. Unsupported media/video sources, worker-realm Canvas installation,
 complete Canvas/Image/Web IDL breadth, and the remaining issue #40 production
 gates remain open; exact evidence is recorded in
 [tasks/native-engine-browser-315.md](tasks/native-engine-browser-315.md).
+
+The completed native-engine-browser-316 matrix/point slice adds bounded
+2D `DOMMatrix`, `DOMMatrixReadOnly`, `DOMPoint`, and `DOMPointReadOnly`
+identity and transform operations. Canvas `setTransform()`/`transform()` and
+`Path2D.addPath()` accept those objects, while `getTransform()` and point
+transforms return the corresponding Web IDL objects. Three-dimensional and
+full matrix-string semantics remain out of scope; complete Canvas/Web IDL
+breadth and the remaining issue #40 production gates remain open. Exact
+evidence is recorded in
+[tasks/native-engine-browser-316.md](tasks/native-engine-browser-316.md).
 
 The completed native-engine-browser-299 page-runtime-primitives slice adds
 page `TextEncoder`/`TextDecoder`, bounded `atob`/`btoa`,

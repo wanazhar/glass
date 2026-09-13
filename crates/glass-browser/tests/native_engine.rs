@@ -2615,6 +2615,161 @@ async fn native_local_page_and_worker_aes_block_crypto() {
 }
 
 #[tokio::test]
+async fn native_local_page_and_worker_ed25519_crypto_keys() {
+    let worker_source = r#"(async () => {
+        try {
+            const privateJwk = {
+                kty: 'OKP', crv: 'Ed25519',
+                x: '11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
+                d: 'nWGxne_9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A',
+                alg: 'EdDSA', ext: true, key_ops: ['sign'],
+            };
+            const publicJwk = {
+                kty: 'OKP', crv: 'Ed25519',
+                x: privateJwk.x, alg: 'EdDSA', ext: true, key_ops: ['verify'],
+            };
+            const privateKey = await crypto.subtle.importKey(
+                'jwk', privateJwk, { name: 'Ed25519' }, true, ['sign']
+            );
+            const publicKey = await crypto.subtle.importKey(
+                'jwk', publicJwk, { name: 'Ed25519' }, true, ['verify']
+            );
+            const data = new Uint8Array();
+            const signature = await crypto.subtle.sign('Ed25519', privateKey, data);
+            const expected = new Uint8Array(signature);
+            const rfcSignature = 'e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b';
+            const signatureHex = Array.from(expected).map(byte => byte.toString(16).padStart(2, '0')).join('');
+            const verified = await crypto.subtle.verify('Ed25519', publicKey, expected, data);
+            expected[0] ^= 1;
+            const tampered = await crypto.subtle.verify('Ed25519', publicKey, expected, data);
+            const generated = await crypto.subtle.generateKey({ name: 'Ed25519' }, false, ['sign', 'verify']);
+            const generatedSignature = await crypto.subtle.sign({ name: 'Ed25519' }, generated.privateKey, new TextEncoder().encode('worker'));
+            const generatedVerified = await crypto.subtle.verify({ name: 'Ed25519' }, generated.publicKey, generatedSignature, new TextEncoder().encode('worker'));
+            const exportedPrivate = await crypto.subtle.exportKey('jwk', privateKey);
+            const exportedPublic = await crypto.subtle.exportKey('jwk', publicKey);
+            postMessage({
+                signatureHex, rfcSignature, verified, tampered, generatedVerified,
+                private: [privateKey.type, privateKey.algorithm.name, privateKey.extractable, Array.from(privateKey.usages)],
+                public: [publicKey.type, publicKey.algorithm.name, publicKey.extractable, Array.from(publicKey.usages)],
+                exported: [exportedPrivate.kty, exportedPrivate.crv, exportedPrivate.x, exportedPrivate.d, exportedPublic.x],
+                raw: Array.from(new Uint8Array(await crypto.subtle.exportKey('raw', publicKey))),
+            });
+        } catch (error) {
+            postMessage({ error: error.name, message: String(error.message) });
+        }
+    })();"#;
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_fixture(
+                "fixture://ed25519-crypto-page",
+                "<html><body><main>Native</main></body></html>",
+            )
+            .unwrap()
+            .with_fixture("fixture://ed25519-crypto-worker", worker_source)
+            .unwrap()
+            .with_initial_url("fixture://ed25519-crypto-page"),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"await (async () => {
+                    const privateJwk = {
+                        kty: 'OKP', crv: 'Ed25519',
+                        x: '11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
+                        d: 'nWGxne_9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A',
+                        alg: 'EdDSA', ext: true, key_ops: ['sign'],
+                    };
+                    const publicJwk = {
+                        kty: 'OKP', crv: 'Ed25519',
+                        x: privateJwk.x, alg: 'EdDSA', ext: true, key_ops: ['verify'],
+                    };
+                    const privateKey = await crypto.subtle.importKey(
+                        'jwk', privateJwk, { name: 'Ed25519' }, true, ['sign']
+                    );
+                    const publicKey = await crypto.subtle.importKey(
+                        'jwk', publicJwk, { name: 'Ed25519' }, true, ['verify']
+                    );
+                    const data = new Uint8Array();
+                    const signature = await crypto.subtle.sign('Ed25519', privateKey, data);
+                    const signatureBytes = new Uint8Array(signature);
+                    const signatureHex = Array.from(signatureBytes).map(byte => byte.toString(16).padStart(2, '0')).join('');
+                    const rfcSignature = 'e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b';
+                    const verified = await crypto.subtle.verify('Ed25519', publicKey, signatureBytes, data);
+                    signatureBytes[0] ^= 1;
+                    const tampered = await crypto.subtle.verify('Ed25519', publicKey, signatureBytes, data);
+                    const generated = await crypto.subtle.generateKey({ name: 'Ed25519' }, false, ['sign', 'verify']);
+                    const generatedData = new TextEncoder().encode('page');
+                    const generatedSignature = await crypto.subtle.sign({ name: 'Ed25519' }, generated.privateKey, generatedData);
+                    const generatedVerified = await crypto.subtle.verify({ name: 'Ed25519' }, generated.publicKey, generatedSignature, generatedData);
+                    const exportedPrivate = await crypto.subtle.exportKey('jwk', privateKey);
+                    const exportedPublic = await crypto.subtle.exportKey('jwk', publicKey);
+                    let badUsage = '';
+                    try { await crypto.subtle.importKey('raw', new Uint8Array(32), { name: 'Ed25519' }, true, ['sign']); } catch (error) { badUsage = error.name; }
+                    let mismatch = '';
+                    try { await crypto.subtle.importKey('jwk', { ...privateJwk, x: publicJwk.x.slice(0, -1) + 'A' }, { name: 'Ed25519' }, true, ['sign']); } catch (error) { mismatch = error.name; }
+                    return {
+                        signatureHex, rfcSignature, verified,
+                        tampered, generatedVerified, badUsage, mismatch,
+                        private: [privateKey.type, privateKey.algorithm.name, privateKey.extractable, Array.from(privateKey.usages)],
+                        public: [publicKey.type, publicKey.algorithm.name, publicKey.extractable, Array.from(publicKey.usages)],
+                        generated: [generated.privateKey.type, generated.publicKey.type, generated.publicKey.extractable],
+                        exported: [exportedPrivate.kty, exportedPrivate.crv, exportedPrivate.x, exportedPrivate.d, exportedPublic.x],
+                        raw: Array.from(new Uint8Array(await crypto.subtle.exportKey('raw', publicKey))),
+                    };
+                })()"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "signatureHex": "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b",
+            "rfcSignature": "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b",
+            "verified": true,
+            "tampered": false,
+            "generatedVerified": true,
+            "badUsage": "SyntaxError",
+            "mismatch": "DataError",
+            "private": ["private", "Ed25519", true, ["sign"]],
+            "public": ["public", "Ed25519", true, ["verify"]],
+            "generated": ["private", "public", true],
+            "exported": ["OKP", "Ed25519", "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo", "nWGxne_9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A", "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"],
+            "raw": [215, 90, 152, 1, 130, 177, 10, 183, 213, 75, 254, 211, 201, 100, 7, 58, 14, 225, 114, 243, 218, 166, 35, 37, 175, 2, 26, 104, 247, 7, 81, 26],
+        })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "globalThis.workerMessages = []; globalThis.workerErrors = []; globalThis.worker = new Worker('fixture://ed25519-crypto-worker'); worker.onmessage = event => workerMessages.push(event.data); worker.onerror = event => workerErrors.push(event.message); true",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("({ messages: workerMessages, errors: workerErrors })")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "messages": [{
+                "signatureHex": "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b",
+                "rfcSignature": "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b",
+                "verified": true,
+                "tampered": false,
+                "generatedVerified": true,
+                "private": ["private", "Ed25519", true, ["sign"]],
+                "public": ["public", "Ed25519", true, ["verify"]],
+                "exported": ["OKP", "Ed25519", "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo", "nWGxne_9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A", "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"],
+                "raw": [215, 90, 152, 1, 130, 177, 10, 183, 213, 75, 254, 211, 201, 100, 7, 58, 14, 225, 114, 243, 218, 166, 35, 37, 175, 2, 26, 104, 247, 7, 81, 26],
+            }],
+            "errors": [],
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_runs_worker_created_during_page_load() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

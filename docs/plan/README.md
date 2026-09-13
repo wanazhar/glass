@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-308` locally. The versioned
+`native-engine-browser-309` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -261,6 +261,16 @@ CBC enforces a 16-byte IV and PKCS#7 padding, while CTR enforces a 16-byte
 counter and 1..128-bit low-order counter length. Its NIST vectors, typed
 errors, page/worker parity, and key-size coverage are recorded in
 [tasks/native-engine-browser-308.md](tasks/native-engine-browser-308.md).
+
+The completed native-engine-browser-309 Web Crypto asymmetric slice adds
+Ed25519 key-pair generation, validated raw public-key import, OKP/Ed25519 JWK
+import/export, and Rust-owned sign/verify operations to page and
+dedicated-worker realms. Private/public usage partitioning, RFC 8032 signing,
+point validation, key-pair consistency, tamper rejection, and realm-local
+opaque key state are covered by the focused witness. RSA/EC algorithms,
+PKCS#8/SPKI formats, key transfer, complete Web Crypto, and full Web IDL
+parity remain issue #40 work; see
+[tasks/native-engine-browser-309.md](tasks/native-engine-browser-309.md).
 
 The completed native-engine-browser-299 page-runtime-primitives slice adds
 page `TextEncoder`/`TextDecoder`, bounded `atob`/`btoa`,

@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-308`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-309`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -4440,6 +4440,17 @@ focused witness. Exact evidence is recorded in
 asymmetric serialization, and final native/CDP replacement remain issue #40
 gates.
 
+The completed native-engine-browser-309 Web Crypto asymmetric slice adds
+Ed25519 key-pair generation, raw public-key import, OKP/Ed25519 JWK
+import/export, and Rust-owned sign/verify for page and dedicated-worker
+realms. Public-point validation occurs before key publication; private/public
+JWK pairs must agree; usage partitioning and realm-local opaque state remain
+explicit. The RFC 8032 vector, generated-pair round trip, raw/JWK export,
+tamper rejection, and typed misuse witnesses pass locally. RSA/EC algorithms,
+PKCS#8/SPKI formats, cross-realm transfer, complete Web Crypto/Web IDL, and
+final native/CDP replacement remain issue #40 gates. Exact evidence is
+recorded in `docs/plan/tasks/native-engine-browser-309.md`.
+
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame
 realms. `document.createAttribute()` creates persistent `Attr` objects;
@@ -5516,7 +5527,8 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-198.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-197.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-196.md` is the preceding completed task;
-The current browser-slice evidence chain is `native-engine-browser-308`,
+The current browser-slice evidence chain is `native-engine-browser-309`,
+`native-engine-browser-308`,
 `native-engine-browser-307`,
 `native-engine-browser-306`,
 `native-engine-browser-305`,

@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-277` slice; the bounded foundation below remains
+`native-engine-browser-278` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -5973,6 +5973,17 @@ true network completion-order scheduling, parser-stream execution, task
 timing, and complete script/lifecycle/Web IDL semantics remain issue #40 work.
 Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-277.md`.
+
+The completed native-engine-browser-278 slice adds bounded idle callbacks to
+the shared QuickJS host scheduler. Idle work is retained in a persistent map,
+can be canceled, honors an optional normalized timeout, and receives an
+`IdleDeadline`-shaped object with `didTimeout` and a finite 50 ms budget
+reported by `timeRemaining()`. Due idle callbacks run after due timers and
+animation frames on both local and content-process turns. This does not yet
+provide background-page scheduling, visibility throttling, fair task-source
+arbitration, or complete animation/idle Web IDL semantics; those remain issue
+#40 work. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-278.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

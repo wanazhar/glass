@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-277`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-278`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -4132,6 +4132,18 @@ loader still fetches sources sequentially before execution, so true network
 completion-order races, parser-stream execution, async script task timing,
 and complete script/lifecycle/Web IDL semantics remain issue #40 work. Exact
 evidence is in `docs/plan/tasks/native-engine-browser-277.md`.
+
+The completed native-engine-browser-278 slice adds the missing bounded idle
+callback surface to the shared page scheduler. `requestIdleCallback()` stores
+one-shot callbacks with an optional normalized timeout, and the host runs due
+idle work after timers and animation frames. Each callback receives an
+`IdleDeadline`-shaped object with boolean `didTimeout` and a finite
+`timeRemaining()` budget; `cancelIdleCallback()` removes pending work before
+delivery. This behavior is shared by local and content-process evaluations.
+It is not yet a background scheduler: browser task-source fairness, real idle
+budget arbitration, throttling, visibility/background policy, and complete
+animation/idle Web IDL semantics remain issue #40 work. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-278.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

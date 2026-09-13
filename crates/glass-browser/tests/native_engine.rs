@@ -3968,6 +3968,54 @@ async fn native_local_scripts_drain_microtasks_and_next_turn_timers() {
 }
 
 #[tokio::test]
+async fn native_local_idle_callbacks_honor_cancellation_and_deadline() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://idle-callbacks",
+            r#"
+                <script>
+                    globalThis.idleLog = [];
+                    const cancelled = requestIdleCallback(() => idleLog.push('cancelled'));
+                    cancelIdleCallback(cancelled);
+                    requestIdleCallback(function(deadline) {
+                        idleLog.push([
+                            'timeout',
+                            deadline.didTimeout,
+                            typeof deadline.timeRemaining() === 'number',
+                            deadline.timeRemaining() >= 0,
+                            this === window,
+                        ]);
+                    }, { timeout: 0 });
+                    requestIdleCallback(function(deadline) {
+                        idleLog.push([
+                            'idle',
+                            deadline.didTimeout,
+                            typeof deadline.timeRemaining() === 'number',
+                            deadline.timeRemaining() >= 0,
+                            this === window,
+                        ]);
+                    });
+                </script>
+                <title>Idle callbacks are observable</title>
+                <p>Document committed</p>
+            "#,
+        )
+        .unwrap()
+        .with_initial_url("fixture://idle-callbacks");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine.evaluate_async("globalThis.idleLog").await.unwrap(),
+        serde_json::json!([
+            ["timeout", true, true, true, true],
+            ["idle", false, true, true, true],
+        ])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_mutation_observer_delivers_script_dom_changes() {
     let config = NativeEngineConfig::default()
         .with_fixture(

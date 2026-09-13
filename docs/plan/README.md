@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-277` locally. The versioned
+`native-engine-browser-278` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -259,6 +259,15 @@ deferred scripts and modules remain ordered after that work; the content
 process witness now observes `blocking-1 → async → blocking-2 → defer`. True
 network completion-order scheduling, parser-stream execution, and complete
 script/lifecycle/Web IDL semantics remain open on issue #40.
+
+The completed bounded idle-callback slice is
+[native-engine-browser-278](tasks/native-engine-browser-278.md).
+`requestIdleCallback` and `cancelIdleCallback` now retain bounded callback
+state, honor zero-or-future timeout deadlines, expose `didTimeout` and a
+bounded `timeRemaining()` budget, and run after due timers and animation frames
+on the shared local/content-process realm. Full background scheduling,
+task-source fairness, and browser idle-budget arbitration remain open on issue
+#40.
 
 The completed profile/contract task is
 [native-engine-browser-000](tasks/native-engine-browser-000.md). It freezes

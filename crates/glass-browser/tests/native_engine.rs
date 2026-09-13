@@ -833,6 +833,44 @@ async fn native_local_dynamic_inline_script_runs_once_after_late_attachment() {
 }
 
 #[tokio::test]
+async fn native_local_script_exposes_computed_style_and_media_queries() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://computed-style",
+            "<style>#target { display: flex; color: #102030; padding: 4px; margin-left: 3px; }</style><div id='target'>Native</div>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://computed-style");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const target = document.getElementById('target'); const style = getComputedStyle(target); const wide = matchMedia('(min-width: 600px) and (orientation: landscape)'); const narrow = matchMedia('(max-width: 599px)'); const before = [style.display, style.color, style.paddingTop, style.getPropertyValue('margin-left'), style.item(0), style.length > 0, wide.media, wide.matches, typeof wide.addEventListener, narrow.matches]; target.style.display = 'none'; return [before, getComputedStyle(target).display]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([
+            [
+                "flex",
+                "rgb(16, 32, 48)",
+                "4px",
+                "3px",
+                "display",
+                true,
+                "(min-width: 600px) and (orientation: landscape)",
+                true,
+                "function",
+                false,
+            ],
+            "none",
+        ])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_script_exposes_web_idl_identity() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

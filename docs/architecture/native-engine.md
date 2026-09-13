@@ -1,8 +1,16 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-281` slice; the bounded foundation below remains
+`native-engine-browser-282` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
+
+Slice 282 adds a bounded page-facing computed-style and media-query bridge:
+the JavaScript realm reads the native cascade/layout snapshot through a
+read-only `getComputedStyle` object, and receives width/height/orientation
+answers through `matchMedia`. The bridge preserves the two-crate boundary and
+does not change backend selection. It deliberately remains a bounded CSSOM
+surface: pseudo-elements, complete CSS property enumeration, dynamic viewport
+change delivery, and full standards conformance remain expansion work.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
 viewport-scroll/side-specific-border/bounded-pattern-border/bounded-corner-radius/

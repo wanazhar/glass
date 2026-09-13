@@ -957,6 +957,7 @@ fn worker_fetch_response_payload(
             "contentType": response.content_type,
             "headers": response.headers,
             "body": String::from_utf8_lossy(&response.body),
+            "bodyBase64": base64::engine::general_purpose::STANDARD.encode(&response.body),
             "redirected": response.redirected,
             "opaque": response.opaque,
             "opaqueRedirect": response.opaque_redirect,
@@ -7171,6 +7172,171 @@ fn worker_bootstrap(
     }}
     return normalized;
   }};
+  const workerBase64Digit = (character) => {{
+    const code = character.charCodeAt(0);
+    if (code >= 65 && code <= 90) return code - 65;
+    if (code >= 97 && code <= 122) return code - 97 + 26;
+    if (code >= 48 && code <= 57) return code - 48 + 52;
+    if (character === "+") return 62;
+    if (character === "/") return 63;
+    if (character === "=") return -2;
+    return -1;
+  }};
+  const decodeWorkerBase64 = (encoded, maxBytes) => {{
+    if (typeof encoded !== "string" || encoded.length % 4 !== 0)
+      throw new TypeError("native Worker bytes are not valid base64");
+    const bytes = [];
+    for (let index = 0; index < encoded.length; index += 4) {{
+      const first = workerBase64Digit(encoded[index]);
+      const second = workerBase64Digit(encoded[index + 1]);
+      const third = workerBase64Digit(encoded[index + 2]);
+      const fourth = workerBase64Digit(encoded[index + 3]);
+      if (first < 0 || second < 0 || third === -1 || fourth === -1
+          || (third === -2 && fourth !== -2)
+          || (third === -2 && index + 4 !== encoded.length)
+          || (fourth === -2 && index + 4 !== encoded.length))
+        throw new TypeError("native Worker bytes are not valid base64");
+      bytes.push((first << 2) | (second >> 4));
+      if (third !== -2) bytes.push(((second & 15) << 4) | (third >> 2));
+      if (fourth !== -2) bytes.push(((third & 3) << 6) | fourth);
+    }}
+    if (bytes.length > maxBytes) throw new RangeError("native Worker bytes exceed their limit");
+    return bytes;
+  }};
+  const encodeWorkerBase64 = (bytes, maxBytes) => {{
+    if (!Array.isArray(bytes) || bytes.length > maxBytes)
+      throw new RangeError("native Worker bytes exceed their limit");
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let encoded = "";
+    for (let index = 0; index < bytes.length; index += 3) {{
+      const first = bytes[index];
+      const second = index + 1 < bytes.length ? bytes[index + 1] : 0;
+      const third = index + 2 < bytes.length ? bytes[index + 2] : 0;
+      for (const value of [first, second, third]) {{
+        if (!Number.isInteger(value) || value < 0 || value > 255)
+          throw new TypeError("native Worker bytes are invalid");
+      }}
+      encoded += alphabet[first >> 2];
+      encoded += alphabet[((first & 3) << 4) | (second >> 4)];
+      encoded += index + 1 < bytes.length ? alphabet[((second & 15) << 2) | (third >> 6)] : "=";
+      encoded += index + 2 < bytes.length ? alphabet[third & 63] : "=";
+    }}
+    return encoded;
+  }};
+  const workerUtf8Bytes = (text) => {{
+    const bytes = [];
+    for (let index = 0; index < text.length; index += 1) {{
+      let code = text.charCodeAt(index);
+      if (code >= 0xd800 && code <= 0xdbff && index + 1 < text.length) {{
+        const low = text.charCodeAt(index + 1);
+        if (low >= 0xdc00 && low <= 0xdfff) {{
+          code = 0x10000 + ((code - 0xd800) << 10) + (low - 0xdc00);
+          index += 1;
+        }}
+      }} else if (code >= 0xd800 && code <= 0xdfff) code = 0xfffd;
+      if (code <= 0x7f) bytes.push(code);
+      else if (code <= 0x7ff) bytes.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f));
+      else if (code <= 0xffff) bytes.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
+      else bytes.push(0xf0 | (code >> 18), 0x80 | ((code >> 12) & 0x3f), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
+    }}
+    if (bytes.length > {fetch_body_limit}) throw new RangeError("native Worker bytes exceed their limit");
+    return bytes;
+  }};
+  const workerUtf8Text = (bytes) => {{
+    const continuation = value => value >= 0x80 && value <= 0xbf;
+    let text = "";
+    for (let index = 0; index < bytes.length;) {{
+      const first = bytes[index];
+      let codePoint = -1;
+      let width = 1;
+      if (first <= 0x7f) codePoint = first;
+      else if (first >= 0xc2 && first <= 0xdf && continuation(bytes[index + 1])) {{
+        codePoint = ((first & 0x1f) << 6) | (bytes[index + 1] & 0x3f);
+        width = 2;
+      }} else if (first === 0xe0 && bytes[index + 1] >= 0xa0 && bytes[index + 1] <= 0xbf && continuation(bytes[index + 2])) {{
+        codePoint = ((first & 0x0f) << 12) | ((bytes[index + 1] & 0x3f) << 6) | (bytes[index + 2] & 0x3f);
+        width = 3;
+      }} else if (first >= 0xe1 && first <= 0xec && continuation(bytes[index + 1]) && continuation(bytes[index + 2])) {{
+        codePoint = ((first & 0x0f) << 12) | ((bytes[index + 1] & 0x3f) << 6) | (bytes[index + 2] & 0x3f);
+        width = 3;
+      }} else if (first === 0xed && bytes[index + 1] >= 0x80 && bytes[index + 1] <= 0x9f && continuation(bytes[index + 2])) {{
+        codePoint = ((first & 0x0f) << 12) | ((bytes[index + 1] & 0x3f) << 6) | (bytes[index + 2] & 0x3f);
+        width = 3;
+      }} else if (first >= 0xee && first <= 0xef && continuation(bytes[index + 1]) && continuation(bytes[index + 2])) {{
+        codePoint = ((first & 0x0f) << 12) | ((bytes[index + 1] & 0x3f) << 6) | (bytes[index + 2] & 0x3f);
+        width = 3;
+      }} else if (first === 0xf0 && bytes[index + 1] >= 0x90 && bytes[index + 1] <= 0xbf && continuation(bytes[index + 2]) && continuation(bytes[index + 3])) {{
+        codePoint = ((first & 0x07) << 18) | ((bytes[index + 1] & 0x3f) << 12) | ((bytes[index + 2] & 0x3f) << 6) | (bytes[index + 3] & 0x3f);
+        width = 4;
+      }} else if (first >= 0xf1 && first <= 0xf3 && continuation(bytes[index + 1]) && continuation(bytes[index + 2]) && continuation(bytes[index + 3])) {{
+        codePoint = ((first & 0x07) << 18) | ((bytes[index + 1] & 0x3f) << 12) | ((bytes[index + 2] & 0x3f) << 6) | (bytes[index + 3] & 0x3f);
+        width = 4;
+      }} else if (first === 0xf4 && bytes[index + 1] >= 0x80 && bytes[index + 1] <= 0x8f && continuation(bytes[index + 2]) && continuation(bytes[index + 3])) {{
+        codePoint = ((first & 0x07) << 18) | ((bytes[index + 1] & 0x3f) << 12) | ((bytes[index + 2] & 0x3f) << 6) | (bytes[index + 3] & 0x3f);
+        width = 4;
+      }}
+      if (codePoint < 0) {{ text += "\ufffd"; index += 1; }}
+      else {{ text += String.fromCodePoint(codePoint); index += width; }}
+    }}
+    return text;
+  }};
+  const workerBlobBytes = (part) => {{
+    if (part && part.__glassWorkerBlob === true) return part._bytes.slice();
+    if (typeof part === "string") return workerUtf8Bytes(part);
+    if (part instanceof ArrayBuffer) return Array.from(new Uint8Array(part));
+    if (typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(part))
+      return Array.from(new Uint8Array(part.buffer, part.byteOffset, part.byteLength));
+    throw new TypeError("native Worker Blob supports text or buffers");
+  }};
+  const WorkerBlob = function(parts, options) {{
+    if (!(this instanceof WorkerBlob)) throw new TypeError("native Worker Blob requires new");
+    const values = parts === undefined || parts === null ? [] : parts;
+    if (!Array.isArray(values)) throw new TypeError("native Worker Blob parts must be an array");
+    this._bytes = [];
+    for (const part of values) {{
+      const bytes = workerBlobBytes(part);
+      if (this._bytes.length + bytes.length > {fetch_body_limit})
+        throw new RangeError("native Worker Blob size limit exceeded");
+      this._bytes.push(...bytes);
+    }}
+    this.__glassWorkerBlob = true;
+    this.size = this._bytes.length;
+    const type = options && typeof options.type === "string" ? options.type.toLowerCase() : "";
+    this.type = /^[\x20-\x7e]*$/.test(type) ? type : "";
+  }};
+  WorkerBlob.prototype.text = function() {{ return Promise.resolve(workerUtf8Text(this._bytes)); }};
+  WorkerBlob.prototype.arrayBuffer = function() {{ return Promise.resolve(new Uint8Array(this._bytes).buffer); }};
+  WorkerBlob.prototype.bytes = function() {{ return Promise.resolve(new Uint8Array(this._bytes)); }};
+  WorkerBlob.prototype.slice = function(start, end, contentType) {{
+    const length = this._bytes.length;
+    const normalize = (value, fallback) => {{
+      if (value === undefined) return fallback;
+      const number = Number(value);
+      if (!Number.isFinite(number)) return fallback;
+      return number < 0 ? Math.max(length + Math.trunc(number), 0) : Math.min(Math.trunc(number), length);
+    }};
+    const begin = normalize(start, 0);
+    const finish = normalize(end, length);
+    const blob = new WorkerBlob([], {{ type: contentType === undefined ? this.type : contentType }});
+    blob._bytes = begin > finish ? [] : this._bytes.slice(begin, finish);
+    blob.size = blob._bytes.length;
+    return blob;
+  }};
+  globalThis.Blob = WorkerBlob;
+  const WorkerFile = function(parts, name, options) {{
+    if (!(this instanceof WorkerFile)) throw new TypeError("native Worker File requires new");
+    WorkerBlob.call(this, parts, options);
+    this.name = String(name);
+    this.lastModified = options && Number.isFinite(Number(options.lastModified))
+      ? Math.max(0, Number(options.lastModified)) : 0;
+    this.__glassWorkerFile = true;
+  }};
+  WorkerFile.prototype = Object.create(WorkerBlob.prototype);
+  WorkerFile.prototype.constructor = WorkerFile;
+  globalThis.File = WorkerFile;
+  const workerResponseBytes = (payload) => payload && typeof payload.bodyBase64 === "string"
+    ? decodeWorkerBase64(payload.bodyBase64, {fetch_body_limit})
+    : workerUtf8Bytes(String(payload && payload.body || ""));
   const workerResponseHeaders = (rawEntries, contentType) => {{
     const entries = [];
     const byName = new Map();
@@ -7208,12 +7374,12 @@ fn worker_bootstrap(
     }});
   }};
   const responseFromWorkerFetch = (payload) => {{
-    const body = payload && typeof payload.body === "string" ? payload.body : "";
+    const bytes = workerResponseBytes(payload);
     let bodyUsed = false;
     const consume = transform => {{
       if (bodyUsed) return Promise.reject(new TypeError("native Worker Response body is unusable"));
       bodyUsed = true;
-      return Promise.resolve().then(() => transform(body));
+      return Promise.resolve().then(() => transform(bytes.slice()));
     }};
     const response = {{
       type: payload && payload.opaqueRedirect === true ? "opaqueredirect" : payload && payload.opaque === true ? "opaque" : "basic",
@@ -7225,8 +7391,18 @@ fn worker_bootstrap(
       headers: workerResponseHeaders(payload && payload.headers, payload && payload.contentType),
       body: null,
       get bodyUsed() {{ return bodyUsed; }},
-      text() {{ return consume(value => value); }},
-      json() {{ return consume(value => JSON.parse(value)); }},
+      text() {{ return consume(value => workerUtf8Text(value)); }},
+      json() {{ return consume(value => JSON.parse(workerUtf8Text(value))); }},
+      arrayBuffer() {{ return consume(value => new Uint8Array(value).buffer); }},
+      bytes() {{ return consume(value => new Uint8Array(value)); }},
+      blob() {{
+        return consume(value => {{
+          const blob = new WorkerBlob([], {{ type: payload && payload.contentType || "" }});
+          blob._bytes = value;
+          blob.size = value.length;
+          return blob;
+        }});
+      }},
       clone() {{
         if (bodyUsed) throw new TypeError("native Worker Response body is unusable");
         return responseFromWorkerFetch(payload);
@@ -7255,9 +7431,26 @@ fn worker_bootstrap(
       contentType = requestHeaders["content-type"];
       delete requestHeaders["content-type"];
     }}
-    let body = settings.body === undefined || settings.body === null ? null : String(settings.body);
-    if (body !== null && body.length > {fetch_body_limit})
-      return Promise.reject(new RangeError("native Worker fetch body exceeds its limit"));
+    const rawBody = settings.body;
+    let body = rawBody === undefined || rawBody === null ? null : String(rawBody);
+    let bodyBase64 = null;
+    if (rawBody !== undefined && rawBody !== null) {{
+      let bytes;
+      if (rawBody && rawBody.__glassWorkerBlob === true) {{
+        bytes = rawBody._bytes.slice();
+        if (contentType === null && rawBody.type) contentType = rawBody.type;
+      }} else if (rawBody instanceof ArrayBuffer) {{
+        bytes = Array.from(new Uint8Array(rawBody));
+      }} else if (typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(rawBody)) {{
+        bytes = Array.from(new Uint8Array(rawBody.buffer, rawBody.byteOffset, rawBody.byteLength));
+      }} else {{
+        bytes = workerUtf8Bytes(body);
+      }}
+      if (bytes.length > {fetch_body_limit})
+        return Promise.reject(new RangeError("native Worker fetch body exceeds its limit"));
+      bodyBase64 = encodeWorkerBase64(bytes, {fetch_body_limit});
+      if (body === null) body = workerUtf8Text(bytes);
+    }}
     if (["GET", "HEAD"].includes(method) && body !== null)
       return Promise.reject(new TypeError(method + " Worker fetch requests must not have a body"));
     const requestId = nextWorkerFetchRequestId;
@@ -7274,7 +7467,7 @@ fn worker_bootstrap(
         method,
         headers: requestHeaders,
         body,
-        body_base64: null,
+        body_base64: bodyBase64,
         content_type: contentType,
         mode,
         redirect,

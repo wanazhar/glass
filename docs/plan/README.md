@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-286` locally. The versioned
+`native-engine-browser-287` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -57,7 +57,7 @@ are delivered at explicit native page turns so local and content-process
 execution remain deterministic. Module/shared/service workers, transferables,
 and full worker-side network/Web IDL parity remain open on issue #40; bounded
 worker timers, static worker import graphs, and worker Fetch are covered by
-slices 284 through 286 below.
+slices 284 through 287 below.
 
 The completed dedicated-worker timer slice is
 [native-engine-browser-284](tasks/native-engine-browser-284.md). It adds
@@ -85,9 +85,18 @@ classic-worker `fetch()` through the shared HTTP(S) resource, cookie, CORS,
 redirect, and policy loader, with owner-tagged requests and bounded response
 metadata plus text/JSON body consumers resolved inside the isolated worker
 promise realm. Startup, message, and timer-created requests use the same
-serialized host boundary. Worker streams, binary/request body parity, full
-Request/Response Web IDL identity, XHR, module/shared service workers, and the
-wider native parity gates remain open on issue #40.
+serialized host boundary. The follow-up 287 slice preserves binary request and
+response bytes and adds bounded worker `bytes()`, `arrayBuffer()`, and `blob()`
+consumers with clone/body ownership.
+
+The completed native-engine-browser-287 slice is
+[native-engine-browser-287](tasks/native-engine-browser-287.md). It carries
+bounded raw response bytes through the worker Fetch handoff, accepts string,
+`ArrayBuffer`, typed-array, Blob, and File request bodies without UTF-8
+corruption, and exposes one-shot byte/ArrayBuffer/Blob response consumers on
+isolated worker responses and clones. Worker streams, full Request/Response
+Web IDL identity, XHR, module/shared service workers, and the wider native
+parity gates remain open on issue #40.
 
 The completed EventSource/SSE slice is
 [native-engine-browser-253](tasks/native-engine-browser-253.md). It adds a

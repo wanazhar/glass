@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-286`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-287`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -4230,11 +4230,20 @@ redirect mode. The worker registry sends those requests through the shared
 HTTP(S) loader, which owns relative URL resolution, cookies, CSP/connect policy,
 CORS, redirects, response limits, and response metadata. Bounded text/JSON
 `Response` consumers are resolved back into the isolated worker promise realm,
-and the same path is used by startup, message, and timer turns. Worker streams,
-binary response/request bodies, full Request/Response Web IDL identity, XHR,
-module/shared service workers, and complete native/CDP parity remain issue #40
-promotion work. Exact evidence is recorded in
-`docs/plan/tasks/native-engine-browser-286.md`.
+and the same path is used by startup, message, and timer turns. Exact evidence
+is recorded in `docs/plan/tasks/native-engine-browser-286.md`.
+
+The completed native-engine-browser-287 slice preserves raw worker Fetch
+response bytes through the serialized host handoff. The worker bootstrap now
+accepts bounded string, `ArrayBuffer`, typed-array, Blob, and File request
+bodies, and exposes byte-preserving `bytes()`, `arrayBuffer()`, and `blob()`
+response consumers with one-shot `bodyUsed` and independent clone ownership.
+The host loader remains the single URL, cookie, CORS, redirect, and response
+limit owner; no second worker security implementation is introduced. Worker
+ReadableStreams, full Request/Response Web IDL identity, XHR, module/shared
+service workers, and complete native/CDP parity remain issue #40 promotion
+work. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-287.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

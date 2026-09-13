@@ -1131,6 +1131,79 @@ async fn native_content_process_worker_fetch_resolves_inside_worker_realm() {
 }
 
 #[tokio::test]
+async fn native_content_process_worker_fetch_preserves_binary_request_and_response_bodies() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..3 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request_bytes(&mut stream).await;
+            let header_end = request
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .map(|index| index + 4)
+                .unwrap();
+            let request_text = String::from_utf8_lossy(&request[..header_end]);
+            let path = request_text.split_whitespace().nth(1).unwrap();
+            match path {
+                "/worker-binary-page" => {
+                    let body = "<script>globalThis.workerMessages = []; globalThis.worker = new Worker('/worker-binary.js'); worker.onmessage = event => workerMessages.push(event.data);</script>";
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                }
+                "/worker-binary.js" => {
+                    let body = "(async () => { try { const bytes = new Uint8Array([0, 255, 1, 254]); const request = new File([bytes], 'payload.bin', { type: 'application/octet-stream' }); const response = await fetch('/worker-binary-echo', { method: 'POST', body: request }); const bufferResponse = response.clone(); const blobResponse = response.clone(); const responseBytes = await response.bytes(); const responseBuffer = await bufferResponse.arrayBuffer(); const responseBlob = await blobResponse.blob(); const blobBytes = await responseBlob.bytes(); postMessage({ kind: 'binary', requestBytes: Array.from(bytes), responseBytes: Array.from(responseBytes), responseBuffer: Array.from(new Uint8Array(responseBuffer)), blobBytes: Array.from(blobBytes), blobSize: responseBlob.size, blobType: responseBlob.type, bodyUsed: response.bodyUsed, bufferBodyUsed: bufferResponse.bodyUsed, blobBodyUsed: blobResponse.bodyUsed }); } catch (error) { postMessage({ kind: 'error', message: String(error) }); } })();";
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/javascript\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                }
+                "/worker-binary-echo" => {
+                    assert_eq!(&request[header_end..], &[0, 255, 1, 254]);
+                    let body = [0_u8, 255, 1, 254];
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                    stream.write_all(&body).await.unwrap();
+                }
+                path => panic!("unexpected native Worker binary request path: {path}"),
+            }
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/worker-binary-page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine.evaluate_async("workerMessages").await.unwrap(),
+        serde_json::json!([{
+            "kind": "binary",
+            "requestBytes": [0, 255, 1, 254],
+            "responseBytes": [0, 255, 1, 254],
+            "responseBuffer": [0, 255, 1, 254],
+            "blobBytes": [0, 255, 1, 254],
+            "blobSize": 4,
+            "blobType": "application/octet-stream",
+            "bodyUsed": true,
+            "bufferBodyUsed": true,
+            "blobBodyUsed": true,
+        }])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_script_exposes_web_idl_identity() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

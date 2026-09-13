@@ -651,6 +651,9 @@ fn validate_alternative_runtime_command(
         Commands::Task {
             action: TaskCommand::Execute { .. },
         } if native => Ok(()),
+        Commands::Batch { .. } if native => Ok(()),
+        Commands::Workflow { action: None, .. } if native => Ok(()),
+        Commands::WorkflowResume { .. } if native => Ok(()),
         Commands::Navigate { .. }
         | Commands::Click { .. }
         | Commands::Type { .. }
@@ -874,6 +877,85 @@ async fn run_alternative_runtime_command(
                     )
                     .await?;
                 alternative_json_output(&result, response_mode)
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
+        }
+        Commands::Batch {
+            input,
+            atomic,
+            mode,
+            expected_revision,
+        } if session.runtime().is_native() => {
+            #[cfg(feature = "native-engine")]
+            {
+                let payload = read_json_input(input.as_ref())?;
+                let steps_value = payload.get("steps").cloned().unwrap_or(payload);
+                let steps: Vec<BatchStep> = serde_json::from_value(steps_value)
+                    .map_err(|error| format!("invalid batch document: {error}"))?;
+                crate::browser::native_batch::check_policy(policy, &steps).await?;
+                alternative_json_output(
+                    &session
+                        .native_run_batch(&steps, *atomic, *mode, *expected_revision)
+                        .await?,
+                    response_mode,
+                )
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
+        }
+        Commands::Workflow {
+            action: None,
+            input,
+        } if session.runtime().is_native() => {
+            #[cfg(feature = "native-engine")]
+            {
+                let payload = read_json_input(input.as_ref())?;
+                let workflow_value = payload
+                    .get("workflow")
+                    .cloned()
+                    .unwrap_or_else(|| payload.clone());
+                let inputs_value = payload
+                    .get("inputs")
+                    .cloned()
+                    .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+                let workflow = WorkflowDefinition::from_value(workflow_value)
+                    .map_err(|error| format!("invalid workflow: {error}"))?;
+                let inputs: BTreeMap<String, Value> = serde_json::from_value(inputs_value)
+                    .map_err(|error| format!("invalid workflow inputs: {error}"))?;
+                alternative_json_output(
+                    &session
+                        .native_run_workflow(policy, &workflow, &inputs)
+                        .await?,
+                    response_mode,
+                )
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
+        }
+        Commands::WorkflowResume {
+            workflow,
+            checkpoint,
+            inputs,
+        } if session.runtime().is_native() => {
+            #[cfg(feature = "native-engine")]
+            {
+                let workflow = WorkflowDefinition::from_value(read_json_input(Some(workflow))?)
+                    .map_err(|error| format!("invalid workflow: {error}"))?;
+                let checkpoint: WorkflowCheckpoint =
+                    serde_json::from_value(read_json_input(Some(checkpoint))?)
+                        .map_err(|error| format!("invalid workflow checkpoint: {error}"))?;
+                let inputs: BTreeMap<String, Value> = match inputs {
+                    Some(path) => serde_json::from_value(read_json_input(Some(path))?)
+                        .map_err(|error| format!("invalid workflow inputs: {error}"))?,
+                    None => BTreeMap::new(),
+                };
+                alternative_json_output(
+                    &session
+                        .native_resume_workflow(policy, &workflow, &inputs, &checkpoint)
+                        .await?,
+                    response_mode,
+                )
             }
             #[cfg(not(feature = "native-engine"))]
             unreachable!("native runtime is feature-gated")

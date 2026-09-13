@@ -545,7 +545,7 @@ impl WorkflowIntentStep {
         self.execution_request(path).map(|_| ())
     }
 
-    fn execution_request(
+    pub(crate) fn execution_request(
         &self,
         path: &str,
     ) -> Result<SemanticIntentExecutionRequest, WorkflowValidationError> {

@@ -6,11 +6,15 @@
 
 use super::policy::BrowserPolicy;
 use super::runtime::BrowserRuntime;
-use super::session::{BrowserResult, BrowserSession, SessionOptions};
+use super::session::{
+    BrowserResult, BrowserSession, SessionOptions, WorkflowCheckpoint, WorkflowDefinition,
+    WorkflowRunResult,
+};
 #[cfg(feature = "native-engine")]
 use super::{BrowserRuntimeSession, NativeEngineConfig, NativeHistoryDirection};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -102,6 +106,8 @@ struct SessionRequest {
     control: Option<NativeControlRequest>,
     #[serde(default)]
     mcp_params: Option<serde_json::Value>,
+    #[serde(default)]
+    workflow: Option<NativeWorkflowRequest>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -109,6 +115,19 @@ struct SessionRequest {
 struct NativeControlRequest {
     action: String,
     expected_revision: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeWorkflowRequest {
+    action: String,
+    workflow: WorkflowDefinition,
+    #[serde(default)]
+    inputs: BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    checkpoint: Option<WorkflowCheckpoint>,
+    #[serde(default)]
+    result: Option<WorkflowRunResult>,
 }
 
 fn default_runtime() -> BrowserRuntime {
@@ -613,6 +632,26 @@ async fn serve_native_unix(config: PersistentSessionServeConfig) -> BrowserResul
                             Err(error) => json!({"ok": false, "error": error.to_string()}),
                         }
                     }
+                    "workflow" => {
+                        match request.workflow {
+                            Some(request) => {
+                                let session = session
+                                    .as_ref()
+                                    .ok_or("native persistent session is stopping")?;
+                                match run_native_workflow_request(session, &policy, request).await
+                                {
+                                    Ok(result) => json!({"ok": true, "result": result}),
+                                    Err(error) => {
+                                        json!({"ok": false, "error": error.to_string()})
+                                    }
+                                }
+                            }
+                            None => json!({
+                                "ok": false,
+                                "error": "native workflow request is missing its payload"
+                            }),
+                        }
+                    }
                     "control" => {
                         let request = request
                             .control
@@ -706,6 +745,42 @@ async fn serve_native_unix(config: PersistentSessionServeConfig) -> BrowserResul
     Ok(())
 }
 
+#[cfg(all(unix, feature = "native-engine"))]
+async fn run_native_workflow_request(
+    session: &BrowserRuntimeSession,
+    policy: &BrowserPolicy,
+    request: NativeWorkflowRequest,
+) -> BrowserResult<serde_json::Value> {
+    match request.action.as_str() {
+        "run" => Ok(serde_json::to_value(
+            session
+                .native_run_workflow(policy, &request.workflow, &request.inputs)
+                .await?,
+        )?),
+        "checkpoint" => {
+            let result = request
+                .result
+                .ok_or("native workflow checkpoint request is missing its result")?;
+            Ok(serde_json::to_value(
+                session
+                    .native_export_workflow_checkpoint(&request.workflow, &result)
+                    .await?,
+            )?)
+        }
+        "resume" => {
+            let checkpoint = request
+                .checkpoint
+                .ok_or("native workflow resume request is missing its checkpoint")?;
+            Ok(serde_json::to_value(
+                session
+                    .native_resume_workflow(policy, &request.workflow, &request.inputs, &checkpoint)
+                    .await?,
+            )?)
+        }
+        action => Err(format!("unsupported native workflow action `{action}`").into()),
+    }
+}
+
 async fn send_request(socket: &Path, op: &str) -> BrowserResult<serde_json::Value> {
     send_request_payload(
         socket,
@@ -714,6 +789,7 @@ async fn send_request(socket: &Path, op: &str) -> BrowserResult<serde_json::Valu
             argv: Vec::new(),
             control: None,
             mcp_params: None,
+            workflow: None,
         },
     )
     .await
@@ -738,6 +814,7 @@ pub async fn execute_native(name: &str, argv: Vec<String>) -> BrowserResult<serd
             argv,
             control: None,
             mcp_params: None,
+            workflow: None,
         },
     )
     .await
@@ -771,6 +848,7 @@ pub async fn control_native(
                 expected_revision,
             }),
             mcp_params: None,
+            workflow: None,
         },
     )
     .await
@@ -797,6 +875,7 @@ pub async fn execute_native_mcp(
             argv: Vec::new(),
             control: None,
             mcp_params: Some(params),
+            workflow: None,
         },
     )
     .await?;
@@ -804,6 +883,98 @@ pub async fn execute_native_mcp(
         .get("result")
         .cloned()
         .ok_or_else(|| "native persistent MCP request returned no result".into())
+}
+
+#[cfg(feature = "native-engine")]
+async fn send_native_workflow_request(
+    name: &str,
+    request: NativeWorkflowRequest,
+) -> BrowserResult<serde_json::Value> {
+    let Some(record) = read_record(name)? else {
+        return Err(format!("persistent session `{name}` is not running; start it first").into());
+    };
+    if !record.runtime.is_native() {
+        return Err(format!("persistent session `{name}` is not a native session").into());
+    }
+    if !process_is_alive(record.pid) {
+        return Err(format!("persistent session `{name}` is stale; restart it first").into());
+    }
+    let response = send_request_payload(
+        &record.socket,
+        &SessionRequest {
+            op: "workflow".into(),
+            argv: Vec::new(),
+            control: None,
+            mcp_params: None,
+            workflow: Some(request),
+        },
+    )
+    .await?;
+    response
+        .get("result")
+        .cloned()
+        .ok_or_else(|| "native persistent workflow request returned no result".into())
+}
+
+#[cfg(feature = "native-engine")]
+pub async fn run_native_workflow(
+    name: &str,
+    workflow: WorkflowDefinition,
+    inputs: BTreeMap<String, serde_json::Value>,
+) -> BrowserResult<WorkflowRunResult> {
+    let result = send_native_workflow_request(
+        name,
+        NativeWorkflowRequest {
+            action: "run".into(),
+            workflow,
+            inputs,
+            checkpoint: None,
+            result: None,
+        },
+    )
+    .await?;
+    Ok(serde_json::from_value(result)?)
+}
+
+#[cfg(feature = "native-engine")]
+pub async fn export_native_workflow_checkpoint(
+    name: &str,
+    workflow: WorkflowDefinition,
+    result: WorkflowRunResult,
+) -> BrowserResult<WorkflowCheckpoint> {
+    let checkpoint = send_native_workflow_request(
+        name,
+        NativeWorkflowRequest {
+            action: "checkpoint".into(),
+            workflow,
+            inputs: BTreeMap::new(),
+            checkpoint: None,
+            result: Some(result),
+        },
+    )
+    .await?;
+    Ok(serde_json::from_value(checkpoint)?)
+}
+
+#[cfg(feature = "native-engine")]
+pub async fn resume_native_workflow(
+    name: &str,
+    workflow: WorkflowDefinition,
+    inputs: BTreeMap<String, serde_json::Value>,
+    checkpoint: WorkflowCheckpoint,
+) -> BrowserResult<WorkflowRunResult> {
+    let result = send_native_workflow_request(
+        name,
+        NativeWorkflowRequest {
+            action: "resume".into(),
+            workflow,
+            inputs,
+            checkpoint: Some(checkpoint),
+            result: None,
+        },
+    )
+    .await?;
+    Ok(serde_json::from_value(result)?)
 }
 
 #[cfg(feature = "native-engine")]
@@ -908,6 +1079,9 @@ fn process_is_alive(_pid: u32) -> bool {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "native-engine")]
+    use crate::browser::session::{WorkflowRunStatus, WorkflowStepState};
+
     #[test]
     fn session_names_are_path_safe() {
         assert!(validate_name("default").is_ok());
@@ -1010,6 +1184,7 @@ mod tests {
                         ],
                         control: None,
                         mcp_params: None,
+                        workflow: None,
                     };
                     let first = send_request_payload(&socket, &request).await.unwrap();
                     assert_eq!(first["ok"], true);
@@ -1025,6 +1200,7 @@ mod tests {
                             expected_revision: revision,
                         }),
                         mcp_params: None,
+                        workflow: None,
                     };
                     let control_result = send_request_payload(&socket, &control).await.unwrap();
                     assert_eq!(control_result["ok"], true);
@@ -1037,10 +1213,73 @@ mod tests {
                             "name": "observe",
                             "arguments": {}
                         })),
+                        workflow: None,
                     };
                     let mcp_result = send_request_payload(&socket, &mcp_request).await.unwrap();
                     assert_eq!(mcp_result["ok"], true);
                     assert!(mcp_result["result"]["content"].is_array());
+
+                    let workflow = WorkflowDefinition::from_value(json!({
+                        "schemaVersion": 1,
+                        "name": "owner-workflow",
+                        "workflowVersion": "1.0.0",
+                        "inputs": {},
+                        "budgets": {
+                            "maxSteps": 2,
+                            "maxDurationMs": 30_000,
+                            "maxRetries": 0,
+                            "maxExtractedBytes": 4_096
+                        },
+                        "steps": [{
+                            "id": "observe",
+                            "action": "observe"
+                        }],
+                        "terminalCondition": {"urlEquals": "about:blank"},
+                        "outputs": {}
+                    }))
+                    .unwrap();
+                    let workflow_request = SessionRequest {
+                        op: "workflow".into(),
+                        argv: Vec::new(),
+                        control: None,
+                        mcp_params: None,
+                        workflow: Some(NativeWorkflowRequest {
+                            action: "run".into(),
+                            workflow: workflow.clone(),
+                            inputs: BTreeMap::new(),
+                            checkpoint: None,
+                            result: None,
+                        }),
+                    };
+                    let workflow_response = send_request_payload(&socket, &workflow_request)
+                        .await
+                        .unwrap();
+                    assert_eq!(workflow_response["ok"], true);
+                    let workflow_result: WorkflowRunResult =
+                        serde_json::from_value(workflow_response["result"].clone()).unwrap();
+                    assert_eq!(workflow_result.status, WorkflowRunStatus::Completed);
+                    assert_eq!(workflow_result.steps.len(), 1);
+                    assert_eq!(workflow_result.steps[0].state, WorkflowStepState::Committed);
+
+                    let checkpoint_request = SessionRequest {
+                        op: "workflow".into(),
+                        argv: Vec::new(),
+                        control: None,
+                        mcp_params: None,
+                        workflow: Some(NativeWorkflowRequest {
+                            action: "checkpoint".into(),
+                            workflow,
+                            inputs: BTreeMap::new(),
+                            checkpoint: None,
+                            result: Some(workflow_result),
+                        }),
+                    };
+                    let checkpoint_response = send_request_payload(&socket, &checkpoint_request)
+                        .await
+                        .unwrap();
+                    assert_eq!(checkpoint_response["ok"], true);
+                    assert_eq!(checkpoint_response["result"]["status"], "completed");
+                    assert_eq!(checkpoint_response["result"]["nextStepIndex"], 1);
                     let owner_pid = record.pid;
 
                     let second = send_request_payload(&socket, &request).await.unwrap();

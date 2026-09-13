@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-322` locally. Native is now the default runtime for
+`native-engine-browser-323` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -69,8 +69,13 @@ slice is [native-engine-browser-322](tasks/native-engine-browser-322.md): the
 TUI can attach non-owningly to that same native owner, while MCP requests are
 multiplexed into the owner's existing session rather than starting a second
 engine. Revision-checked history and loading controls use the same owner
-socket. Native workflow resume, richer semantic/Web IR projection, and final
-profile certification remain active issue #40 work.
+socket. Richer semantic/Web IR projection and final profile certification
+remain active issue #40 work. The completed native
+batch/workflow slice is
+[native-engine-browser-323](tasks/native-engine-browser-323.md): typed batch
+execution, declarative workflow state, bounded checkpoints, safe resume, and
+TUI/owner workflow IPC now use the native runtime. Richer semantic/Web IR
+projection and final profile certification remain active issue #40 work.
 
 The completed computed-style/media-query slice is
 [native-engine-browser-282](tasks/native-engine-browser-282.md). It exposes a

@@ -3446,6 +3446,47 @@ async fn call_native_tool_on_session(
                 response_mode,
             )
         }
+        ToolInvocation::Batch {
+            steps,
+            atomic,
+            mode,
+            expected_revision,
+        } => {
+            let parsed: Vec<BatchStep> = serde_json::from_value(steps.clone())
+                .map_err(|error| format!("invalid batch steps: {error}"))?;
+            crate::browser::native_batch::check_policy(policy, &parsed).await?;
+            serialized_result_mode(
+                &session
+                    .native_run_batch(&parsed, atomic, mode, expected_revision)
+                    .await?,
+                response_mode,
+            )
+        }
+        ToolInvocation::Workflow {
+            definition,
+            inputs,
+            checkpoint,
+        } => {
+            let workflow = crate::browser::session::WorkflowDefinition::from_value(definition)
+                .map_err(|error| format!("invalid workflow: {error}"))?;
+            let inputs: BTreeMap<String, Value> = serde_json::from_value(inputs)
+                .map_err(|error| format!("invalid workflow inputs: {error}"))?;
+            let result = match checkpoint {
+                Some(checkpoint) => {
+                    let checkpoint = serde_json::from_value(checkpoint)
+                        .map_err(|error| format!("invalid workflow checkpoint: {error}"))?;
+                    session
+                        .native_resume_workflow(policy, &workflow, &inputs, &checkpoint)
+                        .await?
+                }
+                None => {
+                    session
+                        .native_run_workflow(policy, &workflow, &inputs)
+                        .await?
+                }
+            };
+            serialized_result_mode(&result, response_mode)
+        }
         ToolInvocation::InspectPage => {
             serialized_result_mode(&session.native_inspect_page().await?, response_mode)
         }

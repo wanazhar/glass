@@ -13547,6 +13547,49 @@ async fn native_local_canvas_2d_script_and_raster_pipeline() {
 }
 
 #[tokio::test]
+async fn native_canvas_image_source_preserves_animated_frames() {
+    let source = format!(
+        "data:image/gif;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(native_test_animated_gif_bytes())
+    );
+    let config = NativeEngineConfig::default()
+        .with_viewport(Viewport {
+            width: 4,
+            height: 2,
+            device_scale_factor_milli: 1000,
+        })
+        .with_fixture(
+            "fixture://animated-canvas-image",
+            &format!(
+                "<canvas id='canvas' width='1' height='1' style='display:block;width:1px;height:1px'></canvas><img id='source' src='{source}' style='display:none'>"
+            ),
+        )
+        .unwrap()
+        .with_initial_url("fixture://animated-canvas-image");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    let result = engine
+        .evaluate_async(
+            "(() => { const image = document.getElementById('source'); const canvas = document.getElementById('canvas'); const context = canvas.getContext('2d'); const resource = globalThis.__glassCanvasImageResources.get(image.nodeIndex); const pixel = () => Array.from(context.getImageData(0, 0, 1, 1).data); resource.animationOriginNowMs = Number.MAX_SAFE_INTEGER; context.drawImage(image, 0, 0); const first = pixel(); resource.loopCount = 0; resource.animationOriginNowMs = -Number.MAX_SAFE_INTEGER; context.clearRect(0, 0, 1, 1); context.drawImage(image, 0, 0); const last = pixel(); return { frames: resource.frames.length, delays: resource.frames.map(frame => frame.delayMs), first, last, complete: image.complete, dimensions: [image.naturalWidth, image.naturalHeight] }; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        result,
+        serde_json::json!({
+            "frames": 2,
+            "delays": [10, 10],
+            "first": [255, 0, 0, 255],
+            "last": [0, 255, 0, 255],
+            "complete": true,
+            "dimensions": [1, 1]
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_canvas_cross_origin_image_taints_readback() {
     let _guard = native_content_process_test_lock().lock().await;
     let page_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

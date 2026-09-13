@@ -4481,11 +4481,29 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
     try {
       const pixels = decodeBase64(String(resource.pixelsBase64 || ""), nativeCanvasByteLimit);
       if (pixels.length === width * height * 4) {
+        const frames = [];
+        for (const frame of Array.isArray(resource.frames) ? resource.frames : []) {
+          const delayMs = Number(frame && frame.delayMs);
+          if (!Number.isSafeInteger(delayMs) || delayMs < 1 || delayMs > 60000) continue;
+          try {
+            const framePixels = decodeBase64(String(frame.pixelsBase64 || ""), nativeCanvasByteLimit);
+            if (framePixels.length === width * height * 4) frames.push({ delayMs, pixels: framePixels });
+          } catch (_error) {}
+        }
+        const animationElapsedMs = Number(resource.animationElapsedMs);
         nativeCanvasImageResources.set(Number(resource.nodeIndex), {
           width,
           height,
           pixels,
           source: String(resource.source || ""),
+          frames,
+          loopCount: resource.loopCount !== null && resource.loopCount !== undefined
+            && Number.isSafeInteger(Number(resource.loopCount)) && Number(resource.loopCount) >= 0
+            ? Number(resource.loopCount)
+            : null,
+          animationOriginNowMs: Number.isSafeInteger(animationElapsedMs)
+            ? Number(host.now_ms) - animationElapsedMs
+            : null,
         });
       }
     } catch (_error) {}
@@ -5164,6 +5182,24 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
   globalThis.__glassCanvasRenderingContext2DConstructor = CanvasRenderingContext2DNative;
   globalThis.CanvasRenderingContext2D = CanvasRenderingContext2DNative;
   const nativeCanvasContextSurface = (context) => nativeCanvasContextSurfaceFor(context.__glassCanvas);
+  const nativeCanvasImagePixels = (resource) => {
+    if (!resource || !Array.isArray(resource.frames) || resource.frames.length === 0
+        || !Number.isFinite(Number(resource.animationOriginNowMs))) return resource.pixels;
+    const elapsed = Math.max(0, Math.floor(Number(host.now_ms) - Number(resource.animationOriginNowMs)));
+    const cycleMs = resource.frames.reduce((total, frame) => total + frame.delayMs, 0);
+    if (cycleMs <= 0) return resource.frames[0].pixels;
+    if (resource.loopCount !== null) {
+      const totalMs = cycleMs * (resource.loopCount + 1);
+      if (elapsed >= totalMs) return resource.frames[resource.frames.length - 1].pixels;
+    }
+    const position = elapsed % cycleMs;
+    let consumed = 0;
+    for (const frame of resource.frames) {
+      consumed += frame.delayMs;
+      if (position < consumed) return frame.pixels;
+    }
+    return resource.frames[resource.frames.length - 1].pixels;
+  };
   const nativeCanvasImageOriginClean = (source) => {
     const current = String(source && (source.currentSrc || source.src) || "");
     if (!current || /^(?:data|fixture):/i.test(current)) return true;
@@ -5189,7 +5225,7 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
     const resource = nativeCanvasImageResources.get(Number(source.nodeIndex));
     if (!resource) return null;
     if (source.complete === false) throw nativeCanvasError("image is not ready", "InvalidStateError");
-    return { surface: resource, originClean: nativeCanvasImageOriginClean(source) };
+    return { surface: { ...resource, pixels: nativeCanvasImagePixels(resource) }, originClean: nativeCanvasImageOriginClean(source) };
   };
   const nativeCanvasCreateImageBitmap = (source, args) => {
     let sourceInfo;

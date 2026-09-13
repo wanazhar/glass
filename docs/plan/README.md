@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-284` locally. The versioned
+`native-engine-browser-285` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -55,8 +55,8 @@ content-process pages, including isolated QuickJS realms, shared resource and
 startup/runtime failure events, and terminate/close ownership. Worker events
 are delivered at explicit native page turns so local and content-process
 execution remain deterministic. Module/shared/service workers, transferables,
-worker import graphs and worker-side network parity remain open on issue #40;
-bounded worker timers are covered by slice 284 below.
+worker-side network parity remains open on issue #40; bounded worker timers and
+static worker import graphs are covered by slices 284 and 285 below.
 
 The completed dedicated-worker timer slice is
 [native-engine-browser-284](tasks/native-engine-browser-284.md). It adds
@@ -67,6 +67,16 @@ owner and HTTP(S) content process, and their messages/lifecycle effects use the
 existing bounded worker queue. Continuous task-source fairness, automatic
 delivery while a page is awaiting unrelated work, and complete worker timer
 Web IDL semantics remain open on issue #40.
+
+The completed dedicated-worker dependency slice is
+[native-engine-browser-285](tasks/native-engine-browser-285.md). It preloads
+bounded static `importScripts()` dependency graphs through the worker resource
+and policy owner, executes dependencies before the root script, preserves
+per-call consumption so unknown or dynamically resolved URLs fail explicitly,
+and covers nested dependencies in the isolated worker realm. Dynamic expression
+resolution, exact browser call-position semantics, module/shared/service
+workers, worker network APIs, and the wider native parity gates remain open on
+issue #40.
 
 The completed EventSource/SSE slice is
 [native-engine-browser-253](tasks/native-engine-browser-253.md). It adds a

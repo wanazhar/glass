@@ -984,6 +984,44 @@ async fn native_local_worker_timers_run_on_the_next_page_turn() {
 }
 
 #[tokio::test]
+async fn native_local_worker_preloads_import_scripts_dependencies() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://worker-import-page",
+            "<html><body><main id='output'>Native</main></body></html>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://worker-import-root",
+            "importScripts('fixture://worker-import-dependency'); postMessage({ kind: 'loaded', value: globalThis.importedWorkerValue });",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://worker-import-dependency",
+            "globalThis.importedWorkerValue = 7;",
+        )
+        .unwrap()
+        .with_initial_url("fixture://worker-import-page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "globalThis.workerMessages = []; globalThis.worker = new Worker('fixture://worker-import-root'); worker.onmessage = event => workerMessages.push(event.data); true",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine.evaluate_async("workerMessages").await.unwrap(),
+        serde_json::json!([{"kind": "loaded", "value": 7}])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_runs_worker_created_during_page_load() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

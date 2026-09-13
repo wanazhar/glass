@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-280`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-281`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -4170,6 +4170,20 @@ Fetch/WebSocket/EventSource commands still need event-loop integration, while
 parser streaming, network completion ordering, and complete
 script/lifecycle/Web IDL semantics remain issue #40 work. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-280.md`.
+
+The completed native-engine-browser-281 slice closes the dynamic network
+handoff. Fetch, WebSocket, and EventSource commands emitted by dynamically
+loaded scripts now return to the existing content-process resolver after the
+dynamic DOM effects are committed; Fetch requests are queued for response
+continuation and persistent transports are installed through their existing
+owners. Stateful script turns use the resolver even when only a dynamic child
+creates the network command, but queued background events are still not
+pumped solely because a connection exists. Dynamic Fetch continuation,
+nested-script, page-Fetch, timer-Fetch, WebSocket, and EventSource witnesses
+are green. Parser streaming, true network completion ordering, complete
+stream/body Web IDL semantics, worker/service-worker ownership, and full
+native/CDP parity remain issue #40 work. Exact evidence is in
+`docs/plan/tasks/native-engine-browser-281.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

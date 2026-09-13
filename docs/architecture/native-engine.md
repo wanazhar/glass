@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-280` slice; the bounded foundation below remains
+`native-engine-browser-281` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 Current foundation scope: Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
@@ -6010,6 +6010,20 @@ Fetch/WebSocket/EventSource effects still require event-loop integration, and
 parser streaming, network completion scheduling, and complete
 script/lifecycle/Web IDL semantics remain Issue #40 promotion gates. Exact
 evidence is recorded in `docs/plan/tasks/native-engine-browser-280.md`.
+
+The completed native-engine-browser-281 slice completes that dynamic network
+handoff. Dynamic Fetch/WebSocket/EventSource commands now leave the shared
+page-script scheduler as typed pending effects; the content owner activates
+them through the existing Fetch resolver and persistent transport maps after
+the dynamic DOM mutation is committed. Stateful script evaluations use the
+same resolver so a network effect created by a dynamic child cannot be missed,
+while the resolver still avoids consuming queued background events merely
+because a connection exists. Dynamic Fetch continuation, nested module/
+external loading, page Fetch, timer Fetch, WebSocket, and EventSource witnesses
+are green. Parser streaming, network completion scheduling, complete
+stream/body Web IDL semantics, worker/service-worker ownership, and full
+native/CDP parity remain Issue #40 promotion gates. Exact evidence is recorded
+in `docs/plan/tasks/native-engine-browser-281.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

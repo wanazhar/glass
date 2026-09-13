@@ -203,6 +203,18 @@ pub(crate) struct NativeCanvasResourceWire {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) pixels_base64: String,
+    #[serde(default = "default_true")]
+    pub(crate) origin_clean: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NativeScriptImageResourceSnapshot {
+    pub(crate) node_index: u32,
+    pub(crate) source: String,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) pixels_base64: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -392,6 +404,8 @@ pub(crate) struct NativeScriptDocumentSnapshot {
     pub(crate) script_nodes: Vec<NativeScriptNodeIdentity>,
     #[serde(default)]
     pub(crate) canvas_resources: Vec<NativeCanvasResourceWire>,
+    #[serde(default)]
+    pub(crate) image_resources: Vec<NativeScriptImageResourceSnapshot>,
 }
 
 /// Layout-backed geometry transferred to one JavaScript document realm.
@@ -563,6 +577,11 @@ pub(crate) struct NativeCanvasResource {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) pixels: Vec<u8>,
+    pub(crate) origin_clean: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn image_from_wire(
@@ -1355,6 +1374,7 @@ impl NativeDocument {
                     height: resource.height,
                     pixels_base64: base64::engine::general_purpose::STANDARD
                         .encode(&resource.pixels),
+                    origin_clean: resource.origin_clean,
                 })
             })
             .collect();
@@ -1888,6 +1908,7 @@ impl NativeDocument {
                         width: resource.width,
                         height: resource.height,
                         pixels,
+                        origin_clean: resource.origin_clean,
                     },
                 )
                 .is_some()
@@ -2140,6 +2161,50 @@ impl NativeDocument {
             .collect()
     }
 
+    fn script_image_resources(&self, viewport: Viewport) -> Vec<NativeScriptImageResourceSnapshot> {
+        let mut resources = Vec::new();
+        let mut included = BTreeSet::new();
+        for (node_index, resource) in &self.image_resources {
+            let node_id = NativeNodeId::from_parts(self.generation, *node_index);
+            let Some(node) = self.node(node_id) else {
+                continue;
+            };
+            if node.element_name() != Some("img")
+                || self.image_loads.get(node_index) != Some(&resource.source)
+            {
+                continue;
+            }
+            resources.push(NativeScriptImageResourceSnapshot {
+                node_index: *node_index,
+                source: resource.source.clone(),
+                width: resource.image.width,
+                height: resource.image.height,
+                pixels_base64: base64::engine::general_purpose::STANDARD
+                    .encode(resource.image.current_pixels()),
+            });
+            included.insert(*node_index);
+        }
+        for node in &self.nodes {
+            let node_index = node.id().index();
+            if included.contains(&node_index) || node.element_name() != Some("img") {
+                continue;
+            }
+            let source = self.image_current_src(node.id(), viewport);
+            let Some(image) = decode_data_image(&source) else {
+                continue;
+            };
+            resources.push(NativeScriptImageResourceSnapshot {
+                node_index,
+                source,
+                width: image.width,
+                height: image.height,
+                pixels_base64: base64::engine::general_purpose::STANDARD
+                    .encode(image.current_pixels()),
+            });
+        }
+        resources
+    }
+
     fn script_snapshot_for_viewport(
         &self,
         max_text_bytes: usize,
@@ -2257,6 +2322,7 @@ impl NativeDocument {
                     height: resource.height,
                     pixels_base64: base64::engine::general_purpose::STANDARD
                         .encode(&resource.pixels),
+                    origin_clean: resource.origin_clean,
                 })
             })
             .collect();
@@ -2281,6 +2347,7 @@ impl NativeDocument {
                 })
                 .collect(),
             canvas_resources,
+            image_resources: self.script_image_resources(viewport),
         }
     }
 
@@ -3561,12 +3628,14 @@ impl NativeDocument {
                     width,
                     height,
                     pixels_base64,
+                    origin_clean,
                 } => {
                     self.apply_script_canvas(
                         *node_index,
                         *width,
                         *height,
                         pixels_base64,
+                        *origin_clean,
                         &script_nodes,
                     )?;
                 }
@@ -3789,6 +3858,7 @@ impl NativeDocument {
         width: u32,
         height: u32,
         pixels_base64: &str,
+        origin_clean: bool,
         script_nodes: &BTreeMap<u32, NativeNodeId>,
     ) -> Result<(), NativeEngineError> {
         if width == 0
@@ -3856,6 +3926,7 @@ impl NativeDocument {
                 width,
                 height,
                 pixels,
+                origin_clean,
             },
         );
         Ok(())

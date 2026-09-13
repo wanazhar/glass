@@ -21,14 +21,15 @@ use super::javascript::{
     MAX_NATIVE_WEBSOCKET_PROTOCOLS, MAX_NATIVE_XHR_TIMEOUT_MS, NativeCookieChange,
     NativeCookieProfileEntry, NativeDialog, NativeFrameScriptBinding, NativeFrameScriptContext,
     NativeFrameScriptRequest, NativeFrameScriptWindow, NativeIndexedDbChange, NativeIndexedDbState,
-    NativeJavaScriptRuntime, NativePageScript, NativePopupRequest, NativePostMessageRequest,
-    NativeScriptCommand, NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState,
-    NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
-    diff_indexed_db_changes, execute_dynamic_page_scripts, execute_page_scripts, host_event_script,
-    host_hash_change_event_script, host_key_event_script, host_key_event_script_with_modifiers,
-    host_submit_event_script, literal_dynamic_module_specifiers, load_indexed_db_profile,
-    load_web_storage_profile, order_page_scripts, page_script_sources_to_scripts,
-    save_web_storage_profile, static_module_specifiers, storage_key,
+    NativeJavaScriptRuntime, NativePageScript, NativePageScriptResult, NativePopupRequest,
+    NativePostMessageRequest, NativeScriptCommand, NativeScriptEvaluation, NativeStorageEvent,
+    NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
+    NativeWindowProxyUpdate, diff_indexed_db_changes, execute_dynamic_page_scripts,
+    execute_page_scripts, host_event_script, host_hash_change_event_script, host_key_event_script,
+    host_key_event_script_with_modifiers, host_submit_event_script,
+    literal_dynamic_module_specifiers, load_indexed_db_profile, load_web_storage_profile,
+    order_page_scripts, page_script_sources_to_scripts, save_web_storage_profile,
+    static_module_specifiers, storage_key,
 };
 use super::layout::NativePoint;
 use super::origin::NativeOrigin;
@@ -5797,6 +5798,84 @@ async fn load_page_script_source_list(
     Ok((order_page_scripts(sources), resource_events))
 }
 
+/// Load and execute dynamic external/module sources discovered by a dynamic
+/// script. Inline descendants are handled synchronously by the shared
+/// scheduler; only sources that require the content-process loader are
+/// returned by each scheduler turn.
+async fn execute_dynamic_page_scripts_with_loader(
+    document: &mut NativeDocument,
+    runtime: &NativeJavaScriptRuntime,
+    mut sources: Vec<NativePageScriptSource>,
+    loader: &mut NativeResourceLoader,
+    document_url: &str,
+    document_origin: &NativeOrigin,
+    viewport: Viewport,
+) -> Result<NativePageScriptResult, NativeEngineError> {
+    let mut aggregate = NativePageScriptResult {
+        pending_fetches: Vec::new(),
+        websocket_commands: Vec::new(),
+        event_source_commands: Vec::new(),
+        pending_script_sources: Vec::new(),
+        scroll_commands: Vec::new(),
+        navigation: None,
+        dialogs: Vec::new(),
+        events: Vec::new(),
+    };
+    let mut batches = 0usize;
+    loop {
+        batches = batches.saturating_add(1);
+        if batches > super::javascript::MAX_NATIVE_INLINE_SCRIPTS {
+            return Err(NativeEngineError::limit(
+                "native dynamic script loader turns",
+                super::javascript::MAX_NATIVE_INLINE_SCRIPTS,
+                batches,
+            ));
+        }
+        let (scripts, resource_events) =
+            load_dynamic_page_script_sources(sources, loader, document_url).await?;
+        let mut result = execute_dynamic_page_scripts(
+            document,
+            runtime,
+            scripts,
+            document_url,
+            document_origin,
+            viewport,
+            &resource_events,
+        )?;
+        let next_sources = std::mem::take(&mut result.pending_script_sources);
+        merge_dynamic_page_script_result(&mut aggregate, result)?;
+        if next_sources.is_empty() {
+            return Ok(aggregate);
+        }
+        sources = next_sources;
+    }
+}
+
+fn merge_dynamic_page_script_result(
+    aggregate: &mut NativePageScriptResult,
+    result: NativePageScriptResult,
+) -> Result<(), NativeEngineError> {
+    aggregate.pending_fetches.extend(result.pending_fetches);
+    aggregate
+        .websocket_commands
+        .extend(result.websocket_commands);
+    aggregate
+        .event_source_commands
+        .extend(result.event_source_commands);
+    aggregate.scroll_commands.extend(result.scroll_commands);
+    aggregate.dialogs.extend(result.dialogs);
+    aggregate.events.extend(result.events);
+    if let Some(navigation) = result.navigation {
+        if aggregate.navigation.is_some() {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "one dynamic page-script batch cannot activate multiple navigations".into(),
+            });
+        }
+        aggregate.navigation = Some(navigation);
+    }
+    Ok(())
+}
+
 async fn load_module_dependencies(
     owner_url: &str,
     module_url: &str,
@@ -7270,28 +7349,51 @@ async fn mutate_script_document(
         MAX_NATIVE_SCRIPT_BYTES,
     );
     if !dynamic_sources.is_empty() {
-        let (dynamic_scripts, dynamic_resource_events) = if let Some(loader) = loader.as_deref_mut()
-        {
-            load_dynamic_page_script_sources(dynamic_sources, loader, &document_url).await?
+        let dynamic_result = if let Some(loader) = loader.as_deref_mut() {
+            execute_dynamic_page_scripts_with_loader(
+                &mut next,
+                runtime,
+                dynamic_sources,
+                loader,
+                &document_url,
+                document_origin,
+                viewport,
+            )
+            .await?
         } else {
-            (
+            if dynamic_sources.iter().any(|source| {
+                matches!(
+                    source,
+                    NativePageScriptSource::External { .. }
+                        | NativePageScriptSource::ModuleExternal { .. }
+                )
+            }) {
+                return Err(NativeEngineError::UnsupportedUrl {
+                    reason:
+                        "dynamic external/module scripts require a process-backed HTTP(S) document"
+                            .into(),
+                });
+            }
+            execute_dynamic_page_scripts(
+                &mut next,
+                runtime,
                 page_script_sources_to_scripts(
                     dynamic_sources,
                     &document_url,
                     "glass-dynamic-module",
                 ),
-                Vec::new(),
-            )
+                &document_url,
+                document_origin,
+                viewport,
+                &[],
+            )?
         };
-        let dynamic_result = execute_dynamic_page_scripts(
-            &mut next,
-            runtime,
-            dynamic_scripts,
-            &document_url,
-            document_origin,
-            viewport,
-            &dynamic_resource_events,
-        )?;
+        if !dynamic_result.pending_script_sources.is_empty() {
+            return Err(NativeEngineError::Worker {
+                operation: "dynamic page script".into(),
+                reason: "dynamic external/module script loader handoff was unavailable".into(),
+            });
+        }
         if !dynamic_result.pending_fetches.is_empty()
             || !dynamic_result.websocket_commands.is_empty()
             || !dynamic_result.event_source_commands.is_empty()

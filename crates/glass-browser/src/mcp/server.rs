@@ -1965,8 +1965,16 @@ async fn call_tool(
     if native_runtime {
         #[cfg(feature = "native-engine")]
         {
-            return call_native_tool(invocation, _native_session, viewport, policy, response_mode)
-                .await;
+            return call_native_tool(
+                invocation,
+                _native_session,
+                viewport,
+                &options.profile,
+                options.incognito,
+                policy,
+                response_mode,
+            )
+            .await;
         }
         #[cfg(not(feature = "native-engine"))]
         {
@@ -3366,11 +3374,30 @@ async fn call_native_tool(
     invocation: ToolInvocation<'_>,
     native_session: &mut Option<BrowserRuntimeSession>,
     viewport: Option<(i64, i64)>,
+    profile: &str,
+    incognito: bool,
     policy: &BrowserPolicy,
     response_mode: ResponseMode,
 ) -> BrowserResult<Value> {
-    let session = ensure_native_session(native_session, viewport).await?;
+    let session = ensure_native_session(native_session, viewport, profile, incognito).await?;
     match invocation {
+        ToolInvocation::SessionSnapshot {
+            operation,
+            from,
+            to,
+        } if operation == "create" => {
+            if from.is_some() || to.is_some() {
+                return Err("sessionSnapshot create does not accept from or to".into());
+            }
+            let observation = session.native_observe().await?;
+            let snapshot = crate::browser::session::SessionSnapshot::from_observation(
+                profile.to_owned(),
+                observation,
+            );
+            let store = SessionSnapshotStore::new(default_session_snapshot_path(profile));
+            store.save(&snapshot)?;
+            serialized_result_mode(&snapshot, response_mode)
+        }
         ToolInvocation::InspectPage => {
             serialized_result_mode(&session.native_inspect_page().await?, response_mode)
         }
@@ -3938,10 +3965,12 @@ async fn native_storage_result(
 }
 
 #[cfg(feature = "native-engine")]
-async fn ensure_native_session(
-    session: &mut Option<BrowserRuntimeSession>,
+async fn ensure_native_session<'a>(
+    session: &'a mut Option<BrowserRuntimeSession>,
     viewport: Option<(i64, i64)>,
-) -> BrowserResult<&mut BrowserRuntimeSession> {
+    profile: &str,
+    incognito: bool,
+) -> BrowserResult<&'a mut BrowserRuntimeSession> {
     if session.is_none() {
         let viewport = viewport
             .map(|(width, height)| -> BrowserResult<Viewport> {
@@ -3954,10 +3983,14 @@ async fn ensure_native_session(
                 })
             })
             .transpose()?;
-        let config = match viewport {
+        let mut config = match viewport {
             Some(viewport) => NativeEngineConfig::default().with_viewport(viewport),
             None => NativeEngineConfig::default(),
         };
+        if !incognito {
+            config =
+                config.with_storage_path(crate::cli::runner::native_profile_storage_path(profile)?);
+        }
         *session = Some(BrowserRuntimeSession::connect_native(config).await?);
     }
     Ok(session.as_mut().expect("native session initialized"))

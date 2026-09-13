@@ -598,6 +598,13 @@ impl BrowserRuntimeSession {
         })
     }
 
+    /// Return one complete native semantic observation for storage, workflow,
+    /// and protocol adapters that need the same revisioned source as inspect.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_observe(&self) -> BrowserResult<super::session::SemanticObservation> {
+        self.native_semantic_observation().await
+    }
+
     /// Resolve native candidates through the same pure intent resolver used by
     /// the Chromium session, backed by one current native observation.
     #[cfg(feature = "native-engine")]

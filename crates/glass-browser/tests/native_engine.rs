@@ -13420,6 +13420,76 @@ async fn native_content_process_recovers_after_worker_exit_during_startup() {
     server.await.unwrap();
 }
 
+#[tokio::test]
+async fn native_local_canvas_2d_script_and_raster_pipeline() {
+    let config = NativeEngineConfig::default()
+        .with_viewport(Viewport {
+            width: 32,
+            height: 24,
+            device_scale_factor_milli: 1000,
+        })
+        .with_fixture(
+            "fixture://canvas",
+            "<html><body><canvas id='canvas' width='8' height='6' style='display:block;width:8px;height:6px'></canvas></body></html>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://canvas");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    let initial = engine
+        .evaluate_async(
+            "(() => { const canvas = document.getElementById('canvas'); const context = canvas.getContext('2d'); globalThis.nativeCanvas = canvas; globalThis.nativeCanvasContext = context; const rect = canvas.getBoundingClientRect(); return { dimensions: [canvas.width, canvas.height, rect.x, rect.y, rect.width, rect.height], identity: [canvas instanceof HTMLCanvasElement, context instanceof CanvasRenderingContext2D, canvas.getContext('webgl') === null, context.getContextAttributes().alpha] }; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(initial["dimensions"], serde_json::json!([8, 6, 0, 0, 8, 6]));
+    assert_eq!(
+        initial["identity"],
+        serde_json::json!([true, true, true, true])
+    );
+
+    let drawn = engine
+        .evaluate_async(
+            "(() => { const canvas = nativeCanvas; const context = nativeCanvasContext; context.fillStyle = '#ff0000'; context.fillRect(1, 1, 3, 2); context.clearRect(2, 1, 1, 1); const copy = context.createImageData(1, 1); copy.data.set([0, 255, 0, 255]); context.putImageData(copy, 5, 2); const image = context.getImageData(0, 0, 4, 3); const pixel = (value, x, y) => Array.from(value.data.slice((y * value.width + x) * 4, (y * value.width + x + 1) * 4)); const output = { samples: [pixel(image, 1, 1), pixel(image, 2, 1), pixel(image, 3, 1)], copy: pixel(context.getImageData(5, 2, 1, 1), 0, 0), png: canvas.toDataURL().startsWith('data:image/png;base64,iVBORw0KGgo'), imageData: [image instanceof ImageData, image.data instanceof Uint8ClampedArray] }; return output; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        drawn["samples"],
+        serde_json::json!([[255, 0, 0, 255], [0, 0, 0, 0], [255, 0, 0, 255]])
+    );
+    assert_eq!(drawn["copy"], serde_json::json!([0, 255, 0, 255]));
+    assert_eq!(drawn["imageData"], serde_json::json!([true, true]));
+    assert_eq!(drawn["png"], serde_json::json!(true));
+
+    let advanced = engine
+        .evaluate_async(
+            "(() => { const canvas = document.createElement('canvas'); canvas.width = 4; canvas.height = 4; document.body.appendChild(canvas); const context = canvas.getContext('2d'); context.strokeStyle = '#00ff00'; context.strokeRect(0.5, 0.5, 3, 3); const border = Array.from(context.getImageData(0, 0, 1, 1).data); context.save(); context.globalAlpha = 0.25; context.lineWidth = 4; context.restore(); const gradient = context.createLinearGradient(0, 0, 4, 0); gradient.addColorStop(0, '#ff0000'); gradient.addColorStop(1, '#0000ff'); context.fillStyle = gradient; context.fillRect(0, 1, 4, 1); const left = Array.from(context.getImageData(0, 1, 1, 1).data); const right = Array.from(context.getImageData(3, 1, 1, 1).data); const state = [context.globalAlpha, context.lineWidth, gradient instanceof CanvasGradient]; canvas.remove(); return { border, left, right, state }; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(advanced["border"], serde_json::json!([0, 255, 0, 255]));
+    assert!(advanced["left"][0].as_u64().unwrap() > advanced["left"][2].as_u64().unwrap());
+    assert!(advanced["right"][2].as_u64().unwrap() > advanced["right"][0].as_u64().unwrap());
+    assert_eq!(advanced["state"], serde_json::json!([1, 1, true]));
+
+    let persisted = engine
+        .evaluate_async(
+            "(() => { const canvas = nativeCanvas; const context = canvas.getContext('2d'); const sample = context.getImageData(5, 2, 1, 1); return [canvas.getContext('2d') === nativeCanvasContext, Array.from(sample.data), canvas.width, canvas.height]; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(persisted, serde_json::json!([true, [0, 255, 0, 255], 8, 6]));
+
+    let surface = engine.rasterize().unwrap();
+    assert_eq!(surface.pixel(1, 1), Some([255, 0, 0, 255]));
+    assert_eq!(surface.pixel(2, 1), Some([255, 255, 255, 255]));
+    assert_eq!(surface.pixel(3, 1), Some([255, 0, 0, 255]));
+    assert_eq!(surface.pixel(5, 2), Some([0, 255, 0, 255]));
+    engine.close_async().await.unwrap();
+}
+
 #[test]
 fn native_layout_is_deterministic_and_uses_bounded_pixel_dimensions() {
     let document = NativeDocument::parse(

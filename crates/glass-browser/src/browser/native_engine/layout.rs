@@ -7,7 +7,9 @@ use super::css::{
     TextJustifyValue, TextOverflowValue, TextTransformValue, VerticalAlignValue, WhiteSpaceValue,
     WordBreakValue,
 };
-use super::dom::{NativeDocument, NativeNode, NativeNodeId, NativeNodeKind};
+use super::dom::{
+    MAX_NATIVE_CANVAS_DIMENSION, NativeDocument, NativeNode, NativeNodeId, NativeNodeKind,
+};
 use super::error::NativeEngineError;
 use super::image::image_dimensions_from_source;
 use std::collections::BTreeMap;
@@ -5753,6 +5755,7 @@ impl<'a> LayoutBuilder<'a> {
         };
         match node.element_name() {
             Some("input" | "textarea" | "select") => DEFAULT_CONTROL_WIDTH,
+            Some("canvas") => self.canvas_dimensions(id).0,
             Some("svg") => node
                 .attribute("width")
                 .and_then(svg_length)
@@ -5813,6 +5816,7 @@ impl<'a> LayoutBuilder<'a> {
     fn intrinsic_inline_height(&self, id: NativeNodeId) -> u32 {
         match self.document.node(id).and_then(|node| node.element_name()) {
             Some("input" | "textarea" | "select" | "button") => DEFAULT_CONTROL_HEIGHT,
+            Some("canvas") => self.canvas_dimensions(id).1,
             Some("svg") => self
                 .document
                 .node(id)
@@ -5824,6 +5828,36 @@ impl<'a> LayoutBuilder<'a> {
                 .map(|(_, height)| height)
                 .unwrap_or(DEFAULT_LINE_HEIGHT),
             _ => DEFAULT_LINE_HEIGHT,
+        }
+    }
+
+    fn canvas_dimensions(&self, id: NativeNodeId) -> (u32, u32) {
+        let Some(node) = self.document.node(id) else {
+            return (300, 150);
+        };
+        let dimension = |name: &str, default: u32| {
+            node.attribute(name)
+                .and_then(|value| value.trim().parse::<u32>().ok())
+                .filter(|value| *value > 0 && *value <= MAX_NATIVE_CANVAS_DIMENSION)
+                .unwrap_or(default)
+        };
+        let width = dimension("width", 300);
+        let height = dimension("height", 150);
+        if usize::try_from(width)
+            .ok()
+            .and_then(|width| {
+                usize::try_from(height)
+                    .ok()
+                    .and_then(|height| width.checked_mul(height))
+            })
+            .is_some_and(|pixels| pixels > super::dom::MAX_NATIVE_CANVAS_PIXELS)
+        {
+            (
+                width,
+                (super::dom::MAX_NATIVE_CANVAS_PIXELS / width as usize).max(1) as u32,
+            )
+        } else {
+            (width, height)
         }
     }
 

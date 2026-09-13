@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-309` locally. The versioned
+`native-engine-browser-310` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -271,6 +271,17 @@ opaque key state are covered by the focused witness. RSA/EC algorithms,
 PKCS#8/SPKI formats, key transfer, complete Web Crypto, and full Web IDL
 parity remain issue #40 work; see
 [tasks/native-engine-browser-309.md](tasks/native-engine-browser-309.md).
+
+The completed native-engine-browser-310 Canvas 2D slice adds persistent,
+bounded RGBA surfaces to page scripts and carries them through native layout,
+display-list painting, screenshots, and document snapshots. It covers canvas
+dimensions and reset behavior, fills, clears, paths, strokes, transforms,
+gradients, compositing, image data, canvas-to-canvas drawing, PNG export, and
+bounded text metrics/rendering. Its focused evidence and explicit limits are
+recorded in
+[tasks/native-engine-browser-310.md](tasks/native-engine-browser-310.md);
+complete Canvas/Web IDL breadth and the remaining issue #40 production gates
+remain open.
 
 The completed native-engine-browser-299 page-runtime-primitives slice adds
 page `TextEncoder`/`TextDecoder`, bounded `atob`/`btoa`,

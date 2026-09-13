@@ -4641,8 +4641,9 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
   const nativeCanvasResolvedColor = (style, x, y) => style && style.__glassCanvasGradient === true
     ? nativeCanvasGradientColor(style, x, y)
     : nativeCanvasParseColor(style) || [0, 0, 0, 255];
-  const nativeCanvasBlendPixel = (surface, x, y, color, alpha, operation) => {
+  const nativeCanvasBlendPixel = (surface, x, y, color, alpha, operation, clipRegions = []) => {
     if (x < 0 || y < 0 || x >= surface.width || y >= surface.height) return;
+    if (!nativeCanvasClipAllows(clipRegions, x + 0.5, y + 0.5)) return;
     const index = (y * surface.width + x) * 4;
     if (operation === "clear") {
       surface.pixels[index] = 0;
@@ -4693,7 +4694,19 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
     }
     return inside;
   };
-  const nativeCanvasFillPolygon = (surface, points, style, alpha, operation) => {
+  const nativeCanvasPointInPaths = (point, paths, fillRule = "nonzero") => {
+    const usable = paths.filter((path) => Array.isArray(path.points) && path.points.length >= 3);
+    if (fillRule === "evenodd") {
+      return usable.reduce((inside, path) => inside !== nativeCanvasPointInPolygon(point, path.points), false);
+    }
+    return usable.some((path) => nativeCanvasPointInPolygon(point, path.points));
+  };
+  const nativeCanvasClipAllows = (clipRegions, x, y) => {
+    if (!Array.isArray(clipRegions) || clipRegions.length === 0) return true;
+    const point = { x, y };
+    return clipRegions.every((region) => nativeCanvasPointInPaths(point, region.paths, region.fillRule));
+  };
+  const nativeCanvasFillPolygon = (surface, points, style, alpha, operation, clipRegions = []) => {
     if (points.length < 3) return;
     const left = Math.max(0, Math.floor(Math.min(...points.map((point) => point.x))));
     const right = Math.min(surface.width - 1, Math.ceil(Math.max(...points.map((point) => point.x))));
@@ -4701,7 +4714,20 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
     const bottom = Math.min(surface.height - 1, Math.ceil(Math.max(...points.map((point) => point.y))));
     for (let y = top; y <= bottom; y += 1) for (let x = left; x <= right; x += 1) {
       if (nativeCanvasPointInPolygon({ x: x + 0.5, y: y + 0.5 }, points)) {
-        nativeCanvasBlendPixel(surface, x, y, nativeCanvasResolvedColor(style, x + 0.5, y + 0.5), alpha, operation);
+        nativeCanvasBlendPixel(surface, x, y, nativeCanvasResolvedColor(style, x + 0.5, y + 0.5), alpha, operation, clipRegions);
+      }
+    }
+  };
+  const nativeCanvasFillPaths = (surface, paths, style, alpha, operation, clipRegions = [], fillRule = "nonzero") => {
+    const points = paths.flatMap((path) => path.points || []);
+    if (points.length < 3) return;
+    const left = Math.max(0, Math.floor(Math.min(...points.map((point) => point.x))));
+    const right = Math.min(surface.width - 1, Math.ceil(Math.max(...points.map((point) => point.x))));
+    const top = Math.max(0, Math.floor(Math.min(...points.map((point) => point.y))));
+    const bottom = Math.min(surface.height - 1, Math.ceil(Math.max(...points.map((point) => point.y))));
+    for (let y = top; y <= bottom; y += 1) for (let x = left; x <= right; x += 1) {
+      if (nativeCanvasPointInPaths({ x: x + 0.5, y: y + 0.5 }, paths, fillRule)) {
+        nativeCanvasBlendPixel(surface, x, y, nativeCanvasResolvedColor(style, x + 0.5, y + 0.5), alpha, operation, clipRegions);
       }
     }
   };
@@ -4714,7 +4740,7 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
     const y = first.y + amount * dy;
     return Math.hypot(point.x - x, point.y - y);
   };
-  const nativeCanvasStrokePath = (surface, paths, style, alpha, operation, lineWidth) => {
+  const nativeCanvasStrokePath = (surface, paths, style, alpha, operation, lineWidth, clipRegions = []) => {
     const radius = Math.max(0.5, lineWidth / 2);
     for (const path of paths) {
       for (let index = 1; index < path.points.length; index += 1) {
@@ -4726,7 +4752,7 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
         const bottom = Math.min(surface.height - 1, Math.ceil(Math.max(first.y, second.y) + radius + 1));
         for (let y = top; y <= bottom; y += 1) for (let x = left; x <= right; x += 1) {
           if (nativeCanvasDistanceToSegment({ x: x + 0.5, y: y + 0.5 }, first, second) <= radius) {
-            nativeCanvasBlendPixel(surface, x, y, nativeCanvasResolvedColor(style, x + 0.5, y + 0.5), alpha, operation);
+            nativeCanvasBlendPixel(surface, x, y, nativeCanvasResolvedColor(style, x + 0.5, y + 0.5), alpha, operation, clipRegions);
           }
         }
       }
@@ -4775,7 +4801,7 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
     globalCompositeOperation: "source-over", lineWidth: 1, lineCap: "butt", lineJoin: "miter",
     miterLimit: 10, font: "10px sans-serif", textAlign: "start", textBaseline: "alphabetic",
     direction: "inherit", transform: nativeCanvasMatrixIdentity(), lineDash: [], lineDashOffset: 0,
-    path: [], stack: [],
+    path: [], clipRegions: [], stack: [],
   });
   const nativeCanvasPathPoint = (context, x, y) => nativeCanvasMatrixPoint(context.__glassCanvasState.transform, x, y);
   const nativeCanvasEnsurePath = (context) => {
@@ -4790,6 +4816,245 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
   const nativeCanvasAddPathPoint = (context, point) => {
     const path = nativeCanvasCurrentPath(context);
     if (path.points.length === 0 || path.points[path.points.length - 1].x !== point.x || path.points[path.points.length - 1].y !== point.y) path.points.push(point);
+  };
+  const nativeCanvasPathCoordinate = (value) => {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) throw new TypeError("path coordinates must be finite");
+    return numeric;
+  };
+  const nativeCanvasPathClone = (paths) => (Array.isArray(paths) ? paths : []).map((path) => ({
+    points: Array.isArray(path.points) ? path.points.map((point) => ({ x: point.x, y: point.y })) : [],
+    closed: path.closed === true,
+  }));
+  const nativeCanvasPathTransform = (paths, matrix) => (Array.isArray(paths) ? paths : []).map((path) => ({
+    points: Array.isArray(path.points)
+      ? path.points.map((point) => nativeCanvasMatrixPoint(matrix, point.x, point.y))
+      : [],
+    closed: path.closed === true,
+  }));
+  const nativeCanvasPathEnsureSubpath = (paths) => {
+    if (!paths.length || paths[paths.length - 1].closed) paths.push({ points: [], closed: false });
+    return paths[paths.length - 1];
+  };
+  const nativeCanvasPathPushPoint = (subpath, point) => {
+    const last = subpath.points[subpath.points.length - 1];
+    if (!last || last.x !== point.x || last.y !== point.y) subpath.points.push(point);
+  };
+  const nativeCanvasPathMove = (paths, x, y) => {
+    paths.push({ points: [{ x: nativeCanvasPathCoordinate(x), y: nativeCanvasPathCoordinate(y) }], closed: false });
+  };
+  const nativeCanvasPathLine = (paths, x, y) => {
+    const subpath = nativeCanvasPathEnsureSubpath(paths);
+    if (subpath.points.length === 0) subpath.points.push({ x: 0, y: 0 });
+    nativeCanvasPathPushPoint(subpath, { x: nativeCanvasPathCoordinate(x), y: nativeCanvasPathCoordinate(y) });
+  };
+  const nativeCanvasPathClose = (paths) => {
+    const subpath = paths[paths.length - 1];
+    if (!subpath || subpath.points.length < 2) return;
+    subpath.closed = true;
+    nativeCanvasPathPushPoint(subpath, { ...subpath.points[0] });
+  };
+  const nativeCanvasPathRect = (paths, x, y, width, height) => {
+    const left = nativeCanvasPathCoordinate(x);
+    const top = nativeCanvasPathCoordinate(y);
+    const right = left + nativeCanvasPathCoordinate(width);
+    const bottom = top + nativeCanvasPathCoordinate(height);
+    if (![right, bottom].every(Number.isFinite)) throw new TypeError("path rectangle is invalid");
+    paths.push({
+      points: [{ x: left, y: top }, { x: right, y: top }, { x: right, y: bottom }, { x: left, y: bottom }, { x: left, y: top }],
+      closed: true,
+    });
+  };
+  const nativeCanvasPathArc = (paths, x, y, radius, startAngle, endAngle, anticlockwise = false) => {
+    const centerX = nativeCanvasPathCoordinate(x);
+    const centerY = nativeCanvasPathCoordinate(y);
+    const numericRadius = nativeCanvasPathCoordinate(radius);
+    if (numericRadius < 0) throw nativeCanvasError("arc radius is invalid");
+    let start = nativeCanvasPathCoordinate(startAngle);
+    let end = nativeCanvasPathCoordinate(endAngle);
+    const full = Math.PI * 2;
+    if (!anticlockwise && end - start >= full) end = start + full;
+    else if (anticlockwise && start - end >= full) end = start - full;
+    else if (!anticlockwise && end < start) end = start;
+    else if (anticlockwise && end > start) end = start;
+    const segments = Math.max(4, Math.min(128, Math.ceil(Math.abs(end - start) * 16)));
+    const points = [];
+    for (let index = 0; index <= segments; index += 1) {
+      const amount = index / segments;
+      const angle = start + (end - start) * amount;
+      points.push({ x: centerX + Math.cos(angle) * numericRadius, y: centerY + Math.sin(angle) * numericRadius });
+    }
+    const subpath = paths[paths.length - 1];
+    if (subpath && subpath.points.length > 0 && !subpath.closed) {
+      nativeCanvasPathPushPoint(subpath, points[0]);
+      subpath.points.push(...points.slice(1));
+    } else {
+      paths.push({ points, closed: false });
+    }
+  };
+  const nativeCanvasPathEllipse = (paths, x, y, radiusX, radiusY, rotation = 0, startAngle = 0, endAngle = Math.PI * 2, anticlockwise = false) => {
+    const centerX = nativeCanvasPathCoordinate(x);
+    const centerY = nativeCanvasPathCoordinate(y);
+    const rx = nativeCanvasPathCoordinate(radiusX);
+    const ry = nativeCanvasPathCoordinate(radiusY);
+    if (rx < 0 || ry < 0) throw nativeCanvasError("ellipse radius is invalid");
+    const rotationRadians = nativeCanvasPathCoordinate(rotation);
+    const start = nativeCanvasPathCoordinate(startAngle);
+    const end = nativeCanvasPathCoordinate(endAngle);
+    const segments = Math.max(8, Math.min(128, Math.ceil(Math.abs(end - start) * 16)));
+    const cos = Math.cos(rotationRadians);
+    const sin = Math.sin(rotationRadians);
+    const points = [];
+    for (let index = 0; index <= segments; index += 1) {
+      const amount = index / segments;
+      const angle = start + (end - start) * (anticlockwise ? -amount : amount);
+      const px = Math.cos(angle) * rx;
+      const py = Math.sin(angle) * ry;
+      points.push({ x: centerX + px * cos - py * sin, y: centerY + px * sin + py * cos });
+    }
+    const subpath = paths[paths.length - 1];
+    if (subpath && subpath.points.length > 0 && !subpath.closed) {
+      nativeCanvasPathPushPoint(subpath, points[0]);
+      subpath.points.push(...points.slice(1));
+    } else {
+      paths.push({ points, closed: false });
+    }
+  };
+  const nativeCanvasPathQuadratic = (paths, cpx, cpy, x, y) => {
+    const subpath = nativeCanvasPathEnsureSubpath(paths);
+    if (subpath.points.length === 0) subpath.points.push({ x: 0, y: 0 });
+    const start = subpath.points[subpath.points.length - 1];
+    const controlX = nativeCanvasPathCoordinate(cpx);
+    const controlY = nativeCanvasPathCoordinate(cpy);
+    const endX = nativeCanvasPathCoordinate(x);
+    const endY = nativeCanvasPathCoordinate(y);
+    for (let index = 1; index <= 16; index += 1) {
+      const amount = index / 16;
+      const inverse = 1 - amount;
+      nativeCanvasPathPushPoint(subpath, {
+        x: inverse * inverse * start.x + 2 * inverse * amount * controlX + amount * amount * endX,
+        y: inverse * inverse * start.y + 2 * inverse * amount * controlY + amount * amount * endY,
+      });
+    }
+  };
+  const nativeCanvasPathBezier = (paths, cp1x, cp1y, cp2x, cp2y, x, y) => {
+    const subpath = nativeCanvasPathEnsureSubpath(paths);
+    if (subpath.points.length === 0) subpath.points.push({ x: 0, y: 0 });
+    const start = subpath.points[subpath.points.length - 1];
+    const controls = [cp1x, cp1y, cp2x, cp2y, x, y].map(nativeCanvasPathCoordinate);
+    for (let index = 1; index <= 24; index += 1) {
+      const amount = index / 24;
+      const inverse = 1 - amount;
+      nativeCanvasPathPushPoint(subpath, {
+        x: inverse ** 3 * start.x + 3 * inverse ** 2 * amount * controls[0] + 3 * inverse * amount ** 2 * controls[2] + amount ** 3 * controls[4],
+        y: inverse ** 3 * start.y + 3 * inverse ** 2 * amount * controls[1] + 3 * inverse * amount ** 2 * controls[3] + amount ** 3 * controls[5],
+      });
+    }
+  };
+  const nativeCanvasPathMatrix = (value) => {
+    if (value === undefined || value === null) return nativeCanvasMatrixIdentity();
+    if (typeof value !== "object") throw new TypeError("path transform must be a matrix");
+    const matrix = [value.a, value.b, value.c, value.d, value.e, value.f].map(Number);
+    if (!matrix.every(Number.isFinite)) throw new TypeError("path transform must be a finite matrix");
+    return matrix;
+  };
+  const nativeCanvasPathData = (value) => {
+    const text = String(value);
+    const tokenPattern = /[a-zA-Z]|[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?/g;
+    const tokens = text.match(tokenPattern) || [];
+    if (text.replace(tokenPattern, "").replace(/[\s,]/g, "") !== "") throw new SyntaxError("unsupported Path2D data");
+    const paths = [];
+    let index = 0;
+    let command = null;
+    let current = { x: 0, y: 0 };
+    let subpathStart = { ...current };
+    const isCommand = (token) => /^[a-zA-Z]$/.test(token);
+    const readNumbers = (count) => {
+      if (index + count > tokens.length || tokens.slice(index, index + count).some(isCommand)) throw new SyntaxError("invalid Path2D data");
+      const values = tokens.slice(index, index + count).map(Number);
+      if (!values.every(Number.isFinite)) throw new SyntaxError("invalid Path2D data");
+      index += count;
+      return values;
+    };
+    while (index < tokens.length) {
+      if (isCommand(tokens[index])) command = tokens[index++];
+      if (!command) throw new SyntaxError("invalid Path2D data");
+      const relative = command === command.toLowerCase();
+      const normalized = command.toUpperCase();
+      if (normalized === "Z") {
+        nativeCanvasPathClose(paths);
+        current = { ...subpathStart };
+        command = null;
+        continue;
+      }
+      const values = readNumbers(normalized === "M" || normalized === "L" ? 2 : normalized === "H" || normalized === "V" ? 1 : normalized === "Q" ? 4 : normalized === "C" ? 6 : 0);
+      if (values.length === 0) throw new SyntaxError("unsupported Path2D command");
+      if (normalized === "M") {
+        const x = values[0] + (relative ? current.x : 0);
+        const y = values[1] + (relative ? current.y : 0);
+        nativeCanvasPathMove(paths, x, y);
+        current = { x, y };
+        subpathStart = { ...current };
+        command = relative ? "l" : "L";
+      } else if (normalized === "L") {
+        const x = values[0] + (relative ? current.x : 0);
+        const y = values[1] + (relative ? current.y : 0);
+        nativeCanvasPathLine(paths, x, y);
+        current = { x, y };
+      } else if (normalized === "H") {
+        const x = values[0] + (relative ? current.x : 0);
+        nativeCanvasPathLine(paths, x, current.y);
+        current.x = x;
+      } else if (normalized === "V") {
+        const y = values[0] + (relative ? current.y : 0);
+        nativeCanvasPathLine(paths, current.x, y);
+        current.y = y;
+      } else if (normalized === "Q") {
+        const controlX = values[0] + (relative ? current.x : 0);
+        const controlY = values[1] + (relative ? current.y : 0);
+        const x = values[2] + (relative ? current.x : 0);
+        const y = values[3] + (relative ? current.y : 0);
+        nativeCanvasPathQuadratic(paths, controlX, controlY, x, y);
+        current = { x, y };
+      } else if (normalized === "C") {
+        const offsetX = relative ? current.x : 0;
+        const offsetY = relative ? current.y : 0;
+        const valuesAbsolute = values.map((entry, valueIndex) => entry + (valueIndex % 2 === 0 ? offsetX : offsetY));
+        nativeCanvasPathBezier(paths, ...valuesAbsolute);
+        current = { x: valuesAbsolute[4], y: valuesAbsolute[5] };
+      } else {
+        throw new SyntaxError("unsupported Path2D command");
+      }
+    }
+    return paths;
+  };
+  const Path2DNative = globalThis.__glassPath2DConstructor || function Path2D(path) {
+    if (!new.target) throw new TypeError("Path2D must be constructed with new");
+    let paths = [];
+    if (path !== undefined) {
+      if (path && Array.isArray(path.__glassPath)) paths = nativeCanvasPathClone(path.__glassPath);
+      else if (typeof path === "string") paths = nativeCanvasPathData(path);
+      else throw new TypeError("Path2D source must be a Path2D or path string");
+    }
+    Object.defineProperty(this, "__glassPath", { configurable: false, enumerable: false, writable: true, value: paths });
+  };
+  globalThis.__glassPath2DConstructor = Path2DNative;
+  globalThis.Path2D = Path2DNative;
+  Object.defineProperties(Path2DNative.prototype, {
+    addPath: { configurable: true, value(path, transform) { if (!path || !Array.isArray(path.__glassPath)) throw new TypeError("addPath requires a Path2D"); this.__glassPath.push(...nativeCanvasPathTransform(path.__glassPath, nativeCanvasPathMatrix(transform))); } },
+    closePath: { configurable: true, value() { nativeCanvasPathClose(this.__glassPath); } },
+    moveTo: { configurable: true, value(x, y) { nativeCanvasPathMove(this.__glassPath, x, y); } },
+    lineTo: { configurable: true, value(x, y) { nativeCanvasPathLine(this.__glassPath, x, y); } },
+    rect: { configurable: true, value(x, y, width, height) { nativeCanvasPathRect(this.__glassPath, x, y, width, height); } },
+    arc: { configurable: true, value(x, y, radius, startAngle, endAngle, anticlockwise = false) { nativeCanvasPathArc(this.__glassPath, x, y, radius, startAngle, endAngle, anticlockwise); } },
+    ellipse: { configurable: true, value(x, y, radiusX, radiusY, rotation = 0, startAngle = 0, endAngle = Math.PI * 2, anticlockwise = false) { nativeCanvasPathEllipse(this.__glassPath, x, y, radiusX, radiusY, rotation, startAngle, endAngle, anticlockwise); } },
+    quadraticCurveTo: { configurable: true, value(cpx, cpy, x, y) { nativeCanvasPathQuadratic(this.__glassPath, cpx, cpy, x, y); } },
+    bezierCurveTo: { configurable: true, value(cp1x, cp1y, cp2x, cp2y, x, y) { nativeCanvasPathBezier(this.__glassPath, cp1x, cp1y, cp2x, cp2y, x, y); } },
+  });
+  const nativeCanvasPathArgument = (context, value) => {
+    if (value === undefined || value === null) return nativeCanvasEnsurePath(context);
+    if (!value || !Array.isArray(value.__glassPath)) throw new TypeError("path must be a Path2D");
+    return nativeCanvasPathTransform(value.__glassPath, context.__glassCanvasState.transform);
   };
   const nativeCanvasResetSurface = (canvas) => {
     const entry = canvas.__glassCanvasEntry();
@@ -5004,12 +5269,12 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
   });
   const nativeCanvasContextDrawPolygon = (context, points, style = context.__glassCanvasState.fillStyle, operation = context.__glassCanvasState.globalCompositeOperation) => {
     const surface = nativeCanvasContextSurface(context);
-    nativeCanvasFillPolygon(surface, points, style, context.__glassCanvasState.globalAlpha, operation);
+    nativeCanvasFillPolygon(surface, points, style, context.__glassCanvasState.globalAlpha, operation, context.__glassCanvasState.clipRegions);
     nativeCanvasCommit(context.__glassCanvas, surface);
   };
   const nativeCanvasContextStroke = (context, paths, style = context.__glassCanvasState.strokeStyle) => {
     const surface = nativeCanvasContextSurface(context);
-    nativeCanvasStrokePath(surface, paths, style, context.__glassCanvasState.globalAlpha, context.__glassCanvasState.globalCompositeOperation, context.__glassCanvasState.lineWidth);
+    nativeCanvasStrokePath(surface, paths, style, context.__glassCanvasState.globalAlpha, context.__glassCanvasState.globalCompositeOperation, context.__glassCanvasState.lineWidth, context.__glassCanvasState.clipRegions);
     nativeCanvasCommit(context.__glassCanvas, surface);
   };
   const nativeCanvasTextSize = (context) => {
@@ -5042,7 +5307,7 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
         nativeCanvasPathPoint(context, left + Math.max(1, advance * 0.82) * scale, top + size),
         nativeCanvasPathPoint(context, left, top + size),
       ];
-      nativeCanvasFillPolygon(surface, points, stroke ? context.__glassCanvasState.strokeStyle : context.__glassCanvasState.fillStyle, context.__glassCanvasState.globalAlpha, context.__glassCanvasState.globalCompositeOperation);
+      nativeCanvasFillPolygon(surface, points, stroke ? context.__glassCanvasState.strokeStyle : context.__glassCanvasState.fillStyle, context.__glassCanvasState.globalAlpha, context.__glassCanvasState.globalCompositeOperation, context.__glassCanvasState.clipRegions);
     }
     nativeCanvasCommit(context.__glassCanvas, surface);
   };
@@ -5075,9 +5340,9 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
       ellipse: { configurable: true, value(x, y, radiusX, radiusY, rotation = 0, startAngle = 0, endAngle = Math.PI * 2, anticlockwise = false) { const rx = Number(radiusX); const ry = Number(radiusY); if (rx < 0 || ry < 0) throw nativeCanvasError("ellipse radius is invalid"); const segments = Math.max(8, Math.min(128, Math.ceil(Math.abs(endAngle - startAngle) * 16))); const points = []; const cos = Math.cos(rotation); const sin = Math.sin(rotation); for (let index = 0; index <= segments; index += 1) { const amount = index / segments; const angle = startAngle + (endAngle - startAngle) * (anticlockwise ? -amount : amount); const px = Math.cos(angle) * rx; const py = Math.sin(angle) * ry; points.push(nativeCanvasPathPoint(this, Number(x) + px * cos - py * sin, Number(y) + px * sin + py * cos)); } nativeCanvasEnsurePath(this).push({ points, closed: false }); } },
       quadraticCurveTo: { configurable: true, value(cpx, cpy, x, y) { const path = nativeCanvasCurrentPath(this); const start = path.points[path.points.length - 1] || nativeCanvasPathPoint(this, 0, 0); const points = []; for (let index = 1; index <= 16; index += 1) { const amount = index / 16; const inverse = 1 - amount; points.push(nativeCanvasPathPoint(this, inverse * inverse * start.x + 2 * inverse * amount * Number(cpx) + amount * amount * Number(x), inverse * inverse * start.y + 2 * inverse * amount * Number(cpy) + amount * amount * Number(y))); } path.points.push(...points); } },
       bezierCurveTo: { configurable: true, value(cp1x, cp1y, cp2x, cp2y, x, y) { const path = nativeCanvasCurrentPath(this); const start = path.points[path.points.length - 1] || nativeCanvasPathPoint(this, 0, 0); const points = []; for (let index = 1; index <= 24; index += 1) { const amount = index / 24; const inverse = 1 - amount; points.push(nativeCanvasPathPoint(this, inverse ** 3 * start.x + 3 * inverse ** 2 * amount * Number(cp1x) + 3 * inverse * amount ** 2 * Number(cp2x) + amount ** 3 * Number(x), inverse ** 3 * start.y + 3 * inverse ** 2 * amount * Number(cp1y) + 3 * inverse * amount ** 2 * Number(cp2y) + amount ** 3 * Number(y))); } path.points.push(...points); } },
-      fill: { configurable: true, value() { const operation = this.__glassCanvasState.globalCompositeOperation; const surface = nativeCanvasContextSurface(this); for (const path of nativeCanvasEnsurePath(this)) { const points = path.points.slice(); if (!path.closed && points.length > 1) points.push(points[0]); nativeCanvasFillPolygon(surface, points, this.__glassCanvasState.fillStyle, this.__glassCanvasState.globalAlpha, operation); } nativeCanvasCommit(this.__glassCanvas, surface); } },
-      stroke: { configurable: true, value() { nativeCanvasContextStroke(this, nativeCanvasEnsurePath(this)); } },
-      save: { configurable: true, value() { const current = this.__glassCanvasState; this.__glassCanvasState.stack.push({ ...current, transform: current.transform.slice(), lineDash: current.lineDash.slice(), path: undefined, stack: undefined }); } },
+      fill: { configurable: true, value(pathOrRule, maybeRule) { const path = pathOrRule && pathOrRule.__glassPath ? pathOrRule : undefined; const fillRule = path ? maybeRule === undefined ? "nonzero" : maybeRule : pathOrRule === undefined ? "nonzero" : pathOrRule; if (!["nonzero", "evenodd"].includes(String(fillRule))) throw new TypeError("fill rule is invalid"); const operation = this.__glassCanvasState.globalCompositeOperation; const surface = nativeCanvasContextSurface(this); nativeCanvasFillPaths(surface, nativeCanvasPathArgument(this, path), this.__glassCanvasState.fillStyle, this.__glassCanvasState.globalAlpha, operation, this.__glassCanvasState.clipRegions, String(fillRule)); nativeCanvasCommit(this.__glassCanvas, surface); } },
+      stroke: { configurable: true, value(path) { nativeCanvasContextStroke(this, nativeCanvasPathArgument(this, path)); } },
+      save: { configurable: true, value() { const current = this.__glassCanvasState; this.__glassCanvasState.stack.push({ ...current, transform: current.transform.slice(), lineDash: current.lineDash.slice(), clipRegions: current.clipRegions.map((region) => ({ fillRule: region.fillRule, paths: nativeCanvasPathClone(region.paths) })), path: undefined, stack: undefined }); } },
       restore: { configurable: true, value() { const current = this.__glassCanvasState; const saved = current.stack.pop(); if (saved) { saved.stack = current.stack; this.__glassCanvasState = saved; } } },
       reset: { configurable: true, value() { this.__glassCanvasState = nativeCanvasState(); } },
       translate: { configurable: true, value(x, y) { this.__glassCanvasState.transform = nativeCanvasMatrixMultiply(this.__glassCanvasState.transform, [1, 0, 0, 1, Number(x), Number(y)]); } },
@@ -5090,14 +5355,15 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
       getContextAttributes: { configurable: true, value() { return { alpha: true, desynchronized: false, willReadFrequently: false }; } },
       getLineDash: { configurable: true, value() { return this.__glassCanvasState.lineDash.slice(); } },
       setLineDash: { configurable: true, value(value) { if (!Array.isArray(value) || value.some((entry) => !Number.isFinite(Number(entry)) || Number(entry) < 0)) throw new TypeError("line dash must be a non-negative array"); this.__glassCanvasState.lineDash = value.map(Number); } },
-      clip: { configurable: true, value() {} },
-      isPointInPath: { configurable: true, value(x, y) { const point = nativeCanvasPathPoint(this, Number(x), Number(y)); return nativeCanvasEnsurePath(this).some((path) => nativeCanvasPointInPolygon(point, path.points)); } },
+      clip: { configurable: true, value(pathOrRule, maybeRule) { const path = pathOrRule && pathOrRule.__glassPath ? pathOrRule : undefined; const fillRule = path ? maybeRule === undefined ? "nonzero" : maybeRule : pathOrRule === undefined ? "nonzero" : pathOrRule; if (!["nonzero", "evenodd"].includes(String(fillRule))) throw new TypeError("clip rule is invalid"); this.__glassCanvasState.clipRegions.push({ fillRule: String(fillRule), paths: nativeCanvasPathClone(nativeCanvasPathArgument(this, path)) }); } },
+      isPointInPath: { configurable: true, value(...args) { const path = args[0] && args[0].__glassPath ? args[0] : undefined; const offset = path ? 1 : 0; const x = Number(args[offset]); const y = Number(args[offset + 1]); const fillRule = args[offset + 2] === undefined ? "nonzero" : String(args[offset + 2]); if (!["nonzero", "evenodd"].includes(fillRule)) throw new TypeError("fill rule is invalid"); if (![x, y].every(Number.isFinite)) return false; const point = nativeCanvasPathPoint(this, x, y); return nativeCanvasPointInPaths(point, nativeCanvasPathArgument(this, path), fillRule); } },
+      isPointInStroke: { configurable: true, value(...args) { const path = args[0] && args[0].__glassPath ? args[0] : undefined; const offset = path ? 1 : 0; const x = Number(args[offset]); const y = Number(args[offset + 1]); if (![x, y].every(Number.isFinite)) return false; const point = nativeCanvasPathPoint(this, x, y); const radius = Math.max(0.5, this.__glassCanvasState.lineWidth / 2); return nativeCanvasPathArgument(this, path).some((subpath) => subpath.points.slice(1).some((end, index) => nativeCanvasDistanceToSegment(point, subpath.points[index], end) <= radius)); } },
       createLinearGradient: { configurable: true, value(x0, y0, x1, y1) { return nativeCanvasGradient("linear", [Number(x0), Number(y0), Number(x1), Number(y1)]); } },
       createRadialGradient: { configurable: true, value(x0, y0, r0, x1, y1, r1) { const gradient = nativeCanvasGradient("radial", [Number(x0), Number(y0), Number(x1), Number(y1)]); gradient.x0 = Number(x0); gradient.y0 = Number(y0); gradient.r0 = Number(r0); gradient.x1 = Number(x1); gradient.y1 = Number(y1); gradient.r1 = Number(r1); return gradient; } },
       createImageData: { configurable: true, value(dataOrWidth, height) { return dataOrWidth instanceof ImageDataNative ? new ImageDataNative(dataOrWidth.width, dataOrWidth.height) : new ImageDataNative(dataOrWidth, height); } },
       getImageData: { configurable: true, value(sx, sy, sw, sh) { const x = Math.trunc(Number(sx)); const y = Math.trunc(Number(sy)); const width = Math.trunc(Number(sw)); const height = Math.trunc(Number(sh)); if (width <= 0 || height <= 0) throw nativeCanvasError("getImageData dimensions must be positive"); if (width * height > nativeCanvasPixelLimit) throw nativeCanvasError("getImageData exceeds the native pixel limit", "QuotaExceededError"); const surface = nativeCanvasContextSurface(this); const bytes = new Uint8ClampedArray(width * height * 4); for (let row = 0; row < height; row += 1) for (let column = 0; column < width; column += 1) { const sourceX = x + column; const sourceY = y + row; if (sourceX < 0 || sourceY < 0 || sourceX >= surface.width || sourceY >= surface.height) continue; const sourceIndex = (sourceY * surface.width + sourceX) * 4; const targetIndex = (row * width + column) * 4; for (let channel = 0; channel < 4; channel += 1) bytes[targetIndex + channel] = surface.pixels[sourceIndex + channel]; } return new ImageDataNative(bytes, width, height); } },
       putImageData: { configurable: true, value(image, dx, dy) { if (!image || !image.data) throw new TypeError("putImageData requires ImageData"); const width = Number(image.width); const height = Number(image.height); if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1 || width * height > nativeCanvasPixelLimit) throw nativeCanvasError("putImageData exceeds the native pixel limit", "QuotaExceededError"); const surface = nativeCanvasContextSurface(this); const offsetX = Math.trunc(Number(dx)); const offsetY = Math.trunc(Number(dy)); for (let row = 0; row < height; row += 1) for (let column = 0; column < width; column += 1) { const targetX = offsetX + column; const targetY = offsetY + row; if (targetX < 0 || targetY < 0 || targetX >= surface.width || targetY >= surface.height) continue; const sourceIndex = (row * width + column) * 4; const targetIndex = (targetY * surface.width + targetX) * 4; for (let channel = 0; channel < 4; channel += 1) surface.pixels[targetIndex + channel] = Number(image.data[sourceIndex + channel]) || 0; } nativeCanvasCommit(this.__glassCanvas, surface); } },
-      drawImage: { configurable: true, value(source, ...args) { const sourceSurface = source && source.__glassCanvasSurface ? source.__glassCanvasSurface : null; if (!sourceSurface) throw new TypeError("native drawImage currently requires a canvas source"); let sx = 0; let sy = 0; let sw = sourceSurface.width; let sh = sourceSurface.height; let dx; let dy; let dw; let dh; if (args.length === 2) { [dx, dy] = args; dw = sw; dh = sh; } else if (args.length === 4) { [dx, dy, dw, dh] = args; } else if (args.length === 8) { [sx, sy, sw, sh, dx, dy, dw, dh] = args; } else throw new TypeError("drawImage arguments are invalid"); sx = Number(sx); sy = Number(sy); sw = Number(sw); sh = Number(sh); dx = Number(dx); dy = Number(dy); dw = Number(dw); dh = Number(dh); if (sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0) throw nativeCanvasError("drawImage dimensions are invalid"); const surface = nativeCanvasContextSurface(this); const inverse = nativeCanvasMatrixInverse(this.__glassCanvasState.transform); if (!inverse) return; for (let y = 0; y < surface.height; y += 1) for (let x = 0; x < surface.width; x += 1) { const user = nativeCanvasMatrixPoint(inverse, x + 0.5, y + 0.5); if (user.x < dx || user.x >= dx + dw || user.y < dy || user.y >= dy + dh) continue; const sourceX = Math.floor(sx + (user.x - dx) * sw / dw); const sourceY = Math.floor(sy + (user.y - dy) * sh / dh); if (sourceX < 0 || sourceY < 0 || sourceX >= sourceSurface.width || sourceY >= sourceSurface.height) continue; const sourceIndex = (sourceY * sourceSurface.width + sourceX) * 4; nativeCanvasBlendPixel(surface, x, y, sourceSurface.pixels.slice(sourceIndex, sourceIndex + 4), this.__glassCanvasState.globalAlpha, this.__glassCanvasState.globalCompositeOperation); } nativeCanvasCommit(this.__glassCanvas, surface); } },
+      drawImage: { configurable: true, value(source, ...args) { const sourceSurface = source && source.__glassCanvasSurface ? source.__glassCanvasSurface : null; if (!sourceSurface) throw new TypeError("native drawImage currently requires a canvas source"); let sx = 0; let sy = 0; let sw = sourceSurface.width; let sh = sourceSurface.height; let dx; let dy; let dw; let dh; if (args.length === 2) { [dx, dy] = args; dw = sw; dh = sh; } else if (args.length === 4) { [dx, dy, dw, dh] = args; } else if (args.length === 8) { [sx, sy, sw, sh, dx, dy, dw, dh] = args; } else throw new TypeError("drawImage arguments are invalid"); sx = Number(sx); sy = Number(sy); sw = Number(sw); sh = Number(sh); dx = Number(dx); dy = Number(dy); dw = Number(dw); dh = Number(dh); if (sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0) throw nativeCanvasError("drawImage dimensions are invalid"); const surface = nativeCanvasContextSurface(this); const inverse = nativeCanvasMatrixInverse(this.__glassCanvasState.transform); if (!inverse) return; for (let y = 0; y < surface.height; y += 1) for (let x = 0; x < surface.width; x += 1) { const user = nativeCanvasMatrixPoint(inverse, x + 0.5, y + 0.5); if (user.x < dx || user.x >= dx + dw || user.y < dy || user.y >= dy + dh) continue; const sourceX = Math.floor(sx + (user.x - dx) * sw / dw); const sourceY = Math.floor(sy + (user.y - dy) * sh / dh); if (sourceX < 0 || sourceY < 0 || sourceX >= sourceSurface.width || sourceY >= sourceSurface.height) continue; const sourceIndex = (sourceY * sourceSurface.width + sourceX) * 4; nativeCanvasBlendPixel(surface, x, y, sourceSurface.pixels.slice(sourceIndex, sourceIndex + 4), this.__glassCanvasState.globalAlpha, this.__glassCanvasState.globalCompositeOperation, this.__glassCanvasState.clipRegions); } nativeCanvasCommit(this.__glassCanvas, surface); } },
       measureText: { configurable: true, value(text) { const width = String(text).length * nativeCanvasTextSize(this) * 0.62; return { width, actualBoundingBoxLeft: 0, actualBoundingBoxRight: width, actualBoundingBoxAscent: nativeCanvasTextSize(this) * 0.8, actualBoundingBoxDescent: nativeCanvasTextSize(this) * 0.2 }; } },
       fillText: { configurable: true, value(text, x, y, maxWidth) { nativeCanvasDrawText(this, text, x, y, maxWidth, false); } },
       strokeText: { configurable: true, value(text, x, y, maxWidth) { nativeCanvasDrawText(this, text, x, y, maxWidth, true); } },
@@ -5161,6 +5427,7 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
             sourceSurface.pixels.slice(sourceIndex, sourceIndex + 4),
             this.__glassCanvasState.globalAlpha,
             this.__glassCanvasState.globalCompositeOperation,
+            this.__glassCanvasState.clipRegions,
           );
         }
       }

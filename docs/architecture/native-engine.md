@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-313` slice; the bounded foundation below remains
+`native-engine-browser-314` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 
 Slice 283 adds a bounded dedicated-worker bridge after the page-facing
@@ -316,6 +316,18 @@ persistent DOM/context closures coherent across host snapshots. Worker-realm
 installation, video/media sources, complete OffscreenCanvas/Canvas Web IDL
 semantics, and the final native/CDP replacement gates remain Issue #40 work.
 Exact evidence is recorded in `docs/plan/tasks/native-engine-browser-313.md`.
+
+Slice 314 adds a page-realm `Path2D` owner and replaces the Canvas `clip()`
+no-op with bounded retained clip regions. Reusable paths support constructor
+copying, basic SVG-style move/line/horizontal/vertical/curve data,
+transformed `addPath()`, the common imperative path methods, and Canvas path
+overloads. The shared software raster gate applies each saved clip region to
+fill, stroke, clear, text, and image writes; path state remains separate from
+the drawing-state stack and clip state is copied by `save()`/`restore()`.
+Worker-realm installation, the rest of SVG path grammar, exact winding and
+stroke metrics, complete Canvas/Web IDL semantics, and the final native/CDP
+replacement gates remain Issue #40 work. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-314.md`.
 
 Slice 282 adds a bounded page-facing computed-style and media-query bridge:
 the JavaScript realm reads the native cascade/layout snapshot through a

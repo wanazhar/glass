@@ -1755,9 +1755,12 @@ fn entity_details_for_fact(kind: WebIrEntityKind, fact: &EvidenceFact) -> WebIrE
             let mut actions = vec![WebIrAction::Read];
             if fact.read_only != Some(true) {
                 match role.as_str() {
-                    "checkbox" => actions.extend([WebIrAction::Check, WebIrAction::Uncheck]),
+                    "checkbox" | "switch" => {
+                        actions.extend([WebIrAction::Check, WebIrAction::Uncheck])
+                    }
                     "radio" => actions.push(WebIrAction::Check),
                     "combobox" | "listbox" => actions.push(WebIrAction::Select),
+                    "file" | "slider" => {}
                     _ => actions.push(WebIrAction::Type),
                 }
             }
@@ -1989,9 +1992,8 @@ fn canonical_kind(fact: &EvidenceFact) -> Option<WebIrEntityKind> {
         "button" => Some(WebIrEntityKind::Action),
         "menuitem" => Some(WebIrEntityKind::NavigationItem),
         "tab" => Some(WebIrEntityKind::Tab),
-        "textbox" | "combobox" | "checkbox" | "radio" | "spinbutton" | "listbox" => {
-            Some(WebIrEntityKind::Field)
-        }
+        "textbox" | "combobox" | "checkbox" | "radio" | "spinbutton" | "listbox" | "slider"
+        | "switch" | "file" => Some(WebIrEntityKind::Field),
         "link" => Some(WebIrEntityKind::Link),
         "table" => Some(WebIrEntityKind::Table),
         "row" => Some(WebIrEntityKind::Row),

@@ -2858,6 +2858,48 @@ impl NativeEngineBackend {
         })
     }
 
+    /// Reload the selected native page without adding a history entry.
+    ///
+    /// Reload goes through the same target/effect pipeline as an ordinary
+    /// navigation so lifecycle scripts, frame state, and browser-owned
+    /// effects remain synchronized with the selected target.
+    pub async fn reload(&self) -> Result<NavigationControlOutcome, BrowserBackendError> {
+        let (target_id, url, previous_revision) =
+            {
+                let targets = self.lock_targets(BackendOperation::Navigate)?;
+                let target_id = targets.active_target_id.clone().ok_or_else(|| {
+                    BrowserBackendError::Lifecycle {
+                        operation: "reload".into(),
+                        state: "no-target-selected".into(),
+                        reason: "select an available native page target before reloading".into(),
+                    }
+                })?;
+                let engine = self.lock_engine_raw(BackendOperation::Navigate)?;
+                let url = engine.context().map_err(native_error)?.url;
+                (target_id, url, engine.revision())
+            };
+        let (_, popups, messages, closes, navigations) = self
+            .navigate_named_target(&target_id, true, &url, true)
+            .await?;
+        self.process_pending_browser_effects(popups, messages, closes, navigations)
+            .await?;
+        let current_revision = self.lock_engine(BackendOperation::Navigate)?.revision();
+        Ok(NavigationControlOutcome {
+            action: "reload".into(),
+            previous_revision,
+            current_revision,
+        })
+    }
+
+    /// Return the logical viewport used by native point routing and capture.
+    pub fn viewport_size(&self) -> Result<(f64, f64), BrowserBackendError> {
+        let engine = self.lock_engine(BackendOperation::Capture)?;
+        Ok((
+            f64::from(engine.config().viewport.width),
+            f64::from(engine.config().viewport.height),
+        ))
+    }
+
     pub fn profile_for(glass_version: &str) -> Result<BackendProfile, BrowserBackendError> {
         if glass_version.is_empty() {
             return Err(BrowserBackendError::InvalidConfiguration {

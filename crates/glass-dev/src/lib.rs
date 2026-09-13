@@ -152,17 +152,17 @@ pub use workspace::{AgentTurnMode, DevelopmentWorkspace, SharedDevelopmentWorksp
 /// Resident development commands are handled here. Browser-only commands use
 /// the public browser runtime through the one-way crate dependency.
 pub async fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
-    if cli.browser_runtime != glass_browser::BrowserRuntime::Chromium
-        || cli.browser_endpoint.is_some()
-    {
-        return glass_browser::cli::runner::dispatch(cli).await;
-    }
     if cli.mcp {
         let backend = std::sync::Arc::new(mcp::DevelopmentMcpBackend::open(
             std::env::current_dir()?,
             cli.yolo,
         )?);
         return glass_browser::mcp::server::run_mcp_server_with_backend(&cli, backend).await;
+    }
+    if cli.browser_runtime != glass_browser::BrowserRuntime::Chromium
+        || cli.browser_endpoint.is_some()
+    {
+        return glass_browser::cli::runner::dispatch(cli).await;
     }
     if let Some(glass_browser::cli::args::Commands::Agent { action }) = &cli.command
         && matches!(

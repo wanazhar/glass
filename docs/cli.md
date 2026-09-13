@@ -24,18 +24,18 @@ remains the authority for installed flags, defaults, and positional arguments.
 | `--experimental-extensions` | off | Opt into the separately gated extension loader. |
 | `--profile NAME` | `default` | Use a persistent browser profile. |
 | `--incognito` | off | Use a disposable browser profile. |
-| `--attach` | off | Connect to an existing CDP endpoint. |
-| `--session NAME` | none | Attach browser operations to a named persistent local session; resolves its verified loopback port. |
-| `--target-id ID` | automatic | Select a page target (required when the endpoint exposes more than one page target). |
-| `--frame-id ID` | main frame | Select a frame. |
-| `--port PORT` | `9222` | Set the local CDP port. |
-| `--headed` | off | Show the Chrome window. |
+| `--attach` | off | Explicitly select an existing Chromium/CDP endpoint; ordinary native startup does not attach to CDP. |
+| `--session NAME` | none | Attach browser operations to a named persistent local session; native sessions use their private owner socket, while Chromium sessions resolve their verified loopback port. |
+| `--target-id ID` | automatic | Select a page target when the selected runtime exposes more than one page target. |
+| `--frame-id ID` | main frame | Select a frame in the selected runtime. |
+| `--port PORT` | `9222` | Set the Chromium/CDP port when attaching or using an explicit Chromium session. |
+| `--headed` | off | Request a visible browser window; native resident startup is headless/local and visible Chromium requires explicit attach. |
 | `--viewport WIDTHxHEIGHT` | browser default | Set CSS viewport dimensions before navigation. |
 | `--interaction human\|fast` | `human` | Select pointer event mode. |
 | `--audit` | off | Record bounded high-risk operation metadata. |
 | `--trace-on-error` | off | Write one bounded failure trace to stderr. |
 | `--chrome-path PATH` | discovered | Select the browser executable. |
-| `--browser-runtime` | `chromium` | Select `chromium`, `firefox`, or `safari`; `native` is available only in a `native-engine` feature build. |
+| `--browser-runtime` | `native` in default builds | Select the Glass-owned `native` runtime, or explicitly select the Chromium/CDP migration backend, Firefox BiDi, or Safari WebDriver. |
 | `--browser-endpoint URL` | none | WebDriver BiDi WebSocket/HTTP discovery endpoint for Firefox, or W3C WebDriver base URL for Safari; native rejects endpoints. |
 | `--knowledge-store PATH` | profile-scoped | Select the knowledge store. |
 | `--response-mode minimal\|normal\|diagnostic` | `minimal` | Select the bounded agent-facing result projection. |
@@ -65,10 +65,11 @@ stdio server and reserves stdout for protocol frames.
 
 ### Alternative browser runtimes
 
-The default `chromium` runtime uses the full `BrowserSession` and CDP lifecycle.
+The default feature-enabled runtime is the Glass-owned `native` engine. The
+explicit `chromium` runtime uses the full `BrowserSession` and CDP lifecycle.
 `firefox` connects to Firefox's direct WebDriver BiDi endpoint, while `safari`
-connects to an externally started `safaridriver` W3C WebDriver server. Both
-alternative runtimes are experimental and expose only the portable semantic
+connects to an externally started `safaridriver` W3C WebDriver server. These
+external runtimes expose only the portable semantic
 one-shot commands:
 
 ```text
@@ -87,19 +88,19 @@ Example:
 glass-browser --browser-runtime firefox --browser-endpoint ws://127.0.0.1:9222/session observe
 ```
 
-Alternative runtimes do not start or own the browser process. The endpoint must
-be private and explicitly supplied. MCP, TUI, profiles, screenshots, storage,
-downloads, prompts, workflows, and the full semantic target resolver remain
-Chromium-only until their capability contracts are certified.
+External Firefox and Safari runtimes do not start or own the browser process.
+Their endpoints must be private and explicitly supplied. The full Glass
+product lifecycle, profiles, screenshots, storage, downloads, prompts, and
+workflows are provided by native or explicit Chromium sessions; the external
+drivers remain a separate portable adapter surface.
 Development and CI capability/URL checks still apply. Hardened,
 untrusted-mcp, and polite network policy modes currently require the full
 Chromium session because alternative drivers do not yet provide Glass's
 request-interception and robots gates.
 
-### Native engine (feature-gated local path)
+### Native engine (default local path)
 
-The Glass-owned native engine is available as `--browser-runtime native` only
-when the `native-engine` feature is explicitly enabled:
+The Glass-owned native engine is the default in feature-enabled builds:
 
 ```console
 cargo run -p glass-browser --features native-engine -- \
@@ -134,6 +135,7 @@ evaluate EXPRESSION
 scroll --dy DY
 screenshot --output PATH --format png
 inspect-page
+extract-web-ir [REQUEST]
 find-target INPUT
 verify PREDICATE_JSON [--timeout-ms MS]
 wait CONDITION [--timeout-ms MS]
@@ -145,17 +147,15 @@ explicit `css=` form. Native clicks may additionally use
 `point=<unsigned-x>,<unsigned-y>` for the bounded viewport hit-test path.
 Native `preflight` is side-effect-free and reports the current semantic node,
 viewport geometry, actionability, and bounded navigation/form hints. Native
-`inspect-page` and `find-target INPUT` expose the standard agent inspection and
-intent-discovery envelopes. Core MCP browser tools now use
-the same native session when `--mcp` is selected: navigation, evidence,
-semantic actions, script, PNG capture, target listing, and storage reads do not
-start Chromium. Richer MCP workflows, TUI, profiles, downloads, prompts, and
-other unsupported operations fail closed. The `--expected-revision` option is
+`inspect-page`, `extract-web-ir`, and `find-target INPUT` expose the standard
+agent inspection, live Web IR, and intent-discovery envelopes. Core MCP browser
+tools now use the same native session when `--mcp` is selected: navigation,
+evidence, semantic actions, script, PNG capture, target listing, storage reads,
+and Web IR extraction do not start Chromium. The `--expected-revision` option is
 honored by native navigation, form, keyboard, and scroll commands; stale
-observations fail before mutation. The backend is experimental, and local
-execution is not a security boundary for hostile content; external HTTP(S)
-documents use the native content worker. It never enters automatic selection
-or silently falls back to Chromium.
+observations fail before mutation. External HTTP(S) documents use the native
+content worker. Native is selected explicitly or by default and never silently
+falls back to Chromium.
 
 Native `wait` supports `lifecycle=`, `url=`, `url-prefix=`, `text=`,
 `semantic-region=`, `js=` boolean, and target-state conditions. Native
@@ -212,6 +212,7 @@ inspect-page
 find-target
 act-and-verify
 extract-structured
+extract-web-ir
 recover-run
 scroll
 wait CONDITION

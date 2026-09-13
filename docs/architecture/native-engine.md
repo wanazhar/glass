@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-323` slice. The native runtime is now the primary
+`native-engine-browser-326` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -77,6 +77,29 @@ with native batches, capped at sixteen controls, and remains policy-gated with
 password redaction by default. The next expansion is the native Web IR
 projection and its conformance corpus before final Core Web Profile and
 release promotion gates.
+
+Slice 325 promotes the native semantic projection into live Web IR. The native
+runtime captures one revisioned observation under its operation lock, narrows
+document/region/frame scope deterministically, emits source-labelled evidence
+for regions, actionable controls, forms, navigation, frame boundaries,
+viewport state, and bounded text, then uses the shared Web IR reconciler and
+validator. Unsupported DOM-like evidence is reported in `missingSources`
+rather than inferred. The CLI `extract-web-ir` command and MCP `extractWebIr`
+tool now use this path for native sessions; explicit Chromium sessions retain
+their CDP evidence adapter. Resident `glass-dev` native ownership, complete
+browser-surface parity, Core Web Profile certification, recovery/cancellation,
+and cross-platform release promotion remain the active issue #40 gates.
+
+Slice 326 makes that native runtime the ordinary resident `glass-dev` browser
+owner. `glass.browser.start` creates one native owner by default, carries its
+revision and workflow state through observation, actions, screenshots, remote
+frames, and remote input, and reports `browserBackend: "native"`. The
+Chromium/CDP path is available only through explicit `glass.browser.attach`;
+the resident worker does not silently change runtime. Reconnect and shutdown
+preserve the same ownership semantics, while native and Chromium action
+receipts remain backend-labelled. Native MCP surface completion, profile-wide
+conformance, recovery/cancellation, and release certification remain active
+issue #40 gates.
 
 Slice 283 adds a bounded dedicated-worker bridge after the page-facing
 computed-style/media-query bridge in slice 282. Page-created classic workers

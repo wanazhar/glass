@@ -44,6 +44,7 @@ use crate::cli::args::Cli;
 use crate::daemon::{DaemonLeaseContext, LeaseError, MutationLeaseManager};
 const MAX_PREFLIGHT_URL_BYTES: usize = 8 * 1024;
 use crate::browser_backend::{BackendProfile, BrowserCapability};
+use crate::extraction::ExtractionRequest;
 use crate::mcp::prompts;
 use crate::mcp::resources;
 use crate::protocol::{GLASS_PROTOCOL_VERSION, GlassRequest};
@@ -277,6 +278,9 @@ enum ToolInvocation<'a> {
     },
     ObserveBootstrap,
     InspectPage,
+    ExtractWebIr {
+        request: ExtractionRequest,
+    },
     InspectWebIr {
         ir: Value,
     },
@@ -1270,6 +1274,7 @@ fn tool_requires_mutation_lease(tool_name: &str) -> bool {
             | "observeBootstrap"
             | "observeKnowledge"
             | "inspectPage"
+            | "extractWebIr"
             | "inspectWebIr"
             | "validateWebIr"
             | "diffWebIr"
@@ -2258,6 +2263,9 @@ async fn call_tool(
         ToolInvocation::InspectPage => {
             serialized_result_mode(&session.inspect_page().await?, response_mode)
         }
+        ToolInvocation::ExtractWebIr { request } => {
+            serialized_result_mode(&session.extract_web_ir(&request).await?, response_mode)
+        }
         ToolInvocation::FindTarget { request } => {
             serialized_result_mode(&session.find_target(&request).await?, response_mode)
         }
@@ -2986,6 +2994,16 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         }),
         "observeBootstrap" => Ok(ToolInvocation::ObserveBootstrap),
         "inspectPage" => Ok(ToolInvocation::InspectPage),
+        "extractWebIr" => {
+            let request = arguments
+                .get("request")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()?
+                .unwrap_or_else(ExtractionRequest::default_document);
+            request.validate()?;
+            Ok(ToolInvocation::ExtractWebIr { request })
+        }
         "inspectWebIr" => {
             let ir = arguments
                 .get("ir")
@@ -3490,6 +3508,10 @@ async fn call_native_tool_on_session(
         ToolInvocation::InspectPage => {
             serialized_result_mode(&session.native_inspect_page().await?, response_mode)
         }
+        ToolInvocation::ExtractWebIr { request } => serialized_result_mode(
+            &session.native_extract_web_ir(&request).await?,
+            response_mode,
+        ),
         ToolInvocation::FindTarget { request } => {
             serialized_result_mode(&session.native_find_target(&request).await?, response_mode)
         }
@@ -4430,6 +4452,21 @@ fn tools() -> Vec<Tool> {
                 "type":"object",
                 "additionalProperties":false,
                 "properties":{"responseMode":{"type":"string","enum":["minimal","normal","diagnostic"],"default":"minimal"}}
+            }),
+        },
+        Tool {
+            name: "extractWebIr",
+            description: "Extract the live active page into bounded Glass Web IR v1 using the selected browser runtime.",
+            input_schema: json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "request": {
+                        "type": "object",
+                        "description": "Optional ExtractionRequest with scope, evidence sources, and hard budgets. Omit for the bounded document default."
+                    },
+                    "responseMode": {"type": "string", "enum": ["minimal", "normal", "diagnostic"], "default": "minimal"}
+                }
             }),
         },
         Tool {
@@ -5968,6 +6005,7 @@ mod tests {
         assert!(tools.iter().any(|tool| tool["name"] == "continuityWebIr"));
         assert!(tools.iter().any(|tool| tool["name"] == "diffWebIr"));
         assert!(tools.iter().any(|tool| tool["name"] == "executeTask"));
+        assert!(tools.iter().any(|tool| tool["name"] == "extractWebIr"));
         assert!(tools.iter().any(|tool| tool["name"] == "inspectWebIr"));
         assert!(tools.iter().any(|tool| tool["name"] == "validateTask"));
         assert!(tools.iter().any(|tool| tool["name"] == "validateWebIr"));
@@ -6017,6 +6055,7 @@ mod tests {
             "findTarget",
             "actAndVerify",
             "extractStructured",
+            "extractWebIr",
             "recoverRun",
             "sessionSnapshot",
         ] {

@@ -337,6 +337,79 @@ impl BrowserRuntimeSession {
         }
     }
 
+    /// Traverse native history only when the caller's observation is current.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_navigate_history_with_revision(
+        &self,
+        direction: super::native_engine::NativeHistoryDirection,
+        expected_revision: u64,
+    ) -> BrowserResult<NavigationControlOutcome> {
+        let _operation = self.operation_lock.lock().await;
+        self.require_current_revision(expected_revision).await?;
+        match &self.backend {
+            BackendStartup::Native(backend) => Ok(backend.navigate_history(direction).await?),
+            _ => Err("native history is only available on the native runtime".into()),
+        }
+    }
+
+    /// Reload the selected native page only when the caller's observation is
+    /// current. Reload replaces the active history entry.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_reload_with_revision(
+        &self,
+        expected_revision: u64,
+    ) -> BrowserResult<NavigationControlOutcome> {
+        let _operation = self.operation_lock.lock().await;
+        self.require_current_revision(expected_revision).await?;
+        match &self.backend {
+            BackendStartup::Native(backend) => Ok(backend.reload().await?),
+            _ => Err("native reload is only available on the native runtime".into()),
+        }
+    }
+
+    /// Stop-loading is a revision-checked no-op for the current native owner.
+    /// Native navigation is completed before its command returns, so there is
+    /// no detached load task to cancel; preserving the control result keeps
+    /// the resident protocol deterministic and honest.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_stop_loading_with_revision(
+        &self,
+        expected_revision: u64,
+    ) -> BrowserResult<NavigationControlOutcome> {
+        let _operation = self.operation_lock.lock().await;
+        self.require_current_revision(expected_revision).await?;
+        Ok(NavigationControlOutcome {
+            action: "stopLoading".into(),
+            previous_revision: expected_revision,
+            current_revision: expected_revision,
+        })
+    }
+
+    /// Validate one native target for the resident highlight command.
+    /// Visual composition does not mutate the page; target identity remains
+    /// revision-scoped for the caller.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_highlight_target_with_revision(
+        &self,
+        target: &str,
+        expected_revision: u64,
+    ) -> BrowserResult<()> {
+        let _operation = self.operation_lock.lock().await;
+        self.require_current_revision(expected_revision).await?;
+        let preflight = match &self.backend {
+            BackendStartup::Native(backend) => {
+                backend
+                    .preflight_target(target, NativePreflightAction::Click)
+                    .await?
+            }
+            _ => return Err("native highlighting is only available on the native runtime".into()),
+        };
+        if !preflight.unique {
+            return Err("native highlight target was not resolved uniquely".into());
+        }
+        Ok(())
+    }
+
     /// Return the oldest unresolved native JavaScript dialog, if present.
     #[cfg(feature = "native-engine")]
     pub async fn native_pending_dialog(&self) -> BrowserResult<Option<PendingDialog>> {
@@ -505,6 +578,15 @@ impl BrowserRuntimeSession {
         }
     }
 
+    /// Return the native logical viewport dimensions.
+    #[cfg(feature = "native-engine")]
+    pub fn native_viewport_size(&self) -> BrowserResult<(f64, f64)> {
+        match &self.backend {
+            BackendStartup::Native(backend) => Ok(backend.viewport_size()?),
+            _ => Err("native viewport inspection is only available on the native runtime".into()),
+        }
+    }
+
     /// Capture a native logical software surface after discovering and
     /// compositing the selected frame's live child browsing contexts.
     #[cfg(feature = "native-engine")]
@@ -605,6 +687,41 @@ impl BrowserRuntimeSession {
     #[cfg(feature = "native-engine")]
     pub async fn native_observe(&self) -> BrowserResult<super::session::SemanticObservation> {
         self.native_semantic_observation().await
+    }
+
+    /// Extract the active native document into the stable, bounded Web IR v1
+    /// contract without creating a Chromium/CDP session.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_extract_web_ir(
+        &self,
+        request: &crate::extraction::ExtractionRequest,
+    ) -> BrowserResult<crate::web_ir::GlassWebIrV1> {
+        request.validate()?;
+        let _operation = self.operation_lock.lock().await;
+        let frames = self.native_inspection_snapshots_unlocked().await?;
+        let selected_frames = match &request.scope {
+            crate::extraction::ExtractionScope::Frame { frame_id } => {
+                let frame = frames
+                    .iter()
+                    .find(|frame| frame.frame_id == *frame_id)
+                    .ok_or_else(|| {
+                        crate::extraction::ExtractionContractError::new(
+                            "scope.frameId",
+                            format!(
+                                "frame {frame_id:?} is not present at the current native revision"
+                            ),
+                        )
+                    })?;
+                vec![frame.clone()]
+            }
+            crate::extraction::ExtractionScope::Document
+            | crate::extraction::ExtractionScope::Region { .. } => frames,
+        };
+        let observation = build_native_semantic_observation(
+            &selected_frames,
+            super::session::SemanticObservationLevel::Structured,
+        )?;
+        super::native_extraction::extract(&observation, request)
     }
 
     /// Return the requested bounded semantic observation level from one
@@ -1448,12 +1565,18 @@ fn build_native_semantic_observation(
         .iter()
         .enumerate()
         .map(|(index, frame)| {
-            let available = frame.inspection.nodes.len();
+            let available = frame
+                .inspection
+                .nodes
+                .iter()
+                .filter(|node| native_semantic_node_is_interactive(node))
+                .count();
             let targets = if native_level_includes_targets(level) {
                 frame
                     .inspection
                     .nodes
                     .iter()
+                    .filter(|node| native_semantic_node_is_interactive(node))
                     .take(NATIVE_SEMANTIC_TARGET_LIMIT)
                     .map(|node| native_semantic_target(node, &frame.frame_id))
                     .collect::<Vec<_>>()
@@ -1594,19 +1717,30 @@ fn native_accessibility_nodes(
             role: node.role.clone(),
             name: node.name.clone(),
             children: Vec::new(),
-            interactive: matches!(
-                node.role.as_str(),
-                "button"
-                    | "checkbox"
-                    | "combobox"
-                    | "file"
-                    | "link"
-                    | "option"
-                    | "radio"
-                    | "textbox"
-            ),
+            interactive: native_semantic_node_is_interactive(node),
         })
         .collect()
+}
+
+#[cfg(feature = "native-engine")]
+fn native_semantic_node_is_interactive(node: &super::native_engine::NativeSemanticNode) -> bool {
+    matches!(
+        node.role.as_str(),
+        "button"
+            | "checkbox"
+            | "combobox"
+            | "file"
+            | "link"
+            | "listbox"
+            | "menuitem"
+            | "option"
+            | "radio"
+            | "slider"
+            | "spinbutton"
+            | "switch"
+            | "tab"
+            | "textbox"
+    )
 }
 
 #[cfg(feature = "native-engine")]

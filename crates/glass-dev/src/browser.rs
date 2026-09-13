@@ -4,9 +4,11 @@ use crate::development::{DevelopmentError, DevelopmentResult};
 use crate::development::{RemoteFrame, RemoteInput, RemoteView};
 use glass_browser::browser::policy::{BrowserPolicy, PolicyPreset};
 use glass_browser::browser::session::{
-    BrowserSession, SemanticObservationLevel, SessionOptions, VerificationPredicate,
-    WorkflowCheckpoint, WorkflowDefinition, WorkflowRunResult,
+    BrowserSession, SemanticObservation, SemanticObservationLevel, SessionOptions,
+    VerificationPredicate, WorkflowCheckpoint, WorkflowDefinition, WorkflowRunResult,
 };
+use glass_browser::browser::{BrowserRuntimeSession, NativeEngineConfig, NativeHistoryDirection};
+use glass_browser::browser_backend::{ActionResult, SemanticAction};
 use glass_browser::extraction::ExtractionRequest;
 use glass_browser::protocol::WebIrInspectionResult;
 use serde::{Deserialize, Serialize};
@@ -66,6 +68,9 @@ pub struct BrowserRuntimeState {
     pub policy_preset: PolicyPreset,
     /// Whether a browser session is connected.
     pub connected: bool,
+    /// Backend serving the resident session. Normal starts are native;
+    /// explicit attach requests report Chromium.
+    pub browser_backend: Option<String>,
     /// PID when this service owns the browser process.
     pub browser_process_id: Option<u32>,
     /// Latest observation revision known to the worker.
@@ -139,6 +144,36 @@ enum BrowserCommand {
 }
 
 type Reply = SyncSender<DevelopmentResult<Value>>;
+
+/// One resident browser connection. Native is the default product path;
+/// Chromium is retained only behind the explicit attach/migration command.
+enum ResidentBrowserSession {
+    Native(BrowserRuntimeSession),
+    Chromium(Box<BrowserSession>),
+}
+
+impl ResidentBrowserSession {
+    fn backend_id(&self) -> &'static str {
+        match self {
+            Self::Native(_) => "native",
+            Self::Chromium(_) => "chromium",
+        }
+    }
+
+    fn owned_chrome_pid(&self) -> Option<u32> {
+        match self {
+            Self::Native(_) => None,
+            Self::Chromium(session) => session.owned_chrome_pid(),
+        }
+    }
+
+    async fn close(self) -> DevelopmentResult<()> {
+        match self {
+            Self::Native(session) => session.close().await.map_err(browser_error),
+            Self::Chromium(session) => session.close().await.map_err(browser_error),
+        }
+    }
+}
 
 /// Cloneable command handle for the one authoritative browser worker.
 #[derive(Clone)]
@@ -383,8 +418,9 @@ impl BrowserService {
 struct BrowserWorker {
     root: PathBuf,
     policy_preset: PolicyPreset,
-    session: Option<BrowserSession>,
+    session: Option<ResidentBrowserSession>,
     revision: Option<u64>,
+    native_previous_observation: Option<SemanticObservation>,
     workflow_state: String,
     active_workflow: Option<String>,
     last_workflow: Option<(WorkflowDefinition, WorkflowRunResult)>,
@@ -399,6 +435,7 @@ impl BrowserWorker {
             policy_preset,
             session: None,
             revision: None,
+            native_previous_observation: None,
             workflow_state: "idle".into(),
             active_workflow: None,
             last_workflow: None,
@@ -411,17 +448,22 @@ impl BrowserWorker {
         BrowserRuntimeState {
             policy_preset: self.policy_preset,
             connected: self.session.is_some(),
+            browser_backend: self
+                .session
+                .as_ref()
+                .map(ResidentBrowserSession::backend_id)
+                .map(str::to_owned),
             browser_process_id: self
                 .session
                 .as_ref()
-                .and_then(BrowserSession::owned_chrome_pid),
+                .and_then(ResidentBrowserSession::owned_chrome_pid),
             browser_revision: self.revision,
             workflow_state: self.workflow_state.clone(),
             active_workflow: self.active_workflow.clone(),
         }
     }
 
-    fn session(&self) -> DevelopmentResult<&BrowserSession> {
+    fn session(&self) -> DevelopmentResult<&ResidentBrowserSession> {
         self.session.as_ref().ok_or_else(|| {
             DevelopmentError::Conflict(
                 "browser is not connected; call glass.browser.start first".into(),
@@ -437,6 +479,7 @@ impl BrowserWorker {
             let _ = session.close().await;
         }
         self.revision = None;
+        self.native_previous_observation = None;
         self.workflow_state = "idle".into();
         self.active_workflow = None;
         self.last_workflow = None;
@@ -448,28 +491,53 @@ impl BrowserWorker {
                 "browser workspace already has a connected session".into(),
             ));
         }
-        let policy = BrowserPolicy::from_preset(self.policy_preset, &self.root)
-            .map_err(|error| DevelopmentError::Process(error.to_string()))?;
-        let mut builder = SessionOptions::builder()
-            .port(config.port)
-            .attach(config.attach)
-            .incognito(config.incognito)
-            .headed(config.headed)
-            .profile(config.profile.clone())
-            .policy(policy);
-        if let Some(path) = config.chrome_path.clone() {
-            builder = builder.chrome_path(path);
-        }
-        let options = builder
-            .build()
-            .map_err(|error| DevelopmentError::InvalidInput(error.to_string()))?;
-        let session = BrowserSession::start(&options)
-            .await
-            .map_err(|error| DevelopmentError::Process(error.to_string()))?;
+        let session = if config.attach {
+            let policy = BrowserPolicy::from_preset(self.policy_preset, &self.root)
+                .map_err(|error| DevelopmentError::Process(error.to_string()))?;
+            let mut builder = SessionOptions::builder()
+                .port(config.port)
+                .attach(true)
+                .incognito(config.incognito)
+                .headed(config.headed)
+                .profile(config.profile.clone())
+                .policy(policy);
+            if let Some(path) = config.chrome_path.clone() {
+                builder = builder.chrome_path(path);
+            }
+            let options = builder
+                .build()
+                .map_err(|error| DevelopmentError::InvalidInput(error.to_string()))?;
+            ResidentBrowserSession::Chromium(Box::new(
+                BrowserSession::start(&options)
+                    .await
+                    .map_err(|error| DevelopmentError::Process(error.to_string()))?,
+            ))
+        } else {
+            if config.headed || config.chrome_path.is_some() {
+                return Err(DevelopmentError::InvalidInput(
+                    "headed and chromePath require explicit glass.browser.attach; glass.browser.start uses the native engine"
+                        .into(),
+                ));
+            }
+            let mut native = NativeEngineConfig::default();
+            if !config.incognito {
+                native = native.with_storage_path(native_profile_storage_path(&config.profile)?);
+            }
+            ResidentBrowserSession::Native(
+                BrowserRuntimeSession::connect_native(native)
+                    .await
+                    .map_err(browser_error)?,
+            )
+        };
         self.revision = Some(1);
         self.session = Some(session);
         self.last_config = Some(config);
         serde_json::to_value(self.state()).map_err(Into::into)
+    }
+
+    fn browser_policy(&self) -> DevelopmentResult<BrowserPolicy> {
+        BrowserPolicy::from_preset(self.policy_preset, &self.root)
+            .map_err(|error| DevelopmentError::Process(error.to_string()))
     }
 
     async fn execute(&mut self, command: BrowserCommand) -> DevelopmentResult<Value> {
@@ -491,174 +559,390 @@ impl BrowserWorker {
             }
             BrowserCommand::State => serde_json::to_value(self.state()).map_err(Into::into),
             BrowserCommand::Observe => {
-                let context = self
-                    .session()?
-                    .observe_fresh()
-                    .await
-                    .map_err(browser_error)?;
-                self.revision = Some(context.consistency.end_revision);
-                serde_json::to_value(context).map_err(Into::into)
+                match self.session()? {
+                    ResidentBrowserSession::Native(session) => {
+                        let observation = session.native_observe().await.map_err(browser_error)?;
+                        self.revision = Some(observation.revision);
+                        self.native_previous_observation = Some(observation.clone());
+                        serde_json::to_value(observation).map_err(Into::into)
+                    }
+                    ResidentBrowserSession::Chromium(session) => {
+                        let context = session.observe_fresh().await.map_err(browser_error)?;
+                        self.revision = Some(context.consistency.end_revision);
+                        serde_json::to_value(context).map_err(Into::into)
+                    }
+                }
             }
             BrowserCommand::Snapshot => {
-                let snapshot = self.session()?.snapshot().await.map_err(browser_error)?;
-                serde_json::to_value(snapshot).map_err(Into::into)
+                match self.session()? {
+                    ResidentBrowserSession::Native(session) => {
+                        let snapshot = session.native_inspect_page().await.map_err(browser_error)?;
+                        self.revision = Some(snapshot.revision);
+                        serde_json::to_value(snapshot).map_err(Into::into)
+                    }
+                    ResidentBrowserSession::Chromium(session) => {
+                        let snapshot = session.snapshot().await.map_err(browser_error)?;
+                        serde_json::to_value(snapshot).map_err(Into::into)
+                    }
+                }
             }
             BrowserCommand::Semantic(level) => {
-                let observation = self
-                    .session()?
-                    .semantic_observe(level)
-                    .await
-                    .map_err(browser_error)?;
-                serde_json::to_value(observation).map_err(Into::into)
+                match self.session()? {
+                    ResidentBrowserSession::Native(session) => {
+                        let observation = session
+                            .native_semantic_observe(level)
+                            .await
+                            .map_err(browser_error)?;
+                        self.revision = Some(observation.revision);
+                        serde_json::to_value(observation).map_err(Into::into)
+                    }
+                    ResidentBrowserSession::Chromium(session) => {
+                        let observation = session
+                            .semantic_observe(level)
+                            .await
+                            .map_err(browser_error)?;
+                        serde_json::to_value(observation).map_err(Into::into)
+                    }
+                }
             }
             BrowserCommand::WebIr => {
-                let ir = self
-                    .session()?
-                    .extract_web_ir(&ExtractionRequest::default_document())
-                    .await
-                    .map_err(browser_error)?;
-                self.revision = Some(ir.revision);
-                serde_json::to_value(WebIrInspectionResult::from_ir(&ir)).map_err(Into::into)
+                match self.session()? {
+                    ResidentBrowserSession::Native(session) => {
+                        let ir = session
+                            .native_extract_web_ir(&ExtractionRequest::default_document())
+                            .await
+                            .map_err(browser_error)?;
+                        self.revision = Some(ir.revision);
+                        serde_json::to_value(WebIrInspectionResult::from_ir(&ir)).map_err(Into::into)
+                    }
+                    ResidentBrowserSession::Chromium(session) => {
+                        let ir = session
+                            .extract_web_ir(&ExtractionRequest::default_document())
+                            .await
+                            .map_err(browser_error)?;
+                        self.revision = Some(ir.revision);
+                        serde_json::to_value(WebIrInspectionResult::from_ir(&ir)).map_err(Into::into)
+                    }
+                }
             }
             BrowserCommand::Diff => {
-                let delta = self
-                    .session()?
-                    .observe_delta()
-                    .await
-                    .map_err(browser_error)?;
-                self.revision = Some(delta.to_revision);
-                serde_json::to_value(delta).map_err(Into::into)
+                match self.session()? {
+                    ResidentBrowserSession::Native(session) => {
+                        let previous = self.native_previous_observation.clone().ok_or_else(|| {
+                            DevelopmentError::Conflict(
+                                "browser diff requires a prior native observation".into(),
+                            )
+                        })?;
+                        let current = session.native_observe().await.map_err(browser_error)?;
+                        let delta = current
+                            .diff_from(&previous)
+                            .map_err(|error| DevelopmentError::Process(error.to_string()))?;
+                        self.revision = Some(current.revision);
+                        self.native_previous_observation = Some(current);
+                        serde_json::to_value(delta).map_err(Into::into)
+                    }
+                    ResidentBrowserSession::Chromium(session) => {
+                        let delta = session.observe_delta().await.map_err(browser_error)?;
+                        self.revision = Some(delta.to_revision);
+                        serde_json::to_value(delta).map_err(Into::into)
+                    }
+                }
             }
             BrowserCommand::Targets => {
-                let targets = self
-                    .session()?
-                    .list_targets()
-                    .await
-                    .map_err(browser_error)?;
-                serde_json::to_value(targets).map_err(Into::into)
+                match self.session()? {
+                    ResidentBrowserSession::Native(session) => {
+                        let targets = session.native_list_targets().await.map_err(browser_error)?;
+                        serde_json::to_value(targets).map_err(Into::into)
+                    }
+                    ResidentBrowserSession::Chromium(session) => {
+                        let targets = session.list_targets().await.map_err(browser_error)?;
+                        serde_json::to_value(targets).map_err(Into::into)
+                    }
+                }
             }
             BrowserCommand::SelectTarget(target) => {
-                let selected = self
-                    .session()?
-                    .select_target(&target)
-                    .await
-                    .map_err(browser_error)?;
-                let observation = self
-                    .session()?
-                    .observe_fresh()
-                    .await
-                    .map_err(browser_error)?;
-                self.revision = Some(observation.consistency.end_revision);
-                Ok(serde_json::json!({"target":selected,"observation":observation}))
+                match self.session()? {
+                    ResidentBrowserSession::Native(session) => {
+                        let selected = session
+                            .native_select_target(&target)
+                            .await
+                            .map_err(browser_error)?;
+                        let observation = session.native_observe().await.map_err(browser_error)?;
+                        self.revision = Some(observation.revision);
+                        self.native_previous_observation = Some(observation.clone());
+                        Ok(serde_json::json!({"target":selected,"observation":observation}))
+                    }
+                    ResidentBrowserSession::Chromium(session) => {
+                        let selected = session
+                            .select_target(&target)
+                            .await
+                            .map_err(browser_error)?;
+                        let observation = session.observe_fresh().await.map_err(browser_error)?;
+                        self.revision = Some(observation.consistency.end_revision);
+                        Ok(serde_json::json!({"target":selected,"observation":observation}))
+                    }
+                }
             }
             BrowserCommand::Navigate {
                 url,
                 expected_revision,
                 timeout,
             } => {
-                let outcome = self
-                    .session()?
-                    .navigate_with_revision(&url, timeout, expected_revision)
-                    .await
-                    .map_err(browser_error)?;
-                let value = serde_json::to_value(outcome)?;
-                self.revision = value.get("currentRevision").and_then(Value::as_u64);
-                Ok(value)
+                match self.session()? {
+                    ResidentBrowserSession::Native(session) => {
+                        let outcome = tokio::time::timeout(
+                            timeout,
+                            session.navigate_with_revision(&url, expected_revision),
+                        )
+                        .await
+                        .map_err(|_| {
+                            DevelopmentError::Process("native browser navigation timed out".into())
+                        })?
+                        .map_err(browser_error)?;
+                        self.revision = Some(outcome.revision);
+                        Ok(serde_json::json!({
+                            "url": outcome.url,
+                            "revision": outcome.revision,
+                            "currentRevision": outcome.revision,
+                            "browserRevision": outcome.revision,
+                            "backend": "native"
+                        }))
+                    }
+                    ResidentBrowserSession::Chromium(session) => {
+                        let outcome = session
+                            .navigate_with_revision(&url, timeout, expected_revision)
+                            .await
+                            .map_err(browser_error)?;
+                        let value = serde_json::to_value(outcome)?;
+                        self.revision = value.get("currentRevision").and_then(Value::as_u64);
+                        Ok(value)
+                    }
+                }
             }
             BrowserCommand::Back(expected_revision) => {
-                let outcome = self
-                    .session()?
-                    .go_back_with_revision(expected_revision)
-                    .await
-                    .map_err(browser_error)?;
-                self.revision = Some(outcome.current_revision);
-                serde_json::to_value(outcome).map_err(Into::into)
+                match self.session()? {
+                    ResidentBrowserSession::Native(session) => {
+                        let outcome = session
+                            .native_navigate_history_with_revision(
+                                NativeHistoryDirection::Back,
+                                expected_revision,
+                            )
+                            .await
+                            .map_err(browser_error)?;
+                        self.revision = Some(outcome.current_revision);
+                        serde_json::to_value(outcome).map_err(Into::into)
+                    }
+                    ResidentBrowserSession::Chromium(session) => {
+                        let outcome = session
+                            .go_back_with_revision(expected_revision)
+                            .await
+                            .map_err(browser_error)?;
+                        self.revision = Some(outcome.current_revision);
+                        serde_json::to_value(outcome).map_err(Into::into)
+                    }
+                }
             }
             BrowserCommand::Forward(expected_revision) => {
-                let outcome = self
-                    .session()?
-                    .go_forward_with_revision(expected_revision)
-                    .await
-                    .map_err(browser_error)?;
-                self.revision = Some(outcome.current_revision);
-                serde_json::to_value(outcome).map_err(Into::into)
+                match self.session()? {
+                    ResidentBrowserSession::Native(session) => {
+                        let outcome = session
+                            .native_navigate_history_with_revision(
+                                NativeHistoryDirection::Forward,
+                                expected_revision,
+                            )
+                            .await
+                            .map_err(browser_error)?;
+                        self.revision = Some(outcome.current_revision);
+                        serde_json::to_value(outcome).map_err(Into::into)
+                    }
+                    ResidentBrowserSession::Chromium(session) => {
+                        let outcome = session
+                            .go_forward_with_revision(expected_revision)
+                            .await
+                            .map_err(browser_error)?;
+                        self.revision = Some(outcome.current_revision);
+                        serde_json::to_value(outcome).map_err(Into::into)
+                    }
+                }
             }
             BrowserCommand::Reload(expected_revision) => {
-                let outcome = self
-                    .session()?
-                    .reload_with_revision(expected_revision)
-                    .await
-                    .map_err(browser_error)?;
-                self.revision = Some(outcome.current_revision);
-                serde_json::to_value(outcome).map_err(Into::into)
+                match self.session()? {
+                    ResidentBrowserSession::Native(session) => {
+                        let outcome = session
+                            .native_reload_with_revision(expected_revision)
+                            .await
+                            .map_err(browser_error)?;
+                        self.revision = Some(outcome.current_revision);
+                        serde_json::to_value(outcome).map_err(Into::into)
+                    }
+                    ResidentBrowserSession::Chromium(session) => {
+                        let outcome = session
+                            .reload_with_revision(expected_revision)
+                            .await
+                            .map_err(browser_error)?;
+                        self.revision = Some(outcome.current_revision);
+                        serde_json::to_value(outcome).map_err(Into::into)
+                    }
+                }
             }
             BrowserCommand::StopLoading(expected_revision) => {
-                let outcome = self
-                    .session()?
-                    .stop_loading_with_revision(expected_revision)
-                    .await
-                    .map_err(browser_error)?;
-                self.revision = Some(outcome.current_revision);
-                serde_json::to_value(outcome).map_err(Into::into)
+                match self.session()? {
+                    ResidentBrowserSession::Native(session) => {
+                        let outcome = session
+                            .native_stop_loading_with_revision(expected_revision)
+                            .await
+                            .map_err(browser_error)?;
+                        self.revision = Some(outcome.current_revision);
+                        serde_json::to_value(outcome).map_err(Into::into)
+                    }
+                    ResidentBrowserSession::Chromium(session) => {
+                        let outcome = session
+                            .stop_loading_with_revision(expected_revision)
+                            .await
+                            .map_err(browser_error)?;
+                        self.revision = Some(outcome.current_revision);
+                        serde_json::to_value(outcome).map_err(Into::into)
+                    }
+                }
             }
             BrowserCommand::Highlight {
                 target,
                 expected_revision,
             } => {
-                self.session()?
-                    .highlight_target_with_revision(&target, expected_revision)
-                    .await
-                    .map_err(browser_error)?;
+                match self.session()? {
+                    ResidentBrowserSession::Native(session) => {
+                        session
+                            .native_highlight_target_with_revision(&target, expected_revision)
+                            .await
+                            .map_err(browser_error)?;
+                    }
+                    ResidentBrowserSession::Chromium(session) => {
+                        session
+                            .highlight_target_with_revision(&target, expected_revision)
+                            .await
+                            .map_err(browser_error)?;
+                    }
+                }
                 Ok(serde_json::json!({"highlighted":target,"browserRevision":expected_revision}))
             }
             BrowserCommand::Click {
                 target,
                 expected_revision,
             } => {
-                let outcome = self
-                    .session()?
-                    .click_with_revision(&target, expected_revision)
-                    .await
-                    .map_err(browser_error)?;
-                self.revision = Some(outcome.current_revision);
-                serde_json::to_value(outcome).map_err(Into::into)
+                match self.session()? {
+                    ResidentBrowserSession::Native(session) => {
+                        let result = session
+                            .action_with_revision(
+                                SemanticAction::Click {
+                                    target: target.clone(),
+                                },
+                                expected_revision,
+                            )
+                            .await
+                            .map_err(browser_error)?;
+                        self.revision = Some(result.revision);
+                        Ok(native_action_value(
+                            result,
+                            "click",
+                            Some(&target),
+                            expected_revision,
+                        ))
+                    }
+                    ResidentBrowserSession::Chromium(session) => {
+                        let outcome = session
+                            .click_with_revision(&target, expected_revision)
+                            .await
+                            .map_err(browser_error)?;
+                        self.revision = Some(outcome.current_revision);
+                        serde_json::to_value(outcome).map_err(Into::into)
+                    }
+                }
             }
             BrowserCommand::Type {
                 text,
                 target,
                 expected_revision,
             } => {
-                let outcome = self
-                    .session()?
-                    .type_text_with_expected_revision(
-                        &text,
-                        target.as_deref(),
-                        Some(expected_revision),
-                    )
-                    .await
-                    .map_err(browser_error)?;
-                self.revision = Some(outcome.current_revision);
-                serde_json::to_value(outcome).map_err(Into::into)
+                match self.session()? {
+                    ResidentBrowserSession::Native(session) => {
+                        let native_target = target.clone().unwrap_or_else(|| "focused".into());
+                        let result = session
+                            .action_with_revision(
+                                SemanticAction::Type {
+                                    target: native_target,
+                                    text: text.clone(),
+                                },
+                                expected_revision,
+                            )
+                            .await
+                            .map_err(browser_error)?;
+                        self.revision = Some(result.revision);
+                        Ok(native_action_value(
+                            result,
+                            "type",
+                            target.as_deref(),
+                            expected_revision,
+                        ))
+                    }
+                    ResidentBrowserSession::Chromium(session) => {
+                        let outcome = session
+                            .type_text_with_expected_revision(
+                                &text,
+                                target.as_deref(),
+                                Some(expected_revision),
+                            )
+                            .await
+                            .map_err(browser_error)?;
+                        self.revision = Some(outcome.current_revision);
+                        serde_json::to_value(outcome).map_err(Into::into)
+                    }
+                }
             }
             BrowserCommand::Scroll {
                 dx,
                 dy,
                 expected_revision,
             } => {
-                let outcome = self
-                    .session()?
-                    .scroll_with_revision(dx, dy, Some(expected_revision))
-                    .await
-                    .map_err(browser_error)?;
-                self.revision = Some(outcome.current_revision);
-                serde_json::to_value(outcome).map_err(Into::into)
+                match self.session()? {
+                    ResidentBrowserSession::Native(session) => {
+                        let delta_x = bounded_native_scroll_delta(dx, "dx")?;
+                        let delta_y = bounded_native_scroll_delta(dy, "dy")?;
+                        let result = session
+                            .action_with_revision(
+                                SemanticAction::Scroll { delta_x, delta_y },
+                                expected_revision,
+                            )
+                            .await
+                            .map_err(browser_error)?;
+                        self.revision = Some(result.revision);
+                        Ok(native_action_value(
+                            result,
+                            "scroll",
+                            None,
+                            expected_revision,
+                        ))
+                    }
+                    ResidentBrowserSession::Chromium(session) => {
+                        let outcome = session
+                            .scroll_with_revision(dx, dy, Some(expected_revision))
+                            .await
+                            .map_err(browser_error)?;
+                        self.revision = Some(outcome.current_revision);
+                        serde_json::to_value(outcome).map_err(Into::into)
+                    }
+                }
             }
             BrowserCommand::Screenshot => {
-                let png = self
-                    .session()?
-                    .screenshot_png()
-                    .await
-                    .map_err(browser_error)?;
+                let png = match self.session()? {
+                    ResidentBrowserSession::Native(session) => session
+                        .native_capture_png_async()
+                        .await
+                        .map_err(browser_error)?,
+                    ResidentBrowserSession::Chromium(session) => session
+                        .screenshot_png()
+                        .await
+                        .map_err(browser_error)?,
+                };
                 Ok(serde_json::json!({
                     "mimeType":"image/png",
                     "bytes":png.len(),
@@ -670,7 +954,15 @@ impl BrowserWorker {
                     .map_err(|error| DevelopmentError::InvalidInput(error.to_string()))?;
                 self.workflow_state = "running".into();
                 self.active_workflow = Some(workflow.name.clone());
-                let result = self.session()?.run_workflow(&workflow, &inputs).await;
+                let result = match self.session()? {
+                    ResidentBrowserSession::Native(session) => {
+                        let policy = self.browser_policy()?;
+                        session.native_run_workflow(&policy, &workflow, &inputs).await
+                    }
+                    ResidentBrowserSession::Chromium(session) => {
+                        session.run_workflow(&workflow, &inputs).await
+                    }
+                };
                 self.workflow_state = if result.is_ok() {
                     "completed"
                 } else {
@@ -688,11 +980,16 @@ impl BrowserWorker {
                         "no workflow result is available to checkpoint".into(),
                     )
                 })?;
-                let checkpoint = self
-                    .session()?
-                    .export_workflow_checkpoint(workflow, result)
-                    .await
-                    .map_err(browser_error)?;
+                let checkpoint = match self.session()? {
+                    ResidentBrowserSession::Native(session) => session
+                        .native_export_workflow_checkpoint(workflow, result)
+                        .await
+                        .map_err(browser_error)?,
+                    ResidentBrowserSession::Chromium(session) => session
+                        .export_workflow_checkpoint(workflow, result)
+                        .await
+                        .map_err(browser_error)?,
+                };
                 self.workflow_state = "paused".into();
                 serde_json::to_value(checkpoint).map_err(Into::into)
             }
@@ -706,10 +1003,17 @@ impl BrowserWorker {
                 let checkpoint: WorkflowCheckpoint = serde_json::from_value(checkpoint)?;
                 self.workflow_state = "running".into();
                 self.active_workflow = Some(workflow.name.clone());
-                let result = self
-                    .session()?
-                    .resume_workflow(&workflow, &inputs, &checkpoint)
-                    .await;
+                let result = match self.session()? {
+                    ResidentBrowserSession::Native(session) => {
+                        let policy = self.browser_policy()?;
+                        session
+                            .native_resume_workflow(&policy, &workflow, &inputs, &checkpoint)
+                            .await
+                    }
+                    ResidentBrowserSession::Chromium(session) => {
+                        session.resume_workflow(&workflow, &inputs, &checkpoint).await
+                    }
+                };
                 self.workflow_state = if result.is_ok() {
                     "completed"
                 } else {
@@ -743,11 +1047,16 @@ impl BrowserWorker {
                 Ok(serde_json::json!({"cancelled":true,"previousState":previous}))
             }
             BrowserCommand::VerifyPredicate { predicate, timeout } => {
-                let outcome = self
-                    .session()?
-                    .verify(predicate, timeout)
-                    .await
-                    .map_err(browser_error)?;
+                let outcome = match self.session()? {
+                    ResidentBrowserSession::Native(session) => session
+                        .native_verify(predicate, timeout)
+                        .await
+                        .map_err(browser_error)?,
+                    ResidentBrowserSession::Chromium(session) => session
+                        .verify(predicate, timeout)
+                        .await
+                        .map_err(browser_error)?,
+                };
                 serde_json::to_value(outcome).map_err(Into::into)
             }
             BrowserCommand::VerifyWorkflow => {
@@ -801,7 +1110,15 @@ impl BrowserWorker {
         ) else {
             return Ok(());
         };
-        let png = session.screenshot_png().await.map_err(browser_error)?;
+        let png = match session {
+            ResidentBrowserSession::Native(session) => session
+                .native_capture_png_async()
+                .await
+                .map_err(browser_error)?,
+            ResidentBrowserSession::Chromium(session) => {
+                session.screenshot_png().await.map_err(browser_error)?
+            }
+        };
         let published = view.publish(RemoteFrame {
             browser_revision: revision,
             mime_type: "image/png".into(),
@@ -826,10 +1143,55 @@ impl BrowserWorker {
             }
         }
         for input in inputs {
-            let session = self.session()?;
             let revision = input.expected_revision();
-            let current_revision = match input {
-                RemoteInput::Click { x, y, .. } => {
+            let current_revision = match (self.session()?, input) {
+                (ResidentBrowserSession::Native(session), RemoteInput::Click { x, y, .. }) => {
+                    let (width, height) = session.native_viewport_size().map_err(browser_error)?;
+                    let result = session
+                        .action_with_revision(
+                            SemanticAction::Click {
+                                target: format!("point={},{}", x * width, y * height),
+                            },
+                            revision,
+                        )
+                        .await
+                        .map_err(browser_error)?;
+                    result.revision
+                }
+                (ResidentBrowserSession::Native(session), RemoteInput::Scroll { dx, dy, .. }) => {
+                    let result = session
+                        .action_with_revision(
+                            SemanticAction::Scroll {
+                                delta_x: bounded_native_scroll_delta(dx, "dx")?,
+                                delta_y: bounded_native_scroll_delta(dy, "dy")?,
+                            },
+                            revision,
+                        )
+                        .await
+                        .map_err(browser_error)?;
+                    result.revision
+                }
+                (ResidentBrowserSession::Native(session), RemoteInput::Key { key, .. }) => {
+                    let result = session
+                        .action_with_revision(SemanticAction::KeyPress { key }, revision)
+                        .await
+                        .map_err(browser_error)?;
+                    result.revision
+                }
+                (ResidentBrowserSession::Native(session), RemoteInput::Text { text, .. }) => {
+                    let result = session
+                        .action_with_revision(
+                            SemanticAction::Type {
+                                target: "focused".into(),
+                                text,
+                            },
+                            revision,
+                        )
+                        .await
+                        .map_err(browser_error)?;
+                    result.revision
+                }
+                (ResidentBrowserSession::Chromium(session), RemoteInput::Click { x, y, .. }) => {
                     let (width, height) = session.viewport_size().await.map_err(browser_error)?;
                     session
                         .click_at_with_revision(x * width, y * height, Some(revision))
@@ -837,21 +1199,21 @@ impl BrowserWorker {
                         .map_err(browser_error)?
                         .revision
                 }
-                RemoteInput::Scroll { dx, dy, .. } => {
+                (ResidentBrowserSession::Chromium(session), RemoteInput::Scroll { dx, dy, .. }) => {
                     session
                         .scroll_with_revision(dx, dy, Some(revision))
                         .await
                         .map_err(browser_error)?
                         .current_revision
                 }
-                RemoteInput::Key { key, .. } => {
+                (ResidentBrowserSession::Chromium(session), RemoteInput::Key { key, .. }) => {
                     session
                         .key_press_with_revision(&key, Some(revision))
                         .await
                         .map_err(browser_error)?
                         .current_revision
                 }
-                RemoteInput::Text { text, .. } => {
+                (ResidentBrowserSession::Chromium(session), RemoteInput::Text { text, .. }) => {
                     session
                         .type_text_with_expected_revision(&text, None, Some(revision))
                         .await
@@ -870,6 +1232,57 @@ impl BrowserWorker {
 
 fn browser_error(error: Box<dyn std::error::Error>) -> DevelopmentError {
     DevelopmentError::Process(error.to_string())
+}
+
+fn native_profile_storage_path(profile: &str) -> DevelopmentResult<PathBuf> {
+    if profile.is_empty()
+        || profile == "."
+        || profile == ".."
+        || profile.contains(['/', '\\', '\0'])
+    {
+        return Err(DevelopmentError::InvalidInput(
+            "native browser profile must be a single safe name".into(),
+        ));
+    }
+    let config_home = std::env::var_os("GLASS_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(dirs::config_dir)
+        .unwrap_or_else(|| PathBuf::from("."));
+    Ok(config_home
+        .join("glass")
+        .join("native-profiles")
+        .join(profile)
+        .join("storage.json"))
+}
+
+fn bounded_native_scroll_delta(value: f64, field: &str) -> DevelopmentResult<i32> {
+    if !value.is_finite() || value < f64::from(i32::MIN) || value > f64::from(i32::MAX) {
+        return Err(DevelopmentError::InvalidInput(format!(
+            "native browser scroll {field} must be a finite i32-sized number"
+        )));
+    }
+    Ok(value as i32)
+}
+
+fn native_action_value(
+    result: ActionResult,
+    action: &str,
+    target: Option<&str>,
+    previous_revision: u64,
+) -> Value {
+    serde_json::json!({
+        "status": if result.accepted { "succeeded" } else { "not_executed" },
+        "action": action,
+        "executionId": format!("act_native_resident_{}", result.revision),
+        "target": target.map(|target| serde_json::json!({"label":target,"reference":target})),
+        "revision": result.revision,
+        "previousRevision": previous_revision,
+        "currentRevision": result.revision,
+        "browserRevision": result.revision,
+        "contextId": result.context_id,
+        "accepted": result.accepted,
+        "backend": "native"
+    })
 }
 
 #[cfg(test)]
@@ -908,6 +1321,25 @@ mod tests {
         let state = service.state().unwrap();
         assert_eq!(state["policyPreset"], "hardened");
         assert_eq!(state["connected"], false);
+    }
+
+    #[test]
+    fn resident_browser_defaults_to_native_runtime() {
+        let service = BrowserService::new(std::env::temp_dir()).unwrap();
+        let started = service.start(BrowserStartConfig::default()).unwrap();
+        assert_eq!(started["connected"], true);
+        assert_eq!(started["browserBackend"], "native");
+        assert!(started["browserProcessId"].is_null());
+
+        let observation = service.observe().unwrap();
+        assert_eq!(observation["level"], "structured");
+        assert!(observation["page"].is_object());
+        let web_ir = service.web_ir().unwrap();
+        assert_eq!(web_ir["schemaVersion"], 1);
+        assert!(web_ir["entityCount"].as_u64().is_some());
+
+        let stopped = service.stop().unwrap();
+        assert_eq!(stopped["connected"], false);
     }
 
     #[test]
@@ -951,6 +1383,7 @@ mod tests {
         let started = service
             .start(BrowserStartConfig {
                 port: browser_port,
+                attach: true,
                 chrome_path: Some(chrome_path.into()),
                 ..BrowserStartConfig::default()
             })

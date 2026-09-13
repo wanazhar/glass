@@ -1,6 +1,6 @@
 # Complete MCP tool catalog
 
-This catalog names all 100 browser tools in the current `0.3.14` client-conformance inventory.
+This catalog names all 101 browser tools in the current `0.3.14` client-conformance inventory.
 The full `glass` command also merges its live `glass.*` Development Workspace
 catalog at runtime; these tools are governed by actor, authority, confirmation,
 workspace-generation, and project-revision metadata.
@@ -22,7 +22,7 @@ actor attribution, bounded-result rules, and revision/confirmation policy.
 | Family | Exact tools | Scope |
 |---|---|---|
 | `glass.agent` | `glass.agent.abort`, `glass.agent.approve`, `glass.agent.clone-session`, `glass.agent.compact`, `glass.agent.delegate`, `glass.agent.entries`, `glass.agent.follow-up`, `glass.agent.fork`, `glass.agent.hello`, `glass.agent.list`, `glass.agent.messages`, `glass.agent.model`, `glass.agent.models`, `glass.agent.name`, `glass.agent.new-session`, `glass.agent.prompt`, `glass.agent.rewind`, `glass.agent.send`, `glass.agent.sessions`, `glass.agent.setup`, `glass.agent.slash`, `glass.agent.spawn`, `glass.agent.stats`, `glass.agent.steer`, `glass.agent.switch-session`, `glass.agent.thinking`, `glass.agent.tree` | Persistent Pi sessions, background composer delivery, governed runtime setup, steering, lifecycle, model state, tool-call approval, and evidence. `slash` dispatches the human-controlled native Pi command surface; `rewind` branches a Pi session from an earlier entry and requires trusted-workspace mutation authority plus per-call confirmation; `sessions` lists resumable sessions and `tree` exposes branchable entries without mutation or confirmation. |
-| `glass.browser` | `glass.browser.act`, `glass.browser.attach`, `glass.browser.diff`, `glass.browser.navigate`, `glass.browser.observe`, `glass.browser.reconnect`, `glass.browser.remote-view.open`, `glass.browser.remote-view.revoke`, `glass.browser.remote-view.status`, `glass.browser.screenshot`, `glass.browser.semantic`, `glass.browser.snapshot`, `glass.browser.start`, `glass.browser.state`, `glass.browser.stop`, `glass.browser.target.select`, `glass.browser.targets`, `glass.browser.verify`, `glass.browser.web_ir` | Resident Chrome lifecycle, revision-safe actions, observations, bounded live Web IR evidence, targets, explicit loopback Remote View, and evidence. |
+| `glass.browser` | `glass.browser.act`, `glass.browser.attach`, `glass.browser.diff`, `glass.browser.navigate`, `glass.browser.observe`, `glass.browser.reconnect`, `glass.browser.remote-view.open`, `glass.browser.remote-view.revoke`, `glass.browser.remote-view.status`, `glass.browser.screenshot`, `glass.browser.semantic`, `glass.browser.snapshot`, `glass.browser.start`, `glass.browser.state`, `glass.browser.stop`, `glass.browser.target.select`, `glass.browser.targets`, `glass.browser.verify`, `glass.browser.web_ir` | Resident native-browser lifecycle, revision-safe actions, observations, bounded live Web IR evidence, targets, explicit loopback Remote View, and evidence. `glass.browser.attach` explicitly selects the Chromium/CDP migration backend; ordinary `glass.browser.start` uses native. |
 | `glass.capabilities` | `glass.capabilities.inspect` | Effective resident-tool availability and unavailable reasons. |
 | `glass.command` | `glass.command.run` | Bounded foreground command execution attributed to the Pi actor. |
 | `glass.daemon` | `glass.daemon.doctor`, `glass.daemon.logs`, `glass.daemon.start`, `glass.daemon.status`, `glass.daemon.stop` | Resident daemon lifecycle, health, logs, and recovery controls. |
@@ -50,10 +50,10 @@ actor attribution, bounded-result rules, and revision/confirmation policy.
 | `glass.workflow` | `glass.workflow.cancel`, `glass.workflow.list`, `glass.workflow.pause`, `glass.workflow.record`, `glass.workflow.resume`, `glass.workflow.run`, `glass.workflow.verify` | Durable workflow lifecycle, verification, and recording. |
 | `glass.workspace` | `glass.workspace.delete`, `glass.workspace.inspect`, `glass.workspace.list`, `glass.workspace.resume`, `glass.workspace.suspend`, `glass.workspace.trust.inspect`, `glass.workspace.trust.status` | Workspace lifecycle, identity-bound trust status, and exact executable configuration inspection. |
 
-The checked-in development conformance fixture pins the full 345-tool
+The checked-in development conformance fixture pins the full 346-tool
 inventory, including `glass.agent.delegate`, `glass.todo.*`, and Git
 fetch/pull/merge/rebase; the documentation coverage gate checks every fixture
-entry against this catalog. The browser-only conformance fixture covers 100
+entry against this catalog. The browser-only conformance fixture covers 101
 tools. Clients must still use `tools/list` for schemas and the negotiated
 capability agreement for availability; an inventory entry is not authority to
 mutate.
@@ -105,7 +105,7 @@ project root, retained content is bounded, and mutations remain attributed.
 | `agent.steer` | Send a steering event to the local harness. |
 
 Project mutation through a daemon-bound client requires the current mutation
-lease. Read-only inspection does not start Chrome. Pi-specific control remains
+lease. Read-only inspection does not start a browser runtime. Pi-specific control remains
 behind the Glass harness; these MCP tools do not expose Pi's private SDK IPC.
 
 ## Task Protocol and Web IR
@@ -116,6 +116,7 @@ behind the Glass harness; these MCP tools do not expose Pi's private SDK IPC.
 | `compileTask` | Compile a task against validated Web IR without starting Chrome. |
 | `executeTask` | Freshly compile, bind, confirm, execute, and verify a browser-backed task. |
 | `inspectWebIr` | Return bounded metadata for validated Web IR. |
+| `extractWebIr` | Extract the live active page into bounded Web IR using the selected runtime. |
 | `validateWebIr` | Validate Web IR graph, details, coverage, and bounds. |
 | `diffWebIr` | Return bounded changes across compatible revisions. |
 | `continuityWebIr` | Classify one entity as unchanged, changed, rebound, removed, or ambiguous. |
@@ -168,6 +169,7 @@ the dedicated policy capability and current geometry.
 | `findTarget` | Resolve one declared semantic intent into candidates without action. |
 | `actAndVerify` | Execute one explicit semantic intent with optional postcondition. |
 | `extractStructured` | Extract typed bounded fields/records with provenance and continuation. |
+| `extractWebIr` | Extract the live active page into validated bounded Web IR; requested unsupported sources remain explicit in `limits.missingSources`. |
 | `recoverRun` | Return conservative browser-free recovery for an indeterminate execution. |
 | `resolveIntent` | Normalize and resolve bounded current candidates without dispatch. |
 | `executeIntent` | Re-observe, re-resolve, and execute only the selected candidate. |

@@ -2469,7 +2469,11 @@ impl NativeEngine {
                 (self.document.apply_upload(id, &files)?, true)
             }
             NativeAction::Type { target, text } => {
-                let id = self.document.resolve_target(&target)?;
+                let id = if target == "focused" {
+                    self.document.focused_text_control()?
+                } else {
+                    self.document.resolve_target(&target)?
+                };
                 self.require_layout_actionable(id)?;
                 if self.javascript.is_some() {
                     return self.action_local_type_with_event_transaction(id, &text);
@@ -2772,7 +2776,11 @@ impl NativeEngine {
                     .await
             }
             NativeAction::Type { target, text } => {
-                let id = self.document.resolve_target(&target)?;
+                let id = if target == "focused" {
+                    self.document.focused_text_control()?
+                } else {
+                    self.document.resolve_target(&target)?
+                };
                 self.require_layout_actionable(id)?;
                 let mut preview = self.document.clone();
                 preview.apply_type(id, &text)?;

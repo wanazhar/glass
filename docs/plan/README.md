@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-323` locally. Native is now the default runtime for
+`native-engine-browser-326` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -81,6 +81,22 @@ completed native semantic observation slice is
 CLI, persistent-owner, and MCP observation surface now exposes the shared
 summary through raw levels, revision-checked region expansion, and bounded
 policy-gated form values.
+
+The completed native live Web IR slice is
+[native-engine-browser-325](tasks/native-engine-browser-325.md): native
+document, region, and frame observations now produce validated bounded Web IR
+through the CLI and MCP `extractWebIr` surfaces, with explicit source
+omissions, coverage, and output-budget metadata.
+
+The completed resident native-first slice is
+[native-engine-browser-326](tasks/native-engine-browser-326.md): ordinary
+`glass-dev` browser starts now own a Glass-native runtime, while
+`glass.browser.attach` is the explicit Chromium/CDP migration path. Resident
+state, revision guards, workflows, screenshots, remote frames, and remote
+inputs dispatch through the selected owner without silently crossing backends.
+The remaining issue-40 work is native MCP surface completion, Core Web Profile
+conformance, recovery/cancellation, cross-platform release evidence, and
+production certification.
 
 The completed computed-style/media-query slice is
 [native-engine-browser-282](tasks/native-engine-browser-282.md). It exposes a

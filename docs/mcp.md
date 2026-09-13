@@ -1,7 +1,9 @@
 # MCP integration
 
-Glass runs an MCP server over standard input and standard output. It starts
-Chrome when the first browser tool needs it.
+Glass runs an MCP server over standard input and standard output. Feature-enabled
+builds start the Glass-owned native browser engine when the first browser tool
+needs it. Chromium/CDP is available only through an explicit migration/attach
+selection.
 
 The [complete MCP tool catalog](mcp-tools.md) lists every tool in the pinned
 client-conformance inventory by domain. Treat the server's negotiated
@@ -85,12 +87,13 @@ unknown optional capabilities are omitted. Experimental capabilities require
 explicit acceptance. Glass rejects unknown schemas, empty version lists, and
 requests with no common supported version.
 
-The `task` and `webIr` schemas describe the browser-free Task Protocol and
-stable Glass Web IR v1 contracts; their offline operations do not start Chrome.
+The `task` and `webIr` schemas describe the Task Protocol and stable Glass Web
+IR v1 contracts. Browser-free validation/inspection operations do not start a
+browser; `extractWebIr` is the live, revisioned extraction operation.
 
 The corresponding `taskProtocol` and `webIr` capabilities report
-`availableUncertified`: the contracts are usable, but cross-platform live
-runtime certification is not yet claimed.
+`availableUncertified`: the contracts are usable in the selected local runtime,
+but cross-platform live runtime certification is not yet claimed.
 
 Read [schema compatibility](schema-compatibility.md) for version rules.
 
@@ -117,8 +120,9 @@ without treating the connection as a partial frame.
 Cancel a request with `notifications/cancelled` and the original request ID.
 Glass returns error code `-32800`.
 
-Cancellation drops local wait and pending CDP response state. It cannot undo
-browser input or JavaScript that Chrome accepted.
+Cancellation drops local waits and pending native or CDP response state. It
+cannot undo browser input or JavaScript already accepted by the selected
+runtime.
 
 Glass handles requests concurrently. It serializes browser operations through
 one session. Requests above the active limit receive an overload error.
@@ -176,7 +180,7 @@ and TUI:
 
 Mutating project and agent tools require the normal daemon mutation lease when
 used through a leased session. Read-only project inspection and harness hello
-remain browser-free and do not start Chrome.
+remain browser-free and do not start a browser runtime.
 
 | Tool | Result |
 |---|---|
@@ -215,6 +219,7 @@ remain browser-free and do not start Chrome.
 | `inspectPage`, `findTarget` | Return bounded semantic page state and candidates without acting. |
 | `actAndVerify` | Execute one explicit intent with optional postcondition evidence. |
 | `extractStructured` | Return bounded typed fields with revision provenance. |
+| `extractWebIr` | Extract the live active page into bounded Glass Web IR v1 using the selected browser runtime. |
 | `recoverRun` | Return conservative recovery guidance after indeterminate execution. |
 | `sessionSnapshot` | Create, list, inspect, diff, or purge redacted local snapshots. |
 | `knowledgeList`, `knowledgeShow`, `knowledgeStats` | Read knowledge records. |
@@ -286,7 +291,7 @@ page evidence or a verified action.
 Call `preflightNavigation` before `navigate` when a caller needs a
 browser-free policy decision. The response contains the normalized URL, host,
 decision, reason, and `confirmationRequired`. Preflight is read-only: it does
-not start Chrome, resolve DNS, or spend a `--policy-confirm-once` token.
+not start a browser runtime, resolve DNS, or spend a `--policy-confirm-once` token.
 
 If the decision is `allow`, call `navigate` with the same URL. If a future
 policy reports `confirmation_required`, obtain the caller's explicit
@@ -309,7 +314,7 @@ Authority credentials are removed from serialized URLs.
 ### Validate a task without starting Chrome
 
 `validateTask` performs strict Task Protocol validation and returns only bounded
-task metadata. It does not compile a plan, start Chrome, acquire a mutation
+task metadata. It does not compile a plan, start a browser runtime, acquire a mutation
 lease, resolve targets, or execute browser actions. Input values are consumed
 only during validation and are never included in the response.
 
@@ -378,7 +383,7 @@ cancellation still require one.
 ### Inspect and validate Glass Web IR v1 without starting Chrome
 
 `inspectWebIr` and `validateWebIr` consume a bounded stable Web IR v1 document and never
-start Chrome, acquire a mutation lease, or dispatch browser actions. Both tools
+start a browser runtime, acquire a mutation lease, or dispatch browser actions. Both tools
 validate graph invariants first. `validateWebIr` returns only schema and revision
 metadata:
 
@@ -420,6 +425,13 @@ into browser authority.
 
 The server dispatches these tools through the typed canonical `webIr.*`
 protocol operations; MCP-only response options are not forwarded into Web IR.
+
+`extractWebIr` is the live counterpart to the browser-free Web IR tools. It
+captures one current revision, applies the request's scope and hard budgets,
+and returns a validated graph. Native extraction uses the Glass-owned semantic
+projection; explicit Chromium extraction uses the CDP evidence adapter. Source
+classes the selected runtime cannot prove are reported in
+`limits.missingSources`.
 
 `diffWebIr` validates both revisions and returns only bounded change counts and
 revision metadata:

@@ -198,6 +198,13 @@ across bootstrap re-entry. Web Crypto `subtle` operations, key objects,
 cross-realm transfer, pool replenishment, and the remaining native replacement
 gates remain open on issue #40.
 
+The completed native-engine-browser-300 crypto-replenishment slice
+keeps a bounded page/worker fast-path pool but refills missing bytes directly
+from a per-turn OS-backed host source, so repeated random requests no longer
+fail merely because the bootstrap seed was consumed. The per-request Web
+Crypto 65,536-byte bound and explicit validation remain. Its contract is in
+[tasks/native-engine-browser-300.md](tasks/native-engine-browser-300.md).
+
 The completed native-engine-browser-299 page-runtime-primitives slice adds
 page `TextEncoder`/`TextDecoder`, bounded `atob`/`btoa`,
 `structuredClone`, and public `EventTarget` support through the existing page

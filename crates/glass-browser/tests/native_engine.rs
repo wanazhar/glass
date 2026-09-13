@@ -1262,7 +1262,7 @@ async fn native_local_worker_exposes_os_seeded_crypto() {
         .unwrap()
         .with_fixture(
             "fixture://worker-crypto-script",
-            "const values = new Uint8Array(8); crypto.getRandomValues(values); const uuid = crypto.randomUUID(); let floatRejected = false; try { crypto.getRandomValues(new Float32Array(1)); } catch (error) { floatRejected = error instanceof TypeError; } postMessage({ byteLength: values.byteLength, uuidValid: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(uuid), uuidVersion: uuid[14], uuidVariant: ['8', '9', 'a', 'b'].includes(uuid[19]), floatRejected, cryptoIdentity: crypto === globalThis.crypto });",
+            "const values = new Uint8Array(8); crypto.getRandomValues(values); const uuid = crypto.randomUUID(); const bulk = new Uint8Array(16 * 1024); crypto.getRandomValues(bulk); const refill = new Uint8Array(16); crypto.getRandomValues(refill); let floatRejected = false; try { crypto.getRandomValues(new Float32Array(1)); } catch (error) { floatRejected = error instanceof TypeError; } postMessage({ byteLength: values.byteLength, bulkByteLength: bulk.byteLength, refillByteLength: refill.byteLength, uuidValid: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(uuid), uuidVersion: uuid[14], uuidVariant: ['8', '9', 'a', 'b'].includes(uuid[19]), floatRejected, cryptoIdentity: crypto === globalThis.crypto });",
         )
         .unwrap()
         .with_initial_url("fixture://worker-crypto-page");
@@ -1285,6 +1285,8 @@ async fn native_local_worker_exposes_os_seeded_crypto() {
         serde_json::json!({
             "messages": [{
                 "byteLength": 8,
+                "bulkByteLength": 16384,
+                "refillByteLength": 16,
                 "uuidValid": true,
                 "uuidVersion": "4",
                 "uuidVariant": true,
@@ -1315,16 +1317,22 @@ async fn native_local_page_exposes_os_seeded_crypto() {
                     const values = new Uint8Array(8);
                     crypto.getRandomValues(values);
                     const uuid = crypto.randomUUID();
+                    const bulk = new Uint8Array(16 * 1024);
+                    crypto.getRandomValues(bulk);
+                    const refill = new Uint8Array(16);
+                    crypto.getRandomValues(refill);
                     let floatRejected = false;
                     try { crypto.getRandomValues(new Float32Array(1)); } catch (error) {
                         floatRejected = error instanceof TypeError;
                     }
                     let largeRejected = false;
-                    try { crypto.getRandomValues(new Uint8Array(16 * 1024 + 1)); } catch (error) {
+                    try { crypto.getRandomValues(new Uint8Array(65536 + 1)); } catch (error) {
                         largeRejected = error.name === 'QuotaExceededError';
                     }
                     globalThis.pageCryptoState = {
                         byteLength: values.byteLength,
+                        bulkByteLength: bulk.byteLength,
+                        refillByteLength: refill.byteLength,
                         changed: values.some(value => value !== 0),
                         uuidValid: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(uuid),
                         uuidVersion: uuid[14],
@@ -1346,6 +1354,8 @@ async fn native_local_page_exposes_os_seeded_crypto() {
             .unwrap(),
         serde_json::json!({
             "byteLength": 8,
+            "bulkByteLength": 16384,
+            "refillByteLength": 16,
             "changed": true,
             "uuidValid": true,
             "uuidVersion": "4",

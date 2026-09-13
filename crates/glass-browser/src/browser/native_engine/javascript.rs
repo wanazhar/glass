@@ -60,9 +60,9 @@ pub(crate) const MAX_NATIVE_WORKER_TIMERS: usize = 64;
 const MAX_NATIVE_WORKER_URLSEARCHPARAMS_ENTRIES: usize = 128;
 const MAX_NATIVE_WORKER_URLSEARCHPARAMS_BYTES: usize = MAX_NATIVE_POST_MESSAGE_BYTES;
 const MAX_NATIVE_WORKER_CRYPTO_POOL_BYTES: usize = 16 * 1024;
-const MAX_NATIVE_WORKER_CRYPTO_VALUES_BYTES: usize = 16 * 1024;
+const MAX_NATIVE_WORKER_CRYPTO_VALUES_BYTES: usize = 65_536;
 const MAX_NATIVE_PAGE_CRYPTO_POOL_BYTES: usize = 16 * 1024;
-const MAX_NATIVE_PAGE_CRYPTO_VALUES_BYTES: usize = 16 * 1024;
+const MAX_NATIVE_PAGE_CRYPTO_VALUES_BYTES: usize = 65_536;
 const NATIVE_SCRIPT_MEMORY_BYTES: usize = 32 * 1024 * 1024;
 const NATIVE_SCRIPT_STACK_BYTES: usize = 1024 * 1024;
 const NATIVE_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -6267,6 +6267,7 @@ impl NativeJavaScriptRuntime {
             *current = Some(deadline);
         }
         let result = self.context.with(|ctx| {
+            install_native_random_source(ctx.clone())?;
             ctx.eval::<(), _>(bootstrap.as_str())
                 .map_err(|_| NativeEngineError::Worker {
                     operation: "install JavaScript host view".into(),
@@ -6589,6 +6590,7 @@ impl NativeJavaScriptRuntime {
             *current = Some(deadline);
         }
         let result = self.context.with(|ctx| {
+            install_native_random_source(ctx.clone())?;
             ctx.eval::<(), _>(bootstrap.as_str())
                 .map_err(|error| NativeEngineError::Worker {
                     operation: "install native Worker host view".into(),
@@ -6911,6 +6913,7 @@ impl NativeJavaScriptRuntime {
             *current = Some(deadline);
         }
         let result = self.context.with(|ctx| {
+            install_native_random_source(ctx.clone())?;
             ctx.eval::<(), _>(bootstrap.as_str())
                 .map_err(|_| NativeEngineError::Worker {
                     operation: "install JavaScript host view".into(),
@@ -7033,6 +7036,30 @@ impl NativeJavaScriptRuntime {
     pub(crate) fn has_pending_jobs(&self) -> bool {
         self.runtime.is_job_pending()
     }
+}
+
+fn install_native_random_source<'js>(ctx: rquickjs::Ctx<'js>) -> Result<(), NativeEngineError> {
+    let random_source = Function::new(
+        ctx.clone(),
+        |count: usize| -> std::result::Result<Vec<u8>, Error> {
+            if count > MAX_NATIVE_PAGE_CRYPTO_VALUES_BYTES {
+                return Err(Error::Unknown);
+            }
+            let mut bytes = vec![0_u8; count];
+            getrandom::fill(&mut bytes).map_err(|_| Error::Unknown)?;
+            Ok(bytes)
+        },
+    )
+    .map_err(|_| NativeEngineError::Worker {
+        operation: "install native random source".into(),
+        reason: "native random source could not be installed".into(),
+    })?;
+    ctx.globals()
+        .set("__glassNativeRandomBytes", random_source)
+        .map_err(|_| NativeEngineError::Worker {
+            operation: "install native random source".into(),
+            reason: "native random source could not be published".into(),
+        })
 }
 
 fn read_script_commands<'js>(
@@ -8311,6 +8338,9 @@ fn worker_bootstrap(
   const workerCryptoPool = globalThis.__glassWorkerCryptoPool instanceof Array
     ? globalThis.__glassWorkerCryptoPool
     : [];
+  const workerCryptoRandomSource = typeof globalThis.__glassNativeRandomBytes === "function"
+    ? globalThis.__glassNativeRandomBytes
+    : null;
   let workerCryptoOffset = Number.isSafeInteger(globalThis.__glassWorkerCryptoOffset)
     ? globalThis.__glassWorkerCryptoOffset
     : 0;
@@ -8324,6 +8354,19 @@ fn worker_bootstrap(
   const workerCryptoTake = (count) => {{
     if (!Number.isSafeInteger(count) || count < 0 || count > {worker_crypto_values_limit})
       throw new RangeError("native Worker crypto value is outside the bounded range");
+    if (workerCryptoOffset + count > workerCryptoPool.length) {{
+      if (workerCryptoOffset > 0) {{
+        workerCryptoPool.splice(0, workerCryptoOffset);
+        workerCryptoOffset = 0;
+      }}
+      const needed = count - workerCryptoPool.length;
+      if (needed > 0 && workerCryptoRandomSource) {{
+        const refill = workerCryptoRandomSource(needed);
+        if (!Array.isArray(refill) || refill.length !== needed)
+          throw new WorkerDOMExceptionNative("native Worker crypto refill failed", "OperationError");
+        for (const byte of refill) workerCryptoPool.push(byte);
+      }}
+    }}
     if (workerCryptoOffset + count > workerCryptoPool.length)
       throw new WorkerDOMExceptionNative("native Worker crypto pool exhausted", "QuotaExceededError");
     const bytes = workerCryptoPool.slice(workerCryptoOffset, workerCryptoOffset + count);
@@ -8359,6 +8402,7 @@ fn worker_bootstrap(
   globalThis.__glassWorkerCryptoPool = workerCryptoPool;
   globalThis.__glassWorkerCryptoObject = workerCrypto;
   globalThis.crypto = workerCrypto;
+  try {{ delete globalThis.__glassNativeRandomBytes; }} catch (_error) {{}}
   const workerBlobBytes = (part) => {{
     if (part && part.__glassWorkerBlob === true) return part._bytes.slice();
     if (typeof part === "string") return workerUtf8Bytes(part);
@@ -19455,6 +19499,9 @@ fn document_bootstrap(
   const pageCryptoPool = globalThis.__glassPageCryptoPool instanceof Array
     ? globalThis.__glassPageCryptoPool
     : [];
+  const pageCryptoRandomSource = typeof globalThis.__glassNativeRandomBytes === "function"
+    ? globalThis.__glassNativeRandomBytes
+    : null;
   let pageCryptoOffset = Number.isSafeInteger(globalThis.__glassPageCryptoOffset)
     ? globalThis.__glassPageCryptoOffset
     : 0;
@@ -19468,6 +19515,22 @@ fn document_bootstrap(
   const pageCryptoTake = (count) => {{
     if (!Number.isSafeInteger(count) || count < 0 || count > {page_crypto_values_limit})
       throw new RangeError("native page crypto value is outside the bounded range");
+    if (pageCryptoOffset + count > pageCryptoPool.length) {{
+      if (pageCryptoOffset > 0) {{
+        pageCryptoPool.splice(0, pageCryptoOffset);
+        pageCryptoOffset = 0;
+      }}
+      const needed = count - pageCryptoPool.length;
+      if (needed > 0 && pageCryptoRandomSource) {{
+        const refill = pageCryptoRandomSource(needed);
+        if (!Array.isArray(refill) || refill.length !== needed) {{
+          const error = new Error("native page crypto refill failed");
+          error.name = "OperationError";
+          throw error;
+        }}
+        for (const byte of refill) pageCryptoPool.push(byte);
+      }}
+    }}
     if (pageCryptoOffset + count > pageCryptoPool.length) {{
       const Constructor = globalThis.DOMException;
       if (typeof Constructor === "function")
@@ -19515,6 +19578,7 @@ fn document_bootstrap(
   globalThis.__glassPageCryptoPool = pageCryptoPool;
   globalThis.__glassPageCryptoObject = pageCrypto;
   globalThis.crypto = pageCrypto;
+  try {{ delete globalThis.__glassNativeRandomBytes; }} catch (_error) {{}}
   const nativeStorageUsage = () => {{
     const encoded = (value) => {{
       try {{ return JSON.stringify(value); }} catch (_error) {{ return ""; }}

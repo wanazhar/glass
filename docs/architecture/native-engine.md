@@ -179,6 +179,15 @@ cycles, complete clone semantics, non-UTF-8 labels, and full Web IDL
 descriptors remain explicit follow-up work. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-299.md`.
 
+Slice 300 removes artificial crypto-pool exhaustion in page and worker realms.
+Each native runtime turn installs a captured QuickJS host function backed by
+`getrandom::fill`; the crypto closure requests only missing bytes, keeps the
+fast path bounded, validates the refill, and deletes the helper from the
+global surface before user code runs. A single request follows the Web Crypto
+65,536-byte limit. Web Crypto `subtle`, `CryptoKey`, and complete Web IDL
+semantics remain separate issue #40 work. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-300.md`.
+
 Slice 282 adds a bounded page-facing computed-style and media-query bridge:
 the JavaScript realm reads the native cascade/layout snapshot through a
 read-only `getComputedStyle` object, and receives width/height/orientation

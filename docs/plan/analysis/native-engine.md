@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-306`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-307`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -4421,6 +4421,14 @@ evidence is recorded in
 complete Web IDL semantics, and final native/CDP replacement remain issue #40
 gates.
 
+The completed native-engine-browser-307 Web Crypto JWK slice adds bounded
+symmetric `oct` JWK import/export for HMAC and AES-GCM in page and dedicated
+worker realms. Strict base64url, `alg`, `ext`, and `key_ops` validation feeds
+the existing opaque stores, and the focused witness covers byte preservation,
+real operations, and typed metadata rejection. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-307.md`; asymmetric JWK/PKCS, complete
+Web IDL semantics, and final native/CDP replacement remain issue #40 gates.
+
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame
 realms. `document.createAttribute()` creates persistent `Attr` objects;
@@ -5497,7 +5505,8 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-198.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-197.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-196.md` is the preceding completed task;
-The current browser-slice evidence chain is `native-engine-browser-306`,
+The current browser-slice evidence chain is `native-engine-browser-307`,
+`native-engine-browser-306`,
 `native-engine-browser-305`,
 `native-engine-browser-304`, `native-engine-browser-303`, `native-engine-browser-302`, `native-engine-browser-301`, `native-engine-browser-300`, `native-engine-browser-299`,
 `native-engine-browser-298`, and `native-engine-browser-297`; each task file

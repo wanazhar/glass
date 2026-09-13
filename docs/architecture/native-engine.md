@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-304` slice; the bounded foundation below remains
+`native-engine-browser-305` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 
 Slice 283 adds a bounded dedicated-worker bridge after the page-facing
@@ -226,6 +226,17 @@ usage, sign, and authenticated-encryption contracts. Key wrapping, derivation,
 asymmetric key pairs, transfer, and complete Web Crypto/Web IDL semantics
 remain issue #40 work. The focused page/worker witness passes locally; exact
 evidence is recorded in `docs/plan/tasks/native-engine-browser-304.md`.
+
+Slice 305 adds bounded HKDF and PBKDF2 key derivation to page and dedicated
+worker realms. Raw base material is held in non-extractable realm-local keys;
+`deriveBits()` follows RFC 5869/RFC 8018-style SHA-family constructions, and
+`deriveKey()` feeds the existing HMAC and AES-GCM key stores. Input, output,
+iteration, block, and input-byte work limits reject before unbounded host CPU
+or allocation, while the captured host helper is removed before user code
+runs. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-305.md`; asymmetric Web Crypto,
+complete Web IDL semantics, and final native/CDP replacement gates remain
+issue #40 work.
 
 Slice 282 adds a bounded page-facing computed-style and media-query bridge:
 the JavaScript realm reads the native cascade/layout snapshot through a

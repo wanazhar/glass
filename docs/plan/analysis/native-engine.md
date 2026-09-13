@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-304`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-305`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -4401,6 +4401,16 @@ derivation, asymmetric pairs, transfer, and complete Web Crypto/Web IDL parity
 remain issue #40 work. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-304.md`.
 
+The completed native-engine-browser-305 Web Crypto derivation slice adds
+page/worker raw HKDF and PBKDF2 base keys, bounded SHA-family `deriveBits()`,
+and derived HMAC/AES-GCM keys. RFC 5869 and RFC 6070 vectors, derived-key
+round-trips, realm-local non-extractability, and typed misuse rejection pass in
+the focused native test. Host and realm work limits include input bytes as
+well as block/iteration counts. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-305.md`; asymmetric operations,
+complete Web IDL semantics, and final native/CDP replacement remain issue #40
+gates.
+
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame
 realms. `document.createAttribute()` creates persistent `Attr` objects;
@@ -5477,8 +5487,8 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-198.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-197.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-196.md` is the preceding completed task;
-The current browser-slice evidence chain is `native-engine-browser-304`,
-`native-engine-browser-303`, `native-engine-browser-302`, `native-engine-browser-301`, `native-engine-browser-300`, `native-engine-browser-299`,
+The current browser-slice evidence chain is `native-engine-browser-305`,
+`native-engine-browser-304`, `native-engine-browser-303`, `native-engine-browser-302`, `native-engine-browser-301`, `native-engine-browser-300`, `native-engine-browser-299`,
 `native-engine-browser-298`, and `native-engine-browser-297`; each task file
 is the authoritative contract and validation record for that slice. The
 historical index below begins with older browser records and is retained as an

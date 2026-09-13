@@ -70,6 +70,8 @@ const MAX_NATIVE_WORKER_CRYPTO_POOL_BYTES: usize = 16 * 1024;
 const MAX_NATIVE_WORKER_CRYPTO_VALUES_BYTES: usize = 65_536;
 const MAX_NATIVE_PAGE_CRYPTO_POOL_BYTES: usize = 16 * 1024;
 const MAX_NATIVE_PAGE_CRYPTO_VALUES_BYTES: usize = 65_536;
+const MAX_NATIVE_CRYPTO_DERIVE_ITERATIONS: usize = 100_000;
+const MAX_NATIVE_CRYPTO_DERIVE_WORK: usize = 10_000_000;
 const NATIVE_SCRIPT_MEMORY_BYTES: usize = 32 * 1024 * 1024;
 const NATIVE_SCRIPT_STACK_BYTES: usize = 1024 * 1024;
 const NATIVE_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -7045,6 +7047,129 @@ impl NativeJavaScriptRuntime {
     }
 }
 
+fn native_hmac_bytes(hash: &str, key: &[u8], data: &[u8]) -> Result<Vec<u8>, Error> {
+    match hash.trim().to_ascii_uppercase().as_str() {
+        "SHA-1" => {
+            let mut mac = <Hmac<Sha1> as Mac>::new_from_slice(key).map_err(|_| Error::Unknown)?;
+            mac.update(data);
+            Ok(mac.finalize().into_bytes().to_vec())
+        }
+        "SHA-256" => {
+            let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key).map_err(|_| Error::Unknown)?;
+            mac.update(data);
+            Ok(mac.finalize().into_bytes().to_vec())
+        }
+        "SHA-384" => {
+            let mut mac = <Hmac<Sha384> as Mac>::new_from_slice(key).map_err(|_| Error::Unknown)?;
+            mac.update(data);
+            Ok(mac.finalize().into_bytes().to_vec())
+        }
+        "SHA-512" => {
+            let mut mac = <Hmac<Sha512> as Mac>::new_from_slice(key).map_err(|_| Error::Unknown)?;
+            mac.update(data);
+            Ok(mac.finalize().into_bytes().to_vec())
+        }
+        _ => Err(Error::Unknown),
+    }
+}
+
+fn native_hash_length(hash: &str) -> Option<usize> {
+    match hash.trim().to_ascii_uppercase().as_str() {
+        "SHA-1" => Some(20),
+        "SHA-256" => Some(32),
+        "SHA-384" => Some(48),
+        "SHA-512" => Some(64),
+        _ => None,
+    }
+}
+
+fn native_crypto_derive(
+    algorithm: &str,
+    hash: &str,
+    key: &[u8],
+    salt: &[u8],
+    info: &[u8],
+    iterations: usize,
+    output_len: usize,
+) -> Result<Vec<u8>, Error> {
+    let hash_len = native_hash_length(hash).ok_or(Error::Unknown)?;
+    if output_len > MAX_NATIVE_FORM_BODY_BYTES {
+        return Err(Error::Unknown);
+    }
+    match algorithm.trim().to_ascii_uppercase().as_str() {
+        "HKDF" => {
+            if output_len > hash_len.saturating_mul(255)
+                || info.len() > MAX_NATIVE_FORM_BODY_BYTES
+                || salt.len() > MAX_NATIVE_FORM_BODY_BYTES
+            {
+                return Err(Error::Unknown);
+            }
+            let salt = if salt.is_empty() {
+                vec![0_u8; hash_len]
+            } else {
+                salt.to_vec()
+            };
+            let pseudorandom_key = native_hmac_bytes(hash, &salt, key)?;
+            let block_count = output_len.div_ceil(hash_len);
+            let work_per_block = info.len().saturating_add(hash_len).saturating_add(1);
+            if block_count > 0
+                && work_per_block > MAX_NATIVE_CRYPTO_DERIVE_WORK.saturating_div(block_count)
+            {
+                return Err(Error::Unknown);
+            }
+            let mut output = Vec::with_capacity(output_len);
+            let mut previous = Vec::new();
+            for block_index in 1..=block_count {
+                let mut input = Vec::with_capacity(previous.len() + info.len() + 1);
+                input.extend_from_slice(&previous);
+                input.extend_from_slice(info);
+                input.push(u8::try_from(block_index).map_err(|_| Error::Unknown)?);
+                previous = native_hmac_bytes(hash, &pseudorandom_key, &input)?;
+                output.extend_from_slice(&previous);
+            }
+            output.truncate(output_len);
+            Ok(output)
+        }
+        "PBKDF2" => {
+            if iterations == 0
+                || iterations > MAX_NATIVE_CRYPTO_DERIVE_ITERATIONS
+                || salt.len() > MAX_NATIVE_FORM_BODY_BYTES
+            {
+                return Err(Error::Unknown);
+            }
+            let block_count = output_len.div_ceil(hash_len);
+            let work_per_block = salt
+                .len()
+                .saturating_add(4)
+                .saturating_add(iterations.saturating_mul(hash_len));
+            if block_count > 0
+                && work_per_block > MAX_NATIVE_CRYPTO_DERIVE_WORK.saturating_div(block_count)
+            {
+                return Err(Error::Unknown);
+            }
+            let mut output = Vec::with_capacity(output_len);
+            for block_index in 1..=block_count {
+                let block_index = u32::try_from(block_index).map_err(|_| Error::Unknown)?;
+                let mut input = Vec::with_capacity(salt.len() + 4);
+                input.extend_from_slice(salt);
+                input.extend_from_slice(&block_index.to_be_bytes());
+                let mut current = native_hmac_bytes(hash, key, &input)?;
+                let mut accumulator = current.clone();
+                for _ in 1..iterations {
+                    current = native_hmac_bytes(hash, key, &current)?;
+                    for (left, right) in accumulator.iter_mut().zip(current.iter()) {
+                        *left ^= *right;
+                    }
+                }
+                output.extend_from_slice(&accumulator);
+            }
+            output.truncate(output_len);
+            Ok(output)
+        }
+        _ => Err(Error::Unknown),
+    }
+}
+
 fn install_native_crypto_sources<'js>(ctx: rquickjs::Ctx<'js>) -> Result<(), NativeEngineError> {
     let random_source = Function::new(
         ctx.clone(),
@@ -7100,33 +7225,7 @@ fn install_native_crypto_sources<'js>(ctx: rquickjs::Ctx<'js>) -> Result<(), Nat
             {
                 return Err(Error::Unknown);
             }
-            let digest = match algorithm.trim().to_ascii_uppercase().as_str() {
-                "SHA-1" => {
-                    let mut mac =
-                        <Hmac<Sha1> as Mac>::new_from_slice(&key).map_err(|_| Error::Unknown)?;
-                    mac.update(&data);
-                    mac.finalize().into_bytes().to_vec()
-                }
-                "SHA-256" => {
-                    let mut mac =
-                        <Hmac<Sha256> as Mac>::new_from_slice(&key).map_err(|_| Error::Unknown)?;
-                    mac.update(&data);
-                    mac.finalize().into_bytes().to_vec()
-                }
-                "SHA-384" => {
-                    let mut mac =
-                        <Hmac<Sha384> as Mac>::new_from_slice(&key).map_err(|_| Error::Unknown)?;
-                    mac.update(&data);
-                    mac.finalize().into_bytes().to_vec()
-                }
-                "SHA-512" => {
-                    let mut mac =
-                        <Hmac<Sha512> as Mac>::new_from_slice(&key).map_err(|_| Error::Unknown)?;
-                    mac.update(&data);
-                    mac.finalize().into_bytes().to_vec()
-                }
-                _ => return Err(Error::Unknown),
-            };
+            let digest = native_hmac_bytes(&algorithm, &key, &data)?;
             Ok(base64::engine::general_purpose::STANDARD.encode(digest))
         },
     )
@@ -7200,6 +7299,50 @@ fn install_native_crypto_sources<'js>(ctx: rquickjs::Ctx<'js>) -> Result<(), Nat
         operation: "install native AES-GCM source".into(),
         reason: "native AES-GCM source could not be installed".into(),
     })?;
+    let derive_source = Function::new(
+        ctx.clone(),
+        |algorithm: String,
+         hash: String,
+         key_encoded: String,
+         salt_encoded: String,
+         info_encoded: String,
+         iterations: usize,
+         output_bits: usize|
+         -> std::result::Result<String, Error> {
+            if output_bits % 8 != 0 {
+                return Err(Error::Unknown);
+            }
+            let key = base64::engine::general_purpose::STANDARD
+                .decode(key_encoded)
+                .map_err(|_| Error::Unknown)?;
+            let salt = base64::engine::general_purpose::STANDARD
+                .decode(salt_encoded)
+                .map_err(|_| Error::Unknown)?;
+            let info = base64::engine::general_purpose::STANDARD
+                .decode(info_encoded)
+                .map_err(|_| Error::Unknown)?;
+            if key.len() > MAX_NATIVE_FORM_BODY_BYTES
+                || salt.len() > MAX_NATIVE_FORM_BODY_BYTES
+                || info.len() > MAX_NATIVE_FORM_BODY_BYTES
+            {
+                return Err(Error::Unknown);
+            }
+            let output = native_crypto_derive(
+                &algorithm,
+                &hash,
+                &key,
+                &salt,
+                &info,
+                iterations,
+                output_bits / 8,
+            )?;
+            Ok(base64::engine::general_purpose::STANDARD.encode(output))
+        },
+    )
+    .map_err(|_| NativeEngineError::Worker {
+        operation: "install native crypto derivation".into(),
+        reason: "native crypto derivation could not be installed".into(),
+    })?;
     ctx.globals()
         .set("__glassNativeRandomBytes", random_source)
         .map_err(|_| NativeEngineError::Worker {
@@ -7223,6 +7366,12 @@ fn install_native_crypto_sources<'js>(ctx: rquickjs::Ctx<'js>) -> Result<(), Nat
         .map_err(|_| NativeEngineError::Worker {
             operation: "install native AES-GCM source".into(),
             reason: "native AES-GCM source could not be published".into(),
+        })?;
+    ctx.globals()
+        .set("__glassNativeCryptoDerive", derive_source)
+        .map_err(|_| NativeEngineError::Worker {
+            operation: "install native crypto derivation".into(),
+            reason: "native crypto derivation could not be published".into(),
         })
 }
 
@@ -8669,6 +8818,9 @@ fn worker_bootstrap(
     );
     return decodeWorkerBase64(encoded, {fetch_body_limit});
   }};
+  const workerCryptoDeriveSource = typeof globalThis.__glassNativeCryptoDerive === "function"
+    ? globalThis.__glassNativeCryptoDerive
+    : null;
   const workerCryptoAesSource = typeof globalThis.__glassNativeCryptoAesGcm === "function"
     ? globalThis.__glassNativeCryptoAesGcm
     : null;
@@ -8720,6 +8872,35 @@ fn worker_bootstrap(
     }});
     return Object.freeze(key);
   }};
+  const workerCryptoDeriveUsages = (values) => {{
+    if (!Array.isArray(values)) throw new TypeError("native Worker crypto usages must be an array");
+    const usages = [];
+    for (const value of values) {{
+      const usage = String(value);
+      if (!["deriveBits", "deriveKey"].includes(usage) || usages.includes(usage))
+        throw new SyntaxError("native Worker derivation usage is invalid or duplicated");
+      usages.push(usage);
+    }}
+    return usages;
+  }};
+  const workerCryptoMakeDeriveKey = (kind, bytes, usages) => {{
+    const key = Object.create(WorkerCryptoKeyNative.prototype);
+    const algorithm = Object.freeze({{ name: kind }});
+    const normalizedUsages = Object.freeze(usages.slice());
+    Object.defineProperties(key, {{
+      type: {{ configurable: false, enumerable: true, value: "secret" }},
+      extractable: {{ configurable: false, enumerable: true, value: false }},
+      algorithm: {{ configurable: false, enumerable: true, value: algorithm }},
+      usages: {{ configurable: false, enumerable: true, value: normalizedUsages }},
+    }});
+    workerCryptoKeyStore.set(key, {{
+      kind,
+      bytes: bytes.slice(),
+      extractable: false,
+      usages: normalizedUsages,
+    }});
+    return Object.freeze(key);
+  }};
   const workerCryptoHmacDefaultLength = (hashName) =>
     ["SHA-384", "SHA-512"].includes(hashName) ? 1024 : 512;
   const workerCryptoGenerateKey = (algorithm, extractable, keyUsages) => {{
@@ -8752,6 +8933,88 @@ fn worker_bootstrap(
       );
     }}
     throw new WorkerDOMExceptionNative("native crypto algorithm is unsupported", "NotSupportedError");
+  }};
+  const workerCryptoDeriveAlgorithm = (algorithm, state) => {{
+    if (!algorithm || typeof algorithm !== "object")
+      throw new WorkerDOMExceptionNative("native crypto derivation algorithm is required", "TypeError");
+    const name = String(algorithm.name || "").toUpperCase();
+    if (name !== state.kind)
+      throw new WorkerDOMExceptionNative("native crypto derivation algorithm does not match the key", "InvalidAccessError");
+    const hashName = workerCryptoHashName(algorithm.hash);
+    const salt = workerCryptoBufferInput(algorithm.salt);
+    if (salt.length > {fetch_body_limit})
+      throw new WorkerDOMExceptionNative("native crypto derivation salt is too large", "DataError");
+    if (name === "HKDF") {{
+      const info = workerCryptoBufferInput(algorithm.info);
+      if (info.length > {fetch_body_limit})
+        throw new WorkerDOMExceptionNative("native HKDF info is too large", "DataError");
+      return {{ hashName, salt, info, iterations: 0 }};
+    }}
+    const iterations = Number(algorithm.iterations);
+    if (!Number.isSafeInteger(iterations) || iterations < 1 || iterations > 100000)
+      throw new WorkerDOMExceptionNative("native PBKDF2 iterations are invalid", "DataError");
+    return {{ hashName, salt, info: [], iterations }};
+  }};
+  const workerCryptoDeriveHashLength = (hashName) =>
+    ({{ "SHA-1": 20, "SHA-256": 32, "SHA-384": 48, "SHA-512": 64 }})[hashName] || 0;
+  const workerCryptoCheckDeriveWork = (state, algorithm, length) => {{
+    const hashLength = workerCryptoDeriveHashLength(algorithm.hashName);
+    const blockCount = Math.ceil(length / hashLength);
+    if (state.kind === "HKDF" && length > hashLength * 255)
+      throw new WorkerDOMExceptionNative("native HKDF output is too large", "DataError");
+    const workPerBlock = state.kind === "HKDF"
+      ? algorithm.info.length + hashLength + 1
+      : algorithm.salt.length + 4 + algorithm.iterations * hashLength;
+    if (blockCount > 0 && workPerBlock > Math.floor({native_crypto_derive_work} / blockCount))
+      throw new WorkerDOMExceptionNative("native crypto derivation work is too large", "DataError");
+  }};
+  const workerCryptoDeriveBytes = (state, algorithm, length) => {{
+    if (!workerCryptoDeriveSource)
+      throw new WorkerDOMExceptionNative("native crypto derivation is unavailable", "OperationError");
+    if (length > {fetch_body_limit})
+      throw new WorkerDOMExceptionNative("native crypto derivation output is too large", "DataError");
+    workerCryptoCheckDeriveWork(state, algorithm, length);
+    const encoded = workerCryptoDeriveSource(
+      state.kind,
+      algorithm.hashName,
+      encodeWorkerBase64(state.bytes, {fetch_body_limit}),
+      encodeWorkerBase64(algorithm.salt, {fetch_body_limit}),
+      encodeWorkerBase64(algorithm.info, {fetch_body_limit}),
+      algorithm.iterations,
+      length * 8,
+    );
+    return decodeWorkerBase64(encoded, {fetch_body_limit});
+  }};
+  const workerCryptoDerivedKey = (state, algorithm, targetAlgorithm, extractable, keyUsages) => {{
+    if (!targetAlgorithm || typeof targetAlgorithm !== "object")
+      throw new WorkerDOMExceptionNative("native derived key algorithm is required", "TypeError");
+    const name = String(targetAlgorithm.name || "").toUpperCase();
+    if (name === "HMAC") {{
+      const hashName = workerCryptoHashName(targetAlgorithm.hash);
+      const length = targetAlgorithm.length === undefined
+        ? workerCryptoHmacDefaultLength(hashName)
+        : Number(targetAlgorithm.length);
+      if (!Number.isSafeInteger(length) || length <= 0 || length % 8 !== 0
+          || length / 8 > {worker_crypto_values_limit})
+        throw new WorkerDOMExceptionNative("native derived HMAC key length is invalid", "DataError");
+      return workerCryptoMakeKey(
+        workerCryptoDeriveBytes(state, algorithm, length / 8),
+        hashName,
+        extractable,
+        workerCryptoUsages(keyUsages),
+      );
+    }}
+    if (name === "AES-GCM") {{
+      const length = Number(targetAlgorithm.length);
+      if (![128, 192, 256].includes(length))
+        throw new WorkerDOMExceptionNative("native derived AES-GCM key length is invalid", "DataError");
+      return workerCryptoMakeAesKey(
+        workerCryptoDeriveBytes(state, algorithm, length / 8),
+        extractable,
+        workerCryptoAesUsages(keyUsages),
+      );
+    }}
+    throw new WorkerDOMExceptionNative("native derived key algorithm is unsupported", "NotSupportedError");
   }};
   const workerCryptoAesBytes = (operation, state, algorithm, data) => {{
     if (!workerCryptoAesSource)
@@ -8793,16 +9056,58 @@ fn worker_bootstrap(
       return Promise.reject(error);
     }}
   }};
+  workerSubtle.deriveBits = (algorithm, baseKey, length) => {{
+    try {{
+      const state = workerCryptoKeyState(baseKey);
+      if (!["HKDF", "PBKDF2"].includes(state.kind))
+        throw new WorkerDOMExceptionNative("native Worker crypto algorithm is unsupported", "NotSupportedError");
+      if (!state.usages.includes("deriveBits"))
+        throw new WorkerDOMExceptionNative("native Worker CryptoKey cannot derive bits", "InvalidAccessError");
+      if (!Number.isSafeInteger(length) || length < 0 || length % 8 !== 0
+          || length / 8 > {fetch_body_limit})
+        throw new WorkerDOMExceptionNative("native Worker crypto derivation length is invalid", "DataError");
+      const normalized = workerCryptoDeriveAlgorithm(algorithm, state);
+      return Promise.resolve(new Uint8Array(
+        workerCryptoDeriveBytes(state, normalized, length / 8)
+      ).buffer);
+    }} catch (error) {{
+      return Promise.reject(error);
+    }}
+  }};
+  workerSubtle.deriveKey = (algorithm, baseKey, derivedKeyAlgorithm, extractable = false, keyUsages = []) => {{
+    try {{
+      const state = workerCryptoKeyState(baseKey);
+      if (!["HKDF", "PBKDF2"].includes(state.kind))
+        throw new WorkerDOMExceptionNative("native Worker crypto algorithm is unsupported", "NotSupportedError");
+      if (!state.usages.includes("deriveKey"))
+        throw new WorkerDOMExceptionNative("native Worker CryptoKey cannot derive a key", "InvalidAccessError");
+      const normalized = workerCryptoDeriveAlgorithm(algorithm, state);
+      return Promise.resolve(workerCryptoDerivedKey(
+        state, normalized, derivedKeyAlgorithm, extractable, keyUsages
+      ));
+    }} catch (error) {{
+      return Promise.reject(error);
+    }}
+  }};
   workerSubtle.importKey = (format, keyData, algorithm, extractable = false, keyUsages = []) => {{
     try {{
       if (String(format).toLowerCase() !== "raw")
         throw new WorkerDOMExceptionNative("native Worker crypto key format is unsupported", "NotSupportedError");
       const bytes = workerCryptoBufferInput(keyData);
-      if (bytes.length === 0 || bytes.length > {fetch_body_limit})
+      if (bytes.length > {fetch_body_limit})
         throw new WorkerDOMExceptionNative("native Worker crypto key data is invalid", "DataError");
       const algorithmName = algorithm && typeof algorithm === "object"
         ? String(algorithm.name || "").toUpperCase()
         : "";
+      if (["HKDF", "PBKDF2"].includes(algorithmName)) {{
+        if (extractable)
+          throw new WorkerDOMExceptionNative("native Worker derivation keys are not extractable", "SyntaxError");
+        return Promise.resolve(workerCryptoMakeDeriveKey(
+          algorithmName, bytes, workerCryptoDeriveUsages(keyUsages)
+        ));
+      }}
+      if (bytes.length === 0)
+        throw new WorkerDOMExceptionNative("native Worker crypto key data is invalid", "DataError");
       if (algorithmName === "AES-GCM") {{
         if (![16, 24, 32].includes(bytes.length))
           throw new WorkerDOMExceptionNative("native Worker AES-GCM key length is invalid", "DataError");
@@ -8901,6 +9206,7 @@ fn worker_bootstrap(
   try {{ delete globalThis.__glassNativeCryptoDigest; }} catch (_error) {{}}
   try {{ delete globalThis.__glassNativeCryptoHmac; }} catch (_error) {{}}
   try {{ delete globalThis.__glassNativeCryptoAesGcm; }} catch (_error) {{}}
+  try {{ delete globalThis.__glassNativeCryptoDerive; }} catch (_error) {{}}
   const workerBlobBytes = (part) => {{
     if (part && part.__glassWorkerBlob === true) return part._bytes.slice();
     if (typeof part === "string") return workerUtf8Bytes(part);
@@ -10186,6 +10492,7 @@ fn worker_bootstrap(
         worker_url_search_params_bytes_limit = MAX_NATIVE_WORKER_URLSEARCHPARAMS_BYTES,
         worker_crypto_pool_limit = MAX_NATIVE_WORKER_CRYPTO_POOL_BYTES,
         worker_crypto_values_limit = MAX_NATIVE_WORKER_CRYPTO_VALUES_BYTES,
+        native_crypto_derive_work = MAX_NATIVE_CRYPTO_DERIVE_WORK,
         initial_random_bytes = initial_random_bytes,
         now_ms = now_ms,
         import_script_counts = import_script_counts,
@@ -20185,6 +20492,9 @@ fn document_bootstrap(
     );
     return decodeBase64(encoded, {native_form_body_bytes});
   }};
+  const pageCryptoDeriveSource = typeof globalThis.__glassNativeCryptoDerive === "function"
+    ? globalThis.__glassNativeCryptoDerive
+    : null;
   const pageCryptoAesSource = typeof globalThis.__glassNativeCryptoAesGcm === "function"
     ? globalThis.__glassNativeCryptoAesGcm
     : null;
@@ -20236,6 +20546,35 @@ fn document_bootstrap(
     }});
     return Object.freeze(key);
   }};
+  const pageCryptoDeriveUsages = (values) => {{
+    if (!Array.isArray(values)) throw new TypeError("native crypto usages must be an array");
+    const usages = [];
+    for (const value of values) {{
+      const usage = String(value);
+      if (!["deriveBits", "deriveKey"].includes(usage) || usages.includes(usage))
+        throw new SyntaxError("native crypto derivation usage is invalid or duplicated");
+      usages.push(usage);
+    }}
+    return usages;
+  }};
+  const pageCryptoMakeDeriveKey = (kind, bytes, usages) => {{
+    const key = Object.create(PageCryptoKeyNative.prototype);
+    const algorithm = Object.freeze({{ name: kind }});
+    const normalizedUsages = Object.freeze(usages.slice());
+    Object.defineProperties(key, {{
+      type: {{ configurable: false, enumerable: true, value: "secret" }},
+      extractable: {{ configurable: false, enumerable: true, value: false }},
+      algorithm: {{ configurable: false, enumerable: true, value: algorithm }},
+      usages: {{ configurable: false, enumerable: true, value: normalizedUsages }},
+    }});
+    pageCryptoKeyStore.set(key, {{
+      kind,
+      bytes: bytes.slice(),
+      extractable: false,
+      usages: normalizedUsages,
+    }});
+    return Object.freeze(key);
+  }};
   const pageCryptoHmacDefaultLength = (hashName) =>
     ["SHA-384", "SHA-512"].includes(hashName) ? 1024 : 512;
   const pageCryptoGenerateKey = (algorithm, extractable, keyUsages) => {{
@@ -20268,6 +20607,88 @@ fn document_bootstrap(
       );
     }}
     throw pageCryptoDigestError("native crypto algorithm is unsupported", "NotSupportedError");
+  }};
+  const pageCryptoDeriveAlgorithm = (algorithm, state) => {{
+    if (!algorithm || typeof algorithm !== "object")
+      throw pageCryptoDigestError("native crypto derivation algorithm is required", "TypeError");
+    const name = String(algorithm.name || "").toUpperCase();
+    if (name !== state.kind)
+      throw pageCryptoDigestError("native crypto derivation algorithm does not match the key", "InvalidAccessError");
+    const hashName = pageCryptoHashName(algorithm.hash);
+    const salt = pageCryptoBufferInput(algorithm.salt);
+    if (salt.length > {native_form_body_bytes})
+      throw pageCryptoDigestError("native crypto derivation salt is too large", "DataError");
+    if (name === "HKDF") {{
+      const info = pageCryptoBufferInput(algorithm.info);
+      if (info.length > {native_form_body_bytes})
+        throw pageCryptoDigestError("native HKDF info is too large", "DataError");
+      return {{ hashName, salt, info, iterations: 0 }};
+    }}
+    const iterations = Number(algorithm.iterations);
+    if (!Number.isSafeInteger(iterations) || iterations < 1 || iterations > 100000)
+      throw pageCryptoDigestError("native PBKDF2 iterations are invalid", "DataError");
+    return {{ hashName, salt, info: [], iterations }};
+  }};
+  const pageCryptoDeriveHashLength = (hashName) =>
+    ({{ "SHA-1": 20, "SHA-256": 32, "SHA-384": 48, "SHA-512": 64 }})[hashName] || 0;
+  const pageCryptoCheckDeriveWork = (state, algorithm, length) => {{
+    const hashLength = pageCryptoDeriveHashLength(algorithm.hashName);
+    const blockCount = Math.ceil(length / hashLength);
+    if (state.kind === "HKDF" && length > hashLength * 255)
+      throw pageCryptoDigestError("native HKDF output is too large", "DataError");
+    const workPerBlock = state.kind === "HKDF"
+      ? algorithm.info.length + hashLength + 1
+      : algorithm.salt.length + 4 + algorithm.iterations * hashLength;
+    if (blockCount > 0 && workPerBlock > Math.floor({native_crypto_derive_work} / blockCount))
+      throw pageCryptoDigestError("native crypto derivation work is too large", "DataError");
+  }};
+  const pageCryptoDeriveBytes = (state, algorithm, length) => {{
+    if (!pageCryptoDeriveSource)
+      throw pageCryptoDigestError("native crypto derivation is unavailable", "OperationError");
+    if (!Number.isSafeInteger(length) || length < 0 || length > {native_form_body_bytes})
+      throw pageCryptoDigestError("native crypto derivation output is too large", "DataError");
+    pageCryptoCheckDeriveWork(state, algorithm, length);
+    const encoded = pageCryptoDeriveSource(
+      state.kind,
+      algorithm.hashName,
+      encodeBase64(state.bytes, {native_form_body_bytes}),
+      encodeBase64(algorithm.salt, {native_form_body_bytes}),
+      encodeBase64(algorithm.info, {native_form_body_bytes}),
+      algorithm.iterations,
+      length * 8,
+    );
+    return decodeBase64(encoded, {native_form_body_bytes});
+  }};
+  const pageCryptoDerivedKey = (state, algorithm, targetAlgorithm, extractable, keyUsages) => {{
+    if (!targetAlgorithm || typeof targetAlgorithm !== "object")
+      throw pageCryptoDigestError("native derived key algorithm is required", "TypeError");
+    const name = String(targetAlgorithm.name || "").toUpperCase();
+    if (name === "HMAC") {{
+      const hashName = pageCryptoHashName(targetAlgorithm.hash);
+      const length = targetAlgorithm.length === undefined
+        ? pageCryptoHmacDefaultLength(hashName)
+        : Number(targetAlgorithm.length);
+      if (!Number.isSafeInteger(length) || length <= 0 || length % 8 !== 0
+          || length / 8 > {page_crypto_values_limit})
+        throw pageCryptoDigestError("native derived HMAC key length is invalid", "DataError");
+      return pageCryptoMakeKey(
+        pageCryptoDeriveBytes(state, algorithm, length / 8),
+        hashName,
+        extractable,
+        pageCryptoUsages(keyUsages),
+      );
+    }}
+    if (name === "AES-GCM") {{
+      const length = Number(targetAlgorithm.length);
+      if (![128, 192, 256].includes(length))
+        throw pageCryptoDigestError("native derived AES-GCM key length is invalid", "DataError");
+      return pageCryptoMakeAesKey(
+        pageCryptoDeriveBytes(state, algorithm, length / 8),
+        extractable,
+        pageCryptoAesUsages(keyUsages),
+      );
+    }}
+    throw pageCryptoDigestError("native derived key algorithm is unsupported", "NotSupportedError");
   }};
   const pageCryptoAesBytes = (operation, state, algorithm, data) => {{
     if (!pageCryptoAesSource)
@@ -20310,16 +20731,58 @@ fn document_bootstrap(
       return Promise.reject(error);
     }}
   }};
+  pageSubtle.deriveBits = (algorithm, baseKey, length) => {{
+    try {{
+      const state = pageCryptoKeyState(baseKey);
+      if (!["HKDF", "PBKDF2"].includes(state.kind))
+        throw pageCryptoDigestError("native crypto algorithm is unsupported", "NotSupportedError");
+      if (!state.usages.includes("deriveBits"))
+        throw pageCryptoDigestError("native CryptoKey cannot derive bits", "InvalidAccessError");
+      if (!Number.isSafeInteger(length) || length < 0 || length % 8 !== 0
+          || length / 8 > {native_form_body_bytes})
+        throw pageCryptoDigestError("native crypto derivation length is invalid", "DataError");
+      const normalized = pageCryptoDeriveAlgorithm(algorithm, state);
+      return Promise.resolve(new Uint8Array(
+        pageCryptoDeriveBytes(state, normalized, length / 8)
+      ).buffer);
+    }} catch (error) {{
+      return Promise.reject(error);
+    }}
+  }};
+  pageSubtle.deriveKey = (algorithm, baseKey, derivedKeyAlgorithm, extractable = false, keyUsages = []) => {{
+    try {{
+      const state = pageCryptoKeyState(baseKey);
+      if (!["HKDF", "PBKDF2"].includes(state.kind))
+        throw pageCryptoDigestError("native crypto algorithm is unsupported", "NotSupportedError");
+      if (!state.usages.includes("deriveKey"))
+        throw pageCryptoDigestError("native CryptoKey cannot derive a key", "InvalidAccessError");
+      const normalized = pageCryptoDeriveAlgorithm(algorithm, state);
+      return Promise.resolve(pageCryptoDerivedKey(
+        state, normalized, derivedKeyAlgorithm, extractable, keyUsages
+      ));
+    }} catch (error) {{
+      return Promise.reject(error);
+    }}
+  }};
   pageSubtle.importKey = (format, keyData, algorithm, extractable = false, keyUsages = []) => {{
     try {{
       if (String(format).toLowerCase() !== "raw")
         throw pageCryptoDigestError("native crypto key format is unsupported", "NotSupportedError");
       const bytes = pageCryptoBufferInput(keyData);
-      if (bytes.length === 0 || bytes.length > {native_form_body_bytes})
+      if (bytes.length > {native_form_body_bytes})
         throw pageCryptoDigestError("native crypto key data is invalid", "DataError");
       const algorithmName = algorithm && typeof algorithm === "object"
         ? String(algorithm.name || "").toUpperCase()
         : "";
+      if (["HKDF", "PBKDF2"].includes(algorithmName)) {{
+        if (extractable)
+          throw pageCryptoDigestError("native derivation keys are not extractable", "SyntaxError");
+        return Promise.resolve(pageCryptoMakeDeriveKey(
+          algorithmName, bytes, pageCryptoDeriveUsages(keyUsages)
+        ));
+      }}
+      if (bytes.length === 0)
+        throw pageCryptoDigestError("native crypto key data is invalid", "DataError");
       if (algorithmName === "AES-GCM") {{
         if (![16, 24, 32].includes(bytes.length))
           throw pageCryptoDigestError("native AES-GCM key length is invalid", "DataError");
@@ -20418,6 +20881,7 @@ fn document_bootstrap(
   try {{ delete globalThis.__glassNativeCryptoDigest; }} catch (_error) {{}}
   try {{ delete globalThis.__glassNativeCryptoHmac; }} catch (_error) {{}}
   try {{ delete globalThis.__glassNativeCryptoAesGcm; }} catch (_error) {{}}
+  try {{ delete globalThis.__glassNativeCryptoDerive; }} catch (_error) {{}}
   const nativeStorageUsage = () => {{
     const encoded = (value) => {{
       try {{ return JSON.stringify(value); }} catch (_error) {{ return ""; }}
@@ -23153,5 +23617,6 @@ fn document_bootstrap(
         initial_page_crypto_bytes = initial_random_bytes,
         page_crypto_pool_limit = MAX_NATIVE_PAGE_CRYPTO_POOL_BYTES,
         page_crypto_values_limit = MAX_NATIVE_PAGE_CRYPTO_VALUES_BYTES,
+        native_crypto_derive_work = MAX_NATIVE_CRYPTO_DERIVE_WORK,
     ))
 }

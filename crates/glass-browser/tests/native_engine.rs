@@ -1960,6 +1960,205 @@ async fn native_local_page_and_worker_generate_crypto_keys() {
 }
 
 #[tokio::test]
+async fn native_local_page_and_worker_derive_crypto_keys() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://derive-crypto-page",
+            "<html><body><main>Native</main></body></html>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://derive-crypto-worker",
+            "(async () => { const hex = bytes => Array.from(new Uint8Array(bytes)).map(value => value.toString(16).padStart(2, '0')).join(''); const base = await crypto.subtle.importKey('raw', new Uint8Array([11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11]), { name: 'HKDF' }, false, ['deriveBits', 'deriveKey']); const algorithm = { name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]), info: new Uint8Array([240, 241, 242, 243, 244, 245, 246, 247, 248, 249]) }; const bits = await crypto.subtle.deriveBits(algorithm, base, 336); const aes = await crypto.subtle.deriveKey(algorithm, base, { name: 'AES-GCM', length: 192 }, false, ['encrypt', 'decrypt']); const iv = new Uint8Array(12); const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, aes, new TextEncoder().encode('worker derived')); const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, aes, ciphertext); postMessage({ bits: hex(bits), plaintext: new TextDecoder().decode(plaintext), ciphertextLength: ciphertext.byteLength, algorithm: [aes.algorithm.name, aes.algorithm.length], extractable: aes.extractable, usages: Array.from(aes.usages), baseAlgorithm: base.algorithm.name, baseExtractable: base.extractable }); })().catch(error => postMessage({ error: error.name }));",
+        )
+        .unwrap()
+        .with_initial_url("fixture://derive-crypto-page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"await (async () => {
+                    const hex = bytes => Array.from(new Uint8Array(bytes))
+                        .map(value => value.toString(16).padStart(2, '0')).join('');
+                    const hkdfBase = await crypto.subtle.importKey(
+                        'raw',
+                        new Uint8Array([
+                            11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11,
+                            11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11,
+                        ]),
+                        { name: 'HKDF' },
+                        false,
+                        ['deriveBits', 'deriveKey'],
+                    );
+                    const hkdfAlgorithm = {
+                        name: 'HKDF',
+                        hash: 'SHA-256',
+                        salt: new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]),
+                        info: new Uint8Array([240, 241, 242, 243, 244, 245, 246, 247, 248, 249]),
+                    };
+                    const hkdfBits = await crypto.subtle.deriveBits(hkdfAlgorithm, hkdfBase, 336);
+                    const derivedAes = await crypto.subtle.deriveKey(
+                        hkdfAlgorithm,
+                        hkdfBase,
+                        { name: 'AES-GCM', length: 128 },
+                        true,
+                        ['encrypt', 'decrypt'],
+                    );
+                    const iv = new Uint8Array(12);
+                    const encrypted = await crypto.subtle.encrypt(
+                        { name: 'AES-GCM', iv },
+                        derivedAes,
+                        new TextEncoder().encode('derived AES'),
+                    );
+                    const decrypted = await crypto.subtle.decrypt(
+                        { name: 'AES-GCM', iv },
+                        derivedAes,
+                        encrypted,
+                    );
+                    const passwordBase = await crypto.subtle.importKey(
+                        'raw',
+                        new TextEncoder().encode('password'),
+                        { name: 'PBKDF2' },
+                        false,
+                        ['deriveBits', 'deriveKey'],
+                    );
+                    const pbkdf2One = await crypto.subtle.deriveBits(
+                        { name: 'PBKDF2', hash: 'SHA-1', salt: new TextEncoder().encode('salt'), iterations: 1 },
+                        passwordBase,
+                        160,
+                    );
+                    const pbkdf2Two = await crypto.subtle.deriveBits(
+                        { name: 'PBKDF2', hash: 'SHA-1', salt: new TextEncoder().encode('salt'), iterations: 2 },
+                        passwordBase,
+                        160,
+                    );
+                    const derivedHmac = await crypto.subtle.deriveKey(
+                        { name: 'PBKDF2', hash: 'SHA-1', salt: new TextEncoder().encode('salt'), iterations: 2 },
+                        passwordBase,
+                        { name: 'HMAC', hash: 'SHA-256', length: 256 },
+                        false,
+                        ['sign', 'verify'],
+                    );
+                    const data = new TextEncoder().encode('derived HMAC');
+                    const signature = await crypto.subtle.sign('HMAC', derivedHmac, data);
+                    const verified = await crypto.subtle.verify('HMAC', derivedHmac, signature, data);
+                    let baseExportError = '';
+                    try { await crypto.subtle.exportKey('raw', hkdfBase); } catch (error) { baseExportError = error.name; }
+                    let mismatchError = '';
+                    try {
+                        await crypto.subtle.deriveBits(
+                            { name: 'PBKDF2', hash: 'SHA-1', salt: new Uint8Array(), iterations: 1 },
+                            hkdfBase,
+                            8,
+                        );
+                    } catch (error) { mismatchError = error.name; }
+                    let lengthError = '';
+                    try { await crypto.subtle.deriveBits(hkdfAlgorithm, hkdfBase, 7); } catch (error) { lengthError = error.name; }
+                    let iterationsError = '';
+                    try {
+                        await crypto.subtle.deriveBits(
+                            { name: 'PBKDF2', hash: 'SHA-1', salt: new Uint8Array(), iterations: 0 },
+                            passwordBase,
+                            8,
+                        );
+                    } catch (error) { iterationsError = error.name; }
+                    globalThis.derivedCryptoState = {
+                        hkdf: {
+                            bits: hex(hkdfBits),
+                            baseAlgorithm: hkdfBase.algorithm.name,
+                            baseExtractable: hkdfBase.extractable,
+                            baseUsages: Array.from(hkdfBase.usages),
+                        },
+                        aes: {
+                            algorithm: [derivedAes.algorithm.name, derivedAes.algorithm.length],
+                            extractable: derivedAes.extractable,
+                            plaintext: new TextDecoder().decode(decrypted),
+                            ciphertextLength: encrypted.byteLength,
+                        },
+                        pbkdf2: {
+                            one: hex(pbkdf2One),
+                            two: hex(pbkdf2Two),
+                            hmacAlgorithm: [derivedHmac.algorithm.name, derivedHmac.algorithm.hash.name, derivedHmac.algorithm.length],
+                            hmacExtractable: derivedHmac.extractable,
+                            signatureLength: signature.byteLength,
+                            verified,
+                        },
+                        errors: { baseExportError, mismatchError, lengthError, iterationsError },
+                    };
+                    return globalThis.derivedCryptoState;
+                })()"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "hkdf": {
+                "bits": "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865",
+                "baseAlgorithm": "HKDF",
+                "baseExtractable": false,
+                "baseUsages": ["deriveBits", "deriveKey"],
+            },
+            "aes": {
+                "algorithm": ["AES-GCM", 128],
+                "extractable": true,
+                "plaintext": "derived AES",
+                "ciphertextLength": 27,
+            },
+            "pbkdf2": {
+                "one": "0c60c80f961f0e71f3a9b524af6012062fe037a6",
+                "two": "ea6c014dc72d6f8ccd1ed92ace1d41f0d8de8957",
+                "hmacAlgorithm": ["HMAC", "SHA-256", 256],
+                "hmacExtractable": false,
+                "signatureLength": 32,
+                "verified": true,
+            },
+            "errors": {
+                "baseExportError": "InvalidAccessError",
+                "mismatchError": "InvalidAccessError",
+                "lengthError": "DataError",
+                "iterationsError": "DataError",
+            },
+        })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("({ sameBase: derivedCryptoState.hkdf.baseAlgorithm === 'HKDF', aesLength: derivedCryptoState.aes.algorithm[1] })")
+            .await
+            .unwrap(),
+        serde_json::json!({ "sameBase": true, "aesLength": 128 })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "globalThis.workerMessages = []; globalThis.workerErrors = []; globalThis.worker = new Worker('fixture://derive-crypto-worker'); worker.onmessage = event => workerMessages.push(event.data); worker.onerror = event => workerErrors.push(event.message); true",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("({ messages: workerMessages, errors: workerErrors })")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "messages": [{
+                "bits": "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865",
+                "plaintext": "worker derived",
+                "ciphertextLength": 30,
+                "algorithm": ["AES-GCM", 192],
+                "extractable": false,
+                "usages": ["encrypt", "decrypt"],
+                "baseAlgorithm": "HKDF",
+                "baseExtractable": false,
+            }],
+            "errors": [],
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_runs_worker_created_during_page_load() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-280` locally. The versioned
+`native-engine-browser-281` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -288,6 +288,16 @@ external module that attaches a second external classic script. Dynamic
 Fetch/WebSocket/EventSource handoff, parser streaming, network completion
 timing, and complete script/lifecycle/Web IDL semantics remain open on issue
 #40.
+
+The completed dynamic network-effects slice is
+[native-engine-browser-281](tasks/native-engine-browser-281.md). Fetch,
+WebSocket, and EventSource commands emitted by dynamically loaded scripts now
+enter the existing bounded content event loop, while background event pumping
+remains separate from merely having an open connection. Dynamic Fetch Promise
+continuations publish their DOM effects, and the existing page Fetch,
+WebSocket, and EventSource witnesses remain green. Parser streaming, true
+network completion ordering, complete stream/body Web IDL semantics, and full
+native/CDP parity remain open on issue #40.
 
 The completed profile/contract task is
 [native-engine-browser-000](tasks/native-engine-browser-000.md). It freezes

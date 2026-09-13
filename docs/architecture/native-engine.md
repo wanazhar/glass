@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-290` slice; the bounded foundation below remains
+`native-engine-browser-291` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 
 Slice 283 adds a bounded dedicated-worker bridge after the page-facing
@@ -84,6 +84,16 @@ and load/error/timeout events across content-process turns. It does not add a
 second transport policy or claim synchronous, upload-progress, XML, or complete
 XHR parity. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-290.md`.
+
+Slice 291 adds dedicated module workers. Module roots and their static or
+literal dynamic-import dependencies are prefetched through the existing worker
+resource/policy owner, then evaluated by QuickJS's in-memory module loader in
+an isolated worker realm. Module message, timer, Fetch, XHR, stream, and
+lifecycle turns reuse the bounded worker queue, and `importScripts()` is
+explicitly rejected for module workers. Shared/service/worklet workers,
+import maps, transferables, complete worker Web IDL parity, and complete
+native/CDP replacement remain Issue #40 gates. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-291.md`.
 
 Slice 282 adds a bounded page-facing computed-style and media-query bridge:
 the JavaScript realm reads the native cascade/layout snapshot through a

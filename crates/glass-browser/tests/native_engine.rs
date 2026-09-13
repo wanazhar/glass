@@ -1022,6 +1022,59 @@ async fn native_local_worker_preloads_import_scripts_dependencies() {
 }
 
 #[tokio::test]
+async fn native_local_module_worker_imports_dependencies_and_handles_messages() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://module-worker-page",
+            "<html><body><main id='output'>Native</main></body></html>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://module-worker-root",
+            "import { workerValue } from 'fixture://module-worker-dependency'; let importScriptsRejected = false; try { importScripts('fixture://module-worker-dependency'); } catch (error) { importScriptsRejected = error instanceof TypeError; } self.onmessage = event => postMessage({ kind: 'reply', value: workerValue + event.data, module: typeof importScripts, hasDocument: typeof document !== 'undefined' }); postMessage({ kind: 'ready', value: workerValue, importScriptsRejected });",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://module-worker-dependency",
+            "export const workerValue = 7;",
+        )
+        .unwrap()
+        .with_initial_url("fixture://module-worker-page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "globalThis.workerMessages = []; globalThis.worker = new Worker('fixture://module-worker-root', { type: 'module' }); worker.onmessage = event => workerMessages.push(event.data); [worker instanceof Worker, worker.url]",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, "fixture://module-worker-root"])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("worker.postMessage(4); workerMessages")
+            .await
+            .unwrap(),
+        serde_json::json!([{"kind": "ready", "value": 7, "importScriptsRejected": true}])
+    );
+    assert_eq!(
+        engine.evaluate_async("workerMessages").await.unwrap(),
+        serde_json::json!([
+            {"kind": "ready", "value": 7, "importScriptsRejected": true},
+            {
+                "kind": "reply",
+                "value": 11,
+                "module": "function",
+                "hasDocument": false,
+            },
+        ])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_runs_worker_created_during_page_load() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

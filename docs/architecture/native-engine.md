@@ -26,8 +26,19 @@ navigation controls, extraction, dialogs, and pagination. Target resolution and
 actionability remain native-engine operations; value and extraction projections
 come from the native document realm and are bounded by the authored task
 limits. Results preserve the shared task receipt and postcondition contract.
-Workflow resume, persistent cross-process sessions, richer region/Web IR
-projection, and final Core Web Profile certification remain issue #40 work.
+Workflow resume, richer region/Web IR projection, and final Core Web Profile
+certification remain issue #40 work.
+
+Slice 321 extends the same ownership boundary to named persistent sessions. A
+native session owner keeps one `BrowserRuntimeSession` alive across CLI
+invocations, publishes runtime-aware status, and accepts bounded command
+argument requests through its mode-0600 local Unix socket. The owner reparses
+and validates each request, fixes profile/storage/viewport configuration, and
+reuses the existing native command dispatcher so persistent and one-shot
+commands cannot diverge. Native liveness is owned by the session process
+itself; no CDP port or Chrome child is invented. TUI attachment through a
+named native session, MCP owner multiplexing, richer semantic regions/Web IR,
+workflow resume, and final certification remain issue #40 work.
 
 Slice 283 adds a bounded dedicated-worker bridge after the page-facing
 computed-style/media-query bridge in slice 282. Page-created classic workers

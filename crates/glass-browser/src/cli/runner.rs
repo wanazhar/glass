@@ -48,6 +48,8 @@ use crate::results::{
 use crate::surfaces::SurfaceSet;
 use crate::workspace::{ResourceReference, WorkspaceId, WorkspaceStore};
 use base64::Engine;
+#[cfg(feature = "native-engine")]
+use clap::Parser;
 use clap::ValueEnum;
 use serde::Serialize;
 use serde_json::Value;
@@ -269,6 +271,12 @@ async fn dispatch_product(mut cli: Cli, _development_enabled: bool) -> BrowserRe
         }
         Some(Commands::Browser { action }) if cli.prompt.is_none() => {
             if let Some(name) = cli.session.clone() {
+                if cli.browser_runtime.is_native() {
+                    return Err(
+                        "native persistent sessions currently attach through explicit commands; use `glass --browser-runtime native --session NAME observe`"
+                            .into(),
+                    );
+                }
                 cli.port = persistent_session_port(&name)?;
                 cli.attach = true;
             }
@@ -284,6 +292,12 @@ async fn dispatch_product(mut cli: Cli, _development_enabled: bool) -> BrowserRe
             return Ok(());
         }
         Some(Commands::Tui) | None if cli.prompt.is_none() => {
+            if cli.browser_runtime.is_native() && cli.session.is_some() {
+                return Err(
+                    "native persistent sessions currently attach through explicit commands; use `glass --browser-runtime native --session NAME observe`"
+                        .into(),
+                );
+            }
             if should_run_tui(
                 std::io::stdin().is_terminal(),
                 std::io::stdout().is_terminal(),
@@ -366,6 +380,10 @@ async fn dispatch_alternative_runtime(cli: &Cli, policy: &mut BrowserPolicy) -> 
         );
     }
     let native = cli.browser_runtime.is_native();
+    #[cfg(feature = "native-engine")]
+    if native && cli.session.is_some() {
+        return dispatch_native_persistent_command(cli).await;
+    }
     validate_alternative_runtime_flags(cli, cli.browser_runtime)?;
     if cli.mcp {
         if native {
@@ -468,14 +486,15 @@ async fn dispatch_alternative_runtime(cli: &Cli, policy: &mut BrowserPolicy) -> 
     };
     let result = match context_result {
         Ok(()) => {
-            run_alternative_runtime_command(
+            let output = run_alternative_runtime_command(
                 &session,
                 command,
                 policy,
                 &cli.profile,
                 cli.response_mode,
             )
-            .await
+            .await?;
+            print_alternative_runtime_output(output)
         }
         Err(error) => Err(error),
     };
@@ -677,13 +696,145 @@ async fn validate_alternative_runtime_context(
     Ok(())
 }
 
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "camelCase")]
+pub(crate) enum AlternativeRuntimeOutput {
+    Json(Value),
+    Text(String),
+    Combined(Vec<Self>),
+}
+
+#[cfg(feature = "native-engine")]
+async fn dispatch_native_persistent_command(cli: &Cli) -> BrowserResult<()> {
+    let name = cli
+        .session
+        .as_deref()
+        .ok_or("native persistent command is missing its session name")?;
+    let raw_args = std::env::args().skip(1).collect::<Vec<_>>();
+    let args = strip_native_session_arg(&raw_args, name)?;
+    let response = crate::browser::persistent::execute_native(name, args).await?;
+    let output = response
+        .get("output")
+        .cloned()
+        .ok_or("native persistent session returned no command output")?;
+    let output: AlternativeRuntimeOutput = serde_json::from_value(output)?;
+    print_alternative_runtime_output(output)
+}
+
+#[cfg(feature = "native-engine")]
+fn strip_native_session_arg(args: &[String], expected_name: &str) -> BrowserResult<Vec<String>> {
+    let mut stripped = Vec::with_capacity(args.len());
+    let mut index = 0;
+    while index < args.len() {
+        let argument = &args[index];
+        if argument == "--session" {
+            let name = args.get(index + 1).ok_or("--session requires a name")?;
+            if name != expected_name {
+                return Err(
+                    "native persistent session argument does not match the selected session".into(),
+                );
+            }
+            index += 2;
+            continue;
+        }
+        if let Some(name) = argument.strip_prefix("--session=") {
+            if name != expected_name {
+                return Err(
+                    "native persistent session argument does not match the selected session".into(),
+                );
+            }
+            index += 1;
+            continue;
+        }
+        stripped.push(argument.clone());
+        index += 1;
+    }
+    Ok(stripped)
+}
+
+#[cfg(feature = "native-engine")]
+pub(crate) async fn run_native_persistent_request(
+    session: &BrowserRuntimeSession,
+    args: Vec<String>,
+    owner_profile: &str,
+    policy: &BrowserPolicy,
+) -> BrowserResult<AlternativeRuntimeOutput> {
+    let mut argv = Vec::with_capacity(args.len() + 1);
+    argv.push("glass".to_string());
+    argv.extend(args);
+    let cli = Cli::try_parse_from(argv)
+        .map_err(|error| format!("invalid persistent native command: {error}"))?;
+    if cli.browser_runtime != BrowserRuntime::Native {
+        return Err("persistent native owner requires --browser-runtime native".into());
+    }
+    if cli.mcp {
+        return Err(
+            "MCP must use its long-lived native server session, not CLI session IPC".into(),
+        );
+    }
+    if cli.prompt.is_some() {
+        return Err("native persistent sessions require an explicit browser command".into());
+    }
+    if cli.session.is_some() {
+        return Err("persistent native session routing removed --session before dispatch".into());
+    }
+    if cli.profile != owner_profile {
+        return Err(format!(
+            "persistent native session owns profile `{owner_profile}`; use that profile"
+        )
+        .into());
+    }
+    if cli.viewport.is_some() {
+        return Err("persistent native sessions keep the owner's viewport; omit --viewport".into());
+    }
+    if cli.incognito {
+        return Err(
+            "persistent native sessions keep the owner's storage mode; omit --incognito".into(),
+        );
+    }
+    let command = cli
+        .command
+        .as_ref()
+        .ok_or("an explicit browser command is required for a persistent native session")?;
+    validate_alternative_runtime_flags(&cli, BrowserRuntime::Native)?;
+    validate_alternative_runtime_command(command, BrowserRuntime::Native)?;
+    run_alternative_runtime_command(session, command, policy, owner_profile, cli.response_mode)
+        .await
+}
+
+fn alternative_json_output<T: Serialize + ?Sized>(
+    value: &T,
+    response_mode: ResponseMode,
+) -> BrowserResult<AlternativeRuntimeOutput> {
+    let value = serde_json::to_value(value)?;
+    Ok(AlternativeRuntimeOutput::Json(project_and_store(
+        value,
+        response_mode,
+        "cli",
+        default_result_store_path(),
+    )?))
+}
+
+fn print_alternative_runtime_output(output: AlternativeRuntimeOutput) -> BrowserResult<()> {
+    match output {
+        AlternativeRuntimeOutput::Json(value) => println!("{}", compact_json(&value)?),
+        AlternativeRuntimeOutput::Text(value) => println!("{value}"),
+        AlternativeRuntimeOutput::Combined(outputs) => {
+            for output in outputs {
+                print_alternative_runtime_output(output)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn run_alternative_runtime_command(
     session: &BrowserRuntimeSession,
     command: &Commands,
     policy: &BrowserPolicy,
     profile: &str,
     response_mode: ResponseMode,
-) -> BrowserResult<()> {
+) -> BrowserResult<AlternativeRuntimeOutput> {
     #[cfg(not(feature = "native-engine"))]
     let _ = profile;
     match command {
@@ -701,7 +852,7 @@ async fn run_alternative_runtime_command(
                     crate::browser::session::default_session_snapshot_path(profile),
                 );
                 store.save(&snapshot)?;
-                print_json_mode(&snapshot, response_mode)
+                alternative_json_output(&snapshot, response_mode)
             }
             #[cfg(not(feature = "native-engine"))]
             unreachable!("native runtime is feature-gated")
@@ -732,7 +883,7 @@ async fn run_alternative_runtime_command(
                         payload.confirmed,
                     )
                     .await?;
-                print_json_mode(&result, response_mode)
+                alternative_json_output(&result, response_mode)
             }
             #[cfg(not(feature = "native-engine"))]
             unreachable!("native runtime is feature-gated")
@@ -755,12 +906,12 @@ async fn run_alternative_runtime_command(
                 }
                 None => session.navigate(url).await?,
             };
-            print_json_mode(&result, response_mode)
+            alternative_json_output(&result, response_mode)
         }
         Commands::Click {
             target,
             expected_revision,
-        } => print_json_mode(
+        } => alternative_json_output(
             &native_or_portable_action(
                 session,
                 SemanticAction::Click {
@@ -774,7 +925,7 @@ async fn run_alternative_runtime_command(
         Commands::DoubleClick {
             target,
             expected_revision,
-        } if session.runtime().is_native() => print_json_mode(
+        } if session.runtime().is_native() => alternative_json_output(
             &native_or_portable_action(
                 session,
                 SemanticAction::DoubleClick {
@@ -785,7 +936,7 @@ async fn run_alternative_runtime_command(
             .await?,
             response_mode,
         ),
-        Commands::Hover { target } if session.runtime().is_native() => print_json_mode(
+        Commands::Hover { target } if session.runtime().is_native() => alternative_json_output(
             &native_or_portable_action(
                 session,
                 SemanticAction::Hover {
@@ -800,7 +951,7 @@ async fn run_alternative_runtime_command(
             source,
             destination,
             expected_revision,
-        } if session.runtime().is_native() => print_json_mode(
+        } if session.runtime().is_native() => alternative_json_output(
             &native_or_portable_action(
                 session,
                 SemanticAction::Drag {
@@ -818,7 +969,7 @@ async fn run_alternative_runtime_command(
         } if session.runtime().is_native() => {
             #[cfg(feature = "native-engine")]
             {
-                print_json_mode(
+                alternative_json_output(
                     &session
                         .native_click_expect_popup(target, *expected_revision)
                         .await?,
@@ -848,7 +999,7 @@ async fn run_alternative_runtime_command(
                         crate::browser::native_engine::NativePreflightAction::Select
                     }
                 };
-                print_json_mode(
+                alternative_json_output(
                     &session.native_preflight_target(target, action).await?,
                     response_mode,
                 )
@@ -859,7 +1010,7 @@ async fn run_alternative_runtime_command(
         Commands::InspectPage if session.runtime().is_native() => {
             #[cfg(feature = "native-engine")]
             {
-                print_json_mode(&session.native_inspect_page().await?, response_mode)
+                alternative_json_output(&session.native_inspect_page().await?, response_mode)
             }
             #[cfg(not(feature = "native-engine"))]
             unreachable!("native runtime is feature-gated")
@@ -870,7 +1021,7 @@ async fn run_alternative_runtime_command(
                 let request = SemanticIntentRequest::from_json(&serde_json::to_string(
                     &read_json_input(Some(input))?,
                 )?)?;
-                print_json_mode(&session.native_find_target(&request).await?, response_mode)
+                alternative_json_output(&session.native_find_target(&request).await?, response_mode)
             }
             #[cfg(not(feature = "native-engine"))]
             unreachable!("native runtime is feature-gated")
@@ -886,7 +1037,7 @@ async fn run_alternative_runtime_command(
                 if native_predicate_uses_javascript(&predicate) {
                     policy.require(PolicyCapability::Evaluate)?;
                 }
-                print_json_mode(
+                alternative_json_output(
                     &session
                         .native_verify(predicate, Duration::from_millis(*timeout_ms))
                         .await?,
@@ -906,7 +1057,7 @@ async fn run_alternative_runtime_command(
                 if matches!(condition, WaitCondition::JavaScript(_)) {
                     policy.require(PolicyCapability::Evaluate)?;
                 }
-                print_json_mode(
+                alternative_json_output(
                     &session
                         .native_wait(condition, Duration::from_millis(*timeout_ms))
                         .await?,
@@ -930,7 +1081,7 @@ async fn run_alternative_runtime_command(
                     .as_deref()
                     .map(serde_json::from_str::<VerificationPredicate>)
                     .transpose()?;
-                print_json_mode(
+                alternative_json_output(
                     &session
                         .native_act_and_verify(
                             &request,
@@ -947,7 +1098,7 @@ async fn run_alternative_runtime_command(
         Commands::Cookies if session.runtime().is_native() => {
             #[cfg(feature = "native-engine")]
             {
-                print_json_mode(&session.native_cookies().await?, response_mode)
+                alternative_json_output(&session.native_cookies().await?, response_mode)
             }
             #[cfg(not(feature = "native-engine"))]
             unreachable!("native runtime is feature-gated")
@@ -959,8 +1110,10 @@ async fn run_alternative_runtime_command(
                 let cookies = session.native_cookies().await?;
                 let bytes = serde_json::to_vec_pretty(&cookies)?;
                 tokio::fs::write(&output, bytes).await?;
-                println!("cookies exported to {}", output.display());
-                Ok(())
+                Ok(AlternativeRuntimeOutput::Text(format!(
+                    "cookies exported to {}",
+                    output.display()
+                )))
             }
             #[cfg(not(feature = "native-engine"))]
             unreachable!("native runtime is feature-gated")
@@ -980,8 +1133,10 @@ async fn run_alternative_runtime_command(
                 let bytes = tokio::fs::read(&input).await?;
                 let cookies: Vec<Cookie> = serde_json::from_slice(&bytes)?;
                 session.native_set_cookies(&cookies).await?;
-                println!("{} cookies imported", cookies.len());
-                Ok(())
+                Ok(AlternativeRuntimeOutput::Text(format!(
+                    "{} cookies imported",
+                    cookies.len()
+                )))
             }
             #[cfg(not(feature = "native-engine"))]
             unreachable!("native runtime is feature-gated")
@@ -998,7 +1153,7 @@ async fn run_alternative_runtime_command(
                     "Firefox/Safari type requires --target with a CSS selector".to_string()
                 }
             })?;
-            print_json_mode(
+            alternative_json_output(
                 &native_or_portable_action(
                     session,
                     SemanticAction::Type {
@@ -1014,7 +1169,7 @@ async fn run_alternative_runtime_command(
         Commands::Clear {
             target,
             expected_revision,
-        } => print_json_mode(
+        } => alternative_json_output(
             &native_or_portable_action(
                 session,
                 SemanticAction::Clear {
@@ -1028,7 +1183,7 @@ async fn run_alternative_runtime_command(
         Commands::Check {
             target,
             expected_revision,
-        } => print_json_mode(
+        } => alternative_json_output(
             &native_or_portable_action(
                 session,
                 SemanticAction::Check {
@@ -1042,7 +1197,7 @@ async fn run_alternative_runtime_command(
         Commands::Uncheck {
             target,
             expected_revision,
-        } => print_json_mode(
+        } => alternative_json_output(
             &native_or_portable_action(
                 session,
                 SemanticAction::Uncheck {
@@ -1057,7 +1212,7 @@ async fn run_alternative_runtime_command(
             target,
             value,
             expected_revision,
-        } => print_json_mode(
+        } => alternative_json_output(
             &native_or_portable_action(
                 session,
                 SemanticAction::Select {
@@ -1084,7 +1239,7 @@ async fn run_alternative_runtime_command(
                         NativeFile::from_path(&path).map_err(Into::into)
                     })
                     .collect::<BrowserResult<Vec<_>>>()?;
-                print_json_mode(
+                alternative_json_output(
                     &session
                         .native_upload_files(target, files, *expected_revision)
                         .await?,
@@ -1096,7 +1251,7 @@ async fn run_alternative_runtime_command(
         }
         Commands::ClickAt { x, y } if session.runtime().is_native() => {
             let target = native_point_locator(*x, *y)?;
-            print_json_mode(
+            alternative_json_output(
                 &session.action(SemanticAction::Click { target }).await?,
                 response_mode,
             )
@@ -1104,7 +1259,7 @@ async fn run_alternative_runtime_command(
         Commands::Key {
             key,
             expected_revision,
-        } if session.runtime().is_native() => print_json_mode(
+        } if session.runtime().is_native() => alternative_json_output(
             &native_or_portable_action(
                 session,
                 SemanticAction::KeyPress { key: key.clone() },
@@ -1116,7 +1271,7 @@ async fn run_alternative_runtime_command(
         Commands::KeyDown {
             key,
             expected_revision,
-        } if session.runtime().is_native() => print_json_mode(
+        } if session.runtime().is_native() => alternative_json_output(
             &native_or_portable_action(
                 session,
                 SemanticAction::KeyDown { key: key.clone() },
@@ -1128,7 +1283,7 @@ async fn run_alternative_runtime_command(
         Commands::KeyUp {
             key,
             expected_revision,
-        } if session.runtime().is_native() => print_json_mode(
+        } if session.runtime().is_native() => alternative_json_output(
             &native_or_portable_action(
                 session,
                 SemanticAction::KeyUp { key: key.clone() },
@@ -1140,7 +1295,7 @@ async fn run_alternative_runtime_command(
         Commands::Shortcut {
             shortcut,
             expected_revision,
-        } if session.runtime().is_native() => print_json_mode(
+        } if session.runtime().is_native() => alternative_json_output(
             &native_or_portable_action(
                 session,
                 SemanticAction::Shortcut {
@@ -1153,15 +1308,14 @@ async fn run_alternative_runtime_command(
         ),
         Commands::Text => {
             let evidence = session.evidence(EvidenceLevel::Compact).await?;
-            println!("{}", evidence.visible_text);
-            Ok(())
+            Ok(AlternativeRuntimeOutput::Text(evidence.visible_text))
         }
         Commands::Dom if session.runtime().is_native() => {
             #[cfg(feature = "native-engine")]
             {
                 let evidence = session.evidence(EvidenceLevel::Deep).await?;
                 let nodes = session.native_semantic_nodes()?;
-                print_json_mode(
+                alternative_json_output(
                     &serde_json::json!({
                         "contextId": evidence.context_id,
                         "revision": evidence.revision,
@@ -1195,7 +1349,7 @@ async fn run_alternative_runtime_command(
                 } else {
                     None
                 };
-                print_json_mode(
+                alternative_json_output(
                     &serde_json::json!({
                         "contextId": evidence.context_id,
                         "revision": evidence.revision,
@@ -1211,14 +1365,14 @@ async fn run_alternative_runtime_command(
             #[cfg(not(feature = "native-engine"))]
             unreachable!("native runtime is feature-gated")
         }
-        Commands::Observe { .. } => print_json_mode(
+        Commands::Observe { .. } => alternative_json_output(
             &session.evidence(EvidenceLevel::Compact).await?,
             response_mode,
         ),
         Commands::Targets if session.runtime().is_native() => {
             #[cfg(feature = "native-engine")]
             {
-                print_json_mode(&session.native_list_targets().await?, response_mode)
+                alternative_json_output(&session.native_list_targets().await?, response_mode)
             }
             #[cfg(not(feature = "native-engine"))]
             unreachable!("native runtime is feature-gated")
@@ -1227,7 +1381,7 @@ async fn run_alternative_runtime_command(
             #[cfg(feature = "native-engine")]
             {
                 let url = crate::browser::session::normalize_url(url);
-                print_json_mode(&session.native_create_target(&url).await?, response_mode)
+                alternative_json_output(&session.native_create_target(&url).await?, response_mode)
             }
             #[cfg(not(feature = "native-engine"))]
             unreachable!("native runtime is feature-gated")
@@ -1245,7 +1399,7 @@ async fn run_alternative_runtime_command(
                         return Err("target archive output must name a file".into());
                     }
                     tokio::fs::write(&path, &bytes).await?;
-                    print_json_mode(
+                    let output = alternative_json_output(
                         &serde_json::json!({
                             "schemaVersion": "glass.target-archive.v1",
                             "targetCount": target_count,
@@ -1253,10 +1407,10 @@ async fn run_alternative_runtime_command(
                         }),
                         response_mode,
                     )?;
+                    Ok(output)
                 } else {
-                    print_json_mode(&archive, response_mode)?;
+                    alternative_json_output(&archive, response_mode)
                 }
-                Ok(())
             }
             #[cfg(not(feature = "native-engine"))]
             unreachable!("native runtime is feature-gated")
@@ -1264,7 +1418,7 @@ async fn run_alternative_runtime_command(
         Commands::SelectTarget { id } if session.runtime().is_native() => {
             #[cfg(feature = "native-engine")]
             {
-                print_json_mode(&session.native_select_target(id).await?, response_mode)
+                alternative_json_output(&session.native_select_target(id).await?, response_mode)
             }
             #[cfg(not(feature = "native-engine"))]
             unreachable!("native runtime is feature-gated")
@@ -1273,7 +1427,7 @@ async fn run_alternative_runtime_command(
             #[cfg(feature = "native-engine")]
             {
                 session.native_close_target(id).await?;
-                print_json_mode(&serde_json::json!({"closed": id}), response_mode)
+                alternative_json_output(&serde_json::json!({"closed": id}), response_mode)
             }
             #[cfg(not(feature = "native-engine"))]
             unreachable!("native runtime is feature-gated")
@@ -1281,7 +1435,7 @@ async fn run_alternative_runtime_command(
         Commands::Frames if session.runtime().is_native() => {
             #[cfg(feature = "native-engine")]
             {
-                print_json_mode(&session.native_list_frames().await?, response_mode)
+                alternative_json_output(&session.native_list_frames().await?, response_mode)
             }
             #[cfg(not(feature = "native-engine"))]
             unreachable!("native runtime is feature-gated")
@@ -1289,7 +1443,7 @@ async fn run_alternative_runtime_command(
         Commands::SelectFrame { id } if session.runtime().is_native() => {
             #[cfg(feature = "native-engine")]
             {
-                print_json_mode(&session.native_select_frame(id).await?, response_mode)
+                alternative_json_output(&session.native_select_frame(id).await?, response_mode)
             }
             #[cfg(not(feature = "native-engine"))]
             unreachable!("native runtime is feature-gated")
@@ -1297,7 +1451,7 @@ async fn run_alternative_runtime_command(
         Commands::Evaluate { expression } => {
             policy.require(PolicyCapability::Evaluate)?;
             let result = session.script(expression).await?;
-            print_json_mode(&result.value, response_mode)
+            alternative_json_output(&result.value, response_mode)
         }
         Commands::Screenshot { output, .. } if session.runtime().is_native() => {
             policy.require(PolicyCapability::Screenshot)?;
@@ -1306,14 +1460,16 @@ async fn run_alternative_runtime_command(
                 let output = policy.require_output_path(std::path::Path::new(output))?;
                 let bytes = session.native_capture_png_async().await?;
                 tokio::fs::write(&output, bytes).await?;
-                println!("wrote {}", output.display());
-                print_json_mode(
-                    &serde_json::json!({
-                        "format": "png",
-                        "output": output,
-                    }),
-                    response_mode,
-                )
+                Ok(AlternativeRuntimeOutput::Combined(vec![
+                    AlternativeRuntimeOutput::Text(format!("wrote {}", output.display())),
+                    alternative_json_output(
+                        &serde_json::json!({
+                            "format": "png",
+                            "output": output,
+                        }),
+                        response_mode,
+                    )?,
+                ]))
             }
             #[cfg(not(feature = "native-engine"))]
             unreachable!("native runtime is feature-gated")
@@ -1324,7 +1480,7 @@ async fn run_alternative_runtime_command(
                 let result = session
                     .native_resolve_dialog(crate::browser_backend::PromptDecision::Accept)
                     .await?;
-                print_json_mode(&result, response_mode)
+                alternative_json_output(&result, response_mode)
             }
             #[cfg(not(feature = "native-engine"))]
             unreachable!("native runtime is feature-gated")
@@ -1335,7 +1491,7 @@ async fn run_alternative_runtime_command(
                 let result = session
                     .native_resolve_dialog(crate::browser_backend::PromptDecision::Dismiss)
                     .await?;
-                print_json_mode(&result, response_mode)
+                alternative_json_output(&result, response_mode)
             }
             #[cfg(not(feature = "native-engine"))]
             unreachable!("native runtime is feature-gated")
@@ -1351,7 +1507,7 @@ async fn run_alternative_runtime_command(
             }
             #[cfg(feature = "native-engine")]
             {
-                print_json_mode(
+                alternative_json_output(
                     &session
                         .native_wait_for_download(&destination, Duration::from_millis(*timeout_ms))
                         .await?,
@@ -1367,7 +1523,7 @@ async fn run_alternative_runtime_command(
             expected_revision,
         } if session.runtime().is_native() => {
             let (delta_x, delta_y) = native_scroll_deltas(*dx, *dy)?;
-            print_json_mode(
+            alternative_json_output(
                 &native_or_portable_action(
                     session,
                     SemanticAction::Scroll { delta_x, delta_y },
@@ -1508,19 +1664,44 @@ async fn dispatch_session(
     action: &SessionCommand,
     policy: &BrowserPolicy,
 ) -> BrowserResult<()> {
+    if cli.browser_runtime != BrowserRuntime::Chromium && !cli.browser_runtime.is_native() {
+        return Err("persistent sessions support only Chromium and native runtimes".into());
+    }
+    if cli.browser_endpoint.is_some() {
+        return Err("persistent sessions do not accept --browser-endpoint".into());
+    }
     match action {
         SessionCommand::Start { name } => {
             if cli.attach {
                 return Err("session start launches Chrome; remove `--attach`".into());
             }
+            if cli.browser_runtime.is_native() && cli.headed {
+                return Err("native persistent sessions do not support --headed".into());
+            }
+            if cli.browser_runtime.is_native() && cli.chrome_path.is_some() {
+                return Err("native persistent sessions do not accept --chrome-path".into());
+            }
+            #[cfg(feature = "native-engine")]
+            let native_config = if cli.browser_runtime.is_native() {
+                Some(native_config_from_cli(cli)?)
+            } else {
+                None
+            };
             let record = crate::browser::persistent::start(
                 crate::browser::persistent::PersistentSessionConfig {
                     name: name.clone(),
-                    port: cli.port,
+                    runtime: cli.browser_runtime,
+                    port: if cli.browser_runtime.is_native() {
+                        0
+                    } else {
+                        cli.port
+                    },
                     profile: cli.profile.clone(),
                     headed: cli.headed,
                     chrome_path: cli.chrome_path.clone(),
                     policy_args: policy_forward_args(cli),
+                    #[cfg(feature = "native-engine")]
+                    native_config,
                 },
             )
             .await?;
@@ -1540,16 +1721,25 @@ async fn dispatch_session(
             socket,
             status,
         } => {
+            #[cfg(feature = "native-engine")]
+            let native_config = if cli.browser_runtime.is_native() {
+                Some(native_config_from_cli(cli)?)
+            } else {
+                None
+            };
             crate::browser::persistent::serve(
                 crate::browser::persistent::PersistentSessionServeConfig {
                     name: name.clone(),
                     socket: socket.clone(),
                     status_path: status.clone(),
+                    runtime: cli.browser_runtime,
                     port: cli.port,
                     profile: cli.profile.clone(),
                     headed: cli.headed,
                     chrome_path: cli.chrome_path.clone(),
                     policy: policy.clone(),
+                    #[cfg(feature = "native-engine")]
+                    native_config,
                 },
             )
             .await?;
@@ -3891,6 +4081,29 @@ mod tests {
                 .unwrap();
         validate_alternative_runtime_command(cli.command.as_ref().unwrap(), cli.browser_runtime)
             .unwrap();
+    }
+
+    #[cfg(feature = "native-engine")]
+    #[test]
+    fn native_persistent_session_arg_is_removed_only_when_it_matches() {
+        let args = vec![
+            "--browser-runtime".into(),
+            "native".into(),
+            "--session".into(),
+            "work".into(),
+            "observe".into(),
+        ];
+        assert_eq!(
+            strip_native_session_arg(&args, "work").unwrap(),
+            vec!["--browser-runtime", "native", "observe"]
+        );
+
+        let equals = vec!["--session=work".into(), "text".into()];
+        assert_eq!(
+            strip_native_session_arg(&equals, "work").unwrap(),
+            vec!["text"]
+        );
+        assert!(strip_native_session_arg(&args, "other").is_err());
     }
 
     #[cfg(feature = "native-engine")]

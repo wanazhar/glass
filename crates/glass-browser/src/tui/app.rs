@@ -32,7 +32,7 @@ use crate::browser::session::{
     WorkflowDefinition, WorkflowRunResult,
 };
 #[cfg(feature = "native-engine")]
-use crate::browser::{BrowserRuntimeSession, NativeEngineConfig, NativeHistoryDirection, Viewport};
+use crate::browser::{BrowserRuntimeSession, NativeHistoryDirection};
 #[cfg(feature = "native-engine")]
 use crate::browser_backend::{EvidenceLevel, SemanticAction};
 use crate::browser_workspace::{
@@ -884,15 +884,7 @@ impl BrowserTui {
                             .into(),
                     );
                 }
-                let mut config = NativeEngineConfig::default();
-                if let Some(viewport) = cli.viewport.as_deref() {
-                    let (width, height) = crate::cli::runner::parse_viewport(viewport)?;
-                    config = config.with_viewport(Viewport {
-                        width: u32::try_from(width)?,
-                        height: u32::try_from(height)?,
-                        device_scale_factor_milli: 1000,
-                    });
-                }
+                let config = crate::cli::runner::native_config_from_cli(cli)?;
                 self.session = Some(BrowserTuiSession::Native(Box::new(
                     BrowserRuntimeSession::connect_native(config).await?,
                 )));

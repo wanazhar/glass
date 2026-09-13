@@ -1,9 +1,17 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-317` slice. The native runtime is now the primary
+`native-engine-browser-318` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
+
+Slice 318 makes native startup configuration a shared product boundary. CLI
+and TUI sessions use the same profile and viewport adapter; a named non-
+incognito profile maps to Rust-owned storage at
+`glass/native-profiles/<profile>/storage.json`, while incognito sessions do
+not persist storage. This state is deliberately separate from Chromium
+profiles. Persistent session ownership, complete storage semantics, and the
+remaining browser parity gates still require issue #40 work.
 
 Slice 283 adds a bounded dedicated-worker bridge after the page-facing
 computed-style/media-query bridge in slice 282. Page-created classic workers

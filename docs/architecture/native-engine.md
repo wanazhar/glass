@@ -5045,17 +5045,20 @@ The native profile is `experimental` and declares:
 | prompts | partial | bounded alert/confirm/prompt metadata, FIFO pending state, `dialogOpen`, and accept/dismiss resolution; suspended modal continuation and response injection remain open |
 | downloads | available | bounded HTTP(S) anchor `download` attributes queue a parent-owned transfer; runtime, CLI, and MCP complete the oldest queued download for the selected target into an existing directory with sanitized collision-free file creation, SHA-256 evidence, stable completion IDs, and bounded cancellation/listing; chooser UI, programmatic/object-URL downloads, streaming/progress, service-worker interception, and cross-target/frame parity remain open |
 
-Within the available script profile, classic dedicated `Worker` creation is
-available for local fixtures and HTTP(S) pages. Worker source uses the shared
-resource and `worker-src` policy path, each worker has an isolated bounded
-QuickJS realm, messages/errors/termination cross an explicit page-turn queue,
-due timers are pumped at that boundary, and bounded static `importScripts()`
-dependencies preload through the same owner. Classic worker `fetch()` also uses
-the shared HTTP(S) loader with owner-tagged requests and bounded response
-metadata plus `text()`/`json()` consumers inside the worker realm.
-Module/shared/service workers, transferables, worker streaming/binary Fetch
-parity, worker XHR, dynamic/exact `importScripts()` timing, and complete Worker
-Web IDL semantics remain outside the current profile.
+Within the available script profile, classic and module dedicated `Worker`
+creation is available for local fixtures and HTTP(S) pages. Worker source uses
+the shared resource and `worker-src` policy path, each worker has an isolated
+bounded QuickJS realm, messages/errors/termination cross an explicit page-turn
+queue, due timers are pumped at that boundary, and bounded static
+`importScripts()` dependencies preload through the same owner. Worker Fetch
+uses the shared HTTP(S) loader with owner-tagged requests, bounded raw-byte
+responses, response streams, `Headers`/`Request`/`Response` identity, and
+body ownership inside the worker realm. Asynchronous worker XHR, persistent
+worker WebSocket, and worker EventSource/SSE use the same owner-tagged content
+process boundary and bounded page-turn delivery. Shared/service/worklet
+workers, transferables, dynamic/exact `importScripts()` timing, automatic
+background task-source fairness, and complete Worker Web IDL semantics remain
+outside the current profile.
 
 Within the available script profile, native Fetch `Response.clone()` creates a
 bounded fresh response/header/body owner; full disturbance and Web IDL

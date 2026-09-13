@@ -1156,7 +1156,71 @@ async fn native_content_process_worker_fetch_preserves_binary_request_and_respon
                     stream.write_all(response.as_bytes()).await.unwrap();
                 }
                 "/worker-binary.js" => {
-                    let body = "(async () => { try { const bytes = new Uint8Array([0, 255, 1, 254]); const request = new File([bytes], 'payload.bin', { type: 'application/octet-stream' }); const response = await fetch('/worker-binary-echo', { method: 'POST', body: request }); const bufferResponse = response.clone(); const blobResponse = response.clone(); const responseBytes = await response.bytes(); const responseBuffer = await bufferResponse.arrayBuffer(); const responseBlob = await blobResponse.blob(); const blobBytes = await responseBlob.bytes(); postMessage({ kind: 'binary', requestBytes: Array.from(bytes), responseBytes: Array.from(responseBytes), responseBuffer: Array.from(new Uint8Array(responseBuffer)), blobBytes: Array.from(blobBytes), blobSize: responseBlob.size, blobType: responseBlob.type, bodyUsed: response.bodyUsed, bufferBodyUsed: bufferResponse.bodyUsed, blobBodyUsed: blobResponse.bodyUsed }); } catch (error) { postMessage({ kind: 'error', message: String(error) }); } })();";
+                    let body = r#"(async () => {
+  try {
+    const bytes = new Uint8Array([0, 255, 1, 254]);
+    const request = new File([bytes], 'payload.bin', { type: 'application/octet-stream' });
+    const response = await fetch('/worker-binary-echo', { method: 'POST', body: request });
+    const bufferResponse = response.clone();
+    const blobResponse = response.clone();
+    const streamResponse = response.clone();
+    const byobResponse = response.clone();
+    const cancelResponse = response.clone();
+    const iteratorResponse = response.clone();
+    const responseBytes = await response.bytes();
+    const responseBuffer = await bufferResponse.arrayBuffer();
+    const responseBlob = await blobResponse.blob();
+    const blobBytes = await responseBlob.bytes();
+    const stream = streamResponse.body;
+    const reader = stream.getReader();
+    const streamFirst = await reader.read();
+    const streamEnd = await reader.read();
+    reader.releaseLock();
+    const byobReader = byobResponse.body.getReader({ mode: 'byob' });
+    const byobFirst = await byobReader.read(new Uint8Array(8));
+    const byobEnd = await byobReader.read(new Uint8Array(2));
+    byobReader.releaseLock();
+    const cancelReader = cancelResponse.body.getReader();
+    const cancelFirst = await cancelReader.read();
+    await cancelReader.cancel('stop');
+    const cancelAfter = await cancelReader.read();
+    cancelReader.releaseLock();
+    const iterator = iteratorResponse.body[Symbol.asyncIterator]();
+    const iteratorFirst = await iterator.next();
+    const iteratorEnd = await iterator.next();
+    postMessage({
+      kind: 'binary',
+      requestBytes: Array.from(bytes),
+      responseBytes: Array.from(responseBytes),
+      responseBuffer: Array.from(new Uint8Array(responseBuffer)),
+      blobBytes: Array.from(blobBytes),
+      blobSize: responseBlob.size,
+      blobType: responseBlob.type,
+      streamBody: stream instanceof ReadableStream,
+      streamFirst: Array.from(streamFirst.value),
+      streamFirstDone: streamFirst.done,
+      streamEndDone: streamEnd.done,
+      streamBodyUsed: streamResponse.bodyUsed,
+      byobFirst: Array.from(byobFirst.value),
+      byobFirstDone: byobFirst.done,
+      byobEndDone: byobEnd.done,
+      byobBodyUsed: byobResponse.bodyUsed,
+      cancelFirst: Array.from(cancelFirst.value),
+      cancelFirstDone: cancelFirst.done,
+      cancelAfterDone: cancelAfter.done,
+      cancelBodyUsed: cancelResponse.bodyUsed,
+      iteratorFirst: Array.from(iteratorFirst.value),
+      iteratorFirstDone: iteratorFirst.done,
+      iteratorEndDone: iteratorEnd.done,
+      iteratorBodyUsed: iteratorResponse.bodyUsed,
+      bodyUsed: response.bodyUsed,
+      bufferBodyUsed: bufferResponse.bodyUsed,
+      blobBodyUsed: blobResponse.bodyUsed,
+    });
+  } catch (error) {
+    postMessage({ kind: 'error', message: String(error) });
+  }
+})();"#;
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: text/javascript\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                         body.len()
@@ -1194,6 +1258,23 @@ async fn native_content_process_worker_fetch_preserves_binary_request_and_respon
             "blobBytes": [0, 255, 1, 254],
             "blobSize": 4,
             "blobType": "application/octet-stream",
+            "streamBody": true,
+            "streamFirst": [0, 255, 1, 254],
+            "streamFirstDone": false,
+            "streamEndDone": true,
+            "streamBodyUsed": true,
+            "byobFirst": [0, 255, 1, 254],
+            "byobFirstDone": false,
+            "byobEndDone": true,
+            "byobBodyUsed": true,
+            "cancelFirst": [0, 255, 1, 254],
+            "cancelFirstDone": false,
+            "cancelAfterDone": true,
+            "cancelBodyUsed": true,
+            "iteratorFirst": [0, 255, 1, 254],
+            "iteratorFirstDone": false,
+            "iteratorEndDone": true,
+            "iteratorBodyUsed": true,
             "bodyUsed": true,
             "bufferBodyUsed": true,
             "blobBodyUsed": true,

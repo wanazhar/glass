@@ -7373,11 +7373,182 @@ fn worker_bootstrap(
       [Symbol.iterator]() {{ return this.entries(); }},
     }});
   }};
+  const workerReadableStreamState = (stream) => {{
+    if (!stream || stream.__glassWorkerReadableStream !== true || !stream._state)
+      throw new TypeError("native Worker ReadableStream receiver is invalid");
+    return stream._state;
+  }};
+  const workerReadableStreamSetDone = (state) => {{
+    if (state.done) return;
+    state.done = true;
+    if (state.closedWaiters.length === 0) return;
+    const waiters = state.closedWaiters.splice(0);
+    for (const resolve of waiters) resolve();
+  }};
+  const workerReadableStreamDisturb = (state) => {{
+    if (state.disturbed) return;
+    state.disturbed = true;
+    if (typeof state.onDisturb === "function") state.onDisturb();
+  }};
+  const workerReadableStreamConsume = (state) => {{
+    if (state.locked || state.disturbed && state.consumedByResponse) return false;
+    workerReadableStreamDisturb(state);
+    state.consumedByResponse = true;
+    state.offset = state.bytes.length;
+    workerReadableStreamSetDone(state);
+    return true;
+  }};
+  const WorkerReadableStreamNative = typeof globalThis.__glassWorkerReadableStreamConstructor === "function"
+    ? globalThis.__glassWorkerReadableStreamConstructor
+    : function(bytes, onDisturb) {{
+    if (!(this instanceof WorkerReadableStreamNative)) throw new TypeError("native Worker ReadableStream requires new");
+    if (bytes !== undefined && !Array.isArray(bytes))
+      throw new TypeError("native Worker ReadableStream only accepts byte snapshots");
+    const values = bytes === undefined ? [] : bytes.slice();
+    if (values.length > {fetch_body_limit})
+      throw new RangeError("native Worker ReadableStream body exceeds its limit");
+    for (const value of values) {{
+      if (!Number.isInteger(value) || value < 0 || value > 255)
+        throw new TypeError("native Worker ReadableStream bytes are invalid");
+    }}
+    const state = {{
+      bytes: values,
+      offset: 0,
+      locked: false,
+      disturbed: false,
+      consumedByResponse: false,
+      cancelled: false,
+      done: false,
+      error: null,
+      closedWaiters: [],
+      onDisturb: typeof onDisturb === "function" ? onDisturb : null,
+    }};
+    Object.defineProperty(this, "__glassWorkerReadableStream", {{ value: true }});
+    Object.defineProperty(this, "_state", {{ value: state }});
+    Object.freeze(this);
+  }};
+  Object.defineProperty(WorkerReadableStreamNative.prototype, "locked", {{
+    configurable: true,
+    get() {{ return workerReadableStreamState(this).locked; }},
+  }});
+  WorkerReadableStreamNative.prototype.getReader = function(options) {{
+    const state = workerReadableStreamState(this);
+    if (state.locked) throw new TypeError("native Worker ReadableStream is already locked");
+    if (state.consumedByResponse) throw new TypeError("native Worker ReadableStream body is unusable");
+    const settings = options === undefined || options === null ? {{}} : options;
+    if (typeof settings !== "object" && typeof settings !== "function")
+      throw new TypeError("native Worker ReadableStream reader options are invalid");
+    const mode = settings.mode === undefined ? undefined : String(settings.mode);
+    if (mode !== undefined && mode !== "byob")
+      throw new TypeError("native Worker ReadableStream reader mode is unsupported");
+    const byob = mode === "byob";
+    state.locked = true;
+    let released = false;
+    let resolveClosed;
+    const closed = new Promise(resolve => {{ resolveClosed = resolve; }});
+    if (state.done || state.cancelled) resolveClosed();
+    else state.closedWaiters.push(resolveClosed);
+    const release = () => {{
+      if (released) return;
+      released = true;
+      state.locked = false;
+    }};
+    const byobResult = (view, count) => {{
+      const bytesPerElement = Number(view.BYTES_PER_ELEMENT) || 1;
+      const elements = Math.floor(count / bytesPerElement);
+      return typeof view.subarray === "function"
+        ? view.subarray(0, elements)
+        : new Uint8Array(view.buffer, view.byteOffset, elements * bytesPerElement);
+    }};
+    const read = (view) => {{
+      if (released) return Promise.reject(new TypeError("native Worker ReadableStream reader is released"));
+      if (state.consumedByResponse) return Promise.reject(new TypeError("native Worker Response body is unusable"));
+      if (byob) {{
+        if (!view || typeof ArrayBuffer.isView !== "function" || !ArrayBuffer.isView(view) || view.byteLength === 0)
+          throw new TypeError("native Worker BYOB read requires a non-empty view");
+      }} else if (view !== undefined) {{
+        throw new TypeError("native Worker default reader read does not accept a view");
+      }}
+      workerReadableStreamDisturb(state);
+      if (state.error !== null) return Promise.reject(new Error(state.error));
+      if (state.cancelled || state.done || state.offset >= state.bytes.length) {{
+        workerReadableStreamSetDone(state);
+        return Promise.resolve(byob
+          ? {{ value: byobResult(view, 0), done: true }}
+          : {{ value: undefined, done: true }});
+      }}
+      const remaining = state.bytes.length - state.offset;
+      const bytesPerElement = byob ? Number(view.BYTES_PER_ELEMENT) || 1 : 1;
+      const capacity = byob
+        ? Math.floor(view.byteLength / bytesPerElement) * bytesPerElement
+        : Math.min(remaining, 8192);
+      if (capacity === 0) throw new TypeError("native Worker BYOB view is too small");
+      const count = Math.min(remaining, capacity);
+      const bytes = state.bytes.slice(state.offset, state.offset + count);
+      state.offset += count;
+      if (byob) {{
+        new Uint8Array(view.buffer, view.byteOffset, count).set(bytes);
+        return Promise.resolve({{ value: byobResult(view, count), done: false }});
+      }}
+      return Promise.resolve({{ value: new Uint8Array(bytes), done: false }});
+    }};
+    const cancel = reason => {{
+      if (released) return Promise.reject(new TypeError("native Worker ReadableStream reader is released"));
+      state.cancelled = true;
+      state.offset = state.bytes.length;
+      workerReadableStreamDisturb(state);
+      workerReadableStreamSetDone(state);
+      return Promise.resolve(undefined);
+    }};
+    const reader = {{
+      read,
+      cancel,
+      releaseLock: release,
+      return() {{
+        if (released) return Promise.resolve({{ value: undefined, done: true }});
+        return cancel().then(() => {{ release(); return {{ value: undefined, done: true }}; }});
+      }},
+      [Symbol.asyncIterator]() {{ return this; }},
+    }};
+    Object.defineProperty(reader, "closed", {{ value: closed }});
+    return Object.freeze(reader);
+  }};
+  WorkerReadableStreamNative.prototype.cancel = function(reason) {{
+    const state = workerReadableStreamState(this);
+    if (state.locked) return Promise.reject(new TypeError("native Worker ReadableStream is locked"));
+    state.cancelled = true;
+    state.offset = state.bytes.length;
+    workerReadableStreamDisturb(state);
+    workerReadableStreamSetDone(state);
+    return Promise.resolve(undefined);
+  }};
+  WorkerReadableStreamNative.prototype.tee = function() {{
+    const state = workerReadableStreamState(this);
+    if (state.locked || state.consumedByResponse)
+      throw new TypeError("native Worker ReadableStream is unusable");
+    workerReadableStreamDisturb(state);
+    const remaining = state.bytes.slice(state.offset);
+    workerReadableStreamSetDone(state);
+    return [new WorkerReadableStreamNative(remaining), new WorkerReadableStreamNative(remaining)];
+  }};
+  WorkerReadableStreamNative.prototype[Symbol.asyncIterator] = function() {{
+    const reader = this.getReader();
+    return Object.freeze({{
+      next() {{ return reader.read(); }},
+      return() {{ return reader.return(); }},
+      [Symbol.asyncIterator]() {{ return this; }},
+    }});
+  }};
+  globalThis.__glassWorkerReadableStreamConstructor = WorkerReadableStreamNative;
+  globalThis.ReadableStream = WorkerReadableStreamNative;
   const responseFromWorkerFetch = (payload) => {{
     const bytes = workerResponseBytes(payload);
     let bodyUsed = false;
+    const body = new WorkerReadableStreamNative(bytes, () => {{ bodyUsed = true; }});
+    const bodyState = workerReadableStreamState(body);
     const consume = transform => {{
-      if (bodyUsed) return Promise.reject(new TypeError("native Worker Response body is unusable"));
+      if (bodyUsed || bodyState.locked || !workerReadableStreamConsume(bodyState))
+        return Promise.reject(new TypeError("native Worker Response body is unusable"));
       bodyUsed = true;
       return Promise.resolve().then(() => transform(bytes.slice()));
     }};
@@ -7389,7 +7560,7 @@ fn worker_bootstrap(
       url: payload && typeof payload.url === "string" ? payload.url : "",
       redirected: payload && payload.redirected === true,
       headers: workerResponseHeaders(payload && payload.headers, payload && payload.contentType),
-      body: null,
+      body,
       get bodyUsed() {{ return bodyUsed; }},
       text() {{ return consume(value => workerUtf8Text(value)); }},
       json() {{ return consume(value => JSON.parse(workerUtf8Text(value))); }},
@@ -7404,7 +7575,7 @@ fn worker_bootstrap(
         }});
       }},
       clone() {{
-        if (bodyUsed) throw new TypeError("native Worker Response body is unusable");
+        if (bodyUsed || bodyState.locked) throw new TypeError("native Worker Response body is unusable");
         return responseFromWorkerFetch(payload);
       }},
     }};

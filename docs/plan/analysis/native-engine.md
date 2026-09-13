@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-287`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-288`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -4239,11 +4239,19 @@ accepts bounded string, `ArrayBuffer`, typed-array, Blob, and File request
 bodies, and exposes byte-preserving `bytes()`, `arrayBuffer()`, and `blob()`
 response consumers with one-shot `bodyUsed` and independent clone ownership.
 The host loader remains the single URL, cookie, CORS, redirect, and response
-limit owner; no second worker security implementation is introduced. Worker
-ReadableStreams, full Request/Response Web IDL identity, XHR, module/shared
-service workers, and complete native/CDP parity remain issue #40 promotion
-work. Exact evidence is recorded in
+limit owner; no second worker security implementation is introduced. Exact
+evidence is recorded in
 `docs/plan/tasks/native-engine-browser-287.md`.
+
+The completed native-engine-browser-288 slice exposes each worker Fetch
+response body as a bounded byte-preserving `ReadableStream` over the already
+buffered response snapshot. Default and BYOB readers, lock/release behavior,
+reader cancellation, async iteration, stream disturbance, and independent
+response clones are covered in the isolated worker realm. Transport-demand
+streaming, full Request/Response Web IDL identity, XHR, module/shared service
+workers, and complete native/CDP parity remain issue #40 promotion work.
+Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-288.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

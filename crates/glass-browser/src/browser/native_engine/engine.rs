@@ -742,10 +742,10 @@ impl NativeEngine {
                 self.runtime.close()?;
                 self.runtime_worker.take();
                 self.lifecycle = NativeLifecycleState::Closed;
-                if let Some(process) = self.content_process.take() {
-                    if process.is_healthy() {
-                        process.close().await?;
-                    }
+                if let Some(process) = self.content_process.take()
+                    && process.is_healthy()
+                {
+                    process.close().await?;
                 }
                 Ok(())
             }
@@ -875,8 +875,8 @@ impl NativeEngine {
             }
             return Ok(self.snapshot_unchecked());
         }
-        if is_network_url(&url) {
-            let referrer = referrer_for_navigation(&self.url, &url)?;
+        if is_network_url(url) {
+            let referrer = referrer_for_navigation(&self.url, url)?;
             self.ensure_content_process().await?;
             let (content, history_commit, page_navigation_handoffs) = self
                 .load_content_with_page_navigation(
@@ -6430,10 +6430,9 @@ fn native_download_filename(download_attribute: &str, url: &str) -> String {
         url::Url::parse(without_fragment(url))
             .ok()
             .and_then(|url| {
-                url.path_segments().and_then(|segments| {
+                url.path_segments().and_then(|mut segments| {
                     segments
-                        .filter(|segment| !segment.is_empty())
-                        .next_back()
+                        .rfind(|segment| !segment.is_empty())
                         .map(str::to_owned)
                 })
             })
@@ -6441,10 +6440,7 @@ fn native_download_filename(download_attribute: &str, url: &str) -> String {
     } else {
         download_attribute.trim().to_owned()
     };
-    let candidate = candidate
-        .split(|character| character == '/' || character == '\\')
-        .next_back()
-        .unwrap_or_default();
+    let candidate = candidate.split(['/', '\\']).next_back().unwrap_or_default();
     let mut sanitized = String::new();
     for character in candidate.chars() {
         if character.is_control() || matches!(character, ':' | '/' | '\\') {

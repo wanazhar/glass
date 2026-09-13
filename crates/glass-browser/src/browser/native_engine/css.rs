@@ -8258,10 +8258,8 @@ fn split_background_size_separator(value: &str) -> Option<(&str, Option<&str>)> 
             b'\'' | b'"' => quote = Some(byte),
             b'(' => parentheses = parentheses.checked_add(1)?,
             b')' => parentheses = parentheses.checked_sub(1)?,
-            b'/' if parentheses == 0 => {
-                if separator.replace(index).is_some() {
-                    return None;
-                }
+            b'/' if parentheses == 0 && separator.replace(index).is_some() => {
+                return None;
             }
             _ => {}
         }

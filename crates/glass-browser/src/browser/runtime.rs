@@ -1371,7 +1371,7 @@ fn native_aggregate_revision(frames: &[NativeFrameInspectionSnapshot]) -> u64 {
             hash = hash.wrapping_mul(0x100000001b3);
         }
     }
-    (hash != 0).then_some(hash).unwrap_or(1)
+    if hash != 0 { hash } else { 1 }
 }
 
 #[cfg(feature = "native-engine")]

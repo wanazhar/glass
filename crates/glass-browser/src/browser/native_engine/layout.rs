@@ -1085,6 +1085,7 @@ fn shift_coordinate(value: u32, offset: i64) -> u32 {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn sticky_axis_delta(
     normal_start: u32,
     size: u32,
@@ -2703,9 +2704,10 @@ impl<'a> LayoutBuilder<'a> {
         let minimum_line_height = style.line_height().unwrap_or(DEFAULT_LINE_HEIGHT);
         let default_content_height = if is_block {
             minimum_line_height
-        } else if self.document.node(id).and_then(|node| node.element_name()) == Some("svg") {
-            self.intrinsic_inline_height(id)
-        } else if self.document.node(id).and_then(|node| node.element_name()) == Some("img") {
+        } else if matches!(
+            self.document.node(id).and_then(|node| node.element_name()),
+            Some("svg" | "img")
+        ) {
             self.intrinsic_inline_height(id)
         } else {
             self.intrinsic_inline_height(id).max(minimum_line_height)
@@ -6436,9 +6438,7 @@ pub(crate) fn svg_path_subpaths(node: &NativeNode) -> Option<Vec<NativeSvgSubpat
             }
             index = index.saturating_add(1);
             if matches!(next, 'Z' | 'z') {
-                let Some(subpath) = subpaths.last_mut() else {
-                    return None;
-                };
+                let subpath = subpaths.last_mut()?;
                 subpath.closed = true;
                 current = subpath
                     .points
@@ -6455,9 +6455,7 @@ pub(crate) fn svg_path_subpaths(node: &NativeNode) -> Option<Vec<NativeSvgSubpat
             continue;
         }
 
-        let Some(next) = command else {
-            return None;
-        };
+        let next = command?;
         let relative = next.is_ascii_lowercase();
         let upper = next.to_ascii_uppercase();
         match upper {
@@ -6478,9 +6476,7 @@ pub(crate) fn svg_path_subpaths(node: &NativeNode) -> Option<Vec<NativeSvgSubpat
                     }
                     command = Some(if relative { 'l' } else { 'L' });
                 } else {
-                    let Some(subpath) = subpaths.last_mut() else {
-                        return None;
-                    };
+                    let subpath = subpaths.last_mut()?;
                     subpath.points.push(svg_path_point(point));
                 }
                 current = point;
@@ -6491,9 +6487,7 @@ pub(crate) fn svg_path_subpaths(node: &NativeNode) -> Option<Vec<NativeSvgSubpat
             'H' => {
                 let x = svg_path_number(&tokens, &mut index)?;
                 let point = (if relative { current.0 + x } else { x }, current.1);
-                let Some(subpath) = subpaths.last_mut() else {
-                    return None;
-                };
+                let subpath = subpaths.last_mut()?;
                 subpath.points.push(svg_path_point(point));
                 current = point;
                 previous_command = Some(upper);
@@ -6503,9 +6497,7 @@ pub(crate) fn svg_path_subpaths(node: &NativeNode) -> Option<Vec<NativeSvgSubpat
             'V' => {
                 let y = svg_path_number(&tokens, &mut index)?;
                 let point = (current.0, if relative { current.1 + y } else { y });
-                let Some(subpath) = subpaths.last_mut() else {
-                    return None;
-                };
+                let subpath = subpaths.last_mut()?;
                 subpath.points.push(svg_path_point(point));
                 current = point;
                 previous_command = Some(upper);
@@ -6531,9 +6523,7 @@ pub(crate) fn svg_path_subpaths(node: &NativeNode) -> Option<Vec<NativeSvgSubpat
                 } else {
                     end
                 };
-                let Some(subpath) = subpaths.last_mut() else {
-                    return None;
-                };
+                let subpath = subpaths.last_mut()?;
                 append_cubic_curve(&mut subpath.points, current, control_1, control_2, end);
                 current = end;
                 previous_command = Some(upper);
@@ -6553,9 +6543,7 @@ pub(crate) fn svg_path_subpaths(node: &NativeNode) -> Option<Vec<NativeSvgSubpat
                 } else {
                     end
                 };
-                let Some(subpath) = subpaths.last_mut() else {
-                    return None;
-                };
+                let subpath = subpaths.last_mut()?;
                 append_quadratic_curve(&mut subpath.points, current, control, end);
                 current = end;
                 previous_command = Some(upper);
@@ -6582,9 +6570,7 @@ pub(crate) fn svg_path_subpaths(node: &NativeNode) -> Option<Vec<NativeSvgSubpat
                 } else {
                     end
                 };
-                let Some(subpath) = subpaths.last_mut() else {
-                    return None;
-                };
+                let subpath = subpaths.last_mut()?;
                 append_cubic_curve(&mut subpath.points, current, control_1, control_2, end);
                 current = end;
                 previous_command = Some(upper);
@@ -6605,9 +6591,7 @@ pub(crate) fn svg_path_subpaths(node: &NativeNode) -> Option<Vec<NativeSvgSubpat
                 } else {
                     end
                 };
-                let Some(subpath) = subpaths.last_mut() else {
-                    return None;
-                };
+                let subpath = subpaths.last_mut()?;
                 append_quadratic_curve(&mut subpath.points, current, control, end);
                 current = end;
                 previous_command = Some(upper);
@@ -6629,9 +6613,7 @@ pub(crate) fn svg_path_subpaths(node: &NativeNode) -> Option<Vec<NativeSvgSubpat
                 } else {
                     end
                 };
-                let Some(subpath) = subpaths.last_mut() else {
-                    return None;
-                };
+                let subpath = subpaths.last_mut()?;
                 if !append_elliptical_arc(
                     &mut subpath.points,
                     current,
@@ -6773,6 +6755,7 @@ fn append_quadratic_curve(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn append_elliptical_arc(
     points: &mut Vec<NativePoint>,
     start: (f64, f64),

@@ -1540,7 +1540,7 @@ impl NativeResourceLoader {
                 current_headers.remove("authorization");
             }
             no_cors_cross_origin |= document_url.origin() != next_url.origin();
-            if matches!(response.status().as_u16(), 301 | 302 | 303)
+            if matches!(response.status().as_u16(), 301..=303)
                 && !matches!(
                     current_method,
                     NativeNavigationMethod::Get | NativeNavigationMethod::Head
@@ -1673,17 +1673,16 @@ impl NativeResourceLoader {
                 reason: "cross-origin preflight did not authorize the request".into(),
             });
         }
-        if let Some(age) = cors_preflight_cache_age(response.headers()) {
-            if !age.is_zero() {
-                if !self.network.preflight_cache.contains_key(&cache_key)
-                    && self.network.preflight_cache.len() >= MAX_NATIVE_PREFLIGHT_CACHE_ENTRIES
-                {
-                    if let Some(oldest) = self.network.preflight_cache.keys().next().cloned() {
-                        self.network.preflight_cache.remove(&oldest);
-                    }
-                }
-                self.network.preflight_cache.insert(cache_key, now + age);
+        if let Some(age) = cors_preflight_cache_age(response.headers())
+            && !age.is_zero()
+        {
+            if !self.network.preflight_cache.contains_key(&cache_key)
+                && self.network.preflight_cache.len() >= MAX_NATIVE_PREFLIGHT_CACHE_ENTRIES
+                && let Some(oldest) = self.network.preflight_cache.keys().next().cloned()
+            {
+                self.network.preflight_cache.remove(&oldest);
             }
+            self.network.preflight_cache.insert(cache_key, now + age);
         }
         Ok(())
     }
@@ -3108,10 +3107,11 @@ impl NativeNetworkState {
     }
 
     fn store_cache(&mut self, key: String, resource: NativeResource) {
-        if !self.cache.contains_key(&key) && self.cache.len() >= MAX_NATIVE_CACHE_ENTRIES {
-            if let Some(oldest) = self.cache.keys().next().cloned() {
-                self.cache.remove(&oldest);
-            }
+        if !self.cache.contains_key(&key)
+            && self.cache.len() >= MAX_NATIVE_CACHE_ENTRIES
+            && let Some(oldest) = self.cache.keys().next().cloned()
+        {
+            self.cache.remove(&oldest);
         }
         self.cache.insert(key, resource);
     }
@@ -3119,10 +3119,9 @@ impl NativeNetworkState {
     fn store_image_cache(&mut self, key: String, image: NativeImage) {
         if !self.image_cache.contains_key(&key)
             && self.image_cache.len() >= MAX_NATIVE_CACHE_ENTRIES
+            && let Some(oldest) = self.image_cache.keys().next().cloned()
         {
-            if let Some(oldest) = self.image_cache.keys().next().cloned() {
-                self.image_cache.remove(&oldest);
-            }
+            self.image_cache.remove(&oldest);
         }
         self.image_cache.insert(key, image);
     }
@@ -3130,10 +3129,9 @@ impl NativeNetworkState {
     fn store_document_policy(&mut self, key: String, policy: NativeCspPolicy) {
         if !self.document_policies.contains_key(&key)
             && self.document_policies.len() >= MAX_NATIVE_CACHE_ENTRIES
+            && let Some(oldest) = self.document_policies.keys().next().cloned()
         {
-            if let Some(oldest) = self.document_policies.keys().next().cloned() {
-                self.document_policies.remove(&oldest);
-            }
+            self.document_policies.remove(&oldest);
         }
         self.document_policies.insert(key, policy);
     }

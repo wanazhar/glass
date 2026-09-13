@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-296` locally. The versioned
+`native-engine-browser-297` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -182,6 +182,13 @@ bounded `atob`/`btoa`, `structuredClone`, `queueMicrotask`, `DOMException`,
 `EventTarget`, `Event`, `CustomEvent`, `MessageEvent`, and `ErrorEvent`. The
 native replacement gates remain open for transferable cross-realm ports,
 complete Web IDL descriptors, and the remaining browser platform surface.
+
+The completed native-engine-browser-297 slice is
+[native-engine-browser-297](tasks/native-engine-browser-297.md). It adds an
+OS-seeded worker `crypto` surface with bounded integer-typed-array
+`getRandomValues()` and UUID v4 `randomUUID()`, including explicit quota and
+type validation. Web Crypto `subtle` operations, cross-realm key transfer,
+and the remaining native replacement gates remain open on issue #40.
 
 The completed EventSource/SSE slice is
 [native-engine-browser-253](tasks/native-engine-browser-253.md). It adds a

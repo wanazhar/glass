@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-296`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-297`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -4329,6 +4329,16 @@ default prevention, clone output, and constructor identity. Transferable
 cross-realm ports, complete Web IDL descriptors, background task scheduling,
 and final native/CDP parity remain issue #40 work. Exact evidence is recorded
 in `docs/plan/tasks/native-engine-browser-296.md`.
+
+The completed native-engine-browser-297 slice adds bounded worker
+cryptography. Each worker bootstrap receives a fresh OS-random seed from Rust
+and retains a bounded realm pool. `crypto.getRandomValues()` accepts only
+integer typed arrays within the byte quota, while `crypto.randomUUID()` sets
+the UUID v4 and RFC variant bits. Exhaustion and invalid types fail
+explicitly; no `Math.random()` fallback is used. Web Crypto `subtle`/key
+identity, cross-realm transfer, background task scheduling, and final
+native/CDP parity remain issue #40 work. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-297.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

@@ -1253,6 +1253,51 @@ async fn native_local_worker_exposes_standard_runtime_primitives() {
 }
 
 #[tokio::test]
+async fn native_local_worker_exposes_os_seeded_crypto() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://worker-crypto-page",
+            "<html><body><main>Native</main></body></html>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://worker-crypto-script",
+            "const values = new Uint8Array(8); crypto.getRandomValues(values); const uuid = crypto.randomUUID(); let floatRejected = false; try { crypto.getRandomValues(new Float32Array(1)); } catch (error) { floatRejected = error instanceof TypeError; } postMessage({ byteLength: values.byteLength, uuidValid: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(uuid), uuidVersion: uuid[14], uuidVariant: ['8', '9', 'a', 'b'].includes(uuid[19]), floatRejected, cryptoIdentity: crypto === globalThis.crypto });",
+        )
+        .unwrap()
+        .with_initial_url("fixture://worker-crypto-page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "globalThis.workerMessages = []; globalThis.workerErrors = []; globalThis.worker = new Worker('fixture://worker-crypto-script'); worker.onmessage = event => workerMessages.push(event.data); worker.onerror = event => workerErrors.push(event.message); true",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("({ messages: workerMessages, errors: workerErrors })")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "messages": [{
+                "byteLength": 8,
+                "uuidValid": true,
+                "uuidVersion": "4",
+                "uuidVariant": true,
+                "floatRejected": true,
+                "cryptoIdentity": true,
+            }],
+            "errors": [],
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_runs_worker_created_during_page_load() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

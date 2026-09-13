@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-311` slice; the bounded foundation below remains
+`native-engine-browser-312` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 
 Slice 283 adds a bounded dedicated-worker bridge after the page-facing
@@ -284,7 +284,7 @@ JavaScript surface owns only the current realm state; a coalesced
 RGBA dimensions and retains the resource on the canvas node. Layout supplies
 intrinsic dimensions and the existing software display list paints the
 resource, so screenshots and content snapshots observe the same pixels.
-Canvas/Web IDL breadth, image/bitmap/video sources, font shaping, GPU paths,
+Canvas/Web IDL breadth, video/media sources, font shaping, GPU paths,
 and full native/CDP replacement remain Issue #40 gates. Exact evidence is
 recorded in `docs/plan/tasks/native-engine-browser-310.md`.
 
@@ -294,9 +294,18 @@ adapter as canvas surfaces; two-, four-, and eight-argument `drawImage()`
 forms share the transformed software sampler. A canvas carries an
 origin-clean bit through commits and snapshots, propagates taint across image
 and canvas draws, and blocks pixel/PNG readback with `SecurityError` when a
-different-origin image has been consumed. ImageBitmap/media sources, complete
-CORS image semantics, and full native/CDP replacement remain Issue #40 gates.
-Exact evidence is recorded in `docs/plan/tasks/native-engine-browser-311.md`.
+different-origin image has been consumed. Complete CORS image semantics and
+full native/CDP replacement remain Issue #40 gates. Exact evidence is recorded
+in `docs/plan/tasks/native-engine-browser-311.md`.
+
+Slice 312 adds bounded native `ImageBitmap` wrappers and Promise-backed
+`createImageBitmap()` to the persistent Canvas realm. Supported image, canvas,
+ImageData, and ImageBitmap sources share one bounded crop/resize sampler;
+bitmap identity, dimensions, `close()`, closed-source errors, and origin-clean
+state are preserved through Canvas `drawImage()`. Video/VideoFrame/media
+sources, OffscreenCanvas, complete ImageBitmap/Web IDL semantics, and the final
+native/CDP replacement gates remain Issue #40 work. Exact evidence is recorded
+in `docs/plan/tasks/native-engine-browser-312.md`.
 
 Slice 282 adds a bounded page-facing computed-style and media-query bridge:
 the JavaScript realm reads the native cascade/layout snapshot through a

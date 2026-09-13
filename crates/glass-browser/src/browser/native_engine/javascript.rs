@@ -4852,6 +4852,37 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
   };
   globalThis.__glassImageDataConstructor = ImageDataNative;
   globalThis.ImageData = ImageDataNative;
+  const ImageBitmapNative = globalThis.__glassImageBitmapConstructor || function ImageBitmap() {
+    throw new TypeError("ImageBitmap cannot be constructed directly");
+  };
+  globalThis.__glassImageBitmapConstructor = ImageBitmapNative;
+  globalThis.ImageBitmap = ImageBitmapNative;
+  const nativeCanvasImageBitmap = (surface) => {
+    const bitmap = Object.create(ImageBitmapNative.prototype);
+    Object.defineProperty(bitmap, "__glassImageBitmapSurface", {
+      configurable: false,
+      enumerable: false,
+      writable: true,
+      value: surface,
+    });
+    return bitmap;
+  };
+  Object.defineProperties(ImageBitmapNative.prototype, {
+    width: {
+      configurable: true,
+      enumerable: true,
+      get() { return this.__glassImageBitmapSurface ? this.__glassImageBitmapSurface.width : 0; },
+    },
+    height: {
+      configurable: true,
+      enumerable: true,
+      get() { return this.__glassImageBitmapSurface ? this.__glassImageBitmapSurface.height : 0; },
+    },
+    close: {
+      configurable: true,
+      value() { this.__glassImageBitmapSurface = null; },
+    },
+  });
   const CanvasRenderingContext2DNative = globalThis.__glassCanvasRenderingContext2DConstructor || function CanvasRenderingContext2D() {
     throw new TypeError("CanvasRenderingContext2D cannot be constructed directly");
   };
@@ -4870,6 +4901,11 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
     }
   };
   const nativeCanvasSource = (source) => {
+    if (source && Object.prototype.hasOwnProperty.call(source, "__glassImageBitmapSurface")) {
+      const surface = source.__glassImageBitmapSurface;
+      if (!surface) throw nativeCanvasError("ImageBitmap is closed", "InvalidStateError");
+      return { surface, originClean: surface.originClean !== false };
+    }
     if (source && source.__glassCanvasSurface) {
       const surface = source.__glassCanvasSurface;
       return { surface, originClean: surface.originClean !== false };
@@ -4880,6 +4916,82 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
     if (source.complete === false) throw nativeCanvasError("image is not ready", "InvalidStateError");
     return { surface: resource, originClean: nativeCanvasImageOriginClean(source) };
   };
+  const nativeCanvasCreateImageBitmap = (source, args) => {
+    let sourceInfo;
+    if (source instanceof ImageDataNative) {
+      sourceInfo = {
+        surface: {
+          width: source.width,
+          height: source.height,
+          pixels: Array.from(source.data),
+          originClean: true,
+        },
+        originClean: true,
+      };
+    } else {
+      sourceInfo = nativeCanvasSource(source);
+    }
+    if (!sourceInfo) throw nativeCanvasError("ImageBitmap source is not ready", "InvalidStateError");
+    let sx = 0;
+    let sy = 0;
+    let sw = sourceInfo.surface.width;
+    let sh = sourceInfo.surface.height;
+    let options = {};
+    if (args.length === 1 && args[0] && typeof args[0] === "object") {
+      options = args[0];
+    } else if (args.length >= 4 && args.length <= 5) {
+      [sx, sy, sw, sh] = args;
+      options = args[4] && typeof args[4] === "object" ? args[4] : {};
+    } else if (args.length !== 0) {
+      throw new TypeError("createImageBitmap arguments are invalid");
+    }
+    sx = Number(sx);
+    sy = Number(sy);
+    sw = Number(sw);
+    sh = Number(sh);
+    if (![sx, sy, sw, sh].every(Number.isFinite) || sw === 0 || sh === 0) {
+      throw nativeCanvasError("ImageBitmap crop dimensions are invalid", "RangeError");
+    }
+    if (sw < 0) {
+      sx += sw;
+      sw = -sw;
+    }
+    if (sh < 0) {
+      sy += sh;
+      sh = -sh;
+    }
+    let width = options.resizeWidth === undefined ? Math.max(1, Math.round(sw)) : Number(options.resizeWidth);
+    let height = options.resizeHeight === undefined ? Math.max(1, Math.round(sh)) : Number(options.resizeHeight);
+    if (options.resizeWidth !== undefined && options.resizeHeight === undefined) {
+      height = Math.max(1, Math.round(width * sh / sw));
+    } else if (options.resizeHeight !== undefined && options.resizeWidth === undefined) {
+      width = Math.max(1, Math.round(height * sw / sh));
+    }
+    if (![width, height].every(Number.isSafeInteger) || width < 1 || height < 1
+        || width > nativeCanvasDimensionLimit || height > nativeCanvasDimensionLimit
+        || width * height > nativeCanvasPixelLimit) {
+      throw nativeCanvasError("ImageBitmap dimensions exceed the native limit", "QuotaExceededError");
+    }
+    const pixels = nativeCanvasBlankPixels(width, height);
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const sourceX = Math.floor(sx + (x + 0.5) * sw / width);
+        const sourceY = Math.floor(sy + (y + 0.5) * sh / height);
+        if (sourceX < 0 || sourceY < 0 || sourceX >= sourceInfo.surface.width || sourceY >= sourceInfo.surface.height) continue;
+        const sourceIndex = (sourceY * sourceInfo.surface.width + sourceX) * 4;
+        const targetIndex = (y * width + x) * 4;
+        for (let channel = 0; channel < 4; channel += 1) pixels[targetIndex + channel] = sourceInfo.surface.pixels[sourceIndex + channel];
+      }
+    }
+    return nativeCanvasImageBitmap({ width, height, pixels, originClean: sourceInfo.originClean });
+  };
+  globalThis.createImageBitmap = (source, ...args) => new Promise((resolve, reject) => {
+    try {
+      resolve(nativeCanvasCreateImageBitmap(source, args));
+    } catch (error) {
+      reject(error);
+    }
+  });
   const nativeCanvasContextDrawPolygon = (context, points, style = context.__glassCanvasState.fillStyle, operation = context.__glassCanvasState.globalCompositeOperation) => {
     const surface = nativeCanvasContextSurface(context);
     nativeCanvasFillPolygon(surface, points, style, context.__glassCanvasState.globalAlpha, operation);

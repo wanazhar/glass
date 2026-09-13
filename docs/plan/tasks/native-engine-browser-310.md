@@ -60,7 +60,7 @@ adding another native renderer dependency.
 The surface is deliberately bounded to 1,048,576 pixels, 4 MiB of RGBA data,
 and a 4,096-pixel axis. This protects the script boundary and keeps the
 software raster path predictable, but it is not a complete Canvas/Web IDL
-implementation: bitmap/video sources, compositing and filter breadth,
+implementation: video/media sources, compositing and filter breadth,
 font loading and shaping, clipping edge cases, pixel-perfect path semantics,
 GPU acceleration, accessibility exposure, and complete descriptor/exception
 parity remain issue #40 work. The current implementation also keeps canvas

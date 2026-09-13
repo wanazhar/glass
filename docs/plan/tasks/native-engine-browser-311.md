@@ -52,7 +52,7 @@ cannot silently restore a readable tainted canvas.
 Using decoded image pixels keeps drawing deterministic and reuses the existing
 HTTP(S), data-image, cache, and image-format owners, but it copies a bounded
 surface across the existing script boundary. The source set is currently
-canvas and `<img>`; `ImageBitmap`, `OffscreenCanvas`, video/media sources,
+canvas, `<img>`, and `ImageBitmap`; `OffscreenCanvas`, video/media sources,
 image smoothing/filter breadth, color-space conversion, complete CORS-enabled
 image loading, and full Canvas/Web IDL semantics remain issue #40 work. The
 broader native/CDP replacement gates are unchanged.

@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-311`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-312`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -4460,7 +4460,7 @@ the retained resource, removes it with detached subtrees, supplies intrinsic
 layout size, and paints it through the existing software display list used by
 screenshots and snapshots. The focused witness covers persistence,
 dimension-reset semantics, raster pixels, export, and state/path behavior.
-Image/bitmap/video sources, full Canvas/Web IDL semantics, font shaping,
+Image/video/media sources, full Canvas/Web IDL semantics, font shaping,
 pixel-perfect edge cases, and final native/CDP replacement remain issue #40
 gates. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-310.md`.
@@ -4472,10 +4472,21 @@ Destination surfaces preserve an origin-clean bit across transformed sampling,
 canvas-to-canvas propagation, per-turn commits, and later document snapshots;
 pixel and PNG readback now fail with `SecurityError` after a different-origin
 image draw. The focused witness covers data-image raster output and an
-HTTP(S) cross-origin taint case. ImageBitmap/media sources, complete CORS
-image semantics, full Canvas/Web IDL, and final native/CDP replacement remain
+HTTP(S) cross-origin taint case. Complete CORS image semantics, full Canvas/Web
+IDL, and final native/CDP replacement remain issue #40 gates. Exact evidence is
+recorded in `docs/plan/tasks/native-engine-browser-311.md`.
+
+The completed native-engine-browser-312 ImageBitmap slice adds a bounded
+realm-local `ImageBitmap` wrapper and Promise-backed `createImageBitmap()` for
+the supported image, canvas, ImageData, and ImageBitmap sources. Crop/resize
+sampling shares the existing source pixel limits, open/closed identity is
+enforced by the Canvas source adapter, and origin-clean state propagates into
+the destination surface. The focused witness covers bitmap identity,
+Promise-backed creation, crop/resize, drawing, close errors, and the existing
+cross-origin taint boundary. Video/VideoFrame/media sources, OffscreenCanvas,
+complete ImageBitmap/Web IDL semantics, and final native/CDP replacement remain
 issue #40 gates. Exact evidence is recorded in
-`docs/plan/tasks/native-engine-browser-311.md`.
+`docs/plan/tasks/native-engine-browser-312.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame
@@ -5553,7 +5564,8 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-198.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-197.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-196.md` is the preceding completed task;
-The current browser-slice evidence chain is `native-engine-browser-311`,
+The current browser-slice evidence chain is `native-engine-browser-312`,
+`native-engine-browser-311`,
 `native-engine-browser-310`,
 `native-engine-browser-309`,
 `native-engine-browser-308`,

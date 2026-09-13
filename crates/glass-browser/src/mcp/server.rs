@@ -3456,6 +3456,19 @@ fn call_native_tool_on_session<'a>(
         )),
         ToolInvocation::GetText => Box::pin(native_mcp_get_text(session)),
         ToolInvocation::GetDom => Box::pin(native_mcp_get_dom(session, response_mode)),
+        ToolInvocation::ReconcileReferences {
+            from_revision,
+            refs,
+            hints,
+            scope_ref,
+        } => Box::pin(native_mcp_reconcile_references(
+            session,
+            from_revision,
+            refs,
+            hints,
+            scope_ref,
+            response_mode,
+        )),
         invocation @ (ToolInvocation::FindTarget { .. }
         | ToolInvocation::ResolveIntent { .. }
         | ToolInvocation::ResolveIntentWithKnowledge { .. }
@@ -3559,6 +3572,17 @@ fn call_native_tool_on_session<'a>(
         | ToolInvocation::SessionStorage) => {
             Box::pin(native_mcp_storage(invocation, session, response_mode))
         }
+        invocation @ (ToolInvocation::SetNetworkConditions { .. }
+        | ToolInvocation::ClearNetworkConditions
+        | ToolInvocation::SetCpuThrottling { .. }
+        | ToolInvocation::ClearCpuThrottling
+        | ToolInvocation::SetUserAgent { .. }
+        | ToolInvocation::ClearUserAgent
+        | ToolInvocation::SetGeolocation { .. }
+        | ToolInvocation::ClearGeolocation
+        | ToolInvocation::SetTimezone { .. }) => {
+            Box::pin(native_mcp_environment(invocation, session, response_mode))
+        }
         invocation => Box::pin(call_native_tool_on_session_impl(
             invocation,
             session,
@@ -3620,6 +3644,114 @@ async fn native_mcp_get_dom(
         }),
         response_mode,
     )
+}
+
+#[cfg(feature = "native-engine")]
+async fn native_mcp_reconcile_references(
+    session: &BrowserRuntimeSession,
+    from_revision: u64,
+    refs: Vec<String>,
+    hints: Vec<String>,
+    scope_ref: Option<String>,
+    response_mode: ResponseMode,
+) -> BrowserResult<Value> {
+    let options = ReconciliationOptions {
+        hints: hints
+            .iter()
+            .map(|hint| Locator::parse(hint))
+            .collect::<BrowserResult<Vec<_>>>()?,
+        scope_ref,
+    };
+    serialized_result_mode(
+        &session
+            .native_reconcile_references(from_revision, &refs, &options)
+            .await?,
+        response_mode,
+    )
+}
+
+#[cfg(feature = "native-engine")]
+async fn native_mcp_environment(
+    invocation: ToolInvocation<'_>,
+    session: &BrowserRuntimeSession,
+    response_mode: ResponseMode,
+) -> BrowserResult<Value> {
+    match invocation {
+        ToolInvocation::SetNetworkConditions {
+            preset,
+            offline,
+            latency_ms,
+            download_throughput,
+            upload_throughput,
+        } => {
+            let conditions = if let Some(preset) = preset {
+                crate::browser::session::NetworkConditions::preset(&preset)?
+            } else {
+                crate::browser::session::NetworkConditions {
+                    offline,
+                    latency_ms,
+                    download_throughput_bytes: download_throughput,
+                    upload_throughput_bytes: upload_throughput,
+                    connection_type: None,
+                }
+            };
+            session
+                .native_set_network_conditions(Some(&conditions))
+                .await?;
+            serialized_result_mode(&json!({"ok": true}), response_mode)
+        }
+        ToolInvocation::ClearNetworkConditions => {
+            session.native_set_network_conditions(None).await?;
+            serialized_result_mode(&json!({"ok": true}), response_mode)
+        }
+        ToolInvocation::SetCpuThrottling { rate } => {
+            session.native_set_cpu_throttling(Some(rate)).await?;
+            serialized_result_mode(&json!({"ok": true}), response_mode)
+        }
+        ToolInvocation::ClearCpuThrottling => {
+            session.native_set_cpu_throttling(None).await?;
+            serialized_result_mode(&json!({"ok": true}), response_mode)
+        }
+        ToolInvocation::SetUserAgent {
+            user_agent,
+            accept_language,
+            platform,
+        } => {
+            session
+                .native_set_user_agent(
+                    Some(&user_agent),
+                    accept_language.as_deref(),
+                    platform.as_deref(),
+                )
+                .await?;
+            serialized_result_mode(&json!({"ok": true}), response_mode)
+        }
+        ToolInvocation::ClearUserAgent => {
+            session.native_set_user_agent(None, None, None).await?;
+            serialized_result_mode(&json!({"ok": true}), response_mode)
+        }
+        ToolInvocation::SetGeolocation {
+            latitude,
+            longitude,
+        } => {
+            let location = crate::browser::session::GeoLocation {
+                latitude,
+                longitude,
+                accuracy: None,
+            };
+            session.native_set_geolocation(Some(&location)).await?;
+            serialized_result_mode(&json!({"ok": true}), response_mode)
+        }
+        ToolInvocation::ClearGeolocation => {
+            session.native_set_geolocation(None).await?;
+            serialized_result_mode(&json!({"ok": true}), response_mode)
+        }
+        ToolInvocation::SetTimezone { timezone_id } => {
+            session.native_set_timezone(Some(&timezone_id)).await?;
+            serialized_result_mode(&json!({"ok": true}), response_mode)
+        }
+        _ => Err("native environment dispatcher received an incompatible tool".into()),
+    }
 }
 
 #[cfg(feature = "native-engine")]
@@ -5055,6 +5187,36 @@ async fn call_native_tool_on_session_impl(
                 .await?,
             response_mode,
         ),
+        ToolInvocation::DismissConsent => {
+            policy.require(crate::browser::policy::PolicyCapability::ConsentDismissal)?;
+            serialized_result_mode(&session.native_dismiss_consent().await?, response_mode)
+        }
+        ToolInvocation::PrintToPdf { options } => {
+            let options: crate::browser::session::PdfOptions = serde_json::from_value(options)
+                .map_err(|error| format!("invalid PDF options: {error}"))?;
+            serialized_result_mode(&session.native_print_to_pdf(&options).await?, response_mode)
+        }
+        ToolInvocation::FillForm {
+            fields,
+            expected_revision,
+        } => {
+            let fields = fields
+                .iter()
+                .map(|(target, value)| (target.as_str(), value.as_str()))
+                .collect::<Vec<_>>();
+            serialized_result_mode(
+                &session.native_fill_form(&fields, expected_revision).await?,
+                response_mode,
+            )
+        }
+        ToolInvocation::ClipboardRead => serialized_result_mode(
+            &serde_json::json!({"text": session.native_clipboard_read().await?}),
+            response_mode,
+        ),
+        ToolInvocation::ClipboardWrite { text } => {
+            session.native_clipboard_write(&text).await?;
+            serialized_result_mode(&serde_json::json!({"ok": true}), response_mode)
+        }
         _ => Err(
             "native MCP does not implement this tool in the current native session slice".into(),
         ),

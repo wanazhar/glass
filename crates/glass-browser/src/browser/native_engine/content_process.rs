@@ -13,6 +13,7 @@ use super::dom::{
     NativeDocument, NativeDocumentWire, NativeNodeId, NativePageScriptSource,
     NativePageScriptTiming,
 };
+use super::environment::NativeEnvironmentOverrides;
 use super::error::{NativeEngineError, NativeWorkerFailureKind};
 use super::interaction::{
     MAX_NATIVE_EFFECTS, MAX_NATIVE_FORM_BODY_BYTES, NativeEventKind, NativeFile,
@@ -1085,7 +1086,9 @@ impl NativeContentProcess {
         opener_window_name: &str,
         opener_url: &str,
         frame_context: Option<&NativeFrameScriptContext>,
+        environment: &NativeEnvironmentOverrides,
     ) -> Result<(), NativeEngineError> {
+        environment.validate()?;
         let id = self.next_id();
         let response = self
             .exchange(json!({
@@ -1100,6 +1103,7 @@ impl NativeContentProcess {
                 "opener_window_name": opener_window_name,
                 "opener_url": opener_url,
                 "frame_context": frame_context,
+                "environment": environment,
             }))
             .await?;
         let result = require_response_kind(&response, "started", id, "content process start");
@@ -1109,6 +1113,47 @@ impl NativeContentProcess {
         }
         if result.is_err() {
             self.mark_failed(NativeWorkerFailureKind::Protocol);
+            let _ = self.child.start_kill();
+        }
+        result
+    }
+
+    pub(crate) async fn set_environment(
+        &mut self,
+        environment: &NativeEnvironmentOverrides,
+    ) -> Result<(), NativeEngineError> {
+        environment.validate()?;
+        let id = self.next_id();
+        let response = match timeout(
+            CONTENT_PROCESS_SCRIPT_TIMEOUT,
+            self.exchange(json!({
+                "kind": "environment_sync",
+                "id": id,
+                "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
+                "environment": environment,
+            })),
+        )
+        .await
+        {
+            Ok(response) => response?,
+            Err(_) => {
+                self.mark_failed(NativeWorkerFailureKind::Timeout);
+                let _ = self.child.start_kill();
+                return Err(NativeEngineError::worker_failure(
+                    "content process environment synchronization",
+                    NativeWorkerFailureKind::Timeout,
+                    "content process environment synchronization exceeded its deadline",
+                ));
+            }
+        };
+        let result = require_response_kind(
+            &response,
+            "environment_synced",
+            id,
+            "content process environment synchronization",
+        );
+        if result.is_err() {
+            self.mark_failed(NativeWorkerFailureKind::InvalidTransfer);
             let _ = self.child.start_kill();
         }
         result
@@ -3370,6 +3415,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut viewport = Viewport::default();
     let mut scroll_offset = NativePoint { x: 0, y: 0 };
     let mut nested_scroll_offsets = BTreeMap::new();
+    let mut environment = NativeEnvironmentOverrides::default();
     let mut resource_loader = None;
     let mut javascript_runtime: Option<NativeJavaScriptRuntime> = None;
     let mut workers = NativeWorkerRegistry::new();
@@ -3416,6 +3462,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 indexed_db_state.origin(&storage_key(document_url, document_origin)),
             );
         }
+        if let Some(runtime) = javascript_runtime.as_ref() {
+            runtime.set_environment(environment.clone());
+        }
         let mut response = match kind {
             "ping" if protocol_matches(&request) => {
                 json!({"kind":"pong","id":id,"protocol":CONTENT_WORKER_PROTOCOL_VERSION})
@@ -3461,6 +3510,21 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     request.get("frame_context"),
                     "decode content process frame script context",
                 )?;
+                let requested_environment = request
+                    .get("environment")
+                    .map(|value| {
+                        serde_json::from_value::<NativeEnvironmentOverrides>(value.clone()).map_err(
+                            |_| {
+                                NativeEngineError::invalid(
+                                    "content-process environment",
+                                    "must be a valid native environment override",
+                                )
+                            },
+                        )
+                    })
+                    .transpose()?
+                    .unwrap_or_default();
+                requested_environment.validate()?;
                 let requested_path = request
                     .get("storage_path")
                     .and_then(Value::as_str)
@@ -3489,6 +3553,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         opener_window_name = requested_opener_window_name.to_owned();
                         opener_url = requested_opener_url.to_owned();
                         frame_script_context = requested_frame_context;
+                        environment = requested_environment;
                         scroll_offset = NativePoint { x: 0, y: 0 };
                         nested_scroll_offsets.clear();
                         running = true;
@@ -3496,6 +3561,27 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     }
                     (Err(error), _) | (_, Err(error)) => content_error_response(id, error),
                 }
+            }
+            "environment_sync" if protocol_matches(&request) && running => {
+                let value = request.get("environment").ok_or_else(|| {
+                    NativeEngineError::invalid("content-process environment", "must be present")
+                })?;
+                let next_environment: NativeEnvironmentOverrides =
+                    serde_json::from_value(value.clone()).map_err(|_| {
+                        NativeEngineError::invalid(
+                            "content-process environment",
+                            "must be a valid native environment override",
+                        )
+                    })?;
+                next_environment.validate()?;
+                environment = next_environment.clone();
+                if let Some(loader) = resource_loader.as_mut() {
+                    loader.set_environment(&environment)?;
+                }
+                if let Some(runtime) = javascript_runtime.as_ref() {
+                    runtime.set_environment(next_environment);
+                }
+                json!({"kind":"environment_synced","id":id})
             }
             "commit" if protocol_matches(&request) && running => {
                 json!({"kind":"committed","id":id})
@@ -3776,6 +3862,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     &request,
                     &mut resource_loader,
                     storage_profile_path.as_deref(),
+                    &environment,
                 )
                 .await
                 {
@@ -3802,6 +3889,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 }
                             };
                         if let Some(runtime) = script_runtime.as_ref() {
+                            runtime.set_environment(environment.clone());
                             runtime.set_frame_id(frame_id.clone());
                             runtime.set_frame_script_context(frame_script_context.clone());
                             runtime.set_frame_script_bindings(frame_script_bindings.clone());
@@ -4063,6 +4151,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         &opener_url,
                     ) {
                         Ok(runtime) => {
+                            runtime.set_environment(environment.clone());
                             runtime.set_storage_state(storage_state.clone());
                             runtime.set_frame_id(frame_id.clone());
                             runtime.set_frame_script_context(frame_script_context.clone());
@@ -4382,6 +4471,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         &opener_url,
                     ) {
                         Ok(runtime) => {
+                            runtime.set_environment(environment.clone());
                             runtime.set_storage_state(storage_state.clone());
                             runtime.set_frame_id(frame_id.clone());
                             runtime.set_frame_script_context(frame_script_context.clone());
@@ -4492,6 +4582,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         &opener_url,
                     ) {
                         Ok(runtime) => {
+                            runtime.set_environment(environment.clone());
                             runtime.set_storage_state(storage_state.clone());
                             runtime.set_frame_id(frame_id.clone());
                             runtime.set_frame_script_context(frame_script_context.clone());
@@ -4650,6 +4741,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         &opener_url,
                     ) {
                         Ok(runtime) => {
+                            runtime.set_environment(environment.clone());
                             runtime.set_storage_state(storage_state.clone());
                             runtime.set_frame_id(frame_id.clone());
                             runtime.set_frame_script_context(frame_script_context.clone());
@@ -4765,6 +4857,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         &opener_url,
                     ) {
                         Ok(runtime) => {
+                            runtime.set_environment(environment.clone());
                             runtime.set_storage_state(storage_state.clone());
                             runtime.set_frame_id(frame_id.clone());
                             runtime.set_frame_script_context(frame_script_context.clone());
@@ -5427,6 +5520,7 @@ async fn load_content_resource(
     request: &Value,
     resource_loader: &mut Option<NativeResourceLoader>,
     storage_path: Option<&Path>,
+    environment: &NativeEnvironmentOverrides,
 ) -> Result<
     (
         NativeContentLoad,
@@ -5620,6 +5714,7 @@ async fn load_content_resource(
                 .expect("content-process resource loader was just initialized")
         }
     };
+    loader.set_environment(environment)?;
     let resource = loader
         .load_async_request_with_referrer(&navigation, referrer)
         .await?;

@@ -10,6 +10,7 @@ use super::content_process::{
 };
 use super::diagnostics::NativeDiagnostic;
 use super::dom::{NativeDocument, NativeNodeId, NativeScriptDocumentSnapshot};
+use super::environment::{NativeEnvironmentOverrides, NativeGeolocation, NativeNetworkConditions};
 use super::error::NativeEngineError;
 use super::error::NativeWorkerFailureKind;
 use super::history::{NativeHistory, NativeHistoryDirection};
@@ -44,7 +45,9 @@ use super::resource_loader::{
 use super::runtime::{NativeRuntimeState, NativeRuntimeTraceEvent};
 use super::scheduler::{DeterministicScheduler, NativeTask};
 use super::worker::{NativeRuntimeShared, NativeRuntimeWorker};
-use crate::browser::session::{Cookie, DownloadOutcome, PendingDialog};
+use crate::browser::session::{
+    Cookie, DownloadOutcome, GeoLocation, NetworkConditions, PendingDialog,
+};
 use crate::browser_backend::{PromptDecision, PromptResult, StorageOperation, StorageScope};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, VecDeque};
@@ -333,6 +336,7 @@ pub struct NativeEngine {
     config: NativeEngineConfig,
     frame_id: String,
     loader: NativeResourceLoader,
+    environment: NativeEnvironmentOverrides,
     runtime: NativeRuntimeShared,
     runtime_worker: Option<NativeRuntimeWorker>,
     content_process: Option<NativeContentProcess>,
@@ -411,6 +415,7 @@ impl NativeEngine {
             frame_id: format!("{}:main", config.context_id),
             config,
             loader,
+            environment: NativeEnvironmentOverrides::default(),
             runtime,
             runtime_worker: None,
             content_process: None,
@@ -454,6 +459,113 @@ impl NativeEngine {
 
     pub fn config(&self) -> &NativeEngineConfig {
         &self.config
+    }
+
+    /// Apply session-scoped network shaping to top-level navigation and every
+    /// resource-loader owner used by the current document.
+    pub async fn set_network_conditions_async(
+        &mut self,
+        conditions: Option<&NetworkConditions>,
+    ) -> Result<(), NativeEngineError> {
+        self.require_running("set network conditions")?;
+        let mut next = self.environment.clone();
+        next.network = NativeNetworkConditions::from_public(conditions)?;
+        next.validate()?;
+        self.loader.set_environment(&next)?;
+        if let Some(process) = self.content_process.as_mut() {
+            process.set_environment(&next).await?;
+        }
+        self.environment = next;
+        Ok(())
+    }
+
+    /// Apply the same bounded CPU throttling multiplier used by the Chromium
+    /// session. A value of `1` is normal execution; larger values lengthen
+    /// browser-visible timer intervals and preserve the setting across the
+    /// live content worker.
+    pub async fn set_cpu_throttling_async(
+        &mut self,
+        rate: Option<f64>,
+    ) -> Result<(), NativeEngineError> {
+        self.require_running("set CPU throttling")?;
+        let mut next = self.environment.clone();
+        next.cpu_throttling_rate = rate.unwrap_or(1.0);
+        next.validate()?;
+        if let Some(process) = self.content_process.as_mut() {
+            process.set_environment(&next).await?;
+        }
+        if let Some(javascript) = self.javascript.as_ref() {
+            javascript.set_environment(next.clone());
+        }
+        self.environment = next;
+        Ok(())
+    }
+
+    /// Override the request and `navigator` user-agent identity for the
+    /// current native browsing context. Passing `None` restores the native
+    /// default identity.
+    pub async fn set_user_agent_async(
+        &mut self,
+        user_agent: Option<&str>,
+        accept_language: Option<&str>,
+        platform: Option<&str>,
+    ) -> Result<(), NativeEngineError> {
+        self.require_running("set user agent")?;
+        let mut next = self.environment.clone();
+        next.user_agent = user_agent.map(str::to_owned);
+        next.accept_language = accept_language.map(str::to_owned);
+        next.platform = platform.map(str::to_owned);
+        next.validate()?;
+        self.loader.set_environment(&next)?;
+        if let Some(process) = self.content_process.as_mut() {
+            process.set_environment(&next).await?;
+        }
+        if let Some(javascript) = self.javascript.as_ref() {
+            javascript.set_environment(next.clone());
+        }
+        self.environment = next;
+        Ok(())
+    }
+
+    /// Override the page-visible geolocation. The native host does not read
+    /// the machine's position; clearing the override restores the denied
+    /// permission state.
+    pub async fn set_geolocation_async(
+        &mut self,
+        location: Option<&GeoLocation>,
+    ) -> Result<(), NativeEngineError> {
+        self.require_running("set geolocation")?;
+        let mut next = self.environment.clone();
+        next.geolocation = location.map(NativeGeolocation::from_public).transpose()?;
+        next.validate()?;
+        if let Some(process) = self.content_process.as_mut() {
+            process.set_environment(&next).await?;
+        }
+        if let Some(javascript) = self.javascript.as_ref() {
+            javascript.set_environment(next.clone());
+        }
+        self.environment = next;
+        Ok(())
+    }
+
+    /// Override the page-visible IANA timezone identifier. Clearing it uses
+    /// the native default (`UTC`) rather than consulting ambient host state.
+    pub async fn set_timezone_async(
+        &mut self,
+        timezone_id: Option<&str>,
+    ) -> Result<(), NativeEngineError> {
+        self.require_running("set timezone")?;
+        let mut next = self.environment.clone();
+        next.timezone_id = timezone_id.map(str::to_owned);
+        next.validate()?;
+        if let Some(process) = self.content_process.as_mut() {
+            process.set_environment(&next).await?;
+        }
+        if let Some(javascript) = self.javascript.as_ref() {
+            javascript.set_environment(next.clone());
+        }
+        self.environment = next;
+        Ok(())
     }
 
     pub(crate) fn set_frame_id(&mut self, frame_id: String) {
@@ -639,6 +751,7 @@ impl NativeEngine {
                     &self.config.opener_window_name,
                     &self.config.opener_url,
                     self.frame_script_context.as_ref(),
+                    &self.environment,
                 )
                 .await?;
         }
@@ -966,6 +1079,7 @@ impl NativeEngine {
                     &self.config.opener_window_name,
                     &self.config.opener_url,
                     self.frame_script_context.as_ref(),
+                    &self.environment,
                 )
                 .await?;
             self.content_process = Some(process);
@@ -1474,11 +1588,15 @@ impl NativeEngine {
             javascript.set_frame_script_bindings(self.frame_script_bindings.clone());
             javascript.set_frame_script_context(self.frame_script_context.clone());
             javascript.set_frame_id(self.frame_id.clone());
+            javascript.set_environment(self.environment.clone());
             javascript.set_scroll_offset(self.scroll_offset);
             javascript.set_nested_scroll_offsets(self.nested_scroll_offsets.clone());
             self.javascript = Some(javascript);
         }
         self.deliver_pending_external_storage_events().await?;
+        if let Some(javascript) = self.javascript.as_ref() {
+            javascript.set_environment(self.environment.clone());
+        }
         let cookie = self.loader.document_cookie(&self.url)?;
         self.javascript
             .as_ref()
@@ -5252,6 +5370,7 @@ impl NativeEngine {
             javascript.set_frame_script_bindings(self.frame_script_bindings.clone());
             javascript.set_frame_script_context(self.frame_script_context.clone());
             javascript.set_frame_id(self.frame_id.clone());
+            javascript.set_environment(self.environment.clone());
         }
         let mut dialogs = std::mem::take(&mut prepared.dialogs);
         let page_navigation = if prepared.execute_inline_scripts {
@@ -5381,6 +5500,7 @@ impl NativeEngine {
             javascript.set_frame_script_bindings(self.frame_script_bindings.clone());
             javascript.set_frame_script_context(self.frame_script_context.clone());
             javascript.set_frame_id(self.frame_id.clone());
+            javascript.set_environment(self.environment.clone());
         }
         let mut dialogs = std::mem::take(&mut prepared.dialogs);
         let page_navigation = if execute_page_scripts {

@@ -2,6 +2,7 @@ use super::config::{
     MAX_NATIVE_DOCUMENT_BYTES, NativeEngineConfig, canonical_fixture_url, is_network_url,
     validate_url_text, without_fragment,
 };
+use super::environment::NativeEnvironmentOverrides;
 use super::error::NativeEngineError;
 use super::image::{MAX_NATIVE_IMAGE_TRANSFER_BYTES, NativeImage, decode_image_bytes};
 use super::interaction::MAX_NATIVE_FORM_BODY_BYTES;
@@ -236,11 +237,12 @@ pub(crate) struct NativeFetchResponseStream {
 }
 
 /// Bounded resource loader for local documents and HTTP(S) HTML responses.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq)]
 pub struct NativeResourceLoader {
     fixtures: BTreeMap<String, String>,
     max_document_bytes: usize,
     network: NativeNetworkState,
+    environment: NativeEnvironmentOverrides,
     cookie_changes: Vec<NativeCookieChange>,
 }
 
@@ -258,6 +260,11 @@ impl fmt::Debug for NativeResourceLoader {
                 &self.network.document_policies.len(),
             )
             .field("preflight_cache_count", &self.network.preflight_cache.len())
+            .field("offline", &self.environment.network.offline)
+            .field(
+                "user_agent_overridden",
+                &self.environment.user_agent.is_some(),
+            )
             .finish()
     }
 }
@@ -430,6 +437,7 @@ impl NativeResourceLoader {
             fixtures,
             max_document_bytes: config.limits.max_document_bytes,
             network: NativeNetworkState::from_profile(cookies)?,
+            environment: NativeEnvironmentOverrides::default(),
             cookie_changes: Vec::new(),
         })
     }
@@ -449,8 +457,54 @@ impl NativeResourceLoader {
             fixtures: BTreeMap::new(),
             max_document_bytes,
             network: NativeNetworkState::from_profile(cookies)?,
+            environment: NativeEnvironmentOverrides::default(),
             cookie_changes: Vec::new(),
         })
+    }
+
+    pub(crate) fn set_environment(
+        &mut self,
+        environment: &NativeEnvironmentOverrides,
+    ) -> Result<(), NativeEngineError> {
+        environment.validate()?;
+        self.environment = environment.clone();
+        Ok(())
+    }
+
+    async fn before_request(&self, request_bytes: usize) -> Result<(), NativeEngineError> {
+        if self.environment.network.offline {
+            return Err(NativeEngineError::Network {
+                operation: "native network emulation".into(),
+                reason: "the native session is offline".into(),
+            });
+        }
+        let delay = self.environment.network.request_delay(request_bytes);
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
+        Ok(())
+    }
+
+    async fn after_response_chunk(&self, bytes: usize) {
+        let rate = self.environment.network.download_throughput_bytes;
+        if rate > 0.0 {
+            let delay = Duration::from_secs_f64(bytes as f64 / rate);
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+        }
+    }
+
+    fn apply_environment_headers(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> reqwest::RequestBuilder {
+        request
+            .header(reqwest::header::USER_AGENT, self.environment.user_agent())
+            .header(
+                reqwest::header::ACCEPT_LANGUAGE,
+                self.environment.accept_language(),
+            )
     }
 
     pub(crate) fn max_document_bytes(&self) -> usize {
@@ -605,10 +659,12 @@ impl NativeResourceLoader {
         let response = loop {
             let mut request_url = current_url.clone();
             request_url.set_fragment(None);
-            let mut request = client
-                .get(request_url)
-                .header(reqwest::header::ACCEPT, "text/event-stream")
-                .header(reqwest::header::CACHE_CONTROL, "no-cache");
+            let mut request = self.apply_environment_headers(
+                client
+                    .get(request_url)
+                    .header(reqwest::header::ACCEPT, "text/event-stream")
+                    .header(reqwest::header::CACHE_CONTROL, "no-cache"),
+            );
             if current_url.origin() != document_url.origin() {
                 request = request.header(
                     reqwest::header::ORIGIN,
@@ -627,6 +683,7 @@ impl NativeResourceLoader {
             if !last_event_id.is_empty() {
                 request = request.header("last-event-id", last_event_id);
             }
+            self.before_request(0).await?;
             let response = request
                 .send()
                 .await
@@ -1025,9 +1082,11 @@ impl NativeResourceLoader {
         let response = loop {
             let mut request_url = current_url.clone();
             request_url.set_fragment(None);
-            let mut request = client
-                .request(current_method.reqwest_method(), request_url)
-                .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml");
+            let mut request = self.apply_environment_headers(
+                client
+                    .request(current_method.reqwest_method(), request_url)
+                    .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml"),
+            );
             if let Some(body) = current_body.clone() {
                 request = match body {
                     NativeRequestBody::Text(body) => request.body(body),
@@ -1043,6 +1102,8 @@ impl NativeResourceLoader {
             if let Some(cookie) = self.network.cookie_header(&current_url) {
                 request = request.header(reqwest::header::COOKIE, cookie);
             }
+            self.before_request(current_body.as_ref().map_or(0, NativeRequestBody::len))
+                .await?;
             let response = request
                 .send()
                 .await
@@ -1135,6 +1196,7 @@ impl NativeResourceLoader {
         );
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|error| network_error("HTTP document body", error))?;
+            self.after_response_chunk(chunk.len()).await;
             let next_len = bytes.len().saturating_add(chunk.len());
             if next_len > self.max_document_bytes {
                 return Err(NativeEngineError::limit(
@@ -1254,6 +1316,7 @@ impl NativeResourceLoader {
         let mut body = Vec::new();
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|error| network_error("fetch response body", error))?;
+            self.after_response_chunk(chunk.len()).await;
             let next_len = body.len().saturating_add(chunk.len());
             if next_len > opened.max_response_bytes {
                 return Err(NativeEngineError::limit(
@@ -1429,9 +1492,11 @@ impl NativeResourceLoader {
                 )
                 .await?;
             }
-            let mut request = client
-                .request(current_method.reqwest_method(), request_url)
-                .header(reqwest::header::ACCEPT, "*/*");
+            let mut request = self.apply_environment_headers(
+                client
+                    .request(current_method.reqwest_method(), request_url)
+                    .header(reqwest::header::ACCEPT, "*/*"),
+            );
             if let Some(body) = current_body.as_ref() {
                 request = match body {
                     NativeRequestBody::Text(body) => request.body(body.clone()),
@@ -1453,6 +1518,8 @@ impl NativeResourceLoader {
             if credentials && let Some(cookie) = self.network.cookie_header(&current_url) {
                 request = request.header(reqwest::header::COOKIE, cookie);
             }
+            self.before_request(current_body.as_ref().map_or(0, NativeRequestBody::len))
+                .await?;
             let response = request
                 .send()
                 .await
@@ -1644,16 +1711,19 @@ impl NativeResourceLoader {
             return Ok(());
         }
         self.network.preflight_cache.remove(&cache_key);
-        let mut request = client
-            .request(reqwest::Method::OPTIONS, target_url.clone())
-            .header("Origin", origin)
-            .header("Access-Control-Request-Method", method);
+        let mut request = self.apply_environment_headers(
+            client
+                .request(reqwest::Method::OPTIONS, target_url.clone())
+                .header("Origin", origin)
+                .header("Access-Control-Request-Method", method),
+        );
         if !requested_headers.is_empty() {
             request = request.header(
                 "Access-Control-Request-Headers",
                 requested_headers.join(", "),
             );
         }
+        self.before_request(0).await?;
         let response = request
             .send()
             .await
@@ -1731,15 +1801,18 @@ impl NativeResourceLoader {
         let response = loop {
             let mut request_url = current_url.clone();
             request_url.set_fragment(None);
-            let mut request = client
-                .get(request_url)
-                .header(reqwest::header::ACCEPT, "text/css");
+            let mut request = self.apply_environment_headers(
+                client
+                    .get(request_url)
+                    .header(reqwest::header::ACCEPT, "text/css"),
+            );
             if let Some(referrer) = request_referrer.as_deref() {
                 request = request.header(reqwest::header::REFERER, referrer);
             }
             if let Some(cookie) = self.network.cookie_header(&current_url) {
                 request = request.header(reqwest::header::COOKIE, cookie);
             }
+            self.before_request(0).await?;
             let response = request
                 .send()
                 .await
@@ -1820,6 +1893,7 @@ impl NativeResourceLoader {
         );
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|error| network_error("CSS subresource body", error))?;
+            self.after_response_chunk(chunk.len()).await;
             let next_len = bytes.len().saturating_add(chunk.len());
             if next_len > self.max_document_bytes {
                 return Err(NativeEngineError::limit(
@@ -1889,16 +1963,17 @@ impl NativeResourceLoader {
         let response = loop {
             let mut request_url = current_url.clone();
             request_url.set_fragment(None);
-            let mut request = client.get(request_url).header(
+            let mut request = self.apply_environment_headers(client.get(request_url).header(
                 reqwest::header::ACCEPT,
                 "image/avif,image/webp,image/apng,image/svg+xml,image/jpeg,image/png,image/*;q=0.8, */*;q=0.5",
-            );
+            ));
             if let Some(referrer) = request_referrer.as_deref() {
                 request = request.header(reqwest::header::REFERER, referrer);
             }
             if let Some(cookie) = self.network.cookie_header(&current_url) {
                 request = request.header(reqwest::header::COOKIE, cookie);
             }
+            self.before_request(0).await?;
             let response = request
                 .send()
                 .await
@@ -1964,6 +2039,7 @@ impl NativeResourceLoader {
         );
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|error| network_error("image subresource body", error))?;
+            self.after_response_chunk(chunk.len()).await;
             let next_len = bytes.len().saturating_add(chunk.len());
             if next_len > MAX_NATIVE_IMAGE_TRANSFER_BYTES {
                 return Ok(None);
@@ -2104,16 +2180,17 @@ impl NativeResourceLoader {
         let response = loop {
             let mut request_url = current_url.clone();
             request_url.set_fragment(None);
-            let mut request = client.get(request_url).header(
+            let mut request = self.apply_environment_headers(client.get(request_url).header(
                 reqwest::header::ACCEPT,
                 "text/javascript, application/javascript, application/ecmascript, */*",
-            );
+            ));
             if let Some(referrer) = request_referrer.as_deref() {
                 request = request.header(reqwest::header::REFERER, referrer);
             }
             if let Some(cookie) = self.network.cookie_header(&current_url) {
                 request = request.header(reqwest::header::COOKIE, cookie);
             }
+            self.before_request(0).await?;
             let response = request
                 .send()
                 .await
@@ -2189,6 +2266,7 @@ impl NativeResourceLoader {
         );
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|error| network_error("script subresource body", error))?;
+            self.after_response_chunk(chunk.len()).await;
             let next_len = bytes.len().saturating_add(chunk.len());
             if next_len > max_source_bytes {
                 return Err(NativeEngineError::limit(

@@ -29,13 +29,15 @@ use serde::{Deserialize, Serialize};
 use super::session::{
     ActAndVerifyResult, ActionFailureKind, ActionFailurePhase, ActionKind, ActionOutcome,
     ActionStatus, ActionTarget, ActionVerificationError, ActionVerificationEvidence,
-    BootstrapObservation, CheckpointError, CheckpointObservation, CheckpointTopology, CheckpointV1,
-    ConsoleEvidence, Cookie, DeltaControl, DiagnosticReport, DownloadOutcome, FindTargetResult,
-    FrameInfo, InspectPageResult, IntentPolicyDecision, KnowledgeAssessmentStatus,
-    KnowledgeLookupContext, KnowledgeLookupOptions, KnowledgeStore, LifecycleDiagnostics,
-    MutationSummary, NavigationControlOutcome, ObservationBoundarySummary, ObservationDelta,
+    BootstrapObservation, CandidateSummary, CheckpointError, CheckpointObservation,
+    CheckpointTopology, CheckpointV1, ConsoleEvidence, Cookie, DeltaControl, DiagnosticReport,
+    DownloadOutcome, FillFieldResult, FillFormOutcome, FindTargetResult, FrameInfo, GeoLocation,
+    InspectPageResult, IntentPolicyDecision, KnowledgeAssessmentStatus, KnowledgeLookupContext,
+    KnowledgeLookupOptions, KnowledgeStore, LifecycleDiagnostics, MutationSummary,
+    NavigationControlOutcome, NetworkConditions, ObservationBoundarySummary, ObservationDelta,
     ObservationIncompleteReason, PageInfo, PageTargetInfo, PendingDialog, PopupClickOutcome,
-    PopupVerificationEvidence, RecoveryStrategy, SemanticIntentAction,
+    PopupVerificationEvidence, ReconciliationOptions, ReconciliationOutcome, ReconciliationStatus,
+    RecoveryStrategy, ReferenceLostReason, ReferenceMapping, ReferenceMatch, SemanticIntentAction,
     SemanticIntentExecutionRequest, SemanticIntentExecutionResult, SemanticIntentExecutionStatus,
     SemanticIntentResult, SemanticObservation, SemanticObservationLevel, SemanticResolution,
     SemanticTarget, VerificationOutcome, VerificationPredicate, ViewportState, WaitCondition,
@@ -63,6 +65,8 @@ const NATIVE_SEMANTIC_TARGET_LIMIT: usize = 32;
 const NATIVE_SEMANTIC_ACCESSIBILITY_LIMIT: usize = 128;
 #[cfg(feature = "native-engine")]
 const NATIVE_SEMANTIC_TEXT_LIMIT: usize = 8 * 1024;
+#[cfg(feature = "native-engine")]
+const NATIVE_RECONCILIATION_CANDIDATE_LIMIT: usize = 8;
 
 /// Browser runtimes supported by the portable semantic session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
@@ -112,6 +116,8 @@ pub struct BrowserRuntimeSession {
     next_execution_id: AtomicU64,
     #[cfg(feature = "native-engine")]
     native_observation_cache: Mutex<Option<SemanticObservation>>,
+    #[cfg(feature = "native-engine")]
+    native_clipboard: Mutex<String>,
 }
 
 impl BrowserRuntimeSession {
@@ -144,6 +150,8 @@ impl BrowserRuntimeSession {
             next_execution_id: AtomicU64::new(1),
             #[cfg(feature = "native-engine")]
             native_observation_cache: Mutex::new(None),
+            #[cfg(feature = "native-engine")]
+            native_clipboard: Mutex::new(String::new()),
         };
         BrowserBackendDispatcher::new(&session.backend)
             .initialize()
@@ -161,6 +169,7 @@ impl BrowserRuntimeSession {
             operation_lock: Mutex::new(()),
             next_execution_id: AtomicU64::new(1),
             native_observation_cache: Mutex::new(None),
+            native_clipboard: Mutex::new(String::new()),
         };
         BrowserBackendDispatcher::new(&session.backend)
             .initialize()
@@ -570,6 +579,66 @@ impl BrowserRuntimeSession {
         }
     }
 
+    #[cfg(feature = "native-engine")]
+    pub async fn native_set_network_conditions(
+        &self,
+        conditions: Option<&NetworkConditions>,
+    ) -> BrowserResult<()> {
+        let _operation = self.operation_lock.lock().await;
+        match &self.backend {
+            BackendStartup::Native(backend) => {
+                Ok(backend.set_network_conditions(conditions).await?)
+            }
+            _ => Err("native network emulation is only available on the native runtime".into()),
+        }
+    }
+
+    #[cfg(feature = "native-engine")]
+    pub async fn native_set_cpu_throttling(&self, rate: Option<f64>) -> BrowserResult<()> {
+        let _operation = self.operation_lock.lock().await;
+        match &self.backend {
+            BackendStartup::Native(backend) => Ok(backend.set_cpu_throttling(rate).await?),
+            _ => Err("native CPU emulation is only available on the native runtime".into()),
+        }
+    }
+
+    #[cfg(feature = "native-engine")]
+    pub async fn native_set_user_agent(
+        &self,
+        user_agent: Option<&str>,
+        accept_language: Option<&str>,
+        platform: Option<&str>,
+    ) -> BrowserResult<()> {
+        let _operation = self.operation_lock.lock().await;
+        match &self.backend {
+            BackendStartup::Native(backend) => Ok(backend
+                .set_user_agent(user_agent, accept_language, platform)
+                .await?),
+            _ => Err("native user-agent emulation is only available on the native runtime".into()),
+        }
+    }
+
+    #[cfg(feature = "native-engine")]
+    pub async fn native_set_geolocation(
+        &self,
+        location: Option<&GeoLocation>,
+    ) -> BrowserResult<()> {
+        let _operation = self.operation_lock.lock().await;
+        match &self.backend {
+            BackendStartup::Native(backend) => Ok(backend.set_geolocation(location).await?),
+            _ => Err("native geolocation is only available on the native runtime".into()),
+        }
+    }
+
+    #[cfg(feature = "native-engine")]
+    pub async fn native_set_timezone(&self, timezone_id: Option<&str>) -> BrowserResult<()> {
+        let _operation = self.operation_lock.lock().await;
+        match &self.backend {
+            BackendStartup::Native(backend) => Ok(backend.set_timezone(timezone_id).await?),
+            _ => Err("native timezone emulation is only available on the native runtime".into()),
+        }
+    }
+
     /// Return the native engine's bounded semantic accessibility projection.
     #[cfg(feature = "native-engine")]
     pub fn native_semantic_nodes(
@@ -952,6 +1021,295 @@ impl BrowserRuntimeSession {
         Ok(delta)
     }
 
+    /// Reconcile revisioned native semantic references against the latest
+    /// observation. The native path uses the same bounded identity rules as
+    /// the Chromium session: exact references and backend identity win, then
+    /// unique role/name or caller-supplied hints may relocate a target.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_reconcile_references(
+        &self,
+        from_revision: u64,
+        refs: &[String],
+        options: &ReconciliationOptions,
+    ) -> BrowserResult<ReconciliationOutcome> {
+        if refs.len() > super::session::MAX_RECONCILE_REFS {
+            return Err(format!(
+                "too many refs to reconcile: {} (max {})",
+                refs.len(),
+                super::session::MAX_RECONCILE_REFS
+            )
+            .into());
+        }
+        if options.hints.len() > super::session::MAX_RECONCILE_HINTS {
+            return Err(format!(
+                "too many reconciliation hints: {} (max {})",
+                options.hints.len(),
+                super::session::MAX_RECONCILE_HINTS
+            )
+            .into());
+        }
+
+        let _operation = self.operation_lock.lock().await;
+        let prior = self
+            .native_observation_cache
+            .lock()
+            .await
+            .as_ref()
+            .filter(|observation| observation.revision == from_revision)
+            .cloned();
+        let current = self
+            .native_semantic_observation_level_unlocked(SemanticObservationLevel::Structured)
+            .await?;
+        let mutation_summary = |prior: Option<&SemanticObservation>| MutationSummary {
+            url_changed: prior.is_some_and(|prior| prior.page.url != current.page.url),
+            title_changed: prior.is_some_and(|prior| prior.page.title != current.page.title),
+            revision_delta: current.revision.saturating_sub(from_revision),
+            soft_navigation_suspected: prior.is_some_and(|prior| {
+                current.revision > from_revision
+                    && prior.page.url == current.page.url
+                    && prior.page.title == current.page.title
+            }),
+        };
+
+        let Some(prior) = prior else {
+            return bounded_native_reconciliation_outcome(ReconciliationOutcome {
+                status: ReconciliationStatus::Complete,
+                to_revision: current.revision,
+                mappings: refs
+                    .iter()
+                    .map(|old| ReferenceMapping::Lost {
+                        old: old.clone(),
+                        reason: ReferenceLostReason::StaleBoundary,
+                    })
+                    .collect(),
+                preserved: 0,
+                relocated: 0,
+                lost: refs.len(),
+                mutation_summary: mutation_summary(None),
+                incomplete: vec![ObservationIncompleteReason::BoundaryScan],
+            });
+        };
+
+        if prior.route != current.route {
+            return bounded_native_reconciliation_outcome(ReconciliationOutcome {
+                status: ReconciliationStatus::RouteChanged,
+                to_revision: current.revision,
+                mappings: refs
+                    .iter()
+                    .map(|old| ReferenceMapping::Lost {
+                        old: old.clone(),
+                        reason: ReferenceLostReason::StaleBoundary,
+                    })
+                    .collect(),
+                preserved: 0,
+                relocated: 0,
+                lost: refs.len(),
+                mutation_summary: mutation_summary(Some(&prior)),
+                incomplete: native_observation_incomplete(&current),
+            });
+        }
+
+        let prior_targets = prior
+            .regions
+            .iter()
+            .flat_map(|region| {
+                region
+                    .targets
+                    .iter()
+                    .map(move |target| (region.id.as_str(), target))
+            })
+            .collect::<Vec<_>>();
+        let current_targets = current
+            .regions
+            .iter()
+            .flat_map(|region| {
+                region
+                    .targets
+                    .iter()
+                    .map(move |target| (region.id.as_str(), target))
+            })
+            .collect::<Vec<_>>();
+        let scope_region = options.scope_ref.as_deref().and_then(|scope_ref| {
+            prior_targets
+                .iter()
+                .find(|(_, target)| target.reference == scope_ref)
+                .map(|(region, _)| *region)
+        });
+        let scope_invalid = options.scope_ref.is_some() && scope_region.is_none();
+        let in_scope = |region: &str| scope_region.is_none_or(|scope| scope == region);
+        let current_backend = |target: &SemanticTarget| {
+            parse_native_semantic_reference(&target.reference)
+                .ok()
+                .flatten()
+                .map(|reference| (reference.context_id, reference.backend_dom_node_id))
+        };
+        let mut mappings = Vec::with_capacity(refs.len());
+        let mut preserved = 0;
+        let mut relocated = 0;
+        let mut lost = 0;
+
+        for (index, old) in refs.iter().enumerate() {
+            let parsed = parse_native_semantic_reference(old).ok().flatten();
+            let valid_revision = parsed
+                .as_ref()
+                .is_some_and(|reference| reference.revision == from_revision);
+            if !valid_revision {
+                mappings.push(ReferenceMapping::Lost {
+                    old: old.clone(),
+                    reason: ReferenceLostReason::StaleBoundary,
+                });
+                lost += 1;
+                continue;
+            }
+            if scope_invalid {
+                mappings.push(ReferenceMapping::Lost {
+                    old: old.clone(),
+                    reason: ReferenceLostReason::OutOfScope,
+                });
+                lost += 1;
+                continue;
+            }
+
+            let prior_target = prior_targets
+                .iter()
+                .find(|(_, target)| target.reference == *old);
+            if current.revision == from_revision {
+                let preserved_target = prior_target.and_then(|(region, _)| {
+                    in_scope(region).then(|| {
+                        current_targets.iter().find(|(current_region, target)| {
+                            *current_region == *region && target.reference == *old
+                        })
+                    })
+                });
+                if preserved_target.flatten().is_some() {
+                    mappings.push(ReferenceMapping::Preserved {
+                        old: old.clone(),
+                        new: old.clone(),
+                    });
+                    preserved += 1;
+                } else {
+                    mappings.push(ReferenceMapping::Lost {
+                        old: old.clone(),
+                        reason: if prior_target.is_some_and(|(region, _)| !in_scope(region)) {
+                            ReferenceLostReason::OutOfScope
+                        } else {
+                            ReferenceLostReason::StaleBoundary
+                        },
+                    });
+                    lost += 1;
+                }
+                continue;
+            }
+
+            if let Some((_, backend_id)) = parsed
+                .as_ref()
+                .map(|reference| (reference.context_id.clone(), reference.backend_dom_node_id))
+            {
+                let backend_matches = current_targets
+                    .iter()
+                    .filter(|(region, target)| {
+                        in_scope(region)
+                            && current_backend(target).is_some_and(|(context, candidate)| {
+                                context
+                                    == parsed
+                                        .as_ref()
+                                        .and_then(|reference| reference.context_id.clone())
+                                    && candidate == backend_id
+                            })
+                    })
+                    .collect::<Vec<_>>();
+                if let [(_, target)] = backend_matches.as_slice() {
+                    mappings.push(ReferenceMapping::Preserved {
+                        old: old.clone(),
+                        new: target.reference.clone(),
+                    });
+                    preserved += 1;
+                    continue;
+                }
+            }
+
+            let mut matches = prior_target
+                .map(|(_, target)| {
+                    current_targets
+                        .iter()
+                        .filter(|(region, candidate)| {
+                            in_scope(region)
+                                && candidate.role.eq_ignore_ascii_case(&target.role)
+                                && candidate.name.eq_ignore_ascii_case(&target.name)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let mut matched_by = ReferenceMatch::RoleAndName;
+            if matches.is_empty()
+                && let Some(hint) = options.hints.get(index)
+            {
+                matches = current_targets
+                    .iter()
+                    .filter(|(region, target)| {
+                        in_scope(region) && native_locator_matches(hint, target)
+                    })
+                    .collect();
+                matched_by = match hint {
+                    super::session::Locator::AccessibleName(_) => ReferenceMatch::AccessibleName,
+                    super::session::Locator::RoleAndName { .. } => ReferenceMatch::RoleAndName,
+                    _ => ReferenceMatch::Hint,
+                };
+            }
+            match matches.as_slice() {
+                [(_, target)] => {
+                    mappings.push(ReferenceMapping::Relocated {
+                        old: old.clone(),
+                        new: target.reference.clone(),
+                        matched_by,
+                    });
+                    relocated += 1;
+                }
+                [] => {
+                    mappings.push(ReferenceMapping::Lost {
+                        old: old.clone(),
+                        reason: if prior_target.is_some_and(|(region, _)| !in_scope(region)) {
+                            ReferenceLostReason::OutOfScope
+                        } else {
+                            ReferenceLostReason::NotFound
+                        },
+                    });
+                    lost += 1;
+                }
+                many => {
+                    mappings.push(ReferenceMapping::Lost {
+                        old: old.clone(),
+                        reason: ReferenceLostReason::Ambiguous {
+                            candidates: many
+                                .iter()
+                                .take(NATIVE_RECONCILIATION_CANDIDATE_LIMIT)
+                                .map(|(_, target)| CandidateSummary {
+                                    label: bounded_native_candidate_label(&format!(
+                                        "{} {}",
+                                        target.role, target.name
+                                    )),
+                                    reference: Some(target.reference.clone()),
+                                })
+                                .collect(),
+                        },
+                    });
+                    lost += 1;
+                }
+            }
+        }
+
+        bounded_native_reconciliation_outcome(ReconciliationOutcome {
+            status: ReconciliationStatus::Complete,
+            to_revision: current.revision,
+            mappings,
+            preserved,
+            relocated,
+            lost,
+            mutation_summary: mutation_summary(Some(&prior)),
+            incomplete: native_observation_incomplete(&current),
+        })
+    }
+
     /// Export the same bounded checkpoint envelope as the CDP session.
     #[cfg(feature = "native-engine")]
     pub async fn native_export_checkpoint(
@@ -1198,6 +1556,226 @@ impl BrowserRuntimeSession {
         allow_sensitive: bool,
     ) -> BrowserResult<serde_json::Value> {
         super::native_batch::read_form_values(self, allow_sensitive).await
+    }
+
+    /// Fill a bounded set of native form controls after resolving every
+    /// locator. The resolution phase is side-effect free; each action then
+    /// uses the same semantic action owner as ordinary native input.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_fill_form(
+        &self,
+        fields: &[(&str, &str)],
+        expected_revision: Option<u64>,
+    ) -> BrowserResult<FillFormOutcome> {
+        const MAX_FIELDS: usize = 16;
+        if fields.len() > MAX_FIELDS {
+            return Err(format!("fill_form: max {MAX_FIELDS} fields, got {}", fields.len()).into());
+        }
+        let before = self.native_observe().await?;
+        if let Some(expected_revision) = expected_revision
+            && before.revision != expected_revision
+        {
+            return Err(Box::new(ActionContractError::stale_revision(
+                expected_revision,
+                before.revision,
+            )));
+        }
+
+        let mut plans = Vec::with_capacity(fields.len());
+        for (target, value) in fields {
+            let click_preflight = self
+                .native_preflight_target(target, NativePreflightAction::Click)
+                .await?;
+            if !click_preflight.unique {
+                return Err(
+                    format!("native fill target could not be resolved uniquely: {target}").into(),
+                );
+            }
+            let node = click_preflight
+                .node
+                .ok_or_else(|| format!("native fill target returned no semantic node: {target}"))?;
+            let (action, preflight_action) = match node.role.as_str() {
+                "listbox" | "combobox" => ("select", NativePreflightAction::Select),
+                "checkbox" => {
+                    let should_check =
+                        !value.is_empty() && *value != "false" && *value != "0" && *value != "off";
+                    if should_check {
+                        ("check", NativePreflightAction::Check)
+                    } else {
+                        ("uncheck", NativePreflightAction::Check)
+                    }
+                }
+                "radio" => ("click", NativePreflightAction::Click),
+                "textbox" => ("type", NativePreflightAction::Type),
+                role => {
+                    return Err(format!(
+                        "native fill does not support semantic role {role:?} for target {target}"
+                    )
+                    .into());
+                }
+            };
+            let actionability = self
+                .native_preflight_target(target, preflight_action)
+                .await?;
+            if !actionability.unique || actionability.actionable != Some(true) {
+                return Err(format!(
+                    "native fill target is not actionable: {target} ({:?})",
+                    actionability.actionability_reason
+                )
+                .into());
+            }
+            plans.push((
+                (*target).to_owned(),
+                (*value).to_owned(),
+                action.to_owned(),
+                (!node.name.is_empty()).then_some(node.name),
+            ));
+        }
+
+        let mut results = Vec::with_capacity(plans.len());
+        let mut filled = 0usize;
+        for (index, (target, value, action, label)) in plans.iter().enumerate() {
+            let semantic_action = match action.as_str() {
+                "select" => SemanticAction::Select {
+                    target: target.clone(),
+                    value: value.clone(),
+                },
+                "check" => SemanticAction::Check {
+                    target: target.clone(),
+                },
+                "uncheck" => SemanticAction::Uncheck {
+                    target: target.clone(),
+                },
+                "click" => SemanticAction::Click {
+                    target: target.clone(),
+                },
+                "type" => SemanticAction::Type {
+                    target: target.clone(),
+                    text: value.clone(),
+                },
+                _ => unreachable!("native fill plan action was validated"),
+            };
+            let action_result = if index == 0 {
+                match expected_revision {
+                    Some(expected_revision) => {
+                        self.action_with_revision(semantic_action, expected_revision)
+                            .await
+                    }
+                    None => self.action(semantic_action).await,
+                }
+            } else {
+                self.action(semantic_action).await
+            };
+            let (success, error) = match action_result {
+                Ok(result) if result.accepted => {
+                    filled += 1;
+                    (true, None)
+                }
+                Ok(_) => (false, Some("native action was not accepted".to_owned())),
+                Err(error) => (false, Some(error.to_string())),
+            };
+            results.push(FillFieldResult {
+                target: target.clone(),
+                action: action.clone(),
+                label: label.clone(),
+                success,
+                error,
+            });
+        }
+        let after = self.native_observe().await?;
+        Ok(FillFormOutcome {
+            status: if filled == fields.len() {
+                ActionStatus::Succeeded
+            } else {
+                ActionStatus::CompletedWithVerificationFailure
+            },
+            failure_kind: (filled != fields.len()).then_some(ActionFailureKind::VerificationFailed),
+            execution_id: self.next_native_execution_id(),
+            filled,
+            total: fields.len(),
+            fields: results,
+            previous_revision: before.revision,
+            current_revision: after.revision,
+            verification: ActionVerificationEvidence {
+                revision_delta: after.revision.saturating_sub(before.revision),
+                url_changed: before.page.url != after.page.url,
+                title_changed: before.page.title != after.page.title,
+                ..ActionVerificationEvidence::default()
+            },
+        })
+    }
+
+    /// Read the native session clipboard broker, bounded to the same 8 KiB
+    /// contract as the Chromium clipboard extension.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_clipboard_read(&self) -> BrowserResult<String> {
+        Ok(self.native_clipboard.lock().await.clone())
+    }
+
+    /// Write the native session clipboard broker with a UTF-8 byte bound.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_clipboard_write(&self, text: &str) -> BrowserResult<()> {
+        const MAX_BYTES: usize = 8192;
+        let end = text.len().min(MAX_BYTES);
+        let end = (0..=end)
+            .rev()
+            .find(|index| text.is_char_boundary(*index))
+            .expect("zero is a UTF-8 boundary");
+        *self.native_clipboard.lock().await = text[..end].to_owned();
+        Ok(())
+    }
+
+    /// Dismiss a recognized consent wall through the native page realm.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_dismiss_consent(
+        &self,
+    ) -> BrowserResult<super::session::ConsentDismissalOutcome> {
+        const SCRIPT: &str = r#"(() => {
+            const visible = (el) => {
+                if (!el) return false;
+                const style = getComputedStyle(el);
+                const rect = el.getBoundingClientRect();
+                return style.display !== 'none' && style.visibility !== 'hidden' &&
+                    Number(style.opacity) !== 0 && rect.width > 0 && rect.height > 0;
+            };
+            const click = (root, selectors) => {
+                for (const selector of selectors) {
+                    const el = root.querySelector(selector);
+                    if (visible(el)) { el.click(); return true; }
+                }
+                return false;
+            };
+            const oneTrust = document.querySelector('#onetrust-banner-sdk, #onetrust-consent-sdk, .onetrust-pc-dark-filter');
+            if (oneTrust) return {framework:'onetrust', dismissed: click(document, ['#onetrust-accept-btn-handler', '#onetrust-reject-all-handler'])};
+            const cookiebot = document.querySelector('#CybotCookiebotDialog, [data-template="cookiebot"]');
+            if (cookiebot) return {framework:'cookiebot', dismissed: click(cookiebot, ['#CybotCookiebotDialogBodyLevelButtonAccept', '#CybotCookiebotDialogBodyButtonDecline'])};
+            return {framework:null, dismissed:false};
+        })()"#;
+        let mut value = self.script(SCRIPT).await?.value;
+        if let Some(text) = value.as_str() {
+            value = serde_json::from_str(text).unwrap_or(serde_json::Value::Null);
+        }
+        match (
+            value["framework"].as_str(),
+            value["dismissed"].as_bool().unwrap_or(false),
+        ) {
+            (_, true) => Ok(super::session::ConsentDismissalOutcome::Dismissed),
+            (Some("onetrust" | "cookiebot"), false) => {
+                Ok(super::session::ConsentDismissalOutcome::UnrecognizedFramework)
+            }
+            (None, false) => Ok(super::session::ConsentDismissalOutcome::NoConsentFound),
+            _ => Ok(super::session::ConsentDismissalOutcome::UnrecognizedFramework),
+        }
+    }
+
+    /// Render the current native semantic page as a bounded PDF document.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_print_to_pdf(
+        &self,
+        options: &super::session::PdfOptions,
+    ) -> BrowserResult<String> {
+        let observation = self.native_observe().await?;
+        super::native_pdf::render(&observation, options)
     }
 
     /// Execute one authored Glass Task Protocol request entirely in the
@@ -1973,6 +2551,46 @@ fn native_observation_incomplete(
 }
 
 #[cfg(feature = "native-engine")]
+fn native_locator_matches(locator: &super::session::Locator, target: &SemanticTarget) -> bool {
+    match locator {
+        super::session::Locator::Reference(reference) => target.reference == *reference,
+        super::session::Locator::AccessibleName(name) => target.name.eq_ignore_ascii_case(name),
+        super::session::Locator::RoleAndName { role, name } => {
+            target.role.eq_ignore_ascii_case(role) && target.name.eq_ignore_ascii_case(name)
+        }
+        super::session::Locator::Text(text) => target.name.eq_ignore_ascii_case(text),
+        super::session::Locator::Css(_) | super::session::Locator::Ordinal(_) => false,
+    }
+}
+
+#[cfg(feature = "native-engine")]
+fn bounded_native_candidate_label(value: &str) -> String {
+    const MAX_BYTES: usize = 128;
+    if value.len() <= MAX_BYTES {
+        return value.to_owned();
+    }
+    let mut end = MAX_BYTES;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_owned()
+}
+
+#[cfg(feature = "native-engine")]
+fn bounded_native_reconciliation_outcome(
+    outcome: ReconciliationOutcome,
+) -> BrowserResult<ReconciliationOutcome> {
+    if serde_json::to_vec(&outcome)?.len() > super::session::MAX_RECONCILIATION_BYTES {
+        return Err(format!(
+            "reconciliation response exceeds {} bytes; retry with fewer refs",
+            super::session::MAX_RECONCILIATION_BYTES
+        )
+        .into());
+    }
+    Ok(outcome)
+}
+
+#[cfg(feature = "native-engine")]
 fn bounded_checkpoint_text(value: &str, max_bytes: usize) -> String {
     if value.len() <= max_bytes {
         return value.to_owned();
@@ -2244,6 +2862,18 @@ fn native_semantic_target(
         checked: node.checked,
         empty: node.empty,
     }
+}
+
+#[cfg(feature = "native-engine")]
+fn parse_native_semantic_reference(
+    value: &str,
+) -> BrowserResult<Option<super::session::RevisionedElementReference>> {
+    let value = value.strip_prefix("ref=").unwrap_or(value);
+    let normalized = value
+        .strip_prefix('r')
+        .and_then(|rest| rest.split_once(":n"))
+        .map(|(revision, node)| format!("r{revision}:b{node}"));
+    super::session::parse_revisioned_reference(normalized.as_deref().unwrap_or(value))
 }
 
 #[cfg(feature = "native-engine")]

@@ -57,6 +57,9 @@ pub mod native_engine;
 /// Native projection of semantic observations into the stable Web IR contract.
 #[cfg(feature = "native-engine")]
 pub(crate) mod native_extraction;
+/// Native bounded PDF rendering from the shared semantic document snapshot.
+#[cfg(feature = "native-engine")]
+pub(crate) mod native_pdf;
 /// Native-owned Task Protocol execution adapter.
 #[cfg(feature = "native-engine")]
 mod native_task;

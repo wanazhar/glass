@@ -20,8 +20,8 @@ use super::native_engine::{
     NativeWindowProxyUpdate, Viewport, parse_point_target,
 };
 use crate::browser::session::{
-    FrameInfo, NavigationControlOutcome, PageTargetInfo, redact_diagnostic_text,
-    redact_diagnostic_url,
+    FrameInfo, GeoLocation, NavigationControlOutcome, NetworkConditions, PageTargetInfo,
+    redact_diagnostic_text, redact_diagnostic_url,
 };
 use crate::browser_backend::{
     ActionResult, BROWSER_BACKEND_SCHEMA_VERSION, BackendFuture, BackendOperation, BackendProfile,
@@ -988,6 +988,52 @@ impl NativeEngineBackend {
     pub async fn clear_cookies(&self) -> Result<(), BrowserBackendError> {
         self.lock_engine(BackendOperation::Storage)?
             .clear_cookies_async()
+            .await
+            .map_err(native_error)
+    }
+
+    pub async fn set_network_conditions(
+        &self,
+        conditions: Option<&NetworkConditions>,
+    ) -> Result<(), BrowserBackendError> {
+        self.lock_engine(BackendOperation::Navigate)?
+            .set_network_conditions_async(conditions)
+            .await
+            .map_err(native_error)
+    }
+
+    pub async fn set_cpu_throttling(&self, rate: Option<f64>) -> Result<(), BrowserBackendError> {
+        self.lock_engine(BackendOperation::Script)?
+            .set_cpu_throttling_async(rate)
+            .await
+            .map_err(native_error)
+    }
+
+    pub async fn set_user_agent(
+        &self,
+        user_agent: Option<&str>,
+        accept_language: Option<&str>,
+        platform: Option<&str>,
+    ) -> Result<(), BrowserBackendError> {
+        self.lock_engine(BackendOperation::Script)?
+            .set_user_agent_async(user_agent, accept_language, platform)
+            .await
+            .map_err(native_error)
+    }
+
+    pub async fn set_geolocation(
+        &self,
+        location: Option<&GeoLocation>,
+    ) -> Result<(), BrowserBackendError> {
+        self.lock_engine(BackendOperation::Script)?
+            .set_geolocation_async(location)
+            .await
+            .map_err(native_error)
+    }
+
+    pub async fn set_timezone(&self, timezone_id: Option<&str>) -> Result<(), BrowserBackendError> {
+        self.lock_engine(BackendOperation::Script)?
+            .set_timezone_async(timezone_id)
             .await
             .map_err(native_error)
     }

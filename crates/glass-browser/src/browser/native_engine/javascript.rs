@@ -8720,6 +8720,39 @@ fn worker_bootstrap(
     }});
     return Object.freeze(key);
   }};
+  const workerCryptoHmacDefaultLength = (hashName) =>
+    ["SHA-384", "SHA-512"].includes(hashName) ? 1024 : 512;
+  const workerCryptoGenerateKey = (algorithm, extractable, keyUsages) => {{
+    if (!algorithm || typeof algorithm !== "object")
+      throw new WorkerDOMExceptionNative("native crypto key algorithm is required", "TypeError");
+    const algorithmName = String(algorithm.name || "").toUpperCase();
+    if (algorithmName === "HMAC") {{
+      const hashName = workerCryptoHashName(algorithm.hash);
+      const length = algorithm.length === undefined
+        ? workerCryptoHmacDefaultLength(hashName)
+        : Number(algorithm.length);
+      if (!Number.isSafeInteger(length) || length <= 0 || length % 8 !== 0
+          || length / 8 > {worker_crypto_values_limit})
+        throw new WorkerDOMExceptionNative("native HMAC key length is invalid", "DataError");
+      return workerCryptoMakeKey(
+        workerCryptoTake(length / 8),
+        hashName,
+        extractable,
+        workerCryptoUsages(keyUsages),
+      );
+    }}
+    if (algorithmName === "AES-GCM") {{
+      const length = Number(algorithm.length);
+      if (![128, 192, 256].includes(length))
+        throw new WorkerDOMExceptionNative("native AES-GCM key length is invalid", "DataError");
+      return workerCryptoMakeAesKey(
+        workerCryptoTake(length / 8),
+        extractable,
+        workerCryptoAesUsages(keyUsages),
+      );
+    }}
+    throw new WorkerDOMExceptionNative("native crypto algorithm is unsupported", "NotSupportedError");
+  }};
   const workerCryptoAesBytes = (operation, state, algorithm, data) => {{
     if (!workerCryptoAesSource)
       throw new WorkerDOMExceptionNative("native Worker AES-GCM is unavailable", "OperationError");
@@ -8749,6 +8782,13 @@ fn worker_bootstrap(
       const encoded = encodeWorkerBase64(bytes, {fetch_body_limit});
       const digest = workerCryptoDigestSource(name.toUpperCase(), encoded);
       return Promise.resolve(new Uint8Array(decodeWorkerBase64(digest, {fetch_body_limit})).buffer);
+    }} catch (error) {{
+      return Promise.reject(error);
+    }}
+  }};
+  workerSubtle.generateKey = (algorithm, extractable = false, keyUsages = []) => {{
+    try {{
+      return Promise.resolve(workerCryptoGenerateKey(algorithm, extractable, keyUsages));
     }} catch (error) {{
       return Promise.reject(error);
     }}
@@ -20196,6 +20236,39 @@ fn document_bootstrap(
     }});
     return Object.freeze(key);
   }};
+  const pageCryptoHmacDefaultLength = (hashName) =>
+    ["SHA-384", "SHA-512"].includes(hashName) ? 1024 : 512;
+  const pageCryptoGenerateKey = (algorithm, extractable, keyUsages) => {{
+    if (!algorithm || typeof algorithm !== "object")
+      throw pageCryptoDigestError("native crypto key algorithm is required", "TypeError");
+    const algorithmName = String(algorithm.name || "").toUpperCase();
+    if (algorithmName === "HMAC") {{
+      const hashName = pageCryptoHashName(algorithm.hash);
+      const length = algorithm.length === undefined
+        ? pageCryptoHmacDefaultLength(hashName)
+        : Number(algorithm.length);
+      if (!Number.isSafeInteger(length) || length <= 0 || length % 8 !== 0
+          || length / 8 > {page_crypto_values_limit})
+        throw pageCryptoDigestError("native HMAC key length is invalid", "DataError");
+      return pageCryptoMakeKey(
+        pageCryptoTake(length / 8),
+        hashName,
+        extractable,
+        pageCryptoUsages(keyUsages),
+      );
+    }}
+    if (algorithmName === "AES-GCM") {{
+      const length = Number(algorithm.length);
+      if (![128, 192, 256].includes(length))
+        throw pageCryptoDigestError("native AES-GCM key length is invalid", "DataError");
+      return pageCryptoMakeAesKey(
+        pageCryptoTake(length / 8),
+        extractable,
+        pageCryptoAesUsages(keyUsages),
+      );
+    }}
+    throw pageCryptoDigestError("native crypto algorithm is unsupported", "NotSupportedError");
+  }};
   const pageCryptoAesBytes = (operation, state, algorithm, data) => {{
     if (!pageCryptoAesSource)
       throw pageCryptoDigestError("native AES-GCM is unavailable", "OperationError");
@@ -20226,6 +20299,13 @@ fn document_bootstrap(
       const encoded = encodeBase64(bytes, {native_form_body_bytes});
       const digest = pageCryptoDigestSource(normalizedName, encoded);
       return Promise.resolve(new Uint8Array(decodeBase64(digest, {native_form_body_bytes})).buffer);
+    }} catch (error) {{
+      return Promise.reject(error);
+    }}
+  }};
+  pageSubtle.generateKey = (algorithm, extractable = false, keyUsages = []) => {{
+    try {{
+      return Promise.resolve(pageCryptoGenerateKey(algorithm, extractable, keyUsages));
     }} catch (error) {{
       return Promise.reject(error);
     }}

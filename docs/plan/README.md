@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-303` locally. The versioned
+`native-engine-browser-304` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -223,6 +223,13 @@ additional authenticated data, view-range preservation, and authentication
 failure handling over the existing native host boundary. Its NIST vector,
 round-trip, worker, and typed-error evidence are recorded in
 [tasks/native-engine-browser-303.md](tasks/native-engine-browser-303.md).
+
+The completed native-engine-browser-304 Web Crypto key-generation slice adds
+native HMAC and AES-GCM secret-key generation using the existing OS-backed
+realm pool. It validates default/explicit lengths and usages, preserves
+opaque key identity and exportability, and proves generated keys through real
+page/worker sign and encrypt/decrypt operations. Its focused evidence is
+recorded in [tasks/native-engine-browser-304.md](tasks/native-engine-browser-304.md).
 
 The completed native-engine-browser-299 page-runtime-primitives slice adds
 page `TextEncoder`/`TextDecoder`, bounded `atob`/`btoa`,

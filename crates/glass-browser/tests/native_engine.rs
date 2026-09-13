@@ -1811,6 +1811,155 @@ async fn native_local_page_and_worker_expose_aes_gcm_crypto_keys() {
 }
 
 #[tokio::test]
+async fn native_local_page_and_worker_generate_crypto_keys() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://generated-key-page",
+            "<html><body><main>Native</main></body></html>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://generated-key-worker",
+            "(async () => { const hmac = await crypto.subtle.generateKey({ name: 'HMAC', hash: 'SHA-512', length: 256 }, false, ['sign']); const aes = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 192 }, false, ['encrypt', 'decrypt']); const iv = new Uint8Array(12); const data = new TextEncoder().encode('worker generated'); const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, aes, data); const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, aes, ciphertext); const signature = await crypto.subtle.sign('HMAC', hmac, data); postMessage({ hmac: [hmac.algorithm.name, hmac.algorithm.hash.name, hmac.algorithm.length], aes: [aes.algorithm.name, aes.algorithm.length], plaintext: new TextDecoder().decode(plaintext), signatureLength: signature.byteLength, identity: hmac instanceof CryptoKey && aes instanceof CryptoKey, usages: Array.from(aes.usages) }); })().catch(error => postMessage({ error: error.name }));",
+        )
+        .unwrap()
+        .with_initial_url("fixture://generated-key-page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"await (async () => {
+                    const data = new TextEncoder().encode('generated native key');
+                    const hmacDefault = await crypto.subtle.generateKey(
+                        { name: 'HMAC', hash: 'SHA-256' }, true, ['sign', 'verify']
+                    );
+                    const hmacCustom = await crypto.subtle.generateKey(
+                        { name: 'HMAC', hash: { name: 'SHA-512' }, length: 256 }, true, ['sign']
+                    );
+                    const defaultSignature = await crypto.subtle.sign('HMAC', hmacDefault, data);
+                    const defaultVerified = await crypto.subtle.verify('HMAC', hmacDefault, defaultSignature, data);
+                    const defaultExport = await crypto.subtle.exportKey('raw', hmacDefault);
+                    const customExport = await crypto.subtle.exportKey('raw', hmacCustom);
+                    const iv = new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+                    const aes = {};
+                    for (const length of [128, 192, 256]) {
+                        const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length }, true, ['encrypt', 'decrypt']);
+                        const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, data);
+                        const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext);
+                        const exported = await crypto.subtle.exportKey('raw', key);
+                        aes[length] = {
+                            algorithm: [key.algorithm.name, key.algorithm.length],
+                            keyBytes: exported.byteLength,
+                            plaintext: new TextDecoder().decode(plaintext),
+                            identity: key instanceof CryptoKey,
+                            usages: Array.from(key.usages),
+                        };
+                    }
+                    let hmacLengthError = '';
+                    try { await crypto.subtle.generateKey({ name: 'HMAC', hash: 'SHA-256', length: 7 }, true, ['sign']); } catch (error) { hmacLengthError = error.name; }
+                    let aesLengthError = '';
+                    try { await crypto.subtle.generateKey({ name: 'AES-GCM', length: 160 }, true, ['encrypt']); } catch (error) { aesLengthError = error.name; }
+                    let usageError = '';
+                    try { await crypto.subtle.generateKey({ name: 'HMAC', hash: 'SHA-256' }, true, ['encrypt']); } catch (error) { usageError = error.name; }
+                    let algorithmError = '';
+                    try { await crypto.subtle.generateKey({ name: 'RSA-PSS' }, true, ['sign']); } catch (error) { algorithmError = error.name; }
+                    globalThis.generatedHmac = hmacDefault;
+                    globalThis.generatedState = {
+                        hmacDefault: {
+                            algorithm: [hmacDefault.algorithm.name, hmacDefault.algorithm.hash.name, hmacDefault.algorithm.length],
+                            keyBytes: defaultExport.byteLength,
+                            customKeyBytes: customExport.byteLength,
+                            verified: defaultVerified,
+                            identity: hmacDefault instanceof CryptoKey,
+                            usages: Array.from(hmacDefault.usages),
+                        },
+                        aes,
+                        hmacLengthError,
+                        aesLengthError,
+                        usageError,
+                        algorithmError,
+                    };
+                    return globalThis.generatedState;
+                })()"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "hmacDefault": {
+                "algorithm": ["HMAC", "SHA-256", 512],
+                "keyBytes": 64,
+                "customKeyBytes": 32,
+                "verified": true,
+                "identity": true,
+                "usages": ["sign", "verify"],
+            },
+            "aes": {
+                "128": {
+                    "algorithm": ["AES-GCM", 128],
+                    "keyBytes": 16,
+                    "plaintext": "generated native key",
+                    "identity": true,
+                    "usages": ["encrypt", "decrypt"],
+                },
+                "192": {
+                    "algorithm": ["AES-GCM", 192],
+                    "keyBytes": 24,
+                    "plaintext": "generated native key",
+                    "identity": true,
+                    "usages": ["encrypt", "decrypt"],
+                },
+                "256": {
+                    "algorithm": ["AES-GCM", 256],
+                    "keyBytes": 32,
+                    "plaintext": "generated native key",
+                    "identity": true,
+                    "usages": ["encrypt", "decrypt"],
+                },
+            },
+            "hmacLengthError": "DataError",
+            "aesLengthError": "DataError",
+            "usageError": "SyntaxError",
+            "algorithmError": "NotSupportedError",
+        })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("({ sameKey: generatedHmac === globalThis.generatedHmac, length: generatedHmac.algorithm.length })")
+            .await
+            .unwrap(),
+        serde_json::json!({ "sameKey": true, "length": 512 })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "globalThis.workerMessages = []; globalThis.workerErrors = []; globalThis.worker = new Worker('fixture://generated-key-worker'); worker.onmessage = event => workerMessages.push(event.data); worker.onerror = event => workerErrors.push(event.message); true",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("({ messages: workerMessages, errors: workerErrors })")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "messages": [{
+                "hmac": ["HMAC", "SHA-512", 256],
+                "aes": ["AES-GCM", 192],
+                "plaintext": "worker generated",
+                "signatureLength": 64,
+                "identity": true,
+                "usages": ["encrypt", "decrypt"],
+            }],
+            "errors": [],
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_runs_worker_created_during_page_load() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -463,6 +463,12 @@ pub(crate) struct NativeScriptElementSnapshot {
     pub(crate) scroll_x: u32,
     #[serde(default)]
     pub(crate) scroll_y: u32,
+    /// The layout owner's computed style for this element.  Keeping this in
+    /// the same snapshot as attributes and geometry lets one JavaScript turn
+    /// observe a coherent style/layout revision rather than reconstructing
+    /// CSS from inline attributes alone.
+    #[serde(default)]
+    pub(crate) computed_style: NativeComputedStyle,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq, Serialize)]
@@ -2053,6 +2059,7 @@ impl NativeDocument {
                 } else {
                     String::new()
                 };
+                let computed_style = self.computed_style_for_layout(node.id());
                 Some(NativeScriptElementSnapshot {
                     node_index: node.id().index(),
                     parent_index: self.parent_element_index(node.id()),
@@ -2083,6 +2090,7 @@ impl NativeDocument {
                     image_current_src,
                     scroll_x: 0,
                     scroll_y: 0,
+                    computed_style,
                 })
             })
             .collect();

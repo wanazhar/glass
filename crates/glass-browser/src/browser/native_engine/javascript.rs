@@ -11994,6 +11994,9 @@ fn document_bootstrap(
     let imageNaturalWidth = Number(entry.imageNaturalWidth) || 0;
     let imageNaturalHeight = Number(entry.imageNaturalHeight) || 0;
     let imageCurrentSrc = String(entry.imageCurrentSrc || "");
+    let computedStyle = entry.computedStyle && typeof entry.computedStyle === "object"
+      ? entry.computedStyle
+      : {{}};
     let scrollLeft = Number(entry.scrollX) || 0;
     let scrollTop = Number(entry.scrollY) || 0;
     const resetImageState = (complete = false) => {{
@@ -12719,11 +12722,19 @@ fn document_bootstrap(
         scrollTop = Number(nextTop) || 0;
       }},
     }});
+    Object.defineProperty(element, "__glassComputedStyle", {{
+      enumerable: false,
+      configurable: false,
+      value() {{ return computedStyle; }},
+    }});
     Object.defineProperty(element, "__glassRefresh", {{
       enumerable: false,
       configurable: false,
       value(nextEntry) {{
         entry = nextEntry;
+        computedStyle = nextEntry.computedStyle && typeof nextEntry.computedStyle === "object"
+          ? nextEntry.computedStyle
+          : {{}};
         if (!entry.attributeNamespaces || typeof entry.attributeNamespaces !== "object") entry.attributeNamespaces = {{}};
         element.nodeIndex = nextEntry.nodeIndex;
         element.parentIndex = nextEntry.parentIndex;
@@ -14578,6 +14589,212 @@ fn document_bootstrap(
     installClassList(element);
     installElementStyleAndDataset(element);
   }}
+  const computedStyleEnumName = (value, fallback = "") => {{
+    const kebab = (name) => String(name).replace(/([a-z])([A-Z])/g, "$1-$2").toLowerCase();
+    if (typeof value === "string") return kebab(value);
+    if (!value || typeof value !== "object") return fallback;
+    const keys = Object.keys(value);
+    if (keys.length === 0) return fallback;
+    const key = keys[0];
+    const payload = value[key];
+    if (typeof payload === "string") return kebab(payload);
+    return kebab(key);
+  }};
+  const computedStyleEnumPayload = (value) => {{
+    if (!value || typeof value !== "object") return value;
+    const keys = Object.keys(value);
+    return keys.length === 0 ? undefined : value[keys[0]];
+  }};
+  const computedStyleNumber = (value, fallback = null) => {{
+    const payload = computedStyleEnumPayload(value);
+    return typeof payload === "number" && Number.isFinite(payload) ? payload : fallback;
+  }};
+  const computedStyleColor = (value, fallback = "rgba(0, 0, 0, 0)") => {{
+    if (!value || typeof value !== "object") return fallback;
+    const red = Number(value.red);
+    const green = Number(value.green);
+    const blue = Number(value.blue);
+    const alpha = Number(value.alpha);
+    if (![red, green, blue, alpha].every(Number.isFinite)) return fallback;
+    if (alpha >= 255) return "rgb(" + red + ", " + green + ", " + blue + ")";
+    return "rgba(" + red + ", " + green + ", " + blue + ", "
+      + (alpha / 255).toFixed(3).replace(/0+$/, "").replace(/\.$/, "") + ")";
+  }};
+  const computedStylePixels = (value, fallback = "auto") => {{
+    const number = computedStyleNumber(value);
+    return number === null ? fallback : String(number) + "px";
+  }};
+  const computedStyleEdge = (value, side, fallback = "0px") => {{
+    if (!value || typeof value !== "object") return fallback;
+    const number = Number(value[side]);
+    return Number.isFinite(number) ? String(number) + "px" : fallback;
+  }};
+  const computedStyleDefaultDisplay = (element) =>
+    ["HTML", "BODY", "ADDRESS", "ARTICLE", "ASIDE", "BLOCKQUOTE", "DD", "DIV", "DL", "DT",
+      "FIELDSET", "FIGCAPTION", "FIGURE", "FOOTER", "FORM", "H1", "H2", "H3", "H4", "H5",
+      "H6", "HEADER", "HR", "LI", "MAIN", "NAV", "OL", "P", "PRE", "SECTION", "TABLE",
+      "TR", "UL"].includes(element.tagName)
+      ? "block"
+      : "inline";
+  const computedStyleProperties = [
+    "display", "position", "visibility", "opacity", "pointer-events", "z-index",
+    "top", "right", "bottom", "left", "width", "height", "min-width", "max-width",
+    "min-height", "max-height", "box-sizing", "margin-top", "margin-right", "margin-bottom",
+    "margin-left", "padding-top", "padding-right", "padding-bottom", "padding-left",
+    "color", "background-color", "background-image", "background-repeat", "background-position",
+    "background-size", "border-top-width", "border-right-width", "border-bottom-width",
+    "border-left-width", "border-top-style", "border-right-style", "border-bottom-style",
+    "border-left-style", "border-top-color", "border-right-color", "border-bottom-color",
+    "border-left-color", "border-radius", "overflow", "overflow-x", "overflow-y", "white-space",
+    "text-align", "text-align-last", "text-justify", "text-indent", "text-transform", "text-overflow",
+    "text-decoration", "text-decoration-style", "text-decoration-thickness", "text-underline-offset",
+    "font-weight", "font-style", "line-height", "word-break", "word-spacing", "letter-spacing",
+    "vertical-align", "flex-direction", "flex-wrap", "flex-grow", "flex-shrink", "flex-basis",
+    "justify-content", "align-items", "align-self", "align-content", "gap", "row-gap", "column-gap",
+    "order", "grid-template-columns", "grid-template-rows"
+  ];
+  const computedStyleValue = (element, property, inline) => {{
+    const name = stylePropertyName(property);
+    const override = inline.find((declaration) => declaration.name === name);
+    if (override) return override.value;
+    const raw = typeof element.__glassComputedStyle === "function"
+      ? element.__glassComputedStyle()
+      : {{}};
+    const geometry = geometryForNode(element);
+    const rawMargins = raw.margin || {{}};
+    const rawPadding = raw.padding || {{}};
+    const rawMarginAuto = raw.margin_auto || {{}};
+    const sideIndex = {{ top: 0, right: 1, bottom: 2, left: 3 }};
+    const side = name.match(/(?:margin|padding|border)-(top|right|bottom|left)/);
+    if (name === "display") {{
+      const display = computedStyleEnumName(raw.display, "auto");
+      return display === "auto" ? computedStyleDefaultDisplay(element) : display;
+    }}
+    if (name === "position") return computedStyleEnumName(raw.position, "static");
+    if (name === "visibility") return raw.visibility_hidden ? "hidden" : "visible";
+    if (name === "opacity") {{
+      const opacity = raw.opacity === null || raw.opacity === undefined ? 1 : Number(raw.opacity) / 255;
+      return Number.isFinite(opacity) ? String(Number(opacity.toFixed(3))) : "1";
+    }}
+    if (name === "pointer-events") return computedStyleEnumName(raw.pointer_events, "auto");
+    if (name === "z-index") {{
+      const value = computedStyleNumber(raw.z_index);
+      return value === null ? "auto" : String(value);
+    }}
+    if (["top", "right", "bottom", "left"].includes(name)) return computedStylePixels(raw[name]);
+    if (name === "width") return String(Number(geometry.contentWidth) || 0) + "px";
+    if (name === "height") return String(Number(geometry.contentHeight) || 0) + "px";
+    if (name === "min-width") return computedStylePixels(raw.min_width, "0px");
+    if (name === "max-width") return computedStylePixels(raw.max_width, "none");
+    if (name === "min-height") return computedStylePixels(raw.min_height, "0px");
+    if (name === "max-height") return computedStylePixels(raw.max_height, "none");
+    if (name === "box-sizing") return computedStyleEnumName(raw.box_sizing, "content-box");
+    if (side && side[0].startsWith("margin-")) {{
+      const direction = side[1];
+      return rawMarginAuto[direction] ? "auto" : computedStyleEdge(rawMargins, direction);
+    }}
+    if (side && side[0].startsWith("padding-")) return computedStyleEdge(rawPadding, side[1]);
+    if (side && name.startsWith("border-") && name.endsWith("-width")) {{
+      const values = Array.isArray(raw.border_widths) ? raw.border_widths : [];
+      return String(Number(values[sideIndex[side[1]]]) || 0) + "px";
+    }}
+    if (side && name.startsWith("border-") && name.endsWith("-style")) {{
+      const values = Array.isArray(raw.border_styles) ? raw.border_styles : [];
+      return computedStyleEnumName(values[sideIndex[side[1]]], "none");
+    }}
+    if (side && name.startsWith("border-") && name.endsWith("-color")) {{
+      const values = Array.isArray(raw.border_colors) ? raw.border_colors : [];
+      return computedStyleColor(values[sideIndex[side[1]]]);
+    }}
+    if (name === "color") return computedStyleColor(raw.color, "rgb(0, 0, 0)");
+    if (name === "background-color") return computedStyleColor(raw.background_color);
+    if (name === "background-image") return raw.background_image === null || raw.background_image === undefined ? "none" : "url(\"\")";
+    if (name === "background-repeat") return computedStyleEnumName(raw.background_repeat, "repeat");
+    if (["background-position", "background-size", "border-radius"].includes(name)) return "0px";
+    if (name === "overflow") return computedStyleEnumName(raw.overflow_x, "visible") + " " + computedStyleEnumName(raw.overflow_y, "visible");
+    if (name === "overflow-x") return computedStyleEnumName(raw.overflow_x, "visible");
+    if (name === "overflow-y") return computedStyleEnumName(raw.overflow_y, "visible");
+    if (name === "white-space") return computedStyleEnumName(raw.white_space, "normal");
+    if (["text-align", "text-align-last", "text-justify", "text-transform", "word-break", "text-overflow", "vertical-align",
+      "flex-direction", "flex-wrap", "justify-content", "align-items", "align-self", "align-content", "flex-basis"].includes(name)) {{
+      const fields = {{
+        "text-align": "text_align", "text-align-last": "text_align_last", "text-justify": "text_justify",
+        "text-transform": "text_transform", "word-break": "word_break", "text-overflow": "text_overflow",
+        "vertical-align": "vertical_align", "flex-direction": "flex_direction", "flex-wrap": "flex_wrap",
+        "justify-content": "justify_content", "align-items": "align_items", "align-self": "align_self",
+        "align-content": "align_content", "flex-basis": "flex_basis",
+      }};
+      return computedStyleEnumName(raw[fields[name]], name === "flex-basis" ? "auto" : "normal");
+    }}
+    if (name === "text-indent") return String(Number(raw.text_indent) || 0) + "px";
+    if (name === "text-decoration") {{
+      const flags = computedStyleNumber(raw.text_decoration, 0);
+      const lines = [];
+      if ((flags & 1) !== 0) lines.push("underline");
+      if ((flags & 2) !== 0) lines.push("overline");
+      if ((flags & 4) !== 0) lines.push("line-through");
+      return lines.length === 0 ? "none" : lines.join(" ");
+    }}
+    if (name === "text-decoration-style") return computedStyleEnumName(raw.text_decoration_style, "solid");
+    if (name === "text-decoration-thickness") return String(Number(raw.text_decoration_thickness) || 0) + "px";
+    if (name === "text-underline-offset") return String(Number(raw.text_underline_offset) || 0) + "px";
+    if (name === "font-weight") return computedStyleEnumName(raw.font_weight, "normal");
+    if (name === "font-style") return computedStyleEnumName(raw.font_style, "normal");
+    if (name === "line-height") return computedStylePixels(raw.line_height, "normal");
+    if (name === "word-spacing") return String(Number(raw.word_spacing) || 0) + "px";
+    if (name === "letter-spacing") return String(Number(raw.letter_spacing) || 0) + "px";
+    if (name === "flex-grow") return String(Number(raw.flex_grow) || 0);
+    if (name === "flex-shrink") return String(Number(raw.flex_shrink) || 0);
+    if (name === "gap" || name === "row-gap" || name === "column-gap") {{
+      const field = name === "gap" ? "gap" : name.replace(/-([a-z])/g, (_match, character) => character.toUpperCase());
+      return String(Number(raw[field]) || 0) + "px";
+    }}
+    if (name === "order") {{
+      const order = computedStyleNumber(raw.flex_item_order);
+      return order === null ? "0" : String(order);
+    }}
+    return "";
+  }};
+  const makeComputedStyle = (element) => {{
+    const inline = () => parseStyleDeclarations(element.getAttribute("style") || "");
+    const api = {{
+      get length() {{ return computedStyleProperties.length; }},
+      item(index) {{
+        const numeric = Number(index);
+        return Number.isSafeInteger(numeric) && numeric >= 0
+          ? computedStyleProperties[numeric] || ""
+          : "";
+      }},
+      getPropertyValue(name) {{ return computedStyleValue(element, name, inline()); }},
+      getPropertyPriority(_name) {{ return ""; }},
+      get cssText() {{ return ""; }},
+      toString() {{ return ""; }},
+    }};
+    return new Proxy(api, {{
+      get(target, property, receiver) {{
+        const index = collectionIndex(property);
+        if (index !== null) return target.item(index);
+        if (typeof property === "string"
+            && !Object.prototype.hasOwnProperty.call(target, property)
+            && !property.startsWith("__")) {{
+          return computedStyleValue(element, property, inline());
+        }}
+        return Reflect.get(target, property, receiver);
+      }},
+      set(_target, _property, _value) {{ return false; }},
+      ownKeys() {{ return computedStyleProperties.slice(); }},
+      getOwnPropertyDescriptor(_target, property) {{
+        if (typeof property === "string" && computedStyleProperties.includes(property)) {{
+          return {{ enumerable: true, configurable: true, value: computedStyleValue(element, property, inline()), writable: false }};
+        }}
+        return undefined;
+      }},
+    }});
+  }};
+  globalThis.getComputedStyle = (element, _pseudoElement) => {{
+    if (!element || Number(element.nodeType) !== 1) throw new TypeError("getComputedStyle requires an element");
+    return makeComputedStyle(element);
+  }};
   const matches = (element, selector) => matchesSelector(element, selector);
   const findAll = (selector) => asNodeList(liveDocumentElements().filter((element) => matches(element, selector)));
   const body = elements.find((element) => element.tagName === "BODY") || null;
@@ -15221,6 +15438,58 @@ fn document_bootstrap(
   }};
   globalThis.innerWidth = {width};
   globalThis.innerHeight = {height};
+  const nativeMediaDimension = (value) => {{
+    const match = /^(-?\d+(?:\.\d+)?)px$/i.exec(String(value).trim());
+    return match ? Number(match[1]) : null;
+  }};
+  const nativeMediaQueryMatches = (query) => {{
+    let source = String(query).trim().toLowerCase();
+    if (!source) return false;
+    let negate = false;
+    if (source.startsWith("not ")) {{
+      negate = true;
+      source = source.slice(4).trim();
+    }}
+    if (source.startsWith("only ")) source = source.slice(5).trim();
+    const clauses = source.split(/\s+and\s+/).map((value) => value.trim()).filter(Boolean);
+    let matches = true;
+    for (const clause of clauses) {{
+      if (clause === "all" || clause === "screen") continue;
+      const feature = /^\(([-a-z]+)\s*:\s*([^)]*)\)$/.exec(clause);
+      if (!feature) {{ matches = false; break; }}
+      const name = feature[1];
+      const value = feature[2].trim();
+      if (name === "min-width") {{ const dimension = nativeMediaDimension(value); matches = matches && dimension !== null && innerWidth >= dimension; }}
+      else if (name === "max-width") {{ const dimension = nativeMediaDimension(value); matches = matches && dimension !== null && innerWidth <= dimension; }}
+      else if (name === "width") {{ const dimension = nativeMediaDimension(value); matches = matches && dimension !== null && innerWidth === dimension; }}
+      else if (name === "min-height") {{ const dimension = nativeMediaDimension(value); matches = matches && dimension !== null && innerHeight >= dimension; }}
+      else if (name === "max-height") {{ const dimension = nativeMediaDimension(value); matches = matches && dimension !== null && innerHeight <= dimension; }}
+      else if (name === "height") {{ const dimension = nativeMediaDimension(value); matches = matches && dimension !== null && innerHeight === dimension; }}
+      else if (name === "orientation") matches = matches && value === (innerWidth >= innerHeight ? "landscape" : "portrait");
+      else if (name === "prefers-color-scheme") matches = false;
+      else matches = false;
+    }}
+    return negate ? !matches : matches;
+  }};
+  globalThis.matchMedia = (query) => {{
+    const media = String(query);
+    const listeners = new Set();
+    const result = {{
+      media,
+      get matches() {{ return nativeMediaQueryMatches(media); }},
+      onchange: null,
+      addListener(callback) {{ if (typeof callback === "function") listeners.add(callback); }},
+      removeListener(callback) {{ listeners.delete(callback); }},
+      addEventListener(type, callback) {{ if (type === "change" && typeof callback === "function") listeners.add(callback); }},
+      removeEventListener(type, callback) {{ if (type === "change") listeners.delete(callback); }},
+      dispatchEvent(event) {{
+        for (const callback of listeners) callback.call(result, event);
+        if (typeof result.onchange === "function") result.onchange.call(result, event);
+        return true;
+      }},
+    }};
+    return result;
+  }};
   const performanceNative = globalThis.__glassPerformance instanceof Object
     ? globalThis.__glassPerformance
     : {{}};

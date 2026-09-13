@@ -13513,6 +13513,23 @@ async fn native_local_canvas_2d_script_and_raster_pipeline() {
     assert_eq!(advanced["state"], serde_json::json!([1, 1, true]));
     assert_eq!(advanced["nativeGreen"], serde_json::json!([0, 255, 0, 255]));
 
+    let paths = engine
+        .evaluate_async(
+            "(() => { const canvas = document.createElement('canvas'); canvas.width = 8; canvas.height = 4; document.body.appendChild(canvas); const context = canvas.getContext('2d'); const path = new Path2D(); path.rect(1, 1, 2, 2); const copied = new Path2D(path); const parsed = new Path2D('M 4 1 h 2 v 2 h -2 z'); copied.addPath(parsed, { a: 1, b: 0, c: 0, d: 1, e: 1, f: 0 }); context.fillStyle = '#ff0000'; context.fill(copied); const pixel = (x, y) => Array.from(context.getImageData(x, y, 1, 1).data); const filled = [pixel(0, 0), pixel(1, 1), pixel(6, 2)]; const pathQueries = [path instanceof Path2D, copied instanceof Path2D, context.isPointInPath(copied, 1.5, 1.5), context.isPointInPath(copied, 0, 0)]; context.beginPath(); context.rect(2, 0, 2, 4); const currentQuery = context.isPointInPath(2.5, 1.5); context.save(); context.clip(); context.fillStyle = '#0000ff'; context.fillRect(0, 0, 8, 4); const clipped = [pixel(1, 0), pixel(2, 0), pixel(4, 0)]; context.restore(); context.fillStyle = '#00ff00'; context.fillRect(0, 0, 1, 1); return { filled, pathQueries, currentQuery, clipped, restored: pixel(0, 0) }; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        paths,
+        serde_json::json!({
+            "filled": [[0, 0, 0, 0], [255, 0, 0, 255], [255, 0, 0, 255]],
+            "pathQueries": [true, true, true, false],
+            "currentQuery": true,
+            "clipped": [[0, 0, 0, 0], [0, 0, 255, 255], [0, 0, 0, 0]],
+            "restored": [0, 255, 0, 255]
+        })
+    );
+
     let persisted = engine
         .evaluate_async(
             "(() => { const canvas = nativeCanvas; const context = canvas.getContext('2d'); const sample = context.getImageData(5, 2, 1, 1); return [canvas.getContext('2d') === nativeCanvasContext, Array.from(sample.data), canvas.width, canvas.height]; })()",

@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-313` locally. The versioned
+`native-engine-browser-314` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -311,6 +311,16 @@ Canvas witness. Worker-realm installation, video/media sources, complete
 Canvas/Web IDL breadth, and the remaining issue #40 production gates remain
 open; exact evidence is recorded in
 [tasks/native-engine-browser-313.md](tasks/native-engine-browser-313.md).
+
+The completed native-engine-browser-314 Path2D and clipping slice adds
+constructable reusable paths, bounded SVG-style path strings, transformed
+`addPath()`, path overloads for Canvas fill/stroke/query operations, and
+stateful `clip()` regions. Central software-raster clipping now applies to
+fill, stroke, clear, text, and image writes and is preserved by
+`save()`/`restore()`. Worker-realm installation, unsupported path grammar,
+complete Canvas/Web IDL breadth, and the remaining issue #40 production gates
+remain open; exact evidence is recorded in
+[tasks/native-engine-browser-314.md](tasks/native-engine-browser-314.md).
 
 The completed native-engine-browser-299 page-runtime-primitives slice adds
 page `TextEncoder`/`TextDecoder`, bounded `atob`/`btoa`,

@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-293`, with local and HTTP(S)
+expansion checkpoint is `native-engine-browser-294`, with local and HTTP(S)
 lifecycle navigation re-entry covered by the native owner. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -4252,6 +4252,60 @@ streaming, full Request/Response Web IDL identity, XHR, module/shared service
 workers, and complete native/CDP parity remain issue #40 promotion work.
 Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-288.md`.
+
+The completed native-engine-browser-289 slice adds worker Fetch object
+identity. Dedicated workers can construct bounded `Headers`, `Request`, and
+`Response` instances, mutate and iterate request headers, clone requests and
+responses with independent body ownership, and consume response text, JSON,
+bytes, ArrayBuffer, Blob, or stream bodies. The existing owner-tagged loader
+continues to own URL, cookie, CORS, redirect, transport, and response-limit
+policy. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-289.md`.
+
+The completed native-engine-browser-290 slice adds asynchronous worker
+XMLHttpRequest over that same Fetch boundary. Ready-state transitions,
+request headers and bodies, text/ArrayBuffer/Blob responses, response-header
+lookup, abort-token late-result suppression, bounded timeouts, and load/error/
+timeout events are observable across content-process turns. Synchronous XHR,
+upload progress, transport cancellation, XML parsing, and complete XHR Web
+IDL parity remain issue #40 work. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-290.md`.
+
+The completed native-engine-browser-291 slice adds dedicated module workers.
+Module roots and supported static or literal dynamic-import dependencies are
+prefetched through the existing worker resource/policy owner and evaluated in
+isolated QuickJS module realms. Module message, timer, Fetch, XHR, stream, and
+lifecycle turns reuse the bounded worker queue, while `importScripts()` is
+rejected for module workers. Shared/service/worklet workers, import maps,
+transferables, and complete Worker Web IDL parity remain issue #40 work. Exact
+evidence is recorded in `docs/plan/tasks/native-engine-browser-291.md`.
+
+The completed native-engine-browser-292 slice adds persistent worker
+WebSocket ownership in the HTTP(S) content process. Owner-tagged worker
+commands reuse the page transport for handshake, ping/pong, text/binary
+frames, errors, and clean close; events are dispatched into the isolated
+worker realm at bounded page turns. The local fixture owner reports the
+process-backed-network requirement explicitly. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-292.md`.
+
+The completed native-engine-browser-293 slice adds persistent worker
+EventSource/SSE ownership through the shared event-stream parser and loader.
+Relative URLs, credentials, cookies, response-cookie changes, named and
+multiline messages, `lastEventId`, reconnect state, open/error/close events,
+and owner-tagged close commands are covered at the worker boundary. Exact
+evidence is recorded in `docs/plan/tasks/native-engine-browser-293.md`.
+
+The completed native-engine-browser-294 slice adds worker runtime identity
+needed by ordinary libraries. `URL` supports bounded absolute and relative
+resolution plus protocol, host, hostname, port, path, query, fragment, and
+origin fields; `URLSearchParams` supports bounded string/record/pair input,
+duplicate entries, decoding/encoding, mutation, stable sorting, iteration,
+and size; worker `location` projects the same URL fields and `navigator`
+provides a stable bounded identity snapshot. Full URL and Web IDL
+conformance, live URL/search-parameter synchronization, automatic background
+task scheduling, shared/service/worklet workers, and final native/CDP parity
+remain issue #40 work. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-294.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame

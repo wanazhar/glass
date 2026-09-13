@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-293` slice; the bounded foundation below remains
+`native-engine-browser-294` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 
 Slice 283 adds a bounded dedicated-worker bridge after the page-facing
@@ -122,6 +122,17 @@ required. Shared/service/worklet workers, automatic background task delivery,
 complete worker Web IDL parity, and complete native/CDP replacement remain
 Issue #40 gates. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-293.md`.
+
+Slice 294 adds worker runtime identity for ordinary script libraries. Each
+dedicated worker receives a bounded `URL` and `URLSearchParams` constructor,
+relative URL resolution, structured `location` fields, and a stable bounded
+`navigator` snapshot. Query pairs are decoded, encoded, sorted, iterated, and
+mutated under explicit entry and byte limits; URL host, hostname, port, path,
+query, fragment, and origin are projected without a second resource or
+security owner. Full URL/Web IDL conformance, live URL/search-parameter
+synchronization, shared/service/worklet workers, automatic background task
+delivery, and complete native/CDP replacement remain Issue #40 gates. Exact
+evidence is recorded in `docs/plan/tasks/native-engine-browser-294.md`.
 
 Slice 282 adds a bounded page-facing computed-style and media-query bridge:
 the JavaScript realm reads the native cascade/layout snapshot through a
@@ -5052,10 +5063,12 @@ bounded QuickJS realm, messages/errors/termination cross an explicit page-turn
 queue, due timers are pumped at that boundary, and bounded static
 `importScripts()` dependencies preload through the same owner. Worker Fetch
 uses the shared HTTP(S) loader with owner-tagged requests, bounded raw-byte
-responses, response streams, `Headers`/`Request`/`Response` identity, and
-body ownership inside the worker realm. Asynchronous worker XHR, persistent
-worker WebSocket, and worker EventSource/SSE use the same owner-tagged content
-process boundary and bounded page-turn delivery. Shared/service/worklet
+responses, response streams, `Headers`/`Request`/`Response` identity, URL and
+URLSearchParams parsing/mutation, structured worker `location`, bounded
+`navigator` identity, and body ownership inside the worker realm. Asynchronous
+worker XHR, persistent worker WebSocket, and worker EventSource/SSE use the
+same owner-tagged content-process boundary and bounded page-turn delivery.
+Shared/service/worklet
 workers, transferables, dynamic/exact `importScripts()` timing, automatic
 background task-source fairness, and complete Worker Web IDL semantics remain
 outside the current profile.

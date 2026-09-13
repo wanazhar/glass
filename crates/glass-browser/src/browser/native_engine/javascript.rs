@@ -57,6 +57,8 @@ pub(crate) const MAX_NATIVE_MODULE_IMPORTS: usize = 128;
 pub(crate) const MAX_NATIVE_WORKERS: usize = 32;
 pub(crate) const MAX_NATIVE_WORKER_MESSAGES: usize = 64;
 pub(crate) const MAX_NATIVE_WORKER_TIMERS: usize = 64;
+const MAX_NATIVE_WORKER_URLSEARCHPARAMS_ENTRIES: usize = 128;
+const MAX_NATIVE_WORKER_URLSEARCHPARAMS_BYTES: usize = MAX_NATIVE_POST_MESSAGE_BYTES;
 const NATIVE_SCRIPT_MEMORY_BYTES: usize = 32 * 1024 * 1024;
 const NATIVE_SCRIPT_STACK_BYTES: usize = 1024 * 1024;
 const NATIVE_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -7584,6 +7586,243 @@ fn worker_bootstrap(
   }};
   globalThis.self = globalThis;
   globalThis.location = Object.freeze({{ href: workerUrl, toString() {{ return workerUrl; }} }});
+  const workerUrlSearchParamsEntryLimit = {worker_url_search_params_entries_limit};
+  const workerUrlSearchParamsBytesLimit = {worker_url_search_params_bytes_limit};
+  const workerSearchParamsDecode = (value) => {{
+    try {{ return decodeURIComponent(String(value).replace(/\\+/g, " ")); }}
+    catch (_) {{ return String(value); }}
+  }};
+  const workerSearchParamsEncode = (value) => encodeURIComponent(String(value))
+    .replace(/[!'()~]/g, character => "%" + character.charCodeAt(0).toString(16).toUpperCase())
+    .replace(/%20/g, "+");
+  const WorkerURLSearchParamsNative = function(init) {{
+    this.__glassWorkerSearchParams = true;
+    this._entries = [];
+    const append = (name, value) => {{
+      const pair = [String(name), String(value)];
+      const nextBytes = this._entries.reduce((total, entry) => total + entry[0].length + entry[1].length, 0)
+        + pair[0].length + pair[1].length;
+      if (this._entries.length >= workerUrlSearchParamsEntryLimit)
+        throw new RangeError("native Worker URLSearchParams entry limit exceeded");
+      if (nextBytes > workerUrlSearchParamsBytesLimit)
+        throw new RangeError("native Worker URLSearchParams exceeds its byte limit");
+      this._entries.push(pair);
+    }};
+    if (init === undefined || init === null) return;
+    const source = init && init.__glassWorkerSearchParams === true ? init._entries : init;
+    if (typeof source === "string") {{
+      const query = source.startsWith("?") ? source.slice(1) : source;
+      if (query) query.split("&").forEach(part => {{
+        const separator = part.indexOf("=");
+        const name = separator < 0 ? part : part.slice(0, separator);
+        const value = separator < 0 ? "" : part.slice(separator + 1);
+        append(workerSearchParamsDecode(name), workerSearchParamsDecode(value));
+      }});
+      return;
+    }}
+    if (source && typeof source[Symbol.iterator] === "function") {{
+      for (const entry of source) {{
+        const pair = Array.from(entry || []);
+        if (pair.length !== 2) throw new TypeError("native Worker URLSearchParams pairs must contain two values");
+        append(pair[0], pair[1]);
+      }}
+      return;
+    }}
+    if (typeof source !== "object") throw new TypeError("native Worker URLSearchParams input is invalid");
+    for (const name of Object.keys(source)) append(name, source[name]);
+  }};
+  WorkerURLSearchParamsNative.prototype.append = function(name, value) {{
+    const current = new WorkerURLSearchParamsNative(this._entries);
+    current._entries.push([String(name), String(value)]);
+    if (current._entries.length > workerUrlSearchParamsEntryLimit)
+      throw new RangeError("native Worker URLSearchParams entry limit exceeded");
+    const bytes = current._entries.reduce((total, entry) => total + entry[0].length + entry[1].length, 0);
+    if (bytes > workerUrlSearchParamsBytesLimit)
+      throw new RangeError("native Worker URLSearchParams exceeds its byte limit");
+    this._entries = current._entries;
+  }};
+  WorkerURLSearchParamsNative.prototype.set = function(name, value) {{
+    const key = String(name);
+    const replacement = [key, String(value)];
+    const index = this._entries.findIndex(entry => entry[0] === key);
+    const nextEntries = index < 0
+      ? this._entries.concat([replacement])
+      : this._entries.map((entry, entryIndex) => entry[0] === key
+        ? (entryIndex === index ? replacement : null)
+        : entry).filter(Boolean);
+    if (nextEntries.length > workerUrlSearchParamsEntryLimit)
+      throw new RangeError("native Worker URLSearchParams entry limit exceeded");
+    const bytes = nextEntries.reduce((total, entry) => total + entry[0].length + entry[1].length, 0);
+    if (bytes > workerUrlSearchParamsBytesLimit)
+      throw new RangeError("native Worker URLSearchParams exceeds its byte limit");
+    this._entries = nextEntries;
+  }};
+  WorkerURLSearchParamsNative.prototype.delete = function(name, value) {{
+    const key = String(name);
+    if (arguments.length < 2) this._entries = this._entries.filter(entry => entry[0] !== key);
+    else this._entries = this._entries.filter(entry => entry[0] !== key || entry[1] !== String(value));
+  }};
+  WorkerURLSearchParamsNative.prototype.get = function(name) {{
+    const entry = this._entries.find(candidate => candidate[0] === String(name));
+    return entry ? entry[1] : null;
+  }};
+  WorkerURLSearchParamsNative.prototype.getAll = function(name) {{
+    return this._entries.filter(entry => entry[0] === String(name)).map(entry => entry[1]);
+  }};
+  WorkerURLSearchParamsNative.prototype.has = function(name, value) {{
+    const key = String(name);
+    return arguments.length < 2
+      ? this._entries.some(entry => entry[0] === key)
+      : this._entries.some(entry => entry[0] === key && entry[1] === String(value));
+  }};
+  WorkerURLSearchParamsNative.prototype.toString = function() {{
+    return this._entries.map(entry => workerSearchParamsEncode(entry[0]) + "=" + workerSearchParamsEncode(entry[1])).join("&");
+  }};
+  WorkerURLSearchParamsNative.prototype.entries = function() {{
+    let index = 0;
+    const owner = this;
+    return {{
+      next() {{
+        if (index >= owner._entries.length) return {{ value: undefined, done: true }};
+        return {{ value: owner._entries[index++].slice(), done: false }};
+      }},
+      [Symbol.iterator]() {{ return this; }},
+    }};
+  }};
+  WorkerURLSearchParamsNative.prototype.keys = function() {{
+    const iterator = this.entries();
+    return {{ next() {{ const step = iterator.next(); return step.done ? step : {{ value: step.value[0], done: false }}; }}, [Symbol.iterator]() {{ return this; }} }};
+  }};
+  WorkerURLSearchParamsNative.prototype.values = function() {{
+    const iterator = this.entries();
+    return {{ next() {{ const step = iterator.next(); return step.done ? step : {{ value: step.value[1], done: false }}; }}, [Symbol.iterator]() {{ return this; }} }};
+  }};
+  WorkerURLSearchParamsNative.prototype.forEach = function(callback, thisArg) {{
+    if (typeof callback !== "function") throw new TypeError("native Worker URLSearchParams callback must be callable");
+    this._entries.slice().forEach(entry => callback.call(thisArg, entry[1], entry[0], this));
+  }};
+  WorkerURLSearchParamsNative.prototype.sort = function() {{
+    this._entries = this._entries
+      .map((entry, index) => [entry, index])
+      .sort((left, right) => left[0][0] < right[0][0] ? -1 : left[0][0] > right[0][0] ? 1 : left[1] - right[1])
+      .map(entry => entry[0]);
+  }};
+  WorkerURLSearchParamsNative.prototype[Symbol.iterator] = WorkerURLSearchParamsNative.prototype.entries;
+  Object.defineProperty(WorkerURLSearchParamsNative.prototype, "size", {{ get() {{ return this._entries.length; }} }});
+  WorkerURLSearchParamsNative.prototype.toJSON = function() {{ return this.toString(); }};
+  globalThis.URLSearchParams = WorkerURLSearchParamsNative;
+  const workerUrlScheme = /^[A-Za-z][A-Za-z0-9+.-]*:/;
+  const workerUrlNormalizePath = (path) => {{
+    const source = String(path || "/");
+    const trailing = source.endsWith("/");
+    const segments = [];
+    for (const segment of source.split("/")) {{
+      if (!segment || segment === ".") continue;
+      if (segment === "..") {{ if (segments.length) segments.pop(); continue; }}
+      segments.push(segment);
+    }}
+    let normalized = "/" + segments.join("/");
+    if (trailing && normalized !== "/") normalized += "/";
+    return normalized;
+  }};
+  const workerUrlParts = (input) => {{
+    const source = String(input);
+    const hashIndex = source.indexOf("#");
+    const hash = hashIndex < 0 ? "" : source.slice(hashIndex);
+    const withoutHash = hashIndex < 0 ? source : source.slice(0, hashIndex);
+    const queryIndex = withoutHash.indexOf("?");
+    const search = queryIndex < 0 ? "" : withoutHash.slice(queryIndex);
+    const main = queryIndex < 0 ? withoutHash : withoutHash.slice(0, queryIndex);
+    const match = main.match(/^([A-Za-z][A-Za-z0-9+.-]*:)(?:\/\/([^/]*))?(.*)$/);
+    if (!match) throw new TypeError("native Worker URL requires an absolute or resolvable URL");
+    const protocol = match[1].toLowerCase();
+    const authority = match[2] || "";
+    let pathname = match[3] || "";
+    if (authority && !pathname && ["http:", "https:"].includes(protocol)) pathname = "/";
+    const at = authority.lastIndexOf("@");
+    const userInfo = at < 0 ? "" : authority.slice(0, at);
+    const credentials = userInfo.indexOf(":");
+    const username = credentials < 0 ? userInfo : userInfo.slice(0, credentials);
+    const password = credentials < 0 ? "" : userInfo.slice(credentials + 1);
+    const host = at < 0 ? authority : authority.slice(at + 1);
+    let hostname = host;
+    let port = "";
+    if (host.startsWith("[")) {{
+      const closing = host.indexOf("]");
+      if (closing >= 0) {{
+        hostname = host.slice(0, closing + 1);
+        if (host.slice(closing + 1, closing + 2) === ":") port = host.slice(closing + 2);
+      }}
+    }} else {{
+      const portIndex = host.lastIndexOf(":");
+      if (portIndex > 0 && /^\d*$/.test(host.slice(portIndex + 1))) {{
+        hostname = host.slice(0, portIndex);
+        port = host.slice(portIndex + 1);
+      }}
+    }}
+    const prefix = authority ? protocol + "//" + authority : protocol;
+    const originProtocol = protocol === "ws:" ? "http:" : protocol === "wss:" ? "https:" : protocol;
+    const origin = ["http:", "https:"].includes(originProtocol) && host
+      ? originProtocol + "//" + host.toLowerCase()
+      : "null";
+    return {{ protocol, authority, host, hostname, port, username, password, pathname, search, hash, origin, href: prefix + pathname + search + hash }};
+  }};
+  const workerUrlResolve = (input, base) => {{
+    const value = String(input);
+    if (workerUrlScheme.test(value)) return value;
+    if (base === undefined || base === null) throw new TypeError("native relative Worker URL requires a base");
+    const baseParts = workerUrlParts(base && base.__glassUrl === true ? base.href : base);
+    if (value.startsWith("//")) return baseParts.protocol + value;
+    const hashIndex = value.indexOf("#");
+    const hash = hashIndex < 0 ? "" : value.slice(hashIndex);
+    const withoutHash = hashIndex < 0 ? value : value.slice(0, hashIndex);
+    const queryIndex = withoutHash.indexOf("?");
+    const search = queryIndex < 0 ? "" : withoutHash.slice(queryIndex);
+    const path = queryIndex < 0 ? withoutHash : withoutHash.slice(0, queryIndex);
+    const baseWithoutHash = baseParts.href.slice(0, baseParts.href.indexOf("#") < 0 ? baseParts.href.length : baseParts.href.indexOf("#"));
+    if (!path && !search && hash) return baseWithoutHash + hash;
+    if (!path && search) return baseWithoutHash.split("?")[0] + search + hash;
+    if (!path && !search) return baseWithoutHash;
+    const baseDirectory = baseParts.pathname.slice(0, baseParts.pathname.lastIndexOf("/") + 1);
+    const resolvedPath = path.startsWith("/") ? path : baseDirectory + path;
+    return baseParts.protocol + "//" + baseParts.authority + workerUrlNormalizePath(resolvedPath) + search + hash;
+  }};
+  const WorkerURLNative = function(input, base) {{
+    const source = input && input.__glassUrl === true ? input.href : input;
+    const parts = workerUrlParts(workerUrlResolve(source, base));
+    const state = parts;
+    Object.defineProperty(this, "__glassUrl", {{ value: true }});
+    for (const name of ["href", "protocol", "host", "hostname", "port", "pathname", "search", "hash", "origin", "username", "password"]) {{
+      Object.defineProperty(this, name, {{ enumerable: true, get: () => state[name] }});
+    }}
+    this.searchParams = new WorkerURLSearchParamsNative(state.search);
+    Object.freeze(this);
+  }};
+  WorkerURLNative.prototype.toString = function() {{ return this.href; }};
+  WorkerURLNative.prototype.toJSON = function() {{ return this.href; }};
+  globalThis.URL = WorkerURLNative;
+  const workerLocationUrl = new WorkerURLNative(workerUrl);
+  const workerLocation = {{}};
+  for (const name of ["href", "protocol", "host", "hostname", "port", "pathname", "search", "hash", "origin"]) {{
+    Object.defineProperty(workerLocation, name, {{ enumerable: true, get: () => workerLocationUrl[name] }});
+  }}
+  workerLocation.toString = () => workerLocationUrl.href;
+  globalThis.location = Object.freeze(workerLocation);
+  const workerNavigator = globalThis.__glassWorkerNavigator instanceof Object
+    ? globalThis.__glassWorkerNavigator
+    : Object.freeze({{
+        userAgent: "GlassNative",
+        language: "en-US",
+        languages: Object.freeze(["en-US"]),
+        onLine: true,
+        cookieEnabled: true,
+        hardwareConcurrency: 1,
+        platform: "GlassNative",
+        product: "Gecko",
+        vendor: "",
+      }});
+  globalThis.__glassWorkerNavigator = workerNavigator;
+  globalThis.navigator = workerNavigator;
   const importScriptCounts = globalThis.__glassWorkerImportScriptCounts instanceof Map
     ? globalThis.__glassWorkerImportScriptCounts
     : new Map(Object.entries(initialImportScriptCounts).map(([url, count]) => [url, Number(count)]));
@@ -9005,6 +9244,8 @@ fn worker_bootstrap(
         websocket_close_reason_limit = MAX_NATIVE_WEBSOCKET_CLOSE_REASON_BYTES,
         eventsource_message_limit = MAX_NATIVE_EVENTSOURCE_MESSAGE_BYTES,
         eventsource_field_limit = MAX_NATIVE_EVENTSOURCE_FIELD_BYTES,
+        worker_url_search_params_entries_limit = MAX_NATIVE_WORKER_URLSEARCHPARAMS_ENTRIES,
+        worker_url_search_params_bytes_limit = MAX_NATIVE_WORKER_URLSEARCHPARAMS_BYTES,
         now_ms = now_ms,
         import_script_counts = import_script_counts,
     ))

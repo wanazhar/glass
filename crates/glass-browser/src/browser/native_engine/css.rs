@@ -1775,192 +1775,91 @@ impl NativeStylesheet {
         })
     }
 
+    // The cascade locals are mutable references into heap-owned scratch. The
+    // explicit reborrows below keep each helper's mutable borrow short-lived
+    // while preserving the stack-safe allocation boundary.
+    #[allow(clippy::explicit_auto_deref, clippy::needless_borrow)]
     fn computed_for_with_matcher(
         &self,
         node: &NativeNode,
         inherited: NativeInheritedStyle,
         matches: impl Fn(&NativeSelector) -> bool,
     ) -> NativeComputedStyle {
-        let mut display: [Option<CascadeValue<LocalCascadeDeclaration<DisplayValue>>>;
-            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
-        let mut position: [Option<CascadeValue<LocalCascadeDeclaration<NativePositionValue>>>;
-            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
-        let mut z_index: [Option<CascadeValue<LocalCascadeDeclaration<NativeZIndexValue>>>;
-            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
-        let mut pointer_events: [Option<
-            CascadeValue<InheritedTextDeclaration<NativePointerEventsValue>>,
-        >; MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
-        let mut top: [Option<CascadeValue<LocalCascadeDeclaration<NativePositionOffset>>>;
-            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
-        let mut right: [Option<CascadeValue<LocalCascadeDeclaration<NativePositionOffset>>>;
-            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
-        let mut bottom: [Option<CascadeValue<LocalCascadeDeclaration<NativePositionOffset>>>;
-            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
-        let mut left: [Option<CascadeValue<LocalCascadeDeclaration<NativePositionOffset>>>;
-            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
-        let mut grid_template_columns: [Option<
-            CascadeValue<LocalCascadeDeclaration<NativeGridTrackList>>,
-        >; MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
-        let mut grid_template_rows: [Option<
-            CascadeValue<LocalCascadeDeclaration<NativeGridTrackList>>,
-        >; MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
-        let mut visibility: [Option<CascadeValue<LocalCascadeDeclaration<VisibilityValue>>>;
-            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
-        let mut opacity: [Option<CascadeValue<LocalCascadeDeclaration<u8>>>;
-            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
-        let mut white_space: [Option<CascadeValue<InheritedTextDeclaration<WhiteSpaceValue>>>;
-            MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
-        let mut text_align: [Option<CascadeValue<InheritedTextDeclaration<TextAlignValue>>>;
-            MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
-        let mut text_align_last: [Option<
-            CascadeValue<InheritedTextDeclaration<TextAlignLastValue>>,
-        >; MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
-        let mut text_justify: [Option<CascadeValue<InheritedTextDeclaration<TextJustifyValue>>>;
-            MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
-        let mut direction: [Option<CascadeValue<InheritedTextDeclaration<DirectionValue>>>;
-            MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
-        let mut justify_content: [Option<CascadeValue<JustifyContentDeclaration>>;
-            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
-        let mut align_items: [Option<CascadeValue<AlignItemsDeclaration>>;
-            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
-        let mut align_self: [Option<CascadeValue<AlignSelfDeclaration>>;
-            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
-        let mut align_content: [Option<CascadeValue<AlignContentDeclaration>>;
-            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
-        let mut flex_direction: [Option<CascadeValue<FlexDirectionDeclaration>>;
-            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
-        let mut flex_wrap: [Option<CascadeValue<FlexWrapDeclaration>>;
-            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
-        let mut flex_item_order: [Option<CascadeValue<FlexItemOrderDeclaration>>;
-            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
-        let mut flex_grow: [Option<CascadeValue<FlexGrowDeclaration>>;
-            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
-        let mut flex_shrink: [Option<CascadeValue<FlexShrinkDeclaration>>;
-            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
-        let mut flex_basis: [Option<CascadeValue<FlexBasisDeclaration>>;
-            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
-        let mut text_decoration: [Option<CascadeValue<NativeTextDecorationDeclaration>>;
-            MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
-        let mut text_decoration_style: [Option<CascadeValue<NativeTextDecorationStyleDeclaration>>;
-            MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
-        let mut text_decoration_skip_ink: [Option<
-            CascadeValue<NativeTextDecorationSkipInkDeclaration>,
-        >; MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
-        let mut text_decoration_skip_spaces: [Option<
-            CascadeValue<NativeTextDecorationSkipSpacesDeclaration>,
-        >; MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
-        let mut text_decoration_thickness: [Option<
-            CascadeValue<NativeTextDecorationThicknessDeclaration>,
-        >; MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
-        let mut text_underline_offset: [Option<CascadeValue<NativeTextUnderlineOffsetDeclaration>>;
-            MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
-        let mut text_decoration_color: [Option<CascadeValue<NativeTextDecorationColorDeclaration>>;
-            MAX_NATIVE_PAINT_CASCADE_LAYERS] = [None; MAX_NATIVE_PAINT_CASCADE_LAYERS];
-        let mut text_transform: [Option<CascadeValue<InheritedTextDeclaration<TextTransformValue>>>;
-            MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
-        let mut font_weight: [Option<CascadeValue<InheritedTextDeclaration<FontWeightValue>>>;
-            MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
-        let mut font_style: [Option<CascadeValue<InheritedTextDeclaration<FontStyleValue>>>;
-            MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
-        let mut word_break: [Option<CascadeValue<InheritedTextDeclaration<WordBreakValue>>>;
-            MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
-        let mut text_overflow: [Option<CascadeValue<LocalCascadeDeclaration<TextOverflowValue>>>;
-            MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
-        let mut vertical_align: [Option<CascadeValue<InheritedTextDeclaration<VerticalAlignValue>>>;
-            MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
-        let mut text_indent: [Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
-            MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
-        let mut word_spacing: [Option<CascadeValue<InheritedTextDeclaration<u32>>>;
-            MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
-        let mut letter_spacing: [Option<CascadeValue<InheritedTextDeclaration<u32>>>;
-            MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
-        let mut gap = GapCascade::default();
-        let mut width: [Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
-            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
-        let mut height: [Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
-            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
-        let mut min_width: [Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
-            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
-        let mut max_width: [Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
-            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
-        let mut min_height: [Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
-            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
-        let mut max_height: [Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
-            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
-        let mut line_height: [Option<CascadeValue<InheritedTextDeclaration<u32>>>;
-            MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
-        let mut background_color: [Option<
-            CascadeValue<LocalCascadeDeclaration<NativeBackgroundColorValue>>,
-        >; MAX_NATIVE_PAINT_CASCADE_LAYERS] = [None; MAX_NATIVE_PAINT_CASCADE_LAYERS];
-        let mut background_image: [Option<
-            CascadeValue<LocalCascadeDeclaration<NativeBackgroundImageValue>>,
-        >; MAX_NATIVE_PAINT_CASCADE_LAYERS] = [None; MAX_NATIVE_PAINT_CASCADE_LAYERS];
-        let mut background_repeat: [Option<
-            CascadeValue<LocalCascadeDeclaration<NativeBackgroundRepeat>>,
-        >; MAX_NATIVE_PAINT_CASCADE_LAYERS] = [None; MAX_NATIVE_PAINT_CASCADE_LAYERS];
-        let mut background_position: [Option<
-            CascadeValue<LocalCascadeDeclaration<NativeBackgroundPosition>>,
-        >; MAX_NATIVE_PAINT_CASCADE_LAYERS] = [None; MAX_NATIVE_PAINT_CASCADE_LAYERS];
-        let mut background_size: [Option<
-            CascadeValue<LocalCascadeDeclaration<NativeBackgroundSize>>,
-        >; MAX_NATIVE_PAINT_CASCADE_LAYERS] = [None; MAX_NATIVE_PAINT_CASCADE_LAYERS];
-        let mut border: [[Option<CascadeValue<LocalCascadeDeclaration<NativeBorderDeclaration>>>;
-            MAX_NATIVE_CASCADE_LAYERS]; 4] = [[None; MAX_NATIVE_CASCADE_LAYERS]; 4];
-        let mut logical_border: [[Option<
-            CascadeValue<LocalCascadeDeclaration<NativeBorderDeclaration>>,
-        >; MAX_NATIVE_CASCADE_LAYERS]; LOGICAL_BORDER_SIDES] =
-            [[None; MAX_NATIVE_CASCADE_LAYERS]; LOGICAL_BORDER_SIDES];
-        let mut border_width: [[Option<
-            CascadeValue<LocalCascadeDeclaration<NativeBorderWidthValue>>,
-        >; MAX_NATIVE_BORDER_WIDTH_CASCADE_LAYERS]; 4] =
-            [[None; MAX_NATIVE_BORDER_WIDTH_CASCADE_LAYERS]; 4];
-        let mut logical_border_width: [[Option<
-            CascadeValue<LocalCascadeDeclaration<NativeBorderWidthValue>>,
-        >; MAX_NATIVE_BORDER_WIDTH_CASCADE_LAYERS];
-            LOGICAL_BORDER_SIDES] =
-            [[None; MAX_NATIVE_BORDER_WIDTH_CASCADE_LAYERS]; LOGICAL_BORDER_SIDES];
-        let mut border_style: [[Option<
-            CascadeValue<LocalCascadeDeclaration<NativeBorderStyleValue>>,
-        >; MAX_NATIVE_BORDER_STYLE_CASCADE_LAYERS]; 4] =
-            [[None; MAX_NATIVE_BORDER_STYLE_CASCADE_LAYERS]; 4];
-        let mut logical_border_style: [[Option<
-            CascadeValue<LocalCascadeDeclaration<NativeBorderStyleValue>>,
-        >; MAX_NATIVE_BORDER_STYLE_CASCADE_LAYERS];
-            LOGICAL_BORDER_SIDES] =
-            [[None; MAX_NATIVE_BORDER_STYLE_CASCADE_LAYERS]; LOGICAL_BORDER_SIDES];
-        let mut border_color: [[Option<
-            CascadeValue<LocalCascadeDeclaration<NativeBorderColorValue>>,
-        >; MAX_NATIVE_BORDER_COLOR_CASCADE_LAYERS]; 4] =
-            [[None; MAX_NATIVE_BORDER_COLOR_CASCADE_LAYERS]; 4];
-        let mut logical_border_color: [[Option<
-            CascadeValue<LocalCascadeDeclaration<NativeBorderColorValue>>,
-        >; MAX_NATIVE_BORDER_COLOR_CASCADE_LAYERS];
-            LOGICAL_BORDER_SIDES] =
-            [[None; MAX_NATIVE_BORDER_COLOR_CASCADE_LAYERS]; LOGICAL_BORDER_SIDES];
-        let mut border_radius: [[Option<
-            CascadeValue<LocalCascadeDeclaration<NativeBorderRadiusValue>>,
-        >; MAX_NATIVE_RADIUS_CASCADE_LAYERS]; 4] = [[None; MAX_NATIVE_RADIUS_CASCADE_LAYERS]; 4];
-        let mut logical_border_radius: [[Option<
-            CascadeValue<LocalCascadeDeclaration<NativeBorderRadiusValue>>,
-        >; MAX_NATIVE_RADIUS_CASCADE_LAYERS];
-            LOGICAL_BORDER_SIDES] =
-            [[None; MAX_NATIVE_RADIUS_CASCADE_LAYERS]; LOGICAL_BORDER_SIDES];
-        let mut logical_padding: NativeLogicalBoxModelCandidates<u32> =
-            [[None; MAX_NATIVE_LOCAL_CASCADE_LAYERS]; LOGICAL_BORDER_SIDES];
-        let mut logical_margin: NativeLogicalBoxModelCandidates<NativeMarginValue> =
-            [[None; MAX_NATIVE_LOCAL_CASCADE_LAYERS]; LOGICAL_BORDER_SIDES];
-        let mut padding: [[Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
-            MAX_NATIVE_LOCAL_CASCADE_LAYERS]; 4] = [[None; MAX_NATIVE_LOCAL_CASCADE_LAYERS]; 4];
-        let mut margin: [[Option<CascadeValue<LocalCascadeDeclaration<NativeMarginValue>>>;
-            MAX_NATIVE_LOCAL_CASCADE_LAYERS]; 4] = [[None; MAX_NATIVE_LOCAL_CASCADE_LAYERS]; 4];
-        let mut box_sizing: [Option<CascadeValue<LocalCascadeDeclaration<NativeBoxSizing>>>;
-            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
-        let mut color: [Option<CascadeValue<LocalCascadeDeclaration<NativeColorValue>>>;
-            MAX_NATIVE_PAINT_CASCADE_LAYERS] = [None; MAX_NATIVE_PAINT_CASCADE_LAYERS];
-        let mut overflow_x: [Option<CascadeValue<LocalCascadeDeclaration<OverflowValue>>>;
-            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
-        let mut overflow_y: [Option<CascadeValue<LocalCascadeDeclaration<OverflowValue>>>;
-            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
+        let mut scratch = NativeCascadeScratch::new_boxed();
+        let mut display = &mut scratch.display;
+        let mut position = &mut scratch.position;
+        let mut z_index = &mut scratch.z_index;
+        let mut pointer_events = &mut scratch.pointer_events;
+        let mut top = &mut scratch.top;
+        let mut right = &mut scratch.right;
+        let mut bottom = &mut scratch.bottom;
+        let mut left = &mut scratch.left;
+        let mut grid_template_columns = &mut scratch.grid_template_columns;
+        let mut grid_template_rows = &mut scratch.grid_template_rows;
+        let mut visibility = &mut scratch.visibility;
+        let mut opacity = &mut scratch.opacity;
+        let mut white_space = &mut scratch.white_space;
+        let mut text_align = &mut scratch.text_align;
+        let mut text_align_last = &mut scratch.text_align_last;
+        let mut text_justify = &mut scratch.text_justify;
+        let mut direction = &mut scratch.direction;
+        let mut justify_content = &mut scratch.justify_content;
+        let mut align_items = &mut scratch.align_items;
+        let mut align_self = &mut scratch.align_self;
+        let mut align_content = &mut scratch.align_content;
+        let mut flex_direction = &mut scratch.flex_direction;
+        let mut flex_wrap = &mut scratch.flex_wrap;
+        let mut flex_item_order = &mut scratch.flex_item_order;
+        let mut flex_grow = &mut scratch.flex_grow;
+        let mut flex_shrink = &mut scratch.flex_shrink;
+        let mut flex_basis = &mut scratch.flex_basis;
+        let mut text_decoration = &mut scratch.text_decoration;
+        let mut text_decoration_style = &mut scratch.text_decoration_style;
+        let mut text_decoration_skip_ink = &mut scratch.text_decoration_skip_ink;
+        let mut text_decoration_skip_spaces = &mut scratch.text_decoration_skip_spaces;
+        let mut text_decoration_thickness = &mut scratch.text_decoration_thickness;
+        let mut text_underline_offset = &mut scratch.text_underline_offset;
+        let mut text_decoration_color = &mut scratch.text_decoration_color;
+        let mut text_transform = &mut scratch.text_transform;
+        let mut font_weight = &mut scratch.font_weight;
+        let mut font_style = &mut scratch.font_style;
+        let mut word_break = &mut scratch.word_break;
+        let mut text_overflow = &mut scratch.text_overflow;
+        let mut vertical_align = &mut scratch.vertical_align;
+        let mut text_indent = &mut scratch.text_indent;
+        let mut word_spacing = &mut scratch.word_spacing;
+        let mut letter_spacing = &mut scratch.letter_spacing;
+        let mut gap = &mut scratch.gap;
+        let mut width = &mut scratch.width;
+        let mut height = &mut scratch.height;
+        let mut min_width = &mut scratch.min_width;
+        let mut max_width = &mut scratch.max_width;
+        let mut min_height = &mut scratch.min_height;
+        let mut max_height = &mut scratch.max_height;
+        let mut line_height = &mut scratch.line_height;
+        let mut background_color = &mut scratch.background_color;
+        let mut background_image = &mut scratch.background_image;
+        let mut background_repeat = &mut scratch.background_repeat;
+        let mut background_position = &mut scratch.background_position;
+        let mut background_size = &mut scratch.background_size;
+        let mut border = &mut scratch.border;
+        let mut logical_border = &mut scratch.logical_border;
+        let mut border_width = &mut scratch.border_width;
+        let mut logical_border_width = &mut scratch.logical_border_width;
+        let mut border_style = &mut scratch.border_style;
+        let mut logical_border_style = &mut scratch.logical_border_style;
+        let mut border_color = &mut scratch.border_color;
+        let mut logical_border_color = &mut scratch.logical_border_color;
+        let mut border_radius = &mut scratch.border_radius;
+        let mut logical_border_radius = &mut scratch.logical_border_radius;
+        let mut logical_padding = &mut scratch.logical_padding;
+        let mut logical_margin = &mut scratch.logical_margin;
+        let mut padding = &mut scratch.padding;
+        let mut margin = &mut scratch.margin;
+        let mut box_sizing = &mut scratch.box_sizing;
+        let mut color = &mut scratch.color;
+        let mut overflow_x = &mut scratch.overflow_x;
+        let mut overflow_y = &mut scratch.overflow_y;
         for rule in &self.rules {
             if !matches(&rule.selector) {
                 continue;
@@ -3085,7 +2984,7 @@ impl NativeStylesheet {
             );
         }
 
-        let resolved_direction = resolve_direction(direction, inherited.direction);
+        let resolved_direction = resolve_direction(*direction, inherited.direction);
         project_logical_border_candidates(
             NativeLogicalBorderCandidateSources {
                 border: &logical_border,
@@ -3133,7 +3032,7 @@ impl NativeStylesheet {
                 inherited.margin[index],
             )
         });
-        let resolved_border = border.map(resolve_local_optional_cascade_declaration);
+        let resolved_border = (*border).map(resolve_local_optional_cascade_declaration);
         let resolved_border_width: [Option<u32>; 4] = std::array::from_fn(|index| {
             resolve_local_border_width_declaration(
                 border_width[index],
@@ -3151,20 +3050,20 @@ impl NativeStylesheet {
         let border_styles = std::array::from_fn(|index| {
             resolved_border_style[index].unwrap_or(NativeBorderStyleValue::None)
         });
-        let resolved_color = resolve_local_color_declaration(color, inherited.color);
+        let resolved_color = resolve_local_color_declaration(*color, inherited.color);
         let current_color = resolved_color.unwrap_or(NativeColor::BLACK);
         let resolved_background_color = resolve_local_background_color_declaration(
-            background_color,
+            *background_color,
             inherited.background_color,
             current_color,
         );
         let resolved_background_image =
-            resolve_local_background_image_declaration(background_image);
+            resolve_local_background_image_declaration(*background_image);
         let resolved_background_repeat =
-            resolve_local_background_repeat_declaration(background_repeat);
+            resolve_local_background_repeat_declaration(*background_repeat);
         let resolved_background_position =
-            resolve_local_background_position_declaration(background_position);
-        let resolved_background_size = resolve_local_background_size_declaration(background_size);
+            resolve_local_background_position_declaration(*background_position);
+        let resolved_background_size = resolve_local_background_size_declaration(*background_size);
         let resolved_border_color: [Option<NativeColor>; 4] = std::array::from_fn(|index| {
             resolve_local_border_color_declaration(
                 border_color[index],
@@ -3199,134 +3098,138 @@ impl NativeStylesheet {
         });
 
         let resolved_box_sizing =
-            resolve_local_inherited_cascade_declaration(box_sizing, inherited.box_sizing);
-        let resolved_overflow_x = resolve_overflow_axis(overflow_x, inherited.overflow_x);
-        let resolved_overflow_y = resolve_overflow_axis(overflow_y, inherited.overflow_y);
+            resolve_local_inherited_cascade_declaration(*box_sizing, inherited.box_sizing);
+        let resolved_overflow_x = resolve_overflow_axis(*overflow_x, inherited.overflow_x);
+        let resolved_overflow_y = resolve_overflow_axis(*overflow_y, inherited.overflow_y);
         NativeComputedStyle {
-            display: resolve_local_cascade_declaration(display, DisplayValue::Auto),
-            position: resolve_local_cascade_declaration(position, NativePositionValue::Static),
-            z_index: resolve_local_cascade_declaration(z_index, NativeZIndexValue::Auto),
+            display: resolve_local_cascade_declaration(*display, DisplayValue::Auto),
+            position: resolve_local_cascade_declaration(*position, NativePositionValue::Static),
+            z_index: resolve_local_cascade_declaration(*z_index, NativeZIndexValue::Auto),
             pointer_events: resolve_inherited_text_declaration(
-                pointer_events,
+                *pointer_events,
                 inherited.pointer_events,
                 NativePointerEventsValue::Auto,
             ),
-            top: resolve_local_cascade_declaration(top, NativePositionOffset::Auto),
-            right: resolve_local_cascade_declaration(right, NativePositionOffset::Auto),
-            bottom: resolve_local_cascade_declaration(bottom, NativePositionOffset::Auto),
-            left: resolve_local_cascade_declaration(left, NativePositionOffset::Auto),
+            top: resolve_local_cascade_declaration(*top, NativePositionOffset::Auto),
+            right: resolve_local_cascade_declaration(*right, NativePositionOffset::Auto),
+            bottom: resolve_local_cascade_declaration(*bottom, NativePositionOffset::Auto),
+            left: resolve_local_cascade_declaration(*left, NativePositionOffset::Auto),
             grid_template_columns: resolve_local_cascade_declaration(
-                grid_template_columns,
+                *grid_template_columns,
                 NativeGridTrackList::default(),
             ),
             grid_template_rows: resolve_local_cascade_declaration(
-                grid_template_rows,
+                *grid_template_rows,
                 NativeGridTrackList::default(),
             ),
             visibility_hidden: resolve_local_cascade_declaration(
-                visibility,
+                *visibility,
                 VisibilityValue::Other,
             ) == VisibilityValue::Hidden,
-            opacity: resolve_local_optional_cascade_declaration(opacity),
-            white_space: resolve_white_space(white_space, inherited.white_space),
-            text_align: resolve_text_align(text_align, inherited.text_align),
-            text_align_last: resolve_text_align_last(text_align_last, inherited.text_align_last),
-            text_justify: resolve_text_justify(text_justify, inherited.text_justify),
-            justify_content: resolve_justify_content(justify_content, inherited.justify_content),
-            align_items: resolve_align_items(align_items, inherited.align_items),
-            align_self: resolve_align_self(align_self, inherited.align_self),
-            align_content: resolve_align_content(align_content, inherited.align_content),
-            flex_direction: resolve_flex_direction(flex_direction, inherited.flex_direction),
+            opacity: resolve_local_optional_cascade_declaration(*opacity),
+            white_space: resolve_white_space(*white_space, inherited.white_space),
+            text_align: resolve_text_align(*text_align, inherited.text_align),
+            text_align_last: resolve_text_align_last(*text_align_last, inherited.text_align_last),
+            text_justify: resolve_text_justify(*text_justify, inherited.text_justify),
+            justify_content: resolve_justify_content(*justify_content, inherited.justify_content),
+            align_items: resolve_align_items(*align_items, inherited.align_items),
+            align_self: resolve_align_self(*align_self, inherited.align_self),
+            align_content: resolve_align_content(*align_content, inherited.align_content),
+            flex_direction: resolve_flex_direction(*flex_direction, inherited.flex_direction),
             direction: resolved_direction,
-            flex_wrap: resolve_flex_wrap(flex_wrap, inherited.flex_wrap),
-            flex_item_order: resolve_flex_item_order(flex_item_order, inherited.flex_item_order),
-            flex_grow: resolve_flex_grow(flex_grow, inherited.flex_grow),
-            flex_shrink: resolve_flex_shrink(flex_shrink, inherited.flex_shrink),
-            flex_basis: resolve_flex_basis(flex_basis, inherited.flex_basis),
-            text_decoration: resolve_text_decoration(text_decoration, inherited.text_decoration),
+            flex_wrap: resolve_flex_wrap(*flex_wrap, inherited.flex_wrap),
+            flex_item_order: resolve_flex_item_order(*flex_item_order, inherited.flex_item_order),
+            flex_grow: resolve_flex_grow(*flex_grow, inherited.flex_grow),
+            flex_shrink: resolve_flex_shrink(*flex_shrink, inherited.flex_shrink),
+            flex_basis: resolve_flex_basis(*flex_basis, inherited.flex_basis),
+            text_decoration: resolve_text_decoration(*text_decoration, inherited.text_decoration),
             text_decoration_style: resolve_text_decoration_style(
-                text_decoration_style,
+                *text_decoration_style,
                 inherited.text_decoration_style,
             ),
             text_decoration_skip_ink: resolve_text_decoration_skip_ink(
-                text_decoration_skip_ink,
+                *text_decoration_skip_ink,
                 inherited.text_decoration_skip_ink,
             ),
             text_decoration_skip_spaces: resolve_text_decoration_skip_spaces(
-                text_decoration_skip_spaces,
+                *text_decoration_skip_spaces,
                 inherited.text_decoration_skip_spaces,
             ),
             text_decoration_thickness: resolve_text_decoration_thickness(
-                text_decoration_thickness,
+                *text_decoration_thickness,
                 inherited.text_decoration_thickness,
             ),
             text_underline_offset: resolve_text_underline_offset(
-                text_underline_offset,
+                *text_underline_offset,
                 inherited.text_underline_offset,
             ),
             text_decoration_color: resolve_text_decoration_color(
-                text_decoration_color,
+                *text_decoration_color,
                 current_color,
                 inherited.text_decoration_color,
             ),
             text_transform: resolve_inherited_text_declaration(
-                text_transform,
+                *text_transform,
                 inherited.text_transform,
                 TextTransformValue::None,
             ),
             font_weight: resolve_inherited_text_declaration(
-                font_weight,
+                *font_weight,
                 inherited.font_weight,
                 FontWeightValue::Normal,
             ),
             font_style: resolve_inherited_text_declaration(
-                font_style,
+                *font_style,
                 inherited.font_style,
                 FontStyleValue::Normal,
             ),
             word_break: resolve_inherited_text_declaration(
-                word_break,
+                *word_break,
                 inherited.word_break,
                 WordBreakValue::Normal,
             ),
-            text_overflow: resolve_text_overflow(text_overflow, inherited.text_overflow),
+            text_overflow: resolve_text_overflow(*text_overflow, inherited.text_overflow),
             vertical_align: resolve_inherited_text_declaration(
-                vertical_align,
+                *vertical_align,
                 inherited.vertical_align,
                 VerticalAlignValue::Baseline,
             ),
-            text_indent: resolve_text_indent(text_indent, inherited.text_indent),
+            text_indent: resolve_text_indent(*text_indent, inherited.text_indent),
             word_spacing: resolve_inherited_text_declaration(
-                word_spacing,
+                *word_spacing,
                 inherited.word_spacing,
                 0,
             ),
             letter_spacing: resolve_inherited_text_declaration(
-                letter_spacing,
+                *letter_spacing,
                 inherited.letter_spacing,
                 0,
             ),
-            gap: resolve_gap_axis(gap.shorthand_column, gap.column_gap, inherited.column_gap),
-            row_gap: resolve_gap_axis(gap.shorthand_row, gap.row_gap, inherited.row_gap),
-            width: resolve_local_inherited_nullable_cascade_declaration(width, inherited.width),
-            height: resolve_local_inherited_nullable_cascade_declaration(height, inherited.height),
+            gap: resolve_gap_axis(
+                (*gap).shorthand_column,
+                (*gap).column_gap,
+                inherited.column_gap,
+            ),
+            row_gap: resolve_gap_axis((*gap).shorthand_row, (*gap).row_gap, inherited.row_gap),
+            width: resolve_local_inherited_nullable_cascade_declaration(*width, inherited.width),
+            height: resolve_local_inherited_nullable_cascade_declaration(*height, inherited.height),
             min_width: resolve_local_inherited_nullable_cascade_declaration(
-                min_width,
+                *min_width,
                 inherited.min_width,
             ),
             max_width: resolve_local_inherited_nullable_cascade_declaration(
-                max_width,
+                *max_width,
                 inherited.max_width,
             ),
             min_height: resolve_local_inherited_nullable_cascade_declaration(
-                min_height,
+                *min_height,
                 inherited.min_height,
             ),
             max_height: resolve_local_inherited_nullable_cascade_declaration(
-                max_height,
+                *max_height,
                 inherited.max_height,
             ),
-            line_height: resolve_line_height(line_height, inherited.line_height),
+            line_height: resolve_line_height(*line_height, inherited.line_height),
             background_color: resolved_background_color,
             background_image: resolved_background_image,
             background_repeat: resolved_background_repeat,
@@ -3337,7 +3240,7 @@ impl NativeStylesheet {
             border_widths,
             border_styles,
             border_radius: resolve_local_border_radius_declaration(
-                border_radius,
+                *border_radius,
                 inherited.border_radius,
             ),
             padding: NativeBoxEdges::from_values(resolved_padding),
@@ -3384,6 +3287,201 @@ struct GapCascadeValue<T> {
     order: usize,
     declaration_order: usize,
     inline: bool,
+}
+
+type NativeLocalCascadeCandidates<T> =
+    [Option<CascadeValue<LocalCascadeDeclaration<T>>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
+type NativeTextCascadeCandidates<T> =
+    [Option<CascadeValue<InheritedTextDeclaration<T>>>; MAX_NATIVE_TEXT_CASCADE_LAYERS];
+type NativePaintCascadeCandidates<T> =
+    [Option<CascadeValue<LocalCascadeDeclaration<T>>>; MAX_NATIVE_PAINT_CASCADE_LAYERS];
+type NativeLocalDeclarationCandidates<T> =
+    [Option<CascadeValue<T>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
+type NativeTextDeclarationCandidates<T> = [Option<CascadeValue<T>>; MAX_NATIVE_TEXT_CASCADE_LAYERS];
+type NativePaintDeclarationCandidates<T> =
+    [Option<CascadeValue<T>>; MAX_NATIVE_PAINT_CASCADE_LAYERS];
+type NativeTextLocalCascadeCandidates<T> =
+    [Option<CascadeValue<LocalCascadeDeclaration<T>>>; MAX_NATIVE_TEXT_CASCADE_LAYERS];
+type NativePhysicalLocalBorderCandidates<T> =
+    [[Option<CascadeValue<LocalCascadeDeclaration<T>>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS]; 4];
+
+/// Heap-owned scratch storage for one computed-style cascade.
+///
+/// A page script can request a layout snapshot from a deeply nested MCP
+/// future. Keeping the cascade candidates on the heap prevents the CSS
+/// resolver's dozens of fixed-size candidate arrays from consuming the
+/// caller's finite thread stack while retaining the same cascade semantics.
+#[derive(Default)]
+struct NativeCascadeScratch {
+    display: NativeLocalCascadeCandidates<DisplayValue>,
+    position: NativeLocalCascadeCandidates<NativePositionValue>,
+    z_index: NativeLocalCascadeCandidates<NativeZIndexValue>,
+    pointer_events: NativeTextCascadeCandidates<NativePointerEventsValue>,
+    top: NativeLocalCascadeCandidates<NativePositionOffset>,
+    right: NativeLocalCascadeCandidates<NativePositionOffset>,
+    bottom: NativeLocalCascadeCandidates<NativePositionOffset>,
+    left: NativeLocalCascadeCandidates<NativePositionOffset>,
+    grid_template_columns: NativeLocalCascadeCandidates<NativeGridTrackList>,
+    grid_template_rows: NativeLocalCascadeCandidates<NativeGridTrackList>,
+    visibility: NativeLocalCascadeCandidates<VisibilityValue>,
+    opacity: NativeLocalCascadeCandidates<u8>,
+    white_space: NativeTextCascadeCandidates<WhiteSpaceValue>,
+    text_align: NativeTextCascadeCandidates<TextAlignValue>,
+    text_align_last: NativeTextCascadeCandidates<TextAlignLastValue>,
+    text_justify: NativeTextCascadeCandidates<TextJustifyValue>,
+    direction: NativeTextCascadeCandidates<DirectionValue>,
+    justify_content: NativeLocalDeclarationCandidates<JustifyContentDeclaration>,
+    align_items: NativeLocalDeclarationCandidates<AlignItemsDeclaration>,
+    align_self: NativeLocalDeclarationCandidates<AlignSelfDeclaration>,
+    align_content: NativeLocalDeclarationCandidates<AlignContentDeclaration>,
+    flex_direction: NativeLocalDeclarationCandidates<FlexDirectionDeclaration>,
+    flex_wrap: NativeLocalDeclarationCandidates<FlexWrapDeclaration>,
+    flex_item_order: NativeLocalDeclarationCandidates<FlexItemOrderDeclaration>,
+    flex_grow: NativeLocalDeclarationCandidates<FlexGrowDeclaration>,
+    flex_shrink: NativeLocalDeclarationCandidates<FlexShrinkDeclaration>,
+    flex_basis: NativeLocalDeclarationCandidates<FlexBasisDeclaration>,
+    text_decoration: NativeTextDeclarationCandidates<NativeTextDecorationDeclaration>,
+    text_decoration_style: NativeTextDeclarationCandidates<NativeTextDecorationStyleDeclaration>,
+    text_decoration_skip_ink:
+        NativeTextDeclarationCandidates<NativeTextDecorationSkipInkDeclaration>,
+    text_decoration_skip_spaces:
+        NativeTextDeclarationCandidates<NativeTextDecorationSkipSpacesDeclaration>,
+    text_decoration_thickness:
+        NativeTextDeclarationCandidates<NativeTextDecorationThicknessDeclaration>,
+    text_underline_offset: NativeTextDeclarationCandidates<NativeTextUnderlineOffsetDeclaration>,
+    text_decoration_color: NativePaintDeclarationCandidates<NativeTextDecorationColorDeclaration>,
+    text_transform: NativeTextCascadeCandidates<TextTransformValue>,
+    font_weight: NativeTextCascadeCandidates<FontWeightValue>,
+    font_style: NativeTextCascadeCandidates<FontStyleValue>,
+    word_break: NativeTextCascadeCandidates<WordBreakValue>,
+    text_overflow: NativeTextLocalCascadeCandidates<TextOverflowValue>,
+    vertical_align: NativeTextCascadeCandidates<VerticalAlignValue>,
+    text_indent: NativeTextLocalCascadeCandidates<u32>,
+    word_spacing: NativeTextCascadeCandidates<u32>,
+    letter_spacing: NativeTextCascadeCandidates<u32>,
+    gap: GapCascade,
+    width: NativeLocalCascadeCandidates<u32>,
+    height: NativeLocalCascadeCandidates<u32>,
+    min_width: NativeLocalCascadeCandidates<u32>,
+    max_width: NativeLocalCascadeCandidates<u32>,
+    min_height: NativeLocalCascadeCandidates<u32>,
+    max_height: NativeLocalCascadeCandidates<u32>,
+    line_height: NativeTextCascadeCandidates<u32>,
+    background_color: NativePaintCascadeCandidates<NativeBackgroundColorValue>,
+    background_image: NativePaintCascadeCandidates<NativeBackgroundImageValue>,
+    background_repeat: NativePaintCascadeCandidates<NativeBackgroundRepeat>,
+    background_position: NativePaintCascadeCandidates<NativeBackgroundPosition>,
+    background_size: NativePaintCascadeCandidates<NativeBackgroundSize>,
+    border: NativePhysicalBorderCandidates<NativeBorderDeclaration>,
+    logical_border: NativeLogicalBorderCandidates<NativeBorderDeclaration>,
+    border_width: NativePhysicalBorderWidthCandidates,
+    logical_border_width: NativeLogicalBorderWidthCandidates,
+    border_style: NativePhysicalBorderStyleCandidates,
+    logical_border_style: NativeLogicalBorderStyleCandidates,
+    border_color: NativePhysicalBorderColorCandidates,
+    logical_border_color: NativeLogicalBorderColorCandidates,
+    border_radius: NativePhysicalBorderRadiusCandidates,
+    logical_border_radius: NativeLogicalBorderRadiusCandidates,
+    logical_padding: NativeLogicalBoxModelCandidates<u32>,
+    logical_margin: NativeLogicalBoxModelCandidates<NativeMarginValue>,
+    padding: NativePhysicalLocalBorderCandidates<u32>,
+    margin: NativePhysicalLocalBorderCandidates<NativeMarginValue>,
+    box_sizing: NativeLocalCascadeCandidates<NativeBoxSizing>,
+    color: NativePaintCascadeCandidates<NativeColorValue>,
+    overflow_x: NativeLocalCascadeCandidates<OverflowValue>,
+    overflow_y: NativeLocalCascadeCandidates<OverflowValue>,
+}
+
+impl NativeCascadeScratch {
+    fn new_boxed() -> Box<Self> {
+        // Initialize each field in the allocation so Rust constructs valid
+        // `Option` values without first materializing the large scratch
+        // object on a caller's stack.
+        let mut scratch = Box::<Self>::new_uninit();
+        unsafe {
+            let pointer = scratch.as_mut_ptr();
+            macro_rules! initialize {
+                ($field:ident) => {
+                    std::ptr::addr_of_mut!((*pointer).$field).write(Default::default());
+                };
+            }
+            initialize!(display);
+            initialize!(position);
+            initialize!(z_index);
+            initialize!(pointer_events);
+            initialize!(top);
+            initialize!(right);
+            initialize!(bottom);
+            initialize!(left);
+            initialize!(grid_template_columns);
+            initialize!(grid_template_rows);
+            initialize!(visibility);
+            initialize!(opacity);
+            initialize!(white_space);
+            initialize!(text_align);
+            initialize!(text_align_last);
+            initialize!(text_justify);
+            initialize!(direction);
+            initialize!(justify_content);
+            initialize!(align_items);
+            initialize!(align_self);
+            initialize!(align_content);
+            initialize!(flex_direction);
+            initialize!(flex_wrap);
+            initialize!(flex_item_order);
+            initialize!(flex_grow);
+            initialize!(flex_shrink);
+            initialize!(flex_basis);
+            initialize!(text_decoration);
+            initialize!(text_decoration_style);
+            initialize!(text_decoration_skip_ink);
+            initialize!(text_decoration_skip_spaces);
+            initialize!(text_decoration_thickness);
+            initialize!(text_underline_offset);
+            initialize!(text_decoration_color);
+            initialize!(text_transform);
+            initialize!(font_weight);
+            initialize!(font_style);
+            initialize!(word_break);
+            initialize!(text_overflow);
+            initialize!(vertical_align);
+            initialize!(text_indent);
+            initialize!(word_spacing);
+            initialize!(letter_spacing);
+            initialize!(gap);
+            initialize!(width);
+            initialize!(height);
+            initialize!(min_width);
+            initialize!(max_width);
+            initialize!(min_height);
+            initialize!(max_height);
+            initialize!(line_height);
+            initialize!(background_color);
+            initialize!(background_image);
+            initialize!(background_repeat);
+            initialize!(background_position);
+            initialize!(background_size);
+            initialize!(border);
+            initialize!(logical_border);
+            initialize!(border_width);
+            initialize!(logical_border_width);
+            initialize!(border_style);
+            initialize!(logical_border_style);
+            initialize!(border_color);
+            initialize!(logical_border_color);
+            initialize!(border_radius);
+            initialize!(logical_border_radius);
+            initialize!(logical_padding);
+            initialize!(logical_margin);
+            initialize!(padding);
+            initialize!(margin);
+            initialize!(box_sizing);
+            initialize!(color);
+            initialize!(overflow_x);
+            initialize!(overflow_y);
+            scratch.assume_init()
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -11,8 +11,10 @@ use serde_json::{Value, json};
 use std::{
     borrow::Cow,
     collections::{BTreeMap, HashMap},
+    future::Future,
     io,
     path::Path,
+    pin::Pin,
     sync::{Arc, Mutex as StdMutex},
     time::Duration,
 };
@@ -31,9 +33,9 @@ use crate::browser::runtime::BrowserRuntimeSession;
 use crate::browser::session::{
     ActionContractError, ActionKind, ActionOutcome, ActionVerificationError, BatchMode, BatchStep,
     BrowserResult, BrowserSession, CheckpointV1, DownloadError, KnowledgeConfidence,
-    KnowledgeLookupOptions, KnowledgeObservationMode, KnowledgeObservationReport,
-    KnowledgeProfileScope, KnowledgeStore, Locator, PopupClickError, PreflightAction,
-    ReconciliationOptions, SemanticIntentExecutionRequest, SemanticIntentRequest,
+    KnowledgeLookupContext, KnowledgeLookupOptions, KnowledgeObservationMode,
+    KnowledgeObservationReport, KnowledgeProfileScope, KnowledgeStore, Locator, PopupClickError,
+    PreflightAction, ReconciliationOptions, SemanticIntentExecutionRequest, SemanticIntentRequest,
     SemanticObservationLevel, SessionOptions, SessionSnapshotStore, StructuredExtractionRequest,
     TargetError, VerificationPredicate, VisualCaptureOptions, VisualClip, VisualFormat,
     WaitCondition, WaitTimeout, default_knowledge_store_path, default_session_snapshot_path,
@@ -1612,7 +1614,7 @@ async fn handle_request_with_viewport(
                 ),
             }
         }
-        "tools/call" => match call_tool(
+        "tools/call" => match Box::pin(call_tool(
             request,
             session,
             native_session,
@@ -1623,7 +1625,7 @@ async fn handle_request_with_viewport(
             viewport,
             knowledge_store_path,
             _development_sessions,
-        )
+        ))
         .await
         {
             Ok(result) => success_response(request.id.response_value(), result),
@@ -1988,7 +1990,7 @@ async fn call_tool(
                 )
                 .await;
             }
-            return call_native_tool(
+            return Box::pin(call_native_tool(
                 invocation,
                 _native_session,
                 viewport,
@@ -1996,7 +1998,7 @@ async fn call_tool(
                 options.incognito,
                 policy,
                 response_mode,
-            )
+            ))
             .await;
         }
         #[cfg(not(feature = "native-engine"))]
@@ -3420,7 +3422,910 @@ async fn call_native_tool(
 }
 
 #[cfg(feature = "native-engine")]
-async fn call_native_tool_on_session(
+fn call_native_tool_on_session<'a>(
+    invocation: ToolInvocation<'a>,
+    session: &'a BrowserRuntimeSession,
+    profile: &'a str,
+    policy: &'a BrowserPolicy,
+    response_mode: ResponseMode,
+) -> Pin<Box<dyn Future<Output = BrowserResult<Value>> + 'a>> {
+    match invocation {
+        ToolInvocation::Navigate {
+            url,
+            timeout_ms,
+            expected_revision,
+        } => Box::pin(native_mcp_navigate(
+            session,
+            policy,
+            url,
+            timeout_ms,
+            expected_revision,
+            response_mode,
+        )),
+        invocation @ (ToolInvocation::InspectPage
+        | ToolInvocation::ObserveBootstrap
+        | ToolInvocation::ExtractWebIr { .. }
+        | ToolInvocation::ExtractStructured { .. }
+        | ToolInvocation::Observe { .. }
+        | ToolInvocation::ObserveDelta
+        | ToolInvocation::Diagnostics { .. }) => Box::pin(native_mcp_observation(
+            invocation,
+            session,
+            policy,
+            response_mode,
+        )),
+        ToolInvocation::GetText => Box::pin(native_mcp_get_text(session)),
+        ToolInvocation::GetDom => Box::pin(native_mcp_get_dom(session, response_mode)),
+        invocation @ (ToolInvocation::FindTarget { .. }
+        | ToolInvocation::ResolveIntent { .. }
+        | ToolInvocation::ResolveIntentWithKnowledge { .. }
+        | ToolInvocation::ExecuteIntent { .. }) => Box::pin(native_mcp_intent(
+            invocation,
+            session,
+            profile,
+            policy,
+            response_mode,
+        )),
+        invocation @ (ToolInvocation::ObserveKnowledge { .. }
+        | ToolInvocation::ExportCheckpoint
+        | ToolInvocation::ImportCheckpoint { .. }) => Box::pin(native_mcp_knowledge_checkpoint(
+            invocation,
+            session,
+            profile,
+            policy,
+            response_mode,
+        )),
+        invocation @ (ToolInvocation::ActAndVerify { .. } | ToolInvocation::Screenshot { .. }) => {
+            Box::pin(native_mcp_control(
+                invocation,
+                session,
+                policy,
+                response_mode,
+            ))
+        }
+        ToolInvocation::Wait {
+            condition,
+            timeout_ms,
+        } => Box::pin(native_mcp_wait(
+            session,
+            policy,
+            condition,
+            timeout_ms,
+            response_mode,
+        )),
+        ToolInvocation::Verify {
+            predicate,
+            timeout_ms,
+        } => Box::pin(native_mcp_verify(
+            session,
+            policy,
+            predicate,
+            timeout_ms,
+            response_mode,
+        )),
+        ToolInvocation::Evaluate { expression } => Box::pin(native_mcp_evaluate(
+            session,
+            policy,
+            expression,
+            response_mode,
+        )),
+        invocation @ (ToolInvocation::Click { .. }
+        | ToolInvocation::DoubleClick { .. }
+        | ToolInvocation::Hover { .. }
+        | ToolInvocation::Drag { .. }
+        | ToolInvocation::Preflight { .. }
+        | ToolInvocation::Key { .. }
+        | ToolInvocation::KeyDown { .. }
+        | ToolInvocation::KeyUp { .. }
+        | ToolInvocation::Shortcut { .. }
+        | ToolInvocation::Clear { .. }
+        | ToolInvocation::Check { .. }
+        | ToolInvocation::Uncheck { .. }
+        | ToolInvocation::Select { .. }
+        | ToolInvocation::Upload { .. }
+        | ToolInvocation::ClickAt { .. }
+        | ToolInvocation::Scroll { .. }) => Box::pin(native_mcp_action(
+            invocation,
+            session,
+            policy,
+            response_mode,
+        )),
+        ToolInvocation::Type {
+            text,
+            target,
+            expected_revision,
+        } => Box::pin(native_mcp_type(
+            session,
+            text,
+            target,
+            expected_revision,
+            response_mode,
+        )),
+        invocation @ (ToolInvocation::ListTargets
+        | ToolInvocation::CreateTarget { .. }
+        | ToolInvocation::SelectTarget { .. }
+        | ToolInvocation::CloseTarget { .. }
+        | ToolInvocation::ListFrames
+        | ToolInvocation::SelectFrame { .. }) => Box::pin(native_mcp_targets(
+            invocation,
+            session,
+            policy,
+            response_mode,
+        )),
+        invocation @ (ToolInvocation::Cookies
+        | ToolInvocation::SetCookies { .. }
+        | ToolInvocation::ClearCookies
+        | ToolInvocation::LocalStorage
+        | ToolInvocation::SessionStorage) => {
+            Box::pin(native_mcp_storage(invocation, session, response_mode))
+        }
+        invocation => Box::pin(call_native_tool_on_session_impl(
+            invocation,
+            session,
+            profile,
+            policy,
+            response_mode,
+        )),
+    }
+}
+
+#[cfg(feature = "native-engine")]
+async fn native_mcp_navigate(
+    session: &BrowserRuntimeSession,
+    policy: &BrowserPolicy,
+    url: &str,
+    timeout_ms: u64,
+    expected_revision: Option<u64>,
+    response_mode: ResponseMode,
+) -> BrowserResult<Value> {
+    let url = crate::browser::session::normalize_url(url);
+    policy.require_url(&url).await?;
+    let navigation = async {
+        match expected_revision {
+            Some(expected_revision) => session.navigate_with_revision(url, expected_revision).await,
+            None => session.navigate(url).await,
+        }
+    };
+    let navigation = tokio::time::timeout(Duration::from_millis(timeout_ms), navigation)
+        .await
+        .map_err(|_| format!("native navigation exceeded its {timeout_ms}ms deadline"))??;
+    serialized_result_mode(&navigation, response_mode)
+}
+
+#[cfg(feature = "native-engine")]
+async fn native_mcp_get_text(session: &BrowserRuntimeSession) -> BrowserResult<Value> {
+    let evidence = session
+        .evidence(crate::browser_backend::EvidenceLevel::Compact)
+        .await?;
+    Ok(text_result(evidence.visible_text))
+}
+
+#[cfg(feature = "native-engine")]
+async fn native_mcp_get_dom(
+    session: &BrowserRuntimeSession,
+    response_mode: ResponseMode,
+) -> BrowserResult<Value> {
+    let evidence = session
+        .evidence(crate::browser_backend::EvidenceLevel::Deep)
+        .await?;
+    let nodes = session.native_semantic_nodes()?;
+    serialized_result_mode(
+        &json!({
+            "contextId": evidence.context_id,
+            "revision": evidence.revision,
+            "url": evidence.url,
+            "title": evidence.title,
+            "visibleText": evidence.visible_text,
+            "nodes": nodes,
+        }),
+        response_mode,
+    )
+}
+
+#[cfg(feature = "native-engine")]
+async fn native_mcp_observation(
+    invocation: ToolInvocation<'_>,
+    session: &BrowserRuntimeSession,
+    policy: &BrowserPolicy,
+    response_mode: ResponseMode,
+) -> BrowserResult<Value> {
+    match invocation {
+        ToolInvocation::InspectPage => {
+            serialized_result_mode(&session.native_inspect_page().await?, response_mode)
+        }
+        ToolInvocation::ObserveBootstrap => {
+            serialized_result_mode(&session.native_observe_bootstrap().await?, response_mode)
+        }
+        ToolInvocation::ExtractWebIr { request } => serialized_result_mode(
+            &session.native_extract_web_ir(&request).await?,
+            response_mode,
+        ),
+        ToolInvocation::ExtractStructured { request } => serialized_result_mode(
+            &session.native_extract_structured(&request, policy).await?,
+            response_mode,
+        ),
+        ToolInvocation::Observe {
+            include_dom,
+            include_screenshot,
+            include_form_values,
+            level,
+            region,
+        } => {
+            if let Some(level) = level {
+                if include_dom || include_screenshot || include_form_values {
+                    return Err(
+                        "semantic observation cannot be combined with DOM, screenshot, or form values"
+                            .into(),
+                    );
+                }
+                let observation = if let Some(region_id) = region {
+                    let page = session.native_semantic_observe(level).await?;
+                    session
+                        .native_semantic_expand_region(region_id, page.revision, level)
+                        .await?
+                } else {
+                    session.native_semantic_observe(level).await?
+                };
+                return serialized_result_mode(&observation, response_mode);
+            }
+            if region.is_some() {
+                return Err("semantic region expansion requires an explicit level".into());
+            }
+            if include_form_values {
+                policy.require(crate::browser::policy::PolicyCapability::ReadFormValues)?;
+            }
+            let observation = session.native_observe().await?;
+            let nodes = include_dom
+                .then(|| session.native_semantic_nodes())
+                .transpose()?;
+            let screenshot = if include_screenshot {
+                Some(session.native_capture_png_async().await?)
+            } else {
+                None
+            };
+            let form_values = if include_form_values {
+                Some(
+                    crate::browser::native_batch::read_form_values(
+                        session,
+                        policy.allow_sensitive_form_values(),
+                    )
+                    .await?,
+                )
+            } else {
+                None
+            };
+            let payload = json!({
+                "contextId": observation.route.target_id,
+                "revision": observation.revision,
+                "url": observation.page.url,
+                "title": observation.page.title,
+                "visibleText": observation.text.unwrap_or_default(),
+                "nodes": nodes,
+                "formValues": form_values,
+            });
+            let payload =
+                project_and_store(payload, response_mode, "mcp", default_result_store_path())?;
+            let serialized = serde_json::to_string(&payload)?;
+            let payload_bytes = serialized.len();
+            let mut content = vec![json!({"type": "text", "text": serialized})];
+            if let Some(bytes) = screenshot {
+                content.push(json!({
+                    "type": "image",
+                    "data": base64::engine::general_purpose::STANDARD.encode(bytes),
+                    "mimeType": "image/png",
+                }));
+            }
+            Ok(json!({
+                "content": content,
+                "_meta": {"contextCost": {
+                    "payloadBytes": payload_bytes,
+                    "estimatedTokens": payload_bytes.div_ceil(4)
+                }}
+            }))
+        }
+        ToolInvocation::ObserveDelta => {
+            serialized_result_mode(&session.native_observe_delta().await?, response_mode)
+        }
+        ToolInvocation::Diagnostics { duration_ms } => serialized_result_mode(
+            &session
+                .native_diagnostics(Duration::from_millis(duration_ms))
+                .await?,
+            response_mode,
+        ),
+        _ => Err("native observation dispatcher received an incompatible tool".into()),
+    }
+}
+
+#[cfg(feature = "native-engine")]
+async fn native_mcp_intent(
+    invocation: ToolInvocation<'_>,
+    session: &BrowserRuntimeSession,
+    profile: &str,
+    policy: &BrowserPolicy,
+    response_mode: ResponseMode,
+) -> BrowserResult<Value> {
+    match invocation {
+        ToolInvocation::FindTarget { request } => {
+            serialized_result_mode(&session.native_find_target(&request).await?, response_mode)
+        }
+        ToolInvocation::ResolveIntent { request } => serialized_result_mode(
+            &session.native_resolve_intent(&request).await?,
+            response_mode,
+        ),
+        ToolInvocation::ResolveIntentWithKnowledge {
+            request,
+            mut lookup,
+        } => {
+            let store = KnowledgeStore::open(default_knowledge_store_path(profile))?;
+            if lookup.profile_scope == KnowledgeProfileScope::ProfileBound
+                && lookup.profile_key.is_none()
+            {
+                lookup.profile_key = Some(profile.to_owned());
+            }
+            lookup.policy_preset = serde_json::to_string(&policy.preset())?
+                .trim_matches('"')
+                .to_owned();
+            lookup.now_epoch_seconds = chrono::Utc::now().timestamp();
+            serialized_result_mode(
+                &session
+                    .native_resolve_intent_with_knowledge(&request, &store, lookup)
+                    .await?,
+                response_mode,
+            )
+        }
+        ToolInvocation::ExecuteIntent { request } => serialized_result_mode(
+            &session.native_execute_intent(&request).await?,
+            response_mode,
+        ),
+        _ => Err("native intent dispatcher received an incompatible tool".into()),
+    }
+}
+
+#[cfg(feature = "native-engine")]
+async fn native_mcp_knowledge_checkpoint(
+    invocation: ToolInvocation<'_>,
+    session: &BrowserRuntimeSession,
+    profile: &str,
+    policy: &BrowserPolicy,
+    response_mode: ResponseMode,
+) -> BrowserResult<Value> {
+    match invocation {
+        ToolInvocation::ObserveKnowledge {
+            level,
+            fresh_only,
+            mut lookup,
+        } => {
+            let observation = session.native_semantic_observe(level).await?;
+            if fresh_only {
+                return serialized_result(&KnowledgeObservationReport {
+                    observation,
+                    mode: KnowledgeObservationMode::FreshOnly,
+                    assessments: Vec::new(),
+                    eligible_record_ids: Vec::new(),
+                    stale_record_ids: Vec::new(),
+                    out_of_scope_record_ids: Vec::new(),
+                });
+            }
+            let store = KnowledgeStore::open(default_knowledge_store_path(profile))?;
+            if lookup.profile_scope == KnowledgeProfileScope::ProfileBound
+                && lookup.profile_key.is_none()
+            {
+                lookup.profile_key = Some(profile.to_owned());
+            }
+            lookup.policy_preset = serde_json::to_string(&policy.preset())?
+                .trim_matches('"')
+                .to_owned();
+            lookup.now_epoch_seconds = chrono::Utc::now().timestamp();
+            let context = KnowledgeLookupContext::from_observation(&observation, lookup)?;
+            let assessments = store.assess(&context);
+            let mut eligible_record_ids = Vec::new();
+            let mut stale_record_ids = Vec::new();
+            let mut out_of_scope_record_ids = Vec::new();
+            for assessment in &assessments {
+                match assessment.status {
+                    crate::browser::session::KnowledgeAssessmentStatus::Eligible => {
+                        eligible_record_ids.push(assessment.record_id.clone())
+                    }
+                    crate::browser::session::KnowledgeAssessmentStatus::Stale => {
+                        stale_record_ids.push(assessment.record_id.clone())
+                    }
+                    crate::browser::session::KnowledgeAssessmentStatus::OutOfScope => {
+                        out_of_scope_record_ids.push(assessment.record_id.clone())
+                    }
+                    crate::browser::session::KnowledgeAssessmentStatus::Contradicted
+                    | crate::browser::session::KnowledgeAssessmentStatus::Quarantined => {}
+                }
+            }
+            serialized_result(&KnowledgeObservationReport {
+                observation,
+                mode: KnowledgeObservationMode::Assessed,
+                assessments,
+                eligible_record_ids,
+                stale_record_ids,
+                out_of_scope_record_ids,
+            })
+        }
+        ToolInvocation::ExportCheckpoint => serialized_result_mode(
+            &session.native_export_checkpoint(profile, policy).await?,
+            response_mode,
+        ),
+        ToolInvocation::ImportCheckpoint { checkpoint } => {
+            let checkpoint: crate::browser::session::CheckpointV1 =
+                serde_json::from_value(checkpoint)
+                    .map_err(|error| format!("invalid checkpoint: {error}"))?;
+            session.native_import_checkpoint(&checkpoint).await?;
+            serialized_result_mode(&json!({"status": "checkpoint_imported"}), response_mode)
+        }
+        _ => Err("native knowledge/checkpoint dispatcher received an incompatible tool".into()),
+    }
+}
+
+#[cfg(feature = "native-engine")]
+async fn native_mcp_control(
+    invocation: ToolInvocation<'_>,
+    session: &BrowserRuntimeSession,
+    policy: &BrowserPolicy,
+    response_mode: ResponseMode,
+) -> BrowserResult<Value> {
+    match invocation {
+        ToolInvocation::Verify {
+            predicate,
+            timeout_ms,
+        } => {
+            let predicate: VerificationPredicate = serde_json::from_value(predicate)
+                .map_err(|error| format!("invalid verification predicate: {error}"))?;
+            if native_predicate_uses_javascript(&predicate) {
+                policy.require(crate::browser::policy::PolicyCapability::Evaluate)?;
+            }
+            serialized_result_mode(
+                &session
+                    .native_verify(predicate, Duration::from_millis(timeout_ms))
+                    .await?,
+                response_mode,
+            )
+        }
+        ToolInvocation::ActAndVerify {
+            request,
+            predicate,
+            timeout,
+        } => serialized_result_mode(
+            &session
+                .native_act_and_verify(&request, predicate, timeout)
+                .await?,
+            response_mode,
+        ),
+        ToolInvocation::Screenshot {
+            format,
+            quality: _,
+            scale,
+            full_page,
+            clip,
+            target,
+        } => {
+            policy.require(crate::browser::policy::PolicyCapability::Screenshot)?;
+            if format != VisualFormat::Png
+                || (scale - 1.0).abs() > f64::EPSILON
+                || full_page
+                || clip.is_some()
+                || target.is_some()
+            {
+                return Err(
+                    "native MCP screenshot supports only the current viewport PNG at scale 1.0"
+                        .into(),
+                );
+            }
+            let bytes = session.native_capture_png_async().await?;
+            Ok(json!({
+                "content": [{
+                    "type": "image",
+                    "data": base64::engine::general_purpose::STANDARD.encode(bytes),
+                    "mimeType": "image/png",
+                }],
+                "_meta": {"native": true}
+            }))
+        }
+        _ => Err("native control dispatcher received an incompatible tool".into()),
+    }
+}
+
+#[cfg(feature = "native-engine")]
+async fn native_mcp_wait(
+    session: &BrowserRuntimeSession,
+    policy: &BrowserPolicy,
+    condition: &str,
+    timeout_ms: u64,
+    response_mode: ResponseMode,
+) -> BrowserResult<Value> {
+    let condition = WaitCondition::parse(condition)?;
+    if matches!(condition, WaitCondition::JavaScript(_)) {
+        policy.require(crate::browser::policy::PolicyCapability::Evaluate)?;
+    }
+    serialized_result_mode(
+        &session
+            .native_wait(condition, Duration::from_millis(timeout_ms))
+            .await?,
+        response_mode,
+    )
+}
+
+#[cfg(feature = "native-engine")]
+async fn native_mcp_evaluate(
+    session: &BrowserRuntimeSession,
+    policy: &BrowserPolicy,
+    expression: &str,
+    response_mode: ResponseMode,
+) -> BrowserResult<Value> {
+    policy.require(crate::browser::policy::PolicyCapability::Evaluate)?;
+    let result = session.script(expression).await?;
+    serialized_result_mode(&result.value, response_mode)
+}
+
+#[cfg(feature = "native-engine")]
+async fn native_mcp_verify(
+    session: &BrowserRuntimeSession,
+    policy: &BrowserPolicy,
+    predicate: Value,
+    timeout_ms: u64,
+    response_mode: ResponseMode,
+) -> BrowserResult<Value> {
+    let predicate: VerificationPredicate = serde_json::from_value(predicate)
+        .map_err(|error| format!("invalid verification predicate: {error}"))?;
+    if native_predicate_uses_javascript(&predicate) {
+        policy.require(crate::browser::policy::PolicyCapability::Evaluate)?;
+    }
+    serialized_result_mode(
+        &session
+            .native_verify(predicate, Duration::from_millis(timeout_ms))
+            .await?,
+        response_mode,
+    )
+}
+
+#[cfg(feature = "native-engine")]
+async fn native_mcp_type(
+    session: &BrowserRuntimeSession,
+    text: &str,
+    target: Option<&str>,
+    expected_revision: Option<u64>,
+    response_mode: ResponseMode,
+) -> BrowserResult<Value> {
+    let target = target.unwrap_or("focused");
+    native_action_result(
+        session,
+        crate::browser_backend::SemanticAction::Type {
+            target: target.to_owned(),
+            text: text.to_owned(),
+        },
+        expected_revision,
+        response_mode,
+    )
+    .await
+}
+
+#[cfg(feature = "native-engine")]
+async fn native_mcp_action(
+    invocation: ToolInvocation<'_>,
+    session: &BrowserRuntimeSession,
+    policy: &BrowserPolicy,
+    response_mode: ResponseMode,
+) -> BrowserResult<Value> {
+    match invocation {
+        ToolInvocation::Click {
+            target,
+            expected_revision,
+        } => {
+            native_action_result(
+                session,
+                crate::browser_backend::SemanticAction::Click {
+                    target: target.into_owned(),
+                },
+                expected_revision,
+                response_mode,
+            )
+            .await
+        }
+        ToolInvocation::DoubleClick {
+            target,
+            expected_revision,
+        } => {
+            native_action_result(
+                session,
+                crate::browser_backend::SemanticAction::DoubleClick {
+                    target: target.into_owned(),
+                },
+                expected_revision,
+                response_mode,
+            )
+            .await
+        }
+        ToolInvocation::Hover {
+            target,
+            expected_revision,
+        } => {
+            native_action_result(
+                session,
+                crate::browser_backend::SemanticAction::Hover {
+                    target: target.into_owned(),
+                },
+                expected_revision,
+                response_mode,
+            )
+            .await
+        }
+        ToolInvocation::Drag {
+            source,
+            destination,
+            expected_revision,
+        } => {
+            native_action_result(
+                session,
+                crate::browser_backend::SemanticAction::Drag {
+                    source: source.into_owned(),
+                    destination: destination.into_owned(),
+                },
+                expected_revision,
+                response_mode,
+            )
+            .await
+        }
+        ToolInvocation::Preflight { target, action } => {
+            let action = match action {
+                PreflightAction::Click => {
+                    crate::browser::native_engine::NativePreflightAction::Click
+                }
+                PreflightAction::Hover => {
+                    crate::browser::native_engine::NativePreflightAction::Hover
+                }
+                PreflightAction::Type => crate::browser::native_engine::NativePreflightAction::Type,
+                PreflightAction::Check => {
+                    crate::browser::native_engine::NativePreflightAction::Check
+                }
+                PreflightAction::Select => {
+                    crate::browser::native_engine::NativePreflightAction::Select
+                }
+            };
+            let result = session
+                .native_preflight_target(target.as_ref(), action)
+                .await?;
+            serialized_result_mode(&result, response_mode)
+        }
+        ToolInvocation::Key {
+            key,
+            expected_revision,
+        } => {
+            native_action_result(
+                session,
+                crate::browser_backend::SemanticAction::KeyPress {
+                    key: key.to_owned(),
+                },
+                expected_revision,
+                response_mode,
+            )
+            .await
+        }
+        ToolInvocation::KeyDown {
+            key,
+            expected_revision,
+        } => {
+            native_action_result(
+                session,
+                crate::browser_backend::SemanticAction::KeyDown {
+                    key: key.to_owned(),
+                },
+                expected_revision,
+                response_mode,
+            )
+            .await
+        }
+        ToolInvocation::KeyUp {
+            key,
+            expected_revision,
+        } => {
+            native_action_result(
+                session,
+                crate::browser_backend::SemanticAction::KeyUp {
+                    key: key.to_owned(),
+                },
+                expected_revision,
+                response_mode,
+            )
+            .await
+        }
+        ToolInvocation::Shortcut {
+            shortcut,
+            expected_revision,
+        } => {
+            native_action_result(
+                session,
+                crate::browser_backend::SemanticAction::Shortcut {
+                    shortcut: shortcut.to_owned(),
+                },
+                expected_revision,
+                response_mode,
+            )
+            .await
+        }
+        ToolInvocation::Clear {
+            target,
+            expected_revision,
+        } => {
+            native_action_result(
+                session,
+                crate::browser_backend::SemanticAction::Clear {
+                    target: target.into_owned(),
+                },
+                expected_revision,
+                response_mode,
+            )
+            .await
+        }
+        ToolInvocation::Check {
+            target,
+            expected_revision,
+        } => {
+            native_action_result(
+                session,
+                crate::browser_backend::SemanticAction::Check {
+                    target: target.into_owned(),
+                },
+                expected_revision,
+                response_mode,
+            )
+            .await
+        }
+        ToolInvocation::Uncheck {
+            target,
+            expected_revision,
+        } => {
+            native_action_result(
+                session,
+                crate::browser_backend::SemanticAction::Uncheck {
+                    target: target.into_owned(),
+                },
+                expected_revision,
+                response_mode,
+            )
+            .await
+        }
+        ToolInvocation::Select {
+            target,
+            value,
+            expected_revision,
+        } => {
+            native_action_result(
+                session,
+                crate::browser_backend::SemanticAction::Select {
+                    target: target.into_owned(),
+                    value: value.to_owned(),
+                },
+                expected_revision,
+                response_mode,
+            )
+            .await
+        }
+        ToolInvocation::Upload {
+            target,
+            files,
+            expected_revision,
+        } => {
+            policy.require(crate::browser::policy::PolicyCapability::Upload)?;
+            let files = files
+                .iter()
+                .map(|path| {
+                    let path = policy.require_existing_path(path)?;
+                    NativeFile::from_path(&path).map_err(Into::into)
+                })
+                .collect::<BrowserResult<Vec<_>>>()?;
+            serialized_result_mode(
+                &session
+                    .native_upload_files(target.as_ref(), files, expected_revision)
+                    .await?,
+                response_mode,
+            )
+        }
+        ToolInvocation::ClickAt { x, y } => {
+            let target = native_mcp_point_target(x, y)?;
+            native_action_result(
+                session,
+                crate::browser_backend::SemanticAction::Click { target },
+                None,
+                response_mode,
+            )
+            .await
+        }
+        ToolInvocation::Scroll {
+            dx,
+            dy,
+            expected_revision,
+        } => {
+            let (delta_x, delta_y) = native_mcp_scroll_deltas(dx, dy)?;
+            native_action_result(
+                session,
+                crate::browser_backend::SemanticAction::Scroll { delta_x, delta_y },
+                expected_revision,
+                response_mode,
+            )
+            .await
+        }
+        _ => Err("native action dispatcher received an incompatible tool".into()),
+    }
+}
+
+#[cfg(feature = "native-engine")]
+async fn native_mcp_targets(
+    invocation: ToolInvocation<'_>,
+    session: &BrowserRuntimeSession,
+    policy: &BrowserPolicy,
+    response_mode: ResponseMode,
+) -> BrowserResult<Value> {
+    match invocation {
+        ToolInvocation::ListTargets => {
+            serialized_result_mode(&session.native_list_targets().await?, response_mode)
+        }
+        ToolInvocation::CreateTarget { url } => {
+            let url = crate::browser::session::normalize_url(url);
+            policy.require_url(&url).await?;
+            serialized_result_mode(&session.native_create_target(&url).await?, response_mode)
+        }
+        ToolInvocation::SelectTarget { id } => {
+            serialized_result_mode(&session.native_select_target(id).await?, response_mode)
+        }
+        ToolInvocation::CloseTarget { id } => {
+            session.native_close_target(id).await?;
+            serialized_result_mode(&json!({"closed": id}), response_mode)
+        }
+        ToolInvocation::ListFrames => {
+            serialized_result_mode(&session.native_list_frames().await?, response_mode)
+        }
+        ToolInvocation::SelectFrame { id } => {
+            serialized_result_mode(&session.native_select_frame(id).await?, response_mode)
+        }
+        _ => Err("native target dispatcher received an incompatible tool".into()),
+    }
+}
+
+#[cfg(feature = "native-engine")]
+async fn native_mcp_storage(
+    invocation: ToolInvocation<'_>,
+    session: &BrowserRuntimeSession,
+    response_mode: ResponseMode,
+) -> BrowserResult<Value> {
+    match invocation {
+        ToolInvocation::Cookies => {
+            serialized_result_mode(&session.native_cookies().await?, response_mode)
+        }
+        ToolInvocation::SetCookies { cookies } => {
+            let parsed: Vec<crate::browser::session::Cookie> = serde_json::from_value(cookies)
+                .map_err(|error| format!("invalid cookies: {error}"))?;
+            session.native_set_cookies(&parsed).await?;
+            serialized_result_mode(&json!({"ok": true}), response_mode)
+        }
+        ToolInvocation::ClearCookies => {
+            session.native_clear_cookies().await?;
+            serialized_result_mode(&json!({"ok": true}), response_mode)
+        }
+        ToolInvocation::LocalStorage => {
+            native_storage_result(
+                session,
+                crate::browser_backend::StorageScope::Local,
+                response_mode,
+            )
+            .await
+        }
+        ToolInvocation::SessionStorage => {
+            native_storage_result(
+                session,
+                crate::browser_backend::StorageScope::Session,
+                response_mode,
+            )
+            .await
+        }
+        _ => Err("native storage dispatcher received an incompatible tool".into()),
+    }
+}
+
+#[cfg(feature = "native-engine")]
+async fn call_native_tool_on_session_impl(
     invocation: ToolInvocation<'_>,
     session: &BrowserRuntimeSession,
     profile: &str,
@@ -3508,29 +4413,104 @@ async fn call_native_tool_on_session(
         ToolInvocation::InspectPage => {
             serialized_result_mode(&session.native_inspect_page().await?, response_mode)
         }
+        ToolInvocation::ObserveBootstrap => {
+            serialized_result_mode(&session.native_observe_bootstrap().await?, response_mode)
+        }
         ToolInvocation::ExtractWebIr { request } => serialized_result_mode(
             &session.native_extract_web_ir(&request).await?,
             response_mode,
         ),
+        ToolInvocation::ExtractStructured { request } => serialized_result_mode(
+            &session.native_extract_structured(&request, policy).await?,
+            response_mode,
+        ),
+        ToolInvocation::ObserveKnowledge {
+            level,
+            fresh_only,
+            mut lookup,
+        } => {
+            let observation = session.native_semantic_observe(level).await?;
+            if fresh_only {
+                return serialized_result(&KnowledgeObservationReport {
+                    observation,
+                    mode: KnowledgeObservationMode::FreshOnly,
+                    assessments: Vec::new(),
+                    eligible_record_ids: Vec::new(),
+                    stale_record_ids: Vec::new(),
+                    out_of_scope_record_ids: Vec::new(),
+                });
+            }
+            let store = KnowledgeStore::open(default_knowledge_store_path(profile))?;
+            if lookup.profile_scope == KnowledgeProfileScope::ProfileBound
+                && lookup.profile_key.is_none()
+            {
+                lookup.profile_key = Some(profile.to_owned());
+            }
+            lookup.policy_preset = serde_json::to_string(&policy.preset())?
+                .trim_matches('"')
+                .to_owned();
+            lookup.now_epoch_seconds = chrono::Utc::now().timestamp();
+            let context = KnowledgeLookupContext::from_observation(&observation, lookup)?;
+            let assessments = store.assess(&context);
+            let mut eligible_record_ids = Vec::new();
+            let mut stale_record_ids = Vec::new();
+            let mut out_of_scope_record_ids = Vec::new();
+            for assessment in &assessments {
+                match assessment.status {
+                    crate::browser::session::KnowledgeAssessmentStatus::Eligible => {
+                        eligible_record_ids.push(assessment.record_id.clone())
+                    }
+                    crate::browser::session::KnowledgeAssessmentStatus::Stale => {
+                        stale_record_ids.push(assessment.record_id.clone())
+                    }
+                    crate::browser::session::KnowledgeAssessmentStatus::OutOfScope => {
+                        out_of_scope_record_ids.push(assessment.record_id.clone())
+                    }
+                    crate::browser::session::KnowledgeAssessmentStatus::Contradicted
+                    | crate::browser::session::KnowledgeAssessmentStatus::Quarantined => {}
+                }
+            }
+            serialized_result(&KnowledgeObservationReport {
+                observation,
+                mode: KnowledgeObservationMode::Assessed,
+                assessments,
+                eligible_record_ids,
+                stale_record_ids,
+                out_of_scope_record_ids,
+            })
+        }
         ToolInvocation::FindTarget { request } => {
             serialized_result_mode(&session.native_find_target(&request).await?, response_mode)
         }
-        ToolInvocation::Verify {
-            predicate,
-            timeout_ms,
+        ToolInvocation::ResolveIntent { request } => serialized_result_mode(
+            &session.native_resolve_intent(&request).await?,
+            response_mode,
+        ),
+        ToolInvocation::ResolveIntentWithKnowledge {
+            request,
+            mut lookup,
         } => {
-            let predicate: VerificationPredicate = serde_json::from_value(predicate)
-                .map_err(|error| format!("invalid verification predicate: {error}"))?;
-            if native_predicate_uses_javascript(&predicate) {
-                policy.require(crate::browser::policy::PolicyCapability::Evaluate)?;
+            let store = KnowledgeStore::open(default_knowledge_store_path(profile))?;
+            if lookup.profile_scope == KnowledgeProfileScope::ProfileBound
+                && lookup.profile_key.is_none()
+            {
+                lookup.profile_key = Some(profile.to_owned());
             }
+            lookup.policy_preset = serde_json::to_string(&policy.preset())?
+                .trim_matches('"')
+                .to_owned();
+            lookup.now_epoch_seconds = chrono::Utc::now().timestamp();
             serialized_result_mode(
                 &session
-                    .native_verify(predicate, Duration::from_millis(timeout_ms))
+                    .native_resolve_intent_with_knowledge(&request, &store, lookup)
                     .await?,
                 response_mode,
             )
         }
+        ToolInvocation::ExecuteIntent { request } => serialized_result_mode(
+            &session.native_execute_intent(&request).await?,
+            response_mode,
+        ),
         ToolInvocation::Wait {
             condition,
             timeout_ms,
@@ -3669,7 +4649,7 @@ async fn call_native_tool_on_session(
             target,
             expected_revision,
         } => {
-            let target = target.ok_or("native MCP type requires target")?;
+            let target = target.unwrap_or("focused");
             native_action_result(
                 session,
                 crate::browser_backend::SemanticAction::Type {
@@ -3941,6 +4921,9 @@ async fn call_native_tool_on_session(
                 }}
             }))
         }
+        ToolInvocation::ObserveDelta => {
+            serialized_result_mode(&session.native_observe_delta().await?, response_mode)
+        }
         ToolInvocation::Evaluate { expression } => {
             policy.require(crate::browser::policy::PolicyCapability::Evaluate)?;
             let result = session.script(expression).await?;
@@ -4055,6 +5038,23 @@ async fn call_native_tool_on_session(
             )
             .await
         }
+        ToolInvocation::ExportCheckpoint => serialized_result_mode(
+            &session.native_export_checkpoint(profile, policy).await?,
+            response_mode,
+        ),
+        ToolInvocation::ImportCheckpoint { checkpoint } => {
+            let checkpoint: crate::browser::session::CheckpointV1 =
+                serde_json::from_value(checkpoint)
+                    .map_err(|error| format!("invalid checkpoint: {error}"))?;
+            session.native_import_checkpoint(&checkpoint).await?;
+            serialized_result_mode(&json!({"status": "checkpoint_imported"}), response_mode)
+        }
+        ToolInvocation::Diagnostics { duration_ms } => serialized_result_mode(
+            &session
+                .native_diagnostics(Duration::from_millis(duration_ms))
+                .await?,
+            response_mode,
+        ),
         _ => Err(
             "native MCP does not implement this tool in the current native session slice".into(),
         ),
@@ -6622,6 +7622,189 @@ mod tests {
         .unwrap();
         assert_eq!(javascript["last_state"], "true");
         assert!(native_session.is_some());
+        native_session.take().unwrap().close().await.unwrap();
+    }
+
+    #[cfg(feature = "native-engine")]
+    #[tokio::test]
+    async fn native_mcp_routes_shared_semantic_contracts_without_chromium() {
+        let mut session = None;
+        let mut native_session = None;
+        let options = SessionOptions::default();
+        let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
+        let url = "data:text/html,%3Ctitle%3ESemantic%20MCP%3C%2Ftitle%3E%3Cmain%3E%3Clabel%20for%3D%22name%22%3EName%3C%2Flabel%3E%3Cinput%20id%3D%22name%22%3E%3Cbutton%3ESave%3C%2Fbutton%3E%3C%2Fmain%3E";
+
+        let invoke_json = |response: JsonRpcResponse| -> Value {
+            assert!(response.error.is_none());
+            serde_json::from_str(
+                response.result.unwrap()["content"][0]["text"]
+                    .as_str()
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+
+        let navigation = invoke_native_mcp_tool(
+            "navigate",
+            json!({"url": url}),
+            &mut session,
+            &mut native_session,
+            &options,
+            &policy,
+        )
+        .await;
+        assert!(navigation.error.is_none());
+
+        let bootstrap = invoke_json(
+            invoke_native_mcp_tool(
+                "observeBootstrap",
+                json!({}),
+                &mut session,
+                &mut native_session,
+                &options,
+                &policy,
+            )
+            .await,
+        );
+        assert_eq!(bootstrap["page"]["title"], "Semantic MCP");
+        assert_eq!(bootstrap["ready"], true);
+
+        let observation = invoke_json(
+            invoke_native_mcp_tool(
+                "observe",
+                json!({"level": "structured"}),
+                &mut session,
+                &mut native_session,
+                &options,
+                &policy,
+            )
+            .await,
+        );
+        let revision = observation["revision"].as_u64().unwrap();
+        assert_eq!(observation["page"]["title"], "Semantic MCP");
+
+        let extracted = invoke_json(
+            invoke_native_mcp_tool(
+                "extractStructured",
+                json!({
+                    "fields": [{"name": "title", "path": "$.page.title", "kind": "string"}],
+                    "maxItems": 16,
+                    "maxBytes": 16384
+                }),
+                &mut session,
+                &mut native_session,
+                &options,
+                &policy,
+            )
+            .await,
+        );
+        assert_eq!(extracted["records"][0]["title"], "Semantic MCP");
+
+        let resolved = invoke_json(
+            invoke_native_mcp_tool(
+                "resolveIntent",
+                json!({
+                    "schemaVersion": 1,
+                    "intent": "save",
+                    "action": "click",
+                    "constraints": {"role": "button", "name": "Save"},
+                    "resolutionPolicy": "requireExact",
+                    "expectedRevision": revision
+                }),
+                &mut session,
+                &mut native_session,
+                &options,
+                &policy,
+            )
+            .await,
+        );
+        let candidate_id = resolved["candidates"][0]["id"].as_str().unwrap();
+        assert_eq!(resolved["resolution"], "exact");
+
+        let executed = invoke_json(
+            invoke_native_mcp_tool(
+                "executeIntent",
+                json!({
+                    "schemaVersion": 1,
+                    "intent": "save",
+                    "action": "click",
+                    "constraints": {"role": "button", "name": "Save"},
+                    "resolutionPolicy": "requireExact",
+                    "expectedRevision": revision,
+                    "candidateId": candidate_id
+                }),
+                &mut session,
+                &mut native_session,
+                &options,
+                &policy,
+            )
+            .await,
+        );
+        assert_eq!(executed["status"], "executed");
+
+        let delta = invoke_json(
+            invoke_native_mcp_tool(
+                "observeDelta",
+                json!({}),
+                &mut session,
+                &mut native_session,
+                &options,
+                &policy,
+            )
+            .await,
+        );
+        assert!(delta["toRevision"].as_u64().unwrap() >= delta["fromRevision"].as_u64().unwrap());
+
+        let fresh_knowledge = invoke_json(
+            invoke_native_mcp_tool(
+                "observeKnowledge",
+                json!({"freshOnly": true, "level": "summary"}),
+                &mut session,
+                &mut native_session,
+                &options,
+                &policy,
+            )
+            .await,
+        );
+        assert_eq!(fresh_knowledge["mode"], "freshOnly");
+
+        let checkpoint = invoke_json(
+            invoke_native_mcp_tool(
+                "exportCheckpoint",
+                json!({}),
+                &mut session,
+                &mut native_session,
+                &options,
+                &policy,
+            )
+            .await,
+        );
+        assert_eq!(checkpoint["attachMode"], false);
+        let imported = invoke_native_mcp_tool(
+            "importCheckpoint",
+            json!({"checkpoint": checkpoint}),
+            &mut session,
+            &mut native_session,
+            &options,
+            &policy,
+        )
+        .await;
+        assert!(imported.error.is_none());
+
+        let diagnostics = invoke_json(
+            invoke_native_mcp_tool(
+                "diagnostics",
+                json!({"durationMs": 1}),
+                &mut session,
+                &mut native_session,
+                &options,
+                &policy,
+            )
+            .await,
+        );
+        assert_eq!(diagnostics["target_id"], "native-context");
+        assert_eq!(diagnostics["lifecycle"]["browserReady"], true);
+
         native_session.take().unwrap().close().await.unwrap();
     }
 

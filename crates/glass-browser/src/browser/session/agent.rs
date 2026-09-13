@@ -289,129 +289,13 @@ impl BrowserSession {
         if request.fields.iter().any(extraction_field_is_sensitive) {
             self.policy.require_sensitive_extraction()?;
         }
-        let contract_hash = extraction_contract_hash(request);
         let observation = self
             .semantic_observe(SemanticObservationLevel::Structured)
             .await?;
-        if let Some(continuation) = &request.continuation
-            && !continuation_matches_source(
-                continuation,
-                observation.revision,
-                &observation.route,
-                request.region_id.as_deref(),
-                &contract_hash,
-            )
-        {
-            return Err(
-                "continuation does not match the current semantic source, region, or extraction contract"
-                    .into(),
-            );
-        }
-        let start_index = request
-            .continuation
-            .as_ref()
-            .map_or(request.start_index, |continuation| continuation.next_index);
-        let scoped_region = request.region_id.as_deref().and_then(|region_id| {
-            observation
-                .regions
-                .iter()
-                .find(|region| region.id == region_id)
-        });
-        if request.region_id.is_some() && scoped_region.is_none() {
-            let region_id = request.region_id.as_deref().unwrap_or_default();
-            return Err(format!("region not found: {region_id}").into());
-        }
-        let source = if let Some(region) = scoped_region {
-            serde_json::to_value(region)?
-        } else {
-            serde_json::to_value(&observation)?
-        };
-        let mut record = Map::new();
-        let mut truncated = observation.limits.truncated
-            || observation.limits.omitted_regions > 0
-            || observation.limits.omitted_targets > 0
-            || observation.limits.omitted_structured_records > 0;
-        let mut next_index: Option<usize> = None;
-        let mut observed_items = observation.limits.omitted_structured_records;
-        let mut emitted_items = 0usize;
-        let mut record_items = Vec::new();
-        let mut field_provenance = Vec::with_capacity(request.fields.len());
-        for field in &request.fields {
-            let mut value = extraction_source_value(&source, field)
-                .ok_or_else(|| format!("field path is missing: {}", field.path))?;
-            if value_contains_sensitive(&value) {
-                if field.path == "$.targets"
-                    || (field.path == "$"
-                        && field.name == "region"
-                        && field.kind == ExtractionKind::Object)
-                {
-                    redact_sensitive_value(&mut value);
-                } else {
-                    self.policy.require_sensitive_extraction()?;
-                }
-            }
-            let mut value = validate_extracted_value(Some(value), field)?;
-            if let Value::Array(items) = &mut value {
-                let item_count = items.len();
-                observed_items = observed_items.saturating_add(item_count);
-                let start = start_index.min(item_count);
-                let remaining = request.max_items.saturating_sub(emitted_items);
-                let end = start.saturating_add(remaining).min(item_count);
-                emitted_items = emitted_items.saturating_add(end.saturating_sub(start));
-                truncated |= start > 0 || end < item_count;
-                if end < item_count {
-                    next_index = Some(next_index.map_or(end, |current| current.max(end)));
-                }
-                if start > 0 || end < item_count {
-                    *items = items[start..end].to_vec();
-                }
-                record_items.extend(extraction_record_items(field, &value, start));
-            }
-            let entity_ids = provenance_entity_ids(&value);
-            field_provenance.push(StructuredExtractionProvenance {
-                field: field.name.clone(),
-                path: field.path.clone(),
-                region_id: request.region_id.clone(),
-                entity_ids,
-            });
-            record.insert(field.name.clone(), value);
-        }
-        let source_route = sanitized_route(&observation.route);
-        let continuation = next_index.map(|next_index| StructuredExtractionContinuation {
-            next_index,
-            source_revision: observation.revision,
-            source_route: source_route.clone(),
-            region_id: request.region_id.clone(),
-            contract_hash: contract_hash.clone(),
-            source_route_fingerprint: Some(route_fingerprint(&observation.route)),
-        });
-        let result = StructuredExtractionResult {
-            source_revision: observation.revision,
-            source_route,
-            records: vec![record.into()],
-            record_items,
-            truncated,
-            provenance: request
-                .fields
-                .iter()
-                .map(|field| field.path.clone())
-                .collect(),
-            field_provenance,
-            continuation,
-            limits: StructuredExtractionLimits {
-                max_items: request.max_items,
-                max_bytes: request.max_bytes,
-                observed_items,
-                serialized_bytes: 0,
-                truncated,
-            },
-        };
-        finalize_extraction_result_with_context(
-            result,
-            request.max_bytes,
-            Some(&contract_hash),
-            request.region_id.as_deref(),
-            Some(&route_fingerprint(&observation.route)),
+        extract_structured_from_observation(
+            &observation,
+            request,
+            self.policy.allow_sensitive_extraction(),
         )
     }
 
@@ -419,6 +303,147 @@ impl BrowserSession {
     pub fn recover_run(&self, execution_id: &str) -> BrowserResult<RecoverRunResult> {
         recover_run(execution_id)
     }
+}
+
+/// Extract a bounded structured result from an already captured semantic
+/// observation. BrowserSession and the Glass-owned native runtime both use
+/// this function so sensitive-field handling, continuation validation, and
+/// output limits cannot drift between backends.
+pub(crate) fn extract_structured_from_observation(
+    observation: &SemanticObservation,
+    request: &StructuredExtractionRequest,
+    allow_sensitive: bool,
+) -> BrowserResult<StructuredExtractionResult> {
+    validate_extraction_request(request)?;
+    let contract_hash = extraction_contract_hash(request);
+    if let Some(continuation) = &request.continuation
+        && !continuation_matches_source(
+            continuation,
+            observation.revision,
+            &observation.route,
+            request.region_id.as_deref(),
+            &contract_hash,
+        )
+    {
+        return Err(
+            "continuation does not match the current semantic source, region, or extraction contract"
+                .into(),
+        );
+    }
+    let start_index = request
+        .continuation
+        .as_ref()
+        .map_or(request.start_index, |continuation| continuation.next_index);
+    let scoped_region = request.region_id.as_deref().and_then(|region_id| {
+        observation
+            .regions
+            .iter()
+            .find(|region| region.id == region_id)
+    });
+    if request.region_id.is_some() && scoped_region.is_none() {
+        let region_id = request.region_id.as_deref().unwrap_or_default();
+        return Err(format!("region not found: {region_id}").into());
+    }
+    let source = if let Some(region) = scoped_region {
+        serde_json::to_value(region)?
+    } else {
+        serde_json::to_value(observation)?
+    };
+    let mut record = Map::new();
+    let mut truncated = observation.limits.truncated
+        || observation.limits.omitted_regions > 0
+        || observation.limits.omitted_targets > 0
+        || observation.limits.omitted_structured_records > 0;
+    let mut next_index: Option<usize> = None;
+    let mut observed_items = observation.limits.omitted_structured_records;
+    let mut emitted_items = 0usize;
+    let mut record_items = Vec::new();
+    let mut field_provenance = Vec::with_capacity(request.fields.len());
+    for field in &request.fields {
+        let mut value = extraction_source_value(&source, field)
+            .ok_or_else(|| format!("field path is missing: {}", field.path))?;
+        if value_contains_sensitive(&value) {
+            if field.path == "$.targets"
+                || (field.path == "$"
+                    && field.name == "region"
+                    && field.kind == ExtractionKind::Object)
+            {
+                redact_sensitive_value(&mut value);
+            } else if !allow_sensitive {
+                return Err(
+                    "sensitive structured extraction requires explicit capability access".into(),
+                );
+            }
+        }
+        let mut value = validate_extracted_value(Some(value), field)?;
+        if let Value::Array(items) = &mut value {
+            let item_count = items.len();
+            observed_items = observed_items.saturating_add(item_count);
+            let start = start_index.min(item_count);
+            let remaining = request.max_items.saturating_sub(emitted_items);
+            let end = start.saturating_add(remaining).min(item_count);
+            emitted_items = emitted_items.saturating_add(end.saturating_sub(start));
+            truncated |= start > 0 || end < item_count;
+            if end < item_count {
+                next_index = Some(next_index.map_or(end, |current| current.max(end)));
+            }
+            if start > 0 || end < item_count {
+                *items = items[start..end].to_vec();
+            }
+            record_items.extend(extraction_record_items(field, &value, start));
+        }
+        let entity_ids = provenance_entity_ids(&value);
+        field_provenance.push(StructuredExtractionProvenance {
+            field: field.name.clone(),
+            path: field.path.clone(),
+            region_id: request.region_id.clone(),
+            entity_ids,
+        });
+        record.insert(field.name.clone(), value);
+    }
+    let source_route = sanitized_route(&observation.route);
+    let continuation = next_index.map(|next_index| StructuredExtractionContinuation {
+        next_index,
+        source_revision: observation.revision,
+        source_route: source_route.clone(),
+        region_id: request.region_id.clone(),
+        contract_hash: contract_hash.clone(),
+        source_route_fingerprint: Some(route_fingerprint(&observation.route)),
+    });
+    let result = StructuredExtractionResult {
+        source_revision: observation.revision,
+        source_route,
+        records: vec![record.into()],
+        record_items,
+        truncated,
+        provenance: request
+            .fields
+            .iter()
+            .map(|field| field.path.clone())
+            .collect(),
+        field_provenance,
+        continuation,
+        limits: StructuredExtractionLimits {
+            max_items: request.max_items,
+            max_bytes: request.max_bytes,
+            observed_items,
+            serialized_bytes: 0,
+            truncated,
+        },
+    };
+    finalize_extraction_result_with_context(
+        result,
+        request.max_bytes,
+        Some(&contract_hash),
+        request.region_id.as_deref(),
+        Some(&route_fingerprint(&observation.route)),
+    )
+}
+
+pub(crate) fn extraction_request_requires_sensitive_access(
+    request: &StructuredExtractionRequest,
+) -> bool {
+    request.fields.iter().any(extraction_field_is_sensitive)
 }
 
 /// Reconcile a run ID without requiring a live browser session.

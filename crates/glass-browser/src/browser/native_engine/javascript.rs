@@ -7615,6 +7615,7 @@ impl NativeJavaScriptRuntime {
         let nested_scroll_offsets = self.nested_scroll_offsets();
         let history_state = self.history_state();
         let history_length = self.history_length();
+        let include_layout = !is_ready_state_comparison(source);
         let bootstrap = document_bootstrap(
             document,
             document_url,
@@ -7638,6 +7639,7 @@ impl NativeJavaScriptRuntime {
             &self.frame_script_bindings(),
             self.frame_script_context().as_ref(),
             self.timer_pump_enabled(),
+            include_layout,
         )?;
         let deadline = Instant::now() + NATIVE_SCRIPT_TIMEOUT;
         if let Ok(mut current) = self.deadline.lock() {
@@ -8284,6 +8286,7 @@ impl NativeJavaScriptRuntime {
             &self.frame_script_bindings(),
             self.frame_script_context().as_ref(),
             self.timer_pump_enabled(),
+            true,
         )?;
         let deadline = Instant::now() + NATIVE_SCRIPT_TIMEOUT;
         if let Ok(mut current) = self.deadline.lock() {
@@ -12695,6 +12698,25 @@ pub(crate) fn worker_message_script(
     Ok(Some(source))
 }
 
+fn is_ready_state_comparison(source: &str) -> bool {
+    let source = source
+        .trim()
+        .strip_suffix(';')
+        .unwrap_or(source.trim())
+        .trim();
+    for operator in ["===", "!==", "==", "!="] {
+        let Some((left, right)) = source.split_once(operator) else {
+            continue;
+        };
+        let right = right.trim();
+        let is_string_literal = right.len() >= 2
+            && matches!(right.as_bytes().first(), Some(b'\'' | b'"'))
+            && right.as_bytes().first() == right.as_bytes().last();
+        return left.trim() == "document.readyState" && is_string_literal;
+    }
+    false
+}
+
 #[allow(clippy::too_many_arguments)]
 fn document_bootstrap(
     document: &NativeDocument,
@@ -12719,6 +12741,7 @@ fn document_bootstrap(
     frame_bindings: &[NativeFrameScriptBinding],
     frame_context: Option<&NativeFrameScriptContext>,
     run_timers: bool,
+    include_layout: bool,
 ) -> Result<String, NativeEngineError> {
     let native_file_bytes = MAX_NATIVE_FILE_BYTES;
     let native_form_body_bytes = MAX_NATIVE_FORM_BODY_BYTES;
@@ -12732,12 +12755,16 @@ fn document_bootstrap(
             operation: "serialize native page crypto seed".into(),
             reason: "native page crypto seed bytes could not be serialized".into(),
         })?;
-    let state = document.script_snapshot_with_layout(
-        crate::browser_backend::MAX_TEXT_BYTES,
-        viewport,
-        scroll_offset,
-        nested_scroll_offsets,
-    )?;
+    let state = if include_layout {
+        document.script_snapshot_with_layout(
+            crate::browser_backend::MAX_TEXT_BYTES,
+            viewport,
+            scroll_offset,
+            nested_scroll_offsets,
+        )?
+    } else {
+        document.script_snapshot_for_viewport(crate::browser_backend::MAX_TEXT_BYTES, viewport)
+    };
     let serialized = serde_json::to_string(&serde_json::json!({
         "url": document_url,
         "context_id": context_id,

@@ -912,6 +912,16 @@ impl NativeEngineBackend {
             .map_err(native_error)
     }
 
+    /// Return bounded parser and presentation diagnostics for the active
+    /// native document. Diagnostics are read-only and carry no page secrets.
+    pub fn diagnostics(
+        &self,
+    ) -> Result<super::native_engine::NativeDiagnosticsSnapshot, BrowserBackendError> {
+        self.lock_engine(BackendOperation::Evidence)?
+            .diagnostics()
+            .map_err(native_error)
+    }
+
     /// Discover and snapshot the selected frame subtree under one registry
     /// lock. Each child remains an independent native document, but callers
     /// receive its owning frame identity alongside its revision-bound handles.

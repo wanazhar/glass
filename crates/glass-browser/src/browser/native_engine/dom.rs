@@ -2224,7 +2224,7 @@ impl NativeDocument {
         resources
     }
 
-    fn script_snapshot_for_viewport(
+    pub(crate) fn script_snapshot_for_viewport(
         &self,
         max_text_bytes: usize,
         viewport: Viewport,

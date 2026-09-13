@@ -14,6 +14,8 @@ use super::native_backend::NativeFrameInspectionSnapshot;
 use super::native_engine::{
     NativeEngineConfig, NativeFile, NativePreflightAction, NativeTargetPreflight,
 };
+#[cfg(feature = "native-engine")]
+use super::policy::BrowserPolicy;
 use crate::browser_backend::{
     ActionRequest, ActionResult, BackendProfile, BrowserBackendDispatcher, BrowsingContext,
     ContextRequest, EffectsRequest, EffectsResult, EvidenceLevel, EvidenceRequest, EvidenceResult,
@@ -26,13 +28,18 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "native-engine")]
 use super::session::{
     ActAndVerifyResult, ActionFailureKind, ActionFailurePhase, ActionKind, ActionOutcome,
-    ActionStatus, ActionTarget, ActionVerificationError, ActionVerificationEvidence, Cookie,
-    DownloadOutcome, FindTargetResult, FrameInfo, InspectPageResult, IntentPolicyDecision,
-    NavigationControlOutcome, PageTargetInfo, PendingDialog, PopupClickOutcome,
+    ActionStatus, ActionTarget, ActionVerificationError, ActionVerificationEvidence,
+    BootstrapObservation, CheckpointError, CheckpointObservation, CheckpointTopology, CheckpointV1,
+    ConsoleEvidence, Cookie, DeltaControl, DiagnosticReport, DownloadOutcome, FindTargetResult,
+    FrameInfo, InspectPageResult, IntentPolicyDecision, KnowledgeAssessmentStatus,
+    KnowledgeLookupContext, KnowledgeLookupOptions, KnowledgeStore, LifecycleDiagnostics,
+    MutationSummary, NavigationControlOutcome, ObservationBoundarySummary, ObservationDelta,
+    ObservationIncompleteReason, PageInfo, PageTargetInfo, PendingDialog, PopupClickOutcome,
     PopupVerificationEvidence, RecoveryStrategy, SemanticIntentAction,
     SemanticIntentExecutionRequest, SemanticIntentExecutionResult, SemanticIntentExecutionStatus,
-    SemanticIntentResult, SemanticResolution, VerificationOutcome, VerificationPredicate,
-    WaitCondition, WaitOutcome, WaitTimeout,
+    SemanticIntentResult, SemanticObservation, SemanticObservationLevel, SemanticResolution,
+    SemanticTarget, VerificationOutcome, VerificationPredicate, ViewportState, WaitCondition,
+    WaitOutcome, WaitTimeout,
 };
 use super::session::{ActionContractError, BrowserResult};
 #[cfg(feature = "native-engine")]
@@ -103,6 +110,8 @@ pub struct BrowserRuntimeSession {
     operation_lock: Mutex<()>,
     #[cfg(feature = "native-engine")]
     next_execution_id: AtomicU64,
+    #[cfg(feature = "native-engine")]
+    native_observation_cache: Mutex<Option<SemanticObservation>>,
 }
 
 impl BrowserRuntimeSession {
@@ -133,6 +142,8 @@ impl BrowserRuntimeSession {
             operation_lock: Mutex::new(()),
             #[cfg(feature = "native-engine")]
             next_execution_id: AtomicU64::new(1),
+            #[cfg(feature = "native-engine")]
+            native_observation_cache: Mutex::new(None),
         };
         BrowserBackendDispatcher::new(&session.backend)
             .initialize()
@@ -149,6 +160,7 @@ impl BrowserRuntimeSession {
             backend,
             operation_lock: Mutex::new(()),
             next_execution_id: AtomicU64::new(1),
+            native_observation_cache: Mutex::new(None),
         };
         BrowserBackendDispatcher::new(&session.backend)
             .initialize()
@@ -689,6 +701,372 @@ impl BrowserRuntimeSession {
         self.native_semantic_observation().await
     }
 
+    /// Return native page-state evidence through the same bootstrap contract
+    /// used by the CDP session. Bootstrap never publishes action references.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_observe_bootstrap(&self) -> BrowserResult<BootstrapObservation> {
+        let _operation = self.operation_lock.lock().await;
+        let frames = self.native_inspection_snapshots_unlocked().await?;
+        let root = frames
+            .first()
+            .ok_or("native bootstrap returned no active frame")?;
+        let snapshot = &root.inspection.snapshot;
+        let (text, text_truncated) = bounded_native_semantic_text(&frames);
+        let page = PageInfo {
+            url: snapshot.url.clone(),
+            title: snapshot.title.clone(),
+            ready_state: if snapshot.lifecycle.as_str() == "running" {
+                "complete".into()
+            } else {
+                snapshot.lifecycle.as_str().into()
+            },
+            target_id: root.inspection.context_id.clone(),
+            frame_id: root.frame_id.clone(),
+        };
+        let landmarks = root
+            .inspection
+            .nodes
+            .iter()
+            .take(NATIVE_SEMANTIC_TARGET_LIMIT)
+            .map(|node| super::session::PageStateLandmark {
+                role: node.role.clone(),
+                name: node.name.clone(),
+            })
+            .collect::<Vec<_>>();
+        let child_frames = frames.len().saturating_sub(1);
+        let mut incomplete = Vec::new();
+        if snapshot.text_truncated || text_truncated {
+            incomplete.push(ObservationIncompleteReason::VisibleText);
+        }
+        if child_frames > 0 {
+            incomplete.push(ObservationIncompleteReason::FrameBoundary);
+        }
+        let viewport = root.inspection.layout.viewport;
+        let scroll_offset = root.inspection.layout.scroll_offset;
+        let boundaries = ObservationBoundarySummary {
+            scanned_elements: root.inspection.nodes.len(),
+            scan_limit: root.inspection.nodes.len(),
+            shadow_roots: 0,
+            child_frames,
+            canvases: 0,
+            canvas_2d: 0,
+            webgl_canvases: 0,
+            webgpu_canvases: 0,
+            svg_elements: 0,
+            media_elements: 0,
+            embedded_documents: child_frames,
+            pdf_documents: 0,
+            native_surfaces: 1,
+            truncated: snapshot.title_truncated || snapshot.text_truncated,
+            text_truncated,
+            viewport: Some(ViewportState {
+                scroll_x: f64::from(scroll_offset.x),
+                scroll_y: f64::from(scroll_offset.y),
+                width: f64::from(viewport.width),
+                height: f64::from(viewport.height),
+                document_width: f64::from(root.inspection.layout.content_width),
+                document_height: f64::from(root.inspection.layout.content_height),
+            }),
+        };
+        let revision = native_aggregate_revision(&frames);
+        let ready = snapshot.lifecycle.as_str() == "running";
+        let page_context_id = format!("{}:{revision}", page.target_id);
+        let complete = ready && incomplete.is_empty();
+        Ok(BootstrapObservation {
+            page: page.clone(),
+            text: text.clone(),
+            classification: super::session::classify_page_state(&page, &text, &landmarks),
+            revision,
+            context_id: 0,
+            page_context_id,
+            ready,
+            complete,
+            consistency: super::session::ObservationConsistency {
+                consistent: true,
+                attempts: 1,
+                start_revision: revision,
+                end_revision: revision,
+                start_mutation_revision: revision,
+                end_mutation_revision: revision,
+            },
+            boundaries,
+            incomplete,
+        })
+    }
+
+    /// Extract structured records from a current native semantic observation
+    /// using the shared bounded extraction implementation.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_extract_structured(
+        &self,
+        request: &super::session::StructuredExtractionRequest,
+        policy: &BrowserPolicy,
+    ) -> BrowserResult<super::session::StructuredExtractionResult> {
+        if super::session::extraction_request_requires_sensitive_access(request) {
+            policy.require_sensitive_extraction()?;
+        }
+        let observation = self
+            .native_semantic_observe(SemanticObservationLevel::Structured)
+            .await?;
+        super::session::extract_structured_from_observation(
+            &observation,
+            request,
+            policy.allow_sensitive_extraction(),
+        )
+    }
+
+    /// Resolve one native intent without dispatching an action.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_resolve_intent(
+        &self,
+        request: &super::session::SemanticIntentRequest,
+    ) -> BrowserResult<SemanticIntentResult> {
+        let observation = self
+            .native_semantic_observe(SemanticObservationLevel::Interactive)
+            .await?;
+        Ok(super::session::resolve_intent(request, &observation))
+    }
+
+    /// Resolve one native intent with historical fingerprints used only as
+    /// bounded explanation evidence; stored knowledge never supplies a target.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_resolve_intent_with_knowledge(
+        &self,
+        request: &super::session::SemanticIntentRequest,
+        store: &KnowledgeStore,
+        lookup_options: KnowledgeLookupOptions,
+    ) -> BrowserResult<SemanticIntentResult> {
+        let observation = self
+            .native_semantic_observe(SemanticObservationLevel::Interactive)
+            .await?;
+        let context = KnowledgeLookupContext::from_observation(&observation, lookup_options)?;
+        let assessments = store.assess(&context);
+        let historical_fingerprints = store
+            .records()
+            .iter()
+            .zip(assessments)
+            .filter(|(record, assessment)| {
+                record.kind == super::session::KnowledgeRecordKind::TargetFingerprint
+                    && assessment.status == KnowledgeAssessmentStatus::Eligible
+            })
+            .filter_map(|(record, _)| {
+                record
+                    .data
+                    .get("fingerprint")
+                    .and_then(|value| value.as_str())
+            })
+            .map(str::to_string)
+            .collect::<std::collections::BTreeSet<_>>();
+        Ok(super::session::resolve_intent_with_historical_matches(
+            request,
+            &observation,
+            &historical_fingerprints,
+        ))
+    }
+
+    /// Resolve and execute one native intent through the guarded action path.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_execute_intent(
+        &self,
+        request: &SemanticIntentExecutionRequest,
+    ) -> BrowserResult<SemanticIntentExecutionResult> {
+        Ok(self
+            .native_act_and_verify(request, None, Duration::from_millis(1))
+            .await?
+            .execution)
+    }
+
+    /// Return a bounded delta from the last public native observation.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_observe_delta(&self) -> BrowserResult<ObservationDelta> {
+        let _operation = self.operation_lock.lock().await;
+        let previous = self
+            .native_observation_cache
+            .lock()
+            .await
+            .clone()
+            .ok_or("observe_delta requires a prior native semantic observation")?;
+        let current = self
+            .native_semantic_observation_level_unlocked(SemanticObservationLevel::Structured)
+            .await?;
+        if previous.route != current.route {
+            return Err("native observe_delta cannot compare different routes".into());
+        }
+        let old_targets = previous
+            .regions
+            .iter()
+            .flat_map(|region| region.targets.iter())
+            .collect::<Vec<_>>();
+        let current_targets = current
+            .regions
+            .iter()
+            .flat_map(|region| region.targets.iter())
+            .collect::<Vec<_>>();
+        let control = |target: &SemanticTarget| DeltaControl {
+            reference: target.reference.clone(),
+            role: target.role.clone(),
+            name: target.name.clone(),
+        };
+        let mut added = Vec::new();
+        let mut removed = Vec::new();
+        let mut changed = Vec::new();
+        for target in &current_targets {
+            match old_targets
+                .iter()
+                .find(|previous| previous.reference == target.reference)
+            {
+                None if added.len() < 8 => added.push(control(target)),
+                Some(previous) if *previous != *target && changed.len() < 8 => {
+                    changed.push(control(target));
+                }
+                _ => {}
+            }
+        }
+        for target in &old_targets {
+            if !current_targets
+                .iter()
+                .any(|current| current.reference == target.reference)
+                && removed.len() < 8
+            {
+                removed.push(control(target));
+            }
+        }
+        let delta = ObservationDelta {
+            from_revision: previous.revision,
+            to_revision: current.revision,
+            mutation_summary: MutationSummary {
+                url_changed: previous.page.url != current.page.url,
+                title_changed: previous.page.title != current.page.title,
+                revision_delta: current.revision.saturating_sub(previous.revision),
+                soft_navigation_suspected: current.revision > previous.revision
+                    && previous.page.url == current.page.url
+                    && previous.page.title == current.page.title,
+            },
+            added,
+            removed,
+            changed,
+            prior_incomplete: native_observation_incomplete(&previous),
+            current_incomplete: native_observation_incomplete(&current),
+        };
+        *self.native_observation_cache.lock().await = Some(current);
+        Ok(delta)
+    }
+
+    /// Export the same bounded checkpoint envelope as the CDP session.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_export_checkpoint(
+        &self,
+        profile: &str,
+        policy: &BrowserPolicy,
+    ) -> BrowserResult<CheckpointV1> {
+        let _operation = self.operation_lock.lock().await;
+        let frames = self.native_inspection_snapshots_unlocked().await?;
+        let observation =
+            build_native_semantic_observation(&frames, SemanticObservationLevel::Structured)?;
+        let root = frames
+            .first()
+            .ok_or("native checkpoint export returned no active frame")?;
+        let last_refs = observation
+            .regions
+            .iter()
+            .flat_map(|region| region.targets.iter())
+            .take(8)
+            .map(|target| target.reference.clone())
+            .collect();
+        let checkpoint = CheckpointV1 {
+            schema_version: 1,
+            glass_version: env!("CARGO_PKG_VERSION").to_string(),
+            exported_at: chrono::Utc::now().to_rfc3339(),
+            profile: profile.to_owned(),
+            attach_mode: false,
+            topology: CheckpointTopology {
+                target_id: Some(root.inspection.context_id.clone()),
+                frame_id: Some(root.frame_id.clone()),
+                url: bounded_checkpoint_text(&root.inspection.snapshot.url, 1024),
+                title: bounded_checkpoint_text(&root.inspection.snapshot.title, 1024),
+            },
+            observation: CheckpointObservation {
+                revision: observation.revision,
+                last_refs,
+            },
+            policy: format!("{:?}", policy.preset()).to_lowercase(),
+        };
+        if serde_json::to_vec(&checkpoint)?.len() > 4 * 1024 {
+            return Err("checkpoint exceeds the 4 KiB serialized limit".into());
+        }
+        Ok(checkpoint)
+    }
+
+    /// Restore only native target/frame selection from a checkpoint. No action
+    /// is ever replayed during import.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_import_checkpoint(&self, checkpoint: &CheckpointV1) -> BrowserResult<()> {
+        if checkpoint.schema_version != 1 {
+            return Err(CheckpointError::SchemaVersionMismatch {
+                expected: 1,
+                found: checkpoint.schema_version,
+            }
+            .into());
+        }
+        if let Some(target_id) = checkpoint.topology.target_id.as_deref() {
+            let targets = self.native_list_targets().await?;
+            if !targets.iter().any(|target| target.id == target_id) {
+                return Err(CheckpointError::TargetClosed.into());
+            }
+            self.native_select_target(target_id).await?;
+        }
+        if let Some(frame_id) = checkpoint.topology.frame_id.as_deref() {
+            let frames = self.native_list_frames().await?;
+            if !frames.iter().any(|frame| frame.id == frame_id) {
+                return Err(CheckpointError::Stale.into());
+            }
+            self.native_select_frame(frame_id).await?;
+        }
+        Ok(())
+    }
+
+    /// Project native parser/presentation diagnostics into the stable Glass
+    /// diagnostics envelope. Native diagnostics are intentionally limited to
+    /// sanitized CSS/document warnings; no synthetic network or console event
+    /// is invented when the native owner did not observe one.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_diagnostics(&self, duration: Duration) -> BrowserResult<DiagnosticReport> {
+        let _operation = self.operation_lock.lock().await;
+        let (diagnostics, inspection) = match &self.backend {
+            BackendStartup::Native(backend) => {
+                (backend.diagnostics()?, backend.inspection_snapshot()?)
+            }
+            _ => return Err("native diagnostics are only available on the native runtime".into()),
+        };
+        let console = diagnostics
+            .diagnostics
+            .into_iter()
+            .map(|diagnostic| ConsoleEvidence {
+                level: "warning".into(),
+                text: format!(
+                    "native {:?} {:?} at {}: {}",
+                    diagnostic.code, diagnostic.source, diagnostic.offset, diagnostic.detail
+                ),
+            })
+            .collect();
+        let ready = inspection.snapshot.lifecycle.as_str() == "running";
+        Ok(DiagnosticReport {
+            target_id: inspection.context_id.clone(),
+            frame_id: format!("{}:main", inspection.context_id),
+            duration_ms: duration.as_millis() as u64,
+            console,
+            network: Vec::new(),
+            dropped_events: u64::from(diagnostics.truncated),
+            startup_diagnostics: Default::default(),
+            lifecycle: LifecycleDiagnostics {
+                browser_ready: ready,
+                navigation_started: ready,
+                evidence_ready: ready,
+                action_verified: false,
+            },
+        })
+    }
+
     /// Extract the active native document into the stable, bounded Web IR v1
     /// contract without creating a Chromium/CDP session.
     #[cfg(feature = "native-engine")]
@@ -732,7 +1110,11 @@ impl BrowserRuntimeSession {
         level: super::session::SemanticObservationLevel,
     ) -> BrowserResult<super::session::SemanticObservation> {
         let _operation = self.operation_lock.lock().await;
-        self.native_semantic_observation_level_unlocked(level).await
+        let observation = self
+            .native_semantic_observation_level_unlocked(level)
+            .await?;
+        *self.native_observation_cache.lock().await = Some(observation.clone());
+        Ok(observation)
     }
 
     /// Expand one native semantic region while keeping its revision and route
@@ -1249,6 +1631,71 @@ impl BrowserRuntimeSession {
     ) -> BrowserResult<WaitOutcome> {
         validate_native_deadline(deadline)?;
         condition.validate()?;
+        match condition {
+            WaitCondition::JavaScript(expression) => {
+                self.native_wait_javascript(expression, deadline).await
+            }
+            condition => self.native_wait_non_javascript(condition, deadline).await,
+        }
+    }
+
+    #[cfg(feature = "native-engine")]
+    async fn native_wait_javascript(
+        &self,
+        expression: String,
+        deadline: Duration,
+    ) -> BrowserResult<WaitOutcome> {
+        let description = WaitCondition::JavaScript(expression.clone()).description();
+        let started = tokio::time::Instant::now();
+        let expires = started + deadline;
+        loop {
+            let result = self.script(&expression).await?;
+            let matched = result
+                .value
+                .as_bool()
+                .ok_or("native wait JavaScript predicate must return a boolean")?;
+            let state = matched.to_string();
+            if matched {
+                let observation = self.native_semantic_observation().await?;
+                return Ok(WaitOutcome {
+                    condition: description,
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                    last_state: state,
+                    target_id: observation.route.target_id,
+                    frame_id: observation.route.frame_id,
+                });
+            }
+            if tokio::time::Instant::now() >= expires {
+                let observation = self.native_semantic_observation().await?;
+                return Err(Box::new(WaitTimeout {
+                    condition: description,
+                    deadline_ms: deadline.as_millis() as u64,
+                    last_state: state,
+                    observed_page: Some(super::session::PageInfo {
+                        url: observation.page.url,
+                        title: observation.page.title,
+                        ready_state: "complete".into(),
+                        target_id: observation.route.target_id,
+                        frame_id: observation.route.frame_id,
+                    }),
+                    reason: "deadline_exceeded",
+                }));
+            }
+            tokio::time::sleep(
+                expires
+                    .saturating_duration_since(tokio::time::Instant::now())
+                    .min(NATIVE_WAIT_POLL_INTERVAL),
+            )
+            .await;
+        }
+    }
+
+    #[cfg(feature = "native-engine")]
+    async fn native_wait_non_javascript(
+        &self,
+        condition: WaitCondition,
+        deadline: Duration,
+    ) -> BrowserResult<WaitOutcome> {
         let description = condition.description();
         let started = tokio::time::Instant::now();
         let expires = started + deadline;
@@ -1506,6 +1953,35 @@ impl BrowserRuntimeSession {
             .map(|context| context.context_id)
             .ok_or("alternative runtime returned no active context")?)
     }
+}
+
+#[cfg(feature = "native-engine")]
+fn native_observation_incomplete(
+    observation: &SemanticObservation,
+) -> Vec<ObservationIncompleteReason> {
+    let mut incomplete = Vec::new();
+    if observation.limits.text_truncated {
+        incomplete.push(ObservationIncompleteReason::VisibleText);
+    }
+    if observation.limits.omitted_targets > 0 {
+        incomplete.push(ObservationIncompleteReason::Control);
+    }
+    if observation.limits.omitted_regions > 0 || observation.limits.truncated {
+        incomplete.push(ObservationIncompleteReason::BoundaryScan);
+    }
+    incomplete
+}
+
+#[cfg(feature = "native-engine")]
+fn bounded_checkpoint_text(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_owned();
+    }
+    let mut end = max_bytes;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_owned()
 }
 
 #[cfg(feature = "native-engine")]

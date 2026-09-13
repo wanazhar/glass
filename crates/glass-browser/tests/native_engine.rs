@@ -15,9 +15,10 @@ use glass_browser::browser::native_engine::{
     NativeTextDecorationSkipSpaces, NativeTextDecorationStyle, NativeWorkerFailureKind, Viewport,
 };
 use glass_browser::browser::session::{
-    Cookie, IntentConfidence, IntentConstraints, SemanticIntentAction,
-    SemanticIntentExecutionRequest, SemanticIntentRequest, SemanticObservationLevel,
-    SemanticResolutionPolicy, VerificationPredicate, WaitCondition,
+    Cookie, ExtractionField, ExtractionKind, IntentConfidence, IntentConstraints,
+    SemanticIntentAction, SemanticIntentExecutionRequest, SemanticIntentRequest,
+    SemanticObservationLevel, SemanticResolutionPolicy, StructuredExtractionRequest,
+    VerificationPredicate, WaitCondition,
 };
 use glass_browser::browser_backend::{
     ActionRequest, BROWSER_BACKEND_SCHEMA_VERSION, BackendSelectionRequest,
@@ -404,6 +405,102 @@ async fn native_semantic_levels_and_region_expansion_are_revision_scoped() {
     let form_values = session.native_form_values(false).await.unwrap();
     assert_eq!(form_values[0]["type"], "email");
     assert_eq!(form_values[0]["value"], "");
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_exposes_shared_semantic_session_contracts() {
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(
+            "data:text/html,%3Ctitle%3EContracts%3C%2Ftitle%3E%3Cmain%3E%3Clabel%20for%3D%22name%22%3EName%3C%2Flabel%3E%3Cinput%20id%3D%22name%22%3E%3Cbutton%3ESave%3C%2Fbutton%3E%3C%2Fmain%3E",
+        ),
+    )
+    .await
+    .unwrap();
+
+    let bootstrap = session.native_observe_bootstrap().await.unwrap();
+    assert!(bootstrap.ready);
+    assert!(bootstrap.complete);
+    assert_eq!(bootstrap.context_id, 0);
+    assert_eq!(bootstrap.page.title, "Contracts");
+
+    let observation = session
+        .native_semantic_observe(SemanticObservationLevel::Structured)
+        .await
+        .unwrap();
+    let policy = glass_browser::browser::policy::BrowserPolicy::development(
+        std::env::current_dir().unwrap(),
+    )
+    .unwrap();
+    let extracted = session
+        .native_extract_structured(
+            &StructuredExtractionRequest {
+                fields: vec![ExtractionField {
+                    name: "title".into(),
+                    path: "$.page.title".into(),
+                    kind: ExtractionKind::String,
+                }],
+                region_id: None,
+                start_index: 0,
+                continuation: None,
+                max_items: 16,
+                max_bytes: 16 * 1024,
+            },
+            &policy,
+        )
+        .await
+        .unwrap();
+    assert_eq!(extracted.records[0]["title"], "Contracts");
+
+    let intent = SemanticIntentRequest {
+        schema_version: 1,
+        intent: "save".into(),
+        action: SemanticIntentAction::Click,
+        scope: Default::default(),
+        constraints: IntentConstraints {
+            role: Some("button".into()),
+            name: Some("Save".into()),
+            ..Default::default()
+        },
+        resolution_policy: SemanticResolutionPolicy::RequireExact,
+        expected_revision: Some(observation.revision),
+    };
+    let resolved = session.native_resolve_intent(&intent).await.unwrap();
+    assert_eq!(resolved.candidates.len(), 1);
+    let execution = session
+        .native_execute_intent(&SemanticIntentExecutionRequest {
+            request: intent,
+            candidate_id: resolved.candidates[0].id.clone(),
+            value: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        execution.status,
+        glass_browser::browser::session::SemanticIntentExecutionStatus::Executed
+    );
+
+    let delta = session.native_observe_delta().await.unwrap();
+    assert!(delta.to_revision >= delta.from_revision);
+    assert!(!delta.mutation_summary.url_changed);
+
+    let checkpoint = session
+        .native_export_checkpoint("contracts", &policy)
+        .await
+        .unwrap();
+    assert!(!checkpoint.attach_mode);
+    assert_eq!(
+        checkpoint.topology.target_id.as_deref(),
+        Some("native-context")
+    );
+    session.native_import_checkpoint(&checkpoint).await.unwrap();
+
+    let diagnostics = session
+        .native_diagnostics(Duration::from_millis(1))
+        .await
+        .unwrap();
+    assert_eq!(diagnostics.target_id, "native-context");
+    assert!(diagnostics.lifecycle.browser_ready);
     session.close().await.unwrap();
 }
 

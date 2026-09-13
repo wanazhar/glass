@@ -101,6 +101,20 @@ receipts remain backend-labelled. Native MCP surface completion, profile-wide
 conformance, recovery/cancellation, and release certification remain active
 issue #40 gates.
 
+Slice 327 routes the shared semantic MCP contract through the native resident
+owner. Bootstrap, structured extraction, intent and knowledge resolution,
+observation deltas, checkpoints, diagnostics, verification, waits, actions,
+targets, storage, and core browser calls use explicit native adapters and the
+existing shared result/policy envelopes. Native target defaults and diagnostic
+field names follow the public MCP contract; no route creates a hidden
+Chromium/CDP session. The CSS cascade scratch used by layout snapshots is
+heap-owned with valid field-by-field initialization, and exact literal
+`document.readyState` comparisons use a no-layout bootstrap snapshot so nested
+lifecycle waits do not exhaust a test or worker stack. General script
+evaluation retains the layout-backed snapshot. Complete operation coverage,
+Core Web Profile conformance, process isolation, recovery/cancellation, and
+release certification remain issue #40 gates.
+
 Slice 283 adds a bounded dedicated-worker bridge after the page-facing
 computed-style/media-query bridge in slice 282. Page-created classic workers
 load through the shared resource policy, execute in isolated QuickJS realms,

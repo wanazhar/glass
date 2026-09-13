@@ -24,7 +24,7 @@ use rquickjs::function::This;
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::{CaughtError, Coerced, Context, Error, FromJs, Function, Module, Runtime, Value};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
@@ -311,6 +311,12 @@ pub(crate) enum NativeScriptCommand {
         child_index: u32,
         #[serde(default)]
         before_index: Option<u32>,
+    },
+    /// The JavaScript realm already executed a newly inserted classic inline
+    /// script synchronously; the host records the single-shot state without
+    /// evaluating it a second time.
+    StartScript {
+        node_index: u32,
     },
     SetCustomValidity {
         node_index: u32,
@@ -2760,6 +2766,7 @@ pub(crate) fn execute_page_scripts(
     cookie: &str,
     resource_events: &[(u32, NativeEventKind)],
 ) -> Result<NativePageScriptResult, NativeEngineError> {
+    document.mark_attached_scripts_started();
     if runtime.is_none() {
         *runtime = Some(NativeJavaScriptRuntime::new_with_context_id(context_id)?);
     }
@@ -3001,6 +3008,294 @@ pub(crate) fn execute_page_scripts(
             .take_dialog_events(),
         events,
     })
+}
+
+/// Execute scripts attached by a completed DOM mutation. Unlike the initial
+/// page loader this path does not replay document lifecycle events; it only
+/// runs each newly started script and the resource event associated with it.
+/// The document owns the single-shot ledger, so a script created in one host
+/// batch and attached in a later batch still executes exactly once.
+pub(crate) fn execute_dynamic_page_scripts(
+    document: &mut NativeDocument,
+    runtime: &NativeJavaScriptRuntime,
+    sources: Vec<NativePageScript>,
+    document_url: &str,
+    document_origin: &NativeOrigin,
+    viewport: Viewport,
+    resource_events: &[(u32, NativeEventKind)],
+) -> Result<NativePageScriptResult, NativeEngineError> {
+    let module_sources = sources
+        .iter()
+        .filter_map(|source| match source {
+            NativePageScript::Module { name, source, .. }
+            | NativePageScript::ModuleDependency { name, source } => {
+                Some((name.clone(), source.clone()))
+            }
+            NativePageScript::Classic { .. } => None,
+        })
+        .collect::<BTreeMap<_, _>>();
+    runtime.set_module_sources(module_sources);
+
+    let mut pending = VecDeque::from(sources);
+    let mut pending_fetches = Vec::new();
+    let mut websocket_commands = Vec::new();
+    let mut event_source_commands = Vec::new();
+    let mut scroll_commands = Vec::new();
+    let mut navigation = None;
+    let mut events = Vec::new();
+    let mut failed_script_nodes = BTreeSet::new();
+    let mut executed = 0usize;
+
+    while let Some(source) = pending.pop_front() {
+        if matches!(&source, NativePageScript::ModuleDependency { .. }) {
+            continue;
+        }
+        executed = executed.saturating_add(1);
+        if executed > MAX_NATIVE_INLINE_SCRIPTS {
+            return Err(NativeEngineError::limit(
+                "native dynamic page scripts",
+                MAX_NATIVE_INLINE_SCRIPTS,
+                executed,
+            ));
+        }
+        let node_index = match &source {
+            NativePageScript::Classic { node_index, .. }
+            | NativePageScript::Module { node_index, .. } => *node_index,
+            NativePageScript::ModuleDependency { .. } => None,
+        };
+        let evaluation = match &source {
+            NativePageScript::Classic { source, .. } => {
+                runtime.evaluate(source, document, document_url, document_origin, viewport)
+            }
+            NativePageScript::Module { name, source, .. } => runtime.evaluate_module(
+                name,
+                source,
+                document,
+                document_url,
+                document_origin,
+                viewport,
+            ),
+            NativePageScript::ModuleDependency { .. } => continue,
+        };
+        let evaluation = match evaluation {
+            Ok(evaluation) => evaluation,
+            Err(error) if is_ignorable_page_script_error(&error) => {
+                if let Some(node_index) = node_index {
+                    failed_script_nodes.insert(node_index);
+                    let message = page_script_error_message(&error);
+                    if let Some(event_source) =
+                        host_script_error_event_script(Some(node_index), &message, document_url)?
+                    {
+                        let error_evaluation = runtime.evaluate(
+                            &event_source,
+                            document,
+                            document_url,
+                            document_origin,
+                            viewport,
+                        )?;
+                        let commands = error_evaluation.commands.clone();
+                        apply_page_script_evaluation(
+                            document,
+                            error_evaluation,
+                            &mut pending_fetches,
+                            &mut websocket_commands,
+                            &mut event_source_commands,
+                            &mut scroll_commands,
+                            &mut navigation,
+                        )?;
+                        enqueue_dynamic_page_scripts(
+                            document,
+                            &commands,
+                            document_url,
+                            &mut pending,
+                        )?;
+                        events.push((node_index, NativeEventKind::Error));
+                    }
+                }
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        let commands = evaluation.commands.clone();
+        apply_page_script_evaluation(
+            document,
+            evaluation,
+            &mut pending_fetches,
+            &mut websocket_commands,
+            &mut event_source_commands,
+            &mut scroll_commands,
+            &mut navigation,
+        )?;
+        enqueue_dynamic_page_scripts(document, &commands, document_url, &mut pending)?;
+    }
+
+    for (node_index, event_kind) in resource_events {
+        if *event_kind == NativeEventKind::Load && failed_script_nodes.contains(node_index) {
+            continue;
+        }
+        let Some(event_source) = host_event_script(&[(*node_index, *event_kind)])? else {
+            continue;
+        };
+        let evaluation = runtime.evaluate(
+            &event_source,
+            document,
+            document_url,
+            document_origin,
+            viewport,
+        )?;
+        let commands = evaluation.commands.clone();
+        apply_page_script_evaluation(
+            document,
+            evaluation,
+            &mut pending_fetches,
+            &mut websocket_commands,
+            &mut event_source_commands,
+            &mut scroll_commands,
+            &mut navigation,
+        )?;
+        enqueue_dynamic_page_scripts(document, &commands, document_url, &mut pending)?;
+        events.push((*node_index, *event_kind));
+    }
+
+    while let Some(source) = pending.pop_front() {
+        if matches!(&source, NativePageScript::ModuleDependency { .. }) {
+            continue;
+        }
+        executed = executed.saturating_add(1);
+        if executed > MAX_NATIVE_INLINE_SCRIPTS {
+            return Err(NativeEngineError::limit(
+                "native dynamic page scripts",
+                MAX_NATIVE_INLINE_SCRIPTS,
+                executed,
+            ));
+        }
+        let node_index = match &source {
+            NativePageScript::Classic { node_index, .. }
+            | NativePageScript::Module { node_index, .. } => *node_index,
+            NativePageScript::ModuleDependency { .. } => None,
+        };
+        let evaluation = match &source {
+            NativePageScript::Classic { source, .. } => {
+                runtime.evaluate(source, document, document_url, document_origin, viewport)
+            }
+            NativePageScript::Module { name, source, .. } => runtime.evaluate_module(
+                name,
+                source,
+                document,
+                document_url,
+                document_origin,
+                viewport,
+            ),
+            NativePageScript::ModuleDependency { .. } => continue,
+        };
+        let evaluation = match evaluation {
+            Ok(evaluation) => evaluation,
+            Err(error) if is_ignorable_page_script_error(&error) => {
+                if let Some(node_index) = node_index {
+                    let message = page_script_error_message(&error);
+                    if let Some(event_source) =
+                        host_script_error_event_script(Some(node_index), &message, document_url)?
+                    {
+                        let error_evaluation = runtime.evaluate(
+                            &event_source,
+                            document,
+                            document_url,
+                            document_origin,
+                            viewport,
+                        )?;
+                        let commands = error_evaluation.commands.clone();
+                        apply_page_script_evaluation(
+                            document,
+                            error_evaluation,
+                            &mut pending_fetches,
+                            &mut websocket_commands,
+                            &mut event_source_commands,
+                            &mut scroll_commands,
+                            &mut navigation,
+                        )?;
+                        enqueue_dynamic_page_scripts(
+                            document,
+                            &commands,
+                            document_url,
+                            &mut pending,
+                        )?;
+                        events.push((node_index, NativeEventKind::Error));
+                    }
+                }
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        let commands = evaluation.commands.clone();
+        apply_page_script_evaluation(
+            document,
+            evaluation,
+            &mut pending_fetches,
+            &mut websocket_commands,
+            &mut event_source_commands,
+            &mut scroll_commands,
+            &mut navigation,
+        )?;
+        enqueue_dynamic_page_scripts(document, &commands, document_url, &mut pending)?;
+    }
+
+    Ok(NativePageScriptResult {
+        pending_fetches,
+        websocket_commands,
+        event_source_commands,
+        scroll_commands,
+        navigation,
+        dialogs: runtime.take_dialog_events(),
+        events,
+    })
+}
+
+fn enqueue_dynamic_page_scripts(
+    document: &mut NativeDocument,
+    commands: &[NativeScriptCommand],
+    document_url: &str,
+    pending: &mut VecDeque<NativePageScript>,
+) -> Result<(), NativeEngineError> {
+    let sources = document.take_newly_attached_page_script_sources(
+        commands,
+        MAX_NATIVE_INLINE_SCRIPTS,
+        MAX_NATIVE_SCRIPT_BYTES,
+    );
+    for script in page_script_sources_to_scripts(sources, document_url, "glass-dynamic-module")
+        .into_iter()
+        .rev()
+    {
+        pending.push_front(script);
+    }
+    Ok(())
+}
+
+pub(crate) fn page_script_sources_to_scripts(
+    sources: Vec<NativePageScriptSource>,
+    document_url: &str,
+    module_name_prefix: &str,
+) -> Vec<NativePageScript> {
+    sources
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, source)| match source {
+            NativePageScriptSource::Inline {
+                source, node_index, ..
+            } => Some(NativePageScript::Classic {
+                source,
+                node_index: Some(node_index),
+            }),
+            NativePageScriptSource::ModuleInline {
+                source, node_index, ..
+            } => Some(NativePageScript::Module {
+                name: format!("{document_url}#{module_name_prefix}-{node_index}-{index}"),
+                source,
+                node_index: Some(node_index),
+            }),
+            NativePageScriptSource::External { .. }
+            | NativePageScriptSource::ModuleExternal { .. } => None,
+        })
+        .collect()
 }
 
 fn page_script_error_message(error: &NativeEngineError) -> String {
@@ -12008,6 +12303,7 @@ fn document_bootstrap(
         child.parentIndex = element.nodeIndex;
         element.__glassSyncContent();
         pushCommand({{ kind: "appendChild", parent_index: entry.nodeIndex, child_index: child.nodeIndex }});
+        if (nodeIsConnected(element)) executeInsertedScripts(child);
         return child;
       }},
       insertBefore(child, before) {{
@@ -12047,6 +12343,7 @@ fn document_bootstrap(
           child_index: child.nodeIndex,
           before_index: before.nodeIndex,
         }});
+        if (nodeIsConnected(element)) executeInsertedScripts(child);
         return child;
       }},
       remove() {{
@@ -12446,6 +12743,12 @@ fn document_bootstrap(
     }};
     const element = makeElement(entry);
     element.__glassCreated = true;
+    Object.defineProperty(element, "__glassDynamicScriptStarted", {{
+      enumerable: false,
+      configurable: false,
+      writable: true,
+      value: false,
+    }});
     defineTreeAccessors(element);
     installClassList(element);
     installElementStyleAndDataset(element);
@@ -12458,6 +12761,33 @@ fn document_bootstrap(
       namespace_uri: namespaceURI === null ? "" : namespaceURI,
     }});
     return element;
+  }};
+  const nodeIsConnected = (node) => {{
+    let current = node;
+    for (let depth = 0; current && depth <= {max_commands}; depth += 1) {{
+      if (current === globalThis.document || rootChildren.includes(current)) return true;
+      current = current.__glassParent || null;
+    }}
+    return false;
+  }};
+  const executeInsertedScripts = (node) => {{
+    if (suppressHostCommands > 0 || !node) return;
+    if (Number(node.nodeType) === 1 && String(node.localName || "").toLowerCase() === "script"
+        && node.__glassDynamicScriptStarted === false) {{
+      node.__glassDynamicScriptStarted = true;
+      const type = String(node.getAttribute("type") || "").trim().toLowerCase();
+      const source = String(node.textContent || "");
+      const classic = type === "" || type === "text/javascript" || type === "application/javascript";
+      if (!node.getAttribute("src") && classic && source) {{
+        pushCommand({{ kind: "startScript", node_index: node.nodeIndex }});
+        try {{
+          (0, eval)(source);
+        }} catch (error) {{
+          dispatchTarget(node, createEvent("error"));
+        }}
+      }}
+    }}
+    for (const child of node.__glassChildren || []) executeInsertedScripts(child);
   }};
   const makeDetachedText = (value) => {{
     let textContent = String(value);

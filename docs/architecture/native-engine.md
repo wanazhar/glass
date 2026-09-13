@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-295` slice; the bounded foundation below remains
+`native-engine-browser-296` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 
 Slice 283 adds a bounded dedicated-worker bridge after the page-facing
@@ -142,6 +142,16 @@ request settles, and suppresses a late response after abort; the existing
 shared loader remains the sole transport and policy owner. Host transport
 cancellation and complete abort Web IDL semantics remain Issue #40 gates.
 Exact evidence is recorded in `docs/plan/tasks/native-engine-browser-295.md`.
+
+Slice 296 adds standard worker runtime primitives used by ordinary libraries:
+UTF-8 `TextEncoder`/`TextDecoder`, bounded `atob`/`btoa`, `structuredClone`,
+`queueMicrotask`, `DOMException`, and stable `EventTarget`, `Event`,
+`CustomEvent`, `MessageEvent`, and `ErrorEvent` constructors. Dispatch is
+bounded to the owning worker realm and preserves listener/default-prevention
+state without opening a new host boundary. Transferable cross-realm ports,
+complete Web IDL descriptors, and complete native/CDP replacement remain
+Issue #40 gates. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-296.md`.
 
 Slice 282 adds a bounded page-facing computed-style and media-query bridge:
 the JavaScript realm reads the native cascade/layout snapshot through a
@@ -5075,7 +5085,8 @@ uses the shared HTTP(S) loader with owner-tagged requests, bounded raw-byte
 responses, response streams, `Headers`/`Request`/`Response` identity, URL and
 URLSearchParams parsing/mutation, structured worker `location`, bounded
 `navigator` identity, signal-aware worker Fetch cancellation with late-result
-suppression, and body ownership inside the worker realm. Asynchronous
+suppression, worker text/byte encoding, structured cloning, and EventTarget/
+Event identity, and body ownership inside the worker realm. Asynchronous
 worker XHR, persistent worker WebSocket, and worker EventSource/SSE use the
 same owner-tagged content-process boundary and bounded page-turn delivery.
 Shared/service/worklet

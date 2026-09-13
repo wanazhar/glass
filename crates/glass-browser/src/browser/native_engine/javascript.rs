@@ -8096,6 +8096,203 @@ fn worker_bootstrap(
     }}
     return text;
   }};
+  const workerByteInput = (input) => {{
+    if (input === undefined || input === null) return [];
+    if (input instanceof ArrayBuffer) return Array.from(new Uint8Array(input));
+    if (typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(input))
+      return Array.from(new Uint8Array(input.buffer, input.byteOffset, input.byteLength));
+    if (Array.isArray(input)) return input.slice();
+    throw new TypeError("native Worker byte input must be an ArrayBuffer or view");
+  }};
+  const WorkerTextEncoderNative = typeof globalThis.__glassWorkerTextEncoderConstructor === "function"
+    ? globalThis.__glassWorkerTextEncoderConstructor
+    : function() {{ this.encoding = "utf-8"; }};
+  WorkerTextEncoderNative.prototype.encode = function(input) {{
+    return new Uint8Array(workerUtf8Bytes(String(input === undefined ? "" : input)));
+  }};
+  WorkerTextEncoderNative.prototype.encodeInto = function(input, destination) {{
+    if (!destination || typeof ArrayBuffer.isView !== "function" || !ArrayBuffer.isView(destination)
+        || destination.BYTES_PER_ELEMENT === undefined)
+      throw new TypeError("native Worker TextEncoder destination must be a typed array");
+    const source = String(input === undefined ? "" : input);
+    const target = new Uint8Array(destination.buffer, destination.byteOffset, destination.byteLength);
+    let read = 0;
+    const bytes = [];
+    for (const character of Array.from(source)) {{
+      const encoded = workerUtf8Bytes(character);
+      if (bytes.length + encoded.length > target.length) break;
+      bytes.push(...encoded);
+      read += character.length;
+    }}
+    target.set(bytes);
+    return {{ read, written: bytes.length }};
+  }};
+  globalThis.__glassWorkerTextEncoderConstructor = WorkerTextEncoderNative;
+  globalThis.TextEncoder = WorkerTextEncoderNative;
+  const WorkerTextDecoderNative = typeof globalThis.__glassWorkerTextDecoderConstructor === "function"
+    ? globalThis.__glassWorkerTextDecoderConstructor
+    : function(label, options) {{
+        const normalized = label === undefined ? "utf-8" : String(label).toLowerCase();
+        if (!["utf-8", "utf8", "unicode-1-1-utf-8"].includes(normalized))
+          throw new RangeError("native Worker TextDecoder only supports UTF-8");
+        const settings = options && typeof options === "object" ? options : {{}};
+        this.encoding = "utf-8";
+        this.fatal = settings.fatal === true;
+        this.ignoreBOM = settings.ignoreBOM === true;
+      }};
+  WorkerTextDecoderNative.prototype.decode = function(input) {{
+    const bytes = workerByteInput(input);
+    if (bytes.length > {fetch_body_limit}) throw new RangeError("native Worker TextDecoder input exceeds its limit");
+    const decoded = workerUtf8Text(bytes);
+    if (this.fatal && decoded.includes("\ufffd")) throw new TypeError("native Worker TextDecoder encountered invalid UTF-8");
+    return decoded;
+  }};
+  globalThis.__glassWorkerTextDecoderConstructor = WorkerTextDecoderNative;
+  globalThis.TextDecoder = WorkerTextDecoderNative;
+  const workerBinaryString = (bytes) => {{
+    let value = "";
+    for (const byte of bytes) value += String.fromCharCode(byte);
+    return value;
+  }};
+  globalThis.atob = (value) => workerBinaryString(decodeWorkerBase64(String(value), {fetch_body_limit}));
+  globalThis.btoa = (value) => {{
+    const text = String(value);
+    const bytes = [];
+    for (let index = 0; index < text.length; index += 1) {{
+      const code = text.charCodeAt(index);
+      if (code > 255) throw new TypeError("native Worker btoa input contains a non-Latin-1 character");
+      bytes.push(code);
+    }}
+    return encodeWorkerBase64(bytes, {fetch_body_limit});
+  }};
+  globalThis.structuredClone = (value) => value === undefined ? undefined : cloneMessageData(value);
+  globalThis.queueMicrotask = (callback) => {{
+    if (typeof callback !== "function") throw new TypeError("native Worker queueMicrotask callback must be callable");
+    Promise.resolve().then(callback);
+  }};
+  const WorkerDOMExceptionNative = typeof globalThis.__glassWorkerDomExceptionConstructor === "function"
+    ? globalThis.__glassWorkerDomExceptionConstructor
+    : function(message, name) {{
+        this.message = String(message === undefined ? "" : message);
+        this.name = String(name === undefined ? "Error" : name);
+        this.code = 0;
+      }};
+  WorkerDOMExceptionNative.prototype.toString = function() {{ return this.name + ": " + this.message; }};
+  globalThis.__glassWorkerDomExceptionConstructor = WorkerDOMExceptionNative;
+  globalThis.DOMException = WorkerDOMExceptionNative;
+  const WorkerEventNative = typeof globalThis.__glassWorkerEventConstructor === "function"
+    ? globalThis.__glassWorkerEventConstructor
+    : function(type, init) {{
+        const settings = init && typeof init === "object" ? init : {{}};
+        this.type = String(type);
+        this.bubbles = settings.bubbles === true;
+        this.cancelable = settings.cancelable === true;
+        this.composed = settings.composed === true;
+        this.defaultPrevented = false;
+        this.isTrusted = false;
+        this.timeStamp = Number(globalThis.performance && globalThis.performance.now && globalThis.performance.now()) || 0;
+        this.target = null;
+        this.currentTarget = null;
+        this.eventPhase = 0;
+        this.cancelBubble = false;
+        this._immediateStopped = false;
+      }};
+  WorkerEventNative.prototype.preventDefault = function() {{
+    if (this.cancelable) this.defaultPrevented = true;
+  }};
+  WorkerEventNative.prototype.stopPropagation = function() {{ this.cancelBubble = true; }};
+  WorkerEventNative.prototype.stopImmediatePropagation = function() {{
+    this.cancelBubble = true;
+    this._immediateStopped = true;
+  }};
+  WorkerEventNative.prototype.composedPath = function() {{ return this.target ? [this.target] : []; }};
+  globalThis.__glassWorkerEventConstructor = WorkerEventNative;
+  globalThis.Event = WorkerEventNative;
+  const hasWorkerCustomEventConstructor = typeof globalThis.__glassWorkerCustomEventConstructor === "function";
+  const WorkerCustomEventNative = hasWorkerCustomEventConstructor
+    ? globalThis.__glassWorkerCustomEventConstructor
+    : function(type, init) {{
+        const settings = init && typeof init === "object" ? init : {{}};
+        WorkerEventNative.call(this, type, settings);
+        this.detail = settings.detail === undefined ? null : settings.detail;
+      }};
+  if (!hasWorkerCustomEventConstructor) {{
+    WorkerCustomEventNative.prototype = Object.create(WorkerEventNative.prototype);
+    WorkerCustomEventNative.prototype.constructor = WorkerCustomEventNative;
+  }}
+  globalThis.__glassWorkerCustomEventConstructor = WorkerCustomEventNative;
+  globalThis.CustomEvent = WorkerCustomEventNative;
+  const hasWorkerMessageEventConstructor = typeof globalThis.__glassWorkerMessageEventConstructor === "function";
+  const WorkerMessageEventNative = hasWorkerMessageEventConstructor
+    ? globalThis.__glassWorkerMessageEventConstructor
+    : function(type, init) {{
+        const settings = init && typeof init === "object" ? init : {{}};
+        WorkerEventNative.call(this, type, settings);
+        this.data = settings.data === undefined ? null : settings.data;
+        this.origin = String(settings.origin || "");
+        this.lastEventId = String(settings.lastEventId || "");
+        this.source = settings.source === undefined ? null : settings.source;
+        this.ports = Array.isArray(settings.ports) ? settings.ports.slice() : [];
+      }};
+  if (!hasWorkerMessageEventConstructor) {{
+    WorkerMessageEventNative.prototype = Object.create(WorkerEventNative.prototype);
+    WorkerMessageEventNative.prototype.constructor = WorkerMessageEventNative;
+  }}
+  globalThis.__glassWorkerMessageEventConstructor = WorkerMessageEventNative;
+  globalThis.MessageEvent = WorkerMessageEventNative;
+  const hasWorkerErrorEventConstructor = typeof globalThis.__glassWorkerErrorEventConstructor === "function";
+  const WorkerErrorEventNative = hasWorkerErrorEventConstructor
+    ? globalThis.__glassWorkerErrorEventConstructor
+    : function(type, init) {{
+        const settings = init && typeof init === "object" ? init : {{}};
+        WorkerEventNative.call(this, type, settings);
+        this.message = String(settings.message || "");
+        this.filename = String(settings.filename || "");
+        this.lineno = Number(settings.lineno || 0);
+        this.colno = Number(settings.colno || 0);
+        this.error = settings.error === undefined ? null : settings.error;
+      }};
+  if (!hasWorkerErrorEventConstructor) {{
+    WorkerErrorEventNative.prototype = Object.create(WorkerEventNative.prototype);
+    WorkerErrorEventNative.prototype.constructor = WorkerErrorEventNative;
+  }}
+  globalThis.__glassWorkerErrorEventConstructor = WorkerErrorEventNative;
+  globalThis.ErrorEvent = WorkerErrorEventNative;
+  const WorkerEventTargetNative = typeof globalThis.__glassWorkerEventTargetConstructor === "function"
+    ? globalThis.__glassWorkerEventTargetConstructor
+    : function() {{ this._eventListeners = new Map(); }};
+  WorkerEventTargetNative.prototype.addEventListener = function(type, callback) {{
+    if (typeof callback !== "function" && !(callback && typeof callback.handleEvent === "function")) return;
+    const name = String(type);
+    const callbacks = this._eventListeners.get(name) || [];
+    if (!callbacks.includes(callback)) callbacks.push(callback);
+    this._eventListeners.set(name, callbacks);
+  }};
+  WorkerEventTargetNative.prototype.removeEventListener = function(type, callback) {{
+    const name = String(type);
+    const callbacks = this._eventListeners.get(name) || [];
+    this._eventListeners.set(name, callbacks.filter(candidate => candidate !== callback));
+  }};
+  WorkerEventTargetNative.prototype.dispatchEvent = function(event) {{
+    if (!event || typeof event !== "object" || !event.type)
+      throw new TypeError("native Worker EventTarget event is invalid");
+    if (event.target === null || event.target === undefined) event.target = this;
+    event.currentTarget = this;
+    event.eventPhase = 2;
+    const callbacks = (this._eventListeners.get(String(event.type)) || []).slice();
+    for (const callback of callbacks) {{
+      try {{
+        if (typeof callback === "function") callback.call(this, event);
+        else callback.handleEvent(event);
+      }} catch (_) {{}}
+      if (event._immediateStopped === true) break;
+    }}
+    event.currentTarget = null;
+    event.eventPhase = 0;
+    return event.defaultPrevented !== true;
+  }};
+  globalThis.__glassWorkerEventTargetConstructor = WorkerEventTargetNative;
+  globalThis.EventTarget = WorkerEventTargetNative;
   const workerBlobBytes = (part) => {{
     if (part && part.__glassWorkerBlob === true) return part._bytes.slice();
     if (typeof part === "string") return workerUtf8Bytes(part);

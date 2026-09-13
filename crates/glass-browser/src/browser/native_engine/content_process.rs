@@ -24,11 +24,11 @@ use super::javascript::{
     NativeJavaScriptRuntime, NativePageScript, NativePopupRequest, NativePostMessageRequest,
     NativeScriptCommand, NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState,
     NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
-    diff_indexed_db_changes, execute_page_scripts, host_event_script,
+    diff_indexed_db_changes, execute_dynamic_page_scripts, execute_page_scripts, host_event_script,
     host_hash_change_event_script, host_key_event_script, host_key_event_script_with_modifiers,
     host_submit_event_script, literal_dynamic_module_specifiers, load_indexed_db_profile,
-    load_web_storage_profile, order_page_scripts, save_web_storage_profile,
-    static_module_specifiers, storage_key,
+    load_web_storage_profile, order_page_scripts, page_script_sources_to_scripts,
+    save_web_storage_profile, static_module_specifiers, storage_key,
 };
 use super::layout::NativePoint;
 use super::origin::NativeOrigin;
@@ -4210,6 +4210,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                         "node_index": event.node_index,
                                         "kind": event_kind_text(event.kind),
                                     })).collect::<Vec<_>>(),
+                                    "dialogs": mutation.dialogs,
                                     "navigation": mutation.navigation.as_ref().map(|navigation| json!({
                                         "node_index": navigation.node_index,
                                         "href": navigation.href,
@@ -5642,16 +5643,35 @@ async fn load_page_script_sources(
     loader: &mut NativeResourceLoader,
     document_url: &str,
 ) -> Result<(Vec<NativePageScript>, Vec<(u32, NativeEventKind)>), NativeEngineError> {
-    let mut sources = Vec::new();
-    let mut resource_events = Vec::new();
-    for (index, script) in document
-        .page_script_sources(
+    load_page_script_source_list(
+        document.page_script_sources(
             super::javascript::MAX_NATIVE_INLINE_SCRIPTS,
             MAX_NATIVE_SCRIPT_BYTES,
-        )
-        .into_iter()
-        .enumerate()
-    {
+        ),
+        loader,
+        document_url,
+        "glass-inline-module",
+    )
+    .await
+}
+
+async fn load_dynamic_page_script_sources(
+    sources: Vec<NativePageScriptSource>,
+    loader: &mut NativeResourceLoader,
+    document_url: &str,
+) -> Result<(Vec<NativePageScript>, Vec<(u32, NativeEventKind)>), NativeEngineError> {
+    load_page_script_source_list(sources, loader, document_url, "glass-dynamic-module").await
+}
+
+async fn load_page_script_source_list(
+    page_sources: Vec<NativePageScriptSource>,
+    loader: &mut NativeResourceLoader,
+    document_url: &str,
+    module_name_prefix: &str,
+) -> Result<(Vec<NativePageScript>, Vec<(u32, NativeEventKind)>), NativeEngineError> {
+    let mut sources = Vec::new();
+    let mut resource_events = Vec::new();
+    for (index, script) in page_sources.into_iter().enumerate() {
         match script {
             NativePageScriptSource::Inline {
                 source,
@@ -5671,7 +5691,7 @@ async fn load_page_script_sources(
                 timing,
                 node_index,
             } => {
-                let name = format!("{document_url}#glass-inline-module-{index}");
+                let name = format!("{document_url}#{module_name_prefix}-{index}");
                 let mut seen = BTreeSet::new();
                 seen.insert(name.clone());
                 let mut total_bytes = source.len();
@@ -7233,15 +7253,69 @@ async fn mutate_script_document(
     document_origin: &NativeOrigin,
     viewport: Viewport,
     commands: &[NativeScriptCommand],
-    loader: Option<&mut NativeResourceLoader>,
+    mut loader: Option<&mut NativeResourceLoader>,
 ) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
     let mut document_url = document_url.to_owned();
     let mut history = Vec::new();
     let mut scroll_commands = extract_scroll_commands(commands);
+    let mut dialogs = Vec::new();
+    let mut dynamic_navigation = None;
     let mut next = current.clone();
     let mut events = next.apply_script_commands_allowing_links(commands)?;
     next.refresh_image_loads(viewport);
     next.refresh_background_image_sources();
+    let dynamic_sources = next.take_newly_attached_page_script_sources(
+        commands,
+        super::javascript::MAX_NATIVE_INLINE_SCRIPTS,
+        MAX_NATIVE_SCRIPT_BYTES,
+    );
+    if !dynamic_sources.is_empty() {
+        let (dynamic_scripts, dynamic_resource_events) = if let Some(loader) = loader.as_deref_mut()
+        {
+            load_dynamic_page_script_sources(dynamic_sources, loader, &document_url).await?
+        } else {
+            (
+                page_script_sources_to_scripts(
+                    dynamic_sources,
+                    &document_url,
+                    "glass-dynamic-module",
+                ),
+                Vec::new(),
+            )
+        };
+        let dynamic_result = execute_dynamic_page_scripts(
+            &mut next,
+            runtime,
+            dynamic_scripts,
+            &document_url,
+            document_origin,
+            viewport,
+            &dynamic_resource_events,
+        )?;
+        if !dynamic_result.pending_fetches.is_empty()
+            || !dynamic_result.websocket_commands.is_empty()
+            || !dynamic_result.event_source_commands.is_empty()
+        {
+            return Err(NativeEngineError::Worker {
+                operation: "dynamic page script".into(),
+                reason: "dynamic script network operations require event-loop handoff".into(),
+            });
+        }
+        events.extend(dynamic_result.events.into_iter().map(|(node_index, kind)| {
+            (
+                NativeNodeId::from_parts(next.generation(), node_index),
+                kind,
+            )
+        }));
+        scroll_commands.extend(dynamic_result.scroll_commands);
+        dialogs.extend(dynamic_result.dialogs);
+        if let Some(page_navigation) = dynamic_result.navigation {
+            dynamic_navigation = Some(ScriptNavigationTarget::Location {
+                href: page_navigation.href,
+                replace_history: page_navigation.replace_history,
+            });
+        }
+    }
     let validation_ids = events
         .iter()
         .filter(|(_, kind)| *kind == NativeEventKind::Invalid)
@@ -7267,7 +7341,7 @@ async fn mutate_script_document(
         scroll_commands.extend(extract_scroll_commands(&evaluation.commands));
         events.extend(next.apply_script_commands(&evaluation.commands)?);
     }
-    let image_events = if let Some(loader) = loader {
+    let image_events = if let Some(loader) = loader.as_deref_mut() {
         load_external_images(&mut next, loader, &document_url, viewport).await?
     } else {
         Vec::new()
@@ -7295,6 +7369,14 @@ async fn mutate_script_document(
     next.refresh_image_loads(viewport);
     next.refresh_background_image_sources();
     let mut navigation = script_navigation_target(&next, &document_url, commands)?;
+    if let Some(dynamic_navigation) = dynamic_navigation {
+        if navigation.is_some() {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "one script batch cannot activate multiple navigations".into(),
+            });
+        }
+        navigation = Some(dynamic_navigation);
+    }
     if let Some(ScriptNavigationTarget::Form {
         form_id,
         dispatch_submit: true,
@@ -7399,11 +7481,11 @@ async fn mutate_script_document(
         scroll_commands,
         storage_events: Vec::new(),
         indexed_db_changes: Vec::new(),
-        dialogs: Vec::new(),
         popups: Vec::new(),
         post_messages: Vec::new(),
         window_closes: Vec::new(),
         window_navigations: Vec::new(),
+        dialogs,
         window_name: String::new(),
     };
     Ok((next, mutation))

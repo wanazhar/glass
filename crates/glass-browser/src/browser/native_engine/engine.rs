@@ -25,9 +25,10 @@ use super::javascript::{
     NativePostMessageRequest, NativeScriptCommand, NativeScriptEvaluation, NativeStorageEvent,
     NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
     NativeWindowProxyUpdate, append_storage_changes, apply_indexed_db_changes,
-    diff_indexed_db_changes, execute_inline_scripts, frame_event_script, host_event_script,
-    host_hash_change_event_script, host_message_event_script, host_submit_event_script,
-    load_indexed_db_profile, load_web_storage_profile, new_storage_writer_id,
+    diff_indexed_db_changes, execute_dynamic_page_scripts, execute_inline_scripts,
+    frame_event_script, host_event_script, host_hash_change_event_script,
+    host_message_event_script, host_submit_event_script, load_indexed_db_profile,
+    load_web_storage_profile, new_storage_writer_id, page_script_sources_to_scripts,
     read_storage_event_journal, register_storage_reader, save_web_storage_profile,
     storage_event_cursor, storage_key, unregister_storage_reader,
 };
@@ -3062,6 +3063,58 @@ impl NativeEngine {
         } else {
             document.apply_script_commands(commands)?
         };
+        let mut dynamic_navigation = None;
+        let mut dynamic_dialogs = Vec::new();
+        if let Some(javascript) = self.javascript.as_ref() {
+            let dynamic_sources = document.take_newly_attached_page_script_sources(
+                commands,
+                super::javascript::MAX_NATIVE_INLINE_SCRIPTS,
+                MAX_NATIVE_SCRIPT_BYTES,
+            );
+            if !dynamic_sources.is_empty() {
+                let dynamic_scripts = page_script_sources_to_scripts(
+                    dynamic_sources,
+                    &self.url,
+                    "glass-dynamic-module",
+                );
+                let dynamic_result = execute_dynamic_page_scripts(
+                    &mut document,
+                    javascript,
+                    dynamic_scripts,
+                    &self.url,
+                    &self.origin,
+                    self.config.viewport,
+                    &[],
+                )?;
+                if !dynamic_result.pending_fetches.is_empty()
+                    || !dynamic_result.websocket_commands.is_empty()
+                    || !dynamic_result.event_source_commands.is_empty()
+                {
+                    return Err(NativeEngineError::UnsupportedUrl {
+                        reason: "dynamic script network transport requires a process-backed HTTP(S) document"
+                            .into(),
+                    });
+                }
+                events.extend(dynamic_result.events.into_iter().map(|(node_index, kind)| {
+                    (
+                        NativeNodeId::from_parts(document.generation(), node_index),
+                        kind,
+                    )
+                }));
+                scroll_commands.extend(dynamic_result.scroll_commands);
+                if let Some(navigation) = dynamic_result.navigation {
+                    dynamic_navigation = Some(ScriptNavigationTarget::Location {
+                        href: navigation.href,
+                        replace_history: navigation.replace_history,
+                    });
+                }
+                dynamic_dialogs = dynamic_result.dialogs;
+            }
+        }
+        if !dynamic_dialogs.is_empty() {
+            let dialog_url = self.url.clone();
+            self.install_dialogs(dynamic_dialogs, &dialog_url)?;
+        }
         let validation_events = events
             .iter()
             .filter(|(_, kind)| *kind == NativeEventKind::Invalid)
@@ -3078,6 +3131,14 @@ impl NativeEngine {
         } else {
             None
         };
+        if let Some(dynamic_navigation) = dynamic_navigation {
+            if navigation.is_some() {
+                return Err(NativeEngineError::TargetNotActionable {
+                    reason: "one script batch cannot activate multiple navigations".into(),
+                });
+            }
+            navigation = Some(dynamic_navigation);
+        }
         if let Some(ScriptNavigationTarget::Form {
             form_id,
             dispatch_submit: true,

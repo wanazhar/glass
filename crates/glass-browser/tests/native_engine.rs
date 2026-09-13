@@ -788,6 +788,51 @@ async fn native_local_script_creates_and_persists_document_types() {
 }
 
 #[tokio::test]
+async fn native_local_dynamic_inline_script_runs_once_after_late_attachment() {
+    let mut engine = NativeEngine::new(NativeEngineConfig::default().with_initial_url(
+        "data:text/html,%3Chtml%3E%3Cbody%3E%3Cp%3ENative%3C%2Fp%3E%3C%2Fbody%3E%3C%2Fhtml%3E",
+    ))
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "globalThis.dynamicLog = []; globalThis.dynamicScript = document.createElement('script'); dynamicScript.textContent = \"dynamicLog.push('ran'); document.body.setAttribute('data-dynamic', 'yes');\"; true",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("[dynamicLog, document.body.getAttribute('data-dynamic')]")
+            .await
+            .unwrap(),
+        serde_json::json!([[], serde_json::Value::Null])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "document.body.appendChild(dynamicScript); [dynamicLog, document.body.getAttribute('data-dynamic')]",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([["ran"], "yes"])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "document.body.appendChild(dynamicScript); dynamicScript.textContent = \"dynamicLog.push('reran')\"; dynamicLog",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["ran"])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_script_exposes_web_idl_identity() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -941,6 +986,66 @@ async fn native_content_process_script_exposes_web_idl_identity() {
             .await
             .unwrap(),
         serde_json::json!([[["attributes", "name", serde_json::Value::Null]]])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_dynamic_inline_script_runs_once_after_late_attachment() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = "<html><body><p>Native content</p></body></html>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "globalThis.dynamicLog = []; globalThis.dynamicScript = document.createElement('script'); dynamicScript.textContent = \"dynamicLog.push('ran'); document.body.setAttribute('data-dynamic', 'yes');\"; true",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("[dynamicLog, document.body.getAttribute('data-dynamic')]")
+            .await
+            .unwrap(),
+        serde_json::json!([[], serde_json::Value::Null])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "document.body.appendChild(dynamicScript); [dynamicLog, document.body.getAttribute('data-dynamic')]",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([["ran"], "yes"])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "document.body.appendChild(dynamicScript); dynamicScript.textContent = \"dynamicLog.push('reran')\"; dynamicLog",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["ran"])
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

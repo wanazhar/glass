@@ -30,7 +30,7 @@ use super::{
 };
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use url::Url;
 
 const MAX_ATTRIBUTE_BYTES: usize = 1024;
@@ -167,6 +167,8 @@ pub(crate) struct NativeDocumentWire {
     pub(crate) computed_styles: Vec<NativeComputedStyle>,
     #[serde(default)]
     pub(crate) script_nodes: Vec<NativeScriptNodeIdentity>,
+    #[serde(default)]
+    pub(crate) started_script_nodes: Vec<u32>,
     #[serde(default)]
     pub(crate) image_resources: Vec<NativeImageResourceWire>,
     #[serde(default)]
@@ -524,6 +526,7 @@ pub struct NativeDocument {
     diagnostics: Vec<NativeDiagnostic>,
     diagnostics_truncated: bool,
     script_node_ids: BTreeMap<u32, NativeNodeId>,
+    started_script_nodes: BTreeSet<u32>,
     image_resources: BTreeMap<u32, NativeImageResource>,
     image_loads: BTreeMap<u32, String>,
     background_image_sources: BTreeMap<u32, String>,
@@ -708,6 +711,7 @@ impl NativeDocument {
             diagnostics: Vec::new(),
             diagnostics_truncated: false,
             script_node_ids: BTreeMap::new(),
+            started_script_nodes: BTreeSet::new(),
             image_resources: BTreeMap::new(),
             image_loads: BTreeMap::new(),
             background_image_sources: BTreeMap::new(),
@@ -1344,6 +1348,7 @@ impl NativeDocument {
                     node_index: id.index,
                 })
                 .collect(),
+            started_script_nodes: self.started_script_nodes.iter().copied().collect(),
             image_resources,
             background_image_sources,
             background_image_resources,
@@ -1786,6 +1791,21 @@ impl NativeDocument {
                 });
             }
         }
+        let mut started_script_nodes = BTreeSet::new();
+        for node_index in wire.started_script_nodes {
+            let index = usize::try_from(node_index).map_err(|_| NativeEngineError::Parse {
+                offset: 0,
+                reason: "content process returned an invalid started script node".into(),
+            })?;
+            if nodes.get(index).and_then(NativeNode::element_name) != Some("script")
+                || !started_script_nodes.insert(node_index)
+            {
+                return Err(NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned an invalid started script node".into(),
+                });
+            }
+        }
         let mut document = Self {
             generation,
             revision: u64::from(generation),
@@ -1798,6 +1818,7 @@ impl NativeDocument {
             diagnostics,
             diagnostics_truncated,
             script_node_ids,
+            started_script_nodes,
             image_resources,
             image_loads,
             background_image_sources,
@@ -1873,6 +1894,7 @@ impl NativeDocument {
             diagnostics: Vec::new(),
             diagnostics_truncated: false,
             script_node_ids: BTreeMap::new(),
+            started_script_nodes: BTreeSet::new(),
             image_resources: BTreeMap::new(),
             image_loads: BTreeMap::new(),
             background_image_sources: BTreeMap::new(),
@@ -2264,6 +2286,107 @@ impl NativeDocument {
                 })
             })
             .collect()
+    }
+
+    /// Mark every parser-discovered script as started before page lifecycle
+    /// events run. A script element is single-shot even when its text or
+    /// parent is later changed by script.
+    pub(crate) fn mark_attached_scripts_started(&mut self) {
+        let started = self
+            .nodes
+            .iter()
+            .filter(|node| self.is_attached(node.id()) && node.element_name() == Some("script"))
+            .map(|node| node.id().index())
+            .collect::<Vec<_>>();
+        self.started_script_nodes.extend(started);
+    }
+
+    /// Commit the script-start side effect for nodes touched by one host
+    /// mutation and return the newly attached page-script sources. Temporary
+    /// script nodes may be created in one evaluation and attached in a later
+    /// evaluation, so both creation and insertion commands are considered.
+    pub(crate) fn take_newly_attached_page_script_sources(
+        &mut self,
+        commands: &[NativeScriptCommand],
+        max_scripts: usize,
+        max_source_bytes: usize,
+    ) -> Vec<NativePageScriptSource> {
+        let mut roots = Vec::new();
+        let mut realm_started = BTreeSet::new();
+        for command in commands {
+            let node_index = match command {
+                NativeScriptCommand::CreateElement {
+                    node_index,
+                    tag_name,
+                    ..
+                } if tag_name.eq_ignore_ascii_case("script") => Some(*node_index),
+                NativeScriptCommand::AppendChild { child_index, .. }
+                | NativeScriptCommand::InsertBefore { child_index, .. } => Some(*child_index),
+                NativeScriptCommand::StartScript { node_index } => {
+                    let id = self
+                        .script_node_ids
+                        .get(node_index)
+                        .copied()
+                        .unwrap_or_else(|| NativeNodeId::from_parts(self.generation, *node_index));
+                    realm_started.insert(id.index());
+                    Some(*node_index)
+                }
+                _ => None,
+            };
+            let Some(node_index) = node_index else {
+                continue;
+            };
+            let id = self
+                .script_node_ids
+                .get(&node_index)
+                .copied()
+                .unwrap_or_else(|| NativeNodeId::from_parts(self.generation, node_index));
+            if !roots.contains(&id) {
+                roots.push(id);
+            }
+        }
+
+        let mut candidate_nodes = BTreeSet::new();
+        for root in roots {
+            self.collect_attached_script_nodes(root, &mut candidate_nodes);
+        }
+        if candidate_nodes.is_empty() {
+            return Vec::new();
+        }
+
+        let sources = self
+            .page_script_sources(self.nodes.len(), max_source_bytes)
+            .into_iter()
+            .filter(|source| {
+                let node_index = match source {
+                    NativePageScriptSource::Inline { node_index, .. }
+                    | NativePageScriptSource::External { node_index, .. }
+                    | NativePageScriptSource::ModuleInline { node_index, .. }
+                    | NativePageScriptSource::ModuleExternal { node_index, .. } => *node_index,
+                };
+                candidate_nodes.contains(&node_index)
+                    && !self.started_script_nodes.contains(&node_index)
+                    && !realm_started.contains(&node_index)
+            })
+            .take(max_scripts)
+            .collect::<Vec<_>>();
+        self.started_script_nodes.extend(candidate_nodes);
+        sources
+    }
+
+    fn collect_attached_script_nodes(&self, id: NativeNodeId, output: &mut BTreeSet<u32>) {
+        if !self.is_attached(id) {
+            return;
+        }
+        let Some(node) = self.node(id) else {
+            return;
+        };
+        if node.element_name() == Some("script") {
+            output.insert(id.index());
+        }
+        for child in node.children() {
+            self.collect_attached_script_nodes(*child, output);
+        }
     }
 
     fn parent_element_index(&self, id: NativeNodeId) -> Option<u32> {
@@ -3426,6 +3549,18 @@ impl NativeDocument {
                     let before =
                         before_index.map(|index| self.resolve_script_node_id(index, &script_nodes));
                     self.append_script_child(parent, child, before, &script_nodes)?;
+                }
+                NativeScriptCommand::StartScript { node_index } => {
+                    let id = self.resolve_script_node_id(*node_index, &script_nodes);
+                    if self
+                        .script_node(id, &script_nodes)
+                        .and_then(NativeNode::element_name)
+                        != Some("script")
+                    {
+                        return Err(NativeEngineError::TargetNotActionable {
+                            reason: "script-start marker must target a script element".into(),
+                        });
+                    }
                 }
                 NativeScriptCommand::SetCustomValidity {
                     node_index,

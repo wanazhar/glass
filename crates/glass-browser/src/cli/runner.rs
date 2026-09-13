@@ -567,20 +567,26 @@ fn validate_alternative_runtime_command(
             semantic_level,
             region,
             ..
-        } if *deep_dom
-            || *screenshot
-            || *form_values
-            || semantic_level.is_some()
-            || region.is_some() =>
-        {
-            if native && !*form_values && semantic_level.is_none() && region.is_none() {
+        } => {
+            if native {
+                if semantic_level.is_some() && (*deep_dom || *screenshot || *form_values) {
+                    return Err(
+                        "semantic observation cannot be combined with deep DOM, screenshot, or form values".into(),
+                    );
+                }
+                if region.is_some() && semantic_level.is_none() {
+                    return Err("semantic region expansion requires --semantic-level".into());
+                }
                 Ok(())
+            } else if *deep_dom
+                || *screenshot
+                || *form_values
+                || semantic_level.is_some()
+                || region.is_some()
+            {
+                Err("portable Firefox/Safari observation supports compact evidence only; DOM, screenshot, forms, and semantic regions require Chromium".into())
             } else {
-                Err(if native {
-                    "native observation does not yet expose form values or semantic regions".into()
-                } else {
-                    "portable Firefox/Safari observation supports compact evidence only; DOM, screenshot, forms, and semantic regions require Chromium".into()
-                })
+                Ok(())
             }
         }
         Commands::Screenshot {
@@ -665,7 +671,6 @@ fn validate_alternative_runtime_command(
         | Commands::KeyUp { .. }
         | Commands::Shortcut { .. }
         | Commands::Text
-        | Commands::Observe { .. }
         | Commands::Targets => Ok(()),
         Commands::Evaluate { .. } => Ok(()),
         _ => Err(if native {
@@ -1405,11 +1410,34 @@ async fn run_alternative_runtime_command(
         Commands::Observe {
             deep_dom,
             screenshot,
-            ..
-        } if session.runtime().is_native() && (*deep_dom || *screenshot) => {
+            form_values,
+            semantic_level,
+            region,
+        } if session.runtime().is_native() => {
             #[cfg(feature = "native-engine")]
             {
-                let evidence = session.evidence(EvidenceLevel::Compact).await?;
+                if let Some(level_name) = semantic_level {
+                    let level = parse_semantic_level(level_name)?;
+                    let observation = if let Some(region_id) = region {
+                        let page = session.native_semantic_observe(level).await?;
+                        session
+                            .native_semantic_expand_region(region_id, page.revision, level)
+                            .await?
+                    } else {
+                        session.native_semantic_observe(level).await?
+                    };
+                    return alternative_json_output(&observation, response_mode);
+                }
+                if *form_values {
+                    policy.require(PolicyCapability::ReadFormValues)?;
+                }
+                if !*deep_dom && !*screenshot && !*form_values {
+                    return alternative_json_output(
+                        &session.evidence(EvidenceLevel::Compact).await?,
+                        response_mode,
+                    );
+                }
+                let observation = session.native_observe().await?;
                 let nodes = (*deep_dom)
                     .then(|| session.native_semantic_nodes())
                     .transpose()?;
@@ -1421,15 +1449,27 @@ async fn run_alternative_runtime_command(
                 } else {
                     None
                 };
+                let form_values = if *form_values {
+                    Some(
+                        crate::browser::native_batch::read_form_values(
+                            session,
+                            policy.allow_sensitive_form_values(),
+                        )
+                        .await?,
+                    )
+                } else {
+                    None
+                };
                 alternative_json_output(
                     &serde_json::json!({
-                        "contextId": evidence.context_id,
-                        "revision": evidence.revision,
-                        "url": evidence.url,
-                        "title": evidence.title,
-                        "visibleText": evidence.visible_text,
+                        "contextId": observation.route.target_id,
+                        "revision": observation.revision,
+                        "url": observation.page.url,
+                        "title": observation.page.title,
+                        "visibleText": observation.text,
                         "nodes": nodes,
                         "screenshotPngBase64": screenshot,
+                        "formValues": form_values,
                     }),
                     response_mode,
                 )

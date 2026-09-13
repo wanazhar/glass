@@ -53,6 +53,8 @@ const NATIVE_MAX_WAIT_DEADLINE: Duration = Duration::from_secs(300);
 #[cfg(feature = "native-engine")]
 const NATIVE_SEMANTIC_TARGET_LIMIT: usize = 32;
 #[cfg(feature = "native-engine")]
+const NATIVE_SEMANTIC_ACCESSIBILITY_LIMIT: usize = 128;
+#[cfg(feature = "native-engine")]
 const NATIVE_SEMANTIC_TEXT_LIMIT: usize = 8 * 1024;
 
 /// Browser runtimes supported by the portable semantic session.
@@ -605,6 +607,100 @@ impl BrowserRuntimeSession {
         self.native_semantic_observation().await
     }
 
+    /// Return the requested bounded semantic observation level from one
+    /// revisioned native frame snapshot.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_semantic_observe(
+        &self,
+        level: super::session::SemanticObservationLevel,
+    ) -> BrowserResult<super::session::SemanticObservation> {
+        let _operation = self.operation_lock.lock().await;
+        self.native_semantic_observation_level_unlocked(level).await
+    }
+
+    /// Expand one native semantic region while keeping its revision and route
+    /// contract. The source frames and expanded payload are captured under
+    /// the same runtime operation lock.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_semantic_expand_region(
+        &self,
+        region_id: &str,
+        expected_revision: u64,
+        level: super::session::SemanticObservationLevel,
+    ) -> BrowserResult<super::session::SemanticObservation> {
+        if region_id.trim().is_empty() {
+            return Err(super::session::SemanticObservationError::new(
+                "regionId",
+                "semantic region ID cannot be empty",
+            )
+            .into());
+        }
+        let _operation = self.operation_lock.lock().await;
+        let frames = self.native_inspection_snapshots_unlocked().await?;
+        let mut observation = build_native_semantic_observation(&frames, level)?;
+        if observation.revision != expected_revision {
+            return Err(Box::new(ActionContractError::stale_revision(
+                expected_revision,
+                observation.revision,
+            )));
+        }
+        let region_index = observation
+            .regions
+            .iter()
+            .position(|region| region.id == region_id)
+            .ok_or_else(|| {
+                super::session::SemanticObservationError::new(
+                    "regionId",
+                    format!("region {region_id:?} is not present at revision {expected_revision}"),
+                )
+            })?;
+        let selected = observation.regions.remove(region_index);
+        let omitted_regions = observation.regions.len();
+        observation.regions = vec![selected];
+        observation.limits.omitted_regions = omitted_regions;
+        observation.limits.truncated |= omitted_regions > 0;
+        observation.limits.omitted_targets = observation
+            .regions
+            .first()
+            .map(|region| {
+                region
+                    .interactive_count
+                    .saturating_sub(region.targets.len())
+            })
+            .unwrap_or_default();
+
+        let selected_frames = std::slice::from_ref(&frames[region_index]);
+        if native_level_includes_text(level) {
+            let (text, text_truncated) = bounded_native_semantic_text(selected_frames);
+            observation.text = Some(text.clone());
+            observation.limits.text_bytes = Some(text.len());
+            observation.limits.text_truncated = text_truncated;
+            observation.limits.truncated |= text_truncated;
+        } else {
+            observation.text = None;
+            observation.limits.text_bytes = None;
+            observation.limits.text_truncated = false;
+        }
+        observation.accessibility = native_level_includes_accessibility(level)
+            .then(|| native_accessibility_nodes(selected_frames));
+        observation.raw_accessibility = native_level_includes_raw_accessibility(level)
+            .then(|| native_accessibility_nodes(selected_frames));
+
+        observation.validate()?;
+        Ok(observation)
+    }
+
+    /// Read the bounded native form-value projection. Password controls are
+    /// redacted unless the caller has separately granted sensitive form
+    /// access through policy.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_form_values(
+        &self,
+        allow_sensitive: bool,
+    ) -> BrowserResult<serde_json::Value> {
+        super::native_batch::read_form_values(self, allow_sensitive).await
+    }
+
     /// Execute one authored Glass Task Protocol request entirely in the
     /// native runtime. The adapter preserves the task envelope and revision
     /// contract used by the CDP session without creating a CDP session.
@@ -949,122 +1045,37 @@ impl BrowserRuntimeSession {
     async fn native_semantic_observation(
         &self,
     ) -> BrowserResult<super::session::SemanticObservation> {
-        let _operation = self.operation_lock.lock().await;
-        self.native_semantic_observation_unlocked().await
+        self.native_semantic_observe(super::session::SemanticObservationLevel::Structured)
+            .await
     }
 
     #[cfg(feature = "native-engine")]
     async fn native_semantic_observation_unlocked(
         &self,
     ) -> BrowserResult<super::session::SemanticObservation> {
-        let frames = match &self.backend {
-            BackendStartup::Native(backend) => backend.inspection_snapshots().await?,
-            _ => {
-                return Err(
-                    "native semantic inspection is only available on the native runtime".into(),
-                );
-            }
-        };
-        let native = frames
-            .first()
-            .ok_or("native semantic inspection returned no active frame")?;
-        let native = &native.inspection;
-        let frame_id = frames[0].frame_id.clone();
-        let route = super::session::SemanticRouteIdentity {
-            target_id: native.context_id.clone(),
-            frame_id: frame_id.clone(),
-            url: native.snapshot.url.clone(),
-        };
-        let revision = native_aggregate_revision(&frames);
-        let mut omitted_targets = 0usize;
-        let regions = frames
-            .iter()
-            .enumerate()
-            .map(|(index, frame)| {
-                let available = frame.inspection.nodes.len();
-                let targets = frame
-                    .inspection
-                    .nodes
-                    .iter()
-                    .take(NATIVE_SEMANTIC_TARGET_LIMIT)
-                    .map(|node| native_semantic_target(node, &frame.frame_id))
-                    .collect::<Vec<_>>();
-                omitted_targets =
-                    omitted_targets.saturating_add(available.saturating_sub(targets.len()));
-                let region_id = if index == 0 {
-                    "region_main".to_owned()
-                } else {
-                    format!("region_frame_{index}")
-                };
-                super::session::SemanticRegion {
-                    id: region_id.clone(),
-                    kind: super::session::SemanticRegionKind::Main,
-                    label: if index == 0 {
-                        "Main content".into()
-                    } else {
-                        format!("Embedded frame {index}")
-                    },
-                    interactive_count: available,
-                    item_count: Some(available),
-                    confidence: super::session::SemanticConfidence::High,
-                    structured_records: Vec::new(),
-                    evidence: vec!["native frame semantic projection".into()],
-                    targets,
-                    expansion: Some(super::session::SemanticExpansionHandle {
-                        region_id,
-                        revision,
-                        route: route.clone(),
-                    }),
-                }
-            })
-            .collect::<Vec<_>>();
-        let (text, text_truncated) = bounded_native_semantic_text(&frames);
-        let viewport = native.layout.viewport;
-        let scroll_offset = native.layout.scroll_offset;
-        let observation = super::session::SemanticObservation {
-            schema_version: super::session::SEMANTIC_OBSERVATION_SCHEMA_VERSION,
-            revision,
-            level: super::session::SemanticObservationLevel::Structured,
-            route: route.clone(),
-            page: super::session::SemanticPage {
-                kind: super::session::SemanticPageKind::Generic,
-                title: native.snapshot.title.clone(),
-                url: native.snapshot.url.clone(),
-                target_id: route.target_id.clone(),
-                frame_id: route.frame_id.clone(),
-                confidence: super::session::SemanticConfidence::Medium,
-                evidence: vec!["native page snapshot".into()],
-            },
-            regions,
-            text: Some(text.clone()),
-            accessibility: None,
-            raw_accessibility: None,
-            changes: None,
-            limits: super::session::SemanticObservationLimits {
-                truncated: frames.iter().any(|frame| {
-                    frame.inspection.snapshot.title_truncated
-                        || frame.inspection.snapshot.text_truncated
-                }) || omitted_targets > 0
-                    || text_truncated,
-                omitted_regions: 0,
-                omitted_targets,
-                omitted_structured_records: 0,
-                structured_bytes: Some(0),
-                omitted_bytes: None,
-                text_bytes: Some(text.len()),
-                text_truncated,
-                viewport: Some(super::session::SemanticViewport {
-                    scroll_x: f64::from(scroll_offset.x),
-                    scroll_y: f64::from(scroll_offset.y),
-                    width: f64::from(viewport.width),
-                    height: f64::from(viewport.height),
-                    document_width: f64::from(native.layout.content_width),
-                    document_height: f64::from(native.layout.content_height),
-                }),
-            },
-        };
-        observation.validate()?;
-        Ok(observation)
+        self.native_semantic_observation_level_unlocked(
+            super::session::SemanticObservationLevel::Structured,
+        )
+        .await
+    }
+
+    #[cfg(feature = "native-engine")]
+    async fn native_semantic_observation_level_unlocked(
+        &self,
+        level: super::session::SemanticObservationLevel,
+    ) -> BrowserResult<super::session::SemanticObservation> {
+        let frames = self.native_inspection_snapshots_unlocked().await?;
+        build_native_semantic_observation(&frames, level)
+    }
+
+    #[cfg(feature = "native-engine")]
+    async fn native_inspection_snapshots_unlocked(
+        &self,
+    ) -> BrowserResult<Vec<NativeFrameInspectionSnapshot>> {
+        match &self.backend {
+            BackendStartup::Native(backend) => Ok(backend.inspection_snapshots().await?),
+            _ => Err("native semantic inspection is only available on the native runtime".into()),
+        }
     }
 
     /// Evaluate a bounded native verification predicate until it is
@@ -1414,6 +1425,196 @@ fn native_not_executed_result(
             recommended_operation: "find_target".into(),
         },
     }
+}
+
+#[cfg(feature = "native-engine")]
+fn build_native_semantic_observation(
+    frames: &[NativeFrameInspectionSnapshot],
+    level: super::session::SemanticObservationLevel,
+) -> BrowserResult<super::session::SemanticObservation> {
+    let native = frames
+        .first()
+        .ok_or("native semantic inspection returned no active frame")?;
+    let native = &native.inspection;
+    let frame_id = frames[0].frame_id.clone();
+    let route = super::session::SemanticRouteIdentity {
+        target_id: native.context_id.clone(),
+        frame_id: frame_id.clone(),
+        url: native.snapshot.url.clone(),
+    };
+    let revision = native_aggregate_revision(frames);
+    let mut omitted_targets = 0usize;
+    let regions = frames
+        .iter()
+        .enumerate()
+        .map(|(index, frame)| {
+            let available = frame.inspection.nodes.len();
+            let targets = if native_level_includes_targets(level) {
+                frame
+                    .inspection
+                    .nodes
+                    .iter()
+                    .take(NATIVE_SEMANTIC_TARGET_LIMIT)
+                    .map(|node| native_semantic_target(node, &frame.frame_id))
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+            omitted_targets =
+                omitted_targets.saturating_add(available.saturating_sub(targets.len()));
+            let region_id = if index == 0 {
+                "region_main".to_owned()
+            } else {
+                format!("region_frame_{index}")
+            };
+            super::session::SemanticRegion {
+                id: region_id.clone(),
+                kind: super::session::SemanticRegionKind::Main,
+                label: if index == 0 {
+                    "Main content".into()
+                } else {
+                    format!("Embedded frame {index}")
+                },
+                interactive_count: available,
+                item_count: Some(available),
+                confidence: super::session::SemanticConfidence::High,
+                structured_records: Vec::new(),
+                evidence: vec!["native frame semantic projection".into()],
+                targets,
+                expansion: Some(super::session::SemanticExpansionHandle {
+                    region_id,
+                    revision,
+                    route: route.clone(),
+                }),
+            }
+        })
+        .collect::<Vec<_>>();
+    let (text, text_truncated) = bounded_native_semantic_text(frames);
+    let viewport = native.layout.viewport;
+    let scroll_offset = native.layout.scroll_offset;
+    let observation = super::session::SemanticObservation {
+        schema_version: super::session::SEMANTIC_OBSERVATION_SCHEMA_VERSION,
+        revision,
+        level,
+        route: route.clone(),
+        page: super::session::SemanticPage {
+            kind: super::session::SemanticPageKind::Generic,
+            title: native.snapshot.title.clone(),
+            url: native.snapshot.url.clone(),
+            target_id: route.target_id.clone(),
+            frame_id: route.frame_id.clone(),
+            confidence: super::session::SemanticConfidence::Medium,
+            evidence: vec!["native page snapshot".into()],
+        },
+        regions,
+        text: native_level_includes_text(level).then_some(text.clone()),
+        accessibility: native_level_includes_accessibility(level)
+            .then(|| native_accessibility_nodes(frames)),
+        raw_accessibility: native_level_includes_raw_accessibility(level)
+            .then(|| native_accessibility_nodes(frames)),
+        changes: None,
+        limits: super::session::SemanticObservationLimits {
+            truncated: frames.iter().any(|frame| {
+                frame.inspection.snapshot.title_truncated
+                    || frame.inspection.snapshot.text_truncated
+            }) || omitted_targets > 0
+                || (native_level_includes_text(level) && text_truncated)
+                || (native_level_includes_accessibility(level)
+                    && native_accessibility_node_count(frames)
+                        > NATIVE_SEMANTIC_ACCESSIBILITY_LIMIT),
+            omitted_regions: 0,
+            omitted_targets,
+            omitted_structured_records: 0,
+            structured_bytes: native_level_includes_text(level).then_some(0),
+            omitted_bytes: None,
+            text_bytes: native_level_includes_text(level).then_some(text.len()),
+            text_truncated: native_level_includes_text(level) && text_truncated,
+            viewport: Some(super::session::SemanticViewport {
+                scroll_x: f64::from(scroll_offset.x),
+                scroll_y: f64::from(scroll_offset.y),
+                width: f64::from(viewport.width),
+                height: f64::from(viewport.height),
+                document_width: f64::from(native.layout.content_width),
+                document_height: f64::from(native.layout.content_height),
+            }),
+        },
+    };
+    observation.validate()?;
+    Ok(observation)
+}
+
+#[cfg(feature = "native-engine")]
+const fn native_level_includes_targets(level: super::session::SemanticObservationLevel) -> bool {
+    matches!(
+        level,
+        super::session::SemanticObservationLevel::Interactive
+            | super::session::SemanticObservationLevel::Structured
+            | super::session::SemanticObservationLevel::Detailed
+            | super::session::SemanticObservationLevel::Raw
+    )
+}
+
+#[cfg(feature = "native-engine")]
+const fn native_level_includes_text(level: super::session::SemanticObservationLevel) -> bool {
+    matches!(
+        level,
+        super::session::SemanticObservationLevel::Structured
+            | super::session::SemanticObservationLevel::Detailed
+            | super::session::SemanticObservationLevel::Raw
+    )
+}
+
+#[cfg(feature = "native-engine")]
+const fn native_level_includes_accessibility(
+    level: super::session::SemanticObservationLevel,
+) -> bool {
+    matches!(
+        level,
+        super::session::SemanticObservationLevel::Detailed
+            | super::session::SemanticObservationLevel::Raw
+    )
+}
+
+#[cfg(feature = "native-engine")]
+const fn native_level_includes_raw_accessibility(
+    level: super::session::SemanticObservationLevel,
+) -> bool {
+    matches!(level, super::session::SemanticObservationLevel::Raw)
+}
+
+#[cfg(feature = "native-engine")]
+fn native_accessibility_nodes(
+    frames: &[NativeFrameInspectionSnapshot],
+) -> Vec<super::session::SemanticAccessibilityNode> {
+    frames
+        .iter()
+        .flat_map(|frame| frame.inspection.nodes.iter())
+        .take(NATIVE_SEMANTIC_ACCESSIBILITY_LIMIT)
+        .map(|node| super::session::SemanticAccessibilityNode {
+            role: node.role.clone(),
+            name: node.name.clone(),
+            children: Vec::new(),
+            interactive: matches!(
+                node.role.as_str(),
+                "button"
+                    | "checkbox"
+                    | "combobox"
+                    | "file"
+                    | "link"
+                    | "option"
+                    | "radio"
+                    | "textbox"
+            ),
+        })
+        .collect()
+}
+
+#[cfg(feature = "native-engine")]
+fn native_accessibility_node_count(frames: &[NativeFrameInspectionSnapshot]) -> usize {
+    frames
+        .iter()
+        .map(|frame| frame.inspection.nodes.len())
+        .sum()
 }
 
 #[cfg(feature = "native-engine")]

@@ -3398,6 +3398,25 @@ async fn call_native_tool(
             store.save(&snapshot)?;
             serialized_result_mode(&snapshot, response_mode)
         }
+        ToolInvocation::ExecuteTask {
+            task,
+            expected_revision,
+            confirmed,
+        } => {
+            if task.task == crate::task_protocol::TaskKind::NavigationFollow
+                && let Some(url) = task.inputs.get("url")
+            {
+                policy
+                    .require_url(&crate::browser::session::normalize_url(url))
+                    .await?;
+            }
+            serialized_result_mode(
+                &session
+                    .native_execute_task(&task, expected_revision, confirmed)
+                    .await?,
+                response_mode,
+            )
+        }
         ToolInvocation::InspectPage => {
             serialized_result_mode(&session.native_inspect_page().await?, response_mode)
         }

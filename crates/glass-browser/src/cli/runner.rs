@@ -639,6 +639,9 @@ fn validate_alternative_runtime_command(
         Commands::Snapshot {
             action: SnapshotCommand::Create,
         } if native => Ok(()),
+        Commands::Task {
+            action: TaskCommand::Execute { .. },
+        } if native => Ok(()),
         Commands::Navigate { .. }
         | Commands::Click { .. }
         | Commands::Type { .. }
@@ -699,6 +702,37 @@ async fn run_alternative_runtime_command(
                 );
                 store.save(&snapshot)?;
                 print_json_mode(&snapshot, response_mode)
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
+        }
+        Commands::Task {
+            action:
+                TaskCommand::Execute {
+                    input,
+                    expected_revision,
+                    confirm,
+                },
+        } if session.runtime().is_native() => {
+            #[cfg(feature = "native-engine")]
+            {
+                let request = read_task_execution_request(input, *expected_revision, *confirm)?;
+                let payload = request.decode_task_execute()?;
+                if payload.task.task == crate::task_protocol::TaskKind::NavigationFollow
+                    && let Some(url) = payload.task.inputs.get("url")
+                {
+                    policy
+                        .require_url(&crate::browser::session::normalize_url(url))
+                        .await?;
+                }
+                let result = session
+                    .native_execute_task(
+                        &payload.task,
+                        payload.expected_revision,
+                        payload.confirmed,
+                    )
+                    .await?;
+                print_json_mode(&result, response_mode)
             }
             #[cfg(not(feature = "native-engine"))]
             unreachable!("native runtime is feature-gated")

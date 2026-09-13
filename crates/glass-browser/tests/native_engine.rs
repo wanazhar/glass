@@ -26,7 +26,12 @@ use glass_browser::browser_backend::{
     ScriptRequest, SemanticAction, StorageOperation, StorageRequest, StorageScope, SupportLevel,
 };
 use glass_browser::{BackendFactory, BrowserRuntime, BrowserRuntimeSession, NativeEngineBackend};
+use glass_browser::{
+    GlassTask, TaskAmbiguityPolicy, TaskKind, TaskLimits, TaskRevisionPolicy, TaskRiskClass,
+    TaskScope,
+};
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::Cursor;
 use std::sync::OnceLock;
@@ -320,6 +325,106 @@ async fn native_runtime_session_uses_explicit_local_constructor() {
         .await
         .unwrap();
     assert_eq!(stored.entries.get("answer"), Some(&"one".to_owned()));
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_executes_revision_guarded_form_tasks() {
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(
+            "data:text/html,%3Cform%3E%3Clabel%20for%3D%22email%22%3EEmail%3C%2Flabel%3E%3Cinput%20id%3D%22email%22%20type%3D%22email%22%3E%3Clabel%3E%3Cinput%20id%3D%22remember%22%20type%3D%22checkbox%22%3ERemember%3C%2Flabel%3E%3C%2Fform%3E",
+        ),
+    )
+    .await
+    .unwrap();
+    let observation = session.native_observe().await.unwrap();
+    let mut inputs = BTreeMap::new();
+    inputs.insert("Email".into(), "native@example.com".into());
+    inputs.insert("Remember".into(), "true".into());
+    let task = GlassTask {
+        schema_version: 1,
+        task: TaskKind::FormFill,
+        scope: TaskScope {
+            region_name: Some("Main content".into()),
+            ..Default::default()
+        },
+        inputs,
+        limits: TaskLimits::default(),
+        risk: TaskRiskClass::LocalMutation,
+        ambiguity: TaskAmbiguityPolicy::Fail,
+        revision: TaskRevisionPolicy::Exact,
+        postconditions: Vec::new(),
+    };
+    let result = session
+        .native_execute_task(&task, observation.revision, false)
+        .await
+        .unwrap();
+    assert_eq!(result.status, "succeeded");
+    let form = result
+        .form
+        .expect("native task should return form evidence");
+    assert_eq!(form.filled, 2);
+    assert_eq!(form.total, 2);
+    assert!(form.fields.iter().all(|field| field.success));
+    let values = session
+        .script(
+            "({ email: document.getElementById('email').value, remember: document.getElementById('remember').checked })",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        values.value,
+        serde_json::json!({"email": "native@example.com", "remember": true})
+    );
+
+    let field_observation = session.native_observe().await.unwrap();
+    let mut field_inputs = BTreeMap::new();
+    field_inputs.insert("field".into(), "Email".into());
+    let field_task = GlassTask {
+        schema_version: 1,
+        task: TaskKind::FieldRead,
+        scope: TaskScope {
+            region_name: Some("Main content".into()),
+            ..Default::default()
+        },
+        inputs: field_inputs,
+        limits: TaskLimits::default(),
+        risk: TaskRiskClass::ReadOnly,
+        ambiguity: TaskAmbiguityPolicy::Fail,
+        revision: TaskRevisionPolicy::Exact,
+        postconditions: Vec::new(),
+    };
+    let field_result = session
+        .native_execute_task(&field_task, field_observation.revision, false)
+        .await
+        .unwrap();
+    assert_eq!(field_result.status, "succeeded");
+    assert_eq!(
+        field_result.extraction.unwrap().records[0]["value"],
+        "native@example.com"
+    );
+
+    let extract_observation = session.native_observe().await.unwrap();
+    let extract_task = GlassTask {
+        schema_version: 1,
+        task: TaskKind::RegionExtract,
+        scope: TaskScope {
+            region_name: Some("Main content".into()),
+            ..Default::default()
+        },
+        inputs: BTreeMap::new(),
+        limits: TaskLimits::default(),
+        risk: TaskRiskClass::ReadOnly,
+        ambiguity: TaskAmbiguityPolicy::Fail,
+        revision: TaskRevisionPolicy::Exact,
+        postconditions: Vec::new(),
+    };
+    let extract_result = session
+        .native_execute_task(&extract_task, extract_observation.revision, false)
+        .await
+        .unwrap();
+    assert_eq!(extract_result.status, "succeeded");
+    assert_eq!(extract_result.extraction.unwrap().records.len(), 1);
     session.close().await.unwrap();
 }
 

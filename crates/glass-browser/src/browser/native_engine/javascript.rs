@@ -59,6 +59,8 @@ pub(crate) const MAX_NATIVE_WORKER_MESSAGES: usize = 64;
 pub(crate) const MAX_NATIVE_WORKER_TIMERS: usize = 64;
 const MAX_NATIVE_WORKER_URLSEARCHPARAMS_ENTRIES: usize = 128;
 const MAX_NATIVE_WORKER_URLSEARCHPARAMS_BYTES: usize = MAX_NATIVE_POST_MESSAGE_BYTES;
+const MAX_NATIVE_WORKER_CRYPTO_POOL_BYTES: usize = 16 * 1024;
+const MAX_NATIVE_WORKER_CRYPTO_VALUES_BYTES: usize = 16 * 1024;
 const NATIVE_SCRIPT_MEMORY_BYTES: usize = 32 * 1024 * 1024;
 const NATIVE_SCRIPT_STACK_BYTES: usize = 1024 * 1024;
 const NATIVE_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -7485,6 +7487,16 @@ fn worker_bootstrap(
             operation: "serialize native Worker importScripts map".into(),
             reason: "native Worker importScripts map could not be serialized".into(),
         })?;
+    let mut random_bytes = vec![0_u8; MAX_NATIVE_WORKER_CRYPTO_POOL_BYTES];
+    getrandom::fill(&mut random_bytes).map_err(|_| NativeEngineError::Worker {
+        operation: "seed native Worker crypto".into(),
+        reason: "the operating system random source was unavailable".into(),
+    })?;
+    let initial_random_bytes =
+        serde_json::to_string(&random_bytes).map_err(|_| NativeEngineError::Worker {
+            operation: "serialize native Worker crypto seed".into(),
+            reason: "native Worker crypto seed could not be serialized".into(),
+        })?;
     let is_module = if is_module { "true" } else { "false" };
     Ok(format!(
         r###"(() => {{
@@ -7492,6 +7504,7 @@ fn worker_bootstrap(
   const workerUrl = {worker_url};
   const nowMs = {now_ms};
   const initialImportScriptCounts = {import_script_counts};
+  const initialWorkerCryptoBytes = {initial_random_bytes};
   const isModuleWorker = {is_module};
   const commands = [];
   const activeCommands = () => Array.isArray(globalThis.__glassWorkerCommandBuffer)
@@ -8293,6 +8306,57 @@ fn worker_bootstrap(
   }};
   globalThis.__glassWorkerEventTargetConstructor = WorkerEventTargetNative;
   globalThis.EventTarget = WorkerEventTargetNative;
+  const workerCryptoPool = globalThis.__glassWorkerCryptoPool instanceof Array
+    ? globalThis.__glassWorkerCryptoPool
+    : [];
+  let workerCryptoOffset = Number.isSafeInteger(globalThis.__glassWorkerCryptoOffset)
+    ? globalThis.__glassWorkerCryptoOffset
+    : 0;
+  if (workerCryptoOffset > 0) {{
+    workerCryptoPool.splice(0, workerCryptoOffset);
+    workerCryptoOffset = 0;
+  }}
+  workerCryptoPool.push(...initialWorkerCryptoBytes);
+  if (workerCryptoPool.length > {worker_crypto_pool_limit})
+    workerCryptoPool.splice(0, workerCryptoPool.length - {worker_crypto_pool_limit});
+  const workerCryptoTake = (count) => {{
+    if (!Number.isSafeInteger(count) || count < 0 || count > {worker_crypto_values_limit})
+      throw new RangeError("native Worker crypto value is outside the bounded range");
+    if (workerCryptoOffset + count > workerCryptoPool.length)
+      throw new WorkerDOMExceptionNative("native Worker crypto pool exhausted", "QuotaExceededError");
+    const bytes = workerCryptoPool.slice(workerCryptoOffset, workerCryptoOffset + count);
+    workerCryptoOffset += count;
+    globalThis.__glassWorkerCryptoOffset = workerCryptoOffset;
+    return bytes;
+  }};
+  const workerCryptoIntegerArray = (value) => {{
+    const tag = Object.prototype.toString.call(value);
+    return ["[object Int8Array]", "[object Uint8Array]", "[object Uint8ClampedArray]",
+      "[object Int16Array]", "[object Uint16Array]", "[object Int32Array]",
+      "[object Uint32Array]", "[object BigInt64Array]", "[object BigUint64Array]"].includes(tag);
+  }};
+  const workerCrypto = globalThis.__glassWorkerCryptoObject instanceof Object
+    ? globalThis.__glassWorkerCryptoObject
+    : {{}};
+  workerCrypto.getRandomValues = (value) => {{
+    if (!workerCryptoIntegerArray(value))
+      throw new TypeError("native Worker crypto requires an integer typed array");
+    if (value.byteLength > {worker_crypto_values_limit})
+      throw new WorkerDOMExceptionNative("native Worker crypto value is too large", "QuotaExceededError");
+    new Uint8Array(value.buffer, value.byteOffset, value.byteLength).set(workerCryptoTake(value.byteLength));
+    return value;
+  }};
+  workerCrypto.randomUUID = () => {{
+    const bytes = workerCryptoTake(16);
+    bytes[6] = (bytes[6] & 15) | 64;
+    bytes[8] = (bytes[8] & 63) | 128;
+    const hex = bytes.map(byte => byte.toString(16).padStart(2, "0")).join("");
+    return hex.slice(0, 8) + "-" + hex.slice(8, 12) + "-" + hex.slice(12, 16)
+      + "-" + hex.slice(16, 20) + "-" + hex.slice(20);
+  }};
+  globalThis.__glassWorkerCryptoPool = workerCryptoPool;
+  globalThis.__glassWorkerCryptoObject = workerCrypto;
+  globalThis.crypto = workerCrypto;
   const workerBlobBytes = (part) => {{
     if (part && part.__glassWorkerBlob === true) return part._bytes.slice();
     if (typeof part === "string") return workerUtf8Bytes(part);
@@ -9576,6 +9640,9 @@ fn worker_bootstrap(
         eventsource_field_limit = MAX_NATIVE_EVENTSOURCE_FIELD_BYTES,
         worker_url_search_params_entries_limit = MAX_NATIVE_WORKER_URLSEARCHPARAMS_ENTRIES,
         worker_url_search_params_bytes_limit = MAX_NATIVE_WORKER_URLSEARCHPARAMS_BYTES,
+        worker_crypto_pool_limit = MAX_NATIVE_WORKER_CRYPTO_POOL_BYTES,
+        worker_crypto_values_limit = MAX_NATIVE_WORKER_CRYPTO_VALUES_BYTES,
+        initial_random_bytes = initial_random_bytes,
         now_ms = now_ms,
         import_script_counts = import_script_counts,
     ))

@@ -23,9 +23,10 @@ use super::resource_loader::{
     NativeCorsMode, NativeFetchRedirectMode, NativeFetchRequest, NativeFetchResponse,
     NativeNavigationMethod, NativeRequestBody, NativeResourceLoader, NativeScriptResource,
 };
+use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit as BlockKeyInit};
 use aes::{Aes128, Aes192, Aes256};
 use aes_gcm::aead::consts::U12;
-use aes_gcm::aead::{Aead, KeyInit, Payload};
+use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::{AesGcm, Nonce};
 use base64::Engine as _;
 use fs2::FileExt;
@@ -7170,6 +7171,177 @@ fn native_crypto_derive(
     }
 }
 
+fn native_aes_cbc_bytes(
+    operation: &str,
+    key: &[u8],
+    iv: &[u8],
+    data: &[u8],
+) -> Result<Vec<u8>, Error> {
+    if iv.len() != 16 || data.len() > MAX_NATIVE_FORM_BODY_BYTES {
+        return Err(Error::Unknown);
+    }
+    let decrypting = match operation.trim().to_ascii_lowercase().as_str() {
+        "encrypt" => false,
+        "decrypt" if !data.is_empty() && data.len().is_multiple_of(16) => true,
+        _ => return Err(Error::Unknown),
+    };
+    macro_rules! run_cbc {
+        ($cipher:ty) => {{
+            let cipher =
+                <$cipher as BlockKeyInit>::new_from_slice(key).map_err(|_| Error::Unknown)?;
+            if decrypting {
+                let mut previous = aes::Block::clone_from_slice(iv);
+                let mut plaintext = Vec::with_capacity(data.len());
+                for chunk in data.chunks_exact(16) {
+                    let mut block = aes::Block::clone_from_slice(chunk);
+                    cipher.decrypt_block(&mut block);
+                    for (byte, previous_byte) in block.iter_mut().zip(previous.iter()) {
+                        *byte ^= *previous_byte;
+                    }
+                    plaintext.extend_from_slice(&block);
+                    previous.copy_from_slice(chunk);
+                }
+                let padding = usize::from(*plaintext.last().ok_or(Error::Unknown)?);
+                if !(1..=16).contains(&padding)
+                    || padding > plaintext.len()
+                    || plaintext[plaintext.len() - padding..]
+                        .iter()
+                        .any(|byte| usize::from(*byte) != padding)
+                {
+                    return Err(Error::Unknown);
+                }
+                plaintext.truncate(plaintext.len() - padding);
+                Ok(plaintext)
+            } else {
+                let padding = 16 - data.len() % 16;
+                if data.len().saturating_add(padding) > MAX_NATIVE_FORM_BODY_BYTES {
+                    return Err(Error::Unknown);
+                }
+                let mut padded = data.to_vec();
+                padded.extend(std::iter::repeat_n(padding as u8, padding));
+                let mut previous = aes::Block::clone_from_slice(iv);
+                let mut ciphertext = Vec::with_capacity(padded.len());
+                for chunk in padded.chunks_exact(16) {
+                    let mut block = aes::Block::clone_from_slice(chunk);
+                    for (byte, previous_byte) in block.iter_mut().zip(previous.iter()) {
+                        *byte ^= *previous_byte;
+                    }
+                    cipher.encrypt_block(&mut block);
+                    ciphertext.extend_from_slice(&block);
+                    previous.copy_from_slice(&block);
+                }
+                Ok(ciphertext)
+            }
+        }};
+    }
+    match key.len() {
+        16 => run_cbc!(Aes128),
+        24 => run_cbc!(Aes192),
+        32 => run_cbc!(Aes256),
+        _ => Err(Error::Unknown),
+    }
+}
+
+fn native_aes_ctr_increment(counter: &mut aes::Block, length: usize) {
+    let byte_count = length.div_ceil(8);
+    let start = 16 - byte_count;
+    let partial_bits = length % 8;
+    let mut carry = true;
+    for index in (start..16).rev() {
+        if !carry {
+            break;
+        }
+        let mask = if index == start && partial_bits != 0 {
+            (1_u8 << partial_bits) - 1
+        } else {
+            u8::MAX
+        };
+        let value = counter[index] & mask;
+        counter[index] = (counter[index] & !mask) | value.wrapping_add(1) & mask;
+        carry = value == mask;
+    }
+}
+
+fn native_aes_ctr_bytes(
+    key: &[u8],
+    counter: &[u8],
+    counter_length: usize,
+    data: &[u8],
+) -> Result<Vec<u8>, Error> {
+    if counter.len() != 16
+        || !(1..=128).contains(&counter_length)
+        || data.len() > MAX_NATIVE_FORM_BODY_BYTES
+    {
+        return Err(Error::Unknown);
+    }
+    macro_rules! run_ctr {
+        ($cipher:ty) => {{
+            let cipher =
+                <$cipher as BlockKeyInit>::new_from_slice(key).map_err(|_| Error::Unknown)?;
+            let mut counter = aes::Block::clone_from_slice(counter);
+            let mut output = Vec::with_capacity(data.len());
+            for chunk in data.chunks(16) {
+                let mut keystream = counter.clone();
+                cipher.encrypt_block(&mut keystream);
+                output.extend(
+                    chunk
+                        .iter()
+                        .zip(keystream.iter())
+                        .map(|(byte, stream_byte)| byte ^ stream_byte),
+                );
+                native_aes_ctr_increment(&mut counter, counter_length);
+            }
+            Ok(output)
+        }};
+    }
+    match key.len() {
+        16 => run_ctr!(Aes128),
+        24 => run_ctr!(Aes192),
+        32 => run_ctr!(Aes256),
+        _ => Err(Error::Unknown),
+    }
+}
+
+#[cfg(test)]
+mod native_aes_tests {
+    use super::*;
+
+    fn hex(value: &str) -> Vec<u8> {
+        (0..value.len())
+            .step_by(2)
+            .map(|index| u8::from_str_radix(&value[index..index + 2], 16).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn aes_block_modes_match_nist_vectors() {
+        let key = hex("2b7e151628aed2a6abf7158809cf4f3c");
+        let iv = hex("000102030405060708090a0b0c0d0e0f");
+        let counter = hex("f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff");
+        let plaintext = hex(
+            "6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e5130c81c46a35ce411e5fbc1191a0a52eff69f2445df4f9b17ad2b417be66c3710",
+        );
+        let expected_cbc_prefix = hex(
+            "7649abac8119b246cee98e9b12e9197d5086cb9b507219ee95db113a917678b273bed6b8e3c1743b7116e69e222295163ff1caa1681fac09120eca307586e1a7",
+        );
+        let expected_ctr = hex(
+            "874d6191b620e3261bef6864990db6ce9806f66b7970fdff8617187bb9fffdff5ae4df3edbd5d35e5b4f09020db03eab1e031dda2fbe03d1792170a0f3009cee",
+        );
+
+        let ciphertext = native_aes_cbc_bytes("encrypt", &key, &iv, &plaintext).unwrap();
+        assert_eq!(ciphertext.len(), 80);
+        assert_eq!(&ciphertext[..64], expected_cbc_prefix.as_slice());
+        assert_eq!(
+            native_aes_cbc_bytes("decrypt", &key, &iv, &ciphertext).unwrap(),
+            plaintext
+        );
+        assert_eq!(
+            native_aes_ctr_bytes(&key, &counter, 128, &plaintext).unwrap(),
+            expected_ctr
+        );
+    }
+}
+
 fn install_native_crypto_sources<'js>(ctx: rquickjs::Ctx<'js>) -> Result<(), NativeEngineError> {
     let random_source = Function::new(
         ctx.clone(),
@@ -7299,6 +7471,66 @@ fn install_native_crypto_sources<'js>(ctx: rquickjs::Ctx<'js>) -> Result<(), Nat
         operation: "install native AES-GCM source".into(),
         reason: "native AES-GCM source could not be installed".into(),
     })?;
+    let aes_cbc_source = Function::new(
+        ctx.clone(),
+        |operation: String,
+         key_encoded: String,
+         iv_encoded: String,
+         data_encoded: String|
+         -> std::result::Result<String, Error> {
+            let key = base64::engine::general_purpose::STANDARD
+                .decode(key_encoded)
+                .map_err(|_| Error::Unknown)?;
+            let iv = base64::engine::general_purpose::STANDARD
+                .decode(iv_encoded)
+                .map_err(|_| Error::Unknown)?;
+            let data = base64::engine::general_purpose::STANDARD
+                .decode(data_encoded)
+                .map_err(|_| Error::Unknown)?;
+            if !matches!(key.len(), 16 | 24 | 32)
+                || iv.len() != 16
+                || data.len() > MAX_NATIVE_FORM_BODY_BYTES
+            {
+                return Err(Error::Unknown);
+            }
+            let output = native_aes_cbc_bytes(&operation, &key, &iv, &data)?;
+            Ok(base64::engine::general_purpose::STANDARD.encode(output))
+        },
+    )
+    .map_err(|_| NativeEngineError::Worker {
+        operation: "install native AES-CBC source".into(),
+        reason: "native AES-CBC source could not be installed".into(),
+    })?;
+    let aes_ctr_source = Function::new(
+        ctx.clone(),
+        |key_encoded: String,
+         counter_encoded: String,
+         counter_length: usize,
+         data_encoded: String|
+         -> std::result::Result<String, Error> {
+            let key = base64::engine::general_purpose::STANDARD
+                .decode(key_encoded)
+                .map_err(|_| Error::Unknown)?;
+            let counter = base64::engine::general_purpose::STANDARD
+                .decode(counter_encoded)
+                .map_err(|_| Error::Unknown)?;
+            let data = base64::engine::general_purpose::STANDARD
+                .decode(data_encoded)
+                .map_err(|_| Error::Unknown)?;
+            if !matches!(key.len(), 16 | 24 | 32)
+                || counter.len() != 16
+                || data.len() > MAX_NATIVE_FORM_BODY_BYTES
+            {
+                return Err(Error::Unknown);
+            }
+            let output = native_aes_ctr_bytes(&key, &counter, counter_length, &data)?;
+            Ok(base64::engine::general_purpose::STANDARD.encode(output))
+        },
+    )
+    .map_err(|_| NativeEngineError::Worker {
+        operation: "install native AES-CTR source".into(),
+        reason: "native AES-CTR source could not be installed".into(),
+    })?;
     let derive_source = Function::new(
         ctx.clone(),
         |algorithm: String,
@@ -7366,6 +7598,18 @@ fn install_native_crypto_sources<'js>(ctx: rquickjs::Ctx<'js>) -> Result<(), Nat
         .map_err(|_| NativeEngineError::Worker {
             operation: "install native AES-GCM source".into(),
             reason: "native AES-GCM source could not be published".into(),
+        })?;
+    ctx.globals()
+        .set("__glassNativeCryptoAesCbc", aes_cbc_source)
+        .map_err(|_| NativeEngineError::Worker {
+            operation: "install native AES-CBC source".into(),
+            reason: "native AES-CBC source could not be published".into(),
+        })?;
+    ctx.globals()
+        .set("__glassNativeCryptoAesCtr", aes_ctr_source)
+        .map_err(|_| NativeEngineError::Worker {
+            operation: "install native AES-CTR source".into(),
+            reason: "native AES-CTR source could not be published".into(),
         })?;
     ctx.globals()
         .set("__glassNativeCryptoDerive", derive_source)
@@ -8824,13 +9068,19 @@ fn worker_bootstrap(
   const workerCryptoAesSource = typeof globalThis.__glassNativeCryptoAesGcm === "function"
     ? globalThis.__glassNativeCryptoAesGcm
     : null;
+  const workerCryptoAesCbcSource = typeof globalThis.__glassNativeCryptoAesCbc === "function"
+    ? globalThis.__glassNativeCryptoAesCbc
+    : null;
+  const workerCryptoAesCtrSource = typeof globalThis.__glassNativeCryptoAesCtr === "function"
+    ? globalThis.__glassNativeCryptoAesCtr
+    : null;
   const workerCryptoAesUsages = (values) => {{
     if (!Array.isArray(values)) throw new TypeError("native Worker crypto usages must be an array");
     const usages = [];
     for (const value of values) {{
       const usage = String(value);
       if (!["encrypt", "decrypt"].includes(usage) || usages.includes(usage))
-        throw new SyntaxError("native Worker AES-GCM usage is invalid or duplicated");
+        throw new SyntaxError("native Worker AES usage is invalid or duplicated");
       usages.push(usage);
     }}
     return usages;
@@ -8853,9 +9103,32 @@ fn worker_bootstrap(
       throw new WorkerDOMExceptionNative("native Worker AES-GCM tag length is unsupported", "NotSupportedError");
     return {{ iv, additionalData, tagLength }};
   }};
-  const workerCryptoMakeAesKey = (bytes, extractable, usages) => {{
+  const workerCryptoAesCbcAlgorithm = (algorithm) => {{
+    if (!algorithm || typeof algorithm !== "object")
+      throw new WorkerDOMExceptionNative("native Worker AES-CBC algorithm is required", "TypeError");
+    if (String(algorithm.name || "").toUpperCase() !== "AES-CBC")
+      throw new WorkerDOMExceptionNative("native Worker crypto algorithm is unsupported", "NotSupportedError");
+    const iv = workerCryptoBufferInput(algorithm.iv);
+    if (iv.length !== 16)
+      throw new WorkerDOMExceptionNative("native Worker AES-CBC IV must be 16 bytes", "DataError");
+    return {{ iv }};
+  }};
+  const workerCryptoAesCtrAlgorithm = (algorithm) => {{
+    if (!algorithm || typeof algorithm !== "object")
+      throw new WorkerDOMExceptionNative("native Worker AES-CTR algorithm is required", "TypeError");
+    if (String(algorithm.name || "").toUpperCase() !== "AES-CTR")
+      throw new WorkerDOMExceptionNative("native Worker crypto algorithm is unsupported", "NotSupportedError");
+    const counter = workerCryptoBufferInput(algorithm.counter);
+    if (counter.length !== 16)
+      throw new WorkerDOMExceptionNative("native Worker AES-CTR counter must be 16 bytes", "DataError");
+    const length = Number(algorithm.length);
+    if (!Number.isSafeInteger(length) || length < 1 || length > 128)
+      throw new WorkerDOMExceptionNative("native Worker AES-CTR counter length is invalid", "DataError");
+    return {{ counter, length }};
+  }};
+  const workerCryptoMakeAesKey = (bytes, extractable, usages, algorithmName = "AES-GCM") => {{
     const key = Object.create(WorkerCryptoKeyNative.prototype);
-    const algorithm = Object.freeze({{ name: "AES-GCM", length: bytes.length * 8 }});
+    const algorithm = Object.freeze({{ name: algorithmName, length: bytes.length * 8 }});
     const normalizedUsages = Object.freeze(usages.slice());
     Object.defineProperties(key, {{
       type: {{ configurable: false, enumerable: true, value: "secret" }},
@@ -8864,7 +9137,7 @@ fn worker_bootstrap(
       usages: {{ configurable: false, enumerable: true, value: normalizedUsages }},
     }});
     workerCryptoKeyStore.set(key, {{
-      kind: "AES-GCM",
+      kind: algorithmName,
       bytes: bytes.slice(),
       extractable: Boolean(extractable),
       length: bytes.length * 8,
@@ -8922,14 +9195,15 @@ fn worker_bootstrap(
         workerCryptoUsages(keyUsages),
       );
     }}
-    if (algorithmName === "AES-GCM") {{
+    if (["AES-GCM", "AES-CBC", "AES-CTR"].includes(algorithmName)) {{
       const length = Number(algorithm.length);
       if (![128, 192, 256].includes(length))
-        throw new WorkerDOMExceptionNative("native AES-GCM key length is invalid", "DataError");
+        throw new WorkerDOMExceptionNative("native AES key length is invalid", "DataError");
       return workerCryptoMakeAesKey(
         workerCryptoTake(length / 8),
         extractable,
         workerCryptoAesUsages(keyUsages),
+        algorithmName,
       );
     }}
     throw new WorkerDOMExceptionNative("native crypto algorithm is unsupported", "NotSupportedError");
@@ -9004,14 +9278,15 @@ fn worker_bootstrap(
         workerCryptoUsages(keyUsages),
       );
     }}
-    if (name === "AES-GCM") {{
+    if (["AES-GCM", "AES-CBC", "AES-CTR"].includes(name)) {{
       const length = Number(targetAlgorithm.length);
       if (![128, 192, 256].includes(length))
-        throw new WorkerDOMExceptionNative("native derived AES-GCM key length is invalid", "DataError");
+        throw new WorkerDOMExceptionNative("native derived AES key length is invalid", "DataError");
       return workerCryptoMakeAesKey(
         workerCryptoDeriveBytes(state, algorithm, length / 8),
         extractable,
         workerCryptoAesUsages(keyUsages),
+        name,
       );
     }}
     throw new WorkerDOMExceptionNative("native derived key algorithm is unsupported", "NotSupportedError");
@@ -9106,6 +9381,28 @@ fn worker_bootstrap(
     );
     return decodeWorkerBase64(encoded, {fetch_body_limit});
   }};
+  const workerCryptoAesCbcBytes = (operation, state, algorithm, data) => {{
+    if (!workerCryptoAesCbcSource)
+      throw new WorkerDOMExceptionNative("native Worker AES-CBC is unavailable", "OperationError");
+    const encoded = workerCryptoAesCbcSource(
+      operation,
+      encodeWorkerBase64(state.bytes, {fetch_body_limit}),
+      encodeWorkerBase64(algorithm.iv, {fetch_body_limit}),
+      encodeWorkerBase64(data, {fetch_body_limit}),
+    );
+    return decodeWorkerBase64(encoded, {fetch_body_limit});
+  }};
+  const workerCryptoAesCtrBytes = (state, algorithm, data) => {{
+    if (!workerCryptoAesCtrSource)
+      throw new WorkerDOMExceptionNative("native Worker AES-CTR is unavailable", "OperationError");
+    const encoded = workerCryptoAesCtrSource(
+      encodeWorkerBase64(state.bytes, {fetch_body_limit}),
+      encodeWorkerBase64(algorithm.counter, {fetch_body_limit}),
+      algorithm.length,
+      encodeWorkerBase64(data, {fetch_body_limit}),
+    );
+    return decodeWorkerBase64(encoded, {fetch_body_limit});
+  }};
   workerSubtle.digest = (algorithm, data) => {{
     const name = algorithm && typeof algorithm === "object"
       ? String(algorithm.name || "")
@@ -9188,10 +9485,12 @@ fn worker_bootstrap(
       }}
       if (bytes.length === 0)
         throw new WorkerDOMExceptionNative("native Worker crypto key data is invalid", "DataError");
-      if (algorithmName === "AES-GCM") {{
+      if (["AES-GCM", "AES-CBC", "AES-CTR"].includes(algorithmName)) {{
         if (![16, 24, 32].includes(bytes.length))
-          throw new WorkerDOMExceptionNative("native Worker AES-GCM key length is invalid", "DataError");
-        return Promise.resolve(workerCryptoMakeAesKey(bytes, extractable, workerCryptoAesUsages(keyUsages)));
+          throw new WorkerDOMExceptionNative("native Worker AES key length is invalid", "DataError");
+        return Promise.resolve(workerCryptoMakeAesKey(
+          bytes, extractable, workerCryptoAesUsages(keyUsages), algorithmName
+        ));
       }}
       const hashName = workerCryptoHmacHash(algorithm);
       return Promise.resolve(workerCryptoMakeKey(bytes, hashName, extractable, workerCryptoUsages(keyUsages)));
@@ -9252,15 +9551,39 @@ fn worker_bootstrap(
   workerSubtle.encrypt = (algorithm, key, data) => {{
     try {{
       const state = workerCryptoKeyState(key);
-      if (state.kind !== "AES-GCM")
+      if (!["AES-GCM", "AES-CBC", "AES-CTR"].includes(state.kind))
         throw new WorkerDOMExceptionNative("native Worker crypto algorithm is unsupported", "NotSupportedError");
-      const normalized = workerCryptoAesAlgorithm(algorithm);
       if (!state.usages.includes("encrypt"))
         throw new WorkerDOMExceptionNative("native Worker CryptoKey cannot encrypt", "InvalidAccessError");
       const bytes = workerCryptoBufferInput(data);
-      if (bytes.length > {fetch_body_limit} - 16)
-        throw new WorkerDOMExceptionNative("native Worker AES-GCM data is too large", "DataError");
-      return Promise.resolve(new Uint8Array(workerCryptoAesBytes("encrypt", state, normalized, bytes)).buffer);
+      if (state.kind === "AES-GCM") {{
+        const normalized = workerCryptoAesAlgorithm(algorithm);
+        if (bytes.length > {fetch_body_limit} - 16)
+          throw new WorkerDOMExceptionNative("native Worker AES-GCM data is too large", "DataError");
+        return Promise.resolve(new Uint8Array(workerCryptoAesBytes("encrypt", state, normalized, bytes)).buffer);
+      }}
+      if (state.kind === "AES-CBC") {{
+        const normalized = workerCryptoAesCbcAlgorithm(algorithm);
+        if (bytes.length > {fetch_body_limit} - 16)
+          throw new WorkerDOMExceptionNative("native Worker AES-CBC data is too large", "DataError");
+        try {{
+          return Promise.resolve(new Uint8Array(
+            workerCryptoAesCbcBytes("encrypt", state, normalized, bytes)
+          ).buffer);
+        }} catch (_error) {{
+          throw new WorkerDOMExceptionNative("native Worker AES-CBC operation failed", "OperationError");
+        }}
+      }}
+      const normalized = workerCryptoAesCtrAlgorithm(algorithm);
+      if (bytes.length > {fetch_body_limit})
+        throw new WorkerDOMExceptionNative("native Worker AES-CTR data is too large", "DataError");
+      try {{
+        return Promise.resolve(new Uint8Array(
+          workerCryptoAesCtrBytes(state, normalized, bytes)
+        ).buffer);
+      }} catch (_error) {{
+        throw new WorkerDOMExceptionNative("native Worker AES-CTR operation failed", "OperationError");
+      }}
     }} catch (error) {{
       return Promise.reject(error);
     }}
@@ -9268,18 +9591,42 @@ fn worker_bootstrap(
   workerSubtle.decrypt = (algorithm, key, data) => {{
     try {{
       const state = workerCryptoKeyState(key);
-      if (state.kind !== "AES-GCM")
+      if (!["AES-GCM", "AES-CBC", "AES-CTR"].includes(state.kind))
         throw new WorkerDOMExceptionNative("native Worker crypto algorithm is unsupported", "NotSupportedError");
-      const normalized = workerCryptoAesAlgorithm(algorithm);
       if (!state.usages.includes("decrypt"))
         throw new WorkerDOMExceptionNative("native Worker CryptoKey cannot decrypt", "InvalidAccessError");
       const bytes = workerCryptoBufferInput(data);
-      if (bytes.length < 16 || bytes.length > {fetch_body_limit})
-        throw new WorkerDOMExceptionNative("native Worker AES-GCM ciphertext is invalid", "DataError");
+      if (state.kind === "AES-GCM") {{
+        const normalized = workerCryptoAesAlgorithm(algorithm);
+        if (bytes.length < 16 || bytes.length > {fetch_body_limit})
+          throw new WorkerDOMExceptionNative("native Worker AES-GCM ciphertext is invalid", "DataError");
+        try {{
+          return Promise.resolve(new Uint8Array(workerCryptoAesBytes("decrypt", state, normalized, bytes)).buffer);
+        }} catch (_error) {{
+          return Promise.reject(new WorkerDOMExceptionNative("native Worker AES-GCM authentication failed", "OperationError"));
+        }}
+      }}
+      if (state.kind === "AES-CBC") {{
+        const normalized = workerCryptoAesCbcAlgorithm(algorithm);
+        if (bytes.length === 0 || bytes.length % 16 !== 0 || bytes.length > {fetch_body_limit})
+          throw new WorkerDOMExceptionNative("native Worker AES-CBC ciphertext is invalid", "DataError");
+        try {{
+          return Promise.resolve(new Uint8Array(
+            workerCryptoAesCbcBytes("decrypt", state, normalized, bytes)
+          ).buffer);
+        }} catch (_error) {{
+          return Promise.reject(new WorkerDOMExceptionNative("native Worker AES-CBC padding is invalid", "OperationError"));
+        }}
+      }}
+      const normalized = workerCryptoAesCtrAlgorithm(algorithm);
+      if (bytes.length > {fetch_body_limit})
+        throw new WorkerDOMExceptionNative("native Worker AES-CTR ciphertext is too large", "DataError");
       try {{
-        return Promise.resolve(new Uint8Array(workerCryptoAesBytes("decrypt", state, normalized, bytes)).buffer);
+        return Promise.resolve(new Uint8Array(
+          workerCryptoAesCtrBytes(state, normalized, bytes)
+        ).buffer);
       }} catch (_error) {{
-        return Promise.reject(new WorkerDOMExceptionNative("native Worker AES-GCM authentication failed", "OperationError"));
+        return Promise.reject(new WorkerDOMExceptionNative("native Worker AES-CTR operation failed", "OperationError"));
       }}
     }} catch (error) {{
       return Promise.reject(error);
@@ -9359,6 +9706,8 @@ fn worker_bootstrap(
   try {{ delete globalThis.__glassNativeCryptoDigest; }} catch (_error) {{}}
   try {{ delete globalThis.__glassNativeCryptoHmac; }} catch (_error) {{}}
   try {{ delete globalThis.__glassNativeCryptoAesGcm; }} catch (_error) {{}}
+  try {{ delete globalThis.__glassNativeCryptoAesCbc; }} catch (_error) {{}}
+  try {{ delete globalThis.__glassNativeCryptoAesCtr; }} catch (_error) {{}}
   try {{ delete globalThis.__glassNativeCryptoDerive; }} catch (_error) {{}}
   const workerBlobBytes = (part) => {{
     if (part && part.__glassWorkerBlob === true) return part._bytes.slice();
@@ -20651,13 +21000,19 @@ fn document_bootstrap(
   const pageCryptoAesSource = typeof globalThis.__glassNativeCryptoAesGcm === "function"
     ? globalThis.__glassNativeCryptoAesGcm
     : null;
+  const pageCryptoAesCbcSource = typeof globalThis.__glassNativeCryptoAesCbc === "function"
+    ? globalThis.__glassNativeCryptoAesCbc
+    : null;
+  const pageCryptoAesCtrSource = typeof globalThis.__glassNativeCryptoAesCtr === "function"
+    ? globalThis.__glassNativeCryptoAesCtr
+    : null;
   const pageCryptoAesUsages = (values) => {{
     if (!Array.isArray(values)) throw new TypeError("native crypto usages must be an array");
     const usages = [];
     for (const value of values) {{
       const usage = String(value);
       if (!["encrypt", "decrypt"].includes(usage) || usages.includes(usage))
-        throw new SyntaxError("native AES-GCM usage is invalid or duplicated");
+        throw new SyntaxError("native AES usage is invalid or duplicated");
       usages.push(usage);
     }}
     return usages;
@@ -20680,9 +21035,32 @@ fn document_bootstrap(
       throw pageCryptoDigestError("native AES-GCM tag length is unsupported", "NotSupportedError");
     return {{ iv, additionalData, tagLength }};
   }};
-  const pageCryptoMakeAesKey = (bytes, extractable, usages) => {{
+  const pageCryptoAesCbcAlgorithm = (algorithm) => {{
+    if (!algorithm || typeof algorithm !== "object")
+      throw pageCryptoDigestError("native AES-CBC algorithm is required", "TypeError");
+    if (String(algorithm.name || "").toUpperCase() !== "AES-CBC")
+      throw pageCryptoDigestError("native crypto algorithm is unsupported", "NotSupportedError");
+    const iv = pageCryptoBufferInput(algorithm.iv);
+    if (iv.length !== 16)
+      throw pageCryptoDigestError("native AES-CBC IV must be 16 bytes", "DataError");
+    return {{ iv }};
+  }};
+  const pageCryptoAesCtrAlgorithm = (algorithm) => {{
+    if (!algorithm || typeof algorithm !== "object")
+      throw pageCryptoDigestError("native AES-CTR algorithm is required", "TypeError");
+    if (String(algorithm.name || "").toUpperCase() !== "AES-CTR")
+      throw pageCryptoDigestError("native crypto algorithm is unsupported", "NotSupportedError");
+    const counter = pageCryptoBufferInput(algorithm.counter);
+    if (counter.length !== 16)
+      throw pageCryptoDigestError("native AES-CTR counter must be 16 bytes", "DataError");
+    const length = Number(algorithm.length);
+    if (!Number.isSafeInteger(length) || length < 1 || length > 128)
+      throw pageCryptoDigestError("native AES-CTR counter length is invalid", "DataError");
+    return {{ counter, length }};
+  }};
+  const pageCryptoMakeAesKey = (bytes, extractable, usages, algorithmName = "AES-GCM") => {{
     const key = Object.create(PageCryptoKeyNative.prototype);
-    const algorithm = Object.freeze({{ name: "AES-GCM", length: bytes.length * 8 }});
+    const algorithm = Object.freeze({{ name: algorithmName, length: bytes.length * 8 }});
     const normalizedUsages = Object.freeze(usages.slice());
     Object.defineProperties(key, {{
       type: {{ configurable: false, enumerable: true, value: "secret" }},
@@ -20691,7 +21069,7 @@ fn document_bootstrap(
       usages: {{ configurable: false, enumerable: true, value: normalizedUsages }},
     }});
     pageCryptoKeyStore.set(key, {{
-      kind: "AES-GCM",
+      kind: algorithmName,
       bytes: bytes.slice(),
       extractable: Boolean(extractable),
       length: bytes.length * 8,
@@ -20749,14 +21127,15 @@ fn document_bootstrap(
         pageCryptoUsages(keyUsages),
       );
     }}
-    if (algorithmName === "AES-GCM") {{
+    if (["AES-GCM", "AES-CBC", "AES-CTR"].includes(algorithmName)) {{
       const length = Number(algorithm.length);
       if (![128, 192, 256].includes(length))
-        throw pageCryptoDigestError("native AES-GCM key length is invalid", "DataError");
+        throw pageCryptoDigestError("native AES key length is invalid", "DataError");
       return pageCryptoMakeAesKey(
         pageCryptoTake(length / 8),
         extractable,
         pageCryptoAesUsages(keyUsages),
+        algorithmName,
       );
     }}
     throw pageCryptoDigestError("native crypto algorithm is unsupported", "NotSupportedError");
@@ -20831,14 +21210,15 @@ fn document_bootstrap(
         pageCryptoUsages(keyUsages),
       );
     }}
-    if (name === "AES-GCM") {{
+    if (["AES-GCM", "AES-CBC", "AES-CTR"].includes(name)) {{
       const length = Number(targetAlgorithm.length);
       if (![128, 192, 256].includes(length))
-        throw pageCryptoDigestError("native derived AES-GCM key length is invalid", "DataError");
+        throw pageCryptoDigestError("native derived AES key length is invalid", "DataError");
       return pageCryptoMakeAesKey(
         pageCryptoDeriveBytes(state, algorithm, length / 8),
         extractable,
         pageCryptoAesUsages(keyUsages),
+        name,
       );
     }}
     throw pageCryptoDigestError("native derived key algorithm is unsupported", "NotSupportedError");
@@ -20933,6 +21313,28 @@ fn document_bootstrap(
     );
     return decodeBase64(encoded, {native_form_body_bytes});
   }};
+  const pageCryptoAesCbcBytes = (operation, state, algorithm, data) => {{
+    if (!pageCryptoAesCbcSource)
+      throw pageCryptoDigestError("native AES-CBC is unavailable", "OperationError");
+    const encoded = pageCryptoAesCbcSource(
+      operation,
+      encodeBase64(state.bytes, {native_form_body_bytes}),
+      encodeBase64(algorithm.iv, {native_form_body_bytes}),
+      encodeBase64(data, {native_form_body_bytes}),
+    );
+    return decodeBase64(encoded, {native_form_body_bytes});
+  }};
+  const pageCryptoAesCtrBytes = (state, algorithm, data) => {{
+    if (!pageCryptoAesCtrSource)
+      throw pageCryptoDigestError("native AES-CTR is unavailable", "OperationError");
+    const encoded = pageCryptoAesCtrSource(
+      encodeBase64(state.bytes, {native_form_body_bytes}),
+      encodeBase64(algorithm.counter, {native_form_body_bytes}),
+      algorithm.length,
+      encodeBase64(data, {native_form_body_bytes}),
+    );
+    return decodeBase64(encoded, {native_form_body_bytes});
+  }};
   pageSubtle.digest = (algorithm, data) => {{
     const name = algorithm && typeof algorithm === "object"
       ? String(algorithm.name || "")
@@ -21016,10 +21418,12 @@ fn document_bootstrap(
       }}
       if (bytes.length === 0)
         throw pageCryptoDigestError("native crypto key data is invalid", "DataError");
-      if (algorithmName === "AES-GCM") {{
+      if (["AES-GCM", "AES-CBC", "AES-CTR"].includes(algorithmName)) {{
         if (![16, 24, 32].includes(bytes.length))
-          throw pageCryptoDigestError("native AES-GCM key length is invalid", "DataError");
-        return Promise.resolve(pageCryptoMakeAesKey(bytes, extractable, pageCryptoAesUsages(keyUsages)));
+          throw pageCryptoDigestError("native AES key length is invalid", "DataError");
+        return Promise.resolve(pageCryptoMakeAesKey(
+          bytes, extractable, pageCryptoAesUsages(keyUsages), algorithmName
+        ));
       }}
       const hashName = pageCryptoHmacHash(algorithm);
       return Promise.resolve(pageCryptoMakeKey(bytes, hashName, extractable, pageCryptoUsages(keyUsages)));
@@ -21080,15 +21484,39 @@ fn document_bootstrap(
   pageSubtle.encrypt = (algorithm, key, data) => {{
     try {{
       const state = pageCryptoKeyState(key);
-      if (state.kind !== "AES-GCM")
+      if (!["AES-GCM", "AES-CBC", "AES-CTR"].includes(state.kind))
         throw pageCryptoDigestError("native crypto algorithm is unsupported", "NotSupportedError");
-      const normalized = pageCryptoAesAlgorithm(algorithm);
       if (!state.usages.includes("encrypt"))
         throw pageCryptoDigestError("native CryptoKey cannot encrypt", "InvalidAccessError");
       const bytes = pageCryptoBufferInput(data);
-      if (bytes.length > {native_form_body_bytes} - 16)
-        throw pageCryptoDigestError("native AES-GCM data is too large", "DataError");
-      return Promise.resolve(new Uint8Array(pageCryptoAesBytes("encrypt", state, normalized, bytes)).buffer);
+      if (state.kind === "AES-GCM") {{
+        const normalized = pageCryptoAesAlgorithm(algorithm);
+        if (bytes.length > {native_form_body_bytes} - 16)
+          throw pageCryptoDigestError("native AES-GCM data is too large", "DataError");
+        return Promise.resolve(new Uint8Array(pageCryptoAesBytes("encrypt", state, normalized, bytes)).buffer);
+      }}
+      if (state.kind === "AES-CBC") {{
+        const normalized = pageCryptoAesCbcAlgorithm(algorithm);
+        if (bytes.length > {native_form_body_bytes} - 16)
+          throw pageCryptoDigestError("native AES-CBC data is too large", "DataError");
+        try {{
+          return Promise.resolve(new Uint8Array(
+            pageCryptoAesCbcBytes("encrypt", state, normalized, bytes)
+          ).buffer);
+        }} catch (_error) {{
+          throw pageCryptoDigestError("native AES-CBC operation failed", "OperationError");
+        }}
+      }}
+      const normalized = pageCryptoAesCtrAlgorithm(algorithm);
+      if (bytes.length > {native_form_body_bytes})
+        throw pageCryptoDigestError("native AES-CTR data is too large", "DataError");
+      try {{
+        return Promise.resolve(new Uint8Array(
+          pageCryptoAesCtrBytes(state, normalized, bytes)
+        ).buffer);
+      }} catch (_error) {{
+        throw pageCryptoDigestError("native AES-CTR operation failed", "OperationError");
+      }}
     }} catch (error) {{
       return Promise.reject(error);
     }}
@@ -21096,18 +21524,42 @@ fn document_bootstrap(
   pageSubtle.decrypt = (algorithm, key, data) => {{
     try {{
       const state = pageCryptoKeyState(key);
-      if (state.kind !== "AES-GCM")
+      if (!["AES-GCM", "AES-CBC", "AES-CTR"].includes(state.kind))
         throw pageCryptoDigestError("native crypto algorithm is unsupported", "NotSupportedError");
-      const normalized = pageCryptoAesAlgorithm(algorithm);
       if (!state.usages.includes("decrypt"))
         throw pageCryptoDigestError("native CryptoKey cannot decrypt", "InvalidAccessError");
       const bytes = pageCryptoBufferInput(data);
-      if (bytes.length < 16 || bytes.length > {native_form_body_bytes})
-        throw pageCryptoDigestError("native AES-GCM ciphertext is invalid", "DataError");
+      if (state.kind === "AES-GCM") {{
+        const normalized = pageCryptoAesAlgorithm(algorithm);
+        if (bytes.length < 16 || bytes.length > {native_form_body_bytes})
+          throw pageCryptoDigestError("native AES-GCM ciphertext is invalid", "DataError");
+        try {{
+          return Promise.resolve(new Uint8Array(pageCryptoAesBytes("decrypt", state, normalized, bytes)).buffer);
+        }} catch (_error) {{
+          return Promise.reject(pageCryptoDigestError("native AES-GCM authentication failed", "OperationError"));
+        }}
+      }}
+      if (state.kind === "AES-CBC") {{
+        const normalized = pageCryptoAesCbcAlgorithm(algorithm);
+        if (bytes.length === 0 || bytes.length % 16 !== 0 || bytes.length > {native_form_body_bytes})
+          throw pageCryptoDigestError("native AES-CBC ciphertext is invalid", "DataError");
+        try {{
+          return Promise.resolve(new Uint8Array(
+            pageCryptoAesCbcBytes("decrypt", state, normalized, bytes)
+          ).buffer);
+        }} catch (_error) {{
+          return Promise.reject(pageCryptoDigestError("native AES-CBC padding is invalid", "OperationError"));
+        }}
+      }}
+      const normalized = pageCryptoAesCtrAlgorithm(algorithm);
+      if (bytes.length > {native_form_body_bytes})
+        throw pageCryptoDigestError("native AES-CTR ciphertext is too large", "DataError");
       try {{
-        return Promise.resolve(new Uint8Array(pageCryptoAesBytes("decrypt", state, normalized, bytes)).buffer);
+        return Promise.resolve(new Uint8Array(
+          pageCryptoAesCtrBytes(state, normalized, bytes)
+        ).buffer);
       }} catch (_error) {{
-        return Promise.reject(pageCryptoDigestError("native AES-GCM authentication failed", "OperationError"));
+        return Promise.reject(pageCryptoDigestError("native AES-CTR operation failed", "OperationError"));
       }}
     }} catch (error) {{
       return Promise.reject(error);
@@ -21187,6 +21639,8 @@ fn document_bootstrap(
   try {{ delete globalThis.__glassNativeCryptoDigest; }} catch (_error) {{}}
   try {{ delete globalThis.__glassNativeCryptoHmac; }} catch (_error) {{}}
   try {{ delete globalThis.__glassNativeCryptoAesGcm; }} catch (_error) {{}}
+  try {{ delete globalThis.__glassNativeCryptoAesCbc; }} catch (_error) {{}}
+  try {{ delete globalThis.__glassNativeCryptoAesCtr; }} catch (_error) {{}}
   try {{ delete globalThis.__glassNativeCryptoDerive; }} catch (_error) {{}}
   const nativeStorageUsage = () => {{
     const encoded = (value) => {{

@@ -2484,6 +2484,137 @@ async fn native_local_page_and_worker_jwk_crypto_keys() {
 }
 
 #[tokio::test]
+async fn native_local_page_and_worker_aes_block_crypto() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://aes-block-crypto-page",
+            "<html><body><main>Native</main></body></html>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://aes-block-crypto-worker",
+            r#"(async () => {
+                const bytes = value => Uint8Array.from(value.match(/../g), pair => parseInt(pair, 16));
+                const hex = value => Array.from(new Uint8Array(value)).map(byte => byte.toString(16).padStart(2, '0')).join('');
+                const keyBytes = bytes('2b7e151628aed2a6abf7158809cf4f3c');
+                const cbcPlaintext = bytes('6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e5130c81c46a35ce411e5fbc1191a0a52eff69f2445df4f9b17ad2b417be66c3710');
+                const cbcKey = await crypto.subtle.importKey('raw', keyBytes, { name: 'AES-CBC' }, false, ['encrypt', 'decrypt']);
+                const cbcAlgorithm = { name: 'AES-CBC', iv: bytes('000102030405060708090a0b0c0d0e0f') };
+                const cbcCiphertext = await crypto.subtle.encrypt(cbcAlgorithm, cbcKey, cbcPlaintext);
+                const cbcPlain = await crypto.subtle.decrypt(cbcAlgorithm, cbcKey, cbcCiphertext);
+                const tampered = new Uint8Array(cbcCiphertext).slice();
+                tampered[tampered.length - 32] ^= 1;
+                let cbcPaddingError = '';
+                try { await crypto.subtle.decrypt(cbcAlgorithm, cbcKey, tampered); } catch (error) { cbcPaddingError = error.name; }
+                const ctrKey = await crypto.subtle.importKey('raw', keyBytes, { name: 'AES-CTR' }, false, ['encrypt', 'decrypt']);
+                const ctrAlgorithm = { name: 'AES-CTR', counter: bytes('f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff'), length: 128 };
+                const ctrCiphertext = await crypto.subtle.encrypt(ctrAlgorithm, ctrKey, cbcPlaintext);
+                const ctrPlain = await crypto.subtle.decrypt(ctrAlgorithm, ctrKey, ctrCiphertext);
+                const generated = await Promise.all([128, 192, 256].map(length => crypto.subtle.generateKey({ name: 'AES-CTR', length }, false, ['encrypt', 'decrypt'])));
+                postMessage({
+                    cbcPrefix: hex(new Uint8Array(cbcCiphertext).subarray(0, 64)),
+                    cbcLength: cbcCiphertext.byteLength,
+                    cbcPlaintext: hex(cbcPlain),
+                    cbcPaddingError,
+                    ctrCiphertext: hex(ctrCiphertext),
+                    ctrPlaintext: hex(ctrPlain),
+                    generated: generated.map(key => [key.algorithm.name, key.algorithm.length]),
+                });
+            })().catch(error => postMessage({ error: error.name }));"#,
+        )
+        .unwrap()
+        .with_initial_url("fixture://aes-block-crypto-page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"await (async () => {
+                    const bytes = value => Uint8Array.from(value.match(/../g), pair => parseInt(pair, 16));
+                    const hex = value => Array.from(new Uint8Array(value)).map(byte => byte.toString(16).padStart(2, '0')).join('');
+                    const keyBytes = bytes('2b7e151628aed2a6abf7158809cf4f3c');
+                    const cbcPlaintext = bytes('6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e5130c81c46a35ce411e5fbc1191a0a52eff69f2445df4f9b17ad2b417be66c3710');
+                    const cbcKey = await crypto.subtle.importKey('raw', keyBytes, { name: 'AES-CBC' }, false, ['encrypt', 'decrypt']);
+                    const cbcAlgorithm = { name: 'AES-CBC', iv: bytes('000102030405060708090a0b0c0d0e0f') };
+                    const cbcCiphertext = await crypto.subtle.encrypt(cbcAlgorithm, cbcKey, cbcPlaintext);
+                    const cbcPlain = await crypto.subtle.decrypt(cbcAlgorithm, cbcKey, cbcCiphertext);
+                    const tampered = new Uint8Array(cbcCiphertext).slice();
+                    tampered[tampered.length - 32] ^= 1;
+                    let cbcPaddingError = '';
+                    try { await crypto.subtle.decrypt(cbcAlgorithm, cbcKey, tampered); } catch (error) { cbcPaddingError = error.name; }
+                    let cbcIvError = '';
+                    try { await crypto.subtle.encrypt({ name: 'AES-CBC', iv: new Uint8Array(15) }, cbcKey, cbcPlaintext); } catch (error) { cbcIvError = error.name; }
+                    const ctrKey = await crypto.subtle.importKey('raw', keyBytes, { name: 'AES-CTR' }, false, ['encrypt', 'decrypt']);
+                    const ctrAlgorithm = { name: 'AES-CTR', counter: bytes('f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff'), length: 128 };
+                    const ctrCiphertext = await crypto.subtle.encrypt(ctrAlgorithm, ctrKey, cbcPlaintext);
+                    const ctrPlain = await crypto.subtle.decrypt(ctrAlgorithm, ctrKey, ctrCiphertext);
+                    let ctrLengthError = '';
+                    try { await crypto.subtle.encrypt({ ...ctrAlgorithm, length: 0 }, ctrKey, cbcPlaintext); } catch (error) { ctrLengthError = error.name; }
+                    const generated = await Promise.all([128, 192, 256].map(length => crypto.subtle.generateKey({ name: 'AES-CBC', length }, false, ['encrypt', 'decrypt'])));
+                    const deriveBase = await crypto.subtle.importKey('raw', new Uint8Array(22).fill(7), { name: 'HKDF' }, false, ['deriveKey']);
+                    const deriveAlgorithm = { name: 'HKDF', hash: 'SHA-256', salt: bytes('000102030405060708090a0b0c'), info: bytes('f0f1f2f3') };
+                    const derivedCbc = await crypto.subtle.deriveKey(deriveAlgorithm, deriveBase, { name: 'AES-CBC', length: 128 }, false, ['encrypt', 'decrypt']);
+                    const derivedCtr = await crypto.subtle.deriveKey(deriveAlgorithm, deriveBase, { name: 'AES-CTR', length: 256 }, false, ['encrypt', 'decrypt']);
+                    return {
+                        cbcPrefix: hex(new Uint8Array(cbcCiphertext).subarray(0, 64)),
+                        cbcLength: cbcCiphertext.byteLength,
+                        cbcPlaintext: hex(cbcPlain),
+                        cbcPaddingError,
+                        cbcIvError,
+                        ctrCiphertext: hex(ctrCiphertext),
+                        ctrPlaintext: hex(ctrPlain),
+                        ctrLengthError,
+                        generated: generated.map(key => [key.algorithm.name, key.algorithm.length]),
+                        derived: [[derivedCbc.algorithm.name, derivedCbc.algorithm.length], [derivedCtr.algorithm.name, derivedCtr.algorithm.length]],
+                    };
+                })()"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "cbcPrefix": "7649abac8119b246cee98e9b12e9197d5086cb9b507219ee95db113a917678b273bed6b8e3c1743b7116e69e222295163ff1caa1681fac09120eca307586e1a7",
+            "cbcLength": 80,
+            "cbcPlaintext": "6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e5130c81c46a35ce411e5fbc1191a0a52eff69f2445df4f9b17ad2b417be66c3710",
+            "cbcPaddingError": "OperationError",
+            "cbcIvError": "DataError",
+            "ctrCiphertext": "874d6191b620e3261bef6864990db6ce9806f66b7970fdff8617187bb9fffdff5ae4df3edbd5d35e5b4f09020db03eab1e031dda2fbe03d1792170a0f3009cee",
+            "ctrPlaintext": "6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e5130c81c46a35ce411e5fbc1191a0a52eff69f2445df4f9b17ad2b417be66c3710",
+            "ctrLengthError": "DataError",
+            "generated": [["AES-CBC", 128], ["AES-CBC", 192], ["AES-CBC", 256]],
+            "derived": [["AES-CBC", 128], ["AES-CTR", 256]],
+        })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "globalThis.workerMessages = []; globalThis.workerErrors = []; globalThis.worker = new Worker('fixture://aes-block-crypto-worker'); worker.onmessage = event => workerMessages.push(event.data); worker.onerror = event => workerErrors.push(event.message); true",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("({ messages: workerMessages, errors: workerErrors })")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "messages": [{
+                "cbcPrefix": "7649abac8119b246cee98e9b12e9197d5086cb9b507219ee95db113a917678b273bed6b8e3c1743b7116e69e222295163ff1caa1681fac09120eca307586e1a7",
+                "cbcLength": 80,
+                "cbcPlaintext": "6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e5130c81c46a35ce411e5fbc1191a0a52eff69f2445df4f9b17ad2b417be66c3710",
+                "cbcPaddingError": "OperationError",
+                "ctrCiphertext": "874d6191b620e3261bef6864990db6ce9806f66b7970fdff8617187bb9fffdff5ae4df3edbd5d35e5b4f09020db03eab1e031dda2fbe03d1792170a0f3009cee",
+                "ctrPlaintext": "6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e5130c81c46a35ce411e5fbc1191a0a52eff69f2445df4f9b17ad2b417be66c3710",
+                "generated": [["AES-CTR", 128], ["AES-CTR", 192], ["AES-CTR", 256]],
+            }],
+            "errors": [],
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_runs_worker_created_during_page_load() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

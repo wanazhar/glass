@@ -9,7 +9,7 @@ use crate::development::{
     ToolAuthorization, ToolCall,
 };
 use crate::experiments::ExperimentManager;
-use crate::git::GitService;
+use crate::git::{GitError, GitService};
 use crate::intelligence::{DevelopmentIntelligence, DevelopmentNode, DevelopmentNodeKind};
 use crate::kernels::{KernelError, KernelExecution, KernelManager, KernelToolCall};
 use crate::lsp::LanguageService;
@@ -142,9 +142,20 @@ impl DevelopmentWorkspace {
             .ancestors()
             .any(|ancestor| ancestor.join(".git").exists())
         {
-            Some(GitService::open(&root).map_err(|error| {
-                crate::development::DevelopmentError::Process(error.to_string())
-            })?)
+            match GitService::open(&root) {
+                Ok(git) => Some(git),
+                Err(GitError::Command { operation, detail })
+                    if operation == "discover repository"
+                        && detail.to_ascii_lowercase().contains("not a git repository") =>
+                {
+                    None
+                }
+                Err(error) => {
+                    return Err(crate::development::DevelopmentError::Process(
+                        error.to_string(),
+                    ));
+                }
+            }
         } else {
             None
         };

@@ -1,12 +1,15 @@
 //! Browser lifecycle, the native runtime, transport adapters, policy, profiles,
 //! and sessions.
 //!
-//! [`session module`](crate::browser::session) is the primary embedded API. An
-//! owned session launches Chrome, owns its process and profile flush, and must
-//! be closed explicitly. An attached session selects an existing CDP endpoint
-//! and never owns that browser process. The [`session options type`](crate::browser::session::SessionOptions)
+//! [`session module`](crate::browser::session) is the Chromium-compatible
+//! embedded API. A feature-enabled product normally enters through the
+//! Glass-owned native runtime; the session API remains available for an
+//! explicit Chromium migration/attach path. An owned Chromium session launches
+//! Chrome, owns its process and profile flush, and must be closed explicitly.
+//! An attached session selects an existing CDP endpoint and never owns that
+//! browser process. The [`session options type`](crate::browser::session::SessionOptions)
 //! validates the distinction before connection. [`runtime module`](crate::browser::runtime)
-//! provides a separate portable semantic slice for externally managed
+//! provides the shared semantic session seam for native and externally managed
 //! Firefox BiDi and Safari WebDriver endpoints.
 //!
 //! Feature-enabled products use the Glass-owned native runtime as their primary
@@ -51,6 +54,9 @@ pub(crate) mod native_batch;
 /// Feature-gated Glass-owned native browser engine kernel.
 #[cfg(feature = "native-engine")]
 pub mod native_engine;
+/// Native projection of semantic observations into the stable Web IR contract.
+#[cfg(feature = "native-engine")]
+pub(crate) mod native_extraction;
 /// Native-owned Task Protocol execution adapter.
 #[cfg(feature = "native-engine")]
 mod native_task;

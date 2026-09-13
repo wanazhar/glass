@@ -31,6 +31,7 @@ use crate::browser_backend::{
     EffectsRequest, EvidenceLevel, EvidenceRequest, NavigationRequest, SemanticAction,
 };
 use crate::capabilities::GlassCapabilityManifest;
+use crate::extraction::ExtractionRequest;
 use crate::protocol::{
     GLASS_PROTOCOL_VERSION, GlassRequest, TASK_COMPILE_OPERATION, TASK_EXECUTE_OPERATION,
     TASK_VALIDATE_OPERATION, WEB_IR_CONTINUITY_OPERATION, WEB_IR_INSPECT_OPERATION,
@@ -613,7 +614,11 @@ fn validate_alternative_runtime_command(
         }
         Commands::Evaluate { .. } if native => Ok(()),
         Commands::Preflight { .. } if native => Ok(()),
-        Commands::InspectPage | Commands::FindTarget { .. } if native => Ok(()),
+        Commands::InspectPage | Commands::FindTarget { .. } | Commands::ExtractWebIr { .. }
+            if native =>
+        {
+            Ok(())
+        }
         Commands::ClickExpectPopup { .. } if native => Ok(()),
         Commands::DoubleClick { .. } | Commands::Hover { .. } | Commands::Drag { .. } if native => {
             Ok(())
@@ -1088,6 +1093,18 @@ async fn run_alternative_runtime_command(
             #[cfg(feature = "native-engine")]
             {
                 alternative_json_output(&session.native_inspect_page().await?, response_mode)
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
+        }
+        Commands::ExtractWebIr { input } if session.runtime().is_native() => {
+            #[cfg(feature = "native-engine")]
+            {
+                let request = read_extraction_request(input.as_ref())?;
+                alternative_json_output(
+                    &session.native_extract_web_ir(&request).await?,
+                    response_mode,
+                )
             }
             #[cfg(not(feature = "native-engine"))]
             unreachable!("native runtime is feature-gated")
@@ -3609,6 +3626,10 @@ async fn run_command(
                 serde_json::from_value(read_json_input(Some(input))?)?;
             print_json_mode(&session.extract_structured(&request).await?, response_mode)?;
         }
+        Commands::ExtractWebIr { input } => {
+            let request = read_extraction_request(input.as_ref())?;
+            print_json_mode(&session.extract_web_ir(&request).await?, response_mode)?;
+        }
         Commands::RecoverRun { execution_id } => {
             print_json_mode(&session.recover_run(execution_id)?, response_mode)?;
         }
@@ -3951,6 +3972,15 @@ fn read_json_input(path: Option<&std::path::PathBuf>) -> BrowserResult<serde_jso
         .into());
     }
     serde_json::from_str(&input).map_err(|error| format!("invalid JSON input: {error}").into())
+}
+
+fn read_extraction_request(path: Option<&std::path::PathBuf>) -> BrowserResult<ExtractionRequest> {
+    let request = match path {
+        Some(path) => serde_json::from_value(read_json_input(Some(path))?)?,
+        None => ExtractionRequest::default_document(),
+    };
+    request.validate()?;
+    Ok(request)
 }
 
 pub(crate) fn policy_from_cli(cli: &Cli) -> BrowserResult<BrowserPolicy> {

@@ -678,6 +678,13 @@ pub enum Commands {
     /// Extract typed records from a fresh semantic region.
     ExtractStructured { input: PathBuf },
 
+    /// Extract the active page into bounded Glass Web IR v1.
+    ///
+    /// When INPUT is omitted, the default document extraction request is
+    /// used. Use `-` to read a strict ExtractionRequest JSON document from
+    /// stdin.
+    ExtractWebIr { input: Option<PathBuf> },
+
     /// Recover a potentially indeterminate execution conservatively.
     RecoverRun { execution_id: String },
 

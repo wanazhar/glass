@@ -27,8 +27,8 @@ use glass_browser::browser_backend::{
 };
 use glass_browser::{BackendFactory, BrowserRuntime, BrowserRuntimeSession, NativeEngineBackend};
 use glass_browser::{
-    GlassTask, TaskAmbiguityPolicy, TaskKind, TaskLimits, TaskRevisionPolicy, TaskRiskClass,
-    TaskScope,
+    EvidenceSource, ExtractionRequest, GlassTask, TaskAmbiguityPolicy, TaskKind, TaskLimits,
+    TaskRevisionPolicy, TaskRiskClass, TaskScope, WebIrAction, WebIrEntityKind,
 };
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -404,6 +404,51 @@ async fn native_semantic_levels_and_region_expansion_are_revision_scoped() {
     let form_values = session.native_form_values(false).await.unwrap();
     assert_eq!(form_values[0]["type"], "email");
     assert_eq!(form_values[0]["value"], "");
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_extracts_validated_live_web_ir() {
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(
+            "data:text/html,%3Ctitle%3ENative%20IR%3C%2Ftitle%3E%3Cmain%3E%3Ch1%3EWelcome%3C%2Fh1%3E%3Clabel%20for%3D%22name%22%3EName%3C%2Flabel%3E%3Cinput%20id%3D%22name%22%20type%3D%22text%22%20required%3E%3Cbutton%3ESave%3C%2Fbutton%3E%3C%2Fmain%3E",
+        ),
+    )
+    .await
+    .unwrap();
+
+    let ir = session
+        .native_extract_web_ir(&ExtractionRequest::default_document())
+        .await
+        .unwrap();
+    ir.validate().unwrap();
+    assert_eq!(ir.document.title.as_deref(), Some("Native IR"));
+    assert!(
+        ir.entities
+            .iter()
+            .any(|entity| entity.kind == WebIrEntityKind::Page)
+    );
+    assert!(
+        ir.entities
+            .iter()
+            .any(|entity| entity.kind == WebIrEntityKind::Region)
+    );
+    assert!(
+        ir.entities
+            .iter()
+            .any(|entity| entity.kind == WebIrEntityKind::Field)
+    );
+    assert!(
+        ir.entities
+            .iter()
+            .any(|entity| entity.kind == WebIrEntityKind::Action)
+    );
+    assert!(ir.limits.missing_sources.contains(&EvidenceSource::Dom));
+    assert!(
+        ir.entity_details
+            .values()
+            .any(|details| { details.supported_actions.contains(&WebIrAction::Type) })
+    );
     session.close().await.unwrap();
 }
 
@@ -12710,11 +12755,16 @@ async fn native_content_process_blocks_csp_disallowed_stylesheet_before_request(
     let target_address = target_listener.local_addr().unwrap();
     let (target_request, target_request_rx) = tokio::sync::oneshot::channel();
     let target_server = tokio::spawn(async move {
-        if tokio::time::timeout(Duration::from_secs(1), target_listener.accept())
-            .await
-            .is_ok()
+        if let Ok(Ok((mut stream, _))) =
+            tokio::time::timeout(Duration::from_secs(1), target_listener.accept()).await
         {
-            let _ = target_request.send(());
+            let mut request = [0_u8; 4096];
+            if let Ok(Ok(read)) =
+                tokio::time::timeout(Duration::from_millis(250), stream.read(&mut request)).await
+                && request[..read].starts_with(b"GET /style.css ")
+            {
+                let _ = target_request.send(());
+            }
         }
     });
 
@@ -12740,9 +12790,10 @@ async fn native_content_process_blocks_csp_disallowed_stylesheet_before_request(
     .unwrap();
     engine.initialize_async().await.unwrap();
     assert!(
-        tokio::time::timeout(Duration::from_millis(250), target_request_rx)
-            .await
-            .is_err(),
+        !matches!(
+            tokio::time::timeout(Duration::from_millis(250), target_request_rx).await,
+            Ok(Ok(()))
+        ),
         "CSP-disallowed stylesheet was requested"
     );
     engine.close_async().await.unwrap();
@@ -40317,11 +40368,16 @@ async fn native_content_process_blocks_csp_disallowed_image_before_request() {
     let target_address = target_listener.local_addr().unwrap();
     let (target_request, target_request_rx) = tokio::sync::oneshot::channel();
     let target_server = tokio::spawn(async move {
-        if tokio::time::timeout(Duration::from_secs(1), target_listener.accept())
-            .await
-            .is_ok()
+        if let Ok(Ok((mut stream, _))) =
+            tokio::time::timeout(Duration::from_secs(1), target_listener.accept()).await
         {
-            let _ = target_request.send(());
+            let mut request = [0_u8; 4096];
+            if let Ok(Ok(read)) =
+                tokio::time::timeout(Duration::from_millis(250), stream.read(&mut request)).await
+                && request[..read].starts_with(b"GET /image.png ")
+            {
+                let _ = target_request.send(());
+            }
         }
     });
 
@@ -40344,9 +40400,10 @@ async fn native_content_process_blocks_csp_disallowed_image_before_request() {
     .unwrap();
     engine.initialize_async().await.unwrap();
     assert!(
-        tokio::time::timeout(Duration::from_millis(250), target_request_rx)
-            .await
-            .is_err(),
+        !matches!(
+            tokio::time::timeout(Duration::from_millis(250), target_request_rx).await,
+            Ok(Ok(()))
+        ),
         "CSP-disallowed image was requested"
     );
     assert!(

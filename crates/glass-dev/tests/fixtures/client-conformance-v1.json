@@ -39,6 +39,7 @@
     "executeTask",
     "exportCheckpoint",
     "extractStructured",
+    "extractWebIr",
     "fillForm",
     "findTarget",
     "getDOM",

@@ -1,9 +1,10 @@
-//! Feature-gated Glass-owned native browser engine kernel.
+//! Glass-owned native browser engine kernel.
 //!
 //! The current implementation combines a deterministic, headless
 //! fixture/data-URL kernel with a bounded asynchronous HTTP(S) document loader
-//! and a bounded semantic interaction and form-control slice. It is not a browser-parity
-//! implementation or a security boundary.
+//! and a bounded semantic interaction and form-control slice. Product builds
+//! enable this kernel by default; its remaining conformance and isolation
+//! gates are tracked by issue #40.
 
 mod browsing_context;
 mod config;

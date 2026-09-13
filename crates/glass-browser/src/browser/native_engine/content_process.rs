@@ -24,12 +24,12 @@ use super::javascript::{
     NativeJavaScriptRuntime, NativePageScript, NativePageScriptResult, NativePopupRequest,
     NativePostMessageRequest, NativeScriptCommand, NativeScriptEvaluation, NativeStorageEvent,
     NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
-    NativeWindowProxyUpdate, diff_indexed_db_changes, execute_dynamic_page_scripts,
-    execute_page_scripts, host_event_script, host_hash_change_event_script, host_key_event_script,
-    host_key_event_script_with_modifiers, host_submit_event_script,
-    literal_dynamic_module_specifiers, load_indexed_db_profile, load_web_storage_profile,
-    order_page_scripts, page_script_sources_to_scripts, save_web_storage_profile,
-    static_module_specifiers, storage_key,
+    NativeWindowProxyUpdate, NativeWorkerMessage, NativeWorkerRegistry, diff_indexed_db_changes,
+    execute_dynamic_page_scripts, execute_page_scripts, host_event_script,
+    host_hash_change_event_script, host_key_event_script, host_key_event_script_with_modifiers,
+    host_submit_event_script, literal_dynamic_module_specifiers, load_indexed_db_profile,
+    load_web_storage_profile, order_page_scripts, page_script_sources_to_scripts,
+    save_web_storage_profile, static_module_specifiers, storage_key, worker_message_script,
 };
 use super::layout::NativePoint;
 use super::origin::NativeOrigin;
@@ -3365,6 +3365,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut nested_scroll_offsets = BTreeMap::new();
     let mut resource_loader = None;
     let mut javascript_runtime: Option<NativeJavaScriptRuntime> = None;
+    let mut workers = NativeWorkerRegistry::new();
+    let mut pending_worker_messages: VecDeque<NativeWorkerMessage> = VecDeque::new();
     let mut websocket_connections = BTreeMap::new();
     let mut fetch_stream_connections = BTreeMap::new();
     let mut event_source_connections = BTreeMap::new();
@@ -3754,6 +3756,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 websocket_connections.clear();
                 fetch_stream_connections.clear();
                 event_source_connections.clear();
+                workers.clear();
+                pending_worker_messages.clear();
                 if let Some(runtime) = javascript_runtime.as_ref() {
                     storage_state = runtime.storage_state();
                 }
@@ -3905,6 +3909,19 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                         storage_key(&resource.url, &resource.origin),
                                         runtime.indexed_db_state(),
                                     )?;
+                                    let worker_commands = runtime.take_worker_commands();
+                                    let Some(loader) = resource_loader.as_mut() else {
+                                        return Err(NativeEngineError::Worker {
+                                            operation: "page-load Worker scheduling".into(),
+                                            reason:
+                                                "content process resource loader is unavailable"
+                                                    .into(),
+                                        });
+                                    };
+                                    workers
+                                        .apply_commands(worker_commands, loader, &resource.url)
+                                        .await?;
+                                    pending_worker_messages.extend(workers.take_messages());
                                 }
                                 let document_wire = parsed.to_content_wire();
                                 document = Some(parsed);
@@ -4068,7 +4085,27 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 runtime.set_indexed_db_state(
                     indexed_db_state.origin(&storage_key(&committed_url, document_origin)),
                 );
-                match runtime.evaluate(source, current, &committed_url, document_origin, viewport) {
+                let worker_messages = std::mem::take(&mut pending_worker_messages)
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                let source = match worker_message_script(&worker_messages)? {
+                    Some(prefix) => format!("{prefix}{source}"),
+                    None => source.to_owned(),
+                };
+                let evaluation =
+                    runtime.evaluate(&source, current, &committed_url, document_origin, viewport);
+                let Some(loader) = resource_loader.as_mut() else {
+                    return Err(NativeEngineError::Worker {
+                        operation: "content process Worker scheduling".into(),
+                        reason: "content process resource loader is unavailable".into(),
+                    });
+                };
+                let worker_commands = runtime.take_worker_commands();
+                workers
+                    .apply_commands(worker_commands, loader, &committed_url)
+                    .await?;
+                pending_worker_messages.extend(workers.take_messages());
+                match evaluation {
                     Ok(NativeScriptEvaluation {
                         value,
                         commands,
@@ -4140,6 +4177,28 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         match result {
                             Ok((next, mutation, resolved_value)) => {
                                 let value = resolved_value.unwrap_or(value);
+                                let Some(loader) = resource_loader.as_mut() else {
+                                    let response = content_error_response(
+                                        id,
+                                        NativeEngineError::Worker {
+                                            operation: "dynamic Worker scheduling".into(),
+                                            reason:
+                                                "content process resource loader is unavailable"
+                                                    .into(),
+                                        },
+                                    );
+                                    write_value_frame(&mut stdout, &response).await?;
+                                    continue;
+                                };
+                                let dynamic_worker_commands = runtime.take_worker_commands();
+                                workers
+                                    .apply_commands(
+                                        dynamic_worker_commands,
+                                        loader,
+                                        &document_url.clone().unwrap_or(committed_url.clone()),
+                                    )
+                                    .await?;
+                                pending_worker_messages.extend(workers.take_messages());
                                 if !mutation.history.is_empty() {
                                     let Some(base_url) = document_url.as_deref() else {
                                         let response = content_error_response(

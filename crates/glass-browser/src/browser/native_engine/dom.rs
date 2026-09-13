@@ -3319,6 +3319,10 @@ impl NativeDocument {
                     }
                 }
                 NativeScriptCommand::Fetch { .. } => {}
+                NativeScriptCommand::WorkerCreate { .. }
+                | NativeScriptCommand::WorkerPostMessage { .. }
+                | NativeScriptCommand::WorkerTerminate { .. }
+                | NativeScriptCommand::WorkerClose { .. } => {}
                 NativeScriptCommand::WebSocketOpen { .. }
                 | NativeScriptCommand::WebSocketSend { .. }
                 | NativeScriptCommand::WebSocketClose { .. }

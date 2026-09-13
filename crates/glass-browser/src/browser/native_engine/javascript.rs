@@ -19,6 +19,7 @@ use super::interaction::{
 };
 use super::layout::NativePoint;
 use super::origin::NativeOrigin;
+use super::resource_loader::NativeResourceLoader;
 use fs2::FileExt;
 use rquickjs::function::This;
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
@@ -49,6 +50,8 @@ pub(crate) const MAX_NATIVE_FRAME_SCRIPT_BINDINGS: usize = 64;
 /// Maximum inline page scripts executed while committing one document.
 pub(crate) const MAX_NATIVE_INLINE_SCRIPTS: usize = 32;
 pub(crate) const MAX_NATIVE_MODULE_IMPORTS: usize = 128;
+pub(crate) const MAX_NATIVE_WORKERS: usize = 32;
+pub(crate) const MAX_NATIVE_WORKER_MESSAGES: usize = 64;
 const NATIVE_SCRIPT_MEMORY_BYTES: usize = 32 * 1024 * 1024;
 const NATIVE_SCRIPT_STACK_BYTES: usize = 1024 * 1024;
 const NATIVE_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -343,6 +346,22 @@ pub(crate) enum NativeScriptCommand {
         source_frame_id: String,
         command: Box<NativeScriptCommand>,
     },
+    WorkerCreate {
+        worker_id: u32,
+        href: String,
+        #[serde(default)]
+        worker_type: String,
+    },
+    WorkerPostMessage {
+        worker_id: u32,
+        data: serde_json::Value,
+    },
+    WorkerTerminate {
+        worker_id: u32,
+    },
+    WorkerClose {
+        worker_id: u32,
+    },
 }
 
 pub(crate) struct NativeScriptEvaluation {
@@ -359,6 +378,275 @@ pub(crate) struct NativeFrameScriptRequest {
     pub(crate) frame_id: String,
     pub(crate) source_frame_id: String,
     pub(crate) command: Box<NativeScriptCommand>,
+}
+
+/// A bounded message emitted by a dedicated page worker for its owner page.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct NativeWorkerMessage {
+    pub(crate) worker_id: u32,
+    pub(crate) data: serde_json::Value,
+    #[serde(default)]
+    pub(crate) error: Option<String>,
+}
+
+struct NativeDedicatedWorker {
+    url: String,
+    runtime: NativeJavaScriptRuntime,
+}
+
+/// Owns dedicated-worker realms and the bounded messages waiting for their
+/// page owner. Worker execution is deliberately serialized at the page turn
+/// boundary: this keeps the native backend deterministic while preserving the
+/// observable message/error/termination contract.
+pub(crate) struct NativeWorkerRegistry {
+    workers: BTreeMap<u32, NativeDedicatedWorker>,
+    pending_messages: VecDeque<NativeWorkerMessage>,
+}
+
+impl NativeWorkerRegistry {
+    pub(crate) fn new() -> Self {
+        Self {
+            workers: BTreeMap::new(),
+            pending_messages: VecDeque::new(),
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.workers.clear();
+        self.pending_messages.clear();
+    }
+
+    pub(crate) fn take_messages(&mut self) -> Vec<NativeWorkerMessage> {
+        self.pending_messages.drain(..).collect()
+    }
+
+    pub(crate) async fn apply_commands(
+        &mut self,
+        commands: Vec<NativeScriptCommand>,
+        loader: &mut NativeResourceLoader,
+        owner_url: &str,
+    ) -> Result<(), NativeEngineError> {
+        if commands.len() > MAX_NATIVE_WORKER_MESSAGES {
+            return Err(NativeEngineError::limit(
+                "native Worker commands",
+                MAX_NATIVE_WORKER_MESSAGES,
+                commands.len(),
+            ));
+        }
+        for command in commands {
+            match command {
+                NativeScriptCommand::WorkerCreate {
+                    worker_id,
+                    href,
+                    worker_type,
+                } => {
+                    self.create_worker(worker_id, href, worker_type, loader, owner_url)
+                        .await?;
+                }
+                NativeScriptCommand::WorkerPostMessage { worker_id, data } => {
+                    self.post_message(worker_id, data)?;
+                }
+                NativeScriptCommand::WorkerTerminate { worker_id }
+                | NativeScriptCommand::WorkerClose { worker_id } => {
+                    self.workers.remove(&worker_id);
+                }
+                _ => {
+                    return Err(NativeEngineError::invalid(
+                        "native Worker command",
+                        "command was not routed through the Worker host boundary",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn create_worker(
+        &mut self,
+        worker_id: u32,
+        href: String,
+        worker_type: String,
+        loader: &mut NativeResourceLoader,
+        owner_url: &str,
+    ) -> Result<(), NativeEngineError> {
+        if worker_id == 0 {
+            return Err(NativeEngineError::invalid(
+                "native Worker id",
+                "must be positive",
+            ));
+        }
+        if self.workers.len() >= MAX_NATIVE_WORKERS {
+            return Err(NativeEngineError::limit(
+                "native Workers",
+                MAX_NATIVE_WORKERS,
+                self.workers.len().saturating_add(1),
+            ));
+        }
+        if self.workers.contains_key(&worker_id) {
+            return Err(NativeEngineError::invalid(
+                "native Worker id",
+                "must be unique within the page realm",
+            ));
+        }
+        validate_url_text("native Worker URL", &href)?;
+        if !worker_type.is_empty() && !worker_type.eq_ignore_ascii_case("classic") {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "native Worker supports classic scripts only".into(),
+            });
+        }
+
+        let resource = match loader
+            .load_worker_async(owner_url, &href, MAX_NATIVE_SCRIPT_BYTES)
+            .await
+        {
+            Ok(Some(resource)) => resource,
+            Ok(None) => {
+                self.queue_error(worker_id, &href, "worker script was blocked or unavailable")?;
+                return Ok(());
+            }
+            Err(error) => {
+                self.queue_error(worker_id, &href, &error.to_string())?;
+                return Ok(());
+            }
+        };
+        let runtime =
+            match NativeJavaScriptRuntime::new_with_context_id(format!("glass-worker-{worker_id}"))
+            {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    self.queue_error(worker_id, &resource.url, &error.to_string())?;
+                    return Ok(());
+                }
+            };
+        self.workers.insert(
+            worker_id,
+            NativeDedicatedWorker {
+                url: resource.url.clone(),
+                runtime,
+            },
+        );
+        let evaluation = self
+            .workers
+            .get(&worker_id)
+            .expect("worker was inserted")
+            .runtime
+            .evaluate_worker(worker_id, &resource.url, &resource.body);
+        match evaluation {
+            Ok(evaluation) => self.collect_worker_evaluation(worker_id, evaluation),
+            Err(error) => {
+                self.workers.remove(&worker_id);
+                self.queue_error(worker_id, &resource.url, &error.to_string())
+            }
+        }
+    }
+
+    fn post_message(
+        &mut self,
+        worker_id: u32,
+        data: serde_json::Value,
+    ) -> Result<(), NativeEngineError> {
+        if !self.workers.contains_key(&worker_id) {
+            return Ok(());
+        }
+        let evaluation = {
+            let worker = self
+                .workers
+                .get(&worker_id)
+                .expect("worker presence was checked");
+            worker
+                .runtime
+                .dispatch_worker_message_to_worker(worker_id, &worker.url, &data)
+        };
+        match evaluation {
+            Ok(evaluation) => self.collect_worker_evaluation(worker_id, evaluation),
+            Err(error) => {
+                self.workers.remove(&worker_id);
+                self.queue_error(worker_id, "", &error.to_string())
+            }
+        }
+    }
+
+    fn collect_worker_evaluation(
+        &mut self,
+        worker_id: u32,
+        evaluation: NativeScriptEvaluation,
+    ) -> Result<(), NativeEngineError> {
+        let mut closed = false;
+        for command in evaluation.commands {
+            match command {
+                NativeScriptCommand::WorkerPostMessage {
+                    worker_id: command_worker_id,
+                    data,
+                } if command_worker_id == worker_id => {
+                    self.queue_message(NativeWorkerMessage {
+                        worker_id,
+                        data,
+                        error: None,
+                    })?;
+                }
+                NativeScriptCommand::WorkerClose {
+                    worker_id: command_worker_id,
+                } if command_worker_id == worker_id => closed = true,
+                _ => {
+                    return Err(NativeEngineError::invalid(
+                        "native Worker command",
+                        "worker emitted an invalid host command",
+                    ));
+                }
+            }
+        }
+        if closed {
+            self.workers.remove(&worker_id);
+        }
+        Ok(())
+    }
+
+    fn queue_error(
+        &mut self,
+        worker_id: u32,
+        worker_url: &str,
+        error: &str,
+    ) -> Result<(), NativeEngineError> {
+        let mut message: String = error
+            .chars()
+            .take(MAX_NATIVE_SCRIPT_BYTES.min(4096))
+            .collect();
+        if message.is_empty() {
+            message = "native Worker failed".into();
+        }
+        self.queue_message(NativeWorkerMessage {
+            worker_id,
+            data: serde_json::Value::Null,
+            error: Some(if worker_url.is_empty() {
+                message
+            } else {
+                format!("{message} ({worker_url})")
+            }),
+        })
+    }
+
+    fn queue_message(&mut self, message: NativeWorkerMessage) -> Result<(), NativeEngineError> {
+        let encoded = serde_json::to_vec(&message.data).map_err(|_| NativeEngineError::Worker {
+            operation: "queue native Worker message".into(),
+            reason: "Worker message data could not be serialized".into(),
+        })?;
+        if encoded.len() > MAX_NATIVE_POST_MESSAGE_BYTES {
+            return Err(NativeEngineError::limit(
+                "native Worker message",
+                MAX_NATIVE_POST_MESSAGE_BYTES,
+                encoded.len(),
+            ));
+        }
+        if self.pending_messages.len() >= MAX_NATIVE_WORKER_MESSAGES {
+            return Err(NativeEngineError::limit(
+                "native Worker message queue",
+                MAX_NATIVE_WORKER_MESSAGES,
+                self.pending_messages.len().saturating_add(1),
+            ));
+        }
+        self.pending_messages.push_back(message);
+        Ok(())
+    }
 }
 
 /// A browser-context creation request emitted by `window.open`.
@@ -3885,6 +4173,7 @@ pub(crate) struct NativeJavaScriptRuntime {
     window_close_events: Arc<Mutex<Vec<NativeWindowCloseRequest>>>,
     window_navigation_events: Arc<Mutex<Vec<NativeWindowNavigationRequest>>>,
     frame_script_events: Arc<Mutex<Vec<NativeFrameScriptRequest>>>,
+    worker_commands: Arc<Mutex<Vec<NativeScriptCommand>>>,
     pending_window_proxy_updates: Arc<Mutex<Vec<NativeWindowProxyUpdate>>>,
     frame_script_bindings: Arc<Mutex<Vec<NativeFrameScriptBinding>>>,
     frame_script_context: Arc<Mutex<Option<NativeFrameScriptContext>>>,
@@ -4012,6 +4301,7 @@ impl NativeJavaScriptRuntime {
             window_close_events: Arc::new(Mutex::new(Vec::new())),
             window_navigation_events: Arc::new(Mutex::new(Vec::new())),
             frame_script_events: Arc::new(Mutex::new(Vec::new())),
+            worker_commands: Arc::new(Mutex::new(Vec::new())),
             pending_window_proxy_updates: Arc::new(Mutex::new(Vec::new())),
             frame_script_bindings: Arc::new(Mutex::new(Vec::new())),
             frame_script_context: Arc::new(Mutex::new(None)),
@@ -4233,6 +4523,13 @@ impl NativeJavaScriptRuntime {
         self.frame_script_events
             .lock()
             .map(|mut requests| std::mem::take(&mut *requests))
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn take_worker_commands(&self) -> Vec<NativeScriptCommand> {
+        self.worker_commands
+            .lock()
+            .map(|mut commands| std::mem::take(&mut *commands))
             .unwrap_or_default()
     }
 
@@ -4985,6 +5282,86 @@ impl NativeJavaScriptRuntime {
         Ok(true)
     }
 
+    fn apply_worker_command(
+        &self,
+        command: &NativeScriptCommand,
+    ) -> Result<bool, NativeEngineError> {
+        if !matches!(
+            command,
+            NativeScriptCommand::WorkerCreate { .. }
+                | NativeScriptCommand::WorkerPostMessage { .. }
+                | NativeScriptCommand::WorkerTerminate { .. }
+                | NativeScriptCommand::WorkerClose { .. }
+        ) {
+            return Ok(false);
+        }
+        match command {
+            NativeScriptCommand::WorkerCreate {
+                worker_id,
+                href,
+                worker_type,
+            } => {
+                if *worker_id == 0 {
+                    return Err(NativeEngineError::invalid(
+                        "native Worker id",
+                        "must be positive",
+                    ));
+                }
+                validate_url_text("native Worker URL", href)?;
+                if !worker_type.is_empty() && !worker_type.eq_ignore_ascii_case("classic") {
+                    return Err(NativeEngineError::UnsupportedUrl {
+                        reason: "native Worker supports classic scripts only".into(),
+                    });
+                }
+            }
+            NativeScriptCommand::WorkerPostMessage { worker_id, data } => {
+                if *worker_id == 0 {
+                    return Err(NativeEngineError::invalid(
+                        "native Worker id",
+                        "must be positive",
+                    ));
+                }
+                let encoded = serde_json::to_vec(data).map_err(|_| NativeEngineError::Worker {
+                    operation: "record native Worker message".into(),
+                    reason: "Worker message data could not be serialized".into(),
+                })?;
+                if encoded.len() > MAX_NATIVE_POST_MESSAGE_BYTES {
+                    return Err(NativeEngineError::limit(
+                        "native Worker message",
+                        MAX_NATIVE_POST_MESSAGE_BYTES,
+                        encoded.len(),
+                    ));
+                }
+            }
+            NativeScriptCommand::WorkerTerminate { worker_id }
+            | NativeScriptCommand::WorkerClose { worker_id } => {
+                if *worker_id == 0 {
+                    return Err(NativeEngineError::invalid(
+                        "native Worker id",
+                        "must be positive",
+                    ));
+                }
+            }
+            _ => unreachable!(),
+        }
+        let mut commands = self
+            .worker_commands
+            .lock()
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "record native Worker command".into(),
+                reason: "native Worker command queue is unavailable".into(),
+            })?;
+        if commands.len() >= MAX_NATIVE_WORKER_MESSAGES {
+            return Err(NativeEngineError::limit(
+                "native Worker commands",
+                MAX_NATIVE_WORKER_MESSAGES,
+                commands.len().saturating_add(1),
+            ));
+        }
+        commands.push(command.clone());
+        Ok(true)
+    }
+
     fn apply_post_message_command(
         &self,
         command: &NativeScriptCommand,
@@ -5296,6 +5673,9 @@ impl NativeJavaScriptRuntime {
                 if self.apply_post_message_command(&command)? {
                     continue;
                 }
+                if self.apply_worker_command(&command)? {
+                    continue;
+                }
                 document_commands.push(command);
             }
             let commands = document_commands;
@@ -5350,6 +5730,141 @@ impl NativeJavaScriptRuntime {
             *current = None;
         }
         result
+    }
+
+    /// Evaluate one classic dedicated-worker turn in an isolated QuickJS
+    /// realm. Workers receive no document or page host objects; only the
+    /// bounded worker-global message surface is installed.
+    pub(crate) fn evaluate_worker(
+        &self,
+        worker_id: u32,
+        worker_url: &str,
+        source: &str,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        if worker_id == 0 {
+            return Err(NativeEngineError::invalid(
+                "native Worker id",
+                "must be positive",
+            ));
+        }
+        validate_url_text("native Worker URL", worker_url)?;
+        if source.is_empty() {
+            return Err(NativeEngineError::invalid(
+                "worker script source",
+                "must not be empty",
+            ));
+        }
+        if source.len() > MAX_NATIVE_SCRIPT_BYTES {
+            return Err(NativeEngineError::limit(
+                "worker script source",
+                MAX_NATIVE_SCRIPT_BYTES,
+                source.len(),
+            ));
+        }
+        let bootstrap = worker_bootstrap(worker_id, worker_url)?;
+        let deadline = Instant::now() + NATIVE_SCRIPT_TIMEOUT;
+        if let Ok(mut current) = self.deadline.lock() {
+            *current = Some(deadline);
+        }
+        let result = self.context.with(|ctx| {
+            ctx.eval::<(), _>(bootstrap.as_str())
+                .map_err(|error| NativeEngineError::Worker {
+                    operation: "install native Worker host view".into(),
+                    reason: format!(
+                        "native Worker host view could not be installed: {}",
+                        CaughtError::from_error(&ctx, error)
+                    ),
+                })?;
+            let value: Value = ctx
+                .eval(source)
+                .map_err(|error| NativeEngineError::Worker {
+                    operation: "evaluate native Worker script".into(),
+                    reason: format!(
+                        "native Worker script evaluation failed: {}",
+                        CaughtError::from_error(&ctx, error)
+                    ),
+                })?;
+            for _ in 0..MAX_NATIVE_MODULE_IMPORTS {
+                if !ctx.execute_pending_job() {
+                    break;
+                }
+            }
+            let commands = read_script_commands(ctx.clone())?;
+            for command in &commands {
+                if !matches!(
+                    command,
+                    NativeScriptCommand::WorkerPostMessage { .. }
+                        | NativeScriptCommand::WorkerClose { .. }
+                ) {
+                    return Err(NativeEngineError::invalid(
+                        "native Worker host command",
+                        "worker scripts may only post messages or close themselves",
+                    ));
+                }
+            }
+            let json = ctx
+                .json_stringify(value)
+                .map_err(|error| NativeEngineError::Worker {
+                    operation: "serialize native Worker result".into(),
+                    reason: format!(
+                        "native Worker result could not be serialized: {}",
+                        CaughtError::from_error(&ctx, error)
+                    ),
+                })?;
+            let value = match json {
+                Some(json) => {
+                    let json = json.to_string().map_err(|_| NativeEngineError::Worker {
+                        operation: "serialize native Worker result".into(),
+                        reason: "native Worker result was not valid UTF-8".into(),
+                    })?;
+                    if json.len() > MAX_NATIVE_SCRIPT_RESULT_BYTES {
+                        return Err(NativeEngineError::limit(
+                            "native Worker result",
+                            MAX_NATIVE_SCRIPT_RESULT_BYTES,
+                            json.len(),
+                        ));
+                    }
+                    serde_json::from_str(&json).map_err(|_| NativeEngineError::Worker {
+                        operation: "decode native Worker result".into(),
+                        reason: "native Worker result was not valid JSON".into(),
+                    })?
+                }
+                None => serde_json::Value::Null,
+            };
+            Ok(NativeScriptEvaluation {
+                value,
+                commands,
+                top_level_await_pending: false,
+            })
+        });
+        if let Ok(mut current) = self.deadline.lock() {
+            *current = None;
+        }
+        result
+    }
+
+    pub(crate) fn dispatch_worker_message_to_worker(
+        &self,
+        worker_id: u32,
+        worker_url: &str,
+        data: &serde_json::Value,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        let serialized = serde_json::to_string(data).map_err(|_| NativeEngineError::Worker {
+            operation: "serialize native Worker message".into(),
+            reason: "native Worker message could not be serialized".into(),
+        })?;
+        if serialized.len() > MAX_NATIVE_POST_MESSAGE_BYTES {
+            return Err(NativeEngineError::limit(
+                "native Worker message",
+                MAX_NATIVE_POST_MESSAGE_BYTES,
+                serialized.len(),
+            ));
+        }
+        self.evaluate_worker(
+            worker_id,
+            worker_url,
+            &format!("globalThis.__glassDispatchWorkerMessage({serialized});"),
+        )
     }
 
     pub(crate) fn resolve_fetch(
@@ -5623,6 +6138,9 @@ impl NativeJavaScriptRuntime {
                     continue;
                 }
                 if self.apply_post_message_command(&command)? {
+                    continue;
+                }
+                if self.apply_worker_command(&command)? {
                     continue;
                 }
                 document_commands.push(command);
@@ -5995,6 +6513,135 @@ fn window_proxy_update_script(
     if source.len() > MAX_NATIVE_SCRIPT_BYTES {
         return Err(NativeEngineError::limit(
             "native WindowProxy update script",
+            MAX_NATIVE_SCRIPT_BYTES,
+            source.len(),
+        ));
+    }
+    Ok(Some(source))
+}
+
+fn worker_bootstrap(worker_id: u32, worker_url: &str) -> Result<String, NativeEngineError> {
+    let worker_url = serde_json::to_string(worker_url).map_err(|_| NativeEngineError::Worker {
+        operation: "serialize native Worker URL".into(),
+        reason: "native Worker URL could not be serialized".into(),
+    })?;
+    Ok(format!(
+        r###"(() => {{
+  const workerId = {worker_id};
+  const workerUrl = {worker_url};
+  const commands = [];
+  const activeCommands = () => Array.isArray(globalThis.__glassWorkerCommandBuffer)
+    ? globalThis.__glassWorkerCommandBuffer
+    : commands;
+  const pushCommand = (command) => {{
+    const target = activeCommands();
+    if (target.length >= {max_commands}) throw new RangeError("native Worker command limit exceeded");
+    target.push(command);
+  }};
+  const cloneMessageData = (value) => {{
+    let encoded;
+    try {{ encoded = JSON.stringify(value); }} catch (_error) {{
+      throw new TypeError("Worker message could not be cloned");
+    }}
+    if (encoded === undefined || encoded.length > {post_message_bytes_limit})
+      throw new TypeError("Worker message could not be cloned");
+    try {{ return JSON.parse(encoded); }} catch (_error) {{
+      throw new TypeError("Worker message could not be cloned");
+    }}
+  }};
+  const listeners = globalThis.__glassWorkerListeners instanceof Map
+    ? globalThis.__glassWorkerListeners
+    : new Map();
+  let onMessage = typeof globalThis.__glassWorkerOnMessage === "function"
+    ? globalThis.__glassWorkerOnMessage
+    : null;
+  let closed = false;
+  const dispatch = (type, event) => {{
+    const handler = type === "message" ? onMessage : null;
+    if (typeof handler === "function") {{
+      try {{ handler.call(globalThis, event); }} catch (_error) {{}}
+    }}
+    const callbacks = listeners.get(type) || [];
+    for (const callback of callbacks.slice()) {{
+      try {{ callback.call(globalThis, event); }} catch (_error) {{}}
+    }}
+  }};
+  const addEventListener = (type, callback) => {{
+    const name = String(type);
+    if (!name || typeof callback !== "function") return;
+    const callbacks = listeners.get(name) || [];
+    if (!callbacks.includes(callback)) callbacks.push(callback);
+    listeners.set(name, callbacks);
+  }};
+  const removeEventListener = (type, callback) => {{
+    const name = String(type);
+    const callbacks = listeners.get(name) || [];
+    listeners.set(name, callbacks.filter((candidate) => candidate !== callback));
+  }};
+  globalThis.self = globalThis;
+  globalThis.location = Object.freeze({{ href: workerUrl, toString() {{ return workerUrl; }} }});
+  globalThis.addEventListener = addEventListener;
+  globalThis.removeEventListener = removeEventListener;
+  globalThis.postMessage = (message) => {{
+    if (closed) return;
+    pushCommand({{ kind: "workerPostMessage", worker_id: workerId, data: cloneMessageData(message) }});
+  }};
+  globalThis.close = () => {{
+    if (closed) return;
+    closed = true;
+    pushCommand({{ kind: "workerClose", worker_id: workerId }});
+  }};
+  globalThis.__glassDispatchWorkerMessage = (data) => {{
+    if (closed) return null;
+    dispatch("message", {{ type: "message", data, origin: "", source: null, target: globalThis, currentTarget: globalThis }});
+    return null;
+  }};
+  globalThis.__glassWorkerListeners = listeners;
+  globalThis.__glassWorkerOnMessage = onMessage;
+  globalThis.__glassHostCommands = commands;
+  Object.defineProperty(globalThis, "onmessage", {{
+    configurable: true,
+    enumerable: true,
+    get() {{ return onMessage; }},
+    set(value) {{ onMessage = typeof value === "function" ? value : null; globalThis.__glassWorkerOnMessage = onMessage; }},
+  }});
+  globalThis.__glassWorkerCommandBuffer = commands;
+}})()"###,
+        max_commands = MAX_NATIVE_WORKER_MESSAGES,
+        post_message_bytes_limit = MAX_NATIVE_POST_MESSAGE_BYTES,
+    ))
+}
+
+pub(crate) fn worker_message_script(
+    messages: &[NativeWorkerMessage],
+) -> Result<Option<String>, NativeEngineError> {
+    if messages.is_empty() {
+        return Ok(None);
+    }
+    let mut source = String::new();
+    for message in messages {
+        if message.worker_id == 0 {
+            return Err(NativeEngineError::invalid(
+                "native Worker message id",
+                "must be positive",
+            ));
+        }
+        let payload = serde_json::json!({
+            "data": message.data,
+            "error": message.error,
+        });
+        let encoded = serde_json::to_string(&payload).map_err(|_| NativeEngineError::Worker {
+            operation: "serialize native Worker event".into(),
+            reason: "native Worker event could not be serialized".into(),
+        })?;
+        source.push_str(&format!(
+            "globalThis.__glassDispatchWorkerMessage({}, {encoded});",
+            message.worker_id
+        ));
+    }
+    if source.len() > MAX_NATIVE_SCRIPT_BYTES {
+        return Err(NativeEngineError::limit(
+            "native Worker event script",
             MAX_NATIVE_SCRIPT_BYTES,
             source.len(),
         ));
@@ -15395,6 +16042,102 @@ fn document_bootstrap(
     event.ports = [];
     return dispatchTarget(globalThis, event);
   }};
+  const workers = globalThis.__glassWorkers instanceof Map
+    ? globalThis.__glassWorkers
+    : new Map();
+  let nextWorkerId = Number.isSafeInteger(globalThis.__glassNextWorkerId)
+    ? globalThis.__glassNextWorkerId
+    : 1;
+  const workerDispatch = (worker, type, event) => {{
+    const handler = worker["on" + type];
+    if (typeof handler === "function") {{
+      try {{ handler.call(worker, event); }} catch (_error) {{}}
+    }}
+    const listeners = worker.__glassWorkerListeners[type] || [];
+    for (const listener of listeners.slice()) {{
+      try {{ listener.call(worker, event); }} catch (_error) {{}}
+    }}
+  }};
+  globalThis.__glassWorkers = workers;
+  globalThis.__glassNextWorkerId = nextWorkerId;
+  globalThis.__glassDispatchWorkerMessage = (workerId, payload) => {{
+    const worker = workers.get(Number(workerId));
+    if (!worker || worker.__glassTerminated || !payload || typeof payload !== "object") return null;
+    if (payload.error !== undefined && payload.error !== null) {{
+      const error = {{
+        type: "error",
+        message: String(payload.error),
+        filename: worker.url,
+        lineno: 0,
+        colno: 0,
+        error: null,
+        target: worker,
+        currentTarget: worker,
+      }};
+      workerDispatch(worker, "error", error);
+    }} else {{
+      workerDispatch(worker, "message", {{
+        type: "message",
+        data: payload.data,
+        origin: String(payload.origin || ""),
+        source: null,
+        target: worker,
+        currentTarget: worker,
+      }});
+    }}
+    return null;
+  }};
+  const WorkerNative = function(input, options) {{
+    if (!(this instanceof WorkerNative)) throw new TypeError("native Worker requires new");
+    if (options !== undefined && (options === null || typeof options !== "object"))
+      throw new TypeError("native Worker options must be an object");
+    const workerType = options && options.type !== undefined
+      ? String(options.type).toLowerCase()
+      : "classic";
+    if (workerType !== "classic") throw new TypeError("native Worker supports classic scripts only");
+    const source = input && input.__glassUrl === true ? input.href : input;
+    const resolved = new URLNative(String(source), locationUrl.href);
+    if (!["http:", "https:", "fixture:"].includes(resolved.protocol)
+        || resolved.username || resolved.password || !resolved.host)
+      throw new SyntaxError("native Worker URL must use HTTP(S) or a registered fixture");
+    const workerId = nextWorkerId;
+    nextWorkerId += 1;
+    globalThis.__glassNextWorkerId = nextWorkerId;
+    this.url = resolved.href;
+    this.onmessage = null;
+    this.onerror = null;
+    this.__glassWorkerId = workerId;
+    this.__glassTerminated = false;
+    this.__glassWorkerListeners = {{ message: [], error: [] }};
+    workers.set(workerId, this);
+    pushCommand({{ kind: "workerCreate", worker_id: workerId, href: resolved.href, worker_type: workerType }});
+  }};
+  WorkerNative.prototype.addEventListener = function(type, listener) {{
+    const name = String(type);
+    if (!this.__glassWorkerListeners[name] || typeof listener !== "function") return;
+    if (!this.__glassWorkerListeners[name].includes(listener)) this.__glassWorkerListeners[name].push(listener);
+  }};
+  WorkerNative.prototype.removeEventListener = function(type, listener) {{
+    const name = String(type);
+    if (!this.__glassWorkerListeners[name]) return;
+    this.__glassWorkerListeners[name] = this.__glassWorkerListeners[name].filter((candidate) => candidate !== listener);
+  }};
+  WorkerNative.prototype.postMessage = function(message) {{
+    if (this.__glassTerminated) return;
+    pushCommand({{ kind: "workerPostMessage", worker_id: this.__glassWorkerId, data: cloneMessageData(message) }});
+  }};
+  WorkerNative.prototype.terminate = function() {{
+    if (this.__glassTerminated) return;
+    this.__glassTerminated = true;
+    workers.delete(this.__glassWorkerId);
+    pushCommand({{ kind: "workerTerminate", worker_id: this.__glassWorkerId }});
+  }};
+  WorkerNative.prototype.dispatchEvent = function(event) {{
+    if (!event || !event.type) throw new TypeError("native Worker event is invalid");
+    workerDispatch(this, String(event.type), event);
+    return true;
+  }};
+  globalThis.Worker = WorkerNative;
   globalThis.open = function open(value, target) {{
     const rawTarget = target === undefined || target === null ? "_blank" : String(target);
     const normalizedTarget = rawTarget || "_blank";

@@ -1,8 +1,17 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-282` slice; the bounded foundation below remains
+`native-engine-browser-283` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
+
+Slice 283 adds a bounded dedicated-worker bridge after the page-facing
+computed-style/media-query bridge in slice 282. Page-created classic workers
+load through the shared resource policy, execute in isolated QuickJS realms,
+and exchange bounded messages/errors through an explicit page-turn queue in
+both local and HTTP(S) content-process paths. The bridge preserves the
+two-crate boundary and does not change backend selection. Task-source fairness,
+transferables, module/shared/service workers, worker network/timer APIs, and
+complete Worker Web IDL semantics remain expansion work.
 
 Slice 282 adds a bounded page-facing computed-style and media-query bridge:
 the JavaScript realm reads the native cascade/layout snapshot through a
@@ -194,8 +203,10 @@ The first executable browser-complete batch is recorded in
 [`native-engine-browser-001`](../plan/tasks/native-engine-browser-001.md). Its
 `NativeRuntime` owns runtime state, typed task/microtask ordering, cancellation,
 bounded privacy-safe traces, startup rollback, and terminal close. It is still
-synchronous and in-process; later BE-01 work must add asynchronous workers,
-IPC, crash recovery, and the production content-process boundary.
+synchronous and in-process; later BE-01 work adds the asynchronous runtime,
+IPC, crash recovery, and production content-process boundary. Dedicated page
+workers are now implemented as the bounded browser slice described above;
+their full task scheduling and Web IDL expansion remains separate work.
 
 The next executable network batch is recorded in
 [`native-engine-browser-002`](../plan/tasks/native-engine-browser-002.md). It
@@ -4924,6 +4935,14 @@ The native profile is `experimental` and declares:
 | prompts | partial | bounded alert/confirm/prompt metadata, FIFO pending state, `dialogOpen`, and accept/dismiss resolution; suspended modal continuation and response injection remain open |
 | downloads | available | bounded HTTP(S) anchor `download` attributes queue a parent-owned transfer; runtime, CLI, and MCP complete the oldest queued download for the selected target into an existing directory with sanitized collision-free file creation, SHA-256 evidence, stable completion IDs, and bounded cancellation/listing; chooser UI, programmatic/object-URL downloads, streaming/progress, service-worker interception, and cross-target/frame parity remain open |
 
+Within the available script profile, classic dedicated `Worker` creation is
+available for local fixtures and HTTP(S) pages. Worker source uses the shared
+resource and `worker-src` policy path, each worker has an isolated bounded
+QuickJS realm, and messages/errors/termination cross an explicit page-turn
+queue. Module/shared/service workers, transferables, worker network/timer
+surfaces, and complete Worker Web IDL semantics remain outside the current
+profile.
+
 Within the available script profile, native Fetch `Response.clone()` creates a
 bounded fresh response/header/body owner; full disturbance and Web IDL
 semantics remain explicitly outside the profile.
@@ -6032,6 +6051,20 @@ are green. Parser streaming, network completion scheduling, complete
 stream/body Web IDL semantics, worker/service-worker ownership, and full
 native/CDP parity remain Issue #40 promotion gates. Exact evidence is recorded
 in `docs/plan/tasks/native-engine-browser-281.md`.
+
+The completed native-engine-browser-283 slice adds the first executable
+dedicated-worker owner. Page-created classic `Worker` objects emit typed
+create/post/terminate/close commands; the shared native registry loads local
+fixture or HTTP(S) worker source through the existing resource and
+`worker-src` policy path, executes each worker in an isolated bounded QuickJS
+realm, and queues bounded JSON-backed message/error events for the owning page.
+Initial page scripts, ordinary evaluations, and dynamically attached scripts
+are covered in both the local owner and the out-of-process HTTP(S) content
+worker. Delivery is serialized at explicit page turns, preserving deterministic
+testing and process ownership while leaving task-source fairness, transferables,
+module/shared/service workers, worker network/timer APIs, and complete Worker
+Web IDL semantics for later Issue #40 work. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-283.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-287` slice; the bounded foundation below remains
+`native-engine-browser-288` slice; the bounded foundation below remains
 experimental until the issue #40 production gates pass.
 
 Slice 283 adds a bounded dedicated-worker bridge after the page-facing
@@ -13,7 +13,7 @@ two-crate boundary and does not change backend selection. Task-source fairness,
 transferables, module/shared/service workers, full worker-side network/Web IDL
 parity, dynamic and exact `importScripts()` timing, and complete Worker Web IDL
 semantics remain expansion work; bounded worker timers, static `importScripts()`
-dependencies, and worker Fetch are covered by slices 284 through 287 below.
+dependencies, and worker Fetch are covered by slices 284 through 288 below.
 
 Slice 284 adds bounded timer ownership to those dedicated-worker realms.
 Worker `setTimeout` and `setInterval` callbacks use the worker runtime's
@@ -52,10 +52,19 @@ bodies without lossy UTF-8 conversion, and worker responses expose
 byte-preserving `bytes()`, `arrayBuffer()`, and `blob()` consumers with
 one-shot body ownership and independent clones. The shared loader still owns
 URL resolution, cookies, CORS, redirects, limits, and transport errors.
-Worker streams, full Request/Response Web IDL identity, XHR, module/shared
-service workers, and complete native/CDP parity remain Issue #40 expansion
-gates. Exact evidence is recorded in
+Transport-demand worker streams, full Request/Response Web IDL identity, XHR,
+module/shared service workers, and complete native/CDP parity remain Issue #40
+expansion gates. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-287.md`.
+
+Slice 288 exposes each worker Fetch response body as a bounded byte-preserving
+`ReadableStream` over the host-buffered response snapshot. Default and BYOB
+readers, lock/release, cancellation, async iteration, stream disturbance, and
+independent response clones are implemented in the isolated worker realm.
+Transport-demand streaming, full Request/Response Web IDL identity, XHR,
+module/shared service workers, and complete native/CDP parity remain Issue #40
+expansion gates. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-288.md`.
 
 Slice 282 adds a bounded page-facing computed-style and media-query bridge:
 the JavaScript realm reads the native cascade/layout snapshot through a
@@ -6113,7 +6122,7 @@ testing and process ownership while leaving task-source fairness, transferables,
 module/shared/service workers, full worker-side network/Web IDL parity, and
 complete Worker Web IDL semantics for later Issue #40 work. Bounded worker
 timers, static importScripts dependencies, and worker Fetch are covered by the
-following 284 through 287 slices. Exact evidence is recorded in
+following 284 through 288 slices. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-283.md`.
 
 The completed native-engine-browser-286 slice adds a real worker-side Fetch
@@ -6128,10 +6137,17 @@ The completed native-engine-browser-287 slice preserves raw bytes through the
 worker Fetch boundary. Bounded string, `ArrayBuffer`, typed-array, Blob, and
 File request bodies cross to the shared loader without lossy conversion;
 responses expose byte-preserving `bytes()`, `arrayBuffer()`, and `blob()` reads
-with one-shot body ownership and independent clones. Worker streams, full
-Request/Response Web IDL identity, XHR, module/shared service workers, and
-complete native/CDP parity remain Issue #40 promotion gates. Exact evidence is
-recorded in `docs/plan/tasks/native-engine-browser-287.md`.
+with one-shot body ownership and independent clones. Transport-demand worker
+streams, full Request/Response Web IDL identity, XHR, module/shared service
+workers, and complete native/CDP parity remain Issue #40 promotion gates.
+Exact evidence is recorded in `docs/plan/tasks/native-engine-browser-287.md`.
+
+The completed native-engine-browser-288 slice exposes the worker Fetch response
+body as a bounded byte-preserving `ReadableStream` over the host-buffered
+snapshot. Default/BYOB readers, cancellation, async iteration, disturbance,
+and clone independence are covered; transport-demand streaming and the wider
+worker/native parity gates remain Issue #40 promotion work. Exact evidence is
+recorded in `docs/plan/tasks/native-engine-browser-288.md`.
 
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface. `document.createAttribute()` creates persistent `Attr`

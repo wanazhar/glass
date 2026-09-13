@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-287` locally. The versioned
+`native-engine-browser-288` locally. The versioned
 [Glass Core Web Profile](native-engine-browser-profile.md) is the M0 contract;
 the authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
@@ -57,7 +57,7 @@ are delivered at explicit native page turns so local and content-process
 execution remain deterministic. Module/shared/service workers, transferables,
 and full worker-side network/Web IDL parity remain open on issue #40; bounded
 worker timers, static worker import graphs, and worker Fetch are covered by
-slices 284 through 287 below.
+slices 284 through 288 below.
 
 The completed dedicated-worker timer slice is
 [native-engine-browser-284](tasks/native-engine-browser-284.md). It adds
@@ -94,9 +94,18 @@ The completed native-engine-browser-287 slice is
 bounded raw response bytes through the worker Fetch handoff, accepts string,
 `ArrayBuffer`, typed-array, Blob, and File request bodies without UTF-8
 corruption, and exposes one-shot byte/ArrayBuffer/Blob response consumers on
-isolated worker responses and clones. Worker streams, full Request/Response
-Web IDL identity, XHR, module/shared service workers, and the wider native
-parity gates remain open on issue #40.
+isolated worker responses and clones. The follow-up 288 slice adds a bounded
+worker `Response.body` stream with default/BYOB readers, cancellation, and
+async iteration.
+
+The completed native-engine-browser-288 slice is
+[native-engine-browser-288](tasks/native-engine-browser-288.md). It exposes
+the worker Fetch response body as a byte-preserving `ReadableStream` over the
+host-buffered response snapshot, with reader locking, body disturbance,
+bounded cancellation, BYOB reads, async iteration, and independent cloned
+responses. Transport-demand streaming, full Request/Response Web IDL
+identity, XHR, module/shared service workers, and the wider native parity
+gates remain open on issue #40.
 
 The completed EventSource/SSE slice is
 [native-engine-browser-253](tasks/native-engine-browser-253.md). It adds a

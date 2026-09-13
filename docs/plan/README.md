@@ -94,7 +94,13 @@ The completed resident native-first slice is
 `glass.browser.attach` is the explicit Chromium/CDP migration path. Resident
 state, revision guards, workflows, screenshots, remote frames, and remote
 inputs dispatch through the selected owner without silently crossing backends.
-The remaining issue-40 work is native MCP surface completion, Core Web Profile
+The completed native semantic MCP and stack-hardening slice is
+[native-engine-browser-327](tasks/native-engine-browser-327.md): the shared
+bootstrap, extraction, intent, knowledge, delta, checkpoint, diagnostics,
+verification, wait, action, target, storage, and core browser contracts now
+have explicit native resident routes. Heap-owned cascade scratch and a narrow
+no-layout ready-state probe keep nested lifecycle/MCP calls stack-safe. The
+remaining issue-40 work is complete operation coverage, Core Web Profile
 conformance, recovery/cancellation, cross-platform release evidence, and
 production certification.
 

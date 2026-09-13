@@ -24,12 +24,13 @@ use super::javascript::{
     NativeJavaScriptRuntime, NativePageScript, NativePageScriptResult, NativePopupRequest,
     NativePostMessageRequest, NativeScriptCommand, NativeScriptEvaluation, NativeStorageEvent,
     NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
-    NativeWindowProxyUpdate, NativeWorkerMessage, NativeWorkerRegistry, diff_indexed_db_changes,
-    execute_dynamic_page_scripts, execute_page_scripts, host_event_script,
-    host_hash_change_event_script, host_key_event_script, host_key_event_script_with_modifiers,
-    host_submit_event_script, literal_dynamic_module_specifiers, load_indexed_db_profile,
-    load_web_storage_profile, order_page_scripts, page_script_sources_to_scripts,
-    save_web_storage_profile, static_module_specifiers, storage_key, worker_message_script,
+    NativeWindowProxyUpdate, NativeWorkerMessage, NativeWorkerRegistry,
+    NativeWorkerWebSocketCommand, diff_indexed_db_changes, execute_dynamic_page_scripts,
+    execute_page_scripts, host_event_script, host_hash_change_event_script, host_key_event_script,
+    host_key_event_script_with_modifiers, host_submit_event_script,
+    literal_dynamic_module_specifiers, load_indexed_db_profile, load_web_storage_profile,
+    order_page_scripts, page_script_sources_to_scripts, save_web_storage_profile,
+    static_module_specifiers, storage_key, worker_message_script,
 };
 use super::layout::NativePoint;
 use super::origin::NativeOrigin;
@@ -3368,6 +3369,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut workers = NativeWorkerRegistry::new();
     let mut pending_worker_messages: VecDeque<NativeWorkerMessage> = VecDeque::new();
     let mut websocket_connections = BTreeMap::new();
+    let mut worker_websocket_connections = BTreeMap::new();
     let mut fetch_stream_connections = BTreeMap::new();
     let mut event_source_connections = BTreeMap::new();
     let mut storage_state = NativeWebStorageState::default();
@@ -3754,6 +3756,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             "load" if protocol_matches(&request) && running => {
                 frame_script_bindings.clear();
                 websocket_connections.clear();
+                worker_websocket_connections.clear();
                 fetch_stream_connections.clear();
                 event_source_connections.clear();
                 workers.clear();
@@ -3921,6 +3924,11 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                     workers
                                         .apply_commands(worker_commands, loader, &resource.url)
                                         .await?;
+                                    process_worker_websocket_commands(
+                                        workers.take_websocket_commands(),
+                                        &mut worker_websocket_connections,
+                                        Some(&*loader),
+                                    )?;
                                     pending_worker_messages.extend(workers.take_messages());
                                 }
                                 let document_wire = parsed.to_content_wire();
@@ -4092,6 +4100,17 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     });
                 };
                 workers.run_due_timers(loader).await?;
+                process_worker_websocket_commands(
+                    workers.take_websocket_commands(),
+                    &mut worker_websocket_connections,
+                    Some(&*loader),
+                )?;
+                pump_worker_websocket_event(
+                    &mut workers,
+                    &mut worker_websocket_connections,
+                    loader,
+                )
+                .await?;
                 pending_worker_messages.extend(workers.take_messages());
                 let worker_messages = std::mem::take(&mut pending_worker_messages)
                     .into_iter()
@@ -4112,6 +4131,11 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 workers
                     .apply_commands(worker_commands, loader, &committed_url)
                     .await?;
+                process_worker_websocket_commands(
+                    workers.take_websocket_commands(),
+                    &mut worker_websocket_connections,
+                    Some(&*loader),
+                )?;
                 pending_worker_messages.extend(workers.take_messages());
                 match evaluation {
                     Ok(NativeScriptEvaluation {
@@ -4206,6 +4230,11 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                         &document_url.clone().unwrap_or(committed_url.clone()),
                                     )
                                     .await?;
+                                process_worker_websocket_commands(
+                                    workers.take_websocket_commands(),
+                                    &mut worker_websocket_connections,
+                                    Some(&*loader),
+                                )?;
                                 pending_worker_messages.extend(workers.take_messages());
                                 if !mutation.history.is_empty() {
                                     let Some(base_url) = document_url.as_deref() else {
@@ -7644,6 +7673,7 @@ fn process_websocket_commands(
                 socket_id,
                 href,
                 protocols,
+                worker_id: None,
             } => {
                 if connections.contains_key(&socket_id) {
                     return Err(NativeEngineError::Network {
@@ -7670,6 +7700,7 @@ fn process_websocket_commands(
                 socket_id,
                 data,
                 data_base64,
+                worker_id: None,
             } => {
                 let message = match (data, data_base64) {
                     (Some(data), None) => {
@@ -7726,6 +7757,7 @@ fn process_websocket_commands(
                 socket_id,
                 code,
                 reason,
+                worker_id: None,
             } => {
                 if code != 1000 && !(3000..=4999).contains(&code) {
                     return Err(NativeEngineError::invalid(
@@ -7759,6 +7791,170 @@ fn process_websocket_commands(
         }
     }
     Ok(retained)
+}
+
+fn process_worker_websocket_commands(
+    commands: Vec<NativeWorkerWebSocketCommand>,
+    connections: &mut BTreeMap<(u32, u32), NativeWebSocketConnection>,
+    loader: Option<&NativeResourceLoader>,
+) -> Result<(), NativeEngineError> {
+    for request in commands {
+        let NativeWorkerWebSocketCommand {
+            worker_id,
+            worker_url,
+            command,
+        } = request;
+        match command {
+            NativeScriptCommand::WebSocketOpen {
+                socket_id,
+                href,
+                protocols,
+                worker_id: Some(command_worker_id),
+            } => {
+                if command_worker_id != worker_id {
+                    return Err(NativeEngineError::invalid(
+                        "native Worker WebSocket command",
+                        "WebSocket command worker id does not match its owner",
+                    ));
+                }
+                let key = (worker_id, socket_id);
+                if connections.contains_key(&key) {
+                    return Err(NativeEngineError::Network {
+                        operation: "Worker WebSocket open".into(),
+                        reason: "WebSocket identifier is already active".into(),
+                    });
+                }
+                if connections.len() >= MAX_NATIVE_WEBSOCKET_EVENTS {
+                    return Err(NativeEngineError::limit(
+                        "native Worker WebSocket connections",
+                        MAX_NATIVE_WEBSOCKET_EVENTS,
+                        connections.len().saturating_add(1),
+                    ));
+                }
+                let loader = loader.ok_or_else(|| NativeEngineError::Worker {
+                    operation: "Worker WebSocket open".into(),
+                    reason: "content process has no resource loader".into(),
+                })?;
+                let target = loader.websocket_target(&worker_url, &href)?;
+                let worker_url = Url::parse(without_fragment(&worker_url)).map_err(|_| {
+                    NativeEngineError::UnsupportedUrl {
+                        reason: "Worker WebSocket owner URL is not valid HTTP(S) syntax".into(),
+                    }
+                })?;
+                let worker_origin = NativeOrigin::from_url(&worker_url)?;
+                let connection = spawn_native_websocket(target, &worker_origin, &protocols)?;
+                connections.insert(key, connection);
+            }
+            NativeScriptCommand::WebSocketSend {
+                socket_id,
+                data,
+                data_base64,
+                worker_id: Some(command_worker_id),
+            } => {
+                if command_worker_id != worker_id {
+                    return Err(NativeEngineError::invalid(
+                        "native Worker WebSocket command",
+                        "WebSocket command worker id does not match its owner",
+                    ));
+                }
+                let message = match (data, data_base64) {
+                    (Some(data), None) => {
+                        if data.len() > MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES {
+                            return Err(NativeEngineError::limit(
+                                "native Worker WebSocket message",
+                                MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES,
+                                data.len(),
+                            ));
+                        }
+                        Message::Text(data.into())
+                    }
+                    (None, Some(data_base64)) => {
+                        let data = base64::engine::general_purpose::STANDARD
+                            .decode(data_base64)
+                            .map_err(|_| {
+                                NativeEngineError::invalid(
+                                    "native Worker WebSocket binary message",
+                                    "must be valid base64",
+                                )
+                            })?;
+                        if data.len() > MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES {
+                            return Err(NativeEngineError::limit(
+                                "native Worker WebSocket message",
+                                MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES,
+                                data.len(),
+                            ));
+                        }
+                        Message::Binary(data.into())
+                    }
+                    _ => {
+                        return Err(NativeEngineError::invalid(
+                            "native Worker WebSocket message",
+                            "must contain exactly one text or binary payload",
+                        ));
+                    }
+                };
+                let connection = connections.get(&(worker_id, socket_id)).ok_or_else(|| {
+                    NativeEngineError::Network {
+                        operation: "Worker WebSocket send".into(),
+                        reason: "WebSocket identifier is not active".into(),
+                    }
+                })?;
+                connection
+                    .commands
+                    .try_send(NativeWebSocketCommand::Send(message))
+                    .map_err(|_| NativeEngineError::Network {
+                        operation: "Worker WebSocket send".into(),
+                        reason: "WebSocket command queue is full or closed".into(),
+                    })?;
+            }
+            NativeScriptCommand::WebSocketClose {
+                socket_id,
+                code,
+                reason,
+                worker_id: Some(command_worker_id),
+            } => {
+                if command_worker_id != worker_id {
+                    return Err(NativeEngineError::invalid(
+                        "native Worker WebSocket command",
+                        "WebSocket command worker id does not match its owner",
+                    ));
+                }
+                if code != 1000 && !(3000..=4999).contains(&code) {
+                    return Err(NativeEngineError::invalid(
+                        "native Worker WebSocket close code",
+                        "must be 1000 or in the 3000-4999 range",
+                    ));
+                }
+                if reason.len() > MAX_NATIVE_WEBSOCKET_CLOSE_REASON_BYTES {
+                    return Err(NativeEngineError::limit(
+                        "native Worker WebSocket close reason",
+                        MAX_NATIVE_WEBSOCKET_CLOSE_REASON_BYTES,
+                        reason.len(),
+                    ));
+                }
+                let connection = connections.get(&(worker_id, socket_id)).ok_or_else(|| {
+                    NativeEngineError::Network {
+                        operation: "Worker WebSocket close".into(),
+                        reason: "WebSocket identifier is not active".into(),
+                    }
+                })?;
+                connection
+                    .commands
+                    .try_send(NativeWebSocketCommand::Close { code, reason })
+                    .map_err(|_| NativeEngineError::Network {
+                        operation: "Worker WebSocket close".into(),
+                        reason: "WebSocket command queue is full or closed".into(),
+                    })?;
+            }
+            _ => {
+                return Err(NativeEngineError::invalid(
+                    "native Worker WebSocket command",
+                    "command is not a worker-owned WebSocket operation",
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn process_fetch_stream_commands(
@@ -7864,6 +8060,53 @@ fn take_websocket_event(
         }
     }
     None
+}
+
+fn take_worker_websocket_event(
+    connections: &mut BTreeMap<(u32, u32), NativeWebSocketConnection>,
+) -> Option<((u32, u32), NativeWebSocketEvent)> {
+    let socket_ids = connections.keys().copied().collect::<Vec<_>>();
+    for key in socket_ids {
+        let Some(connection) = connections.get_mut(&key) else {
+            continue;
+        };
+        match connection.events.try_recv() {
+            Ok(event) => return Some((key, event)),
+            Err(mpsc::error::TryRecvError::Empty) => {}
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                connections.remove(&key);
+            }
+        }
+    }
+    None
+}
+
+async fn pump_worker_websocket_event(
+    workers: &mut NativeWorkerRegistry,
+    connections: &mut BTreeMap<(u32, u32), NativeWebSocketConnection>,
+    loader: &mut NativeResourceLoader,
+) -> Result<bool, NativeEngineError> {
+    let Some(((worker_id, socket_id), event)) = take_worker_websocket_event(connections) else {
+        return Ok(false);
+    };
+    let remove_after_dispatch = matches!(&event, NativeWebSocketEvent::Close { .. });
+    workers
+        .dispatch_websocket_event(
+            worker_id,
+            socket_id,
+            &websocket_event_payload(&event),
+            loader,
+        )
+        .await?;
+    process_worker_websocket_commands(
+        workers.take_websocket_commands(),
+        connections,
+        Some(&*loader),
+    )?;
+    if remove_after_dispatch {
+        connections.remove(&(worker_id, socket_id));
+    }
+    Ok(true)
 }
 
 fn take_event_source_event(

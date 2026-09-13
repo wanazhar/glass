@@ -1052,6 +1052,64 @@ async fn native_content_process_dynamic_inline_script_runs_once_after_late_attac
 }
 
 #[tokio::test]
+async fn native_content_process_runs_nested_dynamic_external_scripts() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..3 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap_or_default();
+            let (content_type, body) = match path {
+                "/page" => (
+                    "text/html",
+                    "<html><body><p>Native content</p></body></html>",
+                ),
+                "/parent.mjs" => (
+                    "application/javascript",
+                    "const child = document.createElement('script'); child.src = '/child.js'; document.body.appendChild(child);",
+                ),
+                "/child.js" => (
+                    "application/javascript",
+                    "document.body.setAttribute('data-nested-script', 'loaded');",
+                ),
+                other => panic!("unexpected request path: {other}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "globalThis.nestedScript = document.createElement('script'); nestedScript.type = 'module'; nestedScript.src = '/parent.mjs'; document.body.appendChild(nestedScript); document.body.getAttribute('data-nested-script')",
+            )
+            .await
+            .unwrap(),
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("document.body.getAttribute('data-nested-script')")
+            .await
+            .unwrap(),
+        serde_json::json!("loaded")
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_scrolls_root_and_nested_overflow_containers() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -3072,6 +3072,18 @@ impl NativeEngine {
                 MAX_NATIVE_SCRIPT_BYTES,
             );
             if !dynamic_sources.is_empty() {
+                if dynamic_sources.iter().any(|source| {
+                    matches!(
+                        source,
+                        super::dom::NativePageScriptSource::External { .. }
+                            | super::dom::NativePageScriptSource::ModuleExternal { .. }
+                    )
+                }) {
+                    return Err(NativeEngineError::UnsupportedUrl {
+                        reason: "dynamic external/module scripts require a process-backed HTTP(S) document"
+                            .into(),
+                    });
+                }
                 let dynamic_scripts = page_script_sources_to_scripts(
                     dynamic_sources,
                     &self.url,
@@ -3086,6 +3098,12 @@ impl NativeEngine {
                     self.config.viewport,
                     &[],
                 )?;
+                if !dynamic_result.pending_script_sources.is_empty() {
+                    return Err(NativeEngineError::UnsupportedUrl {
+                        reason: "dynamic external/module scripts require a process-backed HTTP(S) document"
+                            .into(),
+                    });
+                }
                 if !dynamic_result.pending_fetches.is_empty()
                     || !dynamic_result.websocket_commands.is_empty()
                     || !dynamic_result.event_source_commands.is_empty()

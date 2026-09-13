@@ -480,6 +480,9 @@ pub(crate) struct NativePageScriptResult {
     pub(crate) pending_fetches: Vec<NativeScriptCommand>,
     pub(crate) websocket_commands: Vec<NativeScriptCommand>,
     pub(crate) event_source_commands: Vec<NativeScriptCommand>,
+    /// External/module sources discovered by a dynamic script and awaiting
+    /// resource-loader handoff in the owning content process.
+    pub(crate) pending_script_sources: Vec<NativePageScriptSource>,
     pub(crate) scroll_commands: Vec<NativeScriptCommand>,
     pub(crate) navigation: Option<NativePageNavigation>,
     pub(crate) dialogs: Vec<NativeDialog>,
@@ -3000,6 +3003,7 @@ pub(crate) fn execute_page_scripts(
         pending_fetches,
         websocket_commands,
         event_source_commands,
+        pending_script_sources: Vec::new(),
         scroll_commands,
         navigation,
         dialogs: runtime
@@ -3040,6 +3044,7 @@ pub(crate) fn execute_dynamic_page_scripts(
     let mut pending_fetches = Vec::new();
     let mut websocket_commands = Vec::new();
     let mut event_source_commands = Vec::new();
+    let mut pending_script_sources = Vec::new();
     let mut scroll_commands = Vec::new();
     let mut navigation = None;
     let mut events = Vec::new();
@@ -3108,6 +3113,7 @@ pub(crate) fn execute_dynamic_page_scripts(
                             &commands,
                             document_url,
                             &mut pending,
+                            &mut pending_script_sources,
                         )?;
                         events.push((node_index, NativeEventKind::Error));
                     }
@@ -3126,7 +3132,13 @@ pub(crate) fn execute_dynamic_page_scripts(
             &mut scroll_commands,
             &mut navigation,
         )?;
-        enqueue_dynamic_page_scripts(document, &commands, document_url, &mut pending)?;
+        enqueue_dynamic_page_scripts(
+            document,
+            &commands,
+            document_url,
+            &mut pending,
+            &mut pending_script_sources,
+        )?;
     }
 
     for (node_index, event_kind) in resource_events {
@@ -3153,7 +3165,13 @@ pub(crate) fn execute_dynamic_page_scripts(
             &mut scroll_commands,
             &mut navigation,
         )?;
-        enqueue_dynamic_page_scripts(document, &commands, document_url, &mut pending)?;
+        enqueue_dynamic_page_scripts(
+            document,
+            &commands,
+            document_url,
+            &mut pending,
+            &mut pending_script_sources,
+        )?;
         events.push((*node_index, *event_kind));
     }
 
@@ -3218,6 +3236,7 @@ pub(crate) fn execute_dynamic_page_scripts(
                             &commands,
                             document_url,
                             &mut pending,
+                            &mut pending_script_sources,
                         )?;
                         events.push((node_index, NativeEventKind::Error));
                     }
@@ -3236,13 +3255,20 @@ pub(crate) fn execute_dynamic_page_scripts(
             &mut scroll_commands,
             &mut navigation,
         )?;
-        enqueue_dynamic_page_scripts(document, &commands, document_url, &mut pending)?;
+        enqueue_dynamic_page_scripts(
+            document,
+            &commands,
+            document_url,
+            &mut pending,
+            &mut pending_script_sources,
+        )?;
     }
 
     Ok(NativePageScriptResult {
         pending_fetches,
         websocket_commands,
         event_source_commands,
+        pending_script_sources,
         scroll_commands,
         navigation,
         dialogs: runtime.take_dialog_events(),
@@ -3255,12 +3281,38 @@ fn enqueue_dynamic_page_scripts(
     commands: &[NativeScriptCommand],
     document_url: &str,
     pending: &mut VecDeque<NativePageScript>,
+    pending_script_sources: &mut Vec<NativePageScriptSource>,
 ) -> Result<(), NativeEngineError> {
     let sources = document.take_newly_attached_page_script_sources(
         commands,
         MAX_NATIVE_INLINE_SCRIPTS,
         MAX_NATIVE_SCRIPT_BYTES,
     );
+    let deferred_sources = sources
+        .iter()
+        .filter(|source| {
+            matches!(
+                source,
+                NativePageScriptSource::External { .. }
+                    | NativePageScriptSource::ModuleExternal { .. }
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if pending_script_sources
+        .len()
+        .saturating_add(deferred_sources.len())
+        > MAX_NATIVE_INLINE_SCRIPTS
+    {
+        return Err(NativeEngineError::limit(
+            "native dynamic external scripts",
+            MAX_NATIVE_INLINE_SCRIPTS,
+            pending_script_sources
+                .len()
+                .saturating_add(deferred_sources.len()),
+        ));
+    }
+    pending_script_sources.extend(deferred_sources);
     for script in page_script_sources_to_scripts(sources, document_url, "glass-dynamic-module")
         .into_iter()
         .rev()

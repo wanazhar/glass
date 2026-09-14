@@ -91,6 +91,14 @@ const NATIVE_SCRIPT_STACK_BYTES: usize = 1024 * 1024;
 const NATIVE_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_WEB_STORAGE_PROFILE_BYTES: usize = 4 * 1024 * 1024;
 const WEB_STORAGE_PROFILE_VERSION: u64 = 1;
+pub(crate) const MAX_NATIVE_SERVICE_WORKER_CACHE_ORIGINS: usize = 64;
+pub(crate) const MAX_NATIVE_SERVICE_WORKER_CACHES: usize = 32;
+pub(crate) const MAX_NATIVE_SERVICE_WORKER_CACHE_ENTRIES: usize = 256;
+pub(crate) const MAX_NATIVE_SERVICE_WORKER_CACHE_NAME_BYTES: usize = 256;
+pub(crate) const MAX_NATIVE_SERVICE_WORKER_CACHE_KEY_BYTES: usize = MAX_NATIVE_SCRIPT_BYTES;
+pub(crate) const MAX_NATIVE_SERVICE_WORKER_CACHE_BODY_BYTES: usize = MAX_NATIVE_FORM_BODY_BYTES;
+pub(crate) const MAX_NATIVE_SERVICE_WORKER_CACHE_HEADERS: usize = 64;
+const MAX_NATIVE_SERVICE_WORKER_CACHE_TOTAL_BYTES: usize = 3 * 1024 * 1024;
 const MAX_WEB_STORAGE_EVENT_JOURNAL_BYTES: usize = 4 * 1024 * 1024;
 const MAX_NATIVE_STORAGE_EVENTS: usize = 64;
 const MAX_NATIVE_STORAGE_READER_LEASES: usize = 128;
@@ -236,6 +244,44 @@ pub(crate) enum NativeScriptCommand {
         data: serde_json::Value,
         #[serde(default)]
         transfer_ports: Vec<NativeMessagePortTransfer>,
+    },
+    ServiceWorkerCacheOpen {
+        request_id: u32,
+        cache_name: String,
+    },
+    ServiceWorkerCacheDelete {
+        request_id: u32,
+        cache_name: String,
+    },
+    ServiceWorkerCacheHas {
+        request_id: u32,
+        cache_name: String,
+    },
+    ServiceWorkerCacheKeys {
+        request_id: u32,
+    },
+    ServiceWorkerCacheMatch {
+        request_id: u32,
+        cache_name: String,
+        request_url: String,
+        request_method: String,
+    },
+    ServiceWorkerCachePut {
+        request_id: u32,
+        cache_name: String,
+        request_url: String,
+        request_method: String,
+        response: serde_json::Value,
+    },
+    ServiceWorkerCacheDeleteRequest {
+        request_id: u32,
+        cache_name: String,
+        request_url: String,
+        request_method: String,
+    },
+    ServiceWorkerCacheEntries {
+        request_id: u32,
+        cache_name: String,
     },
     WebSocketOpen {
         socket_id: u32,
@@ -2977,6 +3023,177 @@ struct NativeWebStorageProfile {
     cookies: Vec<NativeCookieProfileEntry>,
     #[serde(default)]
     indexed_db: NativeIndexedDbState,
+    #[serde(default)]
+    service_worker_caches: NativeServiceWorkerCacheState,
+}
+
+/// Profile-owned CacheStorage state. The map is partitioned by serialized
+/// origin, then cache name, then a method/URL key. Keeping this state beside
+/// the existing browser profile makes cache writes survive content-process
+/// replacement without giving JavaScript direct access to profile files.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub(crate) struct NativeServiceWorkerCacheState {
+    pub(crate) origins:
+        BTreeMap<String, BTreeMap<String, BTreeMap<String, NativeServiceWorkerCacheEntry>>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub(crate) struct NativeServiceWorkerCacheEntry {
+    pub(crate) method: String,
+    #[serde(default)]
+    pub(crate) request_url: String,
+    pub(crate) url: String,
+    pub(crate) status: u16,
+    pub(crate) status_text: String,
+    pub(crate) headers: Vec<(String, String)>,
+    #[serde(default)]
+    pub(crate) content_type: Option<String>,
+    #[serde(default)]
+    pub(crate) body_base64: String,
+    #[serde(default)]
+    pub(crate) body_null: bool,
+    #[serde(default)]
+    pub(crate) redirected: bool,
+    #[serde(default)]
+    pub(crate) opaque: bool,
+    #[serde(default)]
+    pub(crate) opaque_redirect: bool,
+}
+
+impl NativeServiceWorkerCacheState {
+    pub(crate) fn validate(&self) -> Result<(), NativeEngineError> {
+        if self.origins.len() > MAX_NATIVE_SERVICE_WORKER_CACHE_ORIGINS {
+            return Err(NativeEngineError::limit(
+                "native service worker cache origins",
+                MAX_NATIVE_SERVICE_WORKER_CACHE_ORIGINS,
+                self.origins.len(),
+            ));
+        }
+        let mut total_bytes = 0usize;
+        for (origin, caches) in &self.origins {
+            if origin.is_empty() || origin.len() > MAX_NATIVE_SCRIPT_BYTES {
+                return Err(NativeEngineError::limit(
+                    "native service worker cache origin",
+                    MAX_NATIVE_SCRIPT_BYTES,
+                    origin.len(),
+                ));
+            }
+            if caches.len() > MAX_NATIVE_SERVICE_WORKER_CACHES {
+                return Err(NativeEngineError::limit(
+                    "native service worker caches",
+                    MAX_NATIVE_SERVICE_WORKER_CACHES,
+                    caches.len(),
+                ));
+            }
+            for (name, entries) in caches {
+                if name.is_empty() || name.len() > MAX_NATIVE_SERVICE_WORKER_CACHE_NAME_BYTES {
+                    return Err(NativeEngineError::limit(
+                        "native service worker cache name",
+                        MAX_NATIVE_SERVICE_WORKER_CACHE_NAME_BYTES,
+                        name.len(),
+                    ));
+                }
+                if entries.len() > MAX_NATIVE_SERVICE_WORKER_CACHE_ENTRIES {
+                    return Err(NativeEngineError::limit(
+                        "native service worker cache entries",
+                        MAX_NATIVE_SERVICE_WORKER_CACHE_ENTRIES,
+                        entries.len(),
+                    ));
+                }
+                for (key, entry) in entries {
+                    if key.len() > MAX_NATIVE_SERVICE_WORKER_CACHE_KEY_BYTES {
+                        return Err(NativeEngineError::limit(
+                            "native service worker cache key",
+                            MAX_NATIVE_SERVICE_WORKER_CACHE_KEY_BYTES,
+                            key.len(),
+                        ));
+                    }
+                    if key != &format!("{}\n{}", entry.method, entry.request_url) {
+                        return Err(NativeEngineError::invalid(
+                            "native service worker cache key",
+                            "does not match its request",
+                        ));
+                    }
+                    if !matches!(entry.method.as_str(), "GET") {
+                        return Err(NativeEngineError::invalid(
+                            "native service worker cache request method",
+                            "only GET cache entries are supported",
+                        ));
+                    }
+                    if entry.request_url.is_empty()
+                        || entry.request_url.len() > MAX_NATIVE_SCRIPT_BYTES
+                    {
+                        return Err(NativeEngineError::limit(
+                            "native service worker cache request URL",
+                            MAX_NATIVE_SCRIPT_BYTES,
+                            entry.request_url.len(),
+                        ));
+                    }
+                    if entry.url.is_empty() || entry.url.len() > MAX_NATIVE_SCRIPT_BYTES {
+                        return Err(NativeEngineError::limit(
+                            "native service worker cached response URL",
+                            MAX_NATIVE_SCRIPT_BYTES,
+                            entry.url.len(),
+                        ));
+                    }
+                    if !(200..=599).contains(&entry.status) {
+                        return Err(NativeEngineError::invalid(
+                            "native service worker cached response status",
+                            "must be between 200 and 599",
+                        ));
+                    }
+                    if entry.headers.len() > MAX_NATIVE_SERVICE_WORKER_CACHE_HEADERS {
+                        return Err(NativeEngineError::limit(
+                            "native service worker cached response headers",
+                            MAX_NATIVE_SERVICE_WORKER_CACHE_HEADERS,
+                            entry.headers.len(),
+                        ));
+                    }
+                    for (header_name, header_value) in &entry.headers {
+                        if header_name.is_empty()
+                            || header_name.len() > MAX_NATIVE_FETCH_HEADER_NAME_BYTES
+                            || header_value.len() > MAX_NATIVE_FETCH_HEADER_VALUE_BYTES
+                        {
+                            return Err(NativeEngineError::invalid(
+                                "native service worker cached response headers",
+                                "contain an invalid name or value",
+                            ));
+                        }
+                    }
+                    let body = base64::engine::general_purpose::STANDARD
+                        .decode(&entry.body_base64)
+                        .map_err(|_| {
+                            NativeEngineError::invalid(
+                                "native service worker cached response body",
+                                "must be valid base64",
+                            )
+                        })?;
+                    if body.len() > MAX_NATIVE_SERVICE_WORKER_CACHE_BODY_BYTES {
+                        return Err(NativeEngineError::limit(
+                            "native service worker cached response body",
+                            MAX_NATIVE_SERVICE_WORKER_CACHE_BODY_BYTES,
+                            body.len(),
+                        ));
+                    }
+                    if entry.body_null && !body.is_empty() {
+                        return Err(NativeEngineError::invalid(
+                            "native service worker cached response body",
+                            "a null body must not contain bytes",
+                        ));
+                    }
+                    total_bytes = total_bytes.saturating_add(body.len());
+                    if total_bytes > MAX_NATIVE_SERVICE_WORKER_CACHE_TOTAL_BYTES {
+                        return Err(NativeEngineError::limit(
+                            "native service worker cache data",
+                            MAX_NATIVE_SERVICE_WORKER_CACHE_TOTAL_BYTES,
+                            total_bytes,
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -3886,6 +4103,20 @@ pub(crate) fn load_indexed_db_profile(
     Ok(profile.indexed_db)
 }
 
+pub(crate) fn load_service_worker_cache_profile(
+    path: Option<&Path>,
+) -> Result<NativeServiceWorkerCacheState, NativeEngineError> {
+    let Some(path) = path else {
+        return Ok(NativeServiceWorkerCacheState::default());
+    };
+    let _lock = lock_web_storage_profile(path, false)?;
+    let Some(profile) = read_web_storage_profile(path)? else {
+        return Ok(NativeServiceWorkerCacheState::default());
+    };
+    profile.service_worker_caches.validate()?;
+    Ok(profile.service_worker_caches)
+}
+
 fn read_web_storage_profile(
     path: &Path,
 ) -> Result<Option<NativeWebStorageProfile>, NativeEngineError> {
@@ -3936,6 +4167,7 @@ fn read_web_storage_profile(
         local,
         cookies,
         indexed_db,
+        service_worker_caches,
         ..
     } = profile;
     let state = NativeWebStorageState {
@@ -3944,6 +4176,7 @@ fn read_web_storage_profile(
     };
     validate_web_storage_state(&state)?;
     indexed_db.validate()?;
+    service_worker_caches.validate()?;
     validate_cookie_profile(&cookies)?;
     let cookies = cookies
         .into_iter()
@@ -3959,6 +4192,7 @@ fn read_web_storage_profile(
         local: state.local,
         cookies,
         indexed_db,
+        service_worker_caches,
     }))
 }
 
@@ -4030,7 +4264,12 @@ pub(crate) fn save_web_storage_profile(
         local: merged_state.local,
         cookies,
         indexed_db: merged_indexed_db,
+        service_worker_caches: current
+            .as_ref()
+            .map(|profile| profile.service_worker_caches.clone())
+            .unwrap_or_default(),
     };
+    profile.service_worker_caches.validate()?;
     let bytes = serde_json::to_vec(&profile).map_err(|_| NativeEngineError::Worker {
         operation: "save native Web Storage profile".into(),
         reason: "native Web Storage profile cannot be encoded".into(),
@@ -4062,6 +4301,88 @@ pub(crate) fn save_web_storage_profile(
             return Err(NativeEngineError::Worker {
                 operation: "save native Web Storage profile".into(),
                 reason: format!("native Web Storage profile cannot be committed: {rename_error}"),
+            });
+        }
+        let _ = fs::remove_file(&temporary_path);
+    }
+    Ok(())
+}
+
+pub(crate) fn save_service_worker_cache_profile(
+    path: Option<&Path>,
+    cache_state: &NativeServiceWorkerCacheState,
+) -> Result<(), NativeEngineError> {
+    let Some(path) = path else {
+        return Ok(());
+    };
+    cache_state.validate()?;
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent).map_err(|_| NativeEngineError::Worker {
+            operation: "save native service worker cache profile".into(),
+            reason: "native service worker cache profile directory cannot be created".into(),
+        })?;
+    }
+    let _lock = lock_web_storage_profile(path, true)?;
+    let current = read_web_storage_profile(path)?;
+    let revision = current
+        .as_ref()
+        .map(|profile| profile.revision)
+        .unwrap_or(0)
+        .checked_add(1)
+        .ok_or_else(|| NativeEngineError::Worker {
+            operation: "save native service worker cache profile".into(),
+            reason: "native Web Storage profile revision overflowed".into(),
+        })?;
+    let profile = NativeWebStorageProfile {
+        version: WEB_STORAGE_PROFILE_VERSION,
+        revision,
+        local: current
+            .as_ref()
+            .map(|profile| profile.local.clone())
+            .unwrap_or_default(),
+        cookies: current
+            .as_ref()
+            .map(|profile| profile.cookies.clone())
+            .unwrap_or_default(),
+        indexed_db: current
+            .as_ref()
+            .map(|profile| profile.indexed_db.clone())
+            .unwrap_or_default(),
+        service_worker_caches: cache_state.clone(),
+    };
+    let bytes = serde_json::to_vec(&profile).map_err(|_| NativeEngineError::Worker {
+        operation: "save native service worker cache profile".into(),
+        reason: "native service worker cache profile cannot be encoded".into(),
+    })?;
+    if bytes.len() > MAX_WEB_STORAGE_PROFILE_BYTES {
+        return Err(NativeEngineError::limit(
+            "native Web Storage profile",
+            MAX_WEB_STORAGE_PROFILE_BYTES,
+            bytes.len(),
+        ));
+    }
+    let temporary_path = path.with_extension(format!("tmp-{}", std::process::id()));
+    fs::write(&temporary_path, &bytes).map_err(|_| NativeEngineError::Worker {
+        operation: "save native service worker cache profile".into(),
+        reason: "native service worker cache profile cannot be written".into(),
+    })?;
+    if let Err(rename_error) = fs::rename(&temporary_path, path) {
+        let expected_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        let fallback = fs::copy(&temporary_path, path).and_then(|copied_bytes| {
+            (copied_bytes == expected_bytes)
+                .then_some(())
+                .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::WriteZero))
+        });
+        if fallback.is_err() {
+            let _ = fs::remove_file(&temporary_path);
+            return Err(NativeEngineError::Worker {
+                operation: "save native service worker cache profile".into(),
+                reason: format!(
+                    "native service worker cache profile cannot be committed: {rename_error}"
+                ),
             });
         }
         let _ = fs::remove_file(&temporary_path);
@@ -9139,6 +9460,11 @@ impl NativeJavaScriptRuntime {
             let commands = read_script_commands(ctx.clone())?;
             let mut worker_commands = Vec::with_capacity(commands.len());
             for command in commands {
+                if service_worker && is_service_worker_cache_command(&command) {
+                    validate_service_worker_cache_command(&command)?;
+                    worker_commands.push(command);
+                    continue;
+                }
                 if matches!(
                     &command,
                     NativeScriptCommand::MessagePortPostMessage {
@@ -9270,6 +9596,7 @@ impl NativeJavaScriptRuntime {
         worker_id: u32,
         worker_url: &str,
         payload: &serde_json::Value,
+        is_module: bool,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
         let serialized = serde_json::to_string(payload).map_err(|_| NativeEngineError::Worker {
             operation: "serialize native service worker fetch".into(),
@@ -9288,7 +9615,7 @@ impl NativeJavaScriptRuntime {
             worker_url,
             self.now_ms(),
             &BTreeMap::new(),
-            false,
+            is_module,
         )?;
         self.evaluate_worker_source_with_bootstrap(
             worker_id, worker_url, None, &source, bootstrap, true, true,
@@ -9300,22 +9627,24 @@ impl NativeJavaScriptRuntime {
         worker_id: u32,
         worker_url: &str,
         event_type: &str,
+        is_module: bool,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
         let event_type =
             serde_json::to_string(event_type).map_err(|_| NativeEngineError::Worker {
                 operation: "serialize native service worker lifecycle".into(),
                 reason: "service worker lifecycle event could not be serialized".into(),
             })?;
-        let source = format!("globalThis.__glassDispatchServiceWorkerLifecycle({event_type});");
+        let source =
+            format!("await globalThis.__glassDispatchServiceWorkerLifecycle({event_type});");
         let bootstrap = service_worker_bootstrap(
             worker_id,
             worker_url,
             self.now_ms(),
             &BTreeMap::new(),
-            false,
+            is_module,
         )?;
         self.evaluate_worker_source_with_bootstrap(
-            worker_id, worker_url, None, &source, bootstrap, true, false,
+            worker_id, worker_url, None, &source, bootstrap, true, true,
         )
     }
 
@@ -9440,6 +9769,43 @@ impl NativeJavaScriptRuntime {
             format!("globalThis.__glassResolveWorkerFetch({request_id}, {serialized});")
         };
         self.evaluate_worker(worker_id, worker_url, &source, import_script_counts)
+    }
+
+    pub(crate) fn resolve_service_worker_cache(
+        &self,
+        worker_id: u32,
+        worker_url: &str,
+        request_id: u32,
+        payload: &serde_json::Value,
+        is_module: bool,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        if request_id == 0 {
+            return Err(NativeEngineError::invalid(
+                "native service worker cache request id",
+                "must be positive",
+            ));
+        }
+        let serialized = serde_json::to_string(payload).map_err(|_| NativeEngineError::Worker {
+            operation: "serialize native service worker cache response".into(),
+            reason: "native service worker cache response could not be serialized".into(),
+        })?;
+        let source = if serialized.len() > MAX_NATIVE_SCRIPT_BYTES {
+            format!(
+                "globalThis.__glassResolveServiceWorkerCache({request_id}, {{ error: \"service worker cache response exceeded the script transfer limit\" }});"
+            )
+        } else {
+            format!("globalThis.__glassResolveServiceWorkerCache({request_id}, {serialized});")
+        };
+        let bootstrap = service_worker_bootstrap(
+            worker_id,
+            worker_url,
+            self.now_ms(),
+            &BTreeMap::new(),
+            is_module,
+        )?;
+        self.evaluate_worker_source_with_bootstrap(
+            worker_id, worker_url, None, &source, bootstrap, true, false,
+        )
     }
 
     pub(crate) fn resolve_fetch(
@@ -9783,6 +10149,109 @@ impl NativeJavaScriptRuntime {
     pub(crate) fn has_pending_jobs(&self) -> bool {
         self.runtime.is_job_pending()
     }
+}
+
+fn is_service_worker_cache_command(command: &NativeScriptCommand) -> bool {
+    matches!(
+        command,
+        NativeScriptCommand::ServiceWorkerCacheOpen { .. }
+            | NativeScriptCommand::ServiceWorkerCacheDelete { .. }
+            | NativeScriptCommand::ServiceWorkerCacheHas { .. }
+            | NativeScriptCommand::ServiceWorkerCacheKeys { .. }
+            | NativeScriptCommand::ServiceWorkerCacheMatch { .. }
+            | NativeScriptCommand::ServiceWorkerCachePut { .. }
+            | NativeScriptCommand::ServiceWorkerCacheDeleteRequest { .. }
+            | NativeScriptCommand::ServiceWorkerCacheEntries { .. }
+    )
+}
+
+fn validate_service_worker_cache_command(
+    command: &NativeScriptCommand,
+) -> Result<(), NativeEngineError> {
+    let request_id = match command {
+        NativeScriptCommand::ServiceWorkerCacheOpen { request_id, .. }
+        | NativeScriptCommand::ServiceWorkerCacheDelete { request_id, .. }
+        | NativeScriptCommand::ServiceWorkerCacheHas { request_id, .. }
+        | NativeScriptCommand::ServiceWorkerCacheKeys { request_id }
+        | NativeScriptCommand::ServiceWorkerCacheMatch { request_id, .. }
+        | NativeScriptCommand::ServiceWorkerCachePut { request_id, .. }
+        | NativeScriptCommand::ServiceWorkerCacheDeleteRequest { request_id, .. }
+        | NativeScriptCommand::ServiceWorkerCacheEntries { request_id, .. } => *request_id,
+        _ => return Ok(()),
+    };
+    if request_id == 0 {
+        return Err(NativeEngineError::invalid(
+            "native service worker cache request id",
+            "must be positive",
+        ));
+    }
+    let cache_name = match command {
+        NativeScriptCommand::ServiceWorkerCacheOpen { cache_name, .. }
+        | NativeScriptCommand::ServiceWorkerCacheDelete { cache_name, .. }
+        | NativeScriptCommand::ServiceWorkerCacheHas { cache_name, .. }
+        | NativeScriptCommand::ServiceWorkerCacheMatch { cache_name, .. }
+        | NativeScriptCommand::ServiceWorkerCachePut { cache_name, .. }
+        | NativeScriptCommand::ServiceWorkerCacheDeleteRequest { cache_name, .. }
+        | NativeScriptCommand::ServiceWorkerCacheEntries { cache_name, .. } => Some(cache_name),
+        NativeScriptCommand::ServiceWorkerCacheKeys { .. } => None,
+        _ => return Ok(()),
+    };
+    if let Some(cache_name) = cache_name
+        && (cache_name.is_empty() || cache_name.len() > MAX_NATIVE_SERVICE_WORKER_CACHE_NAME_BYTES)
+    {
+        return Err(NativeEngineError::limit(
+            "native service worker cache name",
+            MAX_NATIVE_SERVICE_WORKER_CACHE_NAME_BYTES,
+            cache_name.len(),
+        ));
+    }
+    match command {
+        NativeScriptCommand::ServiceWorkerCacheMatch {
+            request_url,
+            request_method,
+            ..
+        }
+        | NativeScriptCommand::ServiceWorkerCacheDeleteRequest {
+            request_url,
+            request_method,
+            ..
+        }
+        | NativeScriptCommand::ServiceWorkerCachePut {
+            request_url,
+            request_method,
+            ..
+        } => {
+            if request_url.is_empty() || request_url.len() > MAX_NATIVE_SCRIPT_BYTES {
+                return Err(NativeEngineError::limit(
+                    "native service worker cache request URL",
+                    MAX_NATIVE_SCRIPT_BYTES,
+                    request_url.len(),
+                ));
+            }
+            if request_method != "GET" {
+                return Err(NativeEngineError::invalid(
+                    "native service worker cache request method",
+                    "only GET requests are supported",
+                ));
+            }
+            if let NativeScriptCommand::ServiceWorkerCachePut { response, .. } = command {
+                let encoded =
+                    serde_json::to_vec(response).map_err(|_| NativeEngineError::Worker {
+                        operation: "validate native service worker cache response".into(),
+                        reason: "cached response could not be serialized".into(),
+                    })?;
+                if encoded.len() > MAX_NATIVE_SCRIPT_RESULT_BYTES {
+                    return Err(NativeEngineError::limit(
+                        "native service worker cache response",
+                        MAX_NATIVE_SCRIPT_RESULT_BYTES,
+                        encoded.len(),
+                    ));
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn native_hmac_bytes(hash: &str, key: &[u8], data: &[u8]) -> Result<Vec<u8>, Error> {
@@ -14132,10 +14601,15 @@ fn shared_worker_bootstrap(
 }
 
 fn service_worker_bootstrap_script() -> String {
-    NATIVE_SERVICE_WORKER_BOOTSTRAP.replace(
-        "__GLASS_SERVICE_WORKER_BODY_LIMIT__",
-        &MAX_NATIVE_FORM_BODY_BYTES.to_string(),
-    )
+    NATIVE_SERVICE_WORKER_BOOTSTRAP
+        .replace(
+            "__GLASS_SERVICE_WORKER_BODY_LIMIT__",
+            &MAX_NATIVE_FORM_BODY_BYTES.to_string(),
+        )
+        .replace(
+            "__GLASS_SERVICE_WORKER_CACHE_NAME_LIMIT__",
+            &MAX_NATIVE_SERVICE_WORKER_CACHE_NAME_BYTES.to_string(),
+        )
 }
 
 const NATIVE_SHARED_WORKER_BOOTSTRAP: &str = r###"
@@ -14979,6 +15453,12 @@ fn service_worker_page_script() -> String {
 }
 
 const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
+  const serviceWorkerCachePendingRequests = globalThis.__glassServiceWorkerCachePendingRequests instanceof Map
+    ? globalThis.__glassServiceWorkerCachePendingRequests
+    : new Map();
+  let nextServiceWorkerCacheRequestId = Number.isSafeInteger(globalThis.__glassNextServiceWorkerCacheRequestId)
+    ? globalThis.__glassNextServiceWorkerCacheRequestId
+    : 1;
   const serviceWorkerFetchResponse = (response) => {
     if (!response || typeof response.status !== "number" || typeof response.clone !== "function")
       return Promise.reject(new TypeError("service worker fetch handler must resolve to a Response"));
@@ -15003,6 +15483,156 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
       };
     });
   };
+  const serviceWorkerCacheQueueRequest = (kind, payload) => {
+    const requestId = nextServiceWorkerCacheRequestId++;
+    globalThis.__glassNextServiceWorkerCacheRequestId = nextServiceWorkerCacheRequestId;
+    return new Promise((resolve, reject) => {
+      serviceWorkerCachePendingRequests.set(requestId, { resolve, reject, kind, cacheName: payload.cache_name });
+      try { pushCommand(Object.assign({ kind, request_id: requestId }, payload)); }
+      catch (error) {
+        serviceWorkerCachePendingRequests.delete(requestId);
+        reject(error);
+      }
+    });
+  };
+  const serviceWorkerCacheRequestKey = (input) => {
+    const source = input && input.__glassWorkerRequest === true
+      ? input
+      : new WorkerRequestNative(
+          input && input.__glassUrl === true ? input.href : workerUrlResolve(input, workerUrl),
+        );
+    if (source.method !== "GET")
+      throw new TypeError("native Cache only supports GET requests");
+    const url = new WorkerURLNative(source.url, workerUrl);
+    if (!["http:", "https:"].includes(url.protocol))
+      throw new TypeError("native Cache request URL must use HTTP(S)");
+    const hash = url.href.indexOf("#");
+    return { url: hash < 0 ? url.href : url.href.slice(0, hash), method: "GET" };
+  };
+  const serviceWorkerCacheRequire = (value) => {
+    if (!value || value.__glassServiceWorkerCache !== true)
+      throw new TypeError("native Cache receiver is invalid");
+    return value;
+  };
+  const ServiceWorkerCacheNative = typeof globalThis.__glassServiceWorkerCacheConstructor === "function"
+    ? globalThis.__glassServiceWorkerCacheConstructor
+    : function Cache() { throw new TypeError("Illegal constructor"); };
+  const serviceWorkerMakeCache = (name) => {
+    const cache = Object.create(ServiceWorkerCacheNative.prototype);
+    Object.defineProperty(cache, "__glassServiceWorkerCache", { configurable: false, enumerable: false, value: true });
+    Object.defineProperty(cache, "name", { configurable: false, enumerable: true, value: String(name) });
+    return Object.freeze(cache);
+  };
+  ServiceWorkerCacheNative.prototype.match = function(request, options) {
+    const cache = serviceWorkerCacheRequire(this);
+    const key = serviceWorkerCacheRequestKey(request);
+    const settings = options && typeof options === "object" ? options : {};
+    if (settings.ignoreMethod || settings.ignoreVary)
+      return Promise.reject(new TypeError("native Cache match options are unsupported"));
+    return serviceWorkerCacheQueueRequest("serviceWorkerCacheMatch", {
+      cache_name: cache.name,
+      request_url: key.url,
+      request_method: key.method,
+    }).then(payload => payload && payload.found === true
+      ? responseFromWorkerFetch(payload.response)
+      : undefined);
+  };
+  ServiceWorkerCacheNative.prototype.put = function(request, response) {
+    const cache = serviceWorkerCacheRequire(this);
+    const key = serviceWorkerCacheRequestKey(request);
+    if (!response || typeof response.clone !== "function")
+      return Promise.reject(new TypeError("native Cache.put requires a Response"));
+    return serviceWorkerFetchResponse(response).then(payload =>
+      serviceWorkerCacheQueueRequest("serviceWorkerCachePut", {
+        cache_name: cache.name,
+        request_url: key.url,
+        request_method: key.method,
+        response: payload,
+      }).then(() => undefined));
+  };
+  ServiceWorkerCacheNative.prototype.delete = function(request, options) {
+    const cache = serviceWorkerCacheRequire(this);
+    const key = serviceWorkerCacheRequestKey(request);
+    if (options && typeof options === "object" && (options.ignoreMethod || options.ignoreVary))
+      return Promise.reject(new TypeError("native Cache.delete options are unsupported"));
+    return serviceWorkerCacheQueueRequest("serviceWorkerCacheDeleteRequest", {
+      cache_name: cache.name,
+      request_url: key.url,
+      request_method: key.method,
+    }).then(payload => payload && payload.deleted === true);
+  };
+  ServiceWorkerCacheNative.prototype.keys = function(request, options) {
+    const cache = serviceWorkerCacheRequire(this);
+    if (request !== undefined) {
+      try { serviceWorkerCacheRequestKey(request); }
+      catch (error) { return Promise.reject(error); }
+    }
+    if (options && typeof options === "object" && (options.ignoreMethod || options.ignoreVary))
+      return Promise.reject(new TypeError("native Cache.keys options are unsupported"));
+    return serviceWorkerCacheQueueRequest("serviceWorkerCacheEntries", {
+      cache_name: cache.name,
+    }).then(payload => (Array.isArray(payload && payload.entries) ? payload.entries : [])
+      .map(entry => new WorkerRequestNative(String(entry.url || ""), { method: String(entry.method || "GET") })));
+  };
+  ServiceWorkerCacheNative.prototype.add = function(request) {
+    const cache = serviceWorkerCacheRequire(this);
+    return workerFetchNative(request).then(response => {
+      if (!response.ok) throw new TypeError("native Cache.add received a non-success response");
+      return cache.put(request, response);
+    });
+  };
+  ServiceWorkerCacheNative.prototype.addAll = function(requests) {
+    const cache = serviceWorkerCacheRequire(this);
+    if (!requests || typeof requests[Symbol.iterator] !== "function")
+      return Promise.reject(new TypeError("native Cache.addAll requires an iterable"));
+    const values = Array.from(requests);
+    let chain = Promise.resolve();
+    for (const request of values) chain = chain.then(() => cache.add(request));
+    return chain.then(() => undefined);
+  };
+  globalThis.__glassServiceWorkerCacheConstructor = ServiceWorkerCacheNative;
+  globalThis.Cache = ServiceWorkerCacheNative;
+  const CacheStorageNative = typeof globalThis.__glassCacheStorageConstructor === "function"
+    ? globalThis.__glassCacheStorageConstructor
+    : function CacheStorage() { throw new TypeError("Illegal constructor"); };
+  const serviceWorkerCacheStorage = globalThis.caches && typeof globalThis.caches === "object"
+    ? globalThis.caches
+    : Object.create(CacheStorageNative.prototype);
+  serviceWorkerCacheStorage.open = (name) => {
+    const cacheName = String(name);
+    if (!cacheName || cacheName.length > __GLASS_SERVICE_WORKER_CACHE_NAME_LIMIT__)
+      return Promise.reject(new TypeError("native Cache name is invalid"));
+    return serviceWorkerCacheQueueRequest("serviceWorkerCacheOpen", { cache_name: cacheName })
+      .then(() => serviceWorkerMakeCache(cacheName));
+  };
+  serviceWorkerCacheStorage.delete = (name) => {
+    const cacheName = String(name);
+    if (!cacheName || cacheName.length > __GLASS_SERVICE_WORKER_CACHE_NAME_LIMIT__)
+      return Promise.reject(new TypeError("native Cache name is invalid"));
+    return serviceWorkerCacheQueueRequest("serviceWorkerCacheDelete", { cache_name: cacheName })
+      .then(payload => payload && payload.deleted === true);
+  };
+  serviceWorkerCacheStorage.has = (name) => {
+    const cacheName = String(name);
+    if (!cacheName || cacheName.length > __GLASS_SERVICE_WORKER_CACHE_NAME_LIMIT__)
+      return Promise.reject(new TypeError("native Cache name is invalid"));
+    return serviceWorkerCacheQueueRequest("serviceWorkerCacheHas", { cache_name: cacheName })
+      .then(payload => payload && payload.has === true);
+  };
+  serviceWorkerCacheStorage.keys = () => serviceWorkerCacheQueueRequest("serviceWorkerCacheKeys", {})
+    .then(payload => Array.isArray(payload && payload.keys) ? payload.keys.map(String) : []);
+  serviceWorkerCacheStorage.match = (request, options) =>
+    serviceWorkerCacheStorage.keys().then(names => {
+      let chain = Promise.resolve(undefined);
+      for (const name of names) {
+        chain = chain.then(found => found === undefined
+          ? serviceWorkerCacheStorage.open(name).then(cache => cache.match(request, options))
+          : found);
+      }
+      return chain;
+    });
+  globalThis.__glassCacheStorageConstructor = CacheStorageNative;
+  globalThis.caches = serviceWorkerCacheStorage;
   const serviceWorkerDispatchFetch = (payload) => {
     const body = payload && payload.bodyNull === true
       ? undefined
@@ -15019,6 +15649,7 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
     });
     let responded = false;
     let responsePromise = null;
+    const waitUntilPromises = [];
     const event = {
       type: "fetch",
       request,
@@ -15027,7 +15658,7 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
       isReload: false,
       isHistoryNavigation: false,
       preloadResponse: Promise.resolve(undefined),
-      waitUntil() {},
+      waitUntil(value) { waitUntilPromises.push(Promise.resolve(value)); },
       respondWith(value) {
         if (responded) throw new DOMExceptionNative("service worker fetch already responded", "InvalidStateError");
         responded = true;
@@ -15042,9 +15673,10 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
         else if (callback && typeof callback.handleEvent === "function") callback.handleEvent(event);
       }
     } catch (error) { return Promise.reject(error); }
-    if (!responded) return Promise.resolve({ handled: false });
+    const lifetime = value => Promise.all(waitUntilPromises).then(() => value);
+    if (!responded) return lifetime({ handled: false });
     return responsePromise.then(response => serviceWorkerFetchResponse(response))
-      .then(response => ({ handled: true, response }));
+      .then(response => lifetime({ handled: true, response }));
   };
   if (!Object.prototype.hasOwnProperty.call(globalThis, "onfetch")) {
     Object.defineProperty(globalThis, "onfetch", {
@@ -15065,7 +15697,11 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
     unregister: () => Promise.resolve(undefined),
   };
   globalThis.__glassDispatchServiceWorkerLifecycle = (type) => {
-    const event = { type: String(type), waitUntil() {} };
+    const waitUntilPromises = [];
+    const event = {
+      type: String(type),
+      waitUntil(value) { waitUntilPromises.push(Promise.resolve(value)); },
+    };
     const callbacks = listeners.get(String(type)) || [];
     for (const callback of callbacks.slice()) {
       try {
@@ -15073,8 +15709,21 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
         else if (callback && typeof callback.handleEvent === "function") callback.handleEvent(event);
       } catch (_) {}
     }
+    return Promise.all(waitUntilPromises).then(() => null);
+  };
+  globalThis.__glassResolveServiceWorkerCache = (requestId, payload) => {
+    const pending = serviceWorkerCachePendingRequests.get(Number(requestId));
+    if (!pending) return null;
+    serviceWorkerCachePendingRequests.delete(Number(requestId));
+    if (payload && payload.error) {
+      pending.reject(new Error(String(payload.error)));
+      return null;
+    }
+    pending.resolve(payload || null);
     return null;
   };
+  globalThis.__glassServiceWorkerCachePendingRequests = serviceWorkerCachePendingRequests;
+  globalThis.__glassNextServiceWorkerCacheRequestId = nextServiceWorkerCacheRequestId;
 "###;
 
 #[allow(clippy::too_many_arguments)]

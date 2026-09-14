@@ -3779,6 +3779,165 @@ self.addEventListener('fetch', event => {
 }
 
 #[tokio::test]
+async fn native_content_process_persists_service_worker_cache_across_restart() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let profile_path = std::env::temp_dir().join(format!(
+        "glass-native-service-worker-cache-{}.json",
+        std::process::id()
+    ));
+    let lock_path = profile_path.with_extension("lock");
+    let events_path = profile_path.with_extension("events");
+    let readers_path = profile_path.with_extension("readers");
+    for path in [&profile_path, &lock_path, &events_path, &readers_path] {
+        let _ = fs::remove_file(path);
+    }
+
+    let server = tokio::spawn(async move {
+        for (expected_path, content_type, body) in [
+            (
+                "/register",
+                "text/html",
+                "<!doctype html><html><body><script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script><main>cache registration page</main></body></html>",
+            ),
+            (
+                "/sw.js",
+                "application/javascript",
+                r#"self.addEventListener('install', event => {
+  event.waitUntil(caches.open('v1').then(async cache => {
+    await cache.put('/durable', new Response('persisted cache value', {
+      status: 200,
+      headers: { 'Content-Type': 'text/plain', 'X-Cache': 'durable' },
+    }));
+    const keys = await cache.keys();
+    const has = await caches.has('v1');
+    await cache.put('/cache-diagnostics', new Response(JSON.stringify({ keys: keys.length, has }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    return self.skipWaiting();
+  }));
+});
+self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+self.addEventListener('fetch', event => {
+  event.respondWith(caches.match(event.request).then(cached => cached ||
+    new Response('<!doctype html><html><body>controlled cache page</body></html>', { headers: { 'Content-Type': 'text/html' } })));
+});"#,
+            ),
+            (
+                "/reopen",
+                "text/html",
+                "<!doctype html><html><body><script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw-reopen.js', { scope: '/' });</script><main>cache reopen page</main></body></html>",
+            ),
+            (
+                "/sw-reopen.js",
+                "application/javascript",
+                r#"self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
+self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+self.addEventListener('fetch', event => {
+  event.respondWith(caches.match(event.request).then(cached => cached ||
+    new Response('<!doctype html><html><body>controlled cache page</body></html>', { headers: { 'Content-Type': 'text/html' } })));
+});"#,
+            ),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/register"))
+            .with_storage_path(profile_path.clone()),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await registrationPromise.then(reg => [reg.active.state, reg.active.scriptURL])"
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["activated", format!("http://{address}/sw.js")])
+    );
+    engine
+        .navigate_async(format!("http://{address}/controlled"))
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("await fetch('/cache-diagnostics').then(response => response.text())")
+            .await
+            .unwrap(),
+        serde_json::json!(r#"{"keys":1,"has":true}"#)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await fetch('/durable').then(async response => ({ status: response.status, cache: response.headers.get('x-cache'), body: await response.text() }))",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "status": 200,
+            "cache": "durable",
+            "body": "persisted cache value",
+        })
+    );
+    engine.close_async().await.unwrap();
+    let profile = fs::read_to_string(&profile_path).unwrap();
+    assert!(profile.contains("service_worker_caches"));
+
+    let mut reopened = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/reopen"))
+            .with_storage_path(profile_path.clone()),
+    )
+    .unwrap();
+    reopened.initialize_async().await.unwrap();
+    assert_eq!(
+        reopened
+            .evaluate_async(
+                "await registrationPromise.then(reg => [reg.active.state, reg.active.scriptURL])",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["activated", format!("http://{address}/sw-reopen.js")])
+    );
+    reopened
+        .navigate_async(format!("http://{address}/controlled-reopen"))
+        .await
+        .unwrap();
+    assert_eq!(
+        reopened
+            .evaluate_async(
+                "await fetch('/durable').then(async response => ({ status: response.status, cache: response.headers.get('x-cache'), body: await response.text() }))",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "status": 200,
+            "cache": "durable",
+            "body": "persisted cache value",
+        })
+    );
+    reopened.close_async().await.unwrap();
+    server.await.unwrap();
+
+    for path in [&profile_path, &lock_path, &events_path, &readers_path] {
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[tokio::test]
 async fn native_content_process_service_worker_transfers_message_port_round_trip() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

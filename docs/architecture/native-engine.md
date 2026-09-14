@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-339` slice. The native runtime is now the primary
+`native-engine-browser-340` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -122,6 +122,21 @@ removes routes when the shared runtime closes. Durable Cache API state, richer
 transferable values, complete task-source interleaving, and final production
 certification remain separate issue #40 gates. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-339.md`.
+
+Slice 340 makes the Service Worker CacheStorage subset durable. Activated
+workers can open, delete, query, enumerate, match, populate, and remove
+bounded exact-GET cache entries; `add` and `addAll` reuse the native worker
+fetch/response path. Rust owns the origin/cache/entry maps, validates names,
+URLs, headers, response status, body size, and aggregate profile size, and
+atomically persists the cache state beside web storage and IndexedDB. The
+content process reloads this state on startup, so a newly registered worker in
+the same profile can serve an entry written by a previous content-process
+owner. Lifecycle and fetch `waitUntil` promises are settled through the same
+bounded command loop before results are exposed. Unsupported matching options
+remain explicit errors; registration metadata persistence, full request/Vary
+matching, richer transferable values, complete task-source interleaving, and
+final production certification remain separate issue #40 gates. Exact evidence
+is recorded in `docs/plan/tasks/native-engine-browser-340.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

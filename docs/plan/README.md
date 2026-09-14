@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-339` locally. Native is now the default runtime for
+`native-engine-browser-340` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -200,8 +200,16 @@ runtime for matching URL/name/type keys, attach independent connection ports,
 receive `connect` events, and exchange bounded messages through the existing
 owner bridge. Initial inline page creation is drained before the next local
 turn so local and content-process startup have the same observable contract.
-Durable worker caches, richer transferable types, complete task-source
-scheduling, and final production certification remain active issue #40 gates.
+The completed native Service Worker CacheStorage slice is
+[native-engine-browser-340](tasks/native-engine-browser-340.md): activated
+HTTP(S) service workers own bounded exact-GET CacheStorage operations in Rust,
+including `open`, `delete`, `has`, `keys`, `match`, `put`, `delete`, `add`, and
+`addAll`; lifecycle `waitUntil` work is settled before install, activate, and
+fetch results are published; and cache entries are persisted in the existing
+Rust storage profile and reloaded by a new content process. Cache matching
+options, registration persistence, richer transferable values, complete
+task-source scheduling, and final production certification remain active issue
+#40 gates.
 
 The completed native cookie-policy slice is
 [native-engine-browser-334](tasks/native-engine-browser-334.md): cookie

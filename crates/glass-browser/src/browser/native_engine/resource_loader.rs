@@ -67,6 +67,58 @@ pub(crate) enum NativeFetchRedirectMode {
     Manual,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum NativeFetchCacheMode {
+    #[default]
+    Default,
+    NoStore,
+    Reload,
+    NoCache,
+    ForceCache,
+    OnlyIfCached,
+}
+
+impl NativeFetchCacheMode {
+    pub(crate) fn from_option(value: Option<&str>) -> Result<Self, NativeEngineError> {
+        match value.unwrap_or("default") {
+            "default" => Ok(Self::Default),
+            "no-store" => Ok(Self::NoStore),
+            "reload" => Ok(Self::Reload),
+            "no-cache" => Ok(Self::NoCache),
+            "force-cache" => Ok(Self::ForceCache),
+            "only-if-cached" => Ok(Self::OnlyIfCached),
+            _ => Err(NativeEngineError::invalid(
+                "fetch cache mode",
+                "must be default, no-store, reload, no-cache, force-cache, or only-if-cached",
+            )),
+        }
+    }
+
+    fn can_read(self) -> bool {
+        !matches!(self, Self::NoStore | Self::Reload)
+    }
+
+    fn can_store(self) -> bool {
+        !matches!(self, Self::NoStore)
+    }
+
+    fn requires_revalidation(self) -> bool {
+        matches!(self, Self::NoCache)
+    }
+
+    fn is_only_if_cached(self) -> bool {
+        matches!(self, Self::OnlyIfCached)
+    }
+
+    fn request_cache_control(self) -> Option<&'static str> {
+        match self {
+            Self::NoStore => Some("no-store"),
+            Self::Reload | Self::NoCache => Some("no-cache"),
+            Self::Default | Self::ForceCache | Self::OnlyIfCached => None,
+        }
+    }
+}
+
 /// A bounded HTML resource accepted by the native engine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeResource {
@@ -206,6 +258,7 @@ pub(crate) struct NativeFetchRequest<'a> {
     pub(crate) credentials: bool,
     pub(crate) cors_mode: NativeCorsMode,
     pub(crate) redirect_mode: NativeFetchRedirectMode,
+    pub(crate) cache_mode: NativeFetchCacheMode,
     pub(crate) timeout: Option<Duration>,
     pub(crate) max_response_bytes: Option<usize>,
 }
@@ -236,7 +289,8 @@ pub struct NativeFetchResponse {
 
 pub(crate) struct NativeFetchResponseStream {
     pub(crate) response: NativeFetchResponse,
-    pub(crate) body: reqwest::Response,
+    pub(crate) body: Option<reqwest::Response>,
+    pub(crate) cached_body: Option<Vec<u8>>,
     pub(crate) max_response_bytes: usize,
 }
 
@@ -263,6 +317,7 @@ impl fmt::Debug for NativeResourceLoader {
                 &self.network.stylesheet_cache.len(),
             )
             .field("cached_script_count", &self.network.script_cache.len())
+            .field("cached_fetch_count", &self.network.fetch_cache.len())
             .field("cookie_count", &self.network.cookies.len())
             .field(
                 "document_policy_count",
@@ -284,6 +339,7 @@ struct NativeNetworkState {
     image_cache: BTreeMap<String, NativeImageCacheEntry>,
     stylesheet_cache: BTreeMap<String, NativeTextCacheEntry>,
     script_cache: BTreeMap<String, NativeTextCacheEntry>,
+    fetch_cache: BTreeMap<String, NativeFetchCacheEntry>,
     cookies: Vec<NativeCookie>,
     document_policies: BTreeMap<String, NativeCspPolicy>,
     preflight_cache: BTreeMap<String, Instant>,
@@ -304,6 +360,64 @@ struct NativeTextCacheEntry {
     fresh_until: Option<Instant>,
     etag: Option<String>,
     last_modified: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeFetchCacheEntry {
+    response: NativeFetchResponse,
+    fresh_until: Option<Instant>,
+    etag: Option<String>,
+    last_modified: Option<String>,
+}
+
+impl NativeFetchCacheEntry {
+    fn from_response(
+        response: NativeFetchResponse,
+        headers: &HeaderMap,
+        now: Instant,
+    ) -> Option<Self> {
+        if response.opaque || response.opaque_redirect {
+            return None;
+        }
+        if !headers.contains_key(reqwest::header::CACHE_CONTROL)
+            && !headers.contains_key(reqwest::header::PRAGMA)
+            && !headers.contains_key(reqwest::header::ETAG)
+            && !headers.contains_key(reqwest::header::LAST_MODIFIED)
+        {
+            return None;
+        }
+        if !document_cache_storage_allowed(headers) {
+            return None;
+        }
+        Some(Self {
+            response,
+            fresh_until: document_cache_fresh_until(headers, now),
+            etag: response_header_text(headers, reqwest::header::ETAG),
+            last_modified: response_header_text(headers, reqwest::header::LAST_MODIFIED),
+        })
+    }
+
+    fn is_fresh(&self, now: Instant) -> bool {
+        self.fresh_until.is_none_or(|deadline| now < deadline)
+    }
+
+    fn refresh_from_not_modified(mut self, headers: &HeaderMap, now: Instant) -> Option<Self> {
+        if !document_cache_storage_allowed(headers) {
+            return None;
+        }
+        if cache_control_requires_revalidation(headers) {
+            self.fresh_until = Some(now);
+        } else if let Some(fresh_until) = document_cache_fresh_until(headers, now) {
+            self.fresh_until = Some(fresh_until);
+        }
+        if let Some(etag) = response_header_text(headers, reqwest::header::ETAG) {
+            self.etag = Some(etag);
+        }
+        if let Some(last_modified) = response_header_text(headers, reqwest::header::LAST_MODIFIED) {
+            self.last_modified = Some(last_modified);
+        }
+        Some(self)
+    }
 }
 
 impl NativeTextCacheEntry {
@@ -1565,6 +1679,7 @@ impl NativeResourceLoader {
             credentials,
             cors_mode: NativeCorsMode::Cors,
             redirect_mode: NativeFetchRedirectMode::Follow,
+            cache_mode: NativeFetchCacheMode::Default,
             timeout: None,
             max_response_bytes: None,
         })
@@ -1590,6 +1705,7 @@ impl NativeResourceLoader {
             credentials: true,
             cors_mode: NativeCorsMode::Navigation,
             redirect_mode: NativeFetchRedirectMode::Follow,
+            cache_mode: NativeFetchCacheMode::NoStore,
             timeout: None,
             max_response_bytes: Some(MAX_NATIVE_DOWNLOAD_BYTES),
         })
@@ -1601,22 +1717,38 @@ impl NativeResourceLoader {
         request: NativeFetchRequest<'_>,
     ) -> Result<NativeFetchResponse, NativeEngineError> {
         let opened = self.open_fetch_response_stream_async(request).await?;
-        let mut stream = opened.body.bytes_stream();
-        let mut body = Vec::new();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|error| network_error("fetch response body", error))?;
-            self.after_response_chunk(chunk.len()).await;
-            let next_len = body.len().saturating_add(chunk.len());
-            if next_len > opened.max_response_bytes {
-                return Err(NativeEngineError::limit(
-                    "fetch response",
-                    opened.max_response_bytes,
-                    next_len,
-                ));
+        let NativeFetchResponseStream {
+            mut response,
+            body: response_body,
+            cached_body,
+            max_response_bytes,
+        } = opened;
+        let body = if let Some(body) = cached_body {
+            body
+        } else {
+            let Some(body) = response_body else {
+                return Err(NativeEngineError::Worker {
+                    operation: "fetch response body".into(),
+                    reason: "native fetch response had no readable body".into(),
+                });
+            };
+            let mut stream = body.bytes_stream();
+            let mut body = Vec::new();
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk.map_err(|error| network_error("fetch response body", error))?;
+                self.after_response_chunk(chunk.len()).await;
+                let next_len = body.len().saturating_add(chunk.len());
+                if next_len > max_response_bytes {
+                    return Err(NativeEngineError::limit(
+                        "fetch response",
+                        max_response_bytes,
+                        next_len,
+                    ));
+                }
+                body.extend_from_slice(&chunk);
             }
-            body.extend_from_slice(&chunk);
-        }
-        let mut response = opened.response;
+            body
+        };
         response.body = body;
         Ok(response)
     }
@@ -1635,6 +1767,7 @@ impl NativeResourceLoader {
             credentials,
             cors_mode,
             redirect_mode,
+            cache_mode,
             timeout,
             max_response_bytes,
         } = request;
@@ -1726,6 +1859,73 @@ impl NativeResourceLoader {
                 reason: "document CSP blocked the connect target".into(),
             });
         }
+        if cache_mode.is_only_if_cached() && cors_mode != NativeCorsMode::SameOrigin {
+            return Err(NativeEngineError::Network {
+                operation: "fetch cache mode".into(),
+                reason: "only-if-cached requires same-origin fetch mode".into(),
+            });
+        }
+        let cacheable_request = matches!(
+            method,
+            NativeNavigationMethod::Get | NativeNavigationMethod::Head
+        ) && body.is_none()
+            && redirect_mode == NativeFetchRedirectMode::Follow
+            && cors_mode != NativeCorsMode::Navigation;
+        let request_cookie = if cacheable_request && credentials {
+            self.network
+                .cookie_header_for_request(&target_url, Some(&document_url), false, method)
+        } else {
+            None
+        };
+        let fetch_cache_key = cacheable_request.then(|| {
+            fetch_response_cache_key(
+                &document_url,
+                &target_url,
+                method,
+                &current_headers,
+                content_type.as_deref(),
+                credentials,
+                cors_mode,
+                request_cookie.as_deref(),
+            )
+        });
+        let cached_fetch = fetch_cache_key
+            .as_ref()
+            .and_then(|key| self.network.fetch_cache.get(key))
+            .cloned()
+            .filter(|cached| cached.response.body.len() <= max_response_bytes);
+        let cache_hit = cached_fetch.clone().filter(|cached| {
+            cache_mode.can_read()
+                && !cache_mode.requires_revalidation()
+                && (matches!(
+                    cache_mode,
+                    NativeFetchCacheMode::ForceCache | NativeFetchCacheMode::OnlyIfCached
+                ) || cached.is_fresh(Instant::now()))
+        });
+        if let Some(cached) = cache_hit {
+            let mut response = cached.response;
+            let body = std::mem::take(&mut response.body);
+            return Ok(NativeFetchResponseStream {
+                response,
+                body: None,
+                cached_body: Some(body),
+                max_response_bytes,
+            });
+        }
+        if cache_mode.is_only_if_cached() {
+            return Err(NativeEngineError::Network {
+                operation: "fetch cache mode".into(),
+                reason: "no usable response is available in the native cache".into(),
+            });
+        }
+        let stale_cached_fetch = cached_fetch.filter(|cached| {
+            cache_mode.can_read()
+                && !matches!(
+                    cache_mode,
+                    NativeFetchCacheMode::ForceCache | NativeFetchCacheMode::OnlyIfCached
+                )
+                && (cache_mode.requires_revalidation() || !cached.is_fresh(Instant::now()))
+        });
 
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -1795,8 +1995,24 @@ impl NativeResourceLoader {
             if let Some(content_type) = current_content_type.as_deref() {
                 request = request.header(reqwest::header::CONTENT_TYPE, content_type);
             }
+            if redirects == 0
+                && let Some(cache_control) = cache_mode.request_cache_control()
+                && !current_headers.contains_key("cache-control")
+            {
+                request = request.header(reqwest::header::CACHE_CONTROL, cache_control);
+            }
             for (name, value) in &current_headers {
                 request = request.header(name, value);
+            }
+            if redirects == 0
+                && let Some(cached) = stale_cached_fetch.as_ref()
+            {
+                if let Some(etag) = cached.etag.as_deref() {
+                    request = request.header(reqwest::header::IF_NONE_MATCH, etag);
+                }
+                if let Some(last_modified) = cached.last_modified.as_deref() {
+                    request = request.header(reqwest::header::IF_MODIFIED_SINCE, last_modified);
+                }
             }
             if let Some(origin) = cors_origin_header(&document_url, &current_url, cors_mode) {
                 request = request.header(reqwest::header::ORIGIN, origin);
@@ -1854,7 +2070,8 @@ impl NativeResourceLoader {
                         opaque: false,
                         opaque_redirect: true,
                     },
-                    body: response,
+                    body: Some(response),
+                    cached_body: None,
                     max_response_bytes,
                 });
             }
@@ -1920,6 +2137,46 @@ impl NativeResourceLoader {
         let final_url = current_url;
         let status = response.status().as_u16();
         let response_headers = response.headers().clone();
+        let has_set_cookie = !pending_cookies.is_empty();
+        if response.status() == reqwest::StatusCode::NOT_MODIFIED {
+            let Some(cached) = stale_cached_fetch else {
+                return Err(NativeEngineError::Network {
+                    operation: "fetch cache revalidation".into(),
+                    reason: "server returned HTTP 304 without a stale cached response".into(),
+                });
+            };
+            if redirects != 0 {
+                return Err(NativeEngineError::Network {
+                    operation: "fetch cache revalidation".into(),
+                    reason: "HTTP 304 was received after a fetch redirect".into(),
+                });
+            }
+            for (cookie_url, cookie) in pending_cookies {
+                self.cookie_changes
+                    .extend(self.network.store_cookie(&cookie_url, &cookie));
+            }
+            let mut cached_response = cached.response.clone();
+            let cached_body = std::mem::take(&mut cached_response.body);
+            if has_set_cookie {
+                if let Some(key) = fetch_cache_key.as_deref() {
+                    self.network.remove_fetch_cache(key);
+                }
+            } else if let Some(entry) =
+                cached.refresh_from_not_modified(&response_headers, Instant::now())
+            {
+                if let Some(key) = fetch_cache_key.as_deref() {
+                    self.network.store_fetch_cache(key.to_owned(), entry);
+                }
+            } else if let Some(key) = fetch_cache_key.as_deref() {
+                self.network.remove_fetch_cache(key);
+            }
+            return Ok(NativeFetchResponseStream {
+                response: cached_response,
+                body: None,
+                cached_body: Some(cached_body),
+                max_response_bytes,
+            });
+        }
         if cors_mode == NativeCorsMode::Cors
             && !cors_response_allowed(&response_headers, &document_url, &final_url, credentials)
         {
@@ -1960,18 +2217,67 @@ impl NativeResourceLoader {
                 credentials,
             )?
         };
+        let mut fetch_response = NativeFetchResponse {
+            url: without_fragment(final_url.as_str()).to_owned(),
+            status,
+            content_type,
+            headers,
+            body: Vec::new(),
+            redirected,
+            opaque,
+            opaque_redirect: false,
+        };
+        let should_cache_response = fetch_cache_key.is_some()
+            && cache_mode.can_store()
+            && !has_set_cookie
+            && !opaque
+            && status != reqwest::StatusCode::PARTIAL_CONTENT.as_u16()
+            && response_cache_metadata_present(&response_headers);
+        if should_cache_response {
+            let mut stream = response.bytes_stream();
+            let mut body = Vec::new();
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk.map_err(|error| network_error("fetch response body", error))?;
+                self.after_response_chunk(chunk.len()).await;
+                let next_len = body.len().saturating_add(chunk.len());
+                if next_len > max_response_bytes {
+                    return Err(NativeEngineError::limit(
+                        "fetch response",
+                        max_response_bytes,
+                        next_len,
+                    ));
+                }
+                body.extend_from_slice(&chunk);
+            }
+            fetch_response.body = body.clone();
+            if let Some(entry) = NativeFetchCacheEntry::from_response(
+                fetch_response.clone(),
+                &response_headers,
+                Instant::now(),
+            ) {
+                if let Some(key) = fetch_cache_key.as_deref() {
+                    self.network.store_fetch_cache(key.to_owned(), entry);
+                }
+            } else if let Some(key) = fetch_cache_key.as_deref() {
+                self.network.remove_fetch_cache(key);
+            }
+            fetch_response.body.clear();
+            return Ok(NativeFetchResponseStream {
+                response: fetch_response,
+                body: None,
+                cached_body: Some(body),
+                max_response_bytes,
+            });
+        }
+        if cache_mode.can_store()
+            && let Some(key) = fetch_cache_key.as_deref()
+        {
+            self.network.remove_fetch_cache(key);
+        }
         Ok(NativeFetchResponseStream {
-            response: NativeFetchResponse {
-                url: without_fragment(final_url.as_str()).to_owned(),
-                status,
-                content_type,
-                headers,
-                body: Vec::new(),
-                redirected,
-                opaque,
-                opaque_redirect: false,
-            },
-            body: response,
+            response: fetch_response,
+            body: Some(response),
+            cached_body: None,
             max_response_bytes,
         })
     }
@@ -3385,6 +3691,59 @@ fn cache_key(url: &Url) -> String {
     key.to_string()
 }
 
+fn fetch_response_cache_key(
+    document_url: &Url,
+    target_url: &Url,
+    method: NativeNavigationMethod,
+    request_headers: &BTreeMap<String, String>,
+    content_type: Option<&str>,
+    credentials: bool,
+    cors_mode: NativeCorsMode,
+    request_cookie: Option<&str>,
+) -> String {
+    let mut key = String::new();
+    let cors_mode_key = if document_url.origin() == target_url.origin() {
+        "same-origin"
+    } else {
+        match cors_mode {
+            NativeCorsMode::NoCors => "no-cors",
+            NativeCorsMode::Cors => "cors",
+            NativeCorsMode::SameOrigin => "same-origin",
+            NativeCorsMode::Navigation => "navigation",
+        }
+    };
+    for value in [
+        document_url.origin().ascii_serialization(),
+        cache_key(target_url),
+        method.as_str().to_owned(),
+        if credentials { "include" } else { "omit" }.to_owned(),
+        cors_mode_key.to_owned(),
+        content_type.unwrap_or_default().to_owned(),
+        request_cookie.unwrap_or_default().to_owned(),
+    ] {
+        append_fetch_cache_key_part(&mut key, &value);
+    }
+    for (name, value) in request_headers {
+        append_fetch_cache_key_part(&mut key, name);
+        append_fetch_cache_key_part(&mut key, value);
+    }
+    key
+}
+
+fn append_fetch_cache_key_part(key: &mut String, value: &str) {
+    key.push_str(&value.len().to_string());
+    key.push(':');
+    key.push_str(value);
+    key.push('|');
+}
+
+fn response_cache_metadata_present(headers: &HeaderMap) -> bool {
+    headers.contains_key(reqwest::header::CACHE_CONTROL)
+        || headers.contains_key(reqwest::header::PRAGMA)
+        || headers.contains_key(reqwest::header::ETAG)
+        || headers.contains_key(reqwest::header::LAST_MODIFIED)
+}
+
 fn with_original_fragment(
     mut resource: NativeResource,
     original_url: &str,
@@ -3834,6 +4193,20 @@ impl NativeNetworkState {
 
     fn remove_script_cache(&mut self, key: &str) {
         self.script_cache.remove(key);
+    }
+
+    fn store_fetch_cache(&mut self, key: String, entry: NativeFetchCacheEntry) {
+        if !self.fetch_cache.contains_key(&key)
+            && self.fetch_cache.len() >= MAX_NATIVE_CACHE_ENTRIES
+            && let Some(oldest) = self.fetch_cache.keys().next().cloned()
+        {
+            self.fetch_cache.remove(&oldest);
+        }
+        self.fetch_cache.insert(key, entry);
+    }
+
+    fn remove_fetch_cache(&mut self, key: &str) {
+        self.fetch_cache.remove(key);
     }
 
     fn store_document_policy(&mut self, key: String, policy: NativeCspPolicy) {

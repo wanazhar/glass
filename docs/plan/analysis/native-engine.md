@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-348`, with native-first product
+expansion checkpoint is `native-engine-browser-349`, with native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
 CacheStorage request matching, Service Worker client enumeration, and
@@ -15,7 +15,13 @@ images with conditional reuse and safe eviction. Slice 348 extends it to
 stylesheet and page-script text resources while keeping worker-source loading
 uncached. Fetch/XHR and Service-Worker CacheStorage freshness remain separate
 promotion gates. The completed 234
-slice carries bounded root-scroll sticky positioning through shared flow,
+slice 349 extends the same bounded cache owner to page Fetch, XHR, and worker
+Fetch responses: explicit cache metadata, credential/cookie/visibility-aware
+keys, `Request.cache` modes, validator-driven `304` reuse, and no-store
+isolation are covered while responses without explicit metadata remain
+incremental streams. Service-Worker CacheStorage freshness remains a separate
+promotion gate. The completed 234 slice carries bounded root-scroll sticky
+positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
 slice carries bounded viewport-anchored fixed positioning through the same
 projection path. The completed 205
@@ -5616,7 +5622,9 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-348.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-349.md` is the latest completed browser
+task;
+`docs/plan/tasks/native-engine-browser-348.md` is the preceding completed browser
 task;
 `docs/plan/tasks/native-engine-browser-347.md` is the preceding completed browser
 task;
@@ -5691,7 +5699,8 @@ task;
 `docs/plan/tasks/native-engine-198.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-197.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-196.md` is the preceding completed task;
-The current browser-slice evidence chain is `native-engine-browser-348`,
+The current browser-slice evidence chain is `native-engine-browser-349`,
+`native-engine-browser-348`,
 `native-engine-browser-347`,
 `native-engine-browser-346`,
 `native-engine-browser-345`,

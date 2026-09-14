@@ -6151,7 +6151,7 @@ async fn native_nested_frame_script_projection_preserves_window_chain() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
-        for _ in 0..4 {
+        for _ in 0..5 {
             let (mut stream, _) = listener.accept().await.unwrap();
             let request = read_http_request(&mut stream).await;
             let path = request.split_whitespace().nth(1).unwrap();
@@ -12473,7 +12473,7 @@ async fn native_content_process_revalidates_stylesheet_and_script_subresources()
     let server = tokio::spawn(async move {
         let mut stylesheet_requests = 0;
         let mut script_requests = 0;
-        for _ in 0..5 {
+        for _ in 0..4 {
             let (mut stream, _) = listener.accept().await.unwrap();
             let request = read_http_request(&mut stream).await;
             let path = request.split_whitespace().nth(1).unwrap_or_default();
@@ -12555,6 +12555,109 @@ async fn native_content_process_revalidates_stylesheet_and_script_subresources()
             .await
             .unwrap(),
         serde_json::json!({ "runs": 2, "color": "rgb(255, 0, 0)" })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_revalidates_fetch_and_xhr_responses() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let mut data_requests = 0;
+        for _ in 0..5 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap_or_default();
+            match path {
+                "/page" => {
+                    let body = "<title>Fetch cache</title><p>response cache</p>";
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                }
+                "/data" => {
+                    data_requests += 1;
+                    match data_requests {
+                        1 => {
+                            let body = "version-one";
+                            let response = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nCache-Control: max-age=600\r\nETag: \"data-v1\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                                body.len()
+                            );
+                            stream.write_all(response.as_bytes()).await.unwrap();
+                        }
+                        2 => {
+                            assert!(request.lines().any(|line| {
+                                line.eq_ignore_ascii_case("cache-control: no-cache")
+                            }));
+                            let body = "version-two";
+                            let response = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nCache-Control: max-age=600\r\nETag: \"data-v2\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                                body.len()
+                            );
+                            stream.write_all(response.as_bytes()).await.unwrap();
+                        }
+                        3 => {
+                            assert!(request.lines().any(|line| {
+                                line.eq_ignore_ascii_case("cache-control: no-cache")
+                            }));
+                            assert!(request.lines().any(|line| {
+                                line.eq_ignore_ascii_case("if-none-match: \"data-v2\"")
+                            }));
+                            stream
+                                .write_all(
+                                    b"HTTP/1.1 304 Not Modified\r\nCache-Control: max-age=600\r\nETag: \"data-v2\"\r\nConnection: close\r\n\r\n",
+                                )
+                                .await
+                                .unwrap();
+                        }
+                        4 => {
+                            assert!(request.lines().any(|line| {
+                                line.eq_ignore_ascii_case("cache-control: no-store")
+                            }));
+                            let body = "network-only";
+                            let response = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nCache-Control: no-store\r\nETag: \"data-v3\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                                body.len()
+                            );
+                            stream.write_all(response.as_bytes()).await.unwrap();
+                        }
+                        other => panic!("unexpected data request {other}"),
+                    }
+                }
+                other => panic!("unexpected request path: {other}"),
+            }
+        }
+        assert_eq!(data_requests, 4);
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await (async () => { const first = await fetch('/data').then(response => response.text()); const fresh = await fetch('/data').then(response => response.text()); const reloaded = await fetch('/data', { cache: 'reload' }).then(response => response.text()); const revalidated = await fetch('/data', { cache: 'no-cache' }).then(response => response.text()); const networkOnly = await fetch('/data', { cache: 'no-store' }).then(response => response.text()); const forced = await fetch('/data', { cache: 'force-cache' }).then(response => response.text()); const only = await fetch(new Request('/data', { mode: 'same-origin', cache: 'only-if-cached' })).then(response => response.text()); const xhr = await new Promise((resolve, reject) => { const request = new XMLHttpRequest(); request.onload = () => resolve(request.responseText); request.onerror = reject; request.open('GET', '/data'); request.withCredentials = true; request.send(); }); return [first, fresh, reloaded, revalidated, networkOnly, forced, only, xhr]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([
+            "version-one",
+            "version-one",
+            "version-two",
+            "version-two",
+            "network-only",
+            "version-two",
+            "version-two",
+            "version-two"
+        ])
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

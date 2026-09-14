@@ -22,9 +22,9 @@ use super::javascript::{
 };
 use super::origin::NativeOrigin;
 use super::resource_loader::{
-    NativeCorsMode, NativeFetchRedirectMode, NativeFetchRequest, NativeFetchResponse,
-    NativeNavigationMethod, NativeNavigationRequest, NativeRequestBody, NativeResource,
-    NativeResourceLoader,
+    NativeCorsMode, NativeFetchCacheMode, NativeFetchRedirectMode, NativeFetchRequest,
+    NativeFetchResponse, NativeNavigationMethod, NativeNavigationRequest, NativeRequestBody,
+    NativeResource, NativeResourceLoader,
 };
 use base64::Engine as _;
 use serde_json::{Value, json};
@@ -1526,6 +1526,7 @@ async fn settle_service_worker_fetch(
             content_type,
             mode,
             redirect,
+            cache,
             timeout_ms,
         } = command
         else {
@@ -1566,6 +1567,7 @@ async fn settle_service_worker_fetch(
         let method = NativeNavigationMethod::from_fetch_method(&method)?;
         let cors_mode = parse_cors_mode(mode.as_deref().unwrap_or("same-origin"))?;
         let redirect_mode = parse_redirect_mode(redirect.as_deref().unwrap_or("follow"))?;
+        let cache_mode = NativeFetchCacheMode::from_option(cache.as_deref())?;
         let response = loader
             .fetch_request_with_headers_async(NativeFetchRequest {
                 document_url: &worker.script_url,
@@ -1577,6 +1579,7 @@ async fn settle_service_worker_fetch(
                 credentials,
                 cors_mode,
                 redirect_mode,
+                cache_mode,
                 timeout: timeout_ms.map(|value| Duration::from_millis(u64::from(value))),
                 max_response_bytes: None,
             })

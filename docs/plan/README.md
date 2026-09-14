@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-348` locally. Native is now the default runtime for
+`native-engine-browser-349` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -260,7 +260,7 @@ document navigation now honors bounded `Cache-Control` freshness, retains
 `ETag`/`Last-Modified` validators for stale entries, reuses validated `304`
 responses, and evicts entries when `no-store`, cookie variance, or response
 cookies make reuse unsafe. The pre-existing no-header session-cache behavior
-is preserved; complete stylesheet/script/Fetch cache freshness, richer
+is preserved; complete Service-Worker CacheStorage freshness, richer
 transferable values, complete task-source scheduling, and final production
 certification remain active issue #40 gates.
 
@@ -269,7 +269,7 @@ The completed native image-cache freshness slice is
 external images now honor bounded `Cache-Control` freshness, retain
 `ETag`/`Last-Modified` validators for stale entries, reuse validated `304`
 responses, and evict unsafe `no-store`/variance/cookie responses. Complete
-Fetch/XHR and Service-Worker CacheStorage freshness, richer
+Service-Worker CacheStorage freshness, richer
 transferable values, complete task-source scheduling, and final production
 certification remain active issue #40 gates.
 
@@ -278,9 +278,20 @@ The completed native stylesheet/page-script cache slice is
 and classic page-script responses now use separate bounded freshness caches,
 retain validators for stale entries, reuse validated `304` responses, and
 evict unsafe entries. Worker source loading bypasses this page cache so worker
-updates remain observable. Fetch/XHR and Service-Worker CacheStorage
-freshness, richer transferable values, complete task-source scheduling, and
-final production certification remain active issue #40 gates.
+updates remain observable. Service-Worker CacheStorage freshness, richer
+transferable values, complete task-source scheduling, and final production
+certification remain active issue #40 gates.
+
+The completed native Fetch/XHR cache slice is
+[native-engine-browser-349](tasks/native-engine-browser-349.md): page Fetch,
+XHR, and worker Fetch now share a bounded HTTP response cache partitioned by
+owner origin, request identity, credentials, visibility, and cookie state.
+`Request.cache` modes cover fresh reuse, forced reload, validator-driven
+no-cache/304 reuse, force-cache, only-if-cached, and no-store isolation.
+Responses without explicit cache metadata remain incremental streams;
+Service-Worker CacheStorage freshness, richer transferables, complete
+task-source scheduling, and final production certification remain active issue
+#40 gates.
 
 The completed native cookie-policy slice is
 [native-engine-browser-334](tasks/native-engine-browser-334.md): cookie

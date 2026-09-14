@@ -21,8 +21,9 @@ use super::interaction::{
 use super::layout::NativePoint;
 use super::origin::NativeOrigin;
 use super::resource_loader::{
-    NativeCorsMode, NativeFetchRedirectMode, NativeFetchRequest, NativeFetchResponse,
-    NativeNavigationMethod, NativeRequestBody, NativeResourceLoader, NativeScriptResource,
+    NativeCorsMode, NativeFetchCacheMode, NativeFetchRedirectMode, NativeFetchRequest,
+    NativeFetchResponse, NativeNavigationMethod, NativeRequestBody, NativeResourceLoader,
+    NativeScriptResource,
 };
 use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit as BlockKeyInit};
 use aes::{Aes128, Aes192, Aes256};
@@ -229,6 +230,8 @@ pub(crate) enum NativeScriptCommand {
         mode: Option<String>,
         #[serde(default)]
         redirect: Option<String>,
+        #[serde(default)]
+        cache: Option<String>,
         #[serde(default)]
         timeout_ms: Option<u32>,
     },
@@ -1806,6 +1809,7 @@ impl NativeWorkerRegistry {
             content_type,
             mode,
             redirect,
+            cache,
             timeout_ms,
         } = command
         else {
@@ -1855,6 +1859,7 @@ impl NativeWorkerRegistry {
                 ));
             }
         };
+        let cache_mode = NativeFetchCacheMode::from_option(cache.as_deref())?;
         let body = match body_base64 {
             Some(encoded) => Some(NativeRequestBody::Bytes(
                 base64::engine::general_purpose::STANDARD
@@ -1885,6 +1890,7 @@ impl NativeWorkerRegistry {
                 credentials,
                 cors_mode,
                 redirect_mode,
+                cache_mode,
                 timeout: timeout_ms.map(|value| Duration::from_millis(u64::from(value))),
                 max_response_bytes: None,
             })
@@ -14034,6 +14040,11 @@ fn worker_bootstrap(
     const redirect = settings.redirect === undefined ? "follow" : String(settings.redirect).toLowerCase();
     if (!["follow", "error", "manual"].includes(redirect))
       throw new TypeError("native Worker Request redirect mode is unsupported");
+    const cache = settings.cache === undefined ? "default" : String(settings.cache).toLowerCase();
+    if (!["default", "no-store", "reload", "no-cache", "force-cache", "only-if-cached"].includes(cache))
+      throw new TypeError("native Worker Request cache mode is unsupported");
+    if (cache === "only-if-cached" && mode !== "same-origin")
+      throw new TypeError("native Worker only-if-cached Requests require same-origin mode");
     const credentials = settings.credentials === undefined ? "same-origin" : String(settings.credentials);
     if (!["omit", "same-origin", "include"].includes(credentials))
       throw new TypeError("native Worker Request credentials are unsupported");
@@ -14042,6 +14053,7 @@ fn worker_bootstrap(
     settings.method = method;
     settings.mode = mode;
     settings.redirect = redirect;
+    settings.cache = cache;
     settings.credentials = credentials;
     settings.headers = headers;
     const signal = settings.signal === undefined ? new AbortSignalNative() : settings.signal;
@@ -14059,6 +14071,7 @@ fn worker_bootstrap(
     this.headers = headers;
     this.mode = mode;
     this.redirect = redirect;
+    this.cache = cache;
     this.credentials = credentials;
     this.signal = signal;
     const bodyState = this.__glassWorkerRequestBodyState;
@@ -14287,6 +14300,11 @@ fn worker_bootstrap(
     const redirect = settings.redirect === undefined ? "follow" : String(settings.redirect).toLowerCase();
     if (!["follow", "error", "manual"].includes(redirect))
       return Promise.reject(new TypeError("native Worker fetch redirect mode is unsupported"));
+    const cache = settings.cache === undefined ? "default" : String(settings.cache).toLowerCase();
+    if (!["default", "no-store", "reload", "no-cache", "force-cache", "only-if-cached"].includes(cache))
+      return Promise.reject(new TypeError("native Worker fetch cache mode is unsupported"));
+    if (cache === "only-if-cached" && mode !== "same-origin")
+      return Promise.reject(new TypeError("native Worker only-if-cached fetches require same-origin mode"));
     let requestHeaders;
     try {{ requestHeaders = normalizeWorkerRequestHeaders(settings.headers); }}
     catch (error) {{ return Promise.reject(error); }}
@@ -14331,6 +14349,7 @@ fn worker_bootstrap(
         content_type: contentType,
         mode,
         redirect,
+        cache,
         timeout_ms: timeoutMs,
       }});
     }});
@@ -18670,10 +18689,16 @@ fn document_bootstrap(
     if (!["cors", "no-cors", "same-origin"].includes(mode)) throw new TypeError("native Request mode is unsupported");
     const redirect = settings.redirect === undefined ? "follow" : String(settings.redirect).toLowerCase();
     if (!["follow", "error", "manual"].includes(redirect)) throw new TypeError("native Request redirect mode is unsupported");
+    const cache = settings.cache === undefined ? "default" : String(settings.cache).toLowerCase();
+    if (!["default", "no-store", "reload", "no-cache", "force-cache", "only-if-cached"].includes(cache))
+      throw new TypeError("native Request cache mode is unsupported");
+    if (cache === "only-if-cached" && mode !== "same-origin")
+      throw new TypeError("native only-if-cached Requests require same-origin mode");
     const headers = new HeadersNative(settings.headers);
     settings.method = method;
     settings.mode = mode;
     settings.redirect = redirect;
+    settings.cache = cache;
     settings.headers = headers;
     Object.defineProperty(this, "__glassRequest", {{ value: true }});
     Object.defineProperty(this, "_settings", {{ value: settings }});
@@ -18684,6 +18709,7 @@ fn document_bootstrap(
     this.headers = headers;
     this.mode = mode;
     this.redirect = redirect;
+    this.cache = cache;
     this.credentials = settings.credentials === undefined ? "same-origin" : String(settings.credentials);
     this.signal = settings.signal === undefined ? null : settings.signal;
     const requestBodyState = this.__glassRequestBodyState;
@@ -18845,6 +18871,11 @@ fn document_bootstrap(
     const redirect = settings.redirect === undefined ? "follow" : String(settings.redirect).toLowerCase();
     if (!["follow", "error", "manual"].includes(redirect))
       return Promise.reject(new TypeError("native fetch redirect mode is unsupported"));
+    const cache = settings.cache === undefined ? "default" : String(settings.cache).toLowerCase();
+    if (!["default", "no-store", "reload", "no-cache", "force-cache", "only-if-cached"].includes(cache))
+      return Promise.reject(new TypeError("native fetch cache mode is unsupported"));
+    if (cache === "only-if-cached" && mode !== "same-origin")
+      return Promise.reject(new TypeError("native only-if-cached fetches require same-origin mode"));
     const method = settings.method === undefined ? "GET" : String(settings.method).toUpperCase();
     const blobBody = sourceBodyPayload
       ? null
@@ -18979,7 +19010,7 @@ fn document_bootstrap(
       fetchRequests.set(requestId, pending);
       if (signal) signal.addEventListener("abort", abort);
       if (!fetchRequests.has(requestId)) return;
-      pushCommand({{ kind: "fetch", request_id: requestId, href, credentials, method, headers: requestHeaders, body, body_base64: bodyBase64, content_type: contentType, mode, redirect, timeout_ms: timeoutMs }});
+      pushCommand({{ kind: "fetch", request_id: requestId, href, credentials, method, headers: requestHeaders, body, body_base64: bodyBase64, content_type: contentType, mode, redirect, cache, timeout_ms: timeoutMs }});
     }});
   }};
   const responseHeaders = (rawEntries, contentType) => {{

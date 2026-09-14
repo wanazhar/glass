@@ -127,6 +127,10 @@ impl NativeNavigationMethod {
     const fn is_document_method(self) -> bool {
         matches!(self, Self::Get | Self::Post)
     }
+
+    const fn is_safe_cookie_navigation(self) -> bool {
+        matches!(self, Self::Get | Self::Head)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -287,8 +291,51 @@ struct NativeCookie {
     host_only: bool,
     secure: bool,
     http_only: bool,
+    same_site: Option<String>,
+    priority: Option<String>,
     expires_at: Option<Instant>,
     expires_at_unix_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeCookieSameSite {
+    Strict,
+    Lax,
+    None,
+}
+
+fn normalize_cookie_same_site(value: Option<&str>) -> Result<Option<String>, NativeEngineError> {
+    match value.map(str::trim) {
+        None => Ok(None),
+        Some(value) if value.eq_ignore_ascii_case("strict") => Ok(Some("Strict".into())),
+        Some(value) if value.eq_ignore_ascii_case("lax") => Ok(Some("Lax".into())),
+        Some(value) if value.eq_ignore_ascii_case("none") => Ok(Some("None".into())),
+        Some(_) => Err(NativeEngineError::invalid(
+            "native cookie SameSite",
+            "must be Strict, Lax, or None",
+        )),
+    }
+}
+
+fn normalize_cookie_priority(value: Option<&str>) -> Result<Option<String>, NativeEngineError> {
+    match value.map(str::trim) {
+        None => Ok(None),
+        Some(value) if value.eq_ignore_ascii_case("low") => Ok(Some("Low".into())),
+        Some(value) if value.eq_ignore_ascii_case("medium") => Ok(Some("Medium".into())),
+        Some(value) if value.eq_ignore_ascii_case("high") => Ok(Some("High".into())),
+        Some(_) => Err(NativeEngineError::invalid(
+            "native cookie priority",
+            "must be Low, Medium, or High",
+        )),
+    }
+}
+
+fn cookie_same_site(value: Option<&str>) -> NativeCookieSameSite {
+    match value {
+        Some(value) if value.eq_ignore_ascii_case("strict") => NativeCookieSameSite::Strict,
+        Some(value) if value.eq_ignore_ascii_case("none") => NativeCookieSameSite::None,
+        _ => NativeCookieSameSite::Lax,
+    }
 }
 
 impl NativeCookie {
@@ -308,6 +355,18 @@ impl NativeCookie {
                 "contains an invalid cookie entry",
             ));
         }
+        let same_site = normalize_cookie_same_site(profile.same_site.as_deref())?;
+        if same_site
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case("none"))
+            && !profile.secure
+        {
+            return Err(NativeEngineError::invalid(
+                "native cookie SameSite",
+                "SameSite=None cookies must be Secure",
+            ));
+        }
+        let priority = normalize_cookie_priority(profile.priority.as_deref())?;
         let expires_at = profile.expires_at_unix_seconds.map(|expires_at| {
             Instant::now() + Duration::from_secs(expires_at.saturating_sub(unix_time_seconds()))
         });
@@ -325,6 +384,8 @@ impl NativeCookie {
             host_only: profile.host_only,
             secure: profile.secure,
             http_only: profile.http_only,
+            same_site,
+            priority,
             expires_at,
             expires_at_unix_seconds: profile.expires_at_unix_seconds,
         }))
@@ -345,6 +406,8 @@ impl NativeCookie {
             host_only: self.host_only,
             secure: self.secure,
             http_only: self.http_only,
+            same_site: self.same_site.clone(),
+            priority: self.priority.clone(),
             expires_at_unix_seconds: self.expires_at_unix_seconds,
         })
     }
@@ -587,7 +650,12 @@ impl NativeResourceLoader {
             })?;
         Ok(NativeWebSocketTarget {
             url: target_url,
-            cookie: self.network.cookie_header(&cookie_target),
+            cookie: self.network.cookie_header_for_request(
+                &cookie_target,
+                Some(&document_url),
+                false,
+                NativeNavigationMethod::Get,
+            ),
         })
     }
 
@@ -676,7 +744,12 @@ impl NativeResourceLoader {
             }
             let same_origin = current_url.origin() == document_url.origin();
             if (with_credentials || same_origin)
-                && let Some(cookie) = self.network.cookie_header(&current_url)
+                && let Some(cookie) = self.network.cookie_header_for_request(
+                    &current_url,
+                    Some(&document_url),
+                    false,
+                    NativeNavigationMethod::Get,
+                )
             {
                 request = request.header(reqwest::header::COOKIE, cookie);
             }
@@ -1062,6 +1135,9 @@ impl NativeResourceLoader {
         })?;
         reject_credentials(&parsed)?;
         let referrer = normalize_referrer(referrer, &parsed)?;
+        let navigation_initiator = referrer
+            .as_deref()
+            .and_then(|value| Url::parse(without_fragment(value)).ok());
         if request_method == NativeNavigationMethod::Get
             && let Some(cached) = self.network.cache.get(&cache_key(&parsed)).cloned()
         {
@@ -1099,7 +1175,12 @@ impl NativeResourceLoader {
             if let Some(referrer) = request_referrer.as_deref() {
                 request = request.header(reqwest::header::REFERER, referrer);
             }
-            if let Some(cookie) = self.network.cookie_header(&current_url) {
+            if let Some(cookie) = self.network.cookie_header_for_request(
+                &current_url,
+                navigation_initiator.as_ref(),
+                true,
+                current_method,
+            ) {
                 request = request.header(reqwest::header::COOKIE, cookie);
             }
             self.before_request(current_body.as_ref().map_or(0, NativeRequestBody::len))
@@ -1515,7 +1596,14 @@ impl NativeResourceLoader {
             if let Some(referrer) = request_referrer.as_deref() {
                 request = request.header(reqwest::header::REFERER, referrer);
             }
-            if credentials && let Some(cookie) = self.network.cookie_header(&current_url) {
+            if credentials
+                && let Some(cookie) = self.network.cookie_header_for_request(
+                    &current_url,
+                    Some(&document_url),
+                    false,
+                    current_method,
+                )
+            {
                 request = request.header(reqwest::header::COOKIE, cookie);
             }
             self.before_request(current_body.as_ref().map_or(0, NativeRequestBody::len))
@@ -1809,7 +1897,12 @@ impl NativeResourceLoader {
             if let Some(referrer) = request_referrer.as_deref() {
                 request = request.header(reqwest::header::REFERER, referrer);
             }
-            if let Some(cookie) = self.network.cookie_header(&current_url) {
+            if let Some(cookie) = self.network.cookie_header_for_request(
+                &current_url,
+                Some(&document_url),
+                false,
+                NativeNavigationMethod::Get,
+            ) {
                 request = request.header(reqwest::header::COOKIE, cookie);
             }
             self.before_request(0).await?;
@@ -1970,7 +2063,12 @@ impl NativeResourceLoader {
             if let Some(referrer) = request_referrer.as_deref() {
                 request = request.header(reqwest::header::REFERER, referrer);
             }
-            if let Some(cookie) = self.network.cookie_header(&current_url) {
+            if let Some(cookie) = self.network.cookie_header_for_request(
+                &current_url,
+                Some(&document_url),
+                false,
+                NativeNavigationMethod::Get,
+            ) {
                 request = request.header(reqwest::header::COOKIE, cookie);
             }
             self.before_request(0).await?;
@@ -2187,7 +2285,12 @@ impl NativeResourceLoader {
             if let Some(referrer) = request_referrer.as_deref() {
                 request = request.header(reqwest::header::REFERER, referrer);
             }
-            if let Some(cookie) = self.network.cookie_header(&current_url) {
+            if let Some(cookie) = self.network.cookie_header_for_request(
+                &current_url,
+                Some(&document_url),
+                false,
+                NativeNavigationMethod::Get,
+            ) {
                 request = request.header(reqwest::header::COOKIE, cookie);
             }
             self.before_request(0).await?;
@@ -2941,12 +3044,24 @@ impl NativeNetworkState {
             .collect()
     }
 
-    fn cookie_header(&self, url: &Url) -> Option<String> {
-        self.cookie_header_with_visibility(url, true)
+    fn document_cookie_header(&self, url: &Url) -> Option<String> {
+        self.cookie_header_with_visibility(
+            url,
+            false,
+            Some(url),
+            false,
+            NativeNavigationMethod::Get,
+        )
     }
 
-    fn document_cookie_header(&self, url: &Url) -> Option<String> {
-        self.cookie_header_with_visibility(url, false)
+    fn cookie_header_for_request(
+        &self,
+        url: &Url,
+        initiator_url: Option<&Url>,
+        top_level_navigation: bool,
+        method: NativeNavigationMethod,
+    ) -> Option<String> {
+        self.cookie_header_with_visibility(url, true, initiator_url, top_level_navigation, method)
     }
 
     fn matching_cookies(&self, url: &Url, include_http_only: bool) -> Vec<&NativeCookie> {
@@ -2982,8 +3097,20 @@ impl NativeNetworkState {
         matching
     }
 
-    fn cookie_header_with_visibility(&self, url: &Url, include_http_only: bool) -> Option<String> {
-        let matching = self.matching_cookies(url, include_http_only);
+    fn cookie_header_with_visibility(
+        &self,
+        url: &Url,
+        include_http_only: bool,
+        initiator_url: Option<&Url>,
+        top_level_navigation: bool,
+        method: NativeNavigationMethod,
+    ) -> Option<String> {
+        let matching = self
+            .matching_cookies(url, include_http_only)
+            .into_iter()
+            .filter(|cookie| {
+                cookie_same_site_allows(cookie, url, initiator_url, top_level_navigation, method)
+            });
 
         let mut header = String::new();
         for cookie in matching {
@@ -3076,6 +3203,8 @@ impl NativeNetworkState {
         let mut path = default_cookie_path(url);
         let mut secure = false;
         let mut http_only = false;
+        let mut same_site = None;
+        let mut priority = None;
         let mut max_age = None;
         for attribute in attributes.split(';').map(str::trim) {
             if attribute.eq_ignore_ascii_case("secure") {
@@ -3112,12 +3241,31 @@ impl NativeNetworkState {
                 "max-age" => {
                     max_age = attribute_value.trim().parse::<i64>().ok();
                 }
+                "samesite" => {
+                    same_site = Some(attribute_value.trim().to_owned());
+                }
+                "priority" => {
+                    priority = Some(attribute_value.trim().to_owned());
+                }
                 _ => {}
             }
         }
         if secure && !url.scheme().eq_ignore_ascii_case("https") {
             return Vec::new();
         }
+        let Ok(same_site) = normalize_cookie_same_site(same_site.as_deref()) else {
+            return Vec::new();
+        };
+        if same_site
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case("none"))
+            && !secure
+        {
+            return Vec::new();
+        }
+        let Ok(priority) = normalize_cookie_priority(priority.as_deref()) else {
+            return Vec::new();
+        };
 
         let same_cookie = |cookie: &NativeCookie| {
             cookie.name == name && cookie.domain == domain && cookie.path == path
@@ -3150,6 +3298,8 @@ impl NativeNetworkState {
             host_only,
             secure,
             http_only,
+            same_site: same_site.clone(),
+            priority: priority.clone(),
             expires_at_unix_seconds,
         };
         let had_existing = self.cookies.iter().any(same_cookie);
@@ -3172,6 +3322,8 @@ impl NativeNetworkState {
             host_only,
             secure,
             http_only,
+            same_site,
+            priority,
             expires_at,
             expires_at_unix_seconds,
         });
@@ -3213,6 +3365,51 @@ impl NativeNetworkState {
         }
         self.document_policies.insert(key, policy);
     }
+}
+
+fn cookie_same_site_allows(
+    cookie: &NativeCookie,
+    request_url: &Url,
+    initiator_url: Option<&Url>,
+    top_level_navigation: bool,
+    method: NativeNavigationMethod,
+) -> bool {
+    let same_site = initiator_url.is_none_or(|initiator| {
+        schemeful_site(initiator).is_some()
+            && schemeful_site(initiator) == schemeful_site(request_url)
+    });
+    match cookie_same_site(cookie.same_site.as_deref()) {
+        NativeCookieSameSite::None => true,
+        NativeCookieSameSite::Strict => same_site,
+        NativeCookieSameSite::Lax => {
+            same_site || (top_level_navigation && method.is_safe_cookie_navigation())
+        }
+    }
+}
+
+/// Return the schemeful site used by SameSite cookie policy. This keeps the
+/// request policy independent from origin ports while still separating HTTP
+/// and HTTPS and grouping ordinary subdomains under their registrable host.
+fn schemeful_site(url: &Url) -> Option<String> {
+    let host = url.host_str()?.trim_end_matches('.').to_ascii_lowercase();
+    if host.is_empty() {
+        return None;
+    }
+    let site_host =
+        if host == "localhost" || host.parse::<std::net::IpAddr>().is_ok() || host.contains(':') {
+            host
+        } else {
+            let labels = host.split('.').collect::<Vec<_>>();
+            if labels.len() >= 2 {
+                format!("{}.{}", labels[labels.len() - 2], labels[labels.len() - 1])
+            } else {
+                host
+            }
+        };
+    Some(format!(
+        "{}://{site_host}",
+        url.scheme().to_ascii_lowercase()
+    ))
 }
 
 fn valid_cookie_text(value: &str, name: bool) -> bool {
@@ -3531,11 +3728,11 @@ mod tests {
         NativeIndexedDbState, NativeWebStorageState, save_web_storage_profile,
     };
     use super::{
-        MAX_NATIVE_CACHE_ENTRIES, NativeCorsMode, NativeEngineConfig, NativeNetworkState,
-        NativeResource, NativeResourceLoader, NativeSubresourceKind, cacheable_response,
-        content_security_policy, cors_origin_header, cors_preflight_response_allowed,
-        cors_response_allowed, decode_html_body, mixed_content_allowed, referrer_for_navigation,
-        resolve_subresource_url,
+        MAX_NATIVE_CACHE_ENTRIES, NativeCookieProfileEntry, NativeCorsMode, NativeEngineConfig,
+        NativeNavigationMethod, NativeNetworkState, NativeResource, NativeResourceLoader,
+        NativeSubresourceKind, cacheable_response, content_security_policy, cors_origin_header,
+        cors_preflight_response_allowed, cors_response_allowed, decode_html_body,
+        mixed_content_allowed, referrer_for_navigation, resolve_subresource_url,
     };
     use reqwest::header::{
         ACCESS_CONTROL_ALLOW_CREDENTIALS, ACCESS_CONTROL_ALLOW_HEADERS,
@@ -3568,15 +3765,30 @@ mod tests {
         state.store_cookie(&secure_page, "secure=secret; Secure; Path=/");
         state.store_cookie(&page, "hidden=value; HttpOnly; Path=/account");
         assert_eq!(
-            state.cookie_header(&Url::parse("http://example.test/account/home").unwrap()),
+            state.cookie_header_for_request(
+                &Url::parse("http://example.test/account/home").unwrap(),
+                None,
+                false,
+                NativeNavigationMethod::Get,
+            ),
             Some("hidden=value; session=alpha".into())
         );
         assert_eq!(
-            state.cookie_header(&Url::parse("http://example.test/public").unwrap()),
+            state.cookie_header_for_request(
+                &Url::parse("http://example.test/public").unwrap(),
+                None,
+                false,
+                NativeNavigationMethod::Get,
+            ),
             None
         );
         assert_eq!(
-            state.cookie_header(&Url::parse("https://example.test/account/home").unwrap()),
+            state.cookie_header_for_request(
+                &Url::parse("https://example.test/account/home").unwrap(),
+                None,
+                false,
+                NativeNavigationMethod::Get,
+            ),
             Some("hidden=value; session=alpha; secure=secret".into())
         );
         assert_eq!(
@@ -3586,7 +3798,12 @@ mod tests {
 
         state.store_cookie(&page, "session=gone; Path=/account; Max-Age=0");
         assert_eq!(
-            state.cookie_header(&Url::parse("http://example.test/account/home").unwrap()),
+            state.cookie_header_for_request(
+                &Url::parse("http://example.test/account/home").unwrap(),
+                None,
+                false,
+                NativeNavigationMethod::Get,
+            ),
             Some("hidden=value".into())
         );
 
@@ -3604,6 +3821,77 @@ mod tests {
             );
         }
         assert_eq!(state.cache.len(), MAX_NATIVE_CACHE_ENTRIES);
+    }
+
+    #[test]
+    fn cookie_same_site_policy_preserves_metadata_and_filters_cross_site_requests() {
+        let mut state = NativeNetworkState::default();
+        let app = Url::parse("https://app.example.test/account/page").unwrap();
+        let api = Url::parse("https://api.example.test/data").unwrap();
+        let evil = Url::parse("https://evil.test/data").unwrap();
+
+        state.store_cookie(
+            &app,
+            "strict=1; Domain=example.test; Path=/; SameSite=Strict; Priority=High",
+        );
+        state.store_cookie(
+            &app,
+            "lax=1; Domain=example.test; Path=/; SameSite=Lax; Priority=Medium",
+        );
+        state.store_cookie(
+            &app,
+            "none=1; Domain=example.test; Path=/; SameSite=None; Secure; Priority=Low",
+        );
+        state.store_cookie(&evil, "strict=1; Path=/; SameSite=Strict");
+        state.store_cookie(&evil, "lax=1; Path=/; SameSite=Lax");
+        state.store_cookie(&evil, "default=1; Path=/");
+        state.store_cookie(&evil, "none=1; Path=/; SameSite=None; Secure");
+
+        assert_eq!(
+            state.cookie_header_for_request(&api, Some(&app), false, NativeNavigationMethod::Get),
+            Some("lax=1; none=1; strict=1".into())
+        );
+        assert_eq!(
+            state.cookie_header_for_request(&evil, Some(&app), false, NativeNavigationMethod::Get,),
+            Some("none=1".into())
+        );
+        assert_eq!(
+            state.cookie_header_for_request(&evil, Some(&app), true, NativeNavigationMethod::Get,),
+            Some("default=1; lax=1; none=1".into())
+        );
+        assert_eq!(
+            state.cookie_header_for_request(&evil, Some(&app), true, NativeNavigationMethod::Post,),
+            Some("none=1".into())
+        );
+
+        let profiles = state.cookie_profile();
+        let strict = profiles
+            .iter()
+            .find(|cookie| cookie.name == "strict" && cookie.domain == "example.test")
+            .unwrap();
+        assert_eq!(strict.same_site.as_deref(), Some("Strict"));
+        assert_eq!(strict.priority.as_deref(), Some("High"));
+
+        assert!(
+            state
+                .store_cookie(&evil, "invalid=1; Path=/; SameSite=None")
+                .is_empty()
+        );
+        assert!(
+            NativeNetworkState::from_profile(vec![NativeCookieProfileEntry {
+                name: "invalid".into(),
+                value: "1".into(),
+                domain: "evil.test".into(),
+                path: "/".into(),
+                host_only: true,
+                secure: false,
+                http_only: false,
+                same_site: Some("None".into()),
+                priority: None,
+                expires_at_unix_seconds: None,
+            }])
+            .is_err()
+        );
     }
 
     #[test]

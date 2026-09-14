@@ -156,10 +156,10 @@ fn public_cookie_from_profile(
             .map_or(0.0, |expires| expires as f64),
         http_only: profile.http_only,
         secure: profile.secure,
-        same_site: None,
+        same_site: profile.same_site,
         is_session: profile.expires_at_unix_seconds.is_none(),
         size,
-        priority: None,
+        priority: profile.priority,
     })
 }
 
@@ -202,6 +202,8 @@ fn profile_from_public_cookie(
         host_only: !cookie.domain.starts_with('.'),
         secure: cookie.secure,
         http_only: cookie.http_only,
+        same_site: cookie.same_site.clone(),
+        priority: cookie.priority.clone(),
         expires_at_unix_seconds,
     })
 }

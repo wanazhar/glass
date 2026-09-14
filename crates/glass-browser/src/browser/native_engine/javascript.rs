@@ -2376,6 +2376,10 @@ pub(crate) struct NativeCookieProfileEntry {
     pub(crate) secure: bool,
     pub(crate) http_only: bool,
     #[serde(default)]
+    pub(crate) same_site: Option<String>,
+    #[serde(default)]
+    pub(crate) priority: Option<String>,
+    #[serde(default)]
     pub(crate) expires_at_unix_seconds: Option<u64>,
 }
 
@@ -3603,6 +3607,39 @@ fn validate_cookie_profile_entry(
         return Err(NativeEngineError::invalid(
             "native cookie profile path",
             "must be a bounded absolute path",
+        ));
+    }
+    if cookie.same_site.as_deref().is_some_and(|value| {
+        !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "strict" | "lax" | "none"
+        )
+    }) {
+        return Err(NativeEngineError::invalid(
+            "native cookie SameSite",
+            "must be Strict, Lax, or None",
+        ));
+    }
+    if cookie
+        .same_site
+        .as_deref()
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("none"))
+        && !cookie.secure
+    {
+        return Err(NativeEngineError::invalid(
+            "native cookie SameSite",
+            "SameSite=None cookies must be Secure",
+        ));
+    }
+    if cookie.priority.as_deref().is_some_and(|value| {
+        !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "low" | "medium" | "high"
+        )
+    }) {
+        return Err(NativeEngineError::invalid(
+            "native cookie priority",
+            "must be Low, Medium, or High",
         ));
     }
     Ok(())

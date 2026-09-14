@@ -15793,6 +15793,7 @@ fn service_worker_page_script() -> String {
 }
 
 const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
+  globalThis.__glassServiceWorkerClientState = null;
   const serviceWorkerCachePendingRequests = globalThis.__glassServiceWorkerCachePendingRequests instanceof Map
     ? globalThis.__glassServiceWorkerCachePendingRequests
     : new Map();
@@ -15993,7 +15994,30 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
     });
   globalThis.__glassCacheStorageConstructor = CacheStorageNative;
   globalThis.caches = serviceWorkerCacheStorage;
+  const serviceWorkerClientFromState = () => {
+    const state = globalThis.__glassServiceWorkerClientState;
+    if (!state || typeof state !== "object") return null;
+    return Object.freeze({
+      id: String(state.clientId || ""),
+      url: String(state.clientUrl || ""),
+      type: String(state.clientType || "window"),
+      frameType: String(state.frameType || "top-level"),
+      visibilityState: String(state.visibilityState || "visible"),
+      focused: state.focused === true,
+    });
+  };
   const serviceWorkerDispatchFetch = (payload) => {
+    globalThis.__glassServiceWorkerClientState = payload && typeof payload === "object"
+      ? {
+          clientId: String(payload.clientId || ""),
+          clientUrl: String(payload.clientUrl || ""),
+          clientType: String(payload.clientType || "window"),
+          frameType: String(payload.frameType || "top-level"),
+          visibilityState: String(payload.visibilityState || "visible"),
+          focused: payload.focused === true,
+          controlled: payload.controlled === true,
+        }
+      : null;
     const body = payload && payload.bodyNull === true
       ? undefined
       : payload && typeof payload.bodyBase64 === "string"
@@ -16046,11 +16070,23 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
   }
   globalThis.__glassDispatchServiceWorkerFetch = serviceWorkerDispatchFetch;
   globalThis.skipWaiting = () => Promise.resolve(undefined);
-  globalThis.clients = globalThis.clients || {
-    claim: () => Promise.resolve(undefined),
-    matchAll: () => Promise.resolve([]),
-    openWindow: () => Promise.reject(new Error("native service worker clients.openWindow is unavailable")),
+  const serviceWorkerClients = globalThis.clients && typeof globalThis.clients === "object"
+    ? globalThis.clients : {};
+  serviceWorkerClients.claim = () => Promise.resolve(undefined);
+  serviceWorkerClients.matchAll = (options) => {
+    const settings = options && typeof options === "object" ? options : {};
+    const type = settings.type === undefined ? "window" : String(settings.type);
+    if (!["window", "worker", "sharedworker", "all"].includes(type))
+      return Promise.reject(new TypeError("service worker clients.matchAll type is invalid"));
+    if (type !== "window" && type !== "all") return Promise.resolve([]);
+    const state = globalThis.__glassServiceWorkerClientState;
+    if (settings.includeUncontrolled !== true && (!state || state.controlled !== true))
+      return Promise.resolve([]);
+    const client = serviceWorkerClientFromState();
+    return Promise.resolve(client ? [client] : []);
   };
+  serviceWorkerClients.openWindow = () => Promise.reject(new Error("native service worker clients.openWindow is unavailable"));
+  globalThis.clients = serviceWorkerClients;
   globalThis.registration = globalThis.registration || {
     scope: workerUrl.slice(0, workerUrl.lastIndexOf("/") + 1),
     update: () => Promise.resolve(undefined),

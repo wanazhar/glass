@@ -3676,10 +3676,26 @@ self.addEventListener('activate', event => event.waitUntil(self.clients.claim())
 self.addEventListener('fetch', event => {
   const path = new URL(event.request.url).pathname;
   if (path === '/api') {
-    event.respondWith(new Response('served by native service worker', {
+    event.respondWith((async () => {
+      const matched = await clients.matchAll();
+      const all = await clients.matchAll({ includeUncontrolled: true, type: 'all' });
+      const workers = await clients.matchAll({ type: 'worker' });
+      const client = matched[0];
+      return new Response(JSON.stringify({
+        matched: matched.length,
+        all: all.length,
+        workers: workers.length,
+        clientIdPresent: Boolean(client && client.id),
+        clientUrl: client && client.url,
+        clientType: client && client.type,
+        frameType: client && client.frameType,
+        visibilityState: client && client.visibilityState,
+        focused: client && client.focused,
+      }), {
       status: 201,
-      headers: { 'Content-Type': 'text/plain', 'X-Native-Worker': 'yes' },
-    }));
+      headers: { 'Content-Type': 'application/json', 'X-Native-Worker': 'yes' },
+      });
+    })());
   } else {
     event.respondWith(new Response('<!doctype html><html><body><main id="controlled">controlled by native service worker</main></body></html>', {
       headers: { 'Content-Type': 'text/html' },
@@ -3744,14 +3760,24 @@ self.addEventListener('fetch', event => {
     assert_eq!(
         engine
             .evaluate_async(
-                "await fetch('/api').then(async response => ({ status: response.status, worker: response.headers.get('x-native-worker'), body: await response.text() }))",
+                "await fetch('/api').then(async response => ({ status: response.status, worker: response.headers.get('x-native-worker'), body: await response.json() }))",
             )
             .await
             .unwrap(),
         serde_json::json!({
             "status": 201,
             "worker": "yes",
-            "body": "served by native service worker",
+            "body": {
+                "matched": 1,
+                "all": 1,
+                "workers": 0,
+                "clientIdPresent": true,
+                "clientUrl": format!("http://{address}/app/page"),
+                "clientType": "window",
+                "frameType": "top-level",
+                "visibilityState": "visible",
+                "focused": true,
+            },
         })
     );
     assert_eq!(

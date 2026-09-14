@@ -687,6 +687,7 @@ impl NativeServiceWorkerRegistry {
             .into_iter()
             .map(|(name, value)| json!([name, value]))
             .collect::<Vec<_>>();
+        let client_url = without_fragment(document_url);
         let payload = json!({
             "url": without_fragment(target.as_str()),
             "method": method.as_str(),
@@ -699,6 +700,13 @@ impl NativeServiceWorkerRegistry {
             "redirect": redirect_mode_text(redirect_mode),
             "credentials": credentials,
             "destination": destination,
+            "clientId": native_service_worker_client_id(client_url),
+            "clientUrl": client_url,
+            "clientType": "window",
+            "frameType": "top-level",
+            "visibilityState": "visible",
+            "focused": true,
+            "controlled": true,
         });
         let evaluation = worker.runtime.evaluate_service_worker_fetch(
             worker.id,
@@ -1642,6 +1650,18 @@ fn resolve_same_origin_or_cross_origin_url(
             reason: format!("{field} is not valid URL syntax"),
         })?;
     parse_network_url(field, url.as_str())
+}
+
+fn native_service_worker_client_id(document_url: &str) -> String {
+    // A content process currently owns one top-level document. Keep the
+    // client identity stable for repeated fetches without exposing the full
+    // document URL as an opaque Service Worker client id.
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in document_url.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3_u64);
+    }
+    format!("native-client-{hash:016x}")
 }
 
 fn cors_mode_text(mode: NativeCorsMode) -> &'static str {

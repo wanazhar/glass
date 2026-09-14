@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-351` slice. The native runtime is now the primary
+`native-engine-browser-352` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -277,6 +277,17 @@ and the waiting candidate intact. Waiting workers are in-memory only in this
 slice, and multi-client controller ownership, exact task-source scheduling,
 and durable waiting-state restoration remain issue #40 gates. Exact evidence
 is recorded in `docs/plan/tasks/native-engine-browser-351.md`.
+
+Slice 352 makes waiting-worker arbitration durable across content-process
+replacement. The Rust profile now retains an optional waiting script/type
+descriptor beside the activated registration; restoration rebuilds both
+isolated worker realms through the native resource policy without replaying
+install or activate, and leaves an unavailable waiting script available for a
+later retry. A restored waiting worker remains page-observable until a
+matching navigation settles activation and promotes it. Multi-client
+controller ownership, exact task-source scheduling, and full Service Worker
+conformance remain issue #40 gates. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-352.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

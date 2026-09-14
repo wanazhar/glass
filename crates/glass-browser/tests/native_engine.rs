@@ -18,7 +18,7 @@ use glass_browser::browser::session::{
     Cookie, ExtractionField, ExtractionKind, IntentConfidence, IntentConstraints,
     SemanticIntentAction, SemanticIntentExecutionRequest, SemanticIntentRequest,
     SemanticObservationLevel, SemanticResolutionPolicy, StructuredExtractionRequest,
-    VerificationPredicate, VisualCaptureOptions, VisualClip, WaitCondition,
+    VerificationPredicate, VisualCaptureOptions, VisualClip, VisualFormat, WaitCondition,
 };
 use glass_browser::browser_backend::{
     ActionRequest, BROWSER_BACKEND_SCHEMA_VERSION, BackendSelectionRequest,
@@ -35134,7 +35134,7 @@ fn native_png_capture_matches_complete_logical_pixel_golden() {
 }
 
 #[tokio::test]
-async fn native_backend_captures_png_without_mutating_revision_and_denies_other_formats() {
+async fn native_backend_captures_all_visual_formats_without_mutating_revision() {
     let config = NativeEngineConfig::default()
         .with_viewport(Viewport {
             width: 8,
@@ -35189,13 +35189,27 @@ async fn native_backend_captures_png_without_mutating_revision_and_denies_other_
             format: CaptureFormat::Jpeg,
         })
         .await
-        .unwrap_err();
-    assert!(matches!(
-        jpeg,
-        glass_browser::browser_backend::BrowserBackendError::UnsupportedOperation {
-            operation, ..
-        } if operation == "capture"
-    ));
+        .unwrap();
+    assert_eq!(jpeg.format, CaptureFormat::Jpeg);
+    assert_eq!(&jpeg.bytes[..2], &[0xff, 0xd8]);
+    let jpeg_size = imagesize::blob_size(&jpeg.bytes).unwrap();
+    assert_eq!((jpeg_size.width, jpeg_size.height), (8, 8));
+
+    let webp = backend
+        .capture_visual(&VisualCaptureOptions {
+            format: VisualFormat::Webp,
+            quality: Some(75),
+            ..VisualCaptureOptions::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(webp.metadata.format, VisualFormat::Webp);
+    let webp_bytes = base64::engine::general_purpose::STANDARD
+        .decode(webp.data.as_bytes())
+        .unwrap();
+    assert_eq!(&webp_bytes[..4], b"RIFF");
+    let webp_size = imagesize::blob_size(&webp_bytes).unwrap();
+    assert_eq!((webp_size.width, webp_size.height), (8, 8));
     dispatcher.close().await.unwrap();
 }
 
@@ -35676,7 +35690,7 @@ async fn fixture_navigation_projects_through_the_real_backend_dispatcher() {
     );
     assert_eq!(
         backend.profile().identity.certification.level,
-        CertificationLevel::Experimental
+        CertificationLevel::Partial
     );
     assert_eq!(
         backend

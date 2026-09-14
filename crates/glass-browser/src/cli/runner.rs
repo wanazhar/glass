@@ -599,9 +599,6 @@ fn validate_alternative_runtime_command(
             target,
             ..
         } if native => {
-            if !matches!(format, crate::browser::session::VisualFormat::Png) {
-                return Err("native screenshot supports only --format png".into());
-            }
             crate::browser::session::validate_visual_options(&VisualCaptureOptions {
                 format: *format,
                 quality: *quality,
@@ -1659,7 +1656,7 @@ async fn run_alternative_runtime_command(
                     AlternativeRuntimeOutput::Text(format!("wrote {}", output.display())),
                     alternative_json_output(
                         &serde_json::json!({
-                            "format": "png",
+                            "format": capture.metadata.format,
                             "output": output,
                             "metadata": capture.metadata,
                         }),

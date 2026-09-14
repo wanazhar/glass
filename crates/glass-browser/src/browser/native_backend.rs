@@ -14,13 +14,14 @@ use super::native_engine::{
     MAX_NATIVE_EFFECTS, MAX_NATIVE_VIEWPORT_DIMENSION, NativeAction, NativeEffect, NativeEngine,
     NativeEngineConfig, NativeEngineError, NativeEventKind, NativeFile, NativeFrameScriptBinding,
     NativeFrameScriptContext, NativeFrameScriptRequest, NativeFrameScriptWindow,
-    NativeHistoryDirection, NativeInspectionSnapshot, NativeOrigin, NativePoint,
-    NativePopupRequest, NativePostMessageRequest, NativePreflightAction, NativeScriptCommand,
-    NativeSurface, NativeTargetPreflight, NativeWindowCloseRequest, NativeWindowNavigationRequest,
-    NativeWindowProxyUpdate, Viewport, parse_point_target,
+    NativeHistoryDirection, NativeInspectionSnapshot, NativeLayoutSnapshot, NativeOrigin,
+    NativePoint, NativePopupRequest, NativePostMessageRequest, NativePreflightAction,
+    NativeScriptCommand, NativeSurface, NativeTargetPreflight, NativeWindowCloseRequest,
+    NativeWindowNavigationRequest, NativeWindowProxyUpdate, Viewport, parse_point_target,
 };
 use crate::browser::session::{
     FrameInfo, GeoLocation, NavigationControlOutcome, NetworkConditions, PageTargetInfo,
+    VisualCapture, VisualCaptureMetadata, VisualCaptureOptions, VisualClip, VisualFormat,
     redact_diagnostic_text, redact_diagnostic_url,
 };
 use crate::browser_backend::{
@@ -31,6 +32,7 @@ use crate::browser_backend::{
     EvidenceResult, NavigationResult, Portability, PromptDecision, PromptResult, ScriptResult,
     SemanticAction, StorageResult, StorageScope, SupportLevel,
 };
+use base64::Engine as _;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Mutex, MutexGuard};
 
@@ -42,6 +44,12 @@ const NATIVE_ENGINE_BROWSER_FAMILY: &str = "native";
 const NATIVE_MAX_TARGETS: usize = crate::browser::session::TOPOLOGY_MAX_TARGETS;
 const NATIVE_MAX_FRAMES: usize = crate::browser::session::TOPOLOGY_MAX_FRAMES;
 const NATIVE_MAX_CLOSED_TARGETS: usize = NATIVE_MAX_TARGETS * 4;
+
+/// Native visual capture is currently encoded by the software PNG renderer.
+/// The option shape intentionally matches the shared visual contract so the
+/// CLI and future runtime surfaces cannot silently discard geometry options.
+const NATIVE_CAPTURE_MAX_AXIS: u32 = 16_384;
+const NATIVE_CAPTURE_MAX_PIXELS: usize = 4 * 1024 * 1024;
 
 struct NativeParkedFrame {
     engine: NativeEngine,
@@ -247,12 +255,120 @@ impl NativeEngineBackend {
     /// The asynchronous form is used by normal Glass operations so a caller
     /// does not need to discover frames before requesting a screenshot.
     pub async fn capture_png_async(&self) -> Result<Vec<u8>, BrowserBackendError> {
+        let capture = self
+            .capture_visual(&VisualCaptureOptions::default())
+            .await?;
+        base64::engine::general_purpose::STANDARD
+            .decode(capture.data.as_bytes())
+            .map_err(|error| BrowserBackendError::InvalidConfiguration {
+                field: "native capture payload".into(),
+                reason: error.to_string(),
+            })
+    }
+
+    /// Capture the selected native frame using the shared visual-capture
+    /// contract. The native renderer keeps composition, clipping, scaling,
+    /// and encoding in one operation so metadata describes the bytes that
+    /// were actually written.
+    pub async fn capture_visual(
+        &self,
+        options: &VisualCaptureOptions,
+    ) -> Result<VisualCapture, BrowserBackendError> {
+        crate::browser::session::validate_visual_options(options).map_err(|error| {
+            BrowserBackendError::InvalidConfiguration {
+                field: "visual capture".into(),
+                reason: error.to_string(),
+            }
+        })?;
+        if options.format != VisualFormat::Png {
+            return Err(BrowserBackendError::UnsupportedOperation {
+                operation: "capture".into(),
+                reason: "native visual capture currently encodes PNG only".into(),
+            });
+        }
+
         let mut targets = self.lock_targets(BackendOperation::Capture)?;
         let engine = self.lock_engine_raw(BackendOperation::Capture)?;
+        let target_id =
+            targets
+                .active_target_id
+                .clone()
+                .ok_or_else(|| BrowserBackendError::Lifecycle {
+                    operation: "capture".into(),
+                    state: "no-target-selected".into(),
+                    reason: "select an available native page target before capture".into(),
+                })?;
         let frame_id = targets.active_frames.active_frame_id.clone();
         reconcile_native_frames(&mut targets.active_frames, &engine).await?;
-        capture_native_frame_surface(&engine, &targets.active_frames, &frame_id)
-            .and_then(|surface| surface.to_png().map_err(native_error))
+
+        let target_node = options
+            .target
+            .as_deref()
+            .map(|locator| engine.resolve_target(locator))
+            .transpose()
+            .map_err(native_error)?;
+        let base_layout = engine.layout().map_err(native_error)?;
+        let expanded_viewport = (options.full_page || target_node.is_some())
+            .then(|| full_page_capture_viewport(&base_layout))
+            .transpose()?;
+        let layout = match expanded_viewport {
+            Some(viewport) => engine
+                .layout_at_viewport(viewport, NativePoint { x: 0, y: 0 })
+                .map_err(native_error)?,
+            None => base_layout,
+        };
+        let mut surface = capture_native_frame_surface_with_viewport(
+            &engine,
+            &targets.active_frames,
+            &frame_id,
+            expanded_viewport,
+        )?;
+
+        let effective_clip = if let Some(node_id) = target_node {
+            let rect = layout
+                .boxes
+                .iter()
+                .find(|layout_box| layout_box.node_id == node_id)
+                .map(|layout_box| layout_box.rect)
+                .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                    reason: "native visual target has no layout box".into(),
+                })?;
+            let clip = VisualClip {
+                x: f64::from(rect.x),
+                y: f64::from(rect.y),
+                width: f64::from(rect.width),
+                height: f64::from(rect.height),
+            };
+            surface = surface.crop(rect).map_err(native_error)?;
+            Some(clip)
+        } else if let Some(clip) = options.clip {
+            let rect = native_capture_rect(clip)?;
+            surface = surface.crop(rect).map_err(native_error)?;
+            Some(clip)
+        } else {
+            None
+        };
+        surface = surface.scale_nearest(options.scale).map_err(native_error)?;
+        let width = surface.width();
+        let height = surface.height();
+        let bytes = surface.to_png().map_err(native_error)?;
+        let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        Ok(VisualCapture {
+            data,
+            metadata: VisualCaptureMetadata {
+                format: options.format,
+                width: usize::try_from(width).unwrap_or(usize::MAX),
+                height: usize::try_from(height).unwrap_or(usize::MAX),
+                encoded_bytes: bytes.len(),
+                device_scale_factor: f64::from(engine.config().viewport.device_scale_factor_milli)
+                    / 1000.0,
+                scale: options.scale,
+                full_page: options.full_page,
+                clip: effective_clip,
+                target_id,
+                frame_id,
+            },
+        })
     }
 
     /// Route a point click through the currently selected frame tree when the
@@ -3570,7 +3686,101 @@ fn capture_native_frame_surface(
     frames: &NativeFrameState,
     frame_id: &str,
 ) -> Result<NativeSurface, BrowserBackendError> {
-    capture_native_frame_surface_at_depth(engine, frames, frame_id, 0)
+    capture_native_frame_surface_with_viewport(engine, frames, frame_id, None)
+}
+
+fn full_page_capture_viewport(
+    layout: &NativeLayoutSnapshot,
+) -> Result<Viewport, BrowserBackendError> {
+    let width = layout.viewport.width;
+    let height = layout.content_height.max(layout.viewport.height);
+    if width == 0
+        || height == 0
+        || width > NATIVE_CAPTURE_MAX_AXIS
+        || height > NATIVE_CAPTURE_MAX_AXIS
+    {
+        return Err(BrowserBackendError::InvalidConfiguration {
+            field: "native full-page capture".into(),
+            reason: format!(
+                "document dimensions must fit the {NATIVE_CAPTURE_MAX_AXIS}-pixel axis budget"
+            ),
+        });
+    }
+    let viewport = Viewport {
+        width,
+        height,
+        device_scale_factor_milli: layout.viewport.device_scale_factor_milli,
+    };
+    viewport.validate().map_err(native_error)?;
+    Ok(viewport)
+}
+
+fn native_capture_rect(
+    clip: VisualClip,
+) -> Result<super::native_engine::NativeRect, BrowserBackendError> {
+    for value in [clip.x, clip.y, clip.width, clip.height] {
+        if !value.is_finite() {
+            return Err(BrowserBackendError::InvalidConfiguration {
+                field: "native capture clip".into(),
+                reason: "clip values must be finite".into(),
+            });
+        }
+    }
+    if clip.x < 0.0 || clip.y < 0.0 || clip.width <= 0.0 || clip.height <= 0.0 {
+        return Err(BrowserBackendError::InvalidConfiguration {
+            field: "native capture clip".into(),
+            reason: "clip must have a non-negative origin and positive size".into(),
+        });
+    }
+    let right = (clip.x + clip.width).ceil();
+    let bottom = (clip.y + clip.height).ceil();
+    let x = clip.x.floor();
+    let y = clip.y.floor();
+    if x > f64::from(NATIVE_CAPTURE_MAX_AXIS)
+        || y > f64::from(NATIVE_CAPTURE_MAX_AXIS)
+        || right > f64::from(NATIVE_CAPTURE_MAX_AXIS)
+        || bottom > f64::from(NATIVE_CAPTURE_MAX_AXIS)
+    {
+        return Err(BrowserBackendError::InvalidConfiguration {
+            field: "native capture clip".into(),
+            reason: format!("clip must fit the {NATIVE_CAPTURE_MAX_AXIS}-pixel axis budget"),
+        });
+    }
+    let x = x as u32;
+    let y = y as u32;
+    let right = right as u32;
+    let bottom = bottom as u32;
+    let width = right.saturating_sub(x);
+    let height = bottom.saturating_sub(y);
+    let pixels = usize::try_from(width)
+        .ok()
+        .and_then(|width| {
+            usize::try_from(height)
+                .ok()
+                .and_then(|height| width.checked_mul(height))
+        })
+        .unwrap_or(usize::MAX);
+    if pixels > NATIVE_CAPTURE_MAX_PIXELS {
+        return Err(BrowserBackendError::InvalidConfiguration {
+            field: "native capture clip".into(),
+            reason: "clip exceeds the native 4-megapixel surface budget".into(),
+        });
+    }
+    Ok(super::native_engine::NativeRect {
+        x,
+        y,
+        width,
+        height,
+    })
+}
+
+fn capture_native_frame_surface_with_viewport(
+    engine: &NativeEngine,
+    frames: &NativeFrameState,
+    frame_id: &str,
+    root_viewport: Option<Viewport>,
+) -> Result<NativeSurface, BrowserBackendError> {
+    capture_native_frame_surface_at_depth(engine, frames, frame_id, 0, root_viewport)
 }
 
 fn capture_native_frame_surface_at_depth(
@@ -3578,14 +3788,27 @@ fn capture_native_frame_surface_at_depth(
     frames: &NativeFrameState,
     frame_id: &str,
     depth: usize,
+    root_viewport: Option<Viewport>,
 ) -> Result<NativeSurface, BrowserBackendError> {
     if depth >= NATIVE_MAX_FRAMES {
         return Err(BrowserBackendError::SelectionFailed {
             reason: "native frame surface composition exceeded its bounded depth".into(),
         });
     }
-    let mut surface = engine.rasterize().map_err(native_error)?;
-    let layout = engine.layout().map_err(native_error)?;
+    let (mut surface, layout) = match (depth, root_viewport) {
+        (0, Some(viewport)) => (
+            engine
+                .rasterize_at_viewport(viewport)
+                .map_err(native_error)?,
+            engine
+                .layout_at_viewport(viewport, NativePoint { x: 0, y: 0 })
+                .map_err(native_error)?,
+        ),
+        _ => (
+            engine.rasterize().map_err(native_error)?,
+            engine.layout().map_err(native_error)?,
+        ),
+    };
     let mut children = frames
         .parked
         .iter()
@@ -3613,6 +3836,7 @@ fn capture_native_frame_surface_at_depth(
             frames,
             &child_id,
             depth.saturating_add(1),
+            None,
         )?;
         surface
             .composite_child(&child_surface, destination, source_offset)

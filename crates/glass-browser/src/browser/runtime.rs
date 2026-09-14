@@ -40,8 +40,8 @@ use super::session::{
     RecoveryStrategy, ReferenceLostReason, ReferenceMapping, ReferenceMatch, SemanticIntentAction,
     SemanticIntentExecutionRequest, SemanticIntentExecutionResult, SemanticIntentExecutionStatus,
     SemanticIntentResult, SemanticObservation, SemanticObservationLevel, SemanticResolution,
-    SemanticTarget, VerificationOutcome, VerificationPredicate, ViewportState, WaitCondition,
-    WaitOutcome, WaitTimeout,
+    SemanticTarget, VerificationOutcome, VerificationPredicate, ViewportState, VisualCapture,
+    VisualCaptureOptions, WaitCondition, WaitOutcome, WaitTimeout,
 };
 use super::session::{ActionContractError, BrowserResult};
 #[cfg(feature = "native-engine")]
@@ -705,6 +705,20 @@ impl BrowserRuntimeSession {
         match &self.backend {
             BackendStartup::Native(backend) => Ok(backend.capture_png_async().await?),
             _ => Err("native PNG capture is only available on the native runtime".into()),
+        }
+    }
+
+    /// Capture a native visual using the same option and metadata contract as
+    /// the Chromium session, without routing the request through CDP.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_capture_visual(
+        &self,
+        options: &VisualCaptureOptions,
+    ) -> BrowserResult<VisualCapture> {
+        let _operation = self.operation_lock.lock().await;
+        match &self.backend {
+            BackendStartup::Native(backend) => Ok(backend.capture_visual(options).await?),
+            _ => Err("native visual capture is only available on the native runtime".into()),
         }
     }
 

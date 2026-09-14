@@ -1,6 +1,6 @@
 use super::browsing_context::NativeBrowsingContext;
 use super::config::{
-    NativeEngineConfig, decode_percent_encoded_fragment, decode_text_fragment_terms,
+    NativeEngineConfig, Viewport, decode_percent_encoded_fragment, decode_text_fragment_terms,
     is_network_url, resolve_fixture_relative_url, validate_context_id, validate_url_text,
     without_fragment,
 };
@@ -2484,13 +2484,24 @@ impl NativeEngine {
     /// Return the current document's derived integer-pixel layout.
     pub fn layout(&self) -> Result<NativeLayoutSnapshot, NativeEngineError> {
         self.require_running("layout")?;
-        self.document
-            .layout(self.config.viewport)?
-            .with_scroll_offset(
-                &self.document,
-                self.scroll_offset,
-                &self.nested_scroll_offsets,
-            )
+        self.layout_at_viewport(self.config.viewport, self.scroll_offset)
+    }
+
+    /// Derive layout for a capture viewport without changing the live engine
+    /// viewport or scroll state. Full-page and element captures use this
+    /// snapshot to render off-screen document content while keeping ordinary
+    /// input and script coordinates tied to the configured viewport.
+    pub(crate) fn layout_at_viewport(
+        &self,
+        viewport: Viewport,
+        scroll_offset: NativePoint,
+    ) -> Result<NativeLayoutSnapshot, NativeEngineError> {
+        self.require_running("layout")?;
+        self.document.layout(viewport)?.with_scroll_offset(
+            &self.document,
+            scroll_offset,
+            &self.nested_scroll_offsets,
+        )
     }
 
     /// Hit test one point in the configured viewport without scrolling or
@@ -2523,6 +2534,18 @@ impl NativeEngine {
     pub fn rasterize(&self) -> Result<NativeSurface, NativeEngineError> {
         self.require_running("raster surface")?;
         self.display_list()?.rasterize()
+    }
+
+    /// Replay the current document into a temporary viewport. This is used by
+    /// full-page and off-screen element capture and never mutates live engine
+    /// geometry, scroll state, or script-visible viewport values.
+    pub(crate) fn rasterize_at_viewport(
+        &self,
+        viewport: Viewport,
+    ) -> Result<NativeSurface, NativeEngineError> {
+        self.require_running("raster surface")?;
+        let layout = self.layout_at_viewport(viewport, NativePoint { x: 0, y: 0 })?;
+        NativeDisplayList::build(&self.document, &layout)?.rasterize()
     }
 
     /// Encode the current logical renderer surface as bounded PNG bytes.

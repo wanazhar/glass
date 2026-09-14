@@ -427,6 +427,161 @@ impl NativeSurface {
         &self.rgba
     }
 
+    /// Return a bounded copy of a pixel rectangle in surface coordinates.
+    ///
+    /// Capture clips are applied after frame composition so an embedded frame
+    /// is never cropped before it has been projected into its owner. The
+    /// rectangle is deliberately required to be inside the surface; callers
+    /// must choose an appropriate raster viewport before asking for an
+    /// off-viewport capture.
+    pub(crate) fn crop(&self, rect: NativeRect) -> Result<Self, NativeEngineError> {
+        if rect.width == 0 || rect.height == 0 {
+            return Err(NativeEngineError::invalid(
+                "native capture clip",
+                "clip dimensions must be positive",
+            ));
+        }
+        if rect.x >= self.width
+            || rect.y >= self.height
+            || rect.right() > self.width
+            || rect.bottom() > self.height
+        {
+            return Err(NativeEngineError::invalid(
+                "native capture clip",
+                "clip exceeds the rendered surface",
+            ));
+        }
+        let width = usize::try_from(rect.width).map_err(|_| {
+            NativeEngineError::invalid("native capture clip", "clip width exceeds host bounds")
+        })?;
+        let height = usize::try_from(rect.height).map_err(|_| {
+            NativeEngineError::invalid("native capture clip", "clip height exceeds host bounds")
+        })?;
+        let source_width = usize::try_from(self.width).map_err(|_| {
+            NativeEngineError::invalid("native capture clip", "source width exceeds host bounds")
+        })?;
+        let row_bytes = width.checked_mul(4).ok_or_else(|| {
+            NativeEngineError::invalid("native capture clip", "clip row exceeds host bounds")
+        })?;
+        let mut rgba = vec![
+            0;
+            row_bytes.checked_mul(height).ok_or_else(|| {
+                NativeEngineError::invalid("native capture clip", "clip pixels exceed host bounds")
+            })?
+        ];
+        let source_x = usize::try_from(rect.x).map_err(|_| {
+            NativeEngineError::invalid("native capture clip", "clip x exceeds host bounds")
+        })?;
+        let source_y = usize::try_from(rect.y).map_err(|_| {
+            NativeEngineError::invalid("native capture clip", "clip y exceeds host bounds")
+        })?;
+        for row in 0..height {
+            let source_start = source_y
+                .checked_add(row)
+                .and_then(|value| value.checked_mul(source_width.checked_mul(4)?))
+                .and_then(|value| value.checked_add(source_x.checked_mul(4)?))
+                .ok_or_else(|| {
+                    NativeEngineError::invalid(
+                        "native capture clip",
+                        "source row offset exceeds host bounds",
+                    )
+                })?;
+            let source_end = source_start.checked_add(row_bytes).ok_or_else(|| {
+                NativeEngineError::invalid(
+                    "native capture clip",
+                    "source row end exceeds host bounds",
+                )
+            })?;
+            let destination_start = row.checked_mul(row_bytes).ok_or_else(|| {
+                NativeEngineError::invalid(
+                    "native capture clip",
+                    "destination row offset exceeds host bounds",
+                )
+            })?;
+            let destination_end = destination_start.checked_add(row_bytes).ok_or_else(|| {
+                NativeEngineError::invalid(
+                    "native capture clip",
+                    "destination row end exceeds host bounds",
+                )
+            })?;
+            rgba[destination_start..destination_end]
+                .copy_from_slice(&self.rgba[source_start..source_end]);
+        }
+        Ok(Self {
+            width: rect.width,
+            height: rect.height,
+            rgba,
+        })
+    }
+
+    /// Scale a surface with deterministic nearest-neighbour sampling.
+    ///
+    /// The native renderer is intentionally software and integer-pixel based;
+    /// nearest-neighbour keeps captures reproducible and avoids introducing a
+    /// second filtering implementation into the layout/paint path.
+    pub(crate) fn scale_nearest(&self, scale: f64) -> Result<Self, NativeEngineError> {
+        if !scale.is_finite() || !(0.1..=4.0).contains(&scale) {
+            return Err(NativeEngineError::invalid(
+                "native capture scale",
+                "scale must be finite and between 0.1 and 4.0",
+            ));
+        }
+        let width = scaled_capture_dimension(self.width, scale)?;
+        let height = scaled_capture_dimension(self.height, scale)?;
+        let pixels = usize::try_from(width)
+            .ok()
+            .and_then(|width| {
+                usize::try_from(height)
+                    .ok()
+                    .and_then(|height| width.checked_mul(height))
+            })
+            .ok_or_else(|| {
+                NativeEngineError::invalid("native capture scale", "scaled pixels exceed bounds")
+            })?;
+        if pixels > MAX_NATIVE_SURFACE_PIXELS {
+            return Err(NativeEngineError::limit(
+                "native scaled capture pixels",
+                MAX_NATIVE_SURFACE_PIXELS,
+                pixels,
+            ));
+        }
+        if width == self.width && height == self.height {
+            return Ok(self.clone());
+        }
+        let source_width = usize::try_from(self.width).map_err(|_| {
+            NativeEngineError::invalid("native capture scale", "source width exceeds bounds")
+        })?;
+        let destination_width = usize::try_from(width).map_err(|_| {
+            NativeEngineError::invalid("native capture scale", "scaled width exceeds bounds")
+        })?;
+        let destination_height = usize::try_from(height).map_err(|_| {
+            NativeEngineError::invalid("native capture scale", "scaled height exceeds bounds")
+        })?;
+        let mut rgba = vec![
+            0;
+            pixels.checked_mul(4).ok_or_else(|| {
+                NativeEngineError::invalid("native capture scale", "scaled bytes exceed bounds")
+            })?
+        ];
+        for destination_y in 0..destination_height {
+            let source_y = ((destination_y as f64) / scale).floor() as usize;
+            let source_y = source_y.min(usize::try_from(self.height).unwrap_or(1) - 1);
+            for destination_x in 0..destination_width {
+                let source_x = ((destination_x as f64) / scale).floor() as usize;
+                let source_x = source_x.min(source_width - 1);
+                let source_start = (source_y * source_width + source_x) * 4;
+                let destination_start = (destination_y * destination_width + destination_x) * 4;
+                rgba[destination_start..destination_start + 4]
+                    .copy_from_slice(&self.rgba[source_start..source_start + 4]);
+            }
+        }
+        Ok(Self {
+            width,
+            height,
+            rgba,
+        })
+    }
+
     /// Composite one opaque child browsing-context surface into this surface.
     ///
     /// The source offset identifies the child pixels corresponding to the
@@ -1565,6 +1720,17 @@ impl NativeSurface {
 
 const fn multiply_alpha(source: u8, multiplier: u8) -> u8 {
     (((source as u16) * (multiplier as u16) + (u8::MAX as u16) / 2) / (u8::MAX as u16)) as u8
+}
+
+fn scaled_capture_dimension(value: u32, scale: f64) -> Result<u32, NativeEngineError> {
+    let scaled = (f64::from(value) * scale).round();
+    if !scaled.is_finite() || scaled < 1.0 || scaled > f64::from(u32::MAX) {
+        return Err(NativeEngineError::invalid(
+            "native capture scale",
+            "scaled dimension exceeds integer bounds",
+        ));
+    }
+    Ok(scaled as u32)
 }
 
 fn ellipse_contains(rect: NativeRect, x: f64, y: f64, inset: f64) -> bool {

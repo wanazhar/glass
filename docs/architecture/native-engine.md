@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-329` slice. The native runtime is now the primary
+`native-engine-browser-330` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -17,6 +17,15 @@ history entry, and avoids replaying an indeterminate mutation. Backend,
 portable-session, and CLI surfaces use the same recovery owner. The native
 profile is no longer classified as experimental; final Core Web Profile
 conformance and production certification remain issue #40 gates.
+
+Slice 330 completes native screenshot geometry through the shared visual
+capture contract. PNG capture now supports viewport, clip, scale, full-page,
+and semantic element options with effective dimensions and clip metadata.
+Nested frame surfaces are composed before cropping; full-page and off-screen
+element captures use a temporary unscrolled raster viewport without changing
+the live session. Native JPEG/WebP encoding remains a typed unsupported format
+until the renderer owns those encoders; the native path never silently ignores
+visual options or labels PNG bytes as another format.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

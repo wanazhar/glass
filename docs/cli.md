@@ -134,7 +134,8 @@ targets
 dom
 evaluate EXPRESSION
 scroll --dy DY
-screenshot --output PATH --format png
+screenshot --output PATH --format png [--scale 0.1..4.0] [--full-page]
+  [--clip X,Y,WIDTH,HEIGHT | --target LOCATOR]
 inspect-page
 extract-web-ir [REQUEST]
 find-target INPUT
@@ -789,9 +790,11 @@ Navigation, action, observation, DOM, scroll, and evaluation results use JSON on
 stdout. `text` emits plain text. `screenshot` writes PNG by default, accepts
 `--format png|jpeg|webp`, and prints the output path. JPEG/WebP accept quality
 `0`–`100`; PNG rejects a quality value. Scale is finite `0.1`–`4.0`, and
-`--full-page`, `--clip`, and `--target` are mutually exclusive. The output
-extension is not silently rewritten, so keep it consistent with the selected
-format.
+`--full-page`, `--clip`, and `--target` are mutually exclusive. Native PNG
+capture honors viewport clip, scale, full-page, and semantic element options;
+native JPEG/WebP encoding is rejected explicitly, while Chromium owns the
+JPEG/WebP encoders. The output extension is not silently rewritten, so keep it
+consistent with the selected format.
 All structured command results, including `diagnostics`, use compact JSON on
 stdout. `text` emits plain text. Operational logs and warnings use stderr.
 With `--trace-on-error`, Glass writes one bounded failure trace to stderr; it

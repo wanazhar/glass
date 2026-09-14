@@ -7,7 +7,7 @@
 use super::backend_adapter::CdpBrowserBackend;
 use super::bidi_backend::{BidiBackendConfig, BidiBrowserBackend};
 #[cfg(feature = "native-engine")]
-use super::native_backend::{NATIVE_ENGINE_BACKEND_ID, NativeEngineBackend};
+use super::native_backend::NativeEngineBackend;
 #[cfg(feature = "native-engine")]
 use super::native_engine::NativeEngineConfig;
 use super::proof_backend::ProofBackend;
@@ -112,26 +112,11 @@ impl BackendFactory {
                 reason: "no backend candidates were registered".into(),
             });
         }
-        let candidates = candidates
-            .into_iter()
-            .filter(|_candidate| {
-                #[cfg(feature = "native-engine")]
-                {
-                    _candidate.backend_id() != NATIVE_ENGINE_BACKEND_ID
-                        || request.preferred_backend_id.as_deref() == Some(NATIVE_ENGINE_BACKEND_ID)
-                }
-                #[cfg(not(feature = "native-engine"))]
-                {
-                    let _ = request;
-                    true
-                }
-            })
-            .collect::<Vec<_>>();
-        if candidates.is_empty() {
-            return Err(BrowserBackendError::SelectionFailed {
-                reason: "no backend candidates were eligible for automatic selection".into(),
-            });
-        }
+        // Native is a normal candidate now.  Its profile and the caller's
+        // certification/capability requirements decide eligibility; keeping
+        // a hidden explicit-only filter here would make the product's
+        // native-first contract differ from the shared backend contract.
+        let candidates = candidates;
         let profiles = candidates
             .iter()
             .map(BackendStartup::profile)
@@ -194,6 +179,8 @@ impl BackendFactory {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "native-engine")]
+    use super::super::native_backend::NATIVE_ENGINE_BACKEND_ID;
     use super::*;
     use crate::browser_backend::{
         BROWSER_BACKEND_SCHEMA_VERSION, BackendSelectionRequest, BrowserCapability,
@@ -221,7 +208,7 @@ mod tests {
 
     #[cfg(feature = "native-engine")]
     #[test]
-    fn native_backend_is_explicit_only() {
+    fn native_backend_is_selected_automatically() {
         let native = BackendFactory::native(NativeEngineConfig::default()).unwrap();
         let automatic = BackendSelectionRequest {
             schema_version: BROWSER_BACKEND_SCHEMA_VERSION,
@@ -230,16 +217,9 @@ mod tests {
             browser_family: None,
             browser_version: None,
             required_capabilities: vec![],
-            minimum_certification: CertificationLevel::Experimental,
+            minimum_certification: CertificationLevel::Partial,
         };
-        assert!(BackendFactory::start(&automatic, vec![native]).is_err());
-
-        let native = BackendFactory::native(NativeEngineConfig::default()).unwrap();
-        let explicit = BackendSelectionRequest {
-            preferred_backend_id: Some(NATIVE_ENGINE_BACKEND_ID.into()),
-            ..automatic
-        };
-        let started = BackendFactory::start(&explicit, vec![native]).unwrap();
+        let started = BackendFactory::start(&automatic, vec![native]).unwrap();
         assert_eq!(
             started.profile().identity.backend_id,
             NATIVE_ENGINE_BACKEND_ID

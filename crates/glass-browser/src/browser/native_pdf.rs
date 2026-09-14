@@ -6,6 +6,7 @@
 //! dependency into the workspace. It deliberately keeps the output bounded;
 //! the native screenshot surface remains the authoritative visual capture.
 
+use super::native_engine::NativeEngineSnapshot;
 use super::session::{BrowserResult, PdfOptions, SemanticObservation};
 use base64::Engine as _;
 
@@ -21,6 +22,32 @@ pub(crate) fn render(
     observation: &SemanticObservation,
     options: &PdfOptions,
 ) -> BrowserResult<String> {
+    let pdf = render_text(
+        &observation.page.title,
+        &observation.page.url,
+        observation.text.as_deref().unwrap_or_default(),
+        options,
+    )?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(pdf))
+}
+
+/// Render a native engine snapshot directly for the transport-neutral capture
+/// contract.  The semantic observation path uses the base64 string form
+/// required by the existing `BrowserSession` API; backend capture returns the
+/// same bytes without a needless encode/decode round trip.
+pub(crate) fn render_snapshot(
+    snapshot: &NativeEngineSnapshot,
+    options: &PdfOptions,
+) -> BrowserResult<Vec<u8>> {
+    render_text(
+        &snapshot.title,
+        &snapshot.url,
+        &snapshot.visible_text,
+        options,
+    )
+}
+
+fn render_text(title: &str, url: &str, text: &str, options: &PdfOptions) -> BrowserResult<Vec<u8>> {
     let width = bounded_dimension(
         options.paper_width,
         DEFAULT_PAPER_WIDTH_INCHES,
@@ -40,7 +67,7 @@ pub(crate) fn render(
         return Err("native PDF margins leave no printable area".into());
     }
 
-    let mut source = observation.text.as_deref().unwrap_or_default().to_owned();
+    let mut source = text.to_owned();
     if source.len() > MAX_TEXT_BYTES {
         let mut end = MAX_TEXT_BYTES;
         while end > 0 && !source.is_char_boundary(end) {
@@ -55,7 +82,7 @@ pub(crate) fn render(
     let max_lines = (printable_height / line_height).floor() as usize;
     let mut lines = Vec::with_capacity(max_lines.min(1024));
     if options.display_header_footer == Some(true) {
-        lines.push(format_pdf_line(&observation.page.title));
+        lines.push(format_pdf_line(title));
     }
     for line in source.lines() {
         if lines.len() >= max_lines {
@@ -64,7 +91,7 @@ pub(crate) fn render(
         lines.push(format_pdf_line(line));
     }
     if options.display_header_footer == Some(true) && lines.len() < max_lines {
-        lines.push(format_pdf_line(&observation.page.url));
+        lines.push(format_pdf_line(url));
     }
 
     let mut content = String::new();
@@ -80,8 +107,7 @@ pub(crate) fn render(
     }
     content.push_str("ET\n");
 
-    let pdf = build_pdf(width, height, content.as_bytes())?;
-    Ok(base64::engine::general_purpose::STANDARD.encode(pdf))
+    build_pdf(width, height, content.as_bytes())
 }
 
 fn bounded_dimension(value: Option<f64>, default: f64, field: &str) -> BrowserResult<f64> {

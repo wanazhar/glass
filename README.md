@@ -327,7 +327,8 @@ glass --browser-runtime safari \
 The portable endpoint command set is `navigate`, `click`, `type`, `text`,
 `observe`, `targets`, and `evaluate`. Native browser operations additionally
 share the local TUI, MCP, target, history, screenshot, storage, revision, and
-revisioned recovery contracts as their implementation slices land. Chromium remains the explicit
+revisioned recovery contracts. Native PNG screenshots honor clip, scale,
+full-page, and semantic element capture options; Chromium remains the explicit
 route for any capability not yet certified in the Glass Core Web Profile; the
 runtime never silently falls back between engines.
 
@@ -952,7 +953,7 @@ workflows.
 | Chrome / Chromium | Supported browser families on environments with native evidence |
 | Firefox automation | Experimental portable semantic session over Firefox WebDriver BiDi |
 | Safari automation | Experimental portable semantic session over SafariDriver W3C WebDriver |
-| Native engine | Primary default runtime in feature-enabled `glass-browser` and `glass-dev` builds. It owns the current local/HTTP(S) navigation, DOM/script, layout/display-list/software-surface, semantic action, target/frame, storage/download, PNG/PDF capture, and revisioned recovery slices; Chromium/CDP is an explicit migration runtime and there is no silent engine fallback. The versioned Glass Core Web Profile and cross-platform certification remain tracked in [issue #40](https://github.com/wanazhar/glass/issues/40) and the [native-engine architecture](docs/architecture/native-engine.md). |
+| Native engine | Primary default runtime in feature-enabled `glass-browser` and `glass-dev` builds. It owns the current local/HTTP(S) navigation, DOM/script, layout/display-list/software-surface, semantic action, target/frame, storage/download, PNG/PDF capture with clip/scale/full-page/element geometry, and revisioned recovery slices; Chromium/CDP is an explicit migration runtime and there is no silent engine fallback. The versioned Glass Core Web Profile and cross-platform certification remain tracked in [issue #40](https://github.com/wanazhar/glass/issues/40) and the [native-engine architecture](docs/architecture/native-engine.md). |
 The native engine also accepts bounded case-insensitive 15-layer/unlayered
 `revert-layer` for local `display` and `visibility`. Rollback resolves through
 lower concrete candidates or the established normal-flow `display:auto` and

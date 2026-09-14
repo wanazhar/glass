@@ -276,10 +276,54 @@ impl fmt::Debug for NativeResourceLoader {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct NativeNetworkState {
     cache: BTreeMap<String, NativeDocumentCacheEntry>,
-    image_cache: BTreeMap<String, NativeImage>,
+    image_cache: BTreeMap<String, NativeImageCacheEntry>,
     cookies: Vec<NativeCookie>,
     document_policies: BTreeMap<String, NativeCspPolicy>,
     preflight_cache: BTreeMap<String, Instant>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeImageCacheEntry {
+    image: NativeImage,
+    fresh_until: Option<Instant>,
+    etag: Option<String>,
+    last_modified: Option<String>,
+}
+
+impl NativeImageCacheEntry {
+    fn from_response(image: NativeImage, headers: &HeaderMap, now: Instant) -> Option<Self> {
+        if !document_cache_storage_allowed(headers) {
+            return None;
+        }
+        Some(Self {
+            image,
+            fresh_until: document_cache_fresh_until(headers, now),
+            etag: response_header_text(headers, reqwest::header::ETAG),
+            last_modified: response_header_text(headers, reqwest::header::LAST_MODIFIED),
+        })
+    }
+
+    fn is_fresh(&self, now: Instant) -> bool {
+        self.fresh_until.is_none_or(|deadline| now < deadline)
+    }
+
+    fn refresh_from_not_modified(mut self, headers: &HeaderMap, now: Instant) -> Option<Self> {
+        if !document_cache_storage_allowed(headers) {
+            return None;
+        }
+        if cache_control_requires_revalidation(headers) {
+            self.fresh_until = Some(now);
+        } else if let Some(fresh_until) = document_cache_fresh_until(headers, now) {
+            self.fresh_until = Some(fresh_until);
+        }
+        if let Some(etag) = response_header_text(headers, reqwest::header::ETAG) {
+            self.etag = Some(etag);
+        }
+        if let Some(last_modified) = response_header_text(headers, reqwest::header::LAST_MODIFIED) {
+            self.last_modified = Some(last_modified);
+        }
+        Some(self)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2144,8 +2188,16 @@ impl NativeResourceLoader {
             return Ok(None);
         }
         let requested_cache_key = cache_key(&target_url);
-        if let Some(image) = self.network.image_cache.get(&requested_cache_key) {
-            return Ok(Some(image.clone()));
+        let stale_cached_image = self
+            .network
+            .image_cache
+            .get(&requested_cache_key)
+            .cloned()
+            .filter(|cached| !cached.is_fresh(Instant::now()));
+        if let Some(cached) = self.network.image_cache.get(&requested_cache_key)
+            && cached.is_fresh(Instant::now())
+        {
+            return Ok(Some(cached.image.clone()));
         }
 
         let client = reqwest::Client::builder()
@@ -2166,6 +2218,16 @@ impl NativeResourceLoader {
             ));
             if let Some(referrer) = request_referrer.as_deref() {
                 request = request.header(reqwest::header::REFERER, referrer);
+            }
+            if redirects == 0
+                && let Some(cached) = stale_cached_image.as_ref()
+            {
+                if let Some(etag) = cached.etag.as_deref() {
+                    request = request.header(reqwest::header::IF_NONE_MATCH, etag);
+                }
+                if let Some(last_modified) = cached.last_modified.as_deref() {
+                    request = request.header(reqwest::header::IF_MODIFIED_SINCE, last_modified);
+                }
             }
             if let Some(cookie) = self.network.cookie_header_for_request(
                 &current_url,
@@ -2220,6 +2282,32 @@ impl NativeResourceLoader {
             current_url = next_url;
             redirects += 1;
         };
+        let response_headers = response.headers().clone();
+        let has_set_cookie = !pending_cookies.is_empty();
+        if response.status() == reqwest::StatusCode::NOT_MODIFIED {
+            let Some(cached) = stale_cached_image else {
+                return Ok(None);
+            };
+            let cached_image = cached.image.clone();
+            if redirects != 0 {
+                return Ok(None);
+            }
+            for (cookie_url, cookie) in pending_cookies {
+                self.cookie_changes
+                    .extend(self.network.store_cookie(&cookie_url, &cookie));
+            }
+            if has_set_cookie {
+                self.network.remove_image_cache(&requested_cache_key);
+            } else if let Some(entry) =
+                cached.refresh_from_not_modified(&response_headers, Instant::now())
+            {
+                self.network
+                    .store_image_cache_entry(requested_cache_key, entry);
+            } else {
+                self.network.remove_image_cache(&requested_cache_key);
+            }
+            return Ok(Some(cached_image));
+        }
         if !response.status().is_success() {
             return Ok(None);
         }
@@ -2232,7 +2320,6 @@ impl NativeResourceLoader {
         if content_length.is_some_and(|length| length > MAX_NATIVE_IMAGE_TRANSFER_BYTES as u64) {
             return Ok(None);
         }
-        let cacheable = cacheable_response(response.headers());
         let mut stream = response.bytes_stream();
         let mut bytes = Vec::with_capacity(
             content_length
@@ -2252,16 +2339,24 @@ impl NativeResourceLoader {
         else {
             return Ok(None);
         };
-        let has_set_cookie = !pending_cookies.is_empty();
-        if cacheable && !has_set_cookie {
-            self.network
-                .store_image_cache(requested_cache_key, image.clone());
-            self.network
-                .store_image_cache(cache_key(&current_url), image.clone());
-        }
         for (cookie_url, cookie) in pending_cookies {
             self.cookie_changes
                 .extend(self.network.store_cookie(&cookie_url, &cookie));
+        }
+        if !has_set_cookie
+            && let Some(entry) = NativeImageCacheEntry::from_response(
+                image.clone(),
+                &response_headers,
+                Instant::now(),
+            )
+        {
+            self.network
+                .store_image_cache_entry(requested_cache_key, entry.clone());
+            self.network
+                .store_image_cache_entry(cache_key(&current_url), entry);
+        } else {
+            self.network.remove_image_cache(&requested_cache_key);
+            self.network.remove_image_cache(&cache_key(&current_url));
         }
         Ok(Some(image))
     }
@@ -3161,10 +3256,6 @@ fn document_cache_fresh_until(headers: &HeaderMap, now: Instant) -> Option<Insta
         .map(|seconds| now.checked_add(Duration::from_secs(seconds)).unwrap_or(now))
 }
 
-fn cacheable_response(headers: &HeaderMap) -> bool {
-    document_cache_storage_allowed(headers) && !cache_control_requires_revalidation(headers)
-}
-
 impl NativeNetworkState {
     fn from_profile(profile: Vec<NativeCookieProfileEntry>) -> Result<Self, NativeEngineError> {
         let mut state = Self::default();
@@ -3490,14 +3581,18 @@ impl NativeNetworkState {
         self.cache.remove(key);
     }
 
-    fn store_image_cache(&mut self, key: String, image: NativeImage) {
+    fn store_image_cache_entry(&mut self, key: String, entry: NativeImageCacheEntry) {
         if !self.image_cache.contains_key(&key)
             && self.image_cache.len() >= MAX_NATIVE_CACHE_ENTRIES
             && let Some(oldest) = self.image_cache.keys().next().cloned()
         {
             self.image_cache.remove(&oldest);
         }
-        self.image_cache.insert(key, image);
+        self.image_cache.insert(key, entry);
+    }
+
+    fn remove_image_cache(&mut self, key: &str) {
+        self.image_cache.remove(key);
     }
 
     fn store_document_policy(&mut self, key: String, policy: NativeCspPolicy) {
@@ -3874,10 +3969,10 @@ mod tests {
     use super::{
         MAX_NATIVE_CACHE_ENTRIES, NativeCookieProfileEntry, NativeCorsMode, NativeEngineConfig,
         NativeNavigationMethod, NativeNetworkState, NativeResource, NativeResourceLoader,
-        NativeSubresourceKind, cache_control_max_age, cacheable_response, content_security_policy,
-        cors_origin_header, cors_preflight_response_allowed, cors_response_allowed,
-        decode_html_body, document_cache_fresh_until, document_cache_storage_allowed,
-        mixed_content_allowed, referrer_for_navigation, resolve_subresource_url,
+        NativeSubresourceKind, cache_control_max_age, cache_control_requires_revalidation,
+        content_security_policy, cors_origin_header, cors_preflight_response_allowed,
+        cors_response_allowed, decode_html_body, document_cache_fresh_until,
+        document_cache_storage_allowed, mixed_content_allowed, referrer_for_navigation,
     };
     use reqwest::header::{
         ACCESS_CONTROL_ALLOW_CREDENTIALS, ACCESS_CONTROL_ALLOW_HEADERS,
@@ -4102,20 +4197,23 @@ mod tests {
     #[test]
     fn cache_policy_rejects_private_or_stale_variants() {
         let mut headers = HeaderMap::new();
-        assert!(cacheable_response(&headers));
+        assert!(document_cache_storage_allowed(&headers));
+        assert!(!cache_control_requires_revalidation(&headers));
         headers.insert(
             CACHE_CONTROL,
             HeaderValue::from_static("public, max-age=60"),
         );
-        assert!(cacheable_response(&headers));
+        assert!(document_cache_storage_allowed(&headers));
+        assert!(!cache_control_requires_revalidation(&headers));
         headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
-        assert!(!cacheable_response(&headers));
+        assert!(!document_cache_storage_allowed(&headers));
         headers.remove(CACHE_CONTROL);
         headers.insert(PRAGMA, HeaderValue::from_static("no-cache"));
-        assert!(!cacheable_response(&headers));
+        assert!(document_cache_storage_allowed(&headers));
+        assert!(cache_control_requires_revalidation(&headers));
         headers.remove(PRAGMA);
         headers.insert(VARY, HeaderValue::from_static("Accept-Encoding, Cookie"));
-        assert!(!cacheable_response(&headers));
+        assert!(!document_cache_storage_allowed(&headers));
     }
 
     #[test]

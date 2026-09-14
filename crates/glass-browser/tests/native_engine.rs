@@ -41746,6 +41746,81 @@ async fn native_content_process_reuses_cacheable_external_png_for_duplicate_imag
 }
 
 #[tokio::test]
+async fn native_content_process_revalidates_no_cache_external_png_with_etag() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let png = native_test_png_bytes();
+    let server = tokio::spawn(async move {
+        for request_index in 0..3 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            if request_index == 0 {
+                assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+                let body = "<div style='width:16px'><img id='first' src='/image.png' width='8'><img id='second' src='/image.png' width='8'></div>";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            } else {
+                assert_eq!(request.split_whitespace().nth(1), Some("/image.png"));
+                if request_index == 1 {
+                    assert!(
+                        !request
+                            .lines()
+                            .any(|line| line.eq_ignore_ascii_case("if-none-match: \"v1\""))
+                    );
+                    let headers = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nCache-Control: no-cache\r\nETag: \"v1\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        png.len()
+                    );
+                    stream.write_all(headers.as_bytes()).await.unwrap();
+                    stream.write_all(&png).await.unwrap();
+                } else {
+                    assert!(
+                        request
+                            .lines()
+                            .any(|line| line.eq_ignore_ascii_case("if-none-match: \"v1\""))
+                    );
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 304 Not Modified\r\nCache-Control: no-cache\r\nETag: \"v1\"\r\nConnection: close\r\n\r\n",
+                        )
+                        .await
+                        .unwrap();
+                }
+            }
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_viewport(Viewport {
+                width: 16,
+                height: 8,
+                device_scale_factor_milli: 1000,
+            })
+            .with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .display_list()
+            .unwrap()
+            .commands
+            .iter()
+            .filter(|command| matches!(command, NativeDisplayCommand::Image { .. }))
+            .count(),
+        2
+    );
+
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_blocks_csp_disallowed_image_before_request() {
     let _guard = native_content_process_test_lock().lock().await;
     let target_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

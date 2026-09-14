@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-346` locally. Native is now the default runtime for
+`native-engine-browser-347` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -260,9 +260,18 @@ document navigation now honors bounded `Cache-Control` freshness, retains
 `ETag`/`Last-Modified` validators for stale entries, reuses validated `304`
 responses, and evicts entries when `no-store`, cookie variance, or response
 cookies make reuse unsafe. The pre-existing no-header session-cache behavior
-is preserved; complete subresource/Fetch cache freshness, richer transferable
-values, complete task-source scheduling, and final production certification
-remain active issue #40 gates.
+is preserved; complete stylesheet/script/Fetch cache freshness, richer
+transferable values, complete task-source scheduling, and final production
+certification remain active issue #40 gates.
+
+The completed native image-cache freshness slice is
+[native-engine-browser-347](tasks/native-engine-browser-347.md): decoded
+external images now honor bounded `Cache-Control` freshness, retain
+`ETag`/`Last-Modified` validators for stale entries, reuse validated `304`
+responses, and evict unsafe `no-store`/variance/cookie responses. Complete
+stylesheet/script/Fetch and Service-Worker CacheStorage freshness, richer
+transferable values, complete task-source scheduling, and final production
+certification remain active issue #40 gates.
 
 The completed native cookie-policy slice is
 [native-engine-browser-334](tasks/native-engine-browser-334.md): cookie
@@ -2694,7 +2703,8 @@ redirected URL keys for both initial discovery and reactive image hydration;
 `Set-Cookie` responses are excluded, and policy checks still run before cache
 lookup. Duplicate external images therefore reuse one decoded resource without
 changing typed layout, paint, capture, hit testing, or load-event ownership.
-Freshness/revalidation, concurrent request coalescing, responsive sources,
+Image freshness/revalidation is covered by the later 347 slice; stylesheet,
+script, Fetch, and Service-Worker CacheStorage freshness, concurrent request coalescing, responsive sources,
 additional CSS image layers beyond the single background-image URL, SVG image
 resources, animation, and other formats remain active issue #40
 browser-completeness work. Exact evidence is recorded in

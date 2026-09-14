@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-357` locally. Native is now the default runtime for
+`native-engine-browser-358` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -361,9 +361,9 @@ so Cache API operations are not limited to page-triggered fetches. This is
 explicit CacheStorage state, not HTTP freshness: `Cache-Control` does not
 silently evict application cache entries, and HTTP response freshness remains
 owned by the resource-loader cache. Cross-process client messaging,
-`clients.openWindow()`, browser-wide registration arbitration, exact
-task-source scheduling, durable live-client leases, and final production
-certification remain active issue #40 gates.
+`clients.openWindow()`, browser-wide registration arbitration, worker-owned
+task queues, durable live-client leases, and final production certification
+remain active issue #40 gates.
 
 The completed native networking task-order slice is
 [native-engine-browser-356](tasks/native-engine-browser-356.md): page Fetch
@@ -381,8 +381,17 @@ EventSource, and Timer using a rotating round-robin cursor. Networking keeps
 its script-emission FIFO order, while due timers cannot be starved by
 continuously ready Fetch work. The timer pump is suspended during host
 continuations so explicit Timer turns own timer execution. Worker,
-ServiceWorker, MessagePort, rendering, navigation, browser-wide queue
-arbitration, and final production certification remain active issue #40 gates.
+ServiceWorker, MessagePort, rendering, navigation-task queues, and final
+production certification remain active issue #40 gates.
+
+The completed native browser-effect arbitration slice is
+[native-engine-browser-358](tasks/native-engine-browser-358.md): popup,
+postMessage, navigation, and close effects now share a persistent round-robin
+cursor, preserve FIFO order within each source, and re-enqueue nested effects
+without allowing popup cascades to starve other browser-owned effects. This is
+an operation-boundary scheduler; worker/ServiceWorker/MessagePort queues,
+registration arbitration, live-client leases, and final production
+certification remain active issue #40 gates.
 
 The completed native cookie-policy slice is
 [native-engine-browser-334](tasks/native-engine-browser-334.md): cookie

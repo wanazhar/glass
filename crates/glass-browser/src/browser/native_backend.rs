@@ -64,6 +64,48 @@ enum NativeFrameRoute {
     ParkedParked { target_id: String },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NativeBrowserEffectSource {
+    Popup,
+    Message,
+    Navigation,
+    Close,
+}
+
+impl NativeBrowserEffectSource {
+    fn next(self) -> Self {
+        match self {
+            Self::Popup => Self::Message,
+            Self::Message => Self::Navigation,
+            Self::Navigation => Self::Close,
+            Self::Close => Self::Popup,
+        }
+    }
+}
+
+fn next_ready_native_browser_effect_source(
+    cursor: &mut NativeBrowserEffectSource,
+    popup_ready: bool,
+    message_ready: bool,
+    navigation_ready: bool,
+    close_ready: bool,
+) -> Option<NativeBrowserEffectSource> {
+    for _ in 0..4 {
+        let candidate = *cursor;
+        *cursor = candidate.next();
+        let ready = match candidate {
+            NativeBrowserEffectSource::Popup => popup_ready,
+            NativeBrowserEffectSource::Message => message_ready,
+            NativeBrowserEffectSource::Navigation => navigation_ready,
+            NativeBrowserEffectSource::Close => close_ready,
+        };
+        if ready {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 struct NativeFrameState {
     active_frame_id: String,
     active_parent_id: Option<String>,
@@ -203,6 +245,7 @@ pub struct NativeEngineBackend {
     profile: BackendProfile,
     engine: Mutex<NativeEngine>,
     targets: Mutex<NativeTargetState>,
+    browser_effect_cursor: Mutex<NativeBrowserEffectSource>,
 }
 
 /// One atomic semantic/layout snapshot together with the frame that owns it.
@@ -225,6 +268,7 @@ impl NativeEngineBackend {
             profile,
             engine: Mutex::new(engine),
             targets: Mutex::new(NativeTargetState::new(active_target_id, active_name)),
+            browser_effect_cursor: Mutex::new(NativeBrowserEffectSource::Popup),
         })
     }
 
@@ -2115,6 +2159,10 @@ impl NativeEngineBackend {
         let mut pending_window_closes = VecDeque::from(window_closes);
         let mut pending_window_navigations = VecDeque::from(window_navigations);
         let mut created: Vec<PageTargetInfo> = Vec::new();
+        let mut next_source = *self
+            .browser_effect_cursor
+            .lock()
+            .map_err(|_| poisoned_lock_error(BackendOperation::Effects, "browser effect"))?;
         let mut processed = 0usize;
         while !pending_popups.is_empty()
             || !pending_messages.is_empty()
@@ -2127,18 +2175,89 @@ impl NativeEngineBackend {
                     reason: "native browser-effect cascade exceeded its bounded limit".into(),
                 });
             }
-            let Some(request) = pending_popups.pop_front() else {
-                let Some(message) = pending_messages.pop_front() else {
-                    let Some(navigation) = pending_window_navigations.pop_front() else {
-                        let request = pending_window_closes
-                            .pop_front()
-                            .expect("window close queue is non-empty when other queues are empty");
-                        if let Some((target_id, _)) = self.window_close_target(&request)? {
-                            self.close_target(&target_id).await?;
-                            created.retain(|target| target.id != target_id);
-                        }
+            let Some(source) = next_ready_native_browser_effect_source(
+                &mut next_source,
+                !pending_popups.is_empty(),
+                !pending_messages.is_empty(),
+                !pending_window_navigations.is_empty(),
+                !pending_window_closes.is_empty(),
+            ) else {
+                break;
+            };
+            match source {
+                NativeBrowserEffectSource::Popup => {
+                    let request = pending_popups
+                        .pop_front()
+                        .expect("popup queue is non-empty after source selection");
+                    let name = native_popup_name(&request.target);
+                    if let Some(name) = name.as_deref()
+                        && let Some((target_id, active)) = self.target_named(name)?
+                    {
+                        let (
+                            _,
+                            nested,
+                            nested_messages,
+                            nested_window_closes,
+                            nested_window_navigations,
+                        ) = self
+                            .navigate_named_target(&target_id, active, &request.url, false)
+                            .await?;
+                        self.bind_window_handle(&request, &target_id)?;
+                        pending_popups.extend(nested);
+                        pending_messages.extend(nested_messages);
+                        pending_window_closes.extend(nested_window_closes);
+                        pending_window_navigations.extend(nested_window_navigations);
                         continue;
-                    };
+                    }
+                    match self
+                        .create_target_named(
+                            &request.url,
+                            name,
+                            Some(request.source_context_id.clone()),
+                        )
+                        .await
+                    {
+                        Ok((
+                            target,
+                            nested,
+                            nested_messages,
+                            nested_window_closes,
+                            nested_window_navigations,
+                        )) => {
+                            self.bind_window_handle(&request, &target.id)?;
+                            created.push(target);
+                            pending_popups.extend(nested);
+                            pending_messages.extend(nested_messages);
+                            pending_window_closes.extend(nested_window_closes);
+                            pending_window_navigations.extend(nested_window_navigations);
+                        }
+                        Err(error) => {
+                            for target in created {
+                                let _ = self.close_target(&target.id).await;
+                            }
+                            return Err(error);
+                        }
+                    }
+                }
+                NativeBrowserEffectSource::Message => {
+                    let message = pending_messages
+                        .pop_front()
+                        .expect("message queue is non-empty after source selection");
+                    let (
+                        nested_popups,
+                        nested_messages,
+                        nested_window_closes,
+                        nested_window_navigations,
+                    ) = self.deliver_post_message(message).await?;
+                    pending_popups.extend(nested_popups);
+                    pending_messages.extend(nested_messages);
+                    pending_window_closes.extend(nested_window_closes);
+                    pending_window_navigations.extend(nested_window_navigations);
+                }
+                NativeBrowserEffectSource::Navigation => {
+                    let navigation = pending_window_navigations
+                        .pop_front()
+                        .expect("navigation queue is non-empty after source selection");
                     if let Some(frame_id) = navigation.target_context_id.as_deref()
                         && let Some(route) = self.frame_route(frame_id)?
                     {
@@ -2178,60 +2297,23 @@ impl NativeEngineBackend {
                     pending_messages.extend(nested_messages);
                     pending_window_closes.extend(nested_closes);
                     pending_window_navigations.extend(nested_navigations);
-                    continue;
-                };
-                let (
-                    nested_popups,
-                    nested_messages,
-                    nested_window_closes,
-                    nested_window_navigations,
-                ) = self.deliver_post_message(message).await?;
-                pending_popups.extend(nested_popups);
-                pending_messages.extend(nested_messages);
-                pending_window_closes.extend(nested_window_closes);
-                pending_window_navigations.extend(nested_window_navigations);
-                continue;
-            };
-            let name = native_popup_name(&request.target);
-            if let Some(name) = name.as_deref()
-                && let Some((target_id, active)) = self.target_named(name)?
-            {
-                let (_, nested, nested_messages, nested_window_closes, nested_window_navigations) =
-                    self.navigate_named_target(&target_id, active, &request.url, false)
-                        .await?;
-                self.bind_window_handle(&request, &target_id)?;
-                pending_popups.extend(nested);
-                pending_messages.extend(nested_messages);
-                pending_window_closes.extend(nested_window_closes);
-                pending_window_navigations.extend(nested_window_navigations);
-                continue;
-            }
-            match self
-                .create_target_named(&request.url, name, Some(request.source_context_id.clone()))
-                .await
-            {
-                Ok((
-                    target,
-                    nested,
-                    nested_messages,
-                    nested_window_closes,
-                    nested_window_navigations,
-                )) => {
-                    self.bind_window_handle(&request, &target.id)?;
-                    created.push(target);
-                    pending_popups.extend(nested);
-                    pending_messages.extend(nested_messages);
-                    pending_window_closes.extend(nested_window_closes);
-                    pending_window_navigations.extend(nested_window_navigations);
                 }
-                Err(error) => {
-                    for target in created {
-                        let _ = self.close_target(&target.id).await;
+                NativeBrowserEffectSource::Close => {
+                    let request = pending_window_closes
+                        .pop_front()
+                        .expect("close queue is non-empty after source selection");
+                    if let Some((target_id, _)) = self.window_close_target(&request)? {
+                        self.close_target(&target_id).await?;
+                        created.retain(|target| target.id != target_id);
                     }
-                    return Err(error);
                 }
             }
         }
+        *self
+            .browser_effect_cursor
+            .lock()
+            .map_err(|_| poisoned_lock_error(BackendOperation::Effects, "browser effect"))? =
+            next_source;
         Ok(created)
     }
 
@@ -4714,5 +4796,45 @@ fn operation_name(operation: BackendOperation) -> &'static str {
         BackendOperation::Storage => "storage",
         BackendOperation::Prompt => "prompt",
         BackendOperation::Download => "download",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NativeBrowserEffectSource, next_ready_native_browser_effect_source};
+
+    #[test]
+    fn native_browser_effect_sources_round_robin_without_starvation() {
+        let mut cursor = NativeBrowserEffectSource::Popup;
+        let mut all_ready =
+            || next_ready_native_browser_effect_source(&mut cursor, true, true, true, true);
+
+        assert_eq!(all_ready(), Some(NativeBrowserEffectSource::Popup));
+        assert_eq!(all_ready(), Some(NativeBrowserEffectSource::Message));
+        assert_eq!(all_ready(), Some(NativeBrowserEffectSource::Navigation));
+        assert_eq!(all_ready(), Some(NativeBrowserEffectSource::Close));
+        assert_eq!(all_ready(), Some(NativeBrowserEffectSource::Popup));
+    }
+
+    #[test]
+    fn native_browser_effect_sources_skip_empty_queues_and_resume_rotation() {
+        let mut cursor = NativeBrowserEffectSource::Popup;
+
+        assert_eq!(
+            next_ready_native_browser_effect_source(&mut cursor, false, true, false, true),
+            Some(NativeBrowserEffectSource::Message)
+        );
+        assert_eq!(
+            next_ready_native_browser_effect_source(&mut cursor, false, false, false, true),
+            Some(NativeBrowserEffectSource::Close)
+        );
+        assert_eq!(
+            next_ready_native_browser_effect_source(&mut cursor, true, false, false, false),
+            Some(NativeBrowserEffectSource::Popup)
+        );
+        assert_eq!(
+            next_ready_native_browser_effect_source(&mut cursor, false, false, false, false),
+            None
+        );
     }
 }

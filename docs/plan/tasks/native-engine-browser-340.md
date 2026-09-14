@@ -29,10 +29,10 @@ profile-backed CacheStorage subset:
 - Cache data shares the existing web-storage profile and bounded atomic write
   path. This keeps recovery and profile ownership unified, at the cost of
   serializing cache mutations with other profile updates.
-- Service-worker registration metadata is still process-owned. A restarted
-  content process must register a worker again, but the worker can immediately
-  observe cache entries written by the previous owner. Persisting registrations
-  is a separate lifecycle/profile slice.
+- Service-worker registration metadata is stored separately from the cache
+  entries and is restored by the following lifecycle/profile slice. A restarted
+  content process can therefore reuse the durable cache without coupling cache
+  bytes to worker source or install replay.
 - The JS resolver returns the Rust response envelope unchanged. Keeping one
   payload shape across `match`, enumeration, name queries, and deletion avoids
   primitive/envelope drift at the host boundary.

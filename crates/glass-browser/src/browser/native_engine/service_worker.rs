@@ -15,8 +15,9 @@ use super::javascript::{
     MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES, MAX_NATIVE_SERVICE_WORKERS, MAX_NATIVE_WORKER_MESSAGES,
     NativeJavaScriptRuntime, NativeMessagePortPageMessage, NativeMessagePortTransfer,
     NativeScriptCommand, NativeScriptEvaluation, NativeServiceWorkerCacheEntry,
-    NativeServiceWorkerCacheState, NativeServiceWorkerRegistrationState,
-    load_service_worker_source, validate_message_port_transfers,
+    NativeServiceWorkerCacheState, NativeServiceWorkerRegistrationProfile,
+    NativeServiceWorkerRegistrationState, load_service_worker_source,
+    validate_message_port_transfers,
 };
 use super::origin::NativeOrigin;
 use super::resource_loader::{
@@ -43,6 +44,7 @@ pub(crate) struct NativeServiceWorkerRegistry {
     registrations: BTreeMap<String, NativeServiceWorker>,
     next_worker_id: u32,
     cache_state: NativeServiceWorkerCacheState,
+    registration_profiles: Vec<NativeServiceWorkerRegistrationProfile>,
     pending_message_port_messages: VecDeque<NativeMessagePortPageMessage>,
     message_port_routes: BTreeMap<String, u32>,
 }
@@ -53,6 +55,7 @@ impl Default for NativeServiceWorkerRegistry {
             registrations: BTreeMap::new(),
             next_worker_id: 1,
             cache_state: NativeServiceWorkerCacheState::default(),
+            registration_profiles: Vec::new(),
             pending_message_port_messages: VecDeque::new(),
             message_port_routes: BTreeMap::new(),
         }
@@ -66,6 +69,53 @@ impl NativeServiceWorkerRegistry {
 
     pub(crate) fn cache_state(&self) -> &NativeServiceWorkerCacheState {
         &self.cache_state
+    }
+
+    pub(crate) fn replace_registration_profiles(
+        &mut self,
+        profiles: Vec<NativeServiceWorkerRegistrationProfile>,
+    ) -> Result<(), NativeEngineError> {
+        for profile in &profiles {
+            profile.validate()?;
+        }
+        self.registration_profiles = profiles;
+        Ok(())
+    }
+
+    pub(crate) fn registration_profiles(&self) -> Vec<NativeServiceWorkerRegistrationProfile> {
+        self.registration_profiles.clone()
+    }
+
+    pub(crate) async fn restore_for_document(
+        &mut self,
+        document_url: &str,
+        loader: &mut NativeResourceLoader,
+    ) -> Result<(), NativeEngineError> {
+        let document = parse_network_url("service worker restoration document URL", document_url)?;
+        let document_origin = NativeOrigin::from_url(&document)?;
+        let profiles = self.registration_profiles.clone();
+        for profile in profiles {
+            if self.registrations.contains_key(&profile.scope) {
+                continue;
+            }
+            let scope = Url::parse(&profile.scope).map_err(|_| NativeEngineError::Worker {
+                operation: "service worker restoration".into(),
+                reason: "persisted service worker scope is invalid".into(),
+            })?;
+            if NativeOrigin::from_url(&scope)? != document_origin {
+                continue;
+            }
+            let is_module = profile.worker_type.eq_ignore_ascii_case("module");
+            let loaded = self.restore_worker(loader, &profile, is_module).await;
+            let Ok(worker) = loaded else {
+                // A persisted registration must not prevent its page from
+                // loading when its script is temporarily unavailable. Keep
+                // the profile so the next navigation can retry restoration.
+                continue;
+            };
+            self.registrations.insert(profile.scope.clone(), worker);
+        }
+        Ok(())
     }
 
     pub(crate) fn states_for_document(
@@ -87,6 +137,117 @@ impl NativeServiceWorkerRegistry {
                 })
             })
             .collect())
+    }
+
+    fn next_worker_id(&mut self) -> Result<u32, NativeEngineError> {
+        let worker_id = self.next_worker_id;
+        self.next_worker_id = self.next_worker_id.checked_add(1).ok_or_else(|| {
+            NativeEngineError::limit(
+                "native service worker identifiers",
+                u32::MAX as usize,
+                u32::MAX as usize,
+            )
+        })?;
+        if worker_id == 0 {
+            return Err(NativeEngineError::limit(
+                "native service worker identifiers",
+                u32::MAX as usize,
+                u32::MAX as usize,
+            ));
+        }
+        Ok(worker_id)
+    }
+
+    fn instantiate_worker(
+        &mut self,
+        script_url: String,
+        scope: String,
+        is_module: bool,
+        source: String,
+        import_script_counts: BTreeMap<String, usize>,
+        module_sources: BTreeMap<String, String>,
+    ) -> Result<NativeServiceWorker, NativeEngineError> {
+        let worker_id = self.next_worker_id()?;
+        let runtime = NativeJavaScriptRuntime::new_with_context_id(format!(
+            "glass-service-worker-{worker_id}"
+        ))?;
+        if is_module {
+            runtime.set_module_sources(module_sources);
+        }
+        let mut worker = NativeServiceWorker {
+            id: worker_id,
+            script_url,
+            scope,
+            is_module,
+            runtime,
+            import_script_counts,
+        };
+        let initial = if is_module {
+            worker.runtime.evaluate_service_worker_source(
+                worker.id,
+                &worker.script_url,
+                Some(&worker.script_url),
+                &source,
+                &BTreeMap::new(),
+            )?
+        } else {
+            worker.runtime.evaluate_service_worker_source(
+                worker.id,
+                &worker.script_url,
+                None,
+                &source,
+                &worker.import_script_counts,
+            )?
+        };
+        settle_service_worker_cache_event(&mut worker, initial, &mut self.cache_state)?;
+        Ok(worker)
+    }
+
+    async fn restore_worker(
+        &mut self,
+        loader: &mut NativeResourceLoader,
+        profile: &NativeServiceWorkerRegistrationProfile,
+        is_module: bool,
+    ) -> Result<NativeServiceWorker, NativeEngineError> {
+        let resource = loader
+            .load_worker_async(
+                &profile.script_url,
+                &profile.script_url,
+                MAX_NATIVE_SCRIPT_BYTES,
+            )
+            .await?
+            .ok_or_else(|| NativeEngineError::Network {
+                operation: "service worker restoration".into(),
+                reason: "persisted service worker script was blocked or unavailable".into(),
+            })?;
+        let (source, import_script_counts, module_sources) =
+            load_service_worker_source(loader, &profile.script_url, resource.clone(), is_module)
+                .await?;
+        self.instantiate_worker(
+            resource.url,
+            profile.scope.clone(),
+            is_module,
+            source,
+            import_script_counts,
+            module_sources,
+        )
+    }
+
+    fn remember_registration(&mut self, worker: &NativeServiceWorker) {
+        self.registration_profiles
+            .retain(|profile| profile.scope != worker.scope);
+        self.registration_profiles
+            .push(NativeServiceWorkerRegistrationProfile {
+                script_url: worker.script_url.clone(),
+                scope: worker.scope.clone(),
+                worker_type: if worker.is_module {
+                    "module".into()
+                } else {
+                    "classic".into()
+                },
+            });
+        self.registration_profiles
+            .sort_unstable_by(|left, right| left.scope.cmp(&right.scope));
     }
 
     pub(crate) async fn register(
@@ -159,7 +320,11 @@ impl NativeServiceWorkerRegistry {
             });
         }
         if !self.registrations.contains_key(&scope)
-            && self.registrations.len() >= MAX_NATIVE_SERVICE_WORKERS
+            && !self
+                .registration_profiles
+                .iter()
+                .any(|profile| profile.scope == scope)
+            && self.registration_profiles.len() >= MAX_NATIVE_SERVICE_WORKERS
         {
             return Err(NativeEngineError::limit(
                 "native service worker registrations",
@@ -176,53 +341,14 @@ impl NativeServiceWorkerRegistry {
             })?;
         let (source, import_script_counts, module_sources) =
             load_service_worker_source(loader, owner_url, resource.clone(), is_module).await?;
-        let worker_id = self.next_worker_id;
-        self.next_worker_id = self.next_worker_id.checked_add(1).ok_or_else(|| {
-            NativeEngineError::limit(
-                "native service worker identifiers",
-                u32::MAX as usize,
-                u32::MAX as usize,
-            )
-        })?;
-        if worker_id == 0 {
-            return Err(NativeEngineError::limit(
-                "native service worker identifiers",
-                u32::MAX as usize,
-                u32::MAX as usize,
-            ));
-        }
-        let runtime = NativeJavaScriptRuntime::new_with_context_id(format!(
-            "glass-service-worker-{worker_id}"
-        ))?;
-        if is_module {
-            runtime.set_module_sources(module_sources);
-        }
-        let mut worker = NativeServiceWorker {
-            id: worker_id,
-            script_url: resource.url.clone(),
-            scope: scope.clone(),
+        let mut worker = self.instantiate_worker(
+            resource.url,
+            scope.clone(),
             is_module,
-            runtime,
+            source,
             import_script_counts,
-        };
-        let initial = if is_module {
-            worker.runtime.evaluate_service_worker_source(
-                worker.id,
-                &worker.script_url,
-                Some(&worker.script_url),
-                &source,
-                &BTreeMap::new(),
-            )?
-        } else {
-            worker.runtime.evaluate_service_worker_source(
-                worker.id,
-                &worker.script_url,
-                None,
-                &source,
-                &worker.import_script_counts,
-            )?
-        };
-        settle_service_worker_cache_event(&mut worker, initial, &mut self.cache_state)?;
+            module_sources,
+        )?;
         let install = worker.runtime.evaluate_service_worker_lifecycle(
             worker.id,
             &worker.script_url,
@@ -246,6 +372,7 @@ impl NativeServiceWorkerRegistry {
         if let Some(previous_id) = previous_id {
             self.remove_worker_routes(previous_id);
         }
+        self.remember_registration(&worker);
         self.registrations.insert(scope, worker);
         Ok(state)
     }
@@ -260,8 +387,14 @@ impl NativeServiceWorkerRegistry {
     }
 
     pub(crate) fn unregister(&mut self, scope: &str) -> bool {
+        let removed_profile = self
+            .registration_profiles
+            .iter()
+            .any(|profile| profile.scope == scope);
+        self.registration_profiles
+            .retain(|profile| profile.scope != scope);
         let Some(worker) = self.registrations.remove(scope) else {
-            return false;
+            return removed_profile;
         };
         self.remove_worker_routes(worker.id);
         true

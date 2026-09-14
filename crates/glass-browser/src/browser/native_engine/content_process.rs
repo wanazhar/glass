@@ -36,9 +36,10 @@ use super::javascript::{
     diff_indexed_db_changes, execute_dynamic_page_scripts, execute_page_scripts, host_event_script,
     host_hash_change_event_script, host_key_event_script, host_key_event_script_with_modifiers,
     host_submit_event_script, literal_dynamic_module_specifiers, load_indexed_db_profile,
-    load_service_worker_cache_profile, load_web_storage_profile, message_port_script,
-    order_page_scripts, page_script_sources_to_scripts, save_service_worker_cache_profile,
-    save_web_storage_profile, static_module_specifiers, storage_key, worker_message_script,
+    load_service_worker_cache_profile, load_service_worker_registration_profiles,
+    load_web_storage_profile, message_port_script, order_page_scripts,
+    page_script_sources_to_scripts, save_service_worker_cache_profile, save_web_storage_profile,
+    static_module_specifiers, storage_key, worker_message_script,
 };
 use super::layout::NativePoint;
 use super::origin::NativeOrigin;
@@ -3563,12 +3564,22 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     .as_deref()
                     .map(|path| load_service_worker_cache_profile(Some(path)))
                     .transpose();
+                let loaded_service_worker_registrations = requested_path
+                    .as_deref()
+                    .map(|path| load_service_worker_registration_profiles(Some(path)))
+                    .transpose();
                 match (
                     loaded_web_storage,
                     loaded_indexed_db,
                     loaded_service_worker_caches,
+                    loaded_service_worker_registrations,
                 ) {
-                    (Ok(loaded), Ok(loaded_indexed_db), Ok(loaded_service_worker_caches)) => {
+                    (
+                        Ok(loaded),
+                        Ok(loaded_indexed_db),
+                        Ok(loaded_service_worker_caches),
+                        Ok(loaded_service_worker_registrations),
+                    ) => {
                         if let Some(loaded) = loaded {
                             storage_state = loaded;
                         }
@@ -3577,6 +3588,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         }
                         if let Some(loaded) = loaded_service_worker_caches {
                             service_workers.replace_cache_state(loaded);
+                        }
+                        if let Some(loaded) = loaded_service_worker_registrations {
+                            service_workers.replace_registration_profiles(loaded)?;
                         }
                         storage_profile_path = requested_path;
                         storage_context_id = requested_context_id.to_owned();
@@ -3592,9 +3606,10 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         running = true;
                         json!({"kind":"started","id":id})
                     }
-                    (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => {
-                        content_error_response(id, error)
-                    }
+                    (Err(error), _, _, _)
+                    | (_, Err(error), _, _)
+                    | (_, _, Err(error), _)
+                    | (_, _, _, Err(error)) => content_error_response(id, error),
                 }
             }
             "environment_sync" if protocol_matches(&request) && running => {
@@ -5671,7 +5686,12 @@ fn persist_content_profile(
         indexed_db_state,
         indexed_db_changes,
     )?;
-    save_service_worker_cache_profile(storage_path, service_workers.cache_state())
+    let registration_profiles = service_workers.registration_profiles();
+    save_service_worker_cache_profile(
+        storage_path,
+        service_workers.cache_state(),
+        &registration_profiles,
+    )
 }
 
 fn refresh_content_runtime_cookie(
@@ -5977,6 +5997,7 @@ async fn load_content_resource(
         }
     };
     loader.set_environment(environment)?;
+    service_workers.restore_for_document(url, loader).await?;
     let resource = match service_workers
         .intercept_navigation(loader, &navigation, referrer)
         .await?

@@ -3576,6 +3576,14 @@ impl NativeDocument {
                 NativeScriptCommand::ServiceWorkerRegister { .. }
                 | NativeScriptCommand::ServiceWorkerUnregister { .. }
                 | NativeScriptCommand::ServiceWorkerPostMessage { .. }
+                | NativeScriptCommand::ServiceWorkerCacheOpen { .. }
+                | NativeScriptCommand::ServiceWorkerCacheDelete { .. }
+                | NativeScriptCommand::ServiceWorkerCacheHas { .. }
+                | NativeScriptCommand::ServiceWorkerCacheKeys { .. }
+                | NativeScriptCommand::ServiceWorkerCacheMatch { .. }
+                | NativeScriptCommand::ServiceWorkerCachePut { .. }
+                | NativeScriptCommand::ServiceWorkerCacheDeleteRequest { .. }
+                | NativeScriptCommand::ServiceWorkerCacheEntries { .. }
                 | NativeScriptCommand::MessagePortPostMessage { .. } => {}
                 NativeScriptCommand::SharedWorkerCreate { .. }
                 | NativeScriptCommand::WorkerCreate { .. }

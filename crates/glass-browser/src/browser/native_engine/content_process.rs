@@ -36,9 +36,9 @@ use super::javascript::{
     diff_indexed_db_changes, execute_dynamic_page_scripts, execute_page_scripts, host_event_script,
     host_hash_change_event_script, host_key_event_script, host_key_event_script_with_modifiers,
     host_submit_event_script, literal_dynamic_module_specifiers, load_indexed_db_profile,
-    load_web_storage_profile, message_port_script, order_page_scripts,
-    page_script_sources_to_scripts, save_web_storage_profile, static_module_specifiers,
-    storage_key, worker_message_script,
+    load_service_worker_cache_profile, load_web_storage_profile, message_port_script,
+    order_page_scripts, page_script_sources_to_scripts, save_service_worker_cache_profile,
+    save_web_storage_profile, static_module_specifiers, storage_key, worker_message_script,
 };
 use super::layout::NativePoint;
 use super::origin::NativeOrigin;
@@ -3559,13 +3559,24 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     .as_deref()
                     .map(|path| load_indexed_db_profile(Some(path)))
                     .transpose();
-                match (loaded_web_storage, loaded_indexed_db) {
-                    (Ok(loaded), Ok(loaded_indexed_db)) => {
+                let loaded_service_worker_caches = requested_path
+                    .as_deref()
+                    .map(|path| load_service_worker_cache_profile(Some(path)))
+                    .transpose();
+                match (
+                    loaded_web_storage,
+                    loaded_indexed_db,
+                    loaded_service_worker_caches,
+                ) {
+                    (Ok(loaded), Ok(loaded_indexed_db), Ok(loaded_service_worker_caches)) => {
                         if let Some(loaded) = loaded {
                             storage_state = loaded;
                         }
                         if let Some(loaded) = loaded_indexed_db {
                             indexed_db_state = loaded;
+                        }
+                        if let Some(loaded) = loaded_service_worker_caches {
+                            service_workers.replace_cache_state(loaded);
                         }
                         storage_profile_path = requested_path;
                         storage_context_id = requested_context_id.to_owned();
@@ -3581,7 +3592,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         running = true;
                         json!({"kind":"started","id":id})
                     }
-                    (Err(error), _) | (_, Err(error)) => content_error_response(id, error),
+                    (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => {
+                        content_error_response(id, error)
+                    }
                 }
             }
             "environment_sync" if protocol_matches(&request) && running => {
@@ -5422,6 +5435,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     &indexed_db_state,
                     &storage_events,
                     &indexed_db_changes,
+                    &service_workers,
                     &mut resource_loader,
                 )?;
                 write_value_frame(&mut stdout, &json!({"kind":"closed","id":id})).await?;
@@ -5461,6 +5475,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             &indexed_db_state,
             &storage_events,
             &indexed_db_changes,
+            &service_workers,
             &mut resource_loader,
         )?;
         let mut response_dialogs = decode_dialogs(&response, "merge content process dialogs")?;
@@ -5636,6 +5651,7 @@ fn persist_content_profile(
     indexed_db_state: &NativeIndexedDbState,
     storage_events: &[NativeStorageEvent],
     indexed_db_changes: &[NativeIndexedDbChange],
+    service_workers: &NativeServiceWorkerRegistry,
     resource_loader: &mut Option<NativeResourceLoader>,
 ) -> Result<(), NativeEngineError> {
     let cookie_state = resource_loader
@@ -5654,7 +5670,8 @@ fn persist_content_profile(
         &cookie_changes,
         indexed_db_state,
         indexed_db_changes,
-    )
+    )?;
+    save_service_worker_cache_profile(storage_path, service_workers.cache_state())
 }
 
 fn refresh_content_runtime_cookie(

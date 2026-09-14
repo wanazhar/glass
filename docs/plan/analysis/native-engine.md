@@ -1,8 +1,10 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-320`, with local and HTTP(S)
-lifecycle navigation re-entry covered by the native owner. The completed 234
+expansion checkpoint is `native-engine-browser-342`, with native-first product
+ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
+cookie and message-channel policy, and Service Worker/SharedWorker ownership
+covered by the native owner across local and HTTP(S) paths. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
 slice carries bounded viewport-anchored fixed positioning through the same
@@ -4552,6 +4554,18 @@ Glass Core Web Profile conformance, and release certification remain open
 issue #40 gates. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-317.md`.
 
+The current post-selection continuation is recorded by browser tasks 318
+through 342. Tasks 318-326 move profile, snapshot, task, workflow, semantic,
+and resident-session ownership into the native path. Tasks 327-334 add native
+semantic MCP contracts, stack-safe lifecycle probes, capture/recovery/liveness
+and encoder coverage, and cookie writes/policy. Tasks 335-339 add message
+channels, Service Worker ownership/interception and cross-realm transfers,
+and SharedWorker ownership. Tasks 340-342 add durable Service Worker
+CacheStorage, persisted registration metadata, and active registration update
+replacement. Each task file remains the authoritative contract and local
+evidence record; complete Core Web Profile conformance and production
+certification remain issue #40 gates.
+
 The completed native-engine-browser-196 slice closes the bounded attribute-node
 Web IDL surface in local, HTTP(S) content-worker, and same-origin frame
 realms. `document.createAttribute()` creates persistent `Attr` objects;
@@ -5591,8 +5605,32 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-317.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-342.md` is the latest completed browser
 task;
+`docs/plan/tasks/native-engine-browser-341.md` is the preceding completed task;
+`docs/plan/tasks/native-engine-browser-340.md` is the preceding completed task;
+`docs/plan/tasks/native-engine-browser-339.md` is the preceding completed task;
+`docs/plan/tasks/native-engine-browser-338.md` is the preceding completed task;
+`docs/plan/tasks/native-engine-browser-337.md` is the preceding completed task;
+`docs/plan/tasks/native-engine-browser-336.md` is the preceding completed task;
+`docs/plan/tasks/native-engine-browser-335.md` is the preceding completed task;
+`docs/plan/tasks/native-engine-browser-334.md` is the preceding completed task;
+`docs/plan/tasks/native-engine-browser-333.md` is the preceding completed task;
+`docs/plan/tasks/native-engine-browser-332.md` is the preceding completed task;
+`docs/plan/tasks/native-engine-browser-331.md` is the preceding completed task;
+`docs/plan/tasks/native-engine-browser-330.md` is the preceding completed task;
+`docs/plan/tasks/native-engine-browser-329.md` is the preceding completed task;
+`docs/plan/tasks/native-engine-browser-328.md` is the preceding completed task;
+`docs/plan/tasks/native-engine-browser-327.md` is the preceding completed task;
+`docs/plan/tasks/native-engine-browser-326.md` is the preceding completed task;
+`docs/plan/tasks/native-engine-browser-325.md` is the preceding completed task;
+`docs/plan/tasks/native-engine-browser-324.md` is the preceding completed task;
+`docs/plan/tasks/native-engine-browser-323.md` is the preceding completed task;
+`docs/plan/tasks/native-engine-browser-322.md` is the preceding completed task;
+`docs/plan/tasks/native-engine-browser-321.md` is the preceding completed task;
+`docs/plan/tasks/native-engine-browser-320.md` is the preceding completed task;
+`docs/plan/tasks/native-engine-browser-319.md` is the preceding completed task;
+`docs/plan/tasks/native-engine-browser-318.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-234.md` is the latest completed foundation task;
 `docs/plan/tasks/native-engine-233.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-232.md` is the preceding completed task;
@@ -5631,7 +5669,19 @@ task;
 `docs/plan/tasks/native-engine-198.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-197.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-196.md` is the preceding completed task;
-The current browser-slice evidence chain is `native-engine-browser-317`,
+The current browser-slice evidence chain is `native-engine-browser-342`,
+`native-engine-browser-341`, `native-engine-browser-340`,
+`native-engine-browser-339`, `native-engine-browser-338`,
+`native-engine-browser-337`, `native-engine-browser-336`,
+`native-engine-browser-335`, `native-engine-browser-334`,
+`native-engine-browser-333`, `native-engine-browser-332`,
+`native-engine-browser-331`, `native-engine-browser-330`,
+`native-engine-browser-329`, `native-engine-browser-328`,
+`native-engine-browser-327`, `native-engine-browser-326`,
+`native-engine-browser-325`, `native-engine-browser-324`,
+`native-engine-browser-323`, `native-engine-browser-322`,
+`native-engine-browser-321`, `native-engine-browser-320`,
+`native-engine-browser-319`, `native-engine-browser-318`,
 `native-engine-browser-316`,
 `native-engine-browser-315`,
 `native-engine-browser-314`,

@@ -1,9 +1,22 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-326` slice. The native runtime is now the primary
+`native-engine-browser-329` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
+
+Slice 328 closes the shared capture boundary for the primary backend. Native
+is an ordinary automatic-selection candidate, and transport-neutral capture
+returns the native logical PNG surface or bounded PDF bytes with the declared
+format. JPEG and screenshot-containing evidence remain explicit contracts
+until their owners exist.
+
+Slice 329 adds an explicit revisioned native recovery operation. It rebuilds an
+unhealthy content owner, reloads the current URL while replacing the current
+history entry, and avoids replaying an indeterminate mutation. Backend,
+portable-session, and CLI surfaces use the same recovery owner. The native
+profile is no longer classified as experimental; final Core Web Profile
+conformance and production certification remain issue #40 gates.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-
@@ -5312,10 +5325,10 @@ padding and box-sizing behavior.
 
 The 015 capture boundary is read-only: a running native engine can encode its
 current logical RGBA surface as PNG through `CaptureFormat::Png`, subject to
-the stable capture-byte limit. JPEG and PDF are explicit denials, and
-`EvidenceLevel::Screenshot`/`Combined` remain denied because the stable
-evidence result has no image payload. The native CLI still has no screenshot
-command.
+the stable capture-byte limit. JPEG and PDF were explicit denials at that
+historical boundary; later native capture slices add bounded PDF and keep
+JPEG typed until an encoder exists. `EvidenceLevel::Screenshot`/`Combined`
+remain denied because the stable evidence result has no image payload.
 
 The 029 capture certification adds a complete small logical-pixel golden for
 the existing renderer and compares both direct surface output and decoded PNG
@@ -5388,7 +5401,7 @@ Rust inspection surface.
 
 ## Backend capability contract
 
-The native profile is `experimental` and declares:
+The native profile is `partial` and declares:
 
 | Capability | Level | Current contract |
 |---|---|---|
@@ -5399,7 +5412,7 @@ The native profile is `experimental` and declares:
 | action | available | semantic click/type, focused-text printable/Backspace/Delete key input, bounded single- and multi-select option interaction, bounded semantic root scroll-into-view, bounded vertical root scrolling, bounded GET or POST form defaults with supported encodings and submitter overrides, plus native point targets for supported local controls; text selection, IME, inner CSS scroll-container adjustment, and nested scrolling remain open |
 | effects | available | current revision and changed signal; bounded event metadata is Rust-only |
 | script | available | bounded QuickJS ECMAScript with a refreshed `window`/`document` snapshot, bounded inline/classic/module-root page-script loading and parser/lifecycle ordering, HTTP(S) static module graphs, literal dynamic imports, bounded due-time `setTimeout`/`setInterval` turns, policy-owned bounded GET, same-origin string-body POST, and bounded cross-origin simple/preflighted POST `fetch()` promises with independent text/json/blob/UTF-8 arrayBuffer/bytes response reads and bounded demand-driven transport-backed incremental `ReadableStream` response bodies split into 8 KiB chunks with one-part reader demand, reader lock/release/cancel, transport cancellation, and bounded per-branch clone queues, bounded response bodyUsed and clone ownership, bounded Request bodyUsed, clone ownership, static ReadableStream bodies, and text/json/blob/arrayBuffer/bytes/formData consumers for bounded URL-encoded and multipart bodies, and bounded underlying-source ReadableStream start/pull/cancel controllers with queue backpressure, bounded byte-source strategies and BYOB readers/controllers with partial-buffer delivery through Fetch and tee owners, a bounded read-only response Headers view with duplicate-name combination and same-origin/CORS-exposed filtering, and raw bounded byte-preserving response payloads for response body variants and binary Blob slicing, bounded Blob/File construction from ArrayBuffer and typed-array parts, bounded raw-byte-backed Blob/File request bodies for Fetch and asynchronous XHR, bounded mutable Fetch Headers records with live owner-backed iterators plus plain-object custom request headers with JavaScript/Rust validation, forbidden/internal-header protection, same-origin transfer, and sorted multi-header CORS preflight authorization with bounded positive-`Access-Control-Max-Age` caching, bounded Fetch `cors`/`no-cors`/`same-origin` mode policy with fail-closed same-origin and no-cors request checks plus opaque cross-origin no-cors response projection, bounded Fetch `follow`/`error`/`manual` redirect policy with `redirected` and filtered `opaqueredirect` response projection, direct text-backed Blob/File request bodies with normalized MIME propagation and bounded observable fetch AbortController/AbortSignal cancellation with static abort/timeout/any composition, bounded text-only `FormData(form)` construction, text-backed and raw-byte-backed Blob/File parts, and multipart bodies with Rust-owned form association plus bounded live owner-backed `entries()`/`keys()`/`values()`/`[Symbol.iterator]()` iterators, and bounded URLSearchParams construction from strings, records, pair arrays, and pair iterables, mutation, sorting, live entries/keys/values iteration, and URL-encoded bodies, plus asynchronous bounded GET/POST `XMLHttpRequest` with string, text-backed, and raw-byte-backed Blob/File request bodies, bounded `arraybuffer`/`blob` response types, bounded non-zero timeout with zero disabling the extra deadline, request-local abort/reset state, bounded `readystatechange`/`abort`/`timeout` callbacks, and stale-continuation suppression, bounded persistent WebSocket text/binary/Ping-Pong transport and EventSource/SSE stream transport with serialized open/message/error/close delivery, from explicit evaluations and initial page scripts, typed click/form-submit/attribute/focus commands, persistent listener records, bounded Event/CustomEvent capture/target/bubble dispatch, cancelable click preflight, transactional type/input/change event re-entry, bounded common constraint validation for required/email/URL/length/numeric/date/month/time/datetime-local/pattern controls, bounded `validity`/`validationMessage`/`willValidate` snapshots with `checkValidity()`/`reportValidity()` and custom validity, submitter event metadata and successful-control serialization, bounded external form ownership, bounded multipart/text/plain form encodings and validated `formaction`/`formmethod`/`formenctype` overrides, bounded `readyState`/`readystatechange`/DOMContentLoaded/load phase ordering, form `novalidate`/`formnovalidate` bypass, top-level link/form navigation handoff, and relative HTTP(S)/same-document resolution; no live Web IDL identity, complete child-frame lifecycle/resource parity, beforeinput/composition, full JavaScript RegExp `v`-flag/Unicode-set and file constraint validation or picker/UI parity, full live `ValidityState` identity, private-network access, streaming FormData body parity, synchronous XHR, XHR upload/progress/streaming parity, complete Fetch Streams/Web IDL semantics, invalid raw response-header bytes, response trailers, service workers, full WebSocket/EventSource Web IDL identity, animation/idle callbacks, task-source fairness, background page scheduling, computed imports, bare specifiers/import maps, local external subresources, or general page loading |
-| capture | available | bounded PNG of the current logical RGBA surface; JPEG/PDF and screenshot-containing evidence are unavailable |
+| capture | available | bounded PNG or PDF of the current logical page surface; JPEG encoding and screenshot-containing evidence remain separate surfaces |
 | storage | partial | process-owned cookies with bounded `document.cookie` synchronization, bounded document cache, origin-keyed page local/session storage with opt-in revisioned localStorage/cookie/IndexedDB profiles, stale-snapshot key-level merge for Web Storage and cookies, profile-journal local/session events across live local and process-backed documents, bounded reader-lease retention, acknowledged-prefix compaction, profile-snapshot recovery, a bounded StorageManager estimate against the fixed 4 MiB profile quota, and a bounded tagged JSON/structured-clone IndexedDB subset with text-backed Blob/File values plus byte-vector ArrayBuffer/typed-array/DataView values, bounded Blob/File `arrayBuffer()`/`bytes()` reads, version upgrades, same-realm version-change/deletion coordination, serialized atomic ordinary transactions, object stores, indexes, key ranges, cursors, and CRUD; no full cookie policy or IndexedDB parity |
 | prompts | partial | bounded alert/confirm/prompt metadata, FIFO pending state, `dialogOpen`, and accept/dismiss resolution; suspended modal continuation and response injection remain open |
 | downloads | available | bounded HTTP(S) anchor `download` attributes queue a parent-owned transfer; runtime, CLI, and MCP complete the oldest queued download for the selected target into an existing directory with sanitized collision-free file creation, SHA-256 evidence, stable completion IDs, and bounded cancellation/listing; chooser UI, programmatic/object-URL downloads, streaming/progress, service-worker interception, and cross-target/frame parity remain open |
@@ -5431,9 +5444,9 @@ semantics remain explicitly outside the profile.
 The profile limitations are surfaced through `BackendProfile`. The dispatcher
 returns typed capability denials for omitted operations. `EvidenceLevel::Deep`
 can return a bounded incomplete projection; screenshot-containing levels are
-explicitly denied. The separate capture operation supports only bounded PNG
-bytes. No operation silently falls back to CDP, the proof backend, or another
-resource loader.
+explicitly denied. The separate capture operation supports bounded PNG and
+PDF bytes, while JPEG remains a typed unsupported format. No operation
+silently falls back to CDP, the proof backend, or another resource loader.
 
 ## Errors and recovery
 

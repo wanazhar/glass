@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-326` locally. Native is now the default runtime for
+`native-engine-browser-329` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -103,6 +103,20 @@ no-layout ready-state probe keep nested lifecycle/MCP calls stack-safe. The
 remaining issue-40 work is complete operation coverage, Core Web Profile
 conformance, recovery/cancellation, cross-platform release evidence, and
 production certification.
+
+The completed native capture-contract slice is
+[native-engine-browser-328](tasks/native-engine-browser-328.md): automatic
+backend selection includes native, and the shared capture operation exposes
+native PNG and bounded PDF bytes without transport changes. JPEG and
+screenshot-containing evidence remain explicit separate contracts.
+
+The completed native recovery slice is
+[native-engine-browser-329](tasks/native-engine-browser-329.md): native
+content-owner recovery reloads the current URL under a revision guard,
+replaces the current history entry, and never replays an indeterminate
+mutation. Native certification is now `Partial`, not `Experimental`; Core Web
+Profile conformance, process isolation, cross-platform evidence, and final
+production certification remain active issue #40 gates.
 
 The completed computed-style/media-query slice is
 [native-engine-browser-282](tasks/native-engine-browser-282.md). It exposes a

@@ -116,6 +116,7 @@ this semantic command set:
 
 ```text
 navigate URL
+recover [--expected-revision N]
 click SEMANTIC_LOCATOR_OR_POINT
 type TEXT --target SEMANTIC_LOCATOR
 clear SEMANTIC_LOCATOR
@@ -185,6 +186,7 @@ The complete browser command inventory is:
 
 ```text
 navigate URL
+recover [--expected-revision N]
 click TARGET
 preflight TARGET
 click-at X Y

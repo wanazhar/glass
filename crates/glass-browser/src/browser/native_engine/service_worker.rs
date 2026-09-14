@@ -233,6 +233,86 @@ impl NativeServiceWorkerRegistry {
         )
     }
 
+    pub(crate) async fn update(
+        &mut self,
+        scope: &str,
+        loader: &mut NativeResourceLoader,
+    ) -> Result<NativeServiceWorkerRegistrationState, NativeEngineError> {
+        let profile = self
+            .registration_profiles
+            .iter()
+            .find(|profile| profile.scope == scope)
+            .cloned()
+            .or_else(|| {
+                self.registrations
+                    .get(scope)
+                    .map(|worker| NativeServiceWorkerRegistrationProfile {
+                        script_url: worker.script_url.clone(),
+                        scope: worker.scope.clone(),
+                        worker_type: if worker.is_module {
+                            "module".into()
+                        } else {
+                            "classic".into()
+                        },
+                    })
+            })
+            .ok_or_else(|| {
+                NativeEngineError::invalid(
+                    "native service worker update scope",
+                    "does not identify a registered worker",
+                )
+            })?;
+        profile.validate()?;
+        let is_module = profile.worker_type.eq_ignore_ascii_case("module");
+        let resource = loader
+            .load_worker_async(
+                &profile.script_url,
+                &profile.script_url,
+                MAX_NATIVE_SCRIPT_BYTES,
+            )
+            .await?
+            .ok_or_else(|| NativeEngineError::Network {
+                operation: "service worker update".into(),
+                reason: "service worker script was blocked or unavailable".into(),
+            })?;
+        let (source, import_script_counts, module_sources) =
+            load_service_worker_source(loader, &profile.script_url, resource.clone(), is_module)
+                .await?;
+        let mut worker = self.instantiate_worker(
+            resource.url,
+            profile.scope.clone(),
+            is_module,
+            source,
+            import_script_counts,
+            module_sources,
+        )?;
+        let install = worker.runtime.evaluate_service_worker_lifecycle(
+            worker.id,
+            &worker.script_url,
+            "install",
+            worker.is_module,
+        )?;
+        settle_service_worker_cache_event(&mut worker, install, &mut self.cache_state)?;
+        let activate = worker.runtime.evaluate_service_worker_lifecycle(
+            worker.id,
+            &worker.script_url,
+            "activate",
+            worker.is_module,
+        )?;
+        settle_service_worker_cache_event(&mut worker, activate, &mut self.cache_state)?;
+        if let Some(previous_id) = self.registrations.get(scope).map(|worker| worker.id) {
+            self.remove_worker_routes(previous_id);
+        }
+        let state = NativeServiceWorkerRegistrationState {
+            script_url: worker.script_url.clone(),
+            scope: worker.scope.clone(),
+            state: "activated".into(),
+        };
+        self.remember_registration(&worker);
+        self.registrations.insert(scope.to_owned(), worker);
+        Ok(state)
+    }
+
     fn remember_registration(&mut self, worker: &NativeServiceWorker) {
         self.registration_profiles
             .retain(|profile| profile.scope != worker.scope);

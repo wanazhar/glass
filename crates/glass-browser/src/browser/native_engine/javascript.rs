@@ -243,6 +243,10 @@ pub(crate) enum NativeScriptCommand {
         request_id: u32,
         scope: String,
     },
+    ServiceWorkerUpdate {
+        request_id: u32,
+        scope: String,
+    },
     ServiceWorkerPostMessage {
         scope: String,
         data: serde_json::Value,
@@ -8793,6 +8797,7 @@ impl NativeJavaScriptRuntime {
             command,
             NativeScriptCommand::ServiceWorkerRegister { .. }
                 | NativeScriptCommand::ServiceWorkerUnregister { .. }
+                | NativeScriptCommand::ServiceWorkerUpdate { .. }
                 | NativeScriptCommand::ServiceWorkerPostMessage { .. }
         );
         if !is_service_worker_command {
@@ -8837,6 +8842,22 @@ impl NativeJavaScriptRuntime {
                 }
             }
             NativeScriptCommand::ServiceWorkerUnregister { request_id, scope } => {
+                if *request_id == 0 {
+                    return Err(NativeEngineError::invalid(
+                        "native service worker request id",
+                        "must be positive",
+                    ));
+                }
+                validate_url_text("native service worker scope", scope)?;
+                if scope.len() > MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES {
+                    return Err(NativeEngineError::limit(
+                        "native service worker scope",
+                        MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES,
+                        scope.len(),
+                    ));
+                }
+            }
+            NativeScriptCommand::ServiceWorkerUpdate { request_id, scope } => {
                 if *request_id == 0 {
                     return Err(NativeEngineError::invalid(
                         "native service worker request id",
@@ -15435,6 +15456,19 @@ const NATIVE_SERVICE_WORKER_PAGE_SCRIPT: &str = r###"
     registration.waiting = null;
     registration.active = serviceWorkerMakeWorker(state, scope);
     registration.onupdatefound = null;
+    registration.update = () => {
+      const requestId = nextServiceWorkerRequestId++;
+      globalThis.__glassNextServiceWorkerRequestId = nextServiceWorkerRequestId;
+      return new Promise((resolve, reject) => {
+        serviceWorkerPendingRequests.set(requestId, { resolve, reject, kind: "update", scope });
+        try {
+          pushCommand({ kind: "serviceWorkerUpdate", request_id: requestId, scope });
+        } catch (error) {
+          serviceWorkerPendingRequests.delete(requestId);
+          reject(error);
+        }
+      });
+    };
     registration.unregister = () => {
       const requestId = nextServiceWorkerRequestId++;
       globalThis.__glassNextServiceWorkerRequestId = nextServiceWorkerRequestId;
@@ -15567,7 +15601,7 @@ const NATIVE_SERVICE_WORKER_PAGE_SCRIPT: &str = r###"
       pending.reject(new Error(String(payload.error)));
       return null;
     }
-    if (pending.kind === "serviceWorkerRegister") {
+    if (pending.kind === "serviceWorkerRegister" || pending.kind === "update") {
       const state = payload && payload.registration;
       if (!state || !state.scope) {
         pending.reject(new Error("native service worker registration response was invalid"));

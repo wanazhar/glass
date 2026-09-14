@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-341` locally. Native is now the default runtime for
+`native-engine-browser-342` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -218,6 +218,17 @@ the existing worker script/module loading policy rebuilds the isolated worker
 owner after a content-process restart. Full update/lifecycle conformance,
 cache matching options, richer transferable values, complete task-source
 scheduling, and final production certification remain active issue #40 gates.
+
+The completed native Service Worker update slice is
+[native-engine-browser-342](tasks/native-engine-browser-342.md):
+`ServiceWorkerRegistration.update()` reloads the registered script through the
+native resource policy, settles bounded install/activate work, replaces the
+active isolated worker, refreshes persisted registration metadata, and routes
+later navigation and Fetch requests through the new worker version. Waiting
+and installing registration states, update notifications, byte-identical
+short-circuiting, full CacheStorage matching, richer transferable values,
+complete task-source scheduling, and final production certification remain
+active issue #40 gates.
 
 The completed native cookie-policy slice is
 [native-engine-browser-334](tasks/native-engine-browser-334.md): cookie

@@ -5783,6 +5783,27 @@ async fn resolve_service_worker_commands(
                 document_commands.extend(evaluation.commands);
                 pending.extend(runtime.take_service_worker_commands());
             }
+            NativeScriptCommand::ServiceWorkerUpdate { request_id, scope } => {
+                let state = registry.update(&scope, loader).await?;
+                runtime
+                    .set_service_worker_registrations(registry.states_for_document(document_url)?);
+                let evaluation = runtime.resolve_service_worker_registration(
+                    request_id,
+                    &json!({"kind":"update","registration":state}),
+                    document,
+                    document_url,
+                    document_origin,
+                    viewport,
+                )?;
+                if evaluation.top_level_await_pending {
+                    return Err(NativeEngineError::Worker {
+                        operation: "service worker update response".into(),
+                        reason: "service worker update response remained pending".into(),
+                    });
+                }
+                document_commands.extend(evaluation.commands);
+                pending.extend(runtime.take_service_worker_commands());
+            }
             NativeScriptCommand::ServiceWorkerPostMessage {
                 scope,
                 data,

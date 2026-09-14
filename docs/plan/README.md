@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-335` locally. Native is now the default runtime for
+`native-engine-browser-336` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -158,8 +158,18 @@ The completed native message-channel slice is
 dedicated-worker realms now expose bounded entangled `MessagePort` pairs and
 same-realm `BroadcastChannel` delivery with cloned asynchronous messages,
 stable `EventTarget`/`MessageEvent` identity, and typed limits. Cross-context
-port transfer, transferables, shared/service workers, complete task-source
-scheduling, and final production certification remain active issue #40 gates.
+port transfer, transferables, shared workers, complete task-source scheduling,
+and final production certification remain active issue #40 gates. Service
+workers are covered by the following native owner slice.
+
+The completed native service-worker slice is
+[native-engine-browser-336](tasks/native-engine-browser-336.md): HTTP(S) pages
+can register bounded classic or static-module workers, retain activated
+registrations across reloads, expose registration/controller state, route
+same-origin navigation and Fetch requests through longest-scope matching, and
+return validated worker-generated responses without CDP. Cross-context port
+transfer, durable worker caches, complete task-source scheduling, and final
+production certification remain active issue #40 gates.
 
 The completed native cookie-policy slice is
 [native-engine-browser-334](tasks/native-engine-browser-334.md): cookie

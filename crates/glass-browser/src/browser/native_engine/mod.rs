@@ -28,6 +28,7 @@ mod resource_loader;
 mod runtime;
 mod sandbox;
 mod scheduler;
+mod service_worker;
 mod worker;
 
 pub use browsing_context::{NATIVE_CONTEXT_ID, NativeBrowsingContext};

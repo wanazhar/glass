@@ -74,6 +74,8 @@ pub(crate) const MAX_NATIVE_MODULE_IMPORTS: usize = 128;
 pub(crate) const MAX_NATIVE_WORKERS: usize = 32;
 pub(crate) const MAX_NATIVE_WORKER_MESSAGES: usize = 64;
 pub(crate) const MAX_NATIVE_WORKER_TIMERS: usize = 64;
+pub(crate) const MAX_NATIVE_SERVICE_WORKERS: usize = 16;
+pub(crate) const MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES: usize = MAX_NATIVE_SCRIPT_BYTES;
 const MAX_NATIVE_WORKER_URLSEARCHPARAMS_ENTRIES: usize = 128;
 const MAX_NATIVE_WORKER_URLSEARCHPARAMS_BYTES: usize = MAX_NATIVE_POST_MESSAGE_BYTES;
 const MAX_NATIVE_WORKER_CRYPTO_POOL_BYTES: usize = 16 * 1024;
@@ -215,6 +217,21 @@ pub(crate) enum NativeScriptCommand {
         redirect: Option<String>,
         #[serde(default)]
         timeout_ms: Option<u32>,
+    },
+    ServiceWorkerRegister {
+        request_id: u32,
+        script_url: String,
+        scope: String,
+        #[serde(default)]
+        worker_type: String,
+    },
+    ServiceWorkerUnregister {
+        request_id: u32,
+        scope: String,
+    },
+    ServiceWorkerPostMessage {
+        scope: String,
+        data: serde_json::Value,
     },
     WebSocketOpen {
         socket_id: u32,
@@ -412,6 +429,13 @@ pub(crate) enum NativeScriptCommand {
     WorkerClose {
         worker_id: u32,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct NativeServiceWorkerRegistrationState {
+    pub(crate) script_url: String,
+    pub(crate) scope: String,
+    pub(crate) state: String,
 }
 
 pub(crate) struct NativeScriptEvaluation {
@@ -1350,6 +1374,25 @@ impl NativeWorkerRegistry {
     }
 }
 
+pub(crate) async fn load_service_worker_source(
+    loader: &mut NativeResourceLoader,
+    owner_url: &str,
+    resource: NativeScriptResource,
+    is_module: bool,
+) -> Result<(String, BTreeMap<String, usize>, BTreeMap<String, String>), NativeEngineError> {
+    let registry = NativeWorkerRegistry::new();
+    if is_module {
+        let module_sources = registry
+            .load_worker_module_graph(loader, owner_url, resource.clone())
+            .await?;
+        Ok((resource.body, BTreeMap::new(), module_sources))
+    } else {
+        let (source, import_script_counts) =
+            registry.load_worker_script_graph(loader, resource).await?;
+        Ok((source, import_script_counts, BTreeMap::new()))
+    }
+}
+
 fn resolve_worker_module_specifier(
     module_url: &str,
     specifier: &str,
@@ -1536,6 +1579,7 @@ pub(crate) struct NativePageNavigation {
 #[derive(Default)]
 pub(crate) struct NativePageScriptResult {
     pub(crate) pending_fetches: Vec<NativeScriptCommand>,
+    pub(crate) service_worker_commands: Vec<NativeScriptCommand>,
     pub(crate) websocket_commands: Vec<NativeScriptCommand>,
     pub(crate) event_source_commands: Vec<NativeScriptCommand>,
     /// External/module sources discovered by a dynamic script and awaiting
@@ -4097,6 +4141,10 @@ pub(crate) fn execute_page_scripts(
     )?;
     Ok(NativePageScriptResult {
         pending_fetches,
+        service_worker_commands: runtime
+            .as_ref()
+            .expect("page script runtime initialized")
+            .take_service_worker_commands(),
         websocket_commands,
         event_source_commands,
         pending_script_sources: Vec::new(),
@@ -4362,6 +4410,7 @@ pub(crate) fn execute_dynamic_page_scripts(
 
     Ok(NativePageScriptResult {
         pending_fetches,
+        service_worker_commands: runtime.take_service_worker_commands(),
         websocket_commands,
         event_source_commands,
         pending_script_sources,
@@ -6332,6 +6381,8 @@ pub(crate) struct NativeJavaScriptRuntime {
     window_navigation_events: Arc<Mutex<Vec<NativeWindowNavigationRequest>>>,
     frame_script_events: Arc<Mutex<Vec<NativeFrameScriptRequest>>>,
     worker_commands: Arc<Mutex<Vec<NativeScriptCommand>>>,
+    service_worker_commands: Arc<Mutex<Vec<NativeScriptCommand>>>,
+    service_worker_registrations: Arc<Mutex<Vec<NativeServiceWorkerRegistrationState>>>,
     pending_window_proxy_updates: Arc<Mutex<Vec<NativeWindowProxyUpdate>>>,
     frame_script_bindings: Arc<Mutex<Vec<NativeFrameScriptBinding>>>,
     frame_script_context: Arc<Mutex<Option<NativeFrameScriptContext>>>,
@@ -6461,6 +6512,8 @@ impl NativeJavaScriptRuntime {
             window_navigation_events: Arc::new(Mutex::new(Vec::new())),
             frame_script_events: Arc::new(Mutex::new(Vec::new())),
             worker_commands: Arc::new(Mutex::new(Vec::new())),
+            service_worker_commands: Arc::new(Mutex::new(Vec::new())),
+            service_worker_registrations: Arc::new(Mutex::new(Vec::new())),
             pending_window_proxy_updates: Arc::new(Mutex::new(Vec::new())),
             frame_script_bindings: Arc::new(Mutex::new(Vec::new())),
             frame_script_context: Arc::new(Mutex::new(None)),
@@ -6702,6 +6755,29 @@ impl NativeJavaScriptRuntime {
         self.worker_commands
             .lock()
             .map(|mut commands| std::mem::take(&mut *commands))
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn take_service_worker_commands(&self) -> Vec<NativeScriptCommand> {
+        self.service_worker_commands
+            .lock()
+            .map(|mut commands| std::mem::take(&mut *commands))
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn set_service_worker_registrations(
+        &self,
+        registrations: Vec<NativeServiceWorkerRegistrationState>,
+    ) {
+        if let Ok(mut current) = self.service_worker_registrations.lock() {
+            *current = registrations;
+        }
+    }
+
+    fn service_worker_registrations(&self) -> Vec<NativeServiceWorkerRegistrationState> {
+        self.service_worker_registrations
+            .lock()
+            .map(|registrations| registrations.clone())
             .unwrap_or_default()
     }
 
@@ -7570,6 +7646,114 @@ impl NativeJavaScriptRuntime {
         Ok(true)
     }
 
+    fn apply_service_worker_command(
+        &self,
+        command: &NativeScriptCommand,
+    ) -> Result<bool, NativeEngineError> {
+        let is_service_worker_command = matches!(
+            command,
+            NativeScriptCommand::ServiceWorkerRegister { .. }
+                | NativeScriptCommand::ServiceWorkerUnregister { .. }
+                | NativeScriptCommand::ServiceWorkerPostMessage { .. }
+        );
+        if !is_service_worker_command {
+            return Ok(false);
+        }
+        match command {
+            NativeScriptCommand::ServiceWorkerRegister {
+                request_id,
+                script_url,
+                scope,
+                worker_type,
+            } => {
+                if *request_id == 0 {
+                    return Err(NativeEngineError::invalid(
+                        "native service worker request id",
+                        "must be positive",
+                    ));
+                }
+                validate_url_text("native service worker script URL", script_url)?;
+                validate_url_text("native service worker scope", scope)?;
+                if script_url.len() > MAX_NATIVE_SCRIPT_BYTES {
+                    return Err(NativeEngineError::limit(
+                        "native service worker script URL",
+                        MAX_NATIVE_SCRIPT_BYTES,
+                        script_url.len(),
+                    ));
+                }
+                if scope.len() > MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES {
+                    return Err(NativeEngineError::limit(
+                        "native service worker scope",
+                        MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES,
+                        scope.len(),
+                    ));
+                }
+                if !worker_type.is_empty()
+                    && !worker_type.eq_ignore_ascii_case("classic")
+                    && !worker_type.eq_ignore_ascii_case("module")
+                {
+                    return Err(NativeEngineError::UnsupportedUrl {
+                        reason: "native service worker type must be classic or module".into(),
+                    });
+                }
+            }
+            NativeScriptCommand::ServiceWorkerUnregister { request_id, scope } => {
+                if *request_id == 0 {
+                    return Err(NativeEngineError::invalid(
+                        "native service worker request id",
+                        "must be positive",
+                    ));
+                }
+                validate_url_text("native service worker scope", scope)?;
+                if scope.len() > MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES {
+                    return Err(NativeEngineError::limit(
+                        "native service worker scope",
+                        MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES,
+                        scope.len(),
+                    ));
+                }
+            }
+            NativeScriptCommand::ServiceWorkerPostMessage { scope, data } => {
+                validate_url_text("native service worker scope", scope)?;
+                if scope.len() > MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES {
+                    return Err(NativeEngineError::limit(
+                        "native service worker scope",
+                        MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES,
+                        scope.len(),
+                    ));
+                }
+                let encoded = serde_json::to_vec(data).map_err(|_| NativeEngineError::Worker {
+                    operation: "record native service worker message".into(),
+                    reason: "service worker message data could not be serialized".into(),
+                })?;
+                if encoded.len() > MAX_NATIVE_POST_MESSAGE_BYTES {
+                    return Err(NativeEngineError::limit(
+                        "native service worker message",
+                        MAX_NATIVE_POST_MESSAGE_BYTES,
+                        encoded.len(),
+                    ));
+                }
+            }
+            _ => unreachable!("service worker command was matched above"),
+        }
+        let mut commands =
+            self.service_worker_commands
+                .lock()
+                .map_err(|_| NativeEngineError::Worker {
+                    operation: "queue native service worker command".into(),
+                    reason: "native service worker command queue was poisoned".into(),
+                })?;
+        if commands.len() >= super::interaction::MAX_NATIVE_EFFECTS {
+            return Err(NativeEngineError::limit(
+                "native service worker commands",
+                super::interaction::MAX_NATIVE_EFFECTS,
+                commands.len().saturating_add(1),
+            ));
+        }
+        commands.push(command.clone());
+        Ok(true)
+    }
+
     fn apply_post_message_command(
         &self,
         command: &NativeScriptCommand,
@@ -7632,7 +7816,7 @@ impl NativeJavaScriptRuntime {
         Ok(true)
     }
 
-    fn set_module_sources(&self, sources: BTreeMap<String, String>) {
+    pub(crate) fn set_module_sources(&self, sources: BTreeMap<String, String>) {
         if let Ok(mut current) = self.module_sources.lock() {
             *current = sources;
         }
@@ -7691,6 +7875,7 @@ impl NativeJavaScriptRuntime {
             &self.cookie_state(),
             &self.frame_script_bindings(),
             self.frame_script_context().as_ref(),
+            &self.service_worker_registrations(),
             self.timer_pump_enabled(),
             include_layout,
             &self.environment(),
@@ -7885,6 +8070,9 @@ impl NativeJavaScriptRuntime {
                 if self.apply_post_message_command(&command)? {
                     continue;
                 }
+                if self.apply_service_worker_command(&command)? {
+                    continue;
+                }
                 if self.apply_worker_command(&command)? {
                     continue;
                 }
@@ -7991,6 +8179,34 @@ impl NativeJavaScriptRuntime {
         source: &str,
         import_script_counts: &BTreeMap<String, usize>,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        let bootstrap = worker_bootstrap(
+            worker_id,
+            worker_url,
+            self.now_ms(),
+            import_script_counts,
+            module_name.is_some(),
+        )?;
+        self.evaluate_worker_source_with_bootstrap(
+            worker_id,
+            worker_url,
+            module_name,
+            source,
+            bootstrap,
+            false,
+            false,
+        )
+    }
+
+    fn evaluate_worker_source_with_bootstrap(
+        &self,
+        worker_id: u32,
+        worker_url: &str,
+        module_name: Option<&str>,
+        source: &str,
+        bootstrap: String,
+        service_worker: bool,
+        await_promise: bool,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
         if worker_id == 0 {
             return Err(NativeEngineError::invalid(
                 "native Worker id",
@@ -8011,13 +8227,6 @@ impl NativeJavaScriptRuntime {
                 source.len(),
             ));
         }
-        let bootstrap = worker_bootstrap(
-            worker_id,
-            worker_url,
-            self.now_ms(),
-            import_script_counts,
-            module_name.is_some(),
-        )?;
         let deadline = Instant::now() + NATIVE_SCRIPT_TIMEOUT;
         if let Ok(mut current) = self.deadline.lock() {
             *current = Some(deadline);
@@ -8032,7 +8241,86 @@ impl NativeJavaScriptRuntime {
                         CaughtError::from_error(&ctx, error)
                     ),
                 })?;
-            let value: Value = if let Some(module_name) = module_name {
+            let mut top_level_await_pending = false;
+            let value: Value = if await_promise {
+                let promise = ctx.eval_promise(source).map_err(|error| {
+                    NativeEngineError::Worker {
+                        operation: "evaluate native service worker promise".into(),
+                        reason: format!(
+                            "native service worker promise could not be created: {}",
+                            CaughtError::from_error(&ctx, error)
+                        ),
+                    }
+                })?;
+                ctx.eval::<(), _>(
+                    "globalThis.__glassTopLevelAwaitState = { state: 'pending' };",
+                )
+                .map_err(|error| NativeEngineError::Worker {
+                    operation: "prepare native service worker promise".into(),
+                    reason: format!(
+                        "native service worker promise could not be prepared: {}",
+                        CaughtError::from_error(&ctx, error)
+                    ),
+                })?;
+                let on_fulfilled: Function = ctx
+                    .eval("value => { globalThis.__glassTopLevelAwaitState = { state: 'fulfilled', value: value === undefined ? null : value }; }")
+                    .map_err(|error| NativeEngineError::Worker {
+                        operation: "prepare native service worker promise".into(),
+                        reason: format!(
+                            "native service worker promise callback could not be created: {}",
+                            CaughtError::from_error(&ctx, error)
+                        ),
+                    })?;
+                let on_rejected: Function = ctx
+                    .eval("error => { globalThis.__glassTopLevelAwaitState = { state: 'rejected', error: String(error) }; }")
+                    .map_err(|error| NativeEngineError::Worker {
+                        operation: "prepare native service worker promise".into(),
+                        reason: format!(
+                            "native service worker promise callback could not be created: {}",
+                            CaughtError::from_error(&ctx, error)
+                        ),
+                    })?;
+                promise
+                    .then()
+                    .and_then(|then| {
+                        then.call::<_, ()>((
+                            This(promise.clone()),
+                            on_fulfilled,
+                            on_rejected,
+                        ))
+                    })
+                    .map_err(|error| NativeEngineError::Worker {
+                        operation: "prepare native service worker promise".into(),
+                        reason: format!(
+                            "native service worker promise callback could not be attached: {}",
+                            CaughtError::from_error(&ctx, error)
+                        ),
+                    })?;
+                match promise.finish::<Value>() {
+                    Ok(value) => value,
+                    Err(Error::WouldBlock) => {
+                        top_level_await_pending = true;
+                        ctx.eval::<Value, _>("undefined").map_err(|error| {
+                            NativeEngineError::Worker {
+                                operation: "serialize native service worker promise".into(),
+                                reason: format!(
+                                    "native service worker promise result could not be created: {}",
+                                    CaughtError::from_error(&ctx, error)
+                                ),
+                            }
+                        })?
+                    }
+                    Err(error) => {
+                        return Err(NativeEngineError::Worker {
+                            operation: "evaluate native service worker promise".into(),
+                            reason: format!(
+                                "native service worker promise failed: {}",
+                                CaughtError::from_error(&ctx, error)
+                            ),
+                        });
+                    }
+                }
+            } else if let Some(module_name) = module_name {
                 Module::evaluate(ctx.clone(), module_name, source)
                     .and_then(|promise| promise.finish::<()>())
                     .map_err(|error| NativeEngineError::Worker {
@@ -8069,7 +8357,7 @@ impl NativeJavaScriptRuntime {
             for command in &commands {
                 let valid = match command {
                     NativeScriptCommand::WorkerPostMessage { .. }
-                    | NativeScriptCommand::WorkerClose { .. } => true,
+                    | NativeScriptCommand::WorkerClose { .. } => !service_worker,
                     NativeScriptCommand::Fetch {
                         worker_id: Some(command_worker_id),
                         ..
@@ -8135,13 +8423,123 @@ impl NativeJavaScriptRuntime {
             Ok(NativeScriptEvaluation {
                 value,
                 commands,
-                top_level_await_pending: false,
+                top_level_await_pending,
             })
         });
         if let Ok(mut current) = self.deadline.lock() {
             *current = None;
         }
         result
+    }
+
+    pub(crate) fn evaluate_service_worker_source(
+        &self,
+        worker_id: u32,
+        worker_url: &str,
+        module_name: Option<&str>,
+        source: &str,
+        import_script_counts: &BTreeMap<String, usize>,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        let bootstrap = service_worker_bootstrap(
+            worker_id,
+            worker_url,
+            self.now_ms(),
+            import_script_counts,
+            module_name.is_some(),
+        )?;
+        self.evaluate_worker_source_with_bootstrap(
+            worker_id,
+            worker_url,
+            module_name,
+            source,
+            bootstrap,
+            true,
+            false,
+        )
+    }
+
+    pub(crate) fn evaluate_service_worker_fetch(
+        &self,
+        worker_id: u32,
+        worker_url: &str,
+        payload: &serde_json::Value,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        let serialized = serde_json::to_string(payload).map_err(|_| NativeEngineError::Worker {
+            operation: "serialize native service worker fetch".into(),
+            reason: "service worker fetch request could not be serialized".into(),
+        })?;
+        if serialized.len() > MAX_NATIVE_SCRIPT_BYTES {
+            return Err(NativeEngineError::limit(
+                "native service worker fetch request",
+                MAX_NATIVE_SCRIPT_BYTES,
+                serialized.len(),
+            ));
+        }
+        let source = format!("globalThis.__glassDispatchServiceWorkerFetch({serialized});");
+        let bootstrap = service_worker_bootstrap(
+            worker_id,
+            worker_url,
+            self.now_ms(),
+            &BTreeMap::new(),
+            false,
+        )?;
+        self.evaluate_worker_source_with_bootstrap(
+            worker_id, worker_url, None, &source, bootstrap, true, true,
+        )
+    }
+
+    pub(crate) fn evaluate_service_worker_lifecycle(
+        &self,
+        worker_id: u32,
+        worker_url: &str,
+        event_type: &str,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        let event_type =
+            serde_json::to_string(event_type).map_err(|_| NativeEngineError::Worker {
+                operation: "serialize native service worker lifecycle".into(),
+                reason: "service worker lifecycle event could not be serialized".into(),
+            })?;
+        let source = format!("globalThis.__glassDispatchServiceWorkerLifecycle({event_type});");
+        let bootstrap = service_worker_bootstrap(
+            worker_id,
+            worker_url,
+            self.now_ms(),
+            &BTreeMap::new(),
+            false,
+        )?;
+        self.evaluate_worker_source_with_bootstrap(
+            worker_id, worker_url, None, &source, bootstrap, true, false,
+        )
+    }
+
+    pub(crate) fn dispatch_service_worker_message(
+        &self,
+        worker_id: u32,
+        worker_url: &str,
+        data: &serde_json::Value,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        let serialized = serde_json::to_string(data).map_err(|_| NativeEngineError::Worker {
+            operation: "serialize native service worker message".into(),
+            reason: "service worker message could not be serialized".into(),
+        })?;
+        if serialized.len() > MAX_NATIVE_POST_MESSAGE_BYTES {
+            return Err(NativeEngineError::limit(
+                "native service worker message",
+                MAX_NATIVE_POST_MESSAGE_BYTES,
+                serialized.len(),
+            ));
+        }
+        let source = format!("globalThis.__glassDispatchWorkerMessage({serialized});");
+        let bootstrap = service_worker_bootstrap(
+            worker_id,
+            worker_url,
+            self.now_ms(),
+            &BTreeMap::new(),
+            false,
+        )?;
+        self.evaluate_worker_source_with_bootstrap(
+            worker_id, worker_url, None, &source, bootstrap, true, false,
+        )
     }
 
     pub(crate) fn resolve_worker_fetch(
@@ -8198,6 +8596,41 @@ impl NativeJavaScriptRuntime {
         }
         self.evaluate(
             &format!("globalThis.__glassResolveFetch({request_id}, {serialized});"),
+            document,
+            document_url,
+            origin,
+            viewport,
+        )
+    }
+
+    pub(crate) fn resolve_service_worker_registration(
+        &self,
+        request_id: u32,
+        payload: &serde_json::Value,
+        document: &NativeDocument,
+        document_url: &str,
+        origin: &NativeOrigin,
+        viewport: Viewport,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        if request_id == 0 {
+            return Err(NativeEngineError::invalid(
+                "native service worker request id",
+                "must be positive",
+            ));
+        }
+        let serialized = serde_json::to_string(payload).map_err(|_| NativeEngineError::Worker {
+            operation: "serialize native service worker response".into(),
+            reason: "service worker response could not be serialized".into(),
+        })?;
+        if serialized.len() > MAX_NATIVE_SCRIPT_BYTES {
+            return Err(NativeEngineError::limit(
+                "native service worker response",
+                MAX_NATIVE_SCRIPT_BYTES,
+                serialized.len(),
+            ));
+        }
+        self.evaluate(
+            &format!("globalThis.__glassResolveServiceWorker({request_id}, {serialized});"),
             document,
             document_url,
             origin,
@@ -8339,6 +8772,7 @@ impl NativeJavaScriptRuntime {
             &self.cookie_state(),
             &self.frame_script_bindings(),
             self.frame_script_context().as_ref(),
+            &self.service_worker_registrations(),
             self.timer_pump_enabled(),
             true,
             &self.environment(),
@@ -8446,6 +8880,9 @@ impl NativeJavaScriptRuntime {
                     continue;
                 }
                 if self.apply_post_message_command(&command)? {
+                    continue;
+                }
+                if self.apply_service_worker_command(&command)? {
                     continue;
                 }
                 if self.apply_worker_command(&command)? {
@@ -12719,6 +13156,38 @@ fn worker_bootstrap(
     ))
 }
 
+fn service_worker_bootstrap(
+    worker_id: u32,
+    worker_url: &str,
+    now_ms: u64,
+    import_script_counts: &BTreeMap<String, usize>,
+    is_module: bool,
+) -> Result<String, NativeEngineError> {
+    let mut bootstrap = worker_bootstrap(
+        worker_id,
+        worker_url,
+        now_ms,
+        import_script_counts,
+        is_module,
+    )?;
+    let marker = "})()";
+    let insertion = bootstrap
+        .rfind(marker)
+        .ok_or_else(|| NativeEngineError::Worker {
+            operation: "install native service worker host view".into(),
+            reason: "native service worker bootstrap boundary was not found".into(),
+        })?;
+    bootstrap.insert_str(insertion, &service_worker_bootstrap_script());
+    Ok(bootstrap)
+}
+
+fn service_worker_bootstrap_script() -> String {
+    NATIVE_SERVICE_WORKER_BOOTSTRAP.replace(
+        "__GLASS_SERVICE_WORKER_BODY_LIMIT__",
+        &MAX_NATIVE_FORM_BODY_BYTES.to_string(),
+    )
+}
+
 pub(crate) fn worker_message_script(
     messages: &[NativeWorkerMessage],
 ) -> Result<Option<String>, NativeEngineError> {
@@ -13097,6 +13566,328 @@ fn message_channel_bootstrap() -> String {
         )
 }
 
+const NATIVE_SERVICE_WORKER_PAGE_SCRIPT: &str = r###"
+  const serviceWorkerRegistrations = globalThis.__glassServiceWorkerRegistrations instanceof Map
+    ? globalThis.__glassServiceWorkerRegistrations
+    : new Map();
+  const serviceWorkerPendingRequests = globalThis.__glassServiceWorkerPendingRequests instanceof Map
+    ? globalThis.__glassServiceWorkerPendingRequests
+    : new Map();
+  let nextServiceWorkerRequestId = Number.isSafeInteger(globalThis.__glassNextServiceWorkerRequestId)
+    ? globalThis.__glassNextServiceWorkerRequestId
+    : 1;
+  const serviceWorkerClone = (value) => {
+    let encoded;
+    try { encoded = JSON.stringify(value === undefined ? null : value); }
+    catch (_) { throw new DOMExceptionNative("service worker message could not be cloned", "DataCloneError"); }
+    if (encoded === undefined || encoded.length > __GLASS_SERVICE_WORKER_MESSAGE_LIMIT__)
+      throw new DOMExceptionNative("service worker message could not be cloned", "DataCloneError");
+    try { return JSON.parse(encoded); }
+    catch (_) { throw new DOMExceptionNative("service worker message could not be cloned", "DataCloneError"); }
+  };
+  const serviceWorkerOrigin = String(host.origin || "null");
+  const serviceWorkerUrl = (value) => {
+    const url = new URLNative(String(value), host.url);
+    if (!["http:", "https:"].includes(url.protocol) || url.origin !== serviceWorkerOrigin)
+      throw new DOMExceptionNative("service worker URL must be same-origin HTTP(S)", "SecurityError");
+    return url;
+  };
+  const serviceWorkerScopeHref = (url) => url.origin + url.pathname;
+  const ServiceWorkerNative = typeof globalThis.__glassServiceWorkerConstructor === "function"
+    ? globalThis.__glassServiceWorkerConstructor
+    : function ServiceWorker() { throw new TypeError("Illegal constructor"); };
+  const ServiceWorkerRegistrationNative = typeof globalThis.__glassServiceWorkerRegistrationConstructor === "function"
+    ? globalThis.__glassServiceWorkerRegistrationConstructor
+    : function ServiceWorkerRegistration() { throw new TypeError("Illegal constructor"); };
+  if (!ServiceWorkerNative.prototype.postMessage) {
+    ServiceWorkerNative.prototype.postMessage = function(message, options) {
+      const transfer = options === undefined ? [] : options && typeof options === "object" && options.transfer !== undefined
+        ? options.transfer : options;
+      if (!Array.isArray(transfer) || transfer.length > 0)
+        throw new DOMExceptionNative("service worker transferables are unsupported", "DataCloneError");
+      pushCommand({ kind: "serviceWorkerPostMessage", scope: String(this.__glassServiceWorkerScope || ""), data: serviceWorkerClone(message) });
+    };
+  }
+  globalThis.__glassServiceWorkerConstructor = ServiceWorkerNative;
+  globalThis.__glassServiceWorkerRegistrationConstructor = ServiceWorkerRegistrationNative;
+  globalThis.ServiceWorker = ServiceWorkerNative;
+  globalThis.ServiceWorkerRegistration = ServiceWorkerRegistrationNative;
+  const serviceWorkerMakeWorker = (state, scope) => {
+    const worker = Object.create(ServiceWorkerNative.prototype);
+    worker.scriptURL = String(state.script_url || "");
+    worker.state = String(state.state || "activated");
+    worker.onstatechange = null;
+    Object.defineProperty(worker, "__glassServiceWorkerScope", {
+      configurable: false, enumerable: false, value: scope,
+    });
+    return worker;
+  };
+  const serviceWorkerMakeRegistration = (state) => {
+    const scope = String(state.scope || "");
+    const registration = Object.create(ServiceWorkerRegistrationNative.prototype);
+    registration.scope = scope;
+    registration.installing = null;
+    registration.waiting = null;
+    registration.active = serviceWorkerMakeWorker(state, scope);
+    registration.onupdatefound = null;
+    registration.unregister = () => {
+      const requestId = nextServiceWorkerRequestId++;
+      globalThis.__glassNextServiceWorkerRequestId = nextServiceWorkerRequestId;
+      return new Promise((resolve, reject) => {
+        serviceWorkerPendingRequests.set(requestId, { resolve, reject, kind: "unregister", scope });
+        try {
+          pushCommand({ kind: "serviceWorkerUnregister", request_id: requestId, scope });
+        } catch (error) {
+          serviceWorkerPendingRequests.delete(requestId);
+          reject(error);
+        }
+      });
+    };
+    return registration;
+  };
+  const serviceWorkerRefresh = () => {
+    const states = Array.isArray(host.service_workers) ? host.service_workers : [];
+    for (const state of states) {
+      if (!state || typeof state !== "object" || !state.scope) continue;
+      const scope = String(state.scope);
+      let registration = serviceWorkerRegistrations.get(scope);
+      if (!registration) {
+        registration = serviceWorkerMakeRegistration(state);
+        serviceWorkerRegistrations.set(scope, registration);
+      } else {
+        registration.scope = scope;
+        registration.active = serviceWorkerMakeWorker(state, scope);
+        registration.installing = null;
+        registration.waiting = null;
+      }
+    }
+    globalThis.__glassServiceWorkerRegistrations = serviceWorkerRegistrations;
+    return states;
+  };
+  serviceWorkerRefresh();
+  const serviceWorkerFind = (href) => {
+    let best = null;
+    for (const registration of serviceWorkerRegistrations.values()) {
+      if (!registration || typeof registration.scope !== "string") continue;
+      if (!href.startsWith(registration.scope)) continue;
+      if (!best || registration.scope.length > best.scope.length) best = registration;
+    }
+    return best;
+  };
+  const serviceWorkerQueueRequest = (kind, payload) => {
+    const requestId = nextServiceWorkerRequestId++;
+    globalThis.__glassNextServiceWorkerRequestId = nextServiceWorkerRequestId;
+    return new Promise((resolve, reject) => {
+      serviceWorkerPendingRequests.set(requestId, { resolve, reject, kind });
+      try { pushCommand(Object.assign({ kind, request_id: requestId }, payload)); }
+      catch (error) {
+        serviceWorkerPendingRequests.delete(requestId);
+        reject(error);
+      }
+    });
+  };
+  const serviceWorkerRegister = (scriptURL, options) => {
+    try {
+      const script = serviceWorkerUrl(scriptURL);
+      const settings = options === undefined ? {} : options;
+      if (!settings || typeof settings !== "object")
+        return Promise.reject(new TypeError("service worker registration options must be an object"));
+      const requestedScope = settings.scope === undefined
+        ? serviceWorkerScopeHref(new URLNative(script.href.slice(0, script.href.lastIndexOf("/") + 1)))
+        : serviceWorkerScopeHref(serviceWorkerUrl(settings.scope));
+      const scriptDirectory = script.pathname.slice(0, script.pathname.lastIndexOf("/") + 1);
+      const scopeUrl = new URLNative(requestedScope);
+      if (!scopeUrl.pathname.startsWith(scriptDirectory))
+        return Promise.reject(new DOMExceptionNative("service worker scope exceeds script scope", "SecurityError"));
+      const workerType = settings.type === undefined ? "classic" : String(settings.type).toLowerCase();
+      if (workerType !== "classic" && workerType !== "module")
+        return Promise.reject(new TypeError("service worker type must be classic or module"));
+      return serviceWorkerQueueRequest("serviceWorkerRegister", {
+        script_url: script.href,
+        scope: requestedScope,
+        worker_type: workerType,
+      });
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  };
+  const serviceWorkerContainer = globalThis.__glassServiceWorkerContainer || {};
+  serviceWorkerContainer.register = serviceWorkerRegister;
+  serviceWorkerContainer.getRegistration = (value) => {
+    try {
+      const url = serviceWorkerUrl(value === undefined ? host.url : value);
+      return Promise.resolve(serviceWorkerFind(url.href));
+    } catch (error) { return Promise.reject(error); }
+  };
+  serviceWorkerContainer.getRegistrations = () => Promise.resolve(
+    Array.from(serviceWorkerRegistrations.values()).filter(registration => registration && registration.active)
+  );
+  serviceWorkerContainer.addEventListener = serviceWorkerContainer.addEventListener || function(type, callback) {
+    if (!this.__glassListeners) this.__glassListeners = new Map();
+    const callbacks = this.__glassListeners.get(String(type)) || [];
+    if (typeof callback === "function" && !callbacks.includes(callback)) callbacks.push(callback);
+    this.__glassListeners.set(String(type), callbacks);
+  };
+  serviceWorkerContainer.removeEventListener = serviceWorkerContainer.removeEventListener || function(type, callback) {
+    const callbacks = this.__glassListeners && this.__glassListeners.get(String(type)) || [];
+    if (this.__glassListeners) this.__glassListeners.set(String(type), callbacks.filter(candidate => candidate !== callback));
+  };
+  serviceWorkerContainer.dispatchEvent = serviceWorkerContainer.dispatchEvent || function(event) {
+    const callbacks = this.__glassListeners && this.__glassListeners.get(String(event && event.type)) || [];
+    for (const callback of callbacks.slice()) { try { callback.call(this, event); } catch (_) {} }
+    const handler = this["on" + String(event && event.type || "")];
+    if (typeof handler === "function") { try { handler.call(this, event); } catch (_) {} }
+    return true;
+  };
+  Object.defineProperty(serviceWorkerContainer, "controller", {
+    configurable: true, enumerable: true,
+    get: () => {
+      const registration = serviceWorkerFind(String(host.url));
+      return registration && registration.active || null;
+    },
+  });
+  Object.defineProperty(serviceWorkerContainer, "ready", {
+    configurable: true, enumerable: true,
+    get: () => Promise.resolve(serviceWorkerFind(String(host.url))),
+  });
+  serviceWorkerContainer.oncontrollerchange = serviceWorkerContainer.oncontrollerchange || null;
+  serviceWorkerContainer.__glassServiceWorkerContainer = true;
+  globalThis.__glassServiceWorkerContainer = serviceWorkerContainer;
+  setNavigatorProperty("serviceWorker", serviceWorkerContainer);
+  globalThis.__glassResolveServiceWorker = (requestId, payload) => {
+    const pending = serviceWorkerPendingRequests.get(Number(requestId));
+    if (!pending) return null;
+    serviceWorkerPendingRequests.delete(Number(requestId));
+    if (payload && payload.error) {
+      pending.reject(new Error(String(payload.error)));
+      return null;
+    }
+    if (pending.kind === "register") {
+      const state = payload && payload.registration;
+      if (!state || !state.scope) {
+        pending.reject(new Error("native service worker registration response was invalid"));
+        return null;
+      }
+      serviceWorkerRefresh();
+      let registration = serviceWorkerRegistrations.get(String(state.scope));
+      if (!registration) {
+        registration = serviceWorkerMakeRegistration(state);
+        serviceWorkerRegistrations.set(String(state.scope), registration);
+      }
+      pending.resolve(registration);
+    } else pending.resolve(Boolean(payload && payload.unregistered));
+    return null;
+  };
+  globalThis.__glassServiceWorkerRegistrations = serviceWorkerRegistrations;
+  globalThis.__glassServiceWorkerPendingRequests = serviceWorkerPendingRequests;
+"###;
+
+fn service_worker_page_script() -> String {
+    NATIVE_SERVICE_WORKER_PAGE_SCRIPT.replace(
+        "__GLASS_SERVICE_WORKER_MESSAGE_LIMIT__",
+        &MAX_NATIVE_POST_MESSAGE_BYTES.to_string(),
+    )
+}
+
+const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
+  const serviceWorkerFetchResponse = (response) => {
+    if (!response || typeof response.status !== "number" || typeof response.clone !== "function")
+      return Promise.reject(new TypeError("service worker fetch handler must resolve to a Response"));
+    const clone = response.clone();
+    const bodyPromise = clone.body === null
+      ? Promise.resolve(new Uint8Array([]))
+      : clone.arrayBuffer().then(buffer => new Uint8Array(buffer));
+    return bodyPromise.then(bytes => {
+      if (bytes.length > __GLASS_SERVICE_WORKER_BODY_LIMIT__)
+        throw new RangeError("service worker response body exceeds its limit");
+      return {
+        status: Number(response.status),
+        statusText: String(response.statusText || ""),
+        url: String(response.url || ""),
+        redirected: response.redirected === true,
+        headers: response.headers && typeof response.headers.entries === "function"
+          ? Array.from(response.headers.entries()) : [],
+        contentType: response.headers && typeof response.headers.get === "function"
+          ? response.headers.get("content-type") : null,
+        bodyNull: clone.body === null,
+        bodyBase64: encodeWorkerBase64(Array.from(bytes), __GLASS_SERVICE_WORKER_BODY_LIMIT__),
+      };
+    });
+  };
+  const serviceWorkerDispatchFetch = (payload) => {
+    const body = payload && payload.bodyNull === true
+      ? undefined
+      : payload && typeof payload.bodyBase64 === "string"
+        ? new Uint8Array(decodeWorkerBase64(payload.bodyBase64, __GLASS_SERVICE_WORKER_BODY_LIMIT__))
+        : String(payload && payload.body || "");
+    const request = new WorkerRequestNative(String(payload && payload.url || workerUrl), {
+      method: String(payload && payload.method || "GET"),
+      headers: Array.isArray(payload && payload.headers) ? payload.headers : [],
+      body,
+      mode: String(payload && payload.mode || "same-origin"),
+      redirect: String(payload && payload.redirect || "follow"),
+      credentials: payload && payload.credentials === true ? "include" : "omit",
+    });
+    let responded = false;
+    let responsePromise = null;
+    const event = {
+      type: "fetch",
+      request,
+      clientId: "",
+      resultingClientId: "",
+      isReload: false,
+      isHistoryNavigation: false,
+      preloadResponse: Promise.resolve(undefined),
+      waitUntil() {},
+      respondWith(value) {
+        if (responded) throw new DOMExceptionNative("service worker fetch already responded", "InvalidStateError");
+        responded = true;
+        responsePromise = Promise.resolve(value);
+      },
+    };
+    const callbacks = listeners.get("fetch") || [];
+    try {
+      if (typeof globalThis.onfetch === "function") globalThis.onfetch.call(globalThis, event);
+      for (const callback of callbacks.slice()) {
+        if (typeof callback === "function") callback.call(globalThis, event);
+        else if (callback && typeof callback.handleEvent === "function") callback.handleEvent(event);
+      }
+    } catch (error) { return Promise.reject(error); }
+    if (!responded) return Promise.resolve({ handled: false });
+    return responsePromise.then(response => serviceWorkerFetchResponse(response))
+      .then(response => ({ handled: true, response }));
+  };
+  if (!Object.prototype.hasOwnProperty.call(globalThis, "onfetch")) {
+    Object.defineProperty(globalThis, "onfetch", {
+      configurable: true, enumerable: true, get() { return globalThis.__glassServiceWorkerOnFetch || null; },
+      set(value) { globalThis.__glassServiceWorkerOnFetch = typeof value === "function" ? value : null; },
+    });
+  }
+  globalThis.__glassDispatchServiceWorkerFetch = serviceWorkerDispatchFetch;
+  globalThis.skipWaiting = () => Promise.resolve(undefined);
+  globalThis.clients = globalThis.clients || {
+    claim: () => Promise.resolve(undefined),
+    matchAll: () => Promise.resolve([]),
+    openWindow: () => Promise.reject(new Error("native service worker clients.openWindow is unavailable")),
+  };
+  globalThis.registration = globalThis.registration || {
+    scope: workerUrl.slice(0, workerUrl.lastIndexOf("/") + 1),
+    update: () => Promise.resolve(undefined),
+    unregister: () => Promise.resolve(undefined),
+  };
+  globalThis.__glassDispatchServiceWorkerLifecycle = (type) => {
+    const event = { type: String(type), waitUntil() {} };
+    const callbacks = listeners.get(String(type)) || [];
+    for (const callback of callbacks.slice()) {
+      try {
+        if (typeof callback === "function") callback.call(globalThis, event);
+        else if (callback && typeof callback.handleEvent === "function") callback.handleEvent(event);
+      } catch (_) {}
+    }
+    return null;
+  };
+"###;
+
 #[allow(clippy::too_many_arguments)]
 fn document_bootstrap(
     document: &NativeDocument,
@@ -13120,6 +13911,7 @@ fn document_bootstrap(
     cookie: &str,
     frame_bindings: &[NativeFrameScriptBinding],
     frame_context: Option<&NativeFrameScriptContext>,
+    service_worker_registrations: &[NativeServiceWorkerRegistrationState],
     run_timers: bool,
     include_layout: bool,
     environment: &NativeEnvironmentOverrides,
@@ -13165,6 +13957,7 @@ fn document_bootstrap(
         "cookie": cookie,
         "frames": frame_bindings,
         "frame_context": frame_context,
+        "service_workers": service_worker_registrations,
         "device_scale_factor_milli": viewport.device_scale_factor_milli,
         "user_agent": environment.user_agent(),
         "accept_language": environment.accept_language(),
@@ -13183,6 +13976,7 @@ fn document_bootstrap(
             reason: "native document ready state could not be serialized".into(),
         })?;
     let message_channel_script = message_channel_bootstrap();
+    let service_worker_page_script = service_worker_page_script();
     Ok(format!(
         r###"(() => {{
   const host = {serialized};
@@ -26562,6 +27356,7 @@ fn document_bootstrap(
   globalThis.ErrorEvent = ErrorEventNative;
   globalThis.PromiseRejectionEvent = PromiseRejectionEventNative;
   {message_channel_script}
+  {service_worker_page_script}
   try {{ Object.setPrototypeOf(CustomEventNative.prototype, EventNative.prototype); }} catch (_error) {{}}
   try {{ Object.setPrototypeOf(StorageEventNative.prototype, EventNative.prototype); }} catch (_error) {{}}
   try {{ Object.setPrototypeOf(ErrorEventNative.prototype, EventNative.prototype); }} catch (_error) {{}}
@@ -26682,5 +27477,6 @@ fn document_bootstrap(
         native_crypto_derive_work = MAX_NATIVE_CRYPTO_DERIVE_WORK,
         native_canvas_source = NATIVE_CANVAS_SCRIPT,
         message_channel_script = message_channel_script,
+        service_worker_page_script = service_worker_page_script,
     ))
 }

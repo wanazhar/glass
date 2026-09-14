@@ -188,7 +188,7 @@ pub(crate) enum NativeRequestBody {
 }
 
 impl NativeRequestBody {
-    fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         match self {
             Self::Text(body) => body.len(),
             Self::Bytes(body) => body.len(),

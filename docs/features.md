@@ -52,9 +52,10 @@ source-behavior reference.
   bounded semantic one-shot command set.
 - A `native-engine` feature build can construct the explicit local
   `BrowserRuntimeSession::connect_native` path or use
-  `--browser-runtime native`; it accepts only local `about:blank` and bounded
-  percent-decoded or standard padded-base64 `data:text/html` from the CLI and
-  never contacts an endpoint. Its current
+  `--browser-runtime native`; it accepts local `about:blank`, bounded
+  percent-decoded or standard padded-base64 `data:text/html`, and validated
+  external HTTP(S) navigation through the native content process, and never
+  contacts a remote browser endpoint. Its current
   Rust-only presentation artifacts include bounded outer/content box layout with
   physical four-side padding/margin shorthands and longhands plus explicit box
   sizing, bounded physical min/max width/height constraints with bounded

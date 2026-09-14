@@ -23,9 +23,9 @@ ordinary HTTP(S) pages:
   all network access remains owned by the existing native resource loader;
   no CDP process or hidden browser fallback is introduced; and
 - page-to-service-worker `postMessage()` is bounded and owner-routed. The
-  cross-context `MessagePort` transfer and worker-to-client event channel are
-  separate follow-up browser surfaces, not silently represented by a same-realm
-  shortcut.
+  follow-up [338](native-engine-browser-338.md) slice adds transferred
+  `MessagePort` delivery and worker-to-page replies without representing the
+  cross-context channel as a same-realm shortcut.
 
 ## Tradeoffs
 

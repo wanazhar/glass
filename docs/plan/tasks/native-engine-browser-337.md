@@ -32,8 +32,9 @@ dedicated-worker `MessagePort` endpoints in both native execution paths:
   sources have browser-accurate interleaving.
 - The implementation uses JSON-backed structured-clone coverage already used
   by the native runtime. Transferable ports are supported; richer browser
-  transferables and SharedWorker/service-worker channel ownership remain
-  separate profile work.
+transferables and SharedWorker channel ownership remain separate profile
+work. Service-worker channel ownership is covered by the follow-up
+[338](native-engine-browser-338.md) slice.
 
 ## Local evidence
 

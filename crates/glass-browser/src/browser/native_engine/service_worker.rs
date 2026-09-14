@@ -10,8 +10,10 @@ use super::error::NativeEngineError;
 use super::interaction::MAX_NATIVE_FORM_BODY_BYTES;
 use super::javascript::{
     MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_SCRIPT_BYTES, MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES,
-    MAX_NATIVE_SERVICE_WORKERS, NativeJavaScriptRuntime, NativeScriptCommand,
+    MAX_NATIVE_SERVICE_WORKERS, MAX_NATIVE_WORKER_MESSAGES, NativeJavaScriptRuntime,
+    NativeMessagePortPageMessage, NativeMessagePortTransfer, NativeScriptCommand,
     NativeScriptEvaluation, NativeServiceWorkerRegistrationState, load_service_worker_source,
+    validate_message_port_transfers,
 };
 use super::origin::NativeOrigin;
 use super::resource_loader::{
@@ -21,7 +23,7 @@ use super::resource_loader::{
 };
 use base64::Engine as _;
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::Duration;
 use url::Url;
 
@@ -36,6 +38,8 @@ struct NativeServiceWorker {
 pub(crate) struct NativeServiceWorkerRegistry {
     registrations: BTreeMap<String, NativeServiceWorker>,
     next_worker_id: u32,
+    pending_message_port_messages: VecDeque<NativeMessagePortPageMessage>,
+    message_port_routes: BTreeMap<String, u32>,
 }
 
 impl Default for NativeServiceWorkerRegistry {
@@ -43,6 +47,8 @@ impl Default for NativeServiceWorkerRegistry {
         Self {
             registrations: BTreeMap::new(),
             next_worker_id: 1,
+            pending_message_port_messages: VecDeque::new(),
+            message_port_routes: BTreeMap::new(),
         }
     }
 }
@@ -219,27 +225,150 @@ impl NativeServiceWorkerRegistry {
             scope: scope.clone(),
             state: "activated".into(),
         };
+        let previous_id = self.registrations.get(&scope).map(|previous| previous.id);
+        if let Some(previous_id) = previous_id {
+            self.remove_worker_routes(previous_id);
+        }
         self.registrations.insert(scope, worker);
         Ok(state)
     }
 
+    pub(crate) fn clear_page_message_port_routes(&mut self) {
+        self.pending_message_port_messages.clear();
+        self.message_port_routes.clear();
+    }
+
+    pub(crate) fn take_message_port_messages(&mut self) -> Vec<NativeMessagePortPageMessage> {
+        self.pending_message_port_messages.drain(..).collect()
+    }
+
     pub(crate) fn unregister(&mut self, scope: &str) -> bool {
-        self.registrations.remove(scope).is_some()
+        let Some(worker) = self.registrations.remove(scope) else {
+            return false;
+        };
+        self.remove_worker_routes(worker.id);
+        true
     }
 
     pub(crate) fn post_message(
         &mut self,
         scope: &str,
         data: &Value,
+        transfer_ports: &[NativeMessagePortTransfer],
     ) -> Result<(), NativeEngineError> {
-        let Some(worker) = self.registrations.get_mut(scope) else {
+        let Some(worker_id) = self.registrations.get(scope).map(|worker| worker.id) else {
             return Ok(());
         };
-        let evaluation =
-            worker
-                .runtime
-                .dispatch_service_worker_message(worker.id, &worker.script_url, data)?;
-        ensure_lifecycle_evaluation("service worker message", evaluation)
+        validate_message_port_transfers(transfer_ports)?;
+        self.register_page_transfers(worker_id, transfer_ports)?;
+        let evaluation = {
+            let worker = self
+                .registrations
+                .get(scope)
+                .ok_or_else(|| NativeEngineError::invalid("service worker scope", "not found"))?;
+            worker.runtime.dispatch_service_worker_message(
+                worker.id,
+                &worker.script_url,
+                data,
+                transfer_ports,
+            )
+        };
+        let evaluation = match evaluation {
+            Ok(evaluation) => evaluation,
+            Err(error) => {
+                self.remove_transfer_routes(transfer_ports);
+                return Err(error);
+            }
+        };
+        let message_port_commands = self
+            .registrations
+            .get(scope)
+            .map(|worker| worker.runtime.take_message_port_commands())
+            .unwrap_or_default();
+        if let Err(error) = self.collect_message_port_commands(worker_id, message_port_commands) {
+            self.remove_transfer_routes(transfer_ports);
+            return Err(error);
+        }
+        if let Err(error) = ensure_lifecycle_evaluation("service worker message", evaluation) {
+            self.remove_transfer_routes(transfer_ports);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn apply_page_message_port_commands(
+        &mut self,
+        commands: Vec<NativeScriptCommand>,
+    ) -> Result<(), NativeEngineError> {
+        if commands.len() > MAX_NATIVE_WORKER_MESSAGES {
+            return Err(NativeEngineError::limit(
+                "native page MessagePort commands",
+                MAX_NATIVE_WORKER_MESSAGES,
+                commands.len(),
+            ));
+        }
+        for command in commands {
+            let NativeScriptCommand::MessagePortPostMessage {
+                bridge_key,
+                data,
+                worker_id: None,
+                transfer_ports,
+            } = command
+            else {
+                return Err(NativeEngineError::invalid(
+                    "native page MessagePort command",
+                    "command did not originate from the page realm",
+                ));
+            };
+            let Some(worker_id) = self.message_port_routes.get(&bridge_key).copied() else {
+                continue;
+            };
+            let Some(scope) = self
+                .registrations
+                .iter()
+                .find_map(|(scope, worker)| (worker.id == worker_id).then_some(scope.clone()))
+            else {
+                self.message_port_routes.remove(&bridge_key);
+                continue;
+            };
+            self.register_page_transfers(worker_id, &transfer_ports)?;
+            let evaluation = {
+                let worker = self.registrations.get(&scope).ok_or_else(|| {
+                    NativeEngineError::invalid("service worker scope", "not found")
+                })?;
+                worker.runtime.dispatch_service_worker_message_port(
+                    worker.id,
+                    &worker.script_url,
+                    &bridge_key,
+                    &data,
+                    &transfer_ports,
+                )
+            };
+            let evaluation = match evaluation {
+                Ok(evaluation) => evaluation,
+                Err(error) => {
+                    self.remove_transfer_routes(&transfer_ports);
+                    return Err(error);
+                }
+            };
+            let message_port_commands = self
+                .registrations
+                .get(&scope)
+                .map(|worker| worker.runtime.take_message_port_commands())
+                .unwrap_or_default();
+            if let Err(error) = self.collect_message_port_commands(worker_id, message_port_commands)
+            {
+                self.remove_transfer_routes(&transfer_ports);
+                return Err(error);
+            }
+            if let Err(error) =
+                ensure_lifecycle_evaluation("service worker MessagePort event", evaluation)
+            {
+                self.remove_transfer_routes(&transfer_ports);
+                return Err(error);
+            }
+        }
+        Ok(())
     }
 
     pub(crate) async fn intercept_navigation(
@@ -336,7 +465,14 @@ impl NativeServiceWorkerRegistry {
             &worker.script_url,
             &payload,
         )?;
+        let worker_id = worker.id;
         let value = settle_service_worker_fetch(worker, loader, evaluation).await?;
+        let message_port_commands = self
+            .registrations
+            .get(&scope)
+            .map(|worker| worker.runtime.take_message_port_commands())
+            .unwrap_or_default();
+        self.collect_message_port_commands(worker_id, message_port_commands)?;
         if value.get("handled").and_then(Value::as_bool) != Some(true) {
             return Ok(None);
         }
@@ -368,6 +504,127 @@ impl NativeServiceWorkerRegistry {
             })
             .max_by_key(|(length, _)| *length)
             .map(|(_, scope)| scope))
+    }
+
+    fn register_page_transfers(
+        &mut self,
+        worker_id: u32,
+        transfers: &[NativeMessagePortTransfer],
+    ) -> Result<(), NativeEngineError> {
+        self.register_transfers(worker_id, transfers)
+    }
+
+    fn register_worker_transfers(
+        &mut self,
+        worker_id: u32,
+        transfers: &[NativeMessagePortTransfer],
+    ) -> Result<(), NativeEngineError> {
+        self.register_transfers(worker_id, transfers)
+    }
+
+    fn register_transfers(
+        &mut self,
+        worker_id: u32,
+        transfers: &[NativeMessagePortTransfer],
+    ) -> Result<(), NativeEngineError> {
+        validate_message_port_transfers(transfers)?;
+        if transfers
+            .iter()
+            .any(|transfer| self.message_port_routes.contains_key(&transfer.bridge_key))
+        {
+            return Err(NativeEngineError::invalid(
+                "native service-worker MessagePort transfer",
+                "bridge key was already transferred",
+            ));
+        }
+        for transfer in transfers {
+            self.message_port_routes
+                .insert(transfer.bridge_key.clone(), worker_id);
+        }
+        Ok(())
+    }
+
+    fn remove_transfer_routes(&mut self, transfers: &[NativeMessagePortTransfer]) {
+        for transfer in transfers {
+            self.message_port_routes.remove(&transfer.bridge_key);
+        }
+        let live_bridge_keys = self
+            .message_port_routes
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        self.pending_message_port_messages
+            .retain(|message| live_bridge_keys.contains(&message.bridge_key));
+    }
+
+    fn collect_message_port_commands(
+        &mut self,
+        worker_id: u32,
+        commands: Vec<NativeScriptCommand>,
+    ) -> Result<(), NativeEngineError> {
+        if commands.len() > MAX_NATIVE_WORKER_MESSAGES {
+            return Err(NativeEngineError::limit(
+                "native service-worker MessagePort commands",
+                MAX_NATIVE_WORKER_MESSAGES,
+                commands.len(),
+            ));
+        }
+        for command in commands {
+            let NativeScriptCommand::MessagePortPostMessage {
+                bridge_key,
+                data,
+                worker_id: Some(command_worker_id),
+                transfer_ports,
+            } = command
+            else {
+                return Err(NativeEngineError::invalid(
+                    "native service-worker MessagePort command",
+                    "service worker emitted an invalid MessagePort host command",
+                ));
+            };
+            if command_worker_id != worker_id {
+                return Err(NativeEngineError::invalid(
+                    "native service-worker MessagePort command",
+                    "service worker command owner is invalid",
+                ));
+            }
+            let Some(route_worker_id) = self.message_port_routes.get(&bridge_key).copied() else {
+                continue;
+            };
+            if route_worker_id != worker_id {
+                return Err(NativeEngineError::invalid(
+                    "native service-worker MessagePort route",
+                    "worker id does not own the MessagePort bridge",
+                ));
+            }
+            self.register_worker_transfers(worker_id, &transfer_ports)?;
+            if self.pending_message_port_messages.len() >= MAX_NATIVE_WORKER_MESSAGES {
+                return Err(NativeEngineError::limit(
+                    "native page MessagePort messages",
+                    MAX_NATIVE_WORKER_MESSAGES,
+                    self.pending_message_port_messages.len().saturating_add(1),
+                ));
+            }
+            self.pending_message_port_messages
+                .push_back(NativeMessagePortPageMessage {
+                    bridge_key,
+                    data,
+                    transfer_ports,
+                });
+        }
+        Ok(())
+    }
+
+    fn remove_worker_routes(&mut self, worker_id: u32) {
+        self.message_port_routes
+            .retain(|_, route_worker_id| *route_worker_id != worker_id);
+        let live_bridge_keys = self
+            .message_port_routes
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        self.pending_message_port_messages
+            .retain(|message| live_bridge_keys.contains(&message.bridge_key));
     }
 }
 

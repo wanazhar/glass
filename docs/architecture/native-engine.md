@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-337` slice. The native runtime is now the primary
+`native-engine-browser-338` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -89,10 +89,25 @@ source endpoints are detached after a bounded clone succeeds, and
 `MessageEvent.ports` exposes the receiving endpoint in either direction. The
 same owner routing is exercised by the in-process fixture engine and the
 HTTP(S) content process; worker-created ports can return to a page and carry
-replies back to their worker peer. SharedWorker/service-worker channel
-ownership, richer transferable types, and complete task-source scheduling
-remain separate profile gates. Exact evidence is recorded in
+replies back to their worker peer. SharedWorker channel ownership, richer
+transferable types, and complete task-source scheduling remain separate
+profile gates. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-337.md`.
+
+Slice 338 extends the transfer bridge to active service workers. A page can
+transfer a `MessagePort` through `ServiceWorker.postMessage`; the worker
+receives it in `MessageEvent.ports`, can start and handle the endpoint, and
+can return messages through the same owner-routed bridge. The content process
+keeps the bridge-key registry separate from page JavaScript objects, drains
+worker-produced messages at the next bounded page turn, and clears page-owned
+routes on navigation/reload, worker replacement, and unregister. Fetch and
+lifecycle results are explicitly settled and normalized before the host
+dispatches them. The HTTP(S) content-process fixture covers registration,
+activation, source detachment, ready/reply delivery, and the typed route
+boundary. SharedWorker channel ownership, richer transferable types, complete
+task-source scheduling, and final profile certification remain separate gates.
+Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-338.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

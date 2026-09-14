@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-347` slice. The native runtime is now the primary
+`native-engine-browser-348` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -216,8 +216,8 @@ native loader retains `Cache-Control` freshness deadlines and bounded
 request, and reuses a validated `304 Not Modified` response without reparsing
 an absent body. `no-store`, `Vary: *`, `Vary: Cookie`, and response cookies
 evict or prevent reuse of document entries; the established no-header bounded
-session-cache behavior remains compatible. Script, stylesheet, Fetch, and
-Service-Worker CacheStorage freshness, concurrent coalescing, and full
+session-cache behavior remains compatible. Fetch/XHR and Service-Worker
+CacheStorage freshness, concurrent coalescing, and full
 HTTP cache conformance remain separate issue #40 gates. Exact evidence is
 recorded in `docs/plan/tasks/native-engine-browser-346.md`.
 
@@ -227,10 +227,20 @@ cache entries retain explicit `Cache-Control` deadlines and bounded
 request, and reuse validated `304 Not Modified` responses without decoding a
 body. Safe responses continue to populate requested and final redirect keys;
 `no-store`, `Vary: *`, `Vary: Cookie`, and response cookies prevent reusable
-entries or evict stale ones. Script, stylesheet, Fetch, and Service-Worker
-CacheStorage freshness, concurrent coalescing, and full HTTP cache conformance
-remain separate issue #40 gates. Exact evidence is recorded in
+entries or evict stale ones. Fetch/XHR and Service-Worker CacheStorage
+freshness, concurrent coalescing, and full HTTP cache conformance remain
+separate issue #40 gates. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-347.md`.
+
+Slice 348 extends the bounded freshness owner to HTTP(S) stylesheets and page
+scripts. Separate text caches retain explicit `Cache-Control`/`Pragma`
+freshness and bounded validators, reuse validated `304 Not Modified` responses
+without re-decoding text, and evict unsafe entries. Worker-source loading
+bypasses the page-script cache so Service-Worker update checks remain
+observable. Fetch/XHR and Service-Worker CacheStorage freshness, concurrent
+coalescing, and full HTTP cache conformance remain separate issue #40 gates.
+Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-348.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

@@ -12466,6 +12466,101 @@ async fn native_content_process_loads_classic_external_scripts_in_document_order
 }
 
 #[tokio::test]
+async fn native_content_process_revalidates_stylesheet_and_script_subresources() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let mut stylesheet_requests = 0;
+        let mut script_requests = 0;
+        for _ in 0..5 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap_or_default();
+            match path {
+                "/page" => {
+                    let body = "<link rel='stylesheet' href='/style.css'><link rel='stylesheet' href='/style.css'><script src='/app.js'></script><script src='/app.js'></script><div id='target'>Cached assets</div>";
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                }
+                "/style.css" => {
+                    stylesheet_requests += 1;
+                    if stylesheet_requests == 1 {
+                        let body = "#target { color: red; }";
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/css\r\nCache-Control: no-cache\r\nETag: \"style-v1\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                        stream.write_all(response.as_bytes()).await.unwrap();
+                    } else {
+                        assert_eq!(stylesheet_requests, 2);
+                        assert!(
+                            request.lines().any(
+                                |line| line.eq_ignore_ascii_case("if-none-match: \"style-v1\"")
+                            )
+                        );
+                        stream
+                            .write_all(
+                                b"HTTP/1.1 304 Not Modified\r\nCache-Control: no-cache\r\nETag: \"style-v1\"\r\nConnection: close\r\n\r\n",
+                            )
+                            .await
+                            .unwrap();
+                    }
+                }
+                "/app.js" => {
+                    script_requests += 1;
+                    if script_requests == 1 {
+                        let body = "globalThis.externalRuns = (globalThis.externalRuns || 0) + 1;";
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/javascript\r\nCache-Control: no-cache\r\nETag: \"script-v1\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                        stream.write_all(response.as_bytes()).await.unwrap();
+                    } else {
+                        assert_eq!(script_requests, 2);
+                        assert!(
+                            request
+                                .lines()
+                                .any(|line| line
+                                    .eq_ignore_ascii_case("if-none-match: \"script-v1\""))
+                        );
+                        stream
+                            .write_all(
+                                b"HTTP/1.1 304 Not Modified\r\nCache-Control: no-cache\r\nETag: \"script-v1\"\r\nConnection: close\r\n\r\n",
+                            )
+                            .await
+                            .unwrap();
+                    }
+                }
+                other => panic!("unexpected subresource request: {other}"),
+            }
+        }
+        assert_eq!(stylesheet_requests, 2);
+        assert_eq!(script_requests, 2);
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({ runs: globalThis.externalRuns, color: getComputedStyle(document.getElementById('target')).color })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({ "runs": 2, "color": "rgb(255, 0, 0)" })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_dispatches_resource_load_events_before_dom_content_loaded() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

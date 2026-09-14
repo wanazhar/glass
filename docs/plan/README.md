@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-358` locally. Native is now the default runtime for
+`native-engine-browser-359` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -392,6 +392,17 @@ without allowing popup cascades to starve other browser-owned effects. This is
 an operation-boundary scheduler; worker/ServiceWorker/MessagePort queues,
 registration arbitration, live-client leases, and final production
 certification remain active issue #40 gates.
+
+The completed native Service Worker `clients.openWindow()` slice is
+[native-engine-browser-359](tasks/native-engine-browser-359.md): a controlled
+non-fetch Service Worker turn can request a validated same-origin HTTP(S)
+window, the browser backend creates a real parked target with the source as
+opener, and the persistent worker Promise resolves with the new WindowClient
+descriptor. Requests cross the content-process boundary with stable IDs and
+return through the same browser-effect scheduler, including nested effects.
+Fetch-event suspension, arbitrary-target WindowClient messaging,
+browser-wide registration arbitration, durable live-client leases, and final
+production certification remain active issue #40 gates.
 
 The completed native cookie-policy slice is
 [native-engine-browser-334](tasks/native-engine-browser-334.md): cookie

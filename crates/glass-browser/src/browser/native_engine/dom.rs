@@ -3589,6 +3589,7 @@ impl NativeDocument {
                 | NativeScriptCommand::ServiceWorkerCachePutAll { .. }
                 | NativeScriptCommand::ServiceWorkerCacheDeleteRequest { .. }
                 | NativeScriptCommand::ServiceWorkerCacheEntries { .. }
+                | NativeScriptCommand::ServiceWorkerOpenWindow { .. }
                 | NativeScriptCommand::MessagePortPostMessage { .. } => {}
                 NativeScriptCommand::SharedWorkerCreate { .. }
                 | NativeScriptCommand::WorkerCreate { .. }

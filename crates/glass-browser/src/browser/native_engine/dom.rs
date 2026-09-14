@@ -3577,6 +3577,7 @@ impl NativeDocument {
                 | NativeScriptCommand::ServiceWorkerUnregister { .. }
                 | NativeScriptCommand::ServiceWorkerUpdate { .. }
                 | NativeScriptCommand::ServiceWorkerPostMessage { .. }
+                | NativeScriptCommand::ServiceWorkerClientPostMessage { .. }
                 | NativeScriptCommand::ServiceWorkerCacheOpen { .. }
                 | NativeScriptCommand::ServiceWorkerCacheDelete { .. }
                 | NativeScriptCommand::ServiceWorkerCacheHas { .. }

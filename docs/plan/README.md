@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-344` locally. Native is now the default runtime for
+`native-engine-browser-345` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -243,9 +243,14 @@ enumeration slice is
 worker fetch now exposes a bounded current top-level window client through
 `clients.matchAll()`, with type filtering, `includeUncontrolled`, stable opaque
 identity, URL, frame, visibility, focus, and control metadata. Full
-multi-client/frame lifecycle, `Client.postMessage()`, `openWindow()`, cache
-freshness/revalidation, richer transferable values, complete task-source
-scheduling, and final production certification remain active issue #40 gates.
+multi-client/frame lifecycle, `openWindow()`, cache freshness/revalidation,
+richer transferable values, complete task-source scheduling, and final
+production certification remain active issue #40 gates. The completed native
+Service Worker client-message slice is
+[native-engine-browser-345](tasks/native-engine-browser-345.md):
+`Client.postMessage()` now clones bounded data, carries existing MessagePort
+transfers through the native owner, and delivers a ServiceWorker-container
+`message` event to the current page at a bounded fetch/page turn.
 
 The completed native cookie-policy slice is
 [native-engine-browser-334](tasks/native-engine-browser-334.md): cookie

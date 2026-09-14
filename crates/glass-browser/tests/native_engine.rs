@@ -3674,13 +3674,17 @@ async fn native_content_process_registers_service_worker_and_intercepts_fetch_an
                 r#"self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
 self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
 self.addEventListener('fetch', event => {
-  const path = new URL(event.request.url).pathname;
+    const path = new URL(event.request.url).pathname;
   if (path === '/api') {
     event.respondWith((async () => {
       const matched = await clients.matchAll();
       const all = await clients.matchAll({ includeUncontrolled: true, type: 'all' });
       const workers = await clients.matchAll({ type: 'worker' });
       const client = matched[0];
+      const channel = new MessageChannel();
+      client.postMessage({ kind: 'fetch-client', url: event.request.url }, {
+        transfer: [channel.port1],
+      });
       return new Response(JSON.stringify({
         matched: matched.length,
         all: all.length,
@@ -3760,7 +3764,16 @@ self.addEventListener('fetch', event => {
     assert_eq!(
         engine
             .evaluate_async(
-                "await fetch('/api').then(async response => ({ status: response.status, worker: response.headers.get('x-native-worker'), body: await response.json() }))",
+                "globalThis.swClientMessages = []; navigator.serviceWorker.addEventListener('message', event => swClientMessages.push({ data: event.data, ports: event.ports.length, source: event.source && event.source.scriptURL })); undefined",
+            )
+            .await
+            .unwrap(),
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await fetch('/api').then(async response => ({ status: response.status, worker: response.headers.get('x-native-worker'), body: await response.json(), messages: swClientMessages }))",
             )
             .await
             .unwrap(),
@@ -3778,6 +3791,14 @@ self.addEventListener('fetch', event => {
                 "visibilityState": "visible",
                 "focused": true,
             },
+            "messages": [{
+                "data": {
+                    "kind": "fetch-client",
+                    "url": format!("http://{address}/api"),
+                },
+                "ports": 1,
+                "source": format!("http://{address}/sw.js"),
+            }],
         })
     );
     assert_eq!(

@@ -30,16 +30,18 @@ use super::javascript::{
     NativeFrameScriptRequest, NativeFrameScriptWindow, NativeIndexedDbChange, NativeIndexedDbState,
     NativeJavaScriptRuntime, NativeMessagePortPageMessage, NativePageScript,
     NativePageScriptResult, NativePopupRequest, NativePostMessageRequest, NativeScriptCommand,
-    NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState, NativeWindowCloseRequest,
-    NativeWindowNavigationRequest, NativeWindowProxyUpdate, NativeWorkerEventSourceCommand,
-    NativeWorkerMessage, NativeWorkerRegistry, NativeWorkerWebSocketCommand,
-    diff_indexed_db_changes, execute_dynamic_page_scripts, execute_page_scripts, host_event_script,
+    NativeScriptEvaluation, NativeServiceWorkerClientMessage, NativeStorageEvent,
+    NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
+    NativeWindowProxyUpdate, NativeWorkerEventSourceCommand, NativeWorkerMessage,
+    NativeWorkerRegistry, NativeWorkerWebSocketCommand, diff_indexed_db_changes,
+    execute_dynamic_page_scripts, execute_page_scripts, host_event_script,
     host_hash_change_event_script, host_key_event_script, host_key_event_script_with_modifiers,
     host_submit_event_script, literal_dynamic_module_specifiers, load_indexed_db_profile,
     load_service_worker_cache_profile, load_service_worker_registration_profiles,
     load_web_storage_profile, message_port_script, order_page_scripts,
     page_script_sources_to_scripts, save_service_worker_cache_profile, save_web_storage_profile,
-    static_module_specifiers, storage_key, worker_message_script,
+    service_worker_client_message_script, static_module_specifiers, storage_key,
+    worker_message_script,
 };
 use super::layout::NativePoint;
 use super::origin::NativeOrigin;
@@ -3443,6 +3445,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut service_workers = NativeServiceWorkerRegistry::default();
     let mut pending_worker_messages: VecDeque<NativeWorkerMessage> = VecDeque::new();
     let mut pending_message_port_messages: VecDeque<NativeMessagePortPageMessage> = VecDeque::new();
+    let mut pending_service_worker_client_messages: VecDeque<NativeServiceWorkerClientMessage> =
+        VecDeque::new();
     let mut websocket_connections = BTreeMap::new();
     let mut worker_websocket_connections = BTreeMap::new();
     let mut fetch_stream_connections = BTreeMap::new();
@@ -3906,6 +3910,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 workers.clear();
                 pending_worker_messages.clear();
                 pending_message_port_messages.clear();
+                pending_service_worker_client_messages.clear();
                 service_workers.clear_page_message_port_routes();
                 if let Some(runtime) = javascript_runtime.as_ref() {
                     storage_state = runtime.storage_state();
@@ -3926,6 +3931,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         script_sources,
                         resource_events,
                     )) => {
+                        pending_service_worker_client_messages
+                            .extend(service_workers.take_client_messages());
                         let mut script_runtime =
                             match NativeJavaScriptRuntime::new_with_context_metadata(
                                 &storage_context_id,
@@ -4037,6 +4044,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                     };
                                     pending_message_port_messages
                                         .extend(service_workers.take_message_port_messages());
+                                    pending_service_worker_client_messages
+                                        .extend(service_workers.take_client_messages());
                                     page_scripts.pending_fetches.extend(resolved);
                                 }
                                 match (script_runtime.as_ref(), resource_loader.as_mut()) {
@@ -4067,6 +4076,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                         .await;
                                         pending_message_port_messages
                                             .extend(service_workers.take_message_port_messages());
+                                        pending_service_worker_client_messages
+                                            .extend(service_workers.take_client_messages());
                                         match script_fetch_result {
                                             Ok((next, mutation, _resolved_value)) => {
                                                 page_events.extend(
@@ -4230,6 +4241,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     )
                     .await;
                 pending_message_port_messages.extend(service_workers.take_message_port_messages());
+                pending_service_worker_client_messages
+                    .extend(service_workers.take_client_messages());
                 let fetch = match intercepted {
                     Ok(Some(response)) => Ok(response),
                     Ok(None) => loader.fetch_async(document_url, href, credentials).await,
@@ -4357,6 +4370,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 pending_worker_messages.extend(workers.take_messages());
                 pending_message_port_messages.extend(workers.take_message_port_messages());
                 pending_message_port_messages.extend(service_workers.take_message_port_messages());
+                pending_service_worker_client_messages
+                    .extend(service_workers.take_client_messages());
                 let worker_messages = std::mem::take(&mut pending_worker_messages)
                     .into_iter()
                     .collect::<Vec<_>>();
@@ -4368,6 +4383,15 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     source = format!("{prefix}{source}");
                 }
                 if let Some(prefix) = message_port_script(&message_port_messages)? {
+                    source = format!("{prefix}{source}");
+                }
+                let service_worker_client_messages =
+                    std::mem::take(&mut pending_service_worker_client_messages)
+                        .into_iter()
+                        .collect::<Vec<_>>();
+                if let Some(prefix) =
+                    service_worker_client_message_script(&service_worker_client_messages)?
+                {
                     source = format!("{prefix}{source}");
                 }
                 let evaluation =
@@ -4397,6 +4421,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         Vec::new()
                     };
                 pending_message_port_messages.extend(service_workers.take_message_port_messages());
+                pending_service_worker_client_messages
+                    .extend(service_workers.take_client_messages());
                 let worker_commands = runtime.take_worker_commands();
                 workers
                     .apply_commands(worker_commands, loader, &committed_url)
@@ -4493,6 +4519,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         .await;
                         pending_message_port_messages
                             .extend(service_workers.take_message_port_messages());
+                        pending_service_worker_client_messages
+                            .extend(service_workers.take_client_messages());
                         match result {
                             Ok((next, mutation, resolved_value)) => {
                                 let value = resolved_value.unwrap_or(value);
@@ -9140,6 +9168,9 @@ async fn resolve_script_fetches(
                     "fetch",
                 )
                 .await;
+            let service_worker_client_messages = service_workers.take_client_messages();
+            let service_worker_client_prefix =
+                service_worker_client_message_script(&service_worker_client_messages)?;
             let payload = match intercepted {
                 Ok(Some(response)) => fetch_response_payload(Ok(response)),
                 Ok(None) => {
@@ -9195,6 +9226,7 @@ async fn resolve_script_fetches(
                 &current_url,
                 document_origin,
                 viewport,
+                service_worker_client_prefix.as_deref(),
             )?;
             if top_level_await_pending && let Some(value) = runtime.take_top_level_await_result()? {
                 resolved_value = Some(value);

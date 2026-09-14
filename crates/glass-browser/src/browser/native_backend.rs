@@ -3411,18 +3411,34 @@ impl BrowserBackend for NativeEngineBackend {
                 }
                 (BackendOperation::Capture, BackendRequest::Capture(request)) => {
                     require_context_id(&request.context_id, &active_context_id)?;
-                    if request.format != CaptureFormat::Png {
-                        return Err(BrowserBackendError::UnsupportedOperation {
-                            operation: "capture".into(),
-                            reason: "native engine supports only bounded PNG capture".into(),
-                        });
-                    }
-                    drop(engine);
-                    let bytes = self.capture_png_async().await?;
-                    Ok(BackendResponse::Capture(CaptureResult {
-                        format: CaptureFormat::Png,
-                        bytes,
-                    }))
+                    let format = request.format;
+                    let bytes = match format {
+                        CaptureFormat::Png => {
+                            drop(engine);
+                            self.capture_png_async().await?
+                        }
+                        CaptureFormat::Pdf => {
+                            let snapshot = engine.snapshot().map_err(native_error)?;
+                            drop(engine);
+                            super::native_pdf::render_snapshot(
+                                &snapshot,
+                                &super::session::PdfOptions::default(),
+                            )
+                            .map_err(|error| {
+                                BrowserBackendError::InvalidConfiguration {
+                                    field: "native PDF".into(),
+                                    reason: error.to_string(),
+                                }
+                            })?
+                        }
+                        CaptureFormat::Jpeg => {
+                            return Err(BrowserBackendError::UnsupportedOperation {
+                                operation: "capture".into(),
+                                reason: "native JPEG encoding is not available yet".into(),
+                            });
+                        }
+                    };
+                    Ok(BackendResponse::Capture(CaptureResult { format, bytes }))
                 }
                 (BackendOperation::Storage, BackendRequest::Storage(request)) => {
                     require_context_id(&request.context_id, &active_context_id)?;

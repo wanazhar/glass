@@ -642,6 +642,13 @@ async fn native_runtime_supports_form_pdf_clipboard_and_consent_surfaces() {
             .any(|window| window == b"United States")
     );
 
+    let capture = session.capture(CaptureFormat::Pdf).await.unwrap();
+    assert_eq!(capture.format, CaptureFormat::Pdf);
+    assert!(capture.bytes.starts_with(b"%PDF-1.4"));
+    let capture = session.capture(CaptureFormat::Png).await.unwrap();
+    assert_eq!(capture.format, CaptureFormat::Png);
+    assert!(capture.bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+
     session
         .native_clipboard_write("native clipboard")
         .await

@@ -18,9 +18,9 @@ use super::native_engine::{
 use super::policy::BrowserPolicy;
 use crate::browser_backend::{
     ActionRequest, ActionResult, BackendProfile, BrowserBackendDispatcher, BrowsingContext,
-    ContextRequest, EffectsRequest, EffectsResult, EvidenceLevel, EvidenceRequest, EvidenceResult,
-    NavigationRequest, NavigationResult, ScriptRequest, ScriptResult, SemanticAction,
-    StorageRequest, StorageResult,
+    CaptureFormat, CaptureRequest, CaptureResult, ContextRequest, EffectsRequest, EffectsResult,
+    EvidenceLevel, EvidenceRequest, EvidenceResult, NavigationRequest, NavigationResult,
+    ScriptRequest, ScriptResult, SemanticAction, StorageRequest, StorageResult,
 };
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
@@ -497,6 +497,18 @@ impl BrowserRuntimeSession {
         let context_id = self.active_context_id().await?;
         Ok(BrowserBackendDispatcher::new(&self.backend)
             .evidence(EvidenceRequest { context_id, level })
+            .await?)
+    }
+
+    /// Capture the active context through the selected backend's native image
+    /// or document owner.  Native PNG and PDF are first-class captures; a
+    /// backend returns a typed unsupported error when it cannot encode the
+    /// requested format rather than silently switching transports.
+    pub async fn capture(&self, format: CaptureFormat) -> BrowserResult<CaptureResult> {
+        let _operation = self.operation_lock.lock().await;
+        let context_id = self.active_context_id().await?;
+        Ok(BrowserBackendDispatcher::new(&self.backend)
+            .capture(CaptureRequest { context_id, format })
             .await?)
     }
 

@@ -576,6 +576,11 @@ pub(crate) struct NativeServiceWorkerRegistrationState {
     pub(crate) script_url: String,
     pub(crate) scope: String,
     pub(crate) state: String,
+    /// Whether the current top-level document is controlled by this
+    /// registration. A matching scope alone does not control a page that has
+    /// just registered a worker.
+    #[serde(default)]
+    pub(crate) controlled: bool,
     /// Lifecycle transitions that the page resolver replays for a newly
     /// installed or updated worker. Restored/navigation snapshots leave this
     /// empty because those transitions already happened in an earlier owner.
@@ -15881,6 +15886,7 @@ const NATIVE_SERVICE_WORKER_PAGE_SCRIPT: &str = r###"
     const activeState = hasExplicitActive ? state.active : state;
     const registration = Object.create(ServiceWorkerRegistrationNative.prototype);
     registration.scope = scope;
+    registration.__glassControlled = state.controlled === true;
     registration.installing = null;
     registration.waiting = state.waiting
       ? serviceWorkerMakeWorker(state.waiting, scope) : null;
@@ -15926,6 +15932,8 @@ const NATIVE_SERVICE_WORKER_PAGE_SCRIPT: &str = r###"
   };
   const serviceWorkerApplyRegistration = (registration, state) => {
     const scope = String(state.scope || registration.scope || "");
+    const wasControlled = registration.__glassControlled === true && !!registration.active;
+    registration.__glassControlled = state.controlled === true;
     const hasExplicitActive = Object.prototype.hasOwnProperty.call(state, "active");
     const activeState = hasExplicitActive ? state.active : state;
     const waitingState = state.waiting || null;
@@ -15942,6 +15950,8 @@ const NATIVE_SERVICE_WORKER_PAGE_SCRIPT: &str = r###"
       registration.installing = null;
       registration.waiting = waitingState
         ? serviceWorkerMakeWorker(waitingState, scope) : null;
+      if (!wasControlled && registration.__glassControlled && registration.active)
+        serviceWorkerContainer.dispatchEvent({ type: "controllerchange" });
       return;
     }
     const candidateState = waitingState || activeState || state;
@@ -15971,11 +15981,14 @@ const NATIVE_SERVICE_WORKER_PAGE_SCRIPT: &str = r###"
       registration.installing = null;
       registration.waiting = null;
       registration.active = worker;
+      let controllerChanged = false;
       if (previousActive && previousActive !== worker) {
         serviceWorkerSetState(previousActive, "redundant");
-        if (typeof serviceWorkerContainer !== "undefined")
-          serviceWorkerContainer.dispatchEvent({ type: "controllerchange" });
+        controllerChanged = true;
       }
+      if (!wasControlled && registration.__glassControlled) controllerChanged = true;
+      if (controllerChanged && typeof serviceWorkerContainer !== "undefined")
+        serviceWorkerContainer.dispatchEvent({ type: "controllerchange" });
     }
   };
   const serviceWorkerRefresh = () => {
@@ -15989,6 +16002,7 @@ const NATIVE_SERVICE_WORKER_PAGE_SCRIPT: &str = r###"
         serviceWorkerRegistrations.set(scope, registration);
       } else {
         registration.scope = scope;
+        registration.__glassControlled = state.controlled === true;
         const hasExplicitActive = Object.prototype.hasOwnProperty.call(state, "active");
         const activeState = hasExplicitActive ? state.active : state;
         if (!registration.active && activeState)
@@ -16081,7 +16095,7 @@ const NATIVE_SERVICE_WORKER_PAGE_SCRIPT: &str = r###"
     configurable: true, enumerable: true,
     get: () => {
       const registration = serviceWorkerFind(String(host.url));
-      return registration && registration.active || null;
+      return registration && registration.__glassControlled && registration.active || null;
     },
   });
   Object.defineProperty(serviceWorkerContainer, "ready", {
@@ -16427,8 +16441,8 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
     const event = {
       type: "fetch",
       request,
-      clientId: "",
-      resultingClientId: "",
+      clientId: String(payload && payload.clientId || ""),
+      resultingClientId: String(payload && payload.resultingClientId || ""),
       isReload: false,
       isHistoryNavigation: false,
       preloadResponse: Promise.resolve(undefined),

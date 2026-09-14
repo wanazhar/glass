@@ -6046,6 +6046,7 @@ async fn load_content_resource(
         }
     };
     loader.set_environment(environment)?;
+    service_workers.begin_document(url)?;
     service_workers.restore_for_document(url, loader).await?;
     let resource = match service_workers
         .intercept_navigation(loader, &navigation, referrer)
@@ -6058,6 +6059,7 @@ async fn load_content_resource(
                 .await?
         }
     };
+    service_workers.commit_document(&resource.url)?;
     let frame_sources = loader.frame_sources_for_document(&resource.url)?;
     let discovery = NativeDocument::parse(&resource.body, &limits)?;
     let mut external_stylesheets = Vec::new();

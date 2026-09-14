@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-352` slice. The native runtime is now the primary
+`native-engine-browser-353` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -288,6 +288,20 @@ matching navigation settles activation and promotes it. Multi-client
 controller ownership, exact task-source scheduling, and full Service Worker
 conformance remain issue #40 gates. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-352.md`.
+
+Slice 353 makes top-level Service Worker client control explicit. The native
+owner now assigns a bounded client identity per document, records control
+separately from registration scope, lets matching navigations establish a new
+controlled client, and honors `clients.claim()` after activation. Ordinary
+Fetch/XHR requests from an uncontrolled page no longer enter a matching
+worker, while a controlled client can route requests through its controlling
+registration even when the target URL is outside that registration's scope.
+Page `navigator.serviceWorker.controller`, controller-change delivery,
+`clients.matchAll()`, and `FetchEvent.clientId` consume the same explicit
+state. The current owner remains one top-level client; multi-client/tab/frame
+ownership, exact task-source scheduling, and full Service Worker conformance
+remain issue #40 gates. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-353.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

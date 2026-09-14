@@ -41,6 +41,7 @@ struct NativeServiceWorker {
     runtime: NativeJavaScriptRuntime,
     import_script_counts: BTreeMap<String, usize>,
     skip_waiting_requested: bool,
+    clients_claim_requested: bool,
 }
 
 fn completed_lifecycle_states() -> Vec<String> {
@@ -76,6 +77,7 @@ fn registration_state_for_workers(
     scope: &str,
     active: Option<&NativeServiceWorker>,
     waiting: Option<&NativeServiceWorker>,
+    controlled: bool,
     lifecycle: Vec<String>,
 ) -> Result<NativeServiceWorkerRegistrationState, NativeEngineError> {
     let active_state = active.map(|worker| worker_state(worker, "activated"));
@@ -93,6 +95,7 @@ fn registration_state_for_workers(
         script_url: representative.script_url.clone(),
         scope: scope.to_owned(),
         state: representative.state.clone(),
+        controlled,
         lifecycle,
         active: active_state,
         waiting: waiting_state,
@@ -108,6 +111,10 @@ pub(crate) struct NativeServiceWorkerRegistry {
     pending_message_port_messages: VecDeque<NativeMessagePortPageMessage>,
     pending_client_messages: VecDeque<NativeServiceWorkerClientMessage>,
     message_port_routes: BTreeMap<String, u32>,
+    current_client_id: String,
+    current_client_url: Option<String>,
+    current_client_scope: Option<String>,
+    next_client_id: u64,
 }
 
 impl Default for NativeServiceWorkerRegistry {
@@ -121,11 +128,71 @@ impl Default for NativeServiceWorkerRegistry {
             pending_message_port_messages: VecDeque::new(),
             pending_client_messages: VecDeque::new(),
             message_port_routes: BTreeMap::new(),
+            current_client_id: String::new(),
+            current_client_url: None,
+            current_client_scope: None,
+            next_client_id: 1,
         }
     }
 }
 
 impl NativeServiceWorkerRegistry {
+    pub(crate) fn begin_document(&mut self, document_url: &str) -> Result<(), NativeEngineError> {
+        let document = parse_network_url("service worker document URL", document_url)?;
+        let document_url = without_fragment(document.as_str()).to_owned();
+        let client_number = self.next_client_id;
+        self.next_client_id = self.next_client_id.checked_add(1).ok_or_else(|| {
+            NativeEngineError::limit(
+                "native service worker client identifiers",
+                u64::MAX as usize,
+                u64::MAX as usize,
+            )
+        })?;
+        self.current_client_id = format!("native-client-{client_number}");
+        self.current_client_url = Some(document_url);
+        self.current_client_scope = None;
+        Ok(())
+    }
+
+    pub(crate) fn commit_document(&mut self, document_url: &str) -> Result<(), NativeEngineError> {
+        let document = parse_network_url("service worker document URL", document_url)?;
+        self.current_client_url = Some(without_fragment(document.as_str()).to_owned());
+        self.current_client_scope = self.matching_scope(&document)?;
+        Ok(())
+    }
+
+    fn current_client_id_for(&self, document_url: &str) -> String {
+        let canonical = without_fragment(document_url);
+        if self.current_client_url.as_deref() == Some(canonical)
+            && !self.current_client_id.is_empty()
+        {
+            return self.current_client_id.clone();
+        }
+        native_service_worker_client_id(canonical)
+    }
+
+    fn current_client_is_controlled(&self, document_url: &str) -> bool {
+        without_fragment(document_url) == self.current_client_url.as_deref().unwrap_or_default()
+            && self.current_client_scope.is_some()
+    }
+
+    fn current_client_scope_for(&self, document_url: &str) -> Option<&str> {
+        self.current_client_is_controlled(document_url)
+            .then_some(self.current_client_scope.as_deref())
+            .flatten()
+    }
+
+    fn claim_current_client(&mut self, scope: &str) -> Result<(), NativeEngineError> {
+        let Some(document_url) = self.current_client_url.as_deref() else {
+            return Ok(());
+        };
+        let document = parse_network_url("service worker client URL", document_url)?;
+        if self.matching_scope(&document)?.as_deref() == Some(scope) {
+            self.current_client_scope = Some(scope.to_owned());
+        }
+        Ok(())
+    }
+
     pub(crate) fn replace_cache_state(&mut self, cache_state: NativeServiceWorkerCacheState) {
         self.cache_state = cache_state;
     }
@@ -208,6 +275,7 @@ impl NativeServiceWorkerRegistry {
     ) -> Result<Vec<NativeServiceWorkerRegistrationState>, NativeEngineError> {
         let document = parse_network_url("service worker document URL", document_url)?;
         let document_origin = NativeOrigin::from_url(&document)?;
+        let controlled_scope = self.current_client_scope_for(document_url);
         let scopes = self
             .registrations
             .keys()
@@ -235,10 +303,12 @@ impl NativeServiceWorkerRegistry {
                     }
                 });
                 let representative = active.as_ref().or(waiting.as_ref())?;
+                let controlled = controlled_scope == Some(scope_text.as_str());
                 Some(NativeServiceWorkerRegistrationState {
                     script_url: representative.script_url.clone(),
                     scope: scope_text,
                     state: representative.state.clone(),
+                    controlled,
                     lifecycle: Vec::new(),
                     active,
                     waiting,
@@ -290,6 +360,7 @@ impl NativeServiceWorkerRegistry {
             runtime,
             import_script_counts,
             skip_waiting_requested: false,
+            clients_claim_requested: false,
         };
         let initial = if is_module {
             worker.runtime.evaluate_service_worker_source(
@@ -375,7 +446,7 @@ impl NativeServiceWorkerRegistry {
         &mut self,
         scope: &str,
         worker: NativeServiceWorker,
-    ) -> NativeServiceWorkerRegistrationState {
+    ) -> Result<NativeServiceWorkerRegistrationState, NativeEngineError> {
         if let Some(previous_id) = self.registrations.get(scope).map(|previous| previous.id) {
             self.remove_worker_routes(previous_id);
         }
@@ -384,17 +455,25 @@ impl NativeServiceWorkerRegistry {
         {
             self.remove_worker_routes(previous_waiting.id);
         }
-        let state = NativeServiceWorkerRegistrationState {
-            script_url: worker.script_url.clone(),
-            scope: scope.to_owned(),
-            state: "activated".into(),
-            lifecycle: completed_lifecycle_states(),
-            active: Some(worker_state(&worker, "activated")),
-            waiting: None,
-        };
+        let clients_claim_requested = worker.clients_claim_requested;
+        let script_url = worker.script_url.clone();
+        let active = worker_state(&worker, "activated");
         self.remember_registration(&worker);
         self.registrations.insert(scope.to_owned(), worker);
-        state
+        if clients_claim_requested {
+            // `clients.claim()` affects uncontrolled clients only after the
+            // activating worker has become active.
+            self.claim_current_client(scope)?;
+        }
+        Ok(NativeServiceWorkerRegistrationState {
+            script_url,
+            scope: scope.to_owned(),
+            state: "activated".into(),
+            controlled: self.current_client_scope.as_deref() == Some(scope),
+            lifecycle: completed_lifecycle_states(),
+            active: Some(active),
+            waiting: None,
+        })
     }
 
     fn install_worker(
@@ -405,7 +484,7 @@ impl NativeServiceWorkerRegistry {
         self.settle_worker_install(&mut worker)?;
         if worker.skip_waiting_requested || !self.registrations.contains_key(&scope) {
             self.settle_worker_activate(&mut worker)?;
-            return Ok(self.commit_activated_worker(&scope, worker));
+            return self.commit_activated_worker(&scope, worker);
         }
         if let Some(previous_waiting) = self.waiting_workers.insert(scope.clone(), worker) {
             self.remove_worker_routes(previous_waiting.id);
@@ -423,6 +502,7 @@ impl NativeServiceWorkerRegistry {
             &scope,
             self.registrations.get(&scope),
             self.waiting_workers.get(&scope),
+            self.current_client_scope.as_deref() == Some(scope.as_str()),
             waiting_lifecycle_states(),
         )
     }
@@ -702,6 +782,9 @@ impl NativeServiceWorkerRegistry {
         if let Some(worker) = removed_waiting {
             self.remove_worker_routes(worker.id);
         }
+        if self.current_client_scope.as_deref() == Some(scope) {
+            self.current_client_scope = None;
+        }
         removed_profile || had_active || had_waiting
     }
 
@@ -914,12 +997,19 @@ impl NativeServiceWorkerRegistry {
         let owner = parse_network_url("service worker fetch owner URL", document_url)?;
         let target =
             resolve_same_origin_or_cross_origin_url(&owner, "service worker fetch URL", href)?;
-        let Some(scope) = self.matching_scope(&target)? else {
+        let is_navigation = destination == "document";
+        let scope = if is_navigation {
+            self.matching_scope(&target)?
+        } else if self.current_client_is_controlled(document_url) {
+            self.current_client_scope.clone()
+        } else {
+            None
+        };
+        let Some(scope) = scope else {
             return Ok(None);
         };
-        let Some(worker) = self.registrations.get_mut(&scope) else {
-            return Ok(None);
-        };
+        let client_id = self.current_client_id_for(document_url);
+        let controlled = self.current_client_is_controlled(document_url);
         let body_null = body.is_none();
         let (body_text, body_base64) = match body {
             Some(NativeRequestBody::Text(value)) => (Some(value), None),
@@ -934,7 +1024,6 @@ impl NativeServiceWorkerRegistry {
             .map(|(name, value)| json!([name, value]))
             .collect::<Vec<_>>();
         let client_url = without_fragment(document_url);
-        let client_id = native_service_worker_client_id(client_url);
         let payload = json!({
             "url": without_fragment(target.as_str()),
             "method": method.as_str(),
@@ -947,14 +1036,17 @@ impl NativeServiceWorkerRegistry {
             "redirect": redirect_mode_text(redirect_mode),
             "credentials": credentials,
             "destination": destination,
-            "clientId": native_service_worker_client_id(client_url),
+            "clientId": client_id,
             "clientUrl": client_url,
             "clientType": "window",
             "frameType": "top-level",
             "visibilityState": "visible",
             "focused": true,
-            "controlled": true,
+            "controlled": controlled,
         });
+        let Some(worker) = self.registrations.get_mut(&scope) else {
+            return Ok(None);
+        };
         let evaluation = worker.runtime.evaluate_service_worker_fetch(
             worker.id,
             &worker.script_url,
@@ -970,6 +1062,7 @@ impl NativeServiceWorkerRegistry {
             &client_id,
         )
         .await?;
+        let clients_claim_requested = worker.clients_claim_requested;
         self.enqueue_client_messages(client_messages)?;
         let message_port_commands = self
             .registrations
@@ -977,6 +1070,9 @@ impl NativeServiceWorkerRegistry {
             .map(|worker| worker.runtime.take_message_port_commands())
             .unwrap_or_default();
         self.collect_message_port_commands(worker_id, message_port_commands)?;
+        if clients_claim_requested {
+            self.claim_current_client(&scope)?;
+        }
         if value.get("handled").and_then(Value::as_bool) != Some(true) {
             return Ok(None);
         }
@@ -1039,7 +1135,7 @@ impl NativeServiceWorkerRegistry {
             self.waiting_workers.insert(scope, worker);
             return Err(error);
         }
-        self.commit_activated_worker(&scope, worker);
+        self.commit_activated_worker(&scope, worker)?;
         Ok(())
     }
 
@@ -1862,6 +1958,8 @@ fn apply_service_worker_lifecycle_command(
         NativeScriptCommand::ServiceWorkerSkipWaiting { .. }
     ) {
         worker.skip_waiting_requested = true;
+    } else {
+        worker.clients_claim_requested = true;
     }
     Ok(true)
 }

@@ -45,9 +45,9 @@ const NATIVE_MAX_TARGETS: usize = crate::browser::session::TOPOLOGY_MAX_TARGETS;
 const NATIVE_MAX_FRAMES: usize = crate::browser::session::TOPOLOGY_MAX_FRAMES;
 const NATIVE_MAX_CLOSED_TARGETS: usize = NATIVE_MAX_TARGETS * 4;
 
-/// Native visual capture is currently encoded by the software PNG renderer.
-/// The option shape intentionally matches the shared visual contract so the
-/// CLI and future runtime surfaces cannot silently discard geometry options.
+/// Native visual capture is encoded by the software renderer. The option
+/// shape intentionally matches the shared visual contract so the CLI and
+/// runtime surfaces cannot silently discard geometry or format options.
 const NATIVE_CAPTURE_MAX_AXIS: u32 = 16_384;
 const NATIVE_CAPTURE_MAX_PIXELS: usize = 4 * 1024 * 1024;
 
@@ -280,13 +280,6 @@ impl NativeEngineBackend {
                 reason: error.to_string(),
             }
         })?;
-        if options.format != VisualFormat::Png {
-            return Err(BrowserBackendError::UnsupportedOperation {
-                operation: "capture".into(),
-                reason: "native visual capture currently encodes PNG only".into(),
-            });
-        }
-
         let mut targets = self.lock_targets(BackendOperation::Capture)?;
         let engine = self.lock_engine_raw(BackendOperation::Capture)?;
         let target_id =
@@ -351,7 +344,12 @@ impl NativeEngineBackend {
         surface = surface.scale_nearest(options.scale).map_err(native_error)?;
         let width = surface.width();
         let height = surface.height();
-        let bytes = surface.to_png().map_err(native_error)?;
+        let bytes = match options.format {
+            VisualFormat::Png => surface.to_png(),
+            VisualFormat::Jpeg => surface.to_jpeg(options.quality.unwrap_or(80)),
+            VisualFormat::Webp => surface.to_webp(options.quality),
+        }
+        .map_err(native_error)?;
         let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
         Ok(VisualCapture {
             data,
@@ -3174,7 +3172,7 @@ impl NativeEngineBackend {
                 ],
                 BrowserCapability::Capture => {
                     vec![
-                        "bounded PNG or PDF of the current logical page surface; JPEG encoding and screenshot-containing evidence remain separate surfaces".into(),
+                        "bounded PNG, JPEG, WebP, or PDF of the current logical page surface; screenshot-containing evidence remains a separate evidence schema".into(),
                     ]
                 }
                 BrowserCapability::Contexts => vec![
@@ -3441,7 +3439,7 @@ impl BrowserBackend for NativeEngineBackend {
                     ) {
                         return Err(BrowserBackendError::UnsupportedOperation {
                             operation: "evidence".into(),
-                            reason: "native engine does not implement screenshots".into(),
+                            reason: "native evidence does not carry image data; use the capture operation".into(),
                         });
                     }
                     let snapshot = engine.snapshot().map_err(native_error)?;
@@ -3586,9 +3584,27 @@ impl BrowserBackend for NativeEngineBackend {
                     require_context_id(&request.context_id, &active_context_id)?;
                     let format = request.format;
                     let bytes = match format {
-                        CaptureFormat::Png => {
+                        CaptureFormat::Png | CaptureFormat::Jpeg => {
                             drop(engine);
-                            self.capture_png_async().await?
+                            let visual_format = match format {
+                                CaptureFormat::Png => VisualFormat::Png,
+                                CaptureFormat::Jpeg => VisualFormat::Jpeg,
+                                CaptureFormat::Pdf => unreachable!("PDF handled separately"),
+                            };
+                            let quality = (format == CaptureFormat::Jpeg).then_some(80);
+                            let capture = self
+                                .capture_visual(&VisualCaptureOptions {
+                                    format: visual_format,
+                                    quality,
+                                    ..VisualCaptureOptions::default()
+                                })
+                                .await?;
+                            base64::engine::general_purpose::STANDARD
+                                .decode(capture.data.as_bytes())
+                                .map_err(|error| BrowserBackendError::InvalidConfiguration {
+                                    field: "native capture payload".into(),
+                                    reason: error.to_string(),
+                                })?
                         }
                         CaptureFormat::Pdf => {
                             let snapshot = engine.snapshot().map_err(native_error)?;
@@ -3603,12 +3619,6 @@ impl BrowserBackend for NativeEngineBackend {
                                     reason: error.to_string(),
                                 }
                             })?
-                        }
-                        CaptureFormat::Jpeg => {
-                            return Err(BrowserBackendError::UnsupportedOperation {
-                                operation: "capture".into(),
-                                reason: "native JPEG encoding is not available yet".into(),
-                            });
                         }
                     };
                     Ok(BackendResponse::Capture(CaptureResult { format, bytes }))

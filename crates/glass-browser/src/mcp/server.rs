@@ -4028,36 +4028,49 @@ async fn native_mcp_control(
         ),
         ToolInvocation::Screenshot {
             format,
-            quality: _,
+            quality,
             scale,
             full_page,
             clip,
             target,
         } => {
-            policy.require(crate::browser::policy::PolicyCapability::Screenshot)?;
-            if format != VisualFormat::Png
-                || (scale - 1.0).abs() > f64::EPSILON
-                || full_page
-                || clip.is_some()
-                || target.is_some()
-            {
-                return Err(
-                    "native MCP screenshot supports only the current viewport PNG at scale 1.0"
-                        .into(),
-                );
-            }
-            let bytes = session.native_capture_png_async().await?;
-            Ok(json!({
-                "content": [{
-                    "type": "image",
-                    "data": base64::engine::general_purpose::STANDARD.encode(bytes),
-                    "mimeType": "image/png",
-                }],
-                "_meta": {"native": true}
-            }))
+            native_mcp_screenshot(
+                session,
+                policy,
+                VisualCaptureOptions {
+                    format,
+                    quality,
+                    scale,
+                    clip,
+                    full_page,
+                    target,
+                },
+            )
+            .await
         }
         _ => Err("native control dispatcher received an incompatible tool".into()),
     }
+}
+
+#[cfg(feature = "native-engine")]
+async fn native_mcp_screenshot(
+    session: &BrowserRuntimeSession,
+    policy: &BrowserPolicy,
+    options: VisualCaptureOptions,
+) -> BrowserResult<Value> {
+    policy.require(crate::browser::policy::PolicyCapability::Screenshot)?;
+    let capture = session.native_capture_visual(&options).await?;
+    Ok(json!({
+        "content": [{
+            "type": "text",
+            "text": serde_json::to_string(&capture.metadata)?
+        }, {
+            "type": "image",
+            "data": capture.data,
+            "mimeType": format!("image/{}", capture.metadata.format.as_cdp())
+        }],
+        "_meta": {"native": true}
+    }))
 }
 
 #[cfg(feature = "native-engine")]
@@ -5063,33 +5076,25 @@ async fn call_native_tool_on_session_impl(
         }
         ToolInvocation::Screenshot {
             format,
-            quality: _,
+            quality,
             scale,
             full_page,
             clip,
             target,
         } => {
-            policy.require(crate::browser::policy::PolicyCapability::Screenshot)?;
-            if format != VisualFormat::Png
-                || (scale - 1.0).abs() > f64::EPSILON
-                || full_page
-                || clip.is_some()
-                || target.is_some()
-            {
-                return Err(
-                    "native MCP screenshot supports only the current viewport PNG at scale 1.0"
-                        .into(),
-                );
-            }
-            let bytes = session.native_capture_png_async().await?;
-            Ok(json!({
-                "content": [{
-                    "type": "image",
-                    "data": base64::engine::general_purpose::STANDARD.encode(bytes),
-                    "mimeType": "image/png",
-                }],
-                "_meta": {"native": true}
-            }))
+            native_mcp_screenshot(
+                session,
+                policy,
+                VisualCaptureOptions {
+                    format,
+                    quality,
+                    scale,
+                    clip,
+                    full_page,
+                    target,
+                },
+            )
+            .await
         }
         ToolInvocation::ListTargets => {
             serialized_result_mode(&session.native_list_targets().await?, response_mode)
@@ -7643,8 +7648,33 @@ mod tests {
         )
         .await;
         let screenshot_result = screenshot.result.unwrap();
-        let image = screenshot_result["content"][0]["data"].as_str().unwrap();
+        let metadata: Value =
+            serde_json::from_str(screenshot_result["content"][0]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(metadata["format"], "png");
+        let image = screenshot_result["content"][1]["data"].as_str().unwrap();
         assert!(image.starts_with("iVBORw0KGgo"));
+
+        let jpeg = invoke_native_mcp_tool(
+            "screenshot",
+            json!({"format": "jpeg", "quality": 75, "scale": 1.5}),
+            &mut session,
+            &mut native_session,
+            &options,
+            &policy,
+        )
+        .await;
+        assert!(jpeg.error.is_none());
+        let jpeg_result = jpeg.result.unwrap();
+        let jpeg_metadata: Value =
+            serde_json::from_str(jpeg_result["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(jpeg_metadata["format"], "jpeg");
+        assert!(
+            jpeg_result["content"][1]["data"]
+                .as_str()
+                .unwrap()
+                .starts_with("/9j/")
+        );
 
         let storage = invoke_native_mcp_tool(
             "localStorage",

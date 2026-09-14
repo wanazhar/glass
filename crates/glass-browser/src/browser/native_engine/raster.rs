@@ -765,6 +765,71 @@ impl NativeSurface {
         Ok(bytes)
     }
 
+    /// Encode the logical surface as a bounded JPEG payload.
+    ///
+    /// JPEG has no alpha channel; the encoder deliberately ignores the
+    /// surface alpha while preserving the native RGB samples. The shared
+    /// visual contract permits quality zero, while the JPEG format's encoder
+    /// accepts one as its minimum, so zero is clamped to the nearest valid
+    /// representation.
+    pub fn to_jpeg(&self, quality: u8) -> Result<Vec<u8>, NativeEngineError> {
+        let quality = quality.max(1);
+        let width = u16::try_from(self.width).map_err(|_| {
+            NativeEngineError::invalid("native JPEG", "surface width exceeds JPEG dimensions")
+        })?;
+        let height = u16::try_from(self.height).map_err(|_| {
+            NativeEngineError::invalid("native JPEG", "surface height exceeds JPEG dimensions")
+        })?;
+        let mut bytes = Vec::new();
+        jpeg_encoder::Encoder::new(&mut bytes, quality)
+            .encode(&self.rgba, width, height, jpeg_encoder::ColorType::Rgba)
+            .map_err(|error| NativeEngineError::invalid("native JPEG", error.to_string()))?;
+        if bytes.len() > crate::browser_backend::MAX_CAPTURE_BYTES {
+            return Err(NativeEngineError::limit(
+                "native JPEG bytes",
+                crate::browser_backend::MAX_CAPTURE_BYTES,
+                bytes.len(),
+            ));
+        }
+        Ok(bytes)
+    }
+
+    /// Encode the logical surface as a bounded still WebP payload.
+    ///
+    /// A missing quality keeps capture lossless. An explicit quality selects
+    /// the pure-Rust lossy encoder so the caller's quality setting is not
+    /// silently discarded.
+    pub fn to_webp(&self, quality: Option<u8>) -> Result<Vec<u8>, NativeEngineError> {
+        let image = webp_rust::ImageBuffer {
+            width: self.width as usize,
+            height: self.height as usize,
+            rgba: self.rgba.clone(),
+        };
+        let bytes = match quality {
+            Some(quality) => {
+                let config = webp_rust::LossyEncodingConfig {
+                    quality: f32::from(quality),
+                    ..webp_rust::LossyEncodingConfig::default()
+                };
+                webp_rust::encode_lossy_with_config(&image, &config, None)
+            }
+            None => webp_rust::encode_lossless_with_config(
+                &image,
+                &webp_rust::LosslessEncodingConfig::default(),
+                None,
+            ),
+        }
+        .map_err(|error| NativeEngineError::invalid("native WebP", error.to_string()))?;
+        if bytes.len() > crate::browser_backend::MAX_CAPTURE_BYTES {
+            return Err(NativeEngineError::limit(
+                "native WebP bytes",
+                crate::browser_backend::MAX_CAPTURE_BYTES,
+                bytes.len(),
+            ));
+        }
+        Ok(bytes)
+    }
+
     pub fn pixel(&self, x: u32, y: u32) -> Option<[u8; 4]> {
         if x >= self.width || y >= self.height {
             return None;

@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-332` slice. The native runtime is now the primary
+`native-engine-browser-334` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -51,6 +51,14 @@ the resulting cookie map, and preserves the existing full-attribute
 `setCookies` import surface for domain/path/security metadata. The CDP adapter
 uses the same current-origin assignment semantics, so the shared storage
 contract no longer advertises a write that only one backend can perform.
+
+Slice 334 completes the cookie request-policy boundary. Native cookie profiles
+and `Set-Cookie` parsing preserve SameSite and priority metadata, reject
+insecure `SameSite=None`, default omitted SameSite to Lax, and apply
+schemeful same-site filtering using the current initiator across navigation,
+Fetch/XHR, EventSource, WebSocket, CSS, image, script, and worker requests.
+The implementation keeps a bounded registrable-site approximation; a full
+public-suffix-list and partitioned-cookie owner remain separate profile gates.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

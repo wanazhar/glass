@@ -39,11 +39,13 @@ you want both `glass` and `glass-browser`. Installing both packages into the
 same Cargo home can make the last installation replace the shared
 `glass-browser` executable; use one package as the owner of that command.
 
-Chrome, Chromium, or Chrome for Testing is required for full
-`BrowserSession`-backed operations. Firefox and Safari require an externally
-started BiDi/WebDriver endpoint for the portable semantic command set.
-`doctor`, Task Protocol validation/compilation, Web IR operations, policy
-checks, and several scorecards are browser-free.
+The Glass-owned native engine is the default feature-enabled runtime for the
+CLI, MCP, TUI, and resident development browser path; it does not require
+Chrome or a remote browser. Explicit `BrowserSession`/Chromium migration
+operations still require Chrome, Chromium, or Chrome for Testing. Firefox and
+Safari require an externally started BiDi/WebDriver endpoint for their
+portable semantic command set. `doctor`, Task Protocol validation/compilation,
+Web IR operations, policy checks, and several scorecards are browser-free.
 
 For Rust:
 
@@ -71,7 +73,7 @@ JavaScript, and form values are explicit operations and may require policy
 capabilities. Locators must resolve exactly one current target; stale revisions
 fail before browser input.
 
-The feature-gated native engine additionally derives bounded integer-pixel
+The native engine additionally derives bounded integer-pixel
 normal-flow rectangles, bounded physical four-side padding/margin shorthands
 and longhands, explicit content-box or border-box sizing, bounded physical
 min/max width/height constraints with bounded case-insensitive 15-layer/
@@ -154,9 +156,8 @@ also inspect bounded revisioned diagnostics for unsupported CSS; the details
 are sanitized and this signal is not stable backend evidence;
 it accepts native
 `point=x,y` click targets
-through its Rust API/CLI path. These are experimental local-content artifacts,
-not CSS/layout, font, physical-pixel, or screenshot-evidence compatibility
-claims. External HTTP(S) documents additionally transfer bounded response CSP
+through its Rust API/CLI path. These are bounded native-engine surfaces with
+explicit format and geometry contracts. External HTTP(S) documents additionally transfer bounded response CSP
 frame-source policy into nested frame ownership, blocking denied child requests
 while retaining observable `about:blank` contexts.
 
@@ -436,7 +437,7 @@ overflow semantics remain outside the boundary.
 |---|---:|---|
 | `visual-compare` | no | Explicit PNG comparison helpers |
 | `fuzzing` | no | Test-only fuzz hooks |
-| `native-engine` | no | Experimental Glass-owned browser backend with bounded local and external HTTP(S) HTML navigation and parent-owned anchor downloads with bounded physical box-edge layout/point input, root horizontal and vertical viewport scrolling, bounded axis-specific `overflow-x`/`overflow-y` `hidden`/`clip` clips, bounded local opacity subtree groups, inherited physical `text-align:left|center|right` fixed-cell line placement, bounded functional `rgba(R, G, B, A)` alpha colors for background/border/text paint, bounded inherited fixed-cell `text-decoration:none|underline|overline|line-through` paint including distinct shorthand combinations, bounded inherited ASCII `text-transform:none|uppercase|lowercase` layout plus bounded case-insensitive 15-layer/unlayered `revert-layer` rollback for inherited `text-transform`, `font-weight`, `font-style`, and `word-break` with finite parent/root fallbacks, bounded non-negative fixed-pixel first-line `text-indent` for block flow, bounded inherited non-negative fixed-pixel `word-spacing` across collapsed and supported preformatted ASCII spaces, bounded inherited non-negative fixed-pixel `letter-spacing` after every rendered fixed-cell character in each emitted fragment composed with word spacing, bounded inherited `font-weight:normal|bold|400|700` fixed-cell raster presentation with unchanged advances and clipped one-pixel bold dilation, bounded inherited `font-style:normal|italic` fixed-cell raster presentation with unchanged advances and clipped row-dependent italic shear, bounded inherited `word-break:normal|break-all` collapsed fixed-cell wrapping, bounded local `text-overflow:clip|ellipsis` on eligible clipped single-line direct text, bounded inherited `vertical-align:baseline|top|middle|bottom` offsets for fixed-cell inline and inline-block line items, bounded percent-decoded exact visible-id or legacy `<a name>` fragment scrolling/history restoration, simple `#:~:text=start[,end]` matching plus exact adjacent prefix/suffix affixes within the first visible non-truncated text run, fragment-only, fixture-relative, and absolute local link activation, bounded non-inherited `align-items:flex-start|center|flex-end` cross-axis placement using explicit content height or the auto row's maximum item outer height, and Rust-only display/raster artifacts |
+| `native-engine` | yes | Glass-owned primary browser backend with bounded local and external HTTP(S) HTML navigation, parent-owned anchor downloads, native page targets, profile/viewport ownership, semantic actions, workers, storage, screenshots, and the documented CSS/layout/display/raster surfaces; the feature is enabled by default and explicit Chromium/CDP remains a migration backend |
 
 ## MCP
 
@@ -499,9 +500,9 @@ navigation/history path, preserves cancellation, and rejects ambiguous loops.
 - Firefox BiDi and Safari WebDriver are experimental and bounded. An
   unavailable capability fails closed rather than falling back to raw
   transport.
-- The native engine is experimental, default-off, and available through the
-  explicit Rust backend factory and feature-gated local CLI runtime. Its
-  current semantic slice supports bounded local and external HTTP(S) document
+- The native engine is the default feature-enabled runtime and is available
+  through the Rust backend factory, CLI, MCP, TUI, and resident development
+  browser paths. Its current semantic slice supports bounded local and external HTTP(S) document
   navigation, parent-owned anchor downloads, up to 32 independently owned page
   targets with explicit selection and cleanup, bounded box-model layout,
   root horizontal and vertical viewport scrolling, bounded inherited

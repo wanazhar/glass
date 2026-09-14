@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-350` slice. The native runtime is now the primary
+`native-engine-browser-351` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -265,6 +265,18 @@ before publishing the sequence; persistent waiting-worker arbitration,
 CacheStorage freshness, and complete task-source scheduling remain issue #40
 gates. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-350.md`.
+
+Slice 351 adds bounded Service Worker waiting-worker arbitration. A worker that
+does not request `skipWaiting()` remains installed and waiting beside the
+incumbent active worker; the page-facing registration exposes both objects and
+replays the installing/installed transition. A validated worker-owned
+`skipWaiting()` command preserves immediate activation, while the next
+matching native navigation promotes a waiting worker only after its activate
+`waitUntil()` work settles. Failed promotion keeps the incumbent active worker
+and the waiting candidate intact. Waiting workers are in-memory only in this
+slice, and multi-client controller ownership, exact task-source scheduling,
+and durable waiting-state restoration remain issue #40 gates. Exact evidence
+is recorded in `docs/plan/tasks/native-engine-browser-351.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

@@ -3986,6 +3986,98 @@ async fn native_content_process_observes_service_worker_lifecycle_update() {
 }
 
 #[tokio::test]
+async fn native_content_process_keeps_service_worker_update_waiting_until_navigation() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for (expected_path, content_type, body) in [
+            (
+                "/page",
+                "text/html",
+                "<!doctype html><html><body><script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script><main>waiting page</main></body></html>",
+            ),
+            (
+                "/sw.js",
+                "application/javascript",
+                r#"self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
+self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+self.addEventListener('fetch', event => { const path = new URL(event.request.url).pathname; event.respondWith(path === '/next' ? new Response('<!doctype html><html><body>worker v1</body></html>', { headers: { 'Content-Type': 'text/html', 'X-Worker-Version': 'v1' } }) : new Response('worker v1', { headers: { 'X-Worker-Version': 'v1' } })); });
+"#,
+            ),
+            (
+                "/sw.js",
+                "application/javascript",
+                r#"self.addEventListener('install', event => event.waitUntil(Promise.resolve()));
+self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+self.addEventListener('fetch', event => { const path = new URL(event.request.url).pathname; event.respondWith(path === '/next' ? new Response('<!doctype html><html><body>worker v2</body></html>', { headers: { 'Content-Type': 'text/html', 'X-Worker-Version': 'v2' } }) : new Response('worker v2', { headers: { 'X-Worker-Version': 'v2' } })); });
+"#,
+            ),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await registrationPromise.then(async reg => { const events = []; reg.addEventListener('updatefound', () => { const installing = reg.installing; events.push('updatefound:' + installing.state); installing.addEventListener('statechange', () => events.push('installing:' + installing.state)); }); const result = await reg.update(); return { updateUndefined: result === undefined, active: reg.active && reg.active.state, waiting: reg.waiting && reg.waiting.state, installing: reg.installing, registrations: (await navigator.serviceWorker.getRegistrations()).length, events }; })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "updateUndefined": true,
+            "active": "activated",
+            "waiting": "installed",
+            "installing": null,
+            "registrations": 1,
+            "events": ["updatefound:installing", "installing:installed"],
+        })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await fetch('/version').then(async response => ({ version: response.headers.get('x-worker-version'), body: await response.text() }))",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({"version":"v1","body":"worker v1"})
+    );
+    engine
+        .navigate_async(format!("http://{address}/next"))
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({ body: document.body.innerText, controlled: navigator.serviceWorker.controller !== null, active: navigator.serviceWorker.controller && navigator.serviceWorker.controller.state, version: await fetch('/version').then(async response => ({ version: response.headers.get('x-worker-version'), body: await response.text() })) })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "body": "worker v2",
+            "controlled": true,
+            "active": "activated",
+            "version": {"version":"v2","body":"worker v2"},
+        })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_service_worker_cache_matching_options_filter_entries() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

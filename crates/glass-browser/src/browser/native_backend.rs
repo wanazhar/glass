@@ -2947,6 +2947,63 @@ impl NativeEngineBackend {
         })
     }
 
+    /// Rebuild the active native document owner and reload its current URL.
+    /// The operation never changes backend or replays the failed mutation;
+    /// it replaces the current history entry and returns the new revision.
+    pub async fn recover(&self) -> Result<NavigationControlOutcome, BrowserBackendError> {
+        let proxy_updates = self.active_window_proxy_updates()?;
+        let (target_id, opener_id, previous_revision) =
+            {
+                let targets = self.lock_targets(BackendOperation::Navigate)?;
+                let target_id = targets.active_target_id.clone().ok_or_else(|| {
+                    BrowserBackendError::Lifecycle {
+                        operation: "recover".into(),
+                        state: "no-target-selected".into(),
+                        reason: "select an available native page target before recovery".into(),
+                    }
+                })?;
+                let engine = self.lock_engine_raw(BackendOperation::Navigate)?;
+                (
+                    target_id,
+                    targets.active_opener_id.clone(),
+                    engine.revision(),
+                )
+            };
+        let (popups, messages, closes, navigations, window_name, current_revision) = {
+            let mut engine = self.lock_engine_raw(BackendOperation::Navigate)?;
+            engine
+                .sync_window_proxies(&proxy_updates)
+                .await
+                .map_err(native_error)?;
+            let snapshot = engine.recover_async().await.map_err(native_error)?;
+            let popups = engine.take_pending_popups();
+            let messages = engine.take_pending_post_messages();
+            let closes = engine.take_pending_window_closes();
+            let navigations = engine.take_pending_window_navigations();
+            let window_name = engine.config().window_name.clone();
+            project_native_target(&engine, &target_id, opener_id, true)?;
+            (
+                popups,
+                messages,
+                closes,
+                navigations,
+                window_name,
+                snapshot.revision,
+            )
+        };
+        let mut targets = self.lock_targets(BackendOperation::Contexts)?;
+        targets.active_frames = NativeFrameState::new(&target_id);
+        targets.active_name = native_window_name(&window_name);
+        drop(targets);
+        self.process_pending_browser_effects(popups, messages, closes, navigations)
+            .await?;
+        Ok(NavigationControlOutcome {
+            action: "recover".into(),
+            previous_revision,
+            current_revision,
+        })
+    }
+
     /// Return the logical viewport used by native point routing and capture.
     pub fn viewport_size(&self) -> Result<(f64, f64), BrowserBackendError> {
         let engine = self.lock_engine(BackendOperation::Capture)?;
@@ -3001,7 +3058,7 @@ impl NativeEngineBackend {
                 ],
                 BrowserCapability::Capture => {
                     vec![
-                        "bounded PNG of the current logical RGBA surface; JPEG/PDF and screenshot-containing evidence are unavailable".into(),
+                        "bounded PNG or PDF of the current logical page surface; JPEG encoding and screenshot-containing evidence remain separate surfaces".into(),
                     ]
                 }
                 BrowserCapability::Contexts => vec![
@@ -3041,7 +3098,7 @@ impl NativeEngineBackend {
                     maximum: None,
                 },
                 certification: CertificationProfile {
-                    level: CertificationLevel::Experimental,
+                    level: CertificationLevel::Partial,
                     glass_version: glass_version.into(),
                     tested_capabilities: supported.to_vec(),
                     limitations: vec![

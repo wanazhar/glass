@@ -388,6 +388,23 @@ impl BrowserRuntimeSession {
         }
     }
 
+    /// Rebuild the native document owner and reload the current URL. An
+    /// optional revision guard prevents recovery from racing a newer caller.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_recover(
+        &self,
+        expected_revision: Option<u64>,
+    ) -> BrowserResult<NavigationControlOutcome> {
+        let _operation = self.operation_lock.lock().await;
+        if let Some(expected_revision) = expected_revision {
+            self.require_current_revision(expected_revision).await?;
+        }
+        match &self.backend {
+            BackendStartup::Native(backend) => Ok(backend.recover().await?),
+            _ => Err("native recovery is only available on the native runtime".into()),
+        }
+    }
+
     /// Stop-loading is a revision-checked no-op for the current native owner.
     /// Native navigation is completed before its command returns, so there is
     /// no detached load task to cancel; preserving the control result keeps

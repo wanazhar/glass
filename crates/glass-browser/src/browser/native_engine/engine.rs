@@ -916,6 +916,29 @@ impl NativeEngine {
         self.navigate_request_async(request, 0).await
     }
 
+    /// Rebuild the current document owner and reload the active URL without
+    /// replaying the operation that may have killed the content worker.
+    ///
+    /// Recovery deliberately skips page unload handlers: a failed worker has
+    /// no trustworthy lifecycle state to deliver, and replaying an outgoing
+    /// mutation could duplicate an external side effect. The current history
+    /// entry is replaced, so recovery does not manufacture a new user-visible
+    /// history step.
+    pub async fn recover_async(&mut self) -> Result<NativeEngineSnapshot, NativeEngineError> {
+        self.require_running("recover")?;
+        if self
+            .content_process
+            .as_ref()
+            .is_some_and(|process| !process.is_healthy())
+        {
+            self.content_process.take();
+        }
+        let mut navigation = NativeNavigationRequest::get(self.url.clone());
+        navigation.replace_history = true;
+        self.navigate_request_async_with_lifecycle(navigation, 0, false)
+            .await
+    }
+
     async fn navigate_request_async(
         &mut self,
         navigation: NativeNavigationRequest,

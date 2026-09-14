@@ -1535,6 +1535,116 @@ async fn native_local_message_channels_deliver_events_in_page_and_worker_realms(
 }
 
 #[tokio::test]
+async fn native_message_ports_transfer_between_page_and_worker_realms() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://transferred-message-port-page",
+            "<html><body><main>Native</main></body></html>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://transferred-message-port-worker",
+            "self.onmessage = event => { const port = event.ports[0]; port.onmessage = message => { postMessage({ kind: 'worker-received', value: message.data.value }); port.postMessage({ kind: 'worker-reply', value: message.data.value + 1 }); }; port.start(); port.postMessage({ kind: 'worker-ready', value: 1 }); const returnChannel = new MessageChannel(); returnChannel.port2.onmessage = message => { postMessage({ kind: 'worker-port-received', value: message.data.value }); returnChannel.port2.postMessage({ kind: 'worker-port-reply', value: message.data.value + 1 }); }; returnChannel.port2.start(); postMessage({ kind: 'worker-port', value: 2 }, [returnChannel.port1]); };",
+        )
+        .unwrap()
+        .with_initial_url("fixture://transferred-message-port-page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"(() => {
+                    globalThis.portEvents = [];
+                    globalThis.workerMessages = [];
+                    globalThis.returnPort = null;
+                    globalThis.channel = new MessageChannel();
+                    globalThis.rollbackChannel = new MessageChannel();
+                    globalThis.invalidTransferChannel = new MessageChannel();
+                    channel.port2.onmessage = event => portEvents.push({
+                        kind: event.data.kind,
+                        value: event.data.value,
+                        portCount: event.ports.length,
+                    });
+                    channel.port2.start();
+                    globalThis.worker = new Worker('fixture://transferred-message-port-worker');
+                    worker.onmessage = event => {
+                        workerMessages.push(event.data);
+                        if (event.data.kind === 'worker-port') {
+                            returnPort = event.ports[0];
+                            returnPort.onmessage = message => portEvents.push({
+                                kind: message.data.kind,
+                                value: message.data.value,
+                                portCount: message.ports.length,
+                            });
+                            returnPort.start();
+                            returnPort.postMessage({ value: 8 });
+                        }
+                    };
+                    worker.postMessage({ kind: 'connect' }, [channel.port1]);
+                    let detachedError = '';
+                    try { channel.port1.postMessage({ value: 0 }); }
+                    catch (error) { detachedError = error.name; }
+                    const cyclic = {};
+                    cyclic.self = cyclic;
+                    let cyclicError = '';
+                    try { worker.postMessage(cyclic, [rollbackChannel.port1]); }
+                    catch (error) { cyclicError = error.name; }
+                    let rollbackPortError = '';
+                    try { rollbackChannel.port1.postMessage({ value: 1 }); }
+                    catch (error) { rollbackPortError = error.name; }
+                    let invalidTransferError = '';
+                    try { worker.postMessage({ value: 2 }, [invalidTransferChannel.port1, {}]); }
+                    catch (error) { invalidTransferError = error.name; }
+                    let invalidTransferPortError = '';
+                    try { invalidTransferChannel.port1.postMessage({ value: 2 }); }
+                    catch (error) { invalidTransferPortError = error.name; }
+                    return [detachedError, channel.port2 instanceof MessagePort, cyclicError, rollbackPortError, invalidTransferError, invalidTransferPortError];
+                })()"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["InvalidStateError", true, "DataCloneError", "", "DataCloneError", ""])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("({ portEvents, workerMessages })")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "portEvents": [{"kind": "worker-ready", "value": 1, "portCount": 0}],
+            "workerMessages": [{"kind": "worker-port", "value": 2}],
+        })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("channel.port2.postMessage({ value: 4 }); true")
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("({ portEvents, workerMessages })")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "portEvents": [
+                {"kind": "worker-ready", "value": 1, "portCount": 0},
+                {"kind": "worker-port-reply", "value": 9, "portCount": 0},
+                {"kind": "worker-reply", "value": 5, "portCount": 0},
+            ],
+            "workerMessages": [
+                {"kind": "worker-port", "value": 2},
+                {"kind": "worker-port-received", "value": 8},
+                {"kind": "worker-received", "value": 4},
+            ],
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_worker_timers_run_on_the_next_page_turn() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -3418,6 +3528,80 @@ async fn native_content_process_runs_worker_created_during_page_load() {
             "value": 5,
             "href": format!("http://{address}/worker.js"),
         }])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_transfers_message_ports_between_page_and_worker_realms() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for (path, content_type, body) in [
+            (
+                "/transferred-port-page",
+                "text/html",
+                "<script>globalThis.portEvents = []; globalThis.workerMessages = []; globalThis.returnPort = null; globalThis.channel = new MessageChannel(); channel.port2.onmessage = event => portEvents.push({ kind: event.data.kind, value: event.data.value, portCount: event.ports.length }); channel.port2.start(); globalThis.worker = new Worker('/transferred-port-worker.js'); worker.onmessage = event => { workerMessages.push(event.data); if (event.data.kind === 'worker-port') { returnPort = event.ports[0]; returnPort.onmessage = message => portEvents.push({ kind: message.data.kind, value: message.data.value, portCount: message.ports.length }); returnPort.start(); returnPort.postMessage({ value: 8 }); } }; worker.postMessage({ kind: 'connect' }, [channel.port1]);</script><main>Native</main>",
+            ),
+            (
+                "/transferred-port-worker.js",
+                "text/javascript",
+                "self.onmessage = event => { const port = event.ports[0]; port.onmessage = message => { postMessage({ kind: 'worker-received', value: message.data.value }); port.postMessage({ kind: 'worker-reply', value: message.data.value + 1 }); }; port.start(); port.postMessage({ kind: 'worker-ready', value: 1 }); const returnChannel = new MessageChannel(); returnChannel.port2.onmessage = message => { postMessage({ kind: 'worker-port-received', value: message.data.value }); returnChannel.port2.postMessage({ kind: 'worker-port-reply', value: message.data.value + 1 }); }; returnChannel.port2.start(); postMessage({ kind: 'worker-port', value: 2 }, [returnChannel.port1]); };",
+            ),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/transferred-port-page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("({ portEvents, workerMessages })")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "portEvents": [{"kind": "worker-ready", "value": 1, "portCount": 0}],
+            "workerMessages": [{"kind": "worker-port", "value": 2}],
+        })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("channel.port2.postMessage({ value: 4 }); true")
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("({ portEvents, workerMessages })")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "portEvents": [
+                {"kind": "worker-ready", "value": 1, "portCount": 0},
+                {"kind": "worker-port-reply", "value": 9, "portCount": 0},
+                {"kind": "worker-reply", "value": 5, "portCount": 0},
+            ],
+            "workerMessages": [
+                {"kind": "worker-port", "value": 2},
+                {"kind": "worker-port-received", "value": 8},
+                {"kind": "worker-received", "value": 4},
+            ],
+        })
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

@@ -28,16 +28,17 @@ use super::javascript::{
     MAX_NATIVE_WEBSOCKET_PROTOCOLS, MAX_NATIVE_XHR_TIMEOUT_MS, NativeCookieChange,
     NativeCookieProfileEntry, NativeDialog, NativeFrameScriptBinding, NativeFrameScriptContext,
     NativeFrameScriptRequest, NativeFrameScriptWindow, NativeIndexedDbChange, NativeIndexedDbState,
-    NativeJavaScriptRuntime, NativePageScript, NativePageScriptResult, NativePopupRequest,
-    NativePostMessageRequest, NativeScriptCommand, NativeScriptEvaluation, NativeStorageEvent,
-    NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
-    NativeWindowProxyUpdate, NativeWorkerEventSourceCommand, NativeWorkerMessage,
-    NativeWorkerRegistry, NativeWorkerWebSocketCommand, diff_indexed_db_changes,
-    execute_dynamic_page_scripts, execute_page_scripts, host_event_script,
+    NativeJavaScriptRuntime, NativeMessagePortPageMessage, NativePageScript,
+    NativePageScriptResult, NativePopupRequest, NativePostMessageRequest, NativeScriptCommand,
+    NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState, NativeWindowCloseRequest,
+    NativeWindowNavigationRequest, NativeWindowProxyUpdate, NativeWorkerEventSourceCommand,
+    NativeWorkerMessage, NativeWorkerRegistry, NativeWorkerWebSocketCommand,
+    diff_indexed_db_changes, execute_dynamic_page_scripts, execute_page_scripts, host_event_script,
     host_hash_change_event_script, host_key_event_script, host_key_event_script_with_modifiers,
     host_submit_event_script, literal_dynamic_module_specifiers, load_indexed_db_profile,
-    load_web_storage_profile, order_page_scripts, page_script_sources_to_scripts,
-    save_web_storage_profile, static_module_specifiers, storage_key, worker_message_script,
+    load_web_storage_profile, message_port_script, order_page_scripts,
+    page_script_sources_to_scripts, save_web_storage_profile, static_module_specifiers,
+    storage_key, worker_message_script,
 };
 use super::layout::NativePoint;
 use super::origin::NativeOrigin;
@@ -3440,6 +3441,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut workers = NativeWorkerRegistry::new();
     let mut service_workers = NativeServiceWorkerRegistry::default();
     let mut pending_worker_messages: VecDeque<NativeWorkerMessage> = VecDeque::new();
+    let mut pending_message_port_messages: VecDeque<NativeMessagePortPageMessage> = VecDeque::new();
     let mut websocket_connections = BTreeMap::new();
     let mut worker_websocket_connections = BTreeMap::new();
     let mut fetch_stream_connections = BTreeMap::new();
@@ -3875,6 +3877,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 worker_event_source_connections.clear();
                 workers.clear();
                 pending_worker_messages.clear();
+                pending_message_port_messages.clear();
                 if let Some(runtime) = javascript_runtime.as_ref() {
                     storage_state = runtime.storage_state();
                 }
@@ -4079,6 +4082,14 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                     workers
                                         .apply_commands(worker_commands, loader, &resource.url)
                                         .await?;
+                                    let message_port_commands =
+                                        runtime.take_message_port_commands();
+                                    workers
+                                        .apply_page_message_port_commands(
+                                            message_port_commands,
+                                            loader,
+                                        )
+                                        .await?;
                                     process_worker_websocket_commands(
                                         workers.take_websocket_commands(),
                                         &mut worker_websocket_connections,
@@ -4090,6 +4101,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                         Some(&*loader),
                                     )?;
                                     pending_worker_messages.extend(workers.take_messages());
+                                    pending_message_port_messages
+                                        .extend(workers.take_message_port_messages());
                                 }
                                 let document_wire = parsed.to_content_wire();
                                 document = Some(parsed);
@@ -4305,13 +4318,20 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 )
                 .await?;
                 pending_worker_messages.extend(workers.take_messages());
+                pending_message_port_messages.extend(workers.take_message_port_messages());
                 let worker_messages = std::mem::take(&mut pending_worker_messages)
                     .into_iter()
                     .collect::<Vec<_>>();
-                let source = match worker_message_script(&worker_messages)? {
-                    Some(prefix) => format!("{prefix}{source}"),
-                    None => source.to_owned(),
-                };
+                let message_port_messages = std::mem::take(&mut pending_message_port_messages)
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                let mut source = source.to_owned();
+                if let Some(prefix) = worker_message_script(&worker_messages)? {
+                    source = format!("{prefix}{source}");
+                }
+                if let Some(prefix) = message_port_script(&message_port_messages)? {
+                    source = format!("{prefix}{source}");
+                }
                 let evaluation =
                     runtime.evaluate(&source, current, &committed_url, document_origin, viewport);
                 let Some(loader) = resource_loader.as_mut() else {
@@ -4342,6 +4362,10 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 workers
                     .apply_commands(worker_commands, loader, &committed_url)
                     .await?;
+                let message_port_commands = runtime.take_message_port_commands();
+                workers
+                    .apply_page_message_port_commands(message_port_commands, loader)
+                    .await?;
                 process_worker_websocket_commands(
                     workers.take_websocket_commands(),
                     &mut worker_websocket_connections,
@@ -4353,6 +4377,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     Some(&*loader),
                 )?;
                 pending_worker_messages.extend(workers.take_messages());
+                pending_message_port_messages.extend(workers.take_message_port_messages());
                 match evaluation.map(|mut evaluation| {
                     evaluation.commands.extend(resolved_service_worker_commands);
                     evaluation
@@ -4450,6 +4475,14 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                         &document_url.clone().unwrap_or(committed_url.clone()),
                                     )
                                     .await?;
+                                let dynamic_message_port_commands =
+                                    runtime.take_message_port_commands();
+                                workers
+                                    .apply_page_message_port_commands(
+                                        dynamic_message_port_commands,
+                                        loader,
+                                    )
+                                    .await?;
                                 process_worker_websocket_commands(
                                     workers.take_websocket_commands(),
                                     &mut worker_websocket_connections,
@@ -4461,6 +4494,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                     Some(&*loader),
                                 )?;
                                 pending_worker_messages.extend(workers.take_messages());
+                                pending_message_port_messages
+                                    .extend(workers.take_message_port_messages());
                                 if !mutation.history.is_empty() {
                                     let Some(base_url) = document_url.as_deref() else {
                                         let response = content_error_response(

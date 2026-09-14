@@ -8924,7 +8924,7 @@ fn fetch_stream_event_payload(event: &NativeFetchStreamEvent) -> Value {
 fn fetch_commands(
     commands: &[NativeScriptCommand],
 ) -> Result<
-    Vec<(
+    VecDeque<(
         u32,
         String,
         NativeNavigationMethod,
@@ -9259,7 +9259,7 @@ async fn resolve_script_fetches(
             cache_mode,
             timeout,
             credentials,
-        )) = pending.pop()
+        )) = pending.pop_front()
         {
             resolved_count = resolved_count.saturating_add(1);
             if resolved_count > MAX_NATIVE_EFFECTS {

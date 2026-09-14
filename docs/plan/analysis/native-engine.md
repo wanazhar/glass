@@ -4,8 +4,9 @@ Status: Active implementation analysis for issue #40. The current browser
 expansion checkpoint is `native-engine-browser-355`, with native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
-CacheStorage request matching, Service Worker client enumeration, and
-Service Worker client messaging covered by the native owner across local and
+CacheStorage request matching, CacheStorage response admission and atomic
+batching, Service Worker client enumeration, and Service Worker client
+messaging covered by the native owner across local and
 HTTP(S) paths. Slice 346 closes bounded document-navigation HTTP cache
 freshness and validator revalidation: `Cache-Control` freshness deadlines,
 `ETag`/`Last-Modified` request validators, validated `304` reuse, and privacy-
@@ -51,7 +52,14 @@ CacheStorage remains explicit application-managed state rather than an HTTP
 freshness cache, so `Cache-Control` expiry remains owned by the resource
 loader. Cross-process client messaging, `clients.openWindow`, browser-wide
 registration arbitration, exact task-source scheduling, durable live-client
-leases, and production certification remain open. The
+leases, and production certification remain open. The completed Slice 356
+makes the page networking queue FIFO: Fetch commands are retained in
+script-emission order, each response is handed back through the persistent
+JavaScript owner before the next queued response, and the existing microtask
+drain therefore observes deterministic request/continuation order. This
+closes a concrete networking task-order defect without claiming cross-source
+arbitration between networking, timers, workers, MessagePorts, WebSocket,
+EventSource, rendering, and other browser task sources. The
 completed 234 slice carries bounded
 root-scroll sticky positioning through
 shared flow,
@@ -5655,8 +5663,10 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-355.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-356.md` is the latest completed browser
 task;
+`docs/plan/tasks/native-engine-browser-355.md` is the preceding completed
+browser task;
 `docs/plan/tasks/native-engine-browser-354.md` is the preceding completed
 browser task;
 `docs/plan/tasks/native-engine-browser-353.md` is the preceding completed
@@ -5742,7 +5752,8 @@ task;
 `docs/plan/tasks/native-engine-198.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-197.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-196.md` is the preceding completed task;
-The current browser-slice evidence chain is `native-engine-browser-355`,
+The current browser-slice evidence chain is `native-engine-browser-356`,
+`native-engine-browser-355`,
 `native-engine-browser-354`,
 `native-engine-browser-353`, `native-engine-browser-352`,
 `native-engine-browser-351`,

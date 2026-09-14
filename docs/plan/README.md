@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-345` locally. Native is now the default runtime for
+`native-engine-browser-346` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -228,9 +228,10 @@ native resource policy, settles bounded install/activate work, replaces the
 active isolated worker, refreshes persisted registration metadata, and routes
 later navigation and Fetch requests through the new worker version. Waiting
 and installing registration states, update notifications, byte-identical
-short-circuiting, cache freshness/revalidation, richer transferable values,
-complete task-source scheduling, and final production certification remain
-active issue #40 gates.
+short-circuiting, richer transferable values, complete task-source scheduling,
+and final production certification remain active issue #40 gates. Bounded
+document-navigation cache freshness/revalidation is covered by the later 346
+slice.
 
 The completed native Service Worker CacheStorage matching slice is
 [native-engine-browser-343](tasks/native-engine-browser-343.md): bounded
@@ -243,14 +244,25 @@ enumeration slice is
 worker fetch now exposes a bounded current top-level window client through
 `clients.matchAll()`, with type filtering, `includeUncontrolled`, stable opaque
 identity, URL, frame, visibility, focus, and control metadata. Full
-multi-client/frame lifecycle, `openWindow()`, cache freshness/revalidation,
-richer transferable values, complete task-source scheduling, and final
-production certification remain active issue #40 gates. The completed native
+multi-client/frame lifecycle, `openWindow()`, richer transferable values,
+complete task-source scheduling, and final production certification remain
+active issue #40 gates. Bounded document-navigation cache
+freshness/revalidation is covered by the following 346 slice. The completed native
 Service Worker client-message slice is
 [native-engine-browser-345](tasks/native-engine-browser-345.md):
 `Client.postMessage()` now clones bounded data, carries existing MessagePort
 transfers through the native owner, and delivers a ServiceWorker-container
 `message` event to the current page at a bounded fetch/page turn.
+
+The completed native document-cache freshness slice is
+[native-engine-browser-346](tasks/native-engine-browser-346.md): native
+document navigation now honors bounded `Cache-Control` freshness, retains
+`ETag`/`Last-Modified` validators for stale entries, reuses validated `304`
+responses, and evicts entries when `no-store`, cookie variance, or response
+cookies make reuse unsafe. The pre-existing no-header session-cache behavior
+is preserved; complete subresource/Fetch cache freshness, richer transferable
+values, complete task-source scheduling, and final production certification
+remain active issue #40 gates.
 
 The completed native cookie-policy slice is
 [native-engine-browser-334](tasks/native-engine-browser-334.md): cookie
@@ -950,7 +962,8 @@ process-backed loader now retains bounded session-only cookies and a bounded
 in-memory document cache across same-child navigations, applies domain/path/
 secure cookie matching, and denies cache reuse for explicit no-cache, private
 variant, or Set-Cookie responses. Cookie/cache state is never persisted or
-logged. Full HTTP freshness/revalidation, CORS/CSP, mixed content,
+logged. Bounded document-navigation freshness/revalidation is covered by
+slice 346; full subresource/Fetch HTTP freshness, CORS/CSP, mixed content,
 service-worker routing, permissions, subresources, complete encoding
 sniffing, origin/referrer request policy, script execution, and browser parity
 remain open.

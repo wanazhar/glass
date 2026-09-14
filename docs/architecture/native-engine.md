@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-345` slice. The native runtime is now the primary
+`native-engine-browser-346` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -133,9 +133,11 @@ content process reloads this state on startup, so a newly registered worker in
 the same profile can serve an entry written by a previous content-process
 owner. Lifecycle and fetch `waitUntil` promises are settled through the same
 bounded command loop before results are exposed. The later 343 slice closes
-the bounded request/Vary matching options; cache freshness/revalidation,
-richer transferable values, complete task-source interleaving, and final
-production certification remain separate issue #40 gates. Exact evidence is recorded in
+the bounded request/Vary matching options; Service-Worker CacheStorage
+freshness/revalidation, richer transferable values, complete task-source
+interleaving, and final production certification remain separate issue #40
+gates. Document-navigation freshness/revalidation is covered by the later 346
+slice. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-340.md`.
 
 Slice 341 persists canonical Service Worker registration metadata in the
@@ -147,8 +149,10 @@ keeps a temporarily unavailable script from blocking the page while retaining
 the profile for a later retry. Registration and unregistration update the
 profile atomically with cache and storage state. Full worker update/version
 conformance was advanced by 342 and bounded CacheStorage matching semantics
-were completed by 343; cache freshness/revalidation, richer transferables,
-and complete task-source interleaving remain separate issue #40 gates. Exact
+were completed by 343; Service-Worker CacheStorage freshness/revalidation,
+richer transferables, and complete task-source interleaving remain separate
+issue #40 gates. Document-navigation freshness/revalidation is covered by the
+later 346 slice. Exact
 evidence is recorded in
 `docs/plan/tasks/native-engine-browser-341.md`.
 
@@ -158,8 +162,10 @@ resource policy, settles bounded install and activate work in a fresh isolated
 worker, removes the old worker routes, refreshes the durable registration
 metadata, and exposes the replacement to the page. Subsequent navigation and
 Fetch requests use the updated worker without Chromium/CDP. Installing and
-waiting states, update notifications, byte-identical short-circuiting, cache
-freshness/revalidation, richer transferables, complete task-source
+waiting states, update notifications, and byte-identical short-circuiting
+remain separate issue #40 gates. Bounded document-navigation cache
+freshness/revalidation is covered by the later 346 slice; richer transferable
+values, complete task-source
 interleaving, and final certification remain separate issue #40 gates. Exact
 evidence is recorded in `docs/plan/tasks/native-engine-browser-342.md`.
 
@@ -169,9 +175,11 @@ options. `Cache.match()`, `Cache.delete()`, `Cache.keys()`, and
 method ignoring, and response `Vary` headers; cached request headers persist
 through the profile and filtered keys return them. Non-GET matching remains
 read/delete-only through `ignoreMethod`, while `Cache.put()` stays GET-only.
-Freshness/revalidation, richer transferables, complete task-source
-interleaving, and final certification remain separate issue #40 gates. Exact
-evidence is recorded in `docs/plan/tasks/native-engine-browser-343.md`.
+Service-Worker CacheStorage freshness/revalidation, richer transferables,
+complete task-source interleaving, and final certification remain separate
+issue #40 gates. Document-navigation freshness/revalidation is covered by the
+later 346 slice. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-343.md`.
 
 Slice 344 replaces the empty native Service Worker `clients.matchAll()`
 placeholder with a bounded current top-level window client projection during
@@ -180,10 +188,11 @@ window/type and top-level frame metadata, visibility, focus, and control
 state; `window`/`all`, worker-only filtering, and `includeUncontrolled` are
 handled without a Chromium/CDP query. Fetch-only client state is cleared
 before lifecycle evaluations, so install and activate cannot inherit stale
-request context. Multi-tab/frame ownership, `Client.postMessage()`,
-`openWindow()`, freshness/revalidation, richer transferables, complete
-task-source interleaving, and final certification remain issue #40 gates.
-Exact evidence is recorded in
+request context. Multi-tab/frame ownership and `openWindow()` remain issue #40
+gates. Service-Worker CacheStorage freshness/revalidation, richer
+transferables, complete task-source interleaving, and final certification
+remain issue #40 gates. Document-navigation freshness/revalidation is covered
+by the later 346 slice. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-344.md`.
 
 Slice 345 completes the active-client reverse messaging path. A bounded
@@ -193,11 +202,24 @@ top-level page client, and is delivered as a ServiceWorker-container
 `MessageEvent`; transferred ports reuse the existing bridge and are decoded in
 the page realm. Fetch continuations receive the event before the page observes
 the resolved Fetch result, while other worker-turn messages wait for the next
-bounded page evaluation. Multi-client/frame ownership, `openWindow()`,
-freshness/revalidation, richer transferables, complete task-source
-interleaving, and final certification remain issue #40 gates. Exact evidence
-is recorded in
+bounded page evaluation. Multi-client/frame ownership and `openWindow()`
+remain issue #40 gates. Service-Worker CacheStorage freshness/revalidation,
+richer transferables, complete task-source interleaving, and final
+certification remain issue #40 gates. Document-navigation
+freshness/revalidation is covered by the later 346 slice. Exact evidence is
+recorded in
 `docs/plan/tasks/native-engine-browser-345.md`.
+
+Slice 346 closes the bounded HTTP document-navigation freshness boundary. The
+native loader retains `Cache-Control` freshness deadlines and bounded
+`ETag`/`Last-Modified` validators, sends validators only on the original stale
+request, and reuses a validated `304 Not Modified` response without reparsing
+an absent body. `no-store`, `Vary: *`, `Vary: Cookie`, and response cookies
+evict or prevent reuse of document entries; the established no-header bounded
+session-cache behavior remains compatible. Image, script, stylesheet, Fetch,
+and Service-Worker CacheStorage freshness, concurrent coalescing, and full
+HTTP cache conformance remain separate issue #40 gates. Exact evidence is
+recorded in `docs/plan/tasks/native-engine-browser-346.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-
@@ -947,7 +969,8 @@ UTF-8, UTF-16, Latin-1, and Windows-1252 HTML responses. The child and parent
 share the policy. The completed native-engine-browser-011 batch adds
 process-owned, session-only bounded cookies and a bounded fragment-free
 in-memory document cache, with explicit no-cache and variant denials and no
-sensitive-data logging. Full HTTP freshness/revalidation, origin/referrer
+sensitive-data logging. Bounded document-navigation freshness/revalidation is
+covered by slice 346; full subresource/Fetch HTTP freshness, origin/referrer
 request policy, CORS/CSP, mixed content, service workers, permissions,
 subresources, complete encoding sniffing, and browser security promotion
 remain open.

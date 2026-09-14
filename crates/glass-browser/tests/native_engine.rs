@@ -14280,6 +14280,62 @@ async fn native_content_process_reuses_bounded_http_cache_for_fragment_navigatio
 }
 
 #[tokio::test]
+async fn native_content_process_revalidates_stale_http_cache_with_etag() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for request_index in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some("/revalidate"));
+            if request_index == 0 {
+                assert!(
+                    !request
+                        .lines()
+                        .any(|line| line.eq_ignore_ascii_case("if-none-match: \"v1\""))
+                );
+                let body = "<title>Revalidated</title><p>Cached representation</p>";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nCache-Control: no-cache\r\nETag: \"v1\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            } else {
+                assert!(
+                    request
+                        .lines()
+                        .any(|line| line.eq_ignore_ascii_case("if-none-match: \"v1\""))
+                );
+                stream
+                    .write_all(
+                        b"HTTP/1.1 304 Not Modified\r\nCache-Control: no-cache\r\nETag: \"v1\"\r\nConnection: close\r\n\r\n",
+                    )
+                    .await
+                    .unwrap();
+            }
+        }
+    });
+
+    let base_url = format!("http://{address}");
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("{base_url}/revalidate")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(engine.snapshot().unwrap().title, "Revalidated");
+    engine
+        .navigate_async(format!("{base_url}/revalidate"))
+        .await
+        .unwrap();
+    let snapshot = engine.snapshot().unwrap();
+    assert_eq!(snapshot.title, "Revalidated");
+    assert_eq!(snapshot.visible_text, "Cached representation");
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_enforces_child_owned_document_limit() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

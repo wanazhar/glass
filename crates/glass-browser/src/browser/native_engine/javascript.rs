@@ -76,6 +76,8 @@ pub(crate) const MAX_NATIVE_WORKER_MESSAGES: usize = 64;
 pub(crate) const MAX_NATIVE_WORKER_TIMERS: usize = 64;
 pub(crate) const MAX_NATIVE_SERVICE_WORKERS: usize = 16;
 pub(crate) const MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES: usize = MAX_NATIVE_SCRIPT_BYTES;
+pub(crate) const MAX_NATIVE_SHARED_WORKER_NAME_BYTES: usize =
+    crate::browser_backend::MAX_BACKEND_ID_BYTES;
 const MAX_NATIVE_WORKER_URLSEARCHPARAMS_ENTRIES: usize = 128;
 const MAX_NATIVE_WORKER_URLSEARCHPARAMS_BYTES: usize = MAX_NATIVE_POST_MESSAGE_BYTES;
 const MAX_NATIVE_WORKER_CRYPTO_POOL_BYTES: usize = 16 * 1024;
@@ -415,6 +417,14 @@ pub(crate) enum NativeScriptCommand {
         source_frame_id: String,
         command: Box<NativeScriptCommand>,
     },
+    SharedWorkerCreate {
+        connection_id: u32,
+        href: String,
+        name: String,
+        #[serde(default)]
+        worker_type: String,
+        transfer_port: NativeMessagePortTransfer,
+    },
     WorkerCreate {
         worker_id: u32,
         href: String,
@@ -515,6 +525,7 @@ struct NativeDedicatedWorker {
     import_script_counts: BTreeMap<String, usize>,
     module_sources: BTreeMap<String, String>,
     is_module: bool,
+    is_shared: bool,
     next_module_turn: AtomicU64,
 }
 
@@ -529,7 +540,22 @@ impl NativeDedicatedWorker {
         worker_id: u32,
         source: &str,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
-        if self.is_module {
+        if self.is_shared && self.is_module {
+            self.runtime.evaluate_shared_worker_module(
+                worker_id,
+                &self.url,
+                &self.url,
+                source,
+                &self.module_sources,
+            )
+        } else if self.is_shared {
+            self.runtime.evaluate_shared_worker(
+                worker_id,
+                &self.url,
+                source,
+                &self.import_script_counts,
+            )
+        } else if self.is_module {
             self.runtime.evaluate_worker_module(
                 worker_id,
                 &self.url,
@@ -548,7 +574,24 @@ impl NativeDedicatedWorker {
         worker_id: u32,
         source: &str,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
-        if self.is_module {
+        if self.is_shared && self.is_module {
+            let turn = self.next_module_turn.fetch_add(1, Ordering::Relaxed);
+            let module_name = format!("{}#glass-shared-worker-turn-{turn}", self.url);
+            self.runtime.evaluate_shared_worker_module(
+                worker_id,
+                &self.url,
+                &module_name,
+                source,
+                &self.module_sources,
+            )
+        } else if self.is_shared {
+            self.runtime.evaluate_shared_worker(
+                worker_id,
+                &self.url,
+                source,
+                &self.import_script_counts,
+            )
+        } else if self.is_module {
             let turn = self.next_module_turn.fetch_add(1, Ordering::Relaxed);
             let module_name = format!("{}#glass-worker-turn-{turn}", self.url);
             self.runtime.evaluate_worker_module(
@@ -562,6 +605,19 @@ impl NativeDedicatedWorker {
             self.runtime
                 .evaluate_worker(worker_id, &self.url, source, &self.import_script_counts)
         }
+    }
+
+    fn evaluate_shared_connect(
+        &self,
+        worker_id: u32,
+        transfer_port: &NativeMessagePortTransfer,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        self.runtime.evaluate_shared_worker_connect(
+            worker_id,
+            &self.url,
+            transfer_port,
+            self.is_module,
+        )
     }
 
     fn evaluate_websocket_event(
@@ -615,6 +671,7 @@ impl NativeDedicatedWorker {
 /// observable message/error/termination contract.
 pub(crate) struct NativeWorkerRegistry {
     workers: BTreeMap<u32, NativeDedicatedWorker>,
+    shared_worker_keys: BTreeMap<String, u32>,
     pending_messages: VecDeque<NativeWorkerMessage>,
     pending_message_port_messages: VecDeque<NativeMessagePortPageMessage>,
     pending_websocket_commands: VecDeque<NativeWorkerWebSocketCommand>,
@@ -626,6 +683,7 @@ impl NativeWorkerRegistry {
     pub(crate) fn new() -> Self {
         Self {
             workers: BTreeMap::new(),
+            shared_worker_keys: BTreeMap::new(),
             pending_messages: VecDeque::new(),
             pending_message_port_messages: VecDeque::new(),
             pending_websocket_commands: VecDeque::new(),
@@ -636,6 +694,7 @@ impl NativeWorkerRegistry {
 
     pub(crate) fn clear(&mut self) {
         self.workers.clear();
+        self.shared_worker_keys.clear();
         self.pending_messages.clear();
         self.pending_message_port_messages.clear();
         self.pending_websocket_commands.clear();
@@ -720,6 +779,24 @@ impl NativeWorkerRegistry {
         }
         for command in commands {
             match command {
+                NativeScriptCommand::SharedWorkerCreate {
+                    connection_id,
+                    href,
+                    name,
+                    worker_type,
+                    transfer_port,
+                } => {
+                    self.create_shared_worker(
+                        connection_id,
+                        href,
+                        name,
+                        worker_type,
+                        transfer_port,
+                        loader,
+                        owner_url,
+                    )
+                    .await?;
+                }
                 NativeScriptCommand::WorkerCreate {
                     worker_id,
                     href,
@@ -828,6 +905,7 @@ impl NativeWorkerRegistry {
                 import_script_counts,
                 module_sources,
                 is_module,
+                is_shared: false,
                 next_module_turn: AtomicU64::new(1),
                 runtime,
             },
@@ -847,6 +925,199 @@ impl NativeWorkerRegistry {
                 self.queue_error(worker_id, &resource.url, &error.to_string())
             }
         }
+    }
+
+    async fn create_shared_worker(
+        &mut self,
+        connection_id: u32,
+        href: String,
+        name: String,
+        worker_type: String,
+        transfer_port: NativeMessagePortTransfer,
+        loader: &mut NativeResourceLoader,
+        owner_url: &str,
+    ) -> Result<(), NativeEngineError> {
+        if connection_id == 0 {
+            return Err(NativeEngineError::invalid(
+                "native SharedWorker connection id",
+                "must be positive",
+            ));
+        }
+        validate_url_text("native SharedWorker URL", &href)?;
+        if name.len() > MAX_NATIVE_SHARED_WORKER_NAME_BYTES {
+            return Err(NativeEngineError::limit(
+                "native SharedWorker name",
+                MAX_NATIVE_SHARED_WORKER_NAME_BYTES,
+                name.len(),
+            ));
+        }
+        if name.bytes().any(|byte| byte < 0x20 || byte == 0x7f) {
+            return Err(NativeEngineError::invalid(
+                "native SharedWorker name",
+                "must not contain control characters",
+            ));
+        }
+        let is_module = worker_type.eq_ignore_ascii_case("module");
+        if !worker_type.is_empty() && !worker_type.eq_ignore_ascii_case("classic") && !is_module {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "native SharedWorker type must be classic or module".into(),
+            });
+        }
+        validate_message_port_transfers(std::slice::from_ref(&transfer_port))?;
+        let shared_key = format!("{href}\u{0}{name}\u{0}{worker_type}");
+        if let Some(worker_id) = self.shared_worker_keys.get(&shared_key).copied() {
+            if self.workers.contains_key(&worker_id) {
+                let worker_url = self
+                    .workers
+                    .get(&worker_id)
+                    .map(|worker| worker.url.clone())
+                    .expect("SharedWorker key points to a worker");
+                self.register_page_transfers(worker_id, std::slice::from_ref(&transfer_port))?;
+                let evaluation = self
+                    .workers
+                    .get(&worker_id)
+                    .expect("SharedWorker survived transfer registration")
+                    .evaluate_shared_connect(worker_id, &transfer_port);
+                match evaluation {
+                    Ok(evaluation) => {
+                        if let Err(error) = self
+                            .collect_worker_evaluation(worker_id, evaluation, loader)
+                            .await
+                        {
+                            self.remove_transfer_routes(std::slice::from_ref(&transfer_port));
+                            return Err(error);
+                        }
+                    }
+                    Err(error) => {
+                        self.remove_transfer_routes(std::slice::from_ref(&transfer_port));
+                        self.workers.remove(&worker_id);
+                        self.remove_worker_routes(worker_id);
+                        self.queue_error(connection_id, &worker_url, &error.to_string())?;
+                    }
+                }
+                return Ok(());
+            }
+            self.shared_worker_keys.remove(&shared_key);
+        }
+        if self.workers.len() >= MAX_NATIVE_WORKERS {
+            return Err(NativeEngineError::limit(
+                "native workers",
+                MAX_NATIVE_WORKERS,
+                self.workers.len().saturating_add(1),
+            ));
+        }
+        if self.workers.contains_key(&connection_id) {
+            return Err(NativeEngineError::invalid(
+                "native SharedWorker connection id",
+                "must be unique within the page realm",
+            ));
+        }
+        let resource = match loader
+            .load_worker_async(owner_url, &href, MAX_NATIVE_SCRIPT_BYTES)
+            .await
+        {
+            Ok(Some(resource)) => resource,
+            Ok(None) => {
+                self.queue_error(
+                    connection_id,
+                    &href,
+                    "SharedWorker script was blocked or unavailable",
+                )?;
+                return Ok(());
+            }
+            Err(error) => {
+                self.queue_error(connection_id, &href, &error.to_string())?;
+                return Ok(());
+            }
+        };
+        let (source, import_script_counts, module_sources) = if is_module {
+            let module_sources = self
+                .load_worker_module_graph(loader, owner_url, resource.clone())
+                .await?;
+            (resource.body.clone(), BTreeMap::new(), module_sources)
+        } else {
+            let (source, import_script_counts) = self
+                .load_worker_script_graph(loader, resource.clone())
+                .await?;
+            (source, import_script_counts, BTreeMap::new())
+        };
+        let runtime = match NativeJavaScriptRuntime::new_with_context_id(format!(
+            "glass-shared-worker-{connection_id}"
+        )) {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                self.queue_error(connection_id, &resource.url, &error.to_string())?;
+                return Ok(());
+            }
+        };
+        self.workers.insert(
+            connection_id,
+            NativeDedicatedWorker {
+                url: resource.url.clone(),
+                import_script_counts,
+                module_sources,
+                is_module,
+                is_shared: true,
+                next_module_turn: AtomicU64::new(1),
+                runtime,
+            },
+        );
+        self.shared_worker_keys
+            .insert(shared_key.clone(), connection_id);
+        if let Err(error) =
+            self.register_page_transfers(connection_id, std::slice::from_ref(&transfer_port))
+        {
+            self.workers.remove(&connection_id);
+            self.shared_worker_keys.remove(&shared_key);
+            return Err(error);
+        }
+        let initial = self
+            .workers
+            .get(&connection_id)
+            .expect("SharedWorker was inserted")
+            .evaluate_initial(connection_id, &source);
+        match initial {
+            Ok(evaluation) => {
+                if let Err(error) = self
+                    .collect_worker_evaluation(connection_id, evaluation, loader)
+                    .await
+                {
+                    self.workers.remove(&connection_id);
+                    self.remove_worker_routes(connection_id);
+                    return Err(error);
+                }
+            }
+            Err(error) => {
+                self.workers.remove(&connection_id);
+                self.remove_worker_routes(connection_id);
+                self.queue_error(connection_id, &resource.url, &error.to_string())?;
+                return Ok(());
+            }
+        }
+        let connect = self
+            .workers
+            .get(&connection_id)
+            .expect("SharedWorker survived initial evaluation")
+            .evaluate_shared_connect(connection_id, &transfer_port);
+        match connect {
+            Ok(evaluation) => {
+                if let Err(error) = self
+                    .collect_worker_evaluation(connection_id, evaluation, loader)
+                    .await
+                {
+                    self.workers.remove(&connection_id);
+                    self.remove_worker_routes(connection_id);
+                    return Err(error);
+                }
+            }
+            Err(error) => {
+                self.remove_transfer_routes(std::slice::from_ref(&transfer_port));
+                self.workers.remove(&connection_id);
+                self.remove_worker_routes(connection_id);
+                self.queue_error(connection_id, &resource.url, &error.to_string())?;
+            }
+        }
+        Ok(())
     }
 
     async fn post_message(
@@ -1149,6 +1420,19 @@ impl NativeWorkerRegistry {
         Ok(())
     }
 
+    fn remove_transfer_routes(&mut self, transfers: &[NativeMessagePortTransfer]) {
+        for transfer in transfers {
+            self.message_port_routes.remove(&transfer.bridge_key);
+        }
+        let live_bridge_keys = self
+            .message_port_routes
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        self.pending_message_port_messages
+            .retain(|message| live_bridge_keys.contains(&message.bridge_key));
+    }
+
     fn queue_page_message_port(
         &mut self,
         worker_id: u32,
@@ -1185,6 +1469,8 @@ impl NativeWorkerRegistry {
     fn remove_worker_routes(&mut self, worker_id: u32) {
         self.message_port_routes
             .retain(|_, route| route.worker_id != worker_id);
+        self.shared_worker_keys
+            .retain(|_, shared_worker_id| *shared_worker_id != worker_id);
         let live_bridge_keys = self
             .message_port_routes
             .keys()
@@ -7860,7 +8146,8 @@ impl NativeJavaScriptRuntime {
     ) -> Result<bool, NativeEngineError> {
         if !matches!(
             command,
-            NativeScriptCommand::WorkerCreate { .. }
+            NativeScriptCommand::SharedWorkerCreate { .. }
+                | NativeScriptCommand::WorkerCreate { .. }
                 | NativeScriptCommand::WorkerPostMessage { .. }
                 | NativeScriptCommand::WorkerTerminate { .. }
                 | NativeScriptCommand::WorkerClose { .. }
@@ -7868,6 +8155,44 @@ impl NativeJavaScriptRuntime {
             return Ok(false);
         }
         match command {
+            NativeScriptCommand::SharedWorkerCreate {
+                connection_id,
+                href,
+                name,
+                worker_type,
+                transfer_port,
+            } => {
+                if *connection_id == 0 {
+                    return Err(NativeEngineError::invalid(
+                        "native SharedWorker connection id",
+                        "must be positive",
+                    ));
+                }
+                validate_url_text("native SharedWorker URL", href)?;
+                if name.len() > MAX_NATIVE_SHARED_WORKER_NAME_BYTES {
+                    return Err(NativeEngineError::limit(
+                        "native SharedWorker name",
+                        MAX_NATIVE_SHARED_WORKER_NAME_BYTES,
+                        name.len(),
+                    ));
+                }
+                if name.bytes().any(|byte| byte < 0x20 || byte == 0x7f) {
+                    return Err(NativeEngineError::invalid(
+                        "native SharedWorker name",
+                        "must not contain control characters",
+                    ));
+                }
+                let is_module = worker_type.eq_ignore_ascii_case("module");
+                if !worker_type.is_empty()
+                    && !worker_type.eq_ignore_ascii_case("classic")
+                    && !is_module
+                {
+                    return Err(NativeEngineError::UnsupportedUrl {
+                        reason: "native SharedWorker type must be classic or module".into(),
+                    });
+                }
+                validate_message_port_transfers(std::slice::from_ref(transfer_port))?;
+            }
             NativeScriptCommand::WorkerCreate {
                 worker_id,
                 href,
@@ -8527,6 +8852,105 @@ impl NativeJavaScriptRuntime {
             Some(module_name),
             source,
             &BTreeMap::new(),
+        )
+    }
+
+    /// Evaluate one classic SharedWorker turn using the shared-worker global
+    /// bootstrap. The runtime itself is shared by all page connections; each
+    /// connection enters through its transferred MessagePort.
+    pub(crate) fn evaluate_shared_worker(
+        &self,
+        worker_id: u32,
+        worker_url: &str,
+        source: &str,
+        import_script_counts: &BTreeMap<String, usize>,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        self.evaluate_shared_worker_source(
+            worker_id,
+            worker_url,
+            None,
+            source,
+            import_script_counts,
+        )
+    }
+
+    /// Evaluate one module SharedWorker turn using the prefetched module
+    /// graph installed in the shared runtime loader.
+    pub(crate) fn evaluate_shared_worker_module(
+        &self,
+        worker_id: u32,
+        worker_url: &str,
+        module_name: &str,
+        source: &str,
+        module_sources: &BTreeMap<String, String>,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        if module_name.is_empty() {
+            return Err(NativeEngineError::invalid(
+                "SharedWorker module name",
+                "must not be empty",
+            ));
+        }
+        self.set_module_sources(module_sources.clone());
+        self.evaluate_shared_worker_source(
+            worker_id,
+            worker_url,
+            Some(module_name),
+            source,
+            &BTreeMap::new(),
+        )
+    }
+
+    fn evaluate_shared_worker_source(
+        &self,
+        worker_id: u32,
+        worker_url: &str,
+        module_name: Option<&str>,
+        source: &str,
+        import_script_counts: &BTreeMap<String, usize>,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        let bootstrap = shared_worker_bootstrap(
+            worker_id,
+            worker_url,
+            self.now_ms(),
+            import_script_counts,
+            module_name.is_some(),
+        )?;
+        self.evaluate_worker_source_with_bootstrap(
+            worker_id,
+            worker_url,
+            module_name,
+            source,
+            bootstrap,
+            false,
+            false,
+        )
+    }
+
+    pub(crate) fn evaluate_shared_worker_connect(
+        &self,
+        worker_id: u32,
+        worker_url: &str,
+        transfer_port: &NativeMessagePortTransfer,
+        is_module: bool,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        validate_message_port_transfers(std::slice::from_ref(transfer_port))?;
+        let serialized =
+            serde_json::to_string(transfer_port).map_err(|_| NativeEngineError::Worker {
+                operation: "serialize native SharedWorker connection".into(),
+                reason: "SharedWorker connection port could not be serialized".into(),
+            })?;
+        let source = format!(
+            "globalThis.__glassDispatchSharedWorkerConnect({{transfer_ports:[{serialized}]}});"
+        );
+        let bootstrap = shared_worker_bootstrap(
+            worker_id,
+            worker_url,
+            self.now_ms(),
+            &BTreeMap::new(),
+            is_module,
+        )?;
+        self.evaluate_worker_source_with_bootstrap(
+            worker_id, worker_url, None, &source, bootstrap, false, false,
         )
     }
 
@@ -10621,9 +11045,12 @@ fn worker_bootstrap(
   let onMessage = typeof globalThis.__glassWorkerOnMessage === "function"
     ? globalThis.__glassWorkerOnMessage
     : null;
+  let onConnect = typeof globalThis.__glassWorkerOnConnect === "function"
+    ? globalThis.__glassWorkerOnConnect
+    : null;
   let closed = globalThis.__glassWorkerClosed === true;
   const dispatch = (type, event) => {{
-    const handler = type === "message" ? onMessage : null;
+    const handler = type === "message" ? onMessage : type === "connect" ? onConnect : null;
     if (typeof handler === "function") {{
       try {{ handler.call(globalThis, event); }} catch (_error) {{}}
     }}
@@ -13582,12 +14009,19 @@ fn worker_bootstrap(
   }};
   globalThis.__glassWorkerListeners = listeners;
   globalThis.__glassWorkerOnMessage = onMessage;
+  globalThis.__glassWorkerOnConnect = onConnect;
   globalThis.__glassHostCommands = commands;
   Object.defineProperty(globalThis, "onmessage", {{
     configurable: true,
     enumerable: true,
     get() {{ return onMessage; }},
     set(value) {{ onMessage = typeof value === "function" ? value : null; globalThis.__glassWorkerOnMessage = onMessage; }},
+  }});
+  Object.defineProperty(globalThis, "onconnect", {{
+    configurable: true,
+    enumerable: true,
+    get() {{ return onConnect; }},
+    set(value) {{ onConnect = typeof value === "function" ? value : null; globalThis.__glassWorkerOnConnect = onConnect; }},
   }});
   globalThis.__glassWorkerTimers = timers;
   globalThis.__glassWorkerRunningTimers = runningTimers;
@@ -13672,12 +14106,52 @@ fn service_worker_bootstrap(
     Ok(bootstrap)
 }
 
+fn shared_worker_bootstrap(
+    worker_id: u32,
+    worker_url: &str,
+    now_ms: u64,
+    import_script_counts: &BTreeMap<String, usize>,
+    is_module: bool,
+) -> Result<String, NativeEngineError> {
+    let mut bootstrap = worker_bootstrap(
+        worker_id,
+        worker_url,
+        now_ms,
+        import_script_counts,
+        is_module,
+    )?;
+    let marker = "})()";
+    let insertion = bootstrap
+        .rfind(marker)
+        .ok_or_else(|| NativeEngineError::Worker {
+            operation: "install native SharedWorker host view".into(),
+            reason: "native SharedWorker bootstrap boundary was not found".into(),
+        })?;
+    bootstrap.insert_str(insertion, NATIVE_SHARED_WORKER_BOOTSTRAP);
+    Ok(bootstrap)
+}
+
 fn service_worker_bootstrap_script() -> String {
     NATIVE_SERVICE_WORKER_BOOTSTRAP.replace(
         "__GLASS_SERVICE_WORKER_BODY_LIMIT__",
         &MAX_NATIVE_FORM_BODY_BYTES.to_string(),
     )
 }
+
+const NATIVE_SHARED_WORKER_BOOTSTRAP: &str = r###"
+  globalThis.__glassDispatchSharedWorkerConnect = (payload) => {
+    if (closed) return null;
+    const envelope = glassMessageDecodeEnvelope(payload || {});
+    const event = {
+      type: "connect",
+      ports: envelope.ports,
+      target: globalThis,
+      currentTarget: globalThis,
+    };
+    dispatch("connect", event);
+    return null;
+  };
+"###;
 
 pub(crate) fn worker_message_script(
     messages: &[NativeWorkerMessage],
@@ -24146,6 +24620,9 @@ fn document_bootstrap(
   const workers = globalThis.__glassWorkers instanceof Map
     ? globalThis.__glassWorkers
     : new Map();
+  const sharedWorkers = globalThis.__glassSharedWorkers instanceof Map
+    ? globalThis.__glassSharedWorkers
+    : new Map();
   let nextWorkerId = Number.isSafeInteger(globalThis.__glassNextWorkerId)
     ? globalThis.__glassNextWorkerId
     : 1;
@@ -24160,9 +24637,10 @@ fn document_bootstrap(
     }}
   }};
   globalThis.__glassWorkers = workers;
+  globalThis.__glassSharedWorkers = sharedWorkers;
   globalThis.__glassNextWorkerId = nextWorkerId;
   globalThis.__glassDispatchWorkerMessage = (workerId, payload) => {{
-    const worker = workers.get(Number(workerId));
+    const worker = workers.get(Number(workerId)) || sharedWorkers.get(Number(workerId));
     if (!worker || worker.__glassTerminated || !payload || typeof payload !== "object") return null;
     if (payload.error !== undefined && payload.error !== null) {{
       const error = {{
@@ -24243,6 +24721,78 @@ fn document_bootstrap(
     return true;
   }};
   globalThis.Worker = WorkerNative;
+  const SharedWorkerNative = function(input, options) {{
+    if (!(this instanceof SharedWorkerNative)) throw new TypeError("native SharedWorker requires new");
+    if (options !== undefined && options !== null
+        && typeof options !== "object" && typeof options !== "string")
+      throw new TypeError("native SharedWorker options must be an object or string");
+    const workerType = typeof options === "object" && options && options.type !== undefined
+      ? String(options.type).toLowerCase()
+      : "classic";
+    if (workerType !== "classic" && workerType !== "module")
+      throw new TypeError("native SharedWorker type must be classic or module");
+    const workerName = typeof options === "string"
+      ? options
+      : options && options.name !== undefined ? String(options.name) : "";
+    if (workerName.length > {storage_key_limit}
+        || [...workerName].some(character => {{
+          const code = character.codePointAt(0);
+          return code < 0x20 || code === 0x7f;
+        }}))
+      throw new TypeError("native SharedWorker name is invalid");
+    const source = input && input.__glassUrl === true ? input.href : input;
+    const resolved = new URLNative(String(source), locationUrl.href);
+    if (!["http:", "https:", "fixture:"].includes(resolved.protocol)
+        || resolved.username || resolved.password || !resolved.host)
+      throw new DOMExceptionNative("native SharedWorker URL must use a same-origin HTTP(S) resource", "SecurityError");
+    if (resolved.protocol !== "fixture:" && resolved.origin !== locationUrl.origin)
+      throw new DOMExceptionNative("native SharedWorker URL must be same-origin", "SecurityError");
+    if (sharedWorkers.size >= {max_timers})
+      throw new DOMExceptionNative("native SharedWorker connection limit exceeded", "QuotaExceededError");
+    const connectionId = nextWorkerId;
+    nextWorkerId += 1;
+    globalThis.__glassNextWorkerId = nextWorkerId;
+    const channel = new MessageChannel();
+    const preparedTransfer = glassMessageTransferDescriptor(channel.port2);
+    glassMessageCommitTransfer(preparedTransfer);
+    this.url = resolved.href;
+    this.name = workerName;
+    this.onerror = null;
+    this.__glassWorkerId = connectionId;
+    this.__glassTerminated = false;
+    this.__glassWorkerListeners = {{ message: [], error: [] }};
+    Object.defineProperty(this, "port", {{
+      configurable: false,
+      enumerable: true,
+      writable: false,
+      value: channel.port1,
+    }});
+    sharedWorkers.set(connectionId, this);
+    pushCommand({{
+      kind: "sharedWorkerCreate",
+      connection_id: connectionId,
+      href: resolved.href,
+      name: workerName,
+      worker_type: workerType,
+      transfer_port: preparedTransfer.descriptor,
+    }});
+  }};
+  SharedWorkerNative.prototype.addEventListener = function(type, listener) {{
+    const name = String(type);
+    if (!this.__glassWorkerListeners[name] || typeof listener !== "function") return;
+    if (!this.__glassWorkerListeners[name].includes(listener)) this.__glassWorkerListeners[name].push(listener);
+  }};
+  SharedWorkerNative.prototype.removeEventListener = function(type, listener) {{
+    const name = String(type);
+    if (!this.__glassWorkerListeners[name]) return;
+    this.__glassWorkerListeners[name] = this.__glassWorkerListeners[name].filter((candidate) => candidate !== listener);
+  }};
+  SharedWorkerNative.prototype.dispatchEvent = function(event) {{
+    if (!event || !event.type) throw new TypeError("native SharedWorker event is invalid");
+    workerDispatch(this, String(event.type), event);
+    return true;
+  }};
+  globalThis.SharedWorker = SharedWorkerNative;
   globalThis.open = function open(value, target) {{
     const rawTarget = target === undefined || target === null ? "_blank" : String(target);
     const normalizedTarget = rawTarget || "_blank";

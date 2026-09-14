@@ -3577,7 +3577,8 @@ impl NativeDocument {
                 | NativeScriptCommand::ServiceWorkerUnregister { .. }
                 | NativeScriptCommand::ServiceWorkerPostMessage { .. }
                 | NativeScriptCommand::MessagePortPostMessage { .. } => {}
-                NativeScriptCommand::WorkerCreate { .. }
+                NativeScriptCommand::SharedWorkerCreate { .. }
+                | NativeScriptCommand::WorkerCreate { .. }
                 | NativeScriptCommand::WorkerPostMessage { .. }
                 | NativeScriptCommand::WorkerTerminate { .. }
                 | NativeScriptCommand::WorkerClose { .. } => {}

@@ -3848,6 +3848,109 @@ async fn native_content_process_service_worker_transfers_message_port_round_trip
 }
 
 #[tokio::test]
+async fn native_content_process_shared_worker_reuses_named_runtime_and_ports() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for (path, content_type, body) in [
+            (
+                "/shared-page",
+                "text/html",
+                "<script>globalThis.sharedEvents = []; globalThis.shared = new SharedWorker('/shared.js', { name: 'glass-shared' }); globalThis.sharedAgain = new SharedWorker('/shared.js', { name: 'glass-shared' }); shared.port.onmessage = event => sharedEvents.push({ port: 'one', kind: event.data.kind, value: event.data.value, connections: event.data.connections }); sharedAgain.port.onmessage = event => sharedEvents.push({ port: 'two', kind: event.data.kind, value: event.data.value, connections: event.data.connections }); shared.port.start(); sharedAgain.port.start();</script><main>shared worker</main>",
+            ),
+            (
+                "/shared.js",
+                "text/javascript",
+                "let connections = 0; onconnect = event => { const port = event.ports[0]; const connection = ++connections; port.onmessage = message => port.postMessage({ kind: 'reply', value: Number(message.data.value) + connection }); port.start(); port.postMessage({ kind: 'ready', connections: connection }); };",
+            ),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/shared-page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine.evaluate_async("sharedEvents").await.unwrap(),
+        serde_json::json!([
+            {"port": "one", "kind": "ready", "connections": 1},
+            {"port": "two", "kind": "ready", "connections": 2},
+        ])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("shared.port.postMessage({ value: 4 }); sharedAgain.port.postMessage({ value: 7 }); true")
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine.evaluate_async("sharedEvents").await.unwrap(),
+        serde_json::json!([
+            {"port": "one", "kind": "ready", "connections": 1},
+            {"port": "two", "kind": "ready", "connections": 2},
+            {"port": "one", "kind": "reply", "value": 5},
+            {"port": "two", "kind": "reply", "value": 9},
+        ])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_local_shared_worker_reuses_named_runtime_and_ports() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://shared-worker-page",
+            "<script>globalThis.sharedEvents = []; globalThis.shared = new SharedWorker('fixture://shared-worker-script', { name: 'glass-shared' }); globalThis.sharedAgain = new SharedWorker('fixture://shared-worker-script', { name: 'glass-shared' }); shared.port.onmessage = event => sharedEvents.push({ port: 'one', kind: event.data.kind, value: event.data.value, connections: event.data.connections }); sharedAgain.port.onmessage = event => sharedEvents.push({ port: 'two', kind: event.data.kind, value: event.data.value, connections: event.data.connections }); shared.port.start(); sharedAgain.port.start();</script><main>shared worker</main>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://shared-worker-script",
+            "let connections = 0; onconnect = event => { const port = event.ports[0]; const connection = ++connections; port.onmessage = message => port.postMessage({ kind: 'reply', value: Number(message.data.value) + connection }); port.start(); port.postMessage({ kind: 'ready', connections: connection }); };",
+        )
+        .unwrap()
+        .with_initial_url("fixture://shared-worker-page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine.evaluate_async("sharedEvents").await.unwrap(),
+        serde_json::json!([
+            {"port": "one", "kind": "ready", "connections": 1},
+            {"port": "two", "kind": "ready", "connections": 2},
+        ])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("shared.port.postMessage({ value: 4 }); sharedAgain.port.postMessage({ value: 7 }); true")
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine.evaluate_async("sharedEvents").await.unwrap(),
+        serde_json::json!([
+            {"port": "one", "kind": "ready", "connections": 1},
+            {"port": "two", "kind": "ready", "connections": 2},
+            {"port": "one", "kind": "reply", "value": 5},
+            {"port": "two", "kind": "reply", "value": 9},
+        ])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_worker_fetch_preserves_binary_request_and_response_bodies() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

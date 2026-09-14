@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-346` slice. The native runtime is now the primary
+`native-engine-browser-347` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -216,10 +216,21 @@ native loader retains `Cache-Control` freshness deadlines and bounded
 request, and reuses a validated `304 Not Modified` response without reparsing
 an absent body. `no-store`, `Vary: *`, `Vary: Cookie`, and response cookies
 evict or prevent reuse of document entries; the established no-header bounded
-session-cache behavior remains compatible. Image, script, stylesheet, Fetch,
-and Service-Worker CacheStorage freshness, concurrent coalescing, and full
+session-cache behavior remains compatible. Script, stylesheet, Fetch, and
+Service-Worker CacheStorage freshness, concurrent coalescing, and full
 HTTP cache conformance remain separate issue #40 gates. Exact evidence is
 recorded in `docs/plan/tasks/native-engine-browser-346.md`.
+
+Slice 347 extends the bounded freshness owner to decoded external images. Image
+cache entries retain explicit `Cache-Control` deadlines and bounded
+`ETag`/`Last-Modified` validators, send validators only on the original stale
+request, and reuse validated `304 Not Modified` responses without decoding a
+body. Safe responses continue to populate requested and final redirect keys;
+`no-store`, `Vary: *`, `Vary: Cookie`, and response cookies prevent reusable
+entries or evict stale ones. Script, stylesheet, Fetch, and Service-Worker
+CacheStorage freshness, concurrent coalescing, and full HTTP cache conformance
+remain separate issue #40 gates. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-347.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-
@@ -6092,8 +6103,9 @@ zero-age, privacy-sensitive `Vary`, and `Set-Cookie` responses are excluded.
 Current document security policy is still evaluated before lookup, and the
 same cache serves initial and script-reactive image discovery. The cache is
 process-lifetime, bounded by the existing resource-entry limit, and does not
-persist pixels to profiles; freshness/revalidation, concurrent coalescing,
-responsive sources, additional CSS image layers beyond the single
+persist pixels to profiles; image freshness/revalidation is covered by the
+later 347 slice; stylesheet, script, Fetch, and Service-Worker CacheStorage
+freshness, concurrent coalescing, responsive sources, additional CSS image layers beyond the single
 background-image URL, SVG image resources, animation, and other formats
 remain active issue #40 work. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-213.md`.

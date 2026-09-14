@@ -3666,7 +3666,7 @@ async fn native_content_process_registers_service_worker_and_intercepts_fetch_an
             (
                 "/register",
                 "text/html",
-                "<!doctype html><html><body><script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script><main>registration page</main></body></html>",
+                "<!doctype html><html><body><script>globalThis.controllerChanges = 0; navigator.serviceWorker.addEventListener('controllerchange', () => controllerChanges++); globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script><main>registration page</main></body></html>",
             ),
             (
                 "/sw.js",
@@ -3690,6 +3690,7 @@ self.addEventListener('fetch', event => {
         all: all.length,
         workers: workers.length,
         clientIdPresent: Boolean(client && client.id),
+        eventClientIdPresent: Boolean(event.clientId),
         clientUrl: client && client.url,
         clientType: client && client.type,
         frameType: client && client.frameType,
@@ -3732,7 +3733,7 @@ self.addEventListener('fetch', event => {
     assert_eq!(
         engine
             .evaluate_async(
-                "await registrationPromise.then(async reg => [reg.scope, reg.active.state, reg.active.scriptURL, await navigator.serviceWorker.getRegistrations().then(items => items.length)])",
+                "await registrationPromise.then(async reg => [reg.scope, reg.active.state, reg.active.scriptURL, navigator.serviceWorker.controller !== null, controllerChanges, await navigator.serviceWorker.getRegistrations().then(items => items.length)])",
             )
             .await
             .unwrap(),
@@ -3740,6 +3741,8 @@ self.addEventListener('fetch', event => {
             format!("http://{address}/"),
             "activated",
             format!("http://{address}/sw.js"),
+            true,
+            1,
             1,
         ])
     );
@@ -3785,6 +3788,7 @@ self.addEventListener('fetch', event => {
                 "all": 1,
                 "workers": 0,
                 "clientIdPresent": true,
+                "eventClientIdPresent": true,
                 "clientUrl": format!("http://{address}/app/page"),
                 "clientType": "window",
                 "frameType": "top-level",
@@ -3829,6 +3833,82 @@ self.addEventListener('fetch', event => {
             .await
             .unwrap(),
         serde_json::json!("network fallback")
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_does_not_intercept_uncontrolled_client_fetch() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for (expected_path, content_type, body) in [
+            (
+                "/page",
+                "text/html",
+                "<!doctype html><html><body><script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script><main>uncontrolled page</main></body></html>",
+            ),
+            (
+                "/sw.js",
+                "application/javascript",
+                r#"self.addEventListener('install', event => event.waitUntil(Promise.resolve()));
+self.addEventListener('activate', event => event.waitUntil(Promise.resolve()));
+self.addEventListener('fetch', event => {
+  const path = new URL(event.request.url).pathname;
+  event.respondWith(path === '/controlled'
+    ? new Response('<!doctype html><html><body>controlled navigation</body></html>', { headers: { 'Content-Type': 'text/html' } })
+    : new Response('service worker response'));
+});"#,
+            ),
+            ("/data", "text/plain", "network response"),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await registrationPromise.then(async () => ({ controlled: navigator.serviceWorker.controller !== null, fetch: await fetch('/data').then(async response => ({ status: response.status, body: await response.text() })) }))",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "controlled": false,
+            "fetch": {"status": 200, "body": "network response"},
+        })
+    );
+
+    engine
+        .navigate_async(format!("http://{address}/controlled"))
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({ body: document.body.innerText, controlled: navigator.serviceWorker.controller !== null, fetch: await fetch('/data').then(response => response.text()) })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "body": "controlled navigation",
+            "controlled": true,
+            "fetch": "service worker response",
+        })
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

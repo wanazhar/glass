@@ -564,6 +564,11 @@ pub(crate) struct NativeServiceWorkerRegistrationState {
     pub(crate) script_url: String,
     pub(crate) scope: String,
     pub(crate) state: String,
+    /// Lifecycle transitions that the page resolver replays for a newly
+    /// installed or updated worker. Restored/navigation snapshots leave this
+    /// empty because those transitions already happened in an earlier owner.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) lifecycle: Vec<String>,
 }
 
 /// Persistent metadata for one activated Service Worker registration. The
@@ -15697,11 +15702,62 @@ const NATIVE_SERVICE_WORKER_PAGE_SCRIPT: &str = r###"
   globalThis.__glassServiceWorkerRegistrationConstructor = ServiceWorkerRegistrationNative;
   globalThis.ServiceWorker = ServiceWorkerNative;
   globalThis.ServiceWorkerRegistration = ServiceWorkerRegistrationNative;
+  const serviceWorkerListeners = (target) => {
+    if (!(target.__glassServiceWorkerListeners instanceof Map)) {
+      Object.defineProperty(target, "__glassServiceWorkerListeners", {
+        configurable: false, enumerable: false, value: new Map(),
+      });
+    }
+    return target.__glassServiceWorkerListeners;
+  };
+  const serviceWorkerAddEventListener = function(type, callback) {
+    if (typeof callback !== "function" && !(callback && typeof callback.handleEvent === "function")) return;
+    const listeners = serviceWorkerListeners(this);
+    const name = String(type);
+    const callbacks = listeners.get(name) || [];
+    if (!callbacks.includes(callback)) callbacks.push(callback);
+    listeners.set(name, callbacks);
+  };
+  const serviceWorkerRemoveEventListener = function(type, callback) {
+    const listeners = serviceWorkerListeners(this);
+    const name = String(type);
+    const callbacks = listeners.get(name) || [];
+    listeners.set(name, callbacks.filter(candidate => candidate !== callback));
+  };
+  const serviceWorkerDispatchEvent = (target, event) => {
+    const name = String(event && event.type || "");
+    const value = Object.assign({ type: name, target, currentTarget: target }, event || {});
+    const listeners = serviceWorkerListeners(target);
+    for (const callback of (listeners.get(name) || []).slice()) {
+      try {
+        if (typeof callback === "function") callback.call(target, value);
+        else if (callback && typeof callback.handleEvent === "function") callback.handleEvent.call(callback, value);
+      } catch (_) {}
+    }
+    const handler = target["on" + name];
+    if (typeof handler === "function") {
+      try { handler.call(target, value); } catch (_) {}
+    }
+    return true;
+  };
+  if (!ServiceWorkerNative.prototype.addEventListener) ServiceWorkerNative.prototype.addEventListener = serviceWorkerAddEventListener;
+  if (!ServiceWorkerNative.prototype.removeEventListener) ServiceWorkerNative.prototype.removeEventListener = serviceWorkerRemoveEventListener;
+  if (!ServiceWorkerNative.prototype.dispatchEvent) ServiceWorkerNative.prototype.dispatchEvent = function(event) {
+    return serviceWorkerDispatchEvent(this, event);
+  };
+  if (!ServiceWorkerRegistrationNative.prototype.addEventListener) ServiceWorkerRegistrationNative.prototype.addEventListener = serviceWorkerAddEventListener;
+  if (!ServiceWorkerRegistrationNative.prototype.removeEventListener) ServiceWorkerRegistrationNative.prototype.removeEventListener = serviceWorkerRemoveEventListener;
+  if (!ServiceWorkerRegistrationNative.prototype.dispatchEvent) ServiceWorkerRegistrationNative.prototype.dispatchEvent = function(event) {
+    return serviceWorkerDispatchEvent(this, event);
+  };
   const serviceWorkerMakeWorker = (state, scope) => {
     const worker = Object.create(ServiceWorkerNative.prototype);
     worker.scriptURL = String(state.script_url || "");
     worker.state = String(state.state || "activated");
     worker.onstatechange = null;
+    Object.defineProperty(worker, "__glassServiceWorkerListeners", {
+      configurable: false, enumerable: false, value: new Map(),
+    });
     Object.defineProperty(worker, "__glassServiceWorkerScope", {
       configurable: false, enumerable: false, value: scope,
     });
@@ -15715,6 +15771,9 @@ const NATIVE_SERVICE_WORKER_PAGE_SCRIPT: &str = r###"
     registration.waiting = null;
     registration.active = serviceWorkerMakeWorker(state, scope);
     registration.onupdatefound = null;
+    Object.defineProperty(registration, "__glassServiceWorkerListeners", {
+      configurable: false, enumerable: false, value: new Map(),
+    });
     registration.update = () => {
       const requestId = nextServiceWorkerRequestId++;
       globalThis.__glassNextServiceWorkerRequestId = nextServiceWorkerRequestId;
@@ -15743,6 +15802,55 @@ const NATIVE_SERVICE_WORKER_PAGE_SCRIPT: &str = r###"
     };
     return registration;
   };
+  const serviceWorkerSetState = (worker, state) => {
+    const next = String(state || "");
+    if (!next || worker.state === next) return;
+    worker.state = next;
+    serviceWorkerDispatchEvent(worker, { type: "statechange" });
+  };
+  const serviceWorkerApplyRegistration = (registration, state) => {
+    const scope = String(state.scope || registration.scope || "");
+    const lifecycle = Array.isArray(state.lifecycle)
+      ? state.lifecycle.map(String).filter(value => ["installing", "installed", "activating", "activated"].includes(value))
+      : [];
+    const previousActive = registration.active;
+    if (lifecycle.length === 0) {
+      registration.scope = scope;
+      registration.active = serviceWorkerMakeWorker(state, scope);
+      registration.installing = null;
+      registration.waiting = null;
+      return;
+    }
+    const worker = serviceWorkerMakeWorker({ script_url: state.script_url, state: lifecycle[0] }, scope);
+    registration.scope = scope;
+    registration.installing = worker;
+    registration.waiting = null;
+    serviceWorkerDispatchEvent(registration, { type: "updatefound" });
+    for (const next of lifecycle.slice(1)) {
+      if (next === "installed") {
+        registration.installing = null;
+        registration.waiting = worker;
+      } else if (next === "activating") {
+        registration.waiting = null;
+        registration.installing = worker;
+      } else if (next === "activated") {
+        registration.installing = null;
+        registration.waiting = null;
+        registration.active = worker;
+      }
+      serviceWorkerSetState(worker, next);
+    }
+    if (worker.state === "activated") {
+      registration.installing = null;
+      registration.waiting = null;
+      registration.active = worker;
+      if (previousActive && previousActive !== worker) {
+        serviceWorkerSetState(previousActive, "redundant");
+        if (typeof serviceWorkerContainer !== "undefined")
+          serviceWorkerContainer.dispatchEvent({ type: "controllerchange" });
+      }
+    }
+  };
   const serviceWorkerRefresh = () => {
     const states = Array.isArray(host.service_workers) ? host.service_workers : [];
     for (const state of states) {
@@ -15754,9 +15862,8 @@ const NATIVE_SERVICE_WORKER_PAGE_SCRIPT: &str = r###"
         serviceWorkerRegistrations.set(scope, registration);
       } else {
         registration.scope = scope;
-        registration.active = serviceWorkerMakeWorker(state, scope);
-        registration.installing = null;
-        registration.waiting = null;
+        if (!registration.active && state.script_url)
+          registration.active = serviceWorkerMakeWorker(state, scope);
       }
     }
     globalThis.__glassServiceWorkerRegistrations = serviceWorkerRegistrations;
@@ -15814,7 +15921,7 @@ const NATIVE_SERVICE_WORKER_PAGE_SCRIPT: &str = r###"
   serviceWorkerContainer.getRegistration = (value) => {
     try {
       const url = serviceWorkerUrl(value === undefined ? host.url : value);
-      return Promise.resolve(serviceWorkerFind(url.href));
+      return Promise.resolve(serviceWorkerFind(url.href) || undefined);
     } catch (error) { return Promise.reject(error); }
   };
   serviceWorkerContainer.getRegistrations = () => Promise.resolve(
@@ -15866,14 +15973,38 @@ const NATIVE_SERVICE_WORKER_PAGE_SCRIPT: &str = r###"
         pending.reject(new Error("native service worker registration response was invalid"));
         return null;
       }
-      serviceWorkerRefresh();
-      let registration = serviceWorkerRegistrations.get(String(state.scope));
+      const scope = String(state.scope);
+      let registration = serviceWorkerRegistrations.get(scope);
       if (!registration) {
         registration = serviceWorkerMakeRegistration(state);
-        serviceWorkerRegistrations.set(String(state.scope), registration);
+        registration.active = null;
+        registration.installing = null;
+        registration.waiting = null;
+        serviceWorkerRegistrations.set(scope, registration);
       }
-      pending.resolve(registration);
-    } else pending.resolve(Boolean(payload && payload.unregistered));
+      serviceWorkerApplyRegistration(registration, state);
+      if (pending.kind === "update") pending.resolve(undefined);
+      else pending.resolve(registration);
+    } else {
+      const unregistered = Boolean(payload && payload.unregistered);
+      if (unregistered) {
+        const requestedScope = String(pending.scope || "");
+        const removals = [];
+        for (const [scope, registration] of serviceWorkerRegistrations.entries()) {
+          if (scope === requestedScope || registration.scope === requestedScope)
+            removals.push([scope, registration]);
+        }
+        for (const [scope, registration] of removals) {
+          if (registration.active) serviceWorkerSetState(registration.active, "redundant");
+          registration.active = null;
+          registration.installing = null;
+          registration.waiting = null;
+          serviceWorkerRegistrations.delete(scope);
+        }
+        if (removals.length > 0) serviceWorkerContainer.dispatchEvent({ type: "controllerchange" });
+      }
+      pending.resolve(unregistered);
+    }
     return null;
   };
   globalThis.__glassServiceWorkerRegistrations = serviceWorkerRegistrations;

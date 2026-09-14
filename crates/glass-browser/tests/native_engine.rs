@@ -3810,6 +3810,15 @@ self.addEventListener('fetch', event => {
             .unwrap(),
         serde_json::json!(true)
     );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(await navigator.serviceWorker.getRegistration('/app/page')) === undefined && (await navigator.serviceWorker.getRegistrations()).length === 0",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
     engine
         .navigate_async(format!("http://{address}/network"))
         .await
@@ -3884,11 +3893,11 @@ self.addEventListener('fetch', event => {
     assert_eq!(
         engine
             .evaluate_async(
-                "await registrationPromise.then(reg => reg.update().then(updated => [updated.active.state, updated.active.scriptURL]))",
+                "await registrationPromise.then(reg => reg.update().then(updated => [updated === undefined, reg.active.state, reg.active.scriptURL]))",
             )
             .await
             .unwrap(),
-        serde_json::json!(["activated", format!("http://{address}/sw.js")])
+        serde_json::json!([true, "activated", format!("http://{address}/sw.js")])
     );
     engine
         .navigate_async(format!("http://{address}/controlled"))
@@ -3905,6 +3914,71 @@ self.addEventListener('fetch', event => {
             "status": 201,
             "version": "v2",
             "body": "worker v2",
+        })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_observes_service_worker_lifecycle_update() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for (expected_path, content_type, body) in [
+            (
+                "/page",
+                "text/html",
+                "<!doctype html><html><body><script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script><main>lifecycle page</main></body></html>",
+            ),
+            (
+                "/sw.js",
+                "application/javascript",
+                "self.addEventListener('install', event => event.waitUntil(self.skipWaiting())); self.addEventListener('activate', event => event.waitUntil(self.clients.claim())); self.addEventListener('fetch', event => event.respondWith(new Response('worker v1')));",
+            ),
+            (
+                "/sw.js",
+                "application/javascript",
+                "self.addEventListener('install', event => event.waitUntil(self.skipWaiting())); self.addEventListener('activate', event => event.waitUntil(self.clients.claim())); self.addEventListener('fetch', event => event.respondWith(new Response('worker v2')));",
+            ),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await registrationPromise.then(async reg => { const events = []; let controllerChanges = 0; navigator.serviceWorker.addEventListener('controllerchange', () => controllerChanges++); const oldActive = reg.active; oldActive.addEventListener('statechange', () => events.push('active:' + oldActive.state)); reg.addEventListener('updatefound', () => { const installing = reg.installing; events.push('updatefound:' + installing.state); installing.addEventListener('statechange', () => events.push('installing:' + installing.state)); }); const result = await reg.update(); return { updateUndefined: result === undefined, active: reg.active && reg.active.state, waiting: reg.waiting, installing: reg.installing, events, controllerChanges }; })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "updateUndefined": true,
+            "active": "activated",
+            "waiting": null,
+            "installing": null,
+            "events": [
+                "updatefound:installing",
+                "installing:installed",
+                "installing:activating",
+                "installing:activated",
+                "active:redundant",
+            ],
+            "controllerChanges": 1,
         })
     );
     engine.close_async().await.unwrap();

@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-355` slice. The native runtime is now the primary
+`native-engine-browser-356` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -332,6 +332,16 @@ message delivery, `clients.openWindow()`, browser-wide registration
 arbitration, exact task-source scheduling, durable live-client leases, and
 final production certification remain issue #40 gates. Exact evidence is
 recorded in `docs/plan/tasks/native-engine-browser-355.md`.
+
+Slice 356 makes the page networking task queue FIFO. Fetch commands are
+collected in script-emission order and resolved in that order, so the request
+and its Promise continuation no longer run in reverse merely because the host
+used a stack pop. Each response handoff still runs through the persistent
+JavaScript owner, which drains the resulting microtasks before the next
+network task is resolved. Cross-source arbitration between networking,
+timers, MessagePort/worker delivery, WebSocket, EventSource, rendering, and
+other browser task sources remains separate issue #40 work; exact evidence is
+recorded in `docs/plan/tasks/native-engine-browser-356.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

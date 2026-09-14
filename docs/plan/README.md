@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-330` locally. Native is now the default runtime for
+`native-engine-browser-331` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -126,6 +126,14 @@ captures use temporary raster geometry without changing live page state, and
 nested frame composition is cropped only after child surfaces are aligned.
 Native JPEG/WebP encoding and final cross-platform renderer certification
 remain issue #40 promotion work.
+
+The completed native content-worker liveness slice is
+[native-engine-browser-331](tasks/native-engine-browser-331.md): dead content
+workers are detected locally before new IPC, classified as typed failures, and
+rebuilt by the explicit native recovery path. Navigation, script, action,
+lifecycle, storage, and close boundaries share the same liveness refresh.
+Process isolation, cancellation, conformance, and final production
+certification remain active issue #40 gates.
 
 The completed computed-style/media-query slice is
 [native-engine-browser-282](tasks/native-engine-browser-282.md). It exposes a

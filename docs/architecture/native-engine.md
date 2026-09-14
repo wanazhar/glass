@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-330` slice. The native runtime is now the primary
+`native-engine-browser-331` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -26,6 +26,13 @@ element captures use a temporary unscrolled raster viewport without changing
 the live session. Native JPEG/WebP encoding remains a typed unsupported format
 until the renderer owns those encoders; the native path never silently ignores
 visual options or labels PNG bytes as another format.
+
+Slice 331 hardens native content-owner liveness. The process-backed engine
+refreshes its child health with a local non-blocking probe before recovery,
+navigation, script, action, lifecycle, storage, and close decisions. An
+externally exited worker is classified as `Exited` and can be rebuilt by the
+revisioned recovery operation before another IPC write; a failed mutation is
+never replayed automatically.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

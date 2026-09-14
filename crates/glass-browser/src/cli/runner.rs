@@ -592,6 +592,7 @@ fn validate_alternative_runtime_command(
         }
         Commands::Screenshot {
             format,
+            quality,
             scale,
             full_page,
             clip,
@@ -601,15 +602,14 @@ fn validate_alternative_runtime_command(
             if !matches!(format, crate::browser::session::VisualFormat::Png) {
                 return Err("native screenshot supports only --format png".into());
             }
-            if (*scale - 1.0).abs() > f64::EPSILON
-                || *full_page
-                || clip.is_some()
-                || target.is_some()
-            {
-                return Err(
-                    "native screenshot supports only the current viewport PNG (scale 1.0)".into(),
-                );
-            }
+            crate::browser::session::validate_visual_options(&VisualCaptureOptions {
+                format: *format,
+                quality: *quality,
+                scale: *scale,
+                clip: *clip,
+                full_page: *full_page,
+                target: target.clone(),
+            })?;
             Ok(())
         }
         Commands::Evaluate { .. } if native => Ok(()),
@@ -1629,12 +1629,31 @@ async fn run_alternative_runtime_command(
             let result = session.script(expression).await?;
             alternative_json_output(&result.value, response_mode)
         }
-        Commands::Screenshot { output, .. } if session.runtime().is_native() => {
+        Commands::Screenshot {
+            output,
+            format,
+            quality,
+            scale,
+            full_page,
+            clip,
+            target,
+        } if session.runtime().is_native() => {
             policy.require(PolicyCapability::Screenshot)?;
             #[cfg(feature = "native-engine")]
             {
                 let output = policy.require_output_path(std::path::Path::new(output))?;
-                let bytes = session.native_capture_png_async().await?;
+                let capture = session
+                    .native_capture_visual(&VisualCaptureOptions {
+                        format: *format,
+                        quality: *quality,
+                        scale: *scale,
+                        clip: *clip,
+                        full_page: *full_page,
+                        target: target.clone(),
+                    })
+                    .await?;
+                let bytes =
+                    base64::engine::general_purpose::STANDARD.decode(capture.data.as_bytes())?;
                 tokio::fs::write(&output, bytes).await?;
                 Ok(AlternativeRuntimeOutput::Combined(vec![
                     AlternativeRuntimeOutput::Text(format!("wrote {}", output.display())),
@@ -1642,6 +1661,7 @@ async fn run_alternative_runtime_command(
                         &serde_json::json!({
                             "format": "png",
                             "output": output,
+                            "metadata": capture.metadata,
                         }),
                         response_mode,
                     )?,

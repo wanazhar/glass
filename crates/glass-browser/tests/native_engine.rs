@@ -18,7 +18,7 @@ use glass_browser::browser::session::{
     Cookie, ExtractionField, ExtractionKind, IntentConfidence, IntentConstraints,
     SemanticIntentAction, SemanticIntentExecutionRequest, SemanticIntentRequest,
     SemanticObservationLevel, SemanticResolutionPolicy, StructuredExtractionRequest,
-    VerificationPredicate, WaitCondition,
+    VerificationPredicate, VisualCaptureOptions, VisualClip, WaitCondition,
 };
 use glass_browser::browser_backend::{
     ActionRequest, BROWSER_BACKEND_SCHEMA_VERSION, BackendSelectionRequest,
@@ -35196,6 +35196,71 @@ async fn native_backend_captures_png_without_mutating_revision_and_denies_other_
             operation, ..
         } if operation == "capture"
     ));
+    dispatcher.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_visual_capture_honors_clip_scale_full_page_and_element_options() {
+    let config = NativeEngineConfig::default()
+        .with_viewport(Viewport {
+            width: 8,
+            height: 4,
+            device_scale_factor_milli: 1000,
+        })
+        .with_fixture(
+            "fixture://visual-options",
+            "<div id='top' style='display:block;width:8px;height:4px;background-color:red'></div><div id='bottom' style='display:block;width:8px;height:4px;background-color:blue'></div>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://visual-options");
+    let backend = NativeEngineBackend::new(config).unwrap();
+    let dispatcher = BrowserBackendDispatcher::new(&backend);
+    dispatcher.initialize().await.unwrap();
+
+    let clipped = backend
+        .capture_visual(&VisualCaptureOptions {
+            clip: Some(VisualClip {
+                x: 0.0,
+                y: 0.0,
+                width: 4.0,
+                height: 2.0,
+            }),
+            scale: 2.0,
+            ..VisualCaptureOptions::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!((clipped.metadata.width, clipped.metadata.height), (8, 4));
+    let clipped_bytes = base64::engine::general_purpose::STANDARD
+        .decode(clipped.data.as_bytes())
+        .unwrap();
+    let decoder = png::Decoder::new(Cursor::new(clipped_bytes));
+    let reader = decoder.read_info().unwrap();
+    assert_eq!((reader.info().width, reader.info().height), (8, 4));
+
+    let full_page = backend
+        .capture_visual(&VisualCaptureOptions {
+            full_page: true,
+            ..VisualCaptureOptions::default()
+        })
+        .await
+        .unwrap();
+    assert!(full_page.metadata.full_page);
+    assert_eq!(
+        (full_page.metadata.width, full_page.metadata.height),
+        (8, 8)
+    );
+
+    let element = backend
+        .capture_visual(&VisualCaptureOptions {
+            target: Some("id=bottom".into()),
+            ..VisualCaptureOptions::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!((element.metadata.width, element.metadata.height), (8, 4));
+    assert_eq!(element.metadata.clip.unwrap().y, 4.0);
+
     dispatcher.close().await.unwrap();
 }
 

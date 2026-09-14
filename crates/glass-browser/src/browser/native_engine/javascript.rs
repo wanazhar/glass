@@ -598,6 +598,18 @@ pub(crate) struct NativeServiceWorkerRegistrationProfile {
     pub(crate) scope: String,
     #[serde(default = "default_classic_worker_type")]
     pub(crate) worker_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) waiting: Option<NativeServiceWorkerWorkerProfile>,
+}
+
+/// Persistent metadata for an installed Service Worker waiting to replace the
+/// activated registration. The runtime and pending event state remain
+/// process-owned and are recreated from this descriptor after restart.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub(crate) struct NativeServiceWorkerWorkerProfile {
+    pub(crate) script_url: String,
+    #[serde(default = "default_classic_worker_type")]
+    pub(crate) worker_type: String,
 }
 
 impl NativeServiceWorkerRegistrationProfile {
@@ -672,6 +684,50 @@ impl NativeServiceWorkerRegistrationProfile {
                 "native service worker registration type",
                 "must be classic or module",
             ));
+        }
+        if let Some(waiting) = self.waiting.as_ref() {
+            if waiting.script_url.is_empty() || waiting.script_url.len() > MAX_NATIVE_SCRIPT_BYTES {
+                return Err(NativeEngineError::limit(
+                    "native waiting service worker script URL",
+                    MAX_NATIVE_SCRIPT_BYTES,
+                    waiting.script_url.len(),
+                ));
+            }
+            let waiting_script =
+                Url::parse(without_fragment(&waiting.script_url)).map_err(|_| {
+                    NativeEngineError::UnsupportedUrl {
+                        reason: "native waiting service worker script URL is invalid".into(),
+                    }
+                })?;
+            if !matches!(waiting_script.scheme(), "http" | "https")
+                || !waiting_script.username().is_empty()
+                || waiting_script.password().is_some()
+                || NativeOrigin::from_url(&waiting_script)? != NativeOrigin::from_url(&scope)?
+            {
+                return Err(NativeEngineError::UnsupportedUrl {
+                    reason: "native waiting service worker script URL must be same-origin and credential-free"
+                        .into(),
+                });
+            }
+            let waiting_directory = waiting_script
+                .path()
+                .rfind('/')
+                .map(|index| &waiting_script.path()[..=index])
+                .unwrap_or("/");
+            if !scope.path().starts_with(waiting_directory) {
+                return Err(NativeEngineError::UnsupportedUrl {
+                    reason: "native waiting service worker scope exceeds its script directory"
+                        .into(),
+                });
+            }
+            if !waiting.worker_type.eq_ignore_ascii_case("classic")
+                && !waiting.worker_type.eq_ignore_ascii_case("module")
+            {
+                return Err(NativeEngineError::invalid(
+                    "native waiting service worker registration type",
+                    "must be classic or module",
+                ));
+            }
         }
         Ok(())
     }

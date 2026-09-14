@@ -25,8 +25,11 @@ unregistration while preserving the prior active worker until replacement
 activation. Slice 351 adds bounded waiting-worker arbitration: a non-skipping
 update remains installed beside the incumbent active worker, page registration
 state exposes both projections, and a matching native navigation promotes the
-waiting worker only after activate `waitUntil()` work settles. Persistent
-waiting state, multi-client controller ownership, CacheStorage freshness, and
+waiting worker only after activate `waitUntil()` work settles. Slice 352
+persists the bounded waiting worker script/type descriptor beside the active
+registration, restores both isolated worker realms without replaying lifecycle
+side effects, and preserves the waiting candidate until a matching navigation
+promotes it. Multi-client controller ownership, CacheStorage freshness, and
 task-source scheduling remain open. The completed 234 slice carries bounded
 root-scroll sticky positioning through
 shared flow,

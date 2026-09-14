@@ -17,8 +17,8 @@ use super::javascript::{
     NativeMessagePortPageMessage, NativeMessagePortTransfer, NativeScriptCommand,
     NativeScriptEvaluation, NativeServiceWorkerCacheEntry, NativeServiceWorkerCacheState,
     NativeServiceWorkerClientMessage, NativeServiceWorkerRegistrationProfile,
-    NativeServiceWorkerRegistrationState, NativeServiceWorkerWorkerState,
-    load_service_worker_source, validate_message_port_transfers,
+    NativeServiceWorkerRegistrationState, NativeServiceWorkerWorkerProfile,
+    NativeServiceWorkerWorkerState, load_service_worker_source, validate_message_port_transfers,
     validate_native_service_worker_cache_request_headers,
 };
 use super::origin::NativeOrigin;
@@ -61,6 +61,14 @@ fn worker_state(worker: &NativeServiceWorker, state: &str) -> NativeServiceWorke
     NativeServiceWorkerWorkerState {
         script_url: worker.script_url.clone(),
         state: state.to_owned(),
+    }
+}
+
+fn worker_type_name(worker: &NativeServiceWorker) -> String {
+    if worker.is_module {
+        "module".into()
+    } else {
+        "classic".into()
     }
 }
 
@@ -150,9 +158,6 @@ impl NativeServiceWorkerRegistry {
         let document_origin = NativeOrigin::from_url(&document)?;
         let profiles = self.registration_profiles.clone();
         for profile in profiles {
-            if self.registrations.contains_key(&profile.scope) {
-                continue;
-            }
             let scope = Url::parse(&profile.scope).map_err(|_| NativeEngineError::Worker {
                 operation: "service worker restoration".into(),
                 reason: "persisted service worker scope is invalid".into(),
@@ -160,15 +165,39 @@ impl NativeServiceWorkerRegistry {
             if NativeOrigin::from_url(&scope)? != document_origin {
                 continue;
             }
-            let is_module = profile.worker_type.eq_ignore_ascii_case("module");
-            let loaded = self.restore_worker(loader, &profile, is_module).await;
-            let Ok(worker) = loaded else {
+            if !self.registrations.contains_key(&profile.scope) {
+                let loaded = self
+                    .restore_worker(
+                        loader,
+                        &profile.script_url,
+                        &profile.scope,
+                        &profile.worker_type,
+                    )
+                    .await;
+                if let Ok(worker) = loaded {
+                    self.registrations.insert(profile.scope.clone(), worker);
+                }
                 // A persisted registration must not prevent its page from
-                // loading when its script is temporarily unavailable. Keep
-                // the profile so the next navigation can retry restoration.
+                // loading when its active script is temporarily unavailable.
+                // Keep the profile so a later navigation can retry it.
+            }
+            let Some(waiting) = profile.waiting.as_ref() else {
                 continue;
             };
-            self.registrations.insert(profile.scope.clone(), worker);
+            if self.waiting_workers.contains_key(&profile.scope) {
+                continue;
+            }
+            let loaded = self
+                .restore_worker(
+                    loader,
+                    &waiting.script_url,
+                    &profile.scope,
+                    &waiting.worker_type,
+                )
+                .await;
+            if let Ok(worker) = loaded {
+                self.waiting_workers.insert(profile.scope.clone(), worker);
+            }
         }
         Ok(())
     }
@@ -288,26 +317,23 @@ impl NativeServiceWorkerRegistry {
     async fn restore_worker(
         &mut self,
         loader: &mut NativeResourceLoader,
-        profile: &NativeServiceWorkerRegistrationProfile,
-        is_module: bool,
+        script_url: &str,
+        scope: &str,
+        worker_type: &str,
     ) -> Result<NativeServiceWorker, NativeEngineError> {
         let resource = loader
-            .load_worker_async(
-                &profile.script_url,
-                &profile.script_url,
-                MAX_NATIVE_SCRIPT_BYTES,
-            )
+            .load_worker_async(script_url, script_url, MAX_NATIVE_SCRIPT_BYTES)
             .await?
             .ok_or_else(|| NativeEngineError::Network {
                 operation: "service worker restoration".into(),
                 reason: "persisted service worker script was blocked or unavailable".into(),
             })?;
+        let is_module = worker_type.eq_ignore_ascii_case("module");
         let (source, import_script_counts, module_sources) =
-            load_service_worker_source(loader, &profile.script_url, resource.clone(), is_module)
-                .await?;
+            load_service_worker_source(loader, script_url, resource.clone(), is_module).await?;
         self.instantiate_worker(
             resource.url,
-            profile.scope.clone(),
+            scope.to_owned(),
             is_module,
             source,
             import_script_counts,
@@ -384,6 +410,15 @@ impl NativeServiceWorkerRegistry {
         if let Some(previous_waiting) = self.waiting_workers.insert(scope.clone(), worker) {
             self.remove_worker_routes(previous_waiting.id);
         }
+        let waiting = self
+            .waiting_workers
+            .get(&scope)
+            .map(|worker| NativeServiceWorkerWorkerProfile {
+                script_url: worker.script_url.clone(),
+                worker_type: worker_type_name(worker),
+            })
+            .expect("service worker waiting candidate was inserted");
+        self.remember_waiting_registration(&scope, waiting);
         registration_state_for_workers(
             &scope,
             self.registrations.get(&scope),
@@ -408,11 +443,8 @@ impl NativeServiceWorkerRegistry {
                     .map(|worker| NativeServiceWorkerRegistrationProfile {
                         script_url: worker.script_url.clone(),
                         scope: worker.scope.clone(),
-                        worker_type: if worker.is_module {
-                            "module".into()
-                        } else {
-                            "classic".into()
-                        },
+                        worker_type: worker_type_name(worker),
+                        waiting: None,
                     })
             })
             .or_else(|| {
@@ -420,11 +452,8 @@ impl NativeServiceWorkerRegistry {
                     NativeServiceWorkerRegistrationProfile {
                         script_url: worker.script_url.clone(),
                         scope: worker.scope.clone(),
-                        worker_type: if worker.is_module {
-                            "module".into()
-                        } else {
-                            "classic".into()
-                        },
+                        worker_type: worker_type_name(worker),
+                        waiting: None,
                     }
                 })
             })
@@ -468,11 +497,35 @@ impl NativeServiceWorkerRegistry {
             .push(NativeServiceWorkerRegistrationProfile {
                 script_url: worker.script_url.clone(),
                 scope: worker.scope.clone(),
-                worker_type: if worker.is_module {
-                    "module".into()
-                } else {
-                    "classic".into()
-                },
+                worker_type: worker_type_name(worker),
+                waiting: None,
+            });
+        self.registration_profiles
+            .sort_unstable_by(|left, right| left.scope.cmp(&right.scope));
+    }
+
+    fn remember_waiting_registration(
+        &mut self,
+        scope: &str,
+        waiting: NativeServiceWorkerWorkerProfile,
+    ) {
+        if let Some(profile) = self
+            .registration_profiles
+            .iter_mut()
+            .find(|profile| profile.scope == scope)
+        {
+            profile.waiting = Some(waiting);
+            return;
+        }
+        let Some(active) = self.registrations.get(scope) else {
+            return;
+        };
+        self.registration_profiles
+            .push(NativeServiceWorkerRegistrationProfile {
+                script_url: active.script_url.clone(),
+                scope: active.scope.clone(),
+                worker_type: worker_type_name(active),
+                waiting: Some(waiting),
             });
         self.registration_profiles
             .sort_unstable_by(|left, right| left.scope.cmp(&right.scope));

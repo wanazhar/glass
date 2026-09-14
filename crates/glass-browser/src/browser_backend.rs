@@ -1903,6 +1903,9 @@ pub enum StorageScope {
 #[serde(rename_all = "camelCase")]
 pub enum StorageOperation {
     Read,
+    /// Write one key/value pair. For [`StorageScope::Cookies`], this is a
+    /// current-origin `document.cookie` assignment and cannot express
+    /// metadata such as HttpOnly, SameSite, or an explicit domain/path.
     Write {
         #[serde(deserialize_with = "deserialize_bounded_string")]
         key: String,

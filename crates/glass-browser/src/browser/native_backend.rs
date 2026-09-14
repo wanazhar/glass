@@ -30,7 +30,7 @@ use crate::browser_backend::{
     BrowsingContext, CapabilityDescriptor, CaptureFormat, CaptureResult, CertificationLevel,
     CertificationProfile, DownloadOperation, DownloadResult, EffectsResult, EvidenceLevel,
     EvidenceResult, NavigationResult, Portability, PromptDecision, PromptResult, ScriptResult,
-    SemanticAction, StorageResult, StorageScope, SupportLevel,
+    SemanticAction, StorageResult, SupportLevel,
 };
 use base64::Engine as _;
 use std::collections::{BTreeMap, VecDeque};
@@ -3625,18 +3625,6 @@ impl BrowserBackend for NativeEngineBackend {
                 }
                 (BackendOperation::Storage, BackendRequest::Storage(request)) => {
                     require_context_id(&request.context_id, &active_context_id)?;
-                    if matches!(&request.scope, StorageScope::Cookies)
-                        && matches!(
-                            &request.operation,
-                            crate::browser_backend::StorageOperation::Write { .. }
-                        )
-                    {
-                        return Err(BrowserBackendError::UnsupportedOperation {
-                            operation: "storage".into(),
-                            reason: "cookie writes require domain, path, and security metadata"
-                                .into(),
-                        });
-                    }
                     let entries = engine
                         .storage_async(request.scope, request.operation)
                         .await

@@ -1754,10 +1754,33 @@ impl NativeEngine {
                     self.clear_cookies_async().await?;
                     Ok(std::collections::BTreeMap::new())
                 }
-                StorageOperation::Write { .. } => Err(NativeEngineError::invalid(
-                    "storage cookies",
-                    "cookie writes require domain, path, and security metadata",
-                )),
+                StorageOperation::Write { key, value } => {
+                    let cookie_line = format!("{key}={value}");
+                    if !is_network_url(&self.url) {
+                        return Err(NativeEngineError::UnsupportedUrl {
+                            reason: "semantic cookie writes require an HTTP(S) document".into(),
+                        });
+                    }
+                    if self.content_process.is_some() {
+                        let cookie_line = serde_json::to_string(&cookie_line).map_err(|_| {
+                            NativeEngineError::Worker {
+                                operation: "native cookie write".into(),
+                                reason: "cookie assignment could not be encoded".into(),
+                            }
+                        })?;
+                        self.evaluate_async(format!("document.cookie = {cookie_line}; true"))
+                            .await?;
+                    } else {
+                        self.loader.set_document_cookie(&self.url, &cookie_line)?;
+                        self.persist_local_web_storage()?;
+                    }
+                    let cookies = self.cookies_async().await?;
+                    let mut entries = std::collections::BTreeMap::new();
+                    for cookie in cookies {
+                        entries.entry(cookie.name).or_insert(cookie.value);
+                    }
+                    Ok(entries)
+                }
             };
         }
 
@@ -1797,7 +1820,7 @@ impl NativeEngine {
             match scope {
                 StorageScope::Local => "local",
                 StorageScope::Session => "session",
-                StorageScope::Cookies => unreachable!("cookies are rejected above"),
+                StorageScope::Cookies => unreachable!("cookies are handled above"),
             },
             &storage_key,
         ))

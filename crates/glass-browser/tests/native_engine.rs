@@ -41632,6 +41632,7 @@ async fn semantic_actions_and_effects_use_the_backend_contract() {
 
 #[tokio::test]
 async fn semantic_storage_uses_page_owned_native_state() {
+    let _guard = native_content_process_test_lock().lock().await;
     let backend = NativeEngineBackend::new(NativeEngineConfig::default()).unwrap();
     assert_eq!(
         backend
@@ -41724,6 +41725,52 @@ async fn semantic_storage_uses_page_owned_native_state() {
         .unwrap();
     assert!(cookies.entries.is_empty());
     dispatcher.close().await.unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/path/page"));
+        let body = "<title>Cookie storage</title><p>Cookie fixture</p>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+    let cookie_url = format!("http://{address}/path/page");
+    let cookie_backend = NativeEngineBackend::new(
+        NativeEngineConfig::default().with_initial_url(cookie_url.clone()),
+    )
+    .unwrap();
+    let cookie_dispatcher = BrowserBackendDispatcher::new(&cookie_backend);
+    cookie_dispatcher.initialize().await.unwrap();
+    let cookie_write = cookie_dispatcher
+        .storage(StorageRequest {
+            context_id: "native-context".into(),
+            scope: StorageScope::Cookies,
+            operation: StorageOperation::Write {
+                key: "session".into(),
+                value: "native".into(),
+            },
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        cookie_write.entries.get("session"),
+        Some(&"native".to_owned())
+    );
+    let page_cookie = cookie_dispatcher
+        .script(ScriptRequest {
+            context_id: "native-context".into(),
+            source: "document.cookie".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(page_cookie.value, serde_json::json!("session=native"));
+    cookie_dispatcher.close().await.unwrap();
+    server.await.unwrap();
 }
 
 #[tokio::test]

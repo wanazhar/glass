@@ -495,10 +495,15 @@ async fn storage_operation(
             "storage",
             "cookie clear is global in CDP and is not exposed as a context-scoped operation",
         )),
-        (StorageScope::Cookies, StorageOperation::Write { .. }) => Err(unsupported(
-            "storage",
-            "cookie writes require cookie metadata outside the semantic map",
-        )),
+        (StorageScope::Cookies, StorageOperation::Write { key, value }) => {
+            let cookie = serde_json::to_string(&format!("{key}={value}"))
+                .map_err(|error| translate_error("storage", &error))?;
+            session
+                .evaluate(&format!("document.cookie = {cookie}; true"))
+                .await
+                .map_err(|error| translate_error("storage", error.as_ref()))?;
+            read_storage(session, scope).await
+        }
         (scope @ (StorageScope::Local | StorageScope::Session), StorageOperation::Read) => {
             read_storage(session, scope).await
         }

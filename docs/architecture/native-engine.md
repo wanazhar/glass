@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-353` slice. The native runtime is now the primary
+`native-engine-browser-354` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -302,6 +302,20 @@ state. The current owner remains one top-level client; multi-client/tab/frame
 ownership, exact task-source scheduling, and full Service Worker conformance
 remain issue #40 gates. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-353.md`.
+
+Slice 354 promotes Service Worker client visibility to a bounded browser-wide
+target/frame projection. The native backend reconciles known target and nested
+frame owners, derives stable context/frame client ids, and synchronizes URL,
+type, frame type, visibility, and focus metadata into each live content
+process. Same-origin `clients.matchAll()` now honors `type` and
+`includeUncontrolled` across live targets, while lifecycle, message, cache,
+and fetch worker turns use the same projection and `FetchEvent` retains its
+current-client envelope. IPC protocol version 9 and equality-based no-op
+synchronization keep the ownership boundary explicit. Cross-process client
+message delivery, `clients.openWindow()`, browser-wide registration
+arbitration, exact task-source scheduling, and durable live-client leases
+remain separate issue #40 gates. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-354.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

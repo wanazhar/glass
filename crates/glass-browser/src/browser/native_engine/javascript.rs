@@ -594,6 +594,25 @@ pub(crate) struct NativeServiceWorkerRegistrationState {
     pub(crate) waiting: Option<NativeServiceWorkerWorkerState>,
 }
 
+/// A bounded browser-wide projection of one live window or frame client.
+///
+/// The content worker receives this projection from the semantic backend so a
+/// Service Worker realm can answer `clients.matchAll()` without reaching into
+/// another content-process address space. Control status is calculated by the
+/// owning Service Worker registry because it depends on the registration and
+/// on whether the current client has completed a controlling navigation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NativeServiceWorkerClientState {
+    pub(crate) id: String,
+    pub(crate) url: String,
+    #[serde(rename = "type")]
+    pub(crate) client_type: String,
+    pub(crate) frame_type: String,
+    pub(crate) visibility_state: String,
+    pub(crate) focused: bool,
+}
+
 /// Persistent metadata for one activated Service Worker registration. The
 /// worker source remains owned by the network/resource policy and is loaded
 /// again when a content-process owner is restored.
@@ -7641,6 +7660,7 @@ pub(crate) struct NativeJavaScriptRuntime {
     message_port_commands: Arc<Mutex<Vec<NativeScriptCommand>>>,
     service_worker_commands: Arc<Mutex<Vec<NativeScriptCommand>>>,
     service_worker_registrations: Arc<Mutex<Vec<NativeServiceWorkerRegistrationState>>>,
+    service_worker_clients: Arc<Mutex<Vec<serde_json::Value>>>,
     pending_window_proxy_updates: Arc<Mutex<Vec<NativeWindowProxyUpdate>>>,
     frame_script_bindings: Arc<Mutex<Vec<NativeFrameScriptBinding>>>,
     frame_script_context: Arc<Mutex<Option<NativeFrameScriptContext>>>,
@@ -7773,6 +7793,7 @@ impl NativeJavaScriptRuntime {
             message_port_commands: Arc::new(Mutex::new(Vec::new())),
             service_worker_commands: Arc::new(Mutex::new(Vec::new())),
             service_worker_registrations: Arc::new(Mutex::new(Vec::new())),
+            service_worker_clients: Arc::new(Mutex::new(Vec::new())),
             pending_window_proxy_updates: Arc::new(Mutex::new(Vec::new())),
             frame_script_bindings: Arc::new(Mutex::new(Vec::new())),
             frame_script_context: Arc::new(Mutex::new(None)),
@@ -8044,6 +8065,19 @@ impl NativeJavaScriptRuntime {
         self.service_worker_registrations
             .lock()
             .map(|registrations| registrations.clone())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn set_service_worker_clients(&self, clients: Vec<serde_json::Value>) {
+        if let Ok(mut current) = self.service_worker_clients.lock() {
+            *current = clients;
+        }
+    }
+
+    fn service_worker_clients(&self) -> Vec<serde_json::Value> {
+        self.service_worker_clients
+            .lock()
+            .map(|clients| clients.clone())
             .unwrap_or_default()
     }
 
@@ -9980,6 +10014,7 @@ impl NativeJavaScriptRuntime {
             self.now_ms(),
             import_script_counts,
             module_name.is_some(),
+            &self.service_worker_clients(),
         )?;
         self.evaluate_worker_source_with_bootstrap(
             worker_id,
@@ -10017,6 +10052,7 @@ impl NativeJavaScriptRuntime {
             self.now_ms(),
             &BTreeMap::new(),
             is_module,
+            &self.service_worker_clients(),
         )?;
         self.evaluate_worker_source_with_bootstrap(
             worker_id, worker_url, None, &source, bootstrap, true, true,
@@ -10043,6 +10079,7 @@ impl NativeJavaScriptRuntime {
             self.now_ms(),
             &BTreeMap::new(),
             is_module,
+            &self.service_worker_clients(),
         )?;
         self.evaluate_worker_source_with_bootstrap(
             worker_id, worker_url, None, &source, bootstrap, true, true,
@@ -10080,6 +10117,7 @@ impl NativeJavaScriptRuntime {
             self.now_ms(),
             &BTreeMap::new(),
             false,
+            &self.service_worker_clients(),
         )?;
         self.evaluate_worker_source_with_bootstrap(
             worker_id, worker_url, None, &source, bootstrap, true, false,
@@ -10138,6 +10176,7 @@ impl NativeJavaScriptRuntime {
             self.now_ms(),
             &BTreeMap::new(),
             false,
+            &self.service_worker_clients(),
         )?;
         self.evaluate_worker_source_with_bootstrap(
             worker_id, worker_url, None, &source, bootstrap, true, false,
@@ -10203,6 +10242,7 @@ impl NativeJavaScriptRuntime {
             self.now_ms(),
             &BTreeMap::new(),
             is_module,
+            &self.service_worker_clients(),
         )?;
         self.evaluate_worker_source_with_bootstrap(
             worker_id, worker_url, None, &source, bootstrap, true, false,
@@ -15049,6 +15089,7 @@ fn service_worker_bootstrap(
     now_ms: u64,
     import_script_counts: &BTreeMap<String, usize>,
     is_module: bool,
+    clients: &[serde_json::Value],
 ) -> Result<String, NativeEngineError> {
     let mut bootstrap = worker_bootstrap(
         worker_id,
@@ -15064,7 +15105,7 @@ fn service_worker_bootstrap(
             operation: "install native service worker host view".into(),
             reason: "native service worker bootstrap boundary was not found".into(),
         })?;
-    bootstrap.insert_str(insertion, &service_worker_bootstrap_script());
+    bootstrap.insert_str(insertion, &service_worker_bootstrap_script(clients)?);
     Ok(bootstrap)
 }
 
@@ -15093,8 +15134,22 @@ fn shared_worker_bootstrap(
     Ok(bootstrap)
 }
 
-fn service_worker_bootstrap_script() -> String {
-    NATIVE_SERVICE_WORKER_BOOTSTRAP
+fn service_worker_bootstrap_script(
+    clients: &[serde_json::Value],
+) -> Result<String, NativeEngineError> {
+    let serialized_clients =
+        serde_json::to_string(clients).map_err(|_| NativeEngineError::Worker {
+            operation: "serialize native service worker clients".into(),
+            reason: "native service worker clients could not be serialized".into(),
+        })?;
+    if serialized_clients.len() > MAX_NATIVE_SCRIPT_BYTES {
+        return Err(NativeEngineError::limit(
+            "native service worker clients",
+            MAX_NATIVE_SCRIPT_BYTES,
+            serialized_clients.len(),
+        ));
+    }
+    Ok(NATIVE_SERVICE_WORKER_BOOTSTRAP
         .replace(
             "__GLASS_SERVICE_WORKER_BODY_LIMIT__",
             &MAX_NATIVE_FORM_BODY_BYTES.to_string(),
@@ -15103,6 +15158,7 @@ fn service_worker_bootstrap_script() -> String {
             "__GLASS_SERVICE_WORKER_CACHE_NAME_LIMIT__",
             &MAX_NATIVE_SERVICE_WORKER_CACHE_NAME_BYTES.to_string(),
         )
+        .replace("__GLASS_SERVICE_WORKER_CLIENTS__", &serialized_clients))
 }
 
 const NATIVE_SHARED_WORKER_BOOTSTRAP: &str = r###"
@@ -16181,6 +16237,7 @@ fn service_worker_page_script() -> String {
 
 const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
   globalThis.__glassServiceWorkerClientState = null;
+  globalThis.__glassServiceWorkerClients = __GLASS_SERVICE_WORKER_CLIENTS__;
   const serviceWorkerCachePendingRequests = globalThis.__glassServiceWorkerCachePendingRequests instanceof Map
     ? globalThis.__glassServiceWorkerCachePendingRequests
     : new Map();
@@ -16381,8 +16438,7 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
     });
   globalThis.__glassCacheStorageConstructor = CacheStorageNative;
   globalThis.caches = serviceWorkerCacheStorage;
-  const serviceWorkerClientFromState = () => {
-    const state = globalThis.__glassServiceWorkerClientState;
+  const serviceWorkerClientFromState = (state) => {
     if (!state || typeof state !== "object") return null;
     const client = {
       id: String(state.clientId || ""),
@@ -16390,7 +16446,7 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
       type: String(state.clientType || "window"),
       frameType: String(state.frameType || "top-level"),
       visibilityState: String(state.visibilityState || "visible"),
-      focused: state.focused === true,
+          focused: state.focused === true,
       postMessage(message, options) {
         const workerId = Number.isSafeInteger(globalThis.__glassWorkerId)
           ? globalThis.__glassWorkerId : 0;
@@ -16422,6 +16478,9 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
           controlled: payload.controlled === true,
         }
       : null;
+    if (payload && Array.isArray(payload.clients)) {
+      globalThis.__glassServiceWorkerClients = payload.clients;
+    }
     const body = payload && payload.bodyNull === true
       ? undefined
       : payload && typeof payload.bodyBase64 === "string"
@@ -16495,11 +16554,14 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
     if (!["window", "worker", "sharedworker", "all"].includes(type))
       return Promise.reject(new TypeError("service worker clients.matchAll type is invalid"));
     if (type !== "window" && type !== "all") return Promise.resolve([]);
-    const state = globalThis.__glassServiceWorkerClientState;
-    if (settings.includeUncontrolled !== true && (!state || state.controlled !== true))
-      return Promise.resolve([]);
-    const client = serviceWorkerClientFromState();
-    return Promise.resolve(client ? [client] : []);
+    const states = Array.isArray(globalThis.__glassServiceWorkerClients)
+      ? globalThis.__glassServiceWorkerClients : [];
+    const clients = states
+      .filter(state => type === "all" || String(state.clientType || "window") === type)
+      .filter(state => settings.includeUncontrolled === true || state.controlled === true)
+      .map(serviceWorkerClientFromState)
+      .filter(Boolean);
+    return Promise.resolve(clients);
   };
   serviceWorkerClients.openWindow = () => Promise.reject(new Error("native service worker clients.openWindow is unavailable"));
   globalThis.clients = serviceWorkerClients;

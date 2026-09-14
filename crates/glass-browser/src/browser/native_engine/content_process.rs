@@ -51,6 +51,7 @@ use super::resource_loader::{
 #[cfg(windows)]
 use super::sandbox::NativeContentSandbox;
 use super::sandbox::prepare_worker_command;
+use super::service_worker::NativeServiceWorkerRegistry;
 use base64::Engine as _;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -3437,6 +3438,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut resource_loader = None;
     let mut javascript_runtime: Option<NativeJavaScriptRuntime> = None;
     let mut workers = NativeWorkerRegistry::new();
+    let mut service_workers = NativeServiceWorkerRegistry::default();
     let mut pending_worker_messages: VecDeque<NativeWorkerMessage> = VecDeque::new();
     let mut websocket_connections = BTreeMap::new();
     let mut worker_websocket_connections = BTreeMap::new();
@@ -3881,6 +3883,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     &mut resource_loader,
                     storage_profile_path.as_deref(),
                     &environment,
+                    &mut service_workers,
                 )
                 .await
                 {
@@ -3911,6 +3914,11 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             runtime.set_frame_id(frame_id.clone());
                             runtime.set_frame_script_context(frame_script_context.clone());
                             runtime.set_frame_script_bindings(frame_script_bindings.clone());
+                            if let Ok(registrations) =
+                                service_workers.states_for_document(&resource.url)
+                            {
+                                runtime.set_service_worker_registrations(registrations);
+                            }
                             runtime.set_scroll_offset(scroll_offset);
                             runtime.set_nested_scroll_offsets(nested_scroll_offsets.clone());
                         }
@@ -3950,6 +3958,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             }
                             Ok(page_scripts)
                                 if page_scripts.pending_fetches.is_empty()
+                                    && page_scripts.service_worker_commands.is_empty()
                                     && page_scripts.websocket_commands.is_empty()
                                     && page_scripts.event_source_commands.is_empty() =>
                             {
@@ -3961,16 +3970,48 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                     page_scripts.scroll_commands,
                                 ))
                             }
-                            Ok(page_scripts) => {
+                            Ok(mut page_scripts) => {
                                 let page_dialogs = page_scripts.dialogs;
                                 let mut page_events = page_scripts.events;
                                 let mut page_scroll_commands = page_scripts.scroll_commands;
+                                let service_worker_commands =
+                                    std::mem::take(&mut page_scripts.service_worker_commands);
+                                if !service_worker_commands.is_empty() {
+                                    let resolved = match (
+                                        script_runtime.as_ref(),
+                                        resource_loader.as_mut(),
+                                    ) {
+                                        (Some(runtime), Some(loader)) => {
+                                            resolve_service_worker_commands(
+                                                service_worker_commands,
+                                                &mut service_workers,
+                                                loader,
+                                                runtime,
+                                                &mut parsed,
+                                                &resource.url,
+                                                &resource.origin,
+                                                loaded_viewport,
+                                            )
+                                            .await?
+                                        }
+                                        _ => {
+                                            return Err(NativeEngineError::Worker {
+                                                operation: "service worker registration".into(),
+                                                reason:
+                                                    "content process service worker state is unavailable"
+                                                        .into(),
+                                            });
+                                        }
+                                    };
+                                    page_scripts.pending_fetches.extend(resolved);
+                                }
                                 match (script_runtime.as_ref(), resource_loader.as_mut()) {
                                     (Some(runtime), Some(loader)) => {
                                         match resolve_script_fetches(
                                             &parsed,
                                             runtime,
                                             Some(loader),
+                                            &mut service_workers,
                                             &mut websocket_connections,
                                             &mut fetch_stream_connections,
                                             &mut event_source_connections,
@@ -4123,7 +4164,28 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     write_value_frame(&mut stdout, &response).await?;
                     continue;
                 };
-                match loader.fetch_async(document_url, href, credentials).await {
+                let intercepted = service_workers
+                    .intercept_fetch(
+                        loader,
+                        document_url,
+                        href,
+                        NativeNavigationMethod::Get,
+                        BTreeMap::new(),
+                        None,
+                        None,
+                        NativeCorsMode::Cors,
+                        NativeFetchRedirectMode::Follow,
+                        None,
+                        credentials,
+                        "fetch",
+                    )
+                    .await;
+                let fetch = match intercepted {
+                    Ok(Some(response)) => Ok(response),
+                    Ok(None) => loader.fetch_async(document_url, href, credentials).await,
+                    Err(error) => Err(error),
+                };
+                match fetch {
                     Ok(fetch) => {
                         json!({
                             "kind": "fetched",
@@ -4258,6 +4320,24 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         reason: "content process resource loader is unavailable".into(),
                     });
                 };
+                let service_worker_commands = runtime.take_service_worker_commands();
+                let resolved_service_worker_commands =
+                    if evaluation.is_ok() && !service_worker_commands.is_empty() {
+                        let mut service_document = current.clone();
+                        resolve_service_worker_commands(
+                            service_worker_commands,
+                            &mut service_workers,
+                            loader,
+                            runtime,
+                            &mut service_document,
+                            &committed_url,
+                            document_origin,
+                            viewport,
+                        )
+                        .await?
+                    } else {
+                        Vec::new()
+                    };
                 let worker_commands = runtime.take_worker_commands();
                 workers
                     .apply_commands(worker_commands, loader, &committed_url)
@@ -4273,7 +4353,10 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     Some(&*loader),
                 )?;
                 pending_worker_messages.extend(workers.take_messages());
-                match evaluation {
+                match evaluation.map(|mut evaluation| {
+                    evaluation.commands.extend(resolved_service_worker_commands);
+                    evaluation
+                }) {
                     Ok(NativeScriptEvaluation {
                         value,
                         commands,
@@ -4328,6 +4411,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             current,
                             runtime,
                             resource_loader.as_mut(),
+                            &mut service_workers,
                             &mut websocket_connections,
                             &mut fetch_stream_connections,
                             &mut event_source_connections,
@@ -5534,11 +5618,98 @@ fn refresh_content_runtime_cookie(
     Ok(())
 }
 
+async fn resolve_service_worker_commands(
+    commands: Vec<NativeScriptCommand>,
+    registry: &mut NativeServiceWorkerRegistry,
+    loader: &mut NativeResourceLoader,
+    runtime: &NativeJavaScriptRuntime,
+    document: &mut NativeDocument,
+    document_url: &str,
+    document_origin: &NativeOrigin,
+    viewport: Viewport,
+) -> Result<Vec<NativeScriptCommand>, NativeEngineError> {
+    let mut pending = VecDeque::from(commands);
+    let mut document_commands = Vec::new();
+    let mut turns = 0usize;
+    while let Some(command) = pending.pop_front() {
+        turns = turns.saturating_add(1);
+        if turns > MAX_CONTENT_EVENT_LOOP_TURNS {
+            return Err(NativeEngineError::limit(
+                "service worker registration event-loop turns",
+                MAX_CONTENT_EVENT_LOOP_TURNS,
+                turns,
+            ));
+        }
+        match command {
+            NativeScriptCommand::ServiceWorkerRegister {
+                request_id,
+                script_url,
+                scope,
+                worker_type,
+            } => {
+                let state = registry
+                    .register(document_url, &script_url, &scope, &worker_type, loader)
+                    .await?;
+                runtime
+                    .set_service_worker_registrations(registry.states_for_document(document_url)?);
+                let evaluation = runtime.resolve_service_worker_registration(
+                    request_id,
+                    &json!({"kind":"register","registration":state}),
+                    document,
+                    document_url,
+                    document_origin,
+                    viewport,
+                )?;
+                if evaluation.top_level_await_pending {
+                    return Err(NativeEngineError::Worker {
+                        operation: "service worker registration response".into(),
+                        reason: "service worker registration response remained pending".into(),
+                    });
+                }
+                document_commands.extend(evaluation.commands);
+                pending.extend(runtime.take_service_worker_commands());
+            }
+            NativeScriptCommand::ServiceWorkerUnregister { request_id, scope } => {
+                let unregistered = registry.unregister(&scope);
+                runtime
+                    .set_service_worker_registrations(registry.states_for_document(document_url)?);
+                let evaluation = runtime.resolve_service_worker_registration(
+                    request_id,
+                    &json!({
+                        "kind":"unregister",
+                        "scope":scope,
+                        "unregistered":unregistered,
+                    }),
+                    document,
+                    document_url,
+                    document_origin,
+                    viewport,
+                )?;
+                if evaluation.top_level_await_pending {
+                    return Err(NativeEngineError::Worker {
+                        operation: "service worker unregister response".into(),
+                        reason: "service worker unregister response remained pending".into(),
+                    });
+                }
+                document_commands.extend(evaluation.commands);
+                pending.extend(runtime.take_service_worker_commands());
+            }
+            NativeScriptCommand::ServiceWorkerPostMessage { scope, data } => {
+                registry.post_message(&scope, &data)?;
+                pending.extend(runtime.take_service_worker_commands());
+            }
+            other => document_commands.push(other),
+        }
+    }
+    Ok(document_commands)
+}
+
 async fn load_content_resource(
     request: &Value,
     resource_loader: &mut Option<NativeResourceLoader>,
     storage_path: Option<&Path>,
     environment: &NativeEnvironmentOverrides,
+    service_workers: &mut NativeServiceWorkerRegistry,
 ) -> Result<
     (
         NativeContentLoad,
@@ -5733,9 +5904,17 @@ async fn load_content_resource(
         }
     };
     loader.set_environment(environment)?;
-    let resource = loader
-        .load_async_request_with_referrer(&navigation, referrer)
-        .await?;
+    let resource = match service_workers
+        .intercept_navigation(loader, &navigation, referrer)
+        .await?
+    {
+        Some(resource) => resource,
+        None => {
+            loader
+                .load_async_request_with_referrer(&navigation, referrer)
+                .await?
+        }
+    };
     let frame_sources = loader.frame_sources_for_document(&resource.url)?;
     let discovery = NativeDocument::parse(&resource.body, &limits)?;
     let mut external_stylesheets = Vec::new();
@@ -6024,6 +6203,7 @@ async fn execute_dynamic_page_scripts_with_loader(
 ) -> Result<NativePageScriptResult, NativeEngineError> {
     let mut aggregate = NativePageScriptResult {
         pending_fetches: Vec::new(),
+        service_worker_commands: Vec::new(),
         websocket_commands: Vec::new(),
         event_source_commands: Vec::new(),
         pending_script_sources: Vec::new(),
@@ -6067,6 +6247,9 @@ fn merge_dynamic_page_script_result(
     result: NativePageScriptResult,
 ) -> Result<(), NativeEngineError> {
     aggregate.pending_fetches.extend(result.pending_fetches);
+    aggregate
+        .service_worker_commands
+        .extend(result.service_worker_commands);
     aggregate
         .websocket_commands
         .extend(result.websocket_commands);
@@ -8739,6 +8922,7 @@ async fn resolve_script_fetches(
     current: &NativeDocument,
     runtime: &NativeJavaScriptRuntime,
     mut loader: Option<&mut NativeResourceLoader>,
+    service_workers: &mut NativeServiceWorkerRegistry,
     websocket_connections: &mut BTreeMap<u32, NativeWebSocketConnection>,
     fetch_stream_connections: &mut BTreeMap<u32, NativeFetchStreamConnection>,
     event_source_connections: &mut BTreeMap<u32, NativeEventSourceConnection>,
@@ -8825,39 +9009,68 @@ async fn resolve_script_fetches(
                     reason: "content process has no resource loader".into(),
                 });
             };
-            let opened = loader
-                .open_fetch_response_stream_async(NativeFetchRequest {
-                    document_url: &current_url,
-                    href: &href,
+            let intercepted = service_workers
+                .intercept_fetch(
+                    loader,
+                    &current_url,
+                    &href,
                     method,
-                    body,
-                    content_type,
-                    request_headers: headers,
+                    headers.clone(),
+                    body.clone(),
+                    content_type.clone(),
                     cors_mode,
                     redirect_mode,
                     timeout,
                     credentials,
-                    max_response_bytes: None,
-                })
+                    "fetch",
+                )
                 .await;
-            let payload = match opened {
-                Ok(opened) if !opened.response.opaque && !opened.response.opaque_redirect => {
-                    if let std::collections::btree_map::Entry::Vacant(e) =
-                        fetch_stream_connections.entry(request_id)
-                    {
-                        let response = opened.response;
-                        let stream =
-                            spawn_native_fetch_stream(opened.body, opened.max_response_bytes);
-                        e.insert(stream);
-                        fetch_stream_response_payload(response, request_id)
-                    } else {
-                        fetch_response_payload(Err(NativeEngineError::Network {
-                            operation: "fetch response stream".into(),
-                            reason: "fetch response stream identifier is already active".into(),
-                        }))
+            let payload = match intercepted {
+                Ok(Some(response)) => fetch_response_payload(Ok(response)),
+                Ok(None) => {
+                    let opened = loader
+                        .open_fetch_response_stream_async(NativeFetchRequest {
+                            document_url: &current_url,
+                            href: &href,
+                            method,
+                            body,
+                            content_type,
+                            request_headers: headers,
+                            cors_mode,
+                            redirect_mode,
+                            timeout,
+                            credentials,
+                            max_response_bytes: None,
+                        })
+                        .await;
+                    match opened {
+                        Ok(opened)
+                            if !opened.response.opaque && !opened.response.opaque_redirect =>
+                        {
+                            if let std::collections::btree_map::Entry::Vacant(e) =
+                                fetch_stream_connections.entry(request_id)
+                            {
+                                let response = opened.response;
+                                let stream = spawn_native_fetch_stream(
+                                    opened.body,
+                                    opened.max_response_bytes,
+                                );
+                                e.insert(stream);
+                                fetch_stream_response_payload(response, request_id)
+                            } else {
+                                fetch_response_payload(Err(NativeEngineError::Network {
+                                    operation: "fetch response stream".into(),
+                                    reason: "fetch response stream identifier is already active"
+                                        .into(),
+                                }))
+                            }
+                        }
+                        Ok(opened) => {
+                            fetch_response_payload(collect_native_fetch_response(opened).await)
+                        }
+                        Err(error) => fetch_response_payload(Err(error)),
                     }
                 }
-                Ok(opened) => fetch_response_payload(collect_native_fetch_response(opened).await),
                 Err(error) => fetch_response_payload(Err(error)),
             };
             let resolved = runtime.resolve_fetch(

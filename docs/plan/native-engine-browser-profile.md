@@ -3,8 +3,8 @@
 Profile: `GCWP-0.1`
 
 Status: implementation baseline for issue #40. This profile is the M0
-contract; it is not a conformance result and does not promote the current
-native backend.
+contract; it is not a conformance result or a production certification record
+for the current native backend.
 
 Authority: [issue #40](https://github.com/wanazhar/glass/issues/40), with the
 implementation and ownership contract in

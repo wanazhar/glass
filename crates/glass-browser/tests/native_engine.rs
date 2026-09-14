@@ -3473,6 +3473,128 @@ async fn native_content_process_worker_fetch_resolves_inside_worker_realm() {
 }
 
 #[tokio::test]
+async fn native_content_process_registers_service_worker_and_intercepts_fetch_and_navigation() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for (expected_path, content_type, body) in [
+            (
+                "/register",
+                "text/html",
+                "<script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script><main>registration page</main>",
+            ),
+            (
+                "/sw.js",
+                "application/javascript",
+                r#"self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
+self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+self.addEventListener('fetch', event => {
+  const path = new URL(event.request.url).pathname;
+  if (path === '/api') {
+    event.respondWith(new Response('served by native service worker', {
+      status: 201,
+      headers: { 'Content-Type': 'text/plain', 'X-Native-Worker': 'yes' },
+    }));
+  } else {
+    event.respondWith(new Response('<main id="controlled">controlled by native service worker</main>', {
+      headers: { 'Content-Type': 'text/html' },
+    }));
+  }
+});"#,
+            ),
+            (
+                "/network",
+                "text/html",
+                "<main id='network'>network fallback</main>",
+            ),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/register")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await registrationPromise.then(reg => [reg.scope, reg.active.state, reg.active.scriptURL, navigator.serviceWorker.getRegistrations().then(items => items.length)])",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([
+            format!("http://{address}/"),
+            "activated",
+            format!("http://{address}/sw.js"),
+            1,
+        ])
+    );
+
+    engine
+        .navigate_async(format!("http://{address}/app/page"))
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({ text: document.body.innerText, controlled: navigator.serviceWorker.controller !== null, scriptURL: navigator.serviceWorker.controller && navigator.serviceWorker.controller.scriptURL })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "text": "controlled by native service worker",
+            "controlled": true,
+            "scriptURL": format!("http://{address}/sw.js"),
+        })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await fetch('/api').then(async response => ({ status: response.status, worker: response.headers.get('x-native-worker'), body: await response.text() }))",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "status": 201,
+            "worker": "yes",
+            "body": "served by native service worker",
+        })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await navigator.serviceWorker.getRegistration('/app/page').then(registration => registration.unregister())",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    engine
+        .navigate_async(format!("http://{address}/network"))
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("document.body.innerText")
+            .await
+            .unwrap(),
+        serde_json::json!("network fallback")
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_worker_fetch_preserves_binary_request_and_response_bodies() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -20,9 +20,10 @@ scripts use without introducing a second transport or scheduler:
 
 The slice deliberately keeps channel ownership inside the existing JavaScript
 realm. Cross-context `MessagePort` transfer, transferables, shared workers,
-service workers, and browser-wide task-source scheduling still require the
-issue #40 promotion work that will connect those realms through the native
-owner rather than pretending same-realm delivery is full browser parity.
+and browser-wide task-source scheduling still require the issue #40 promotion
+work that will connect those realms through the native owner rather than
+pretending same-realm delivery is full browser parity. Service-worker
+registration and fetch ownership is delivered by the following browser slice.
 
 ## Local evidence
 

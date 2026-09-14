@@ -3573,6 +3573,9 @@ impl NativeDocument {
                     }
                 }
                 NativeScriptCommand::Fetch { .. } => {}
+                NativeScriptCommand::ServiceWorkerRegister { .. }
+                | NativeScriptCommand::ServiceWorkerUnregister { .. }
+                | NativeScriptCommand::ServiceWorkerPostMessage { .. } => {}
                 NativeScriptCommand::WorkerCreate { .. }
                 | NativeScriptCommand::WorkerPostMessage { .. }
                 | NativeScriptCommand::WorkerTerminate { .. }

@@ -9617,6 +9617,7 @@ fn worker_bootstrap(
             operation: "serialize native Worker crypto seed".into(),
             reason: "native Worker crypto seed could not be serialized".into(),
         })?;
+    let message_channel_script = message_channel_bootstrap();
     let is_module = if is_module { "true" } else { "false" };
     Ok(format!(
         r###"(() => {{
@@ -10426,6 +10427,7 @@ fn worker_bootstrap(
   }};
   globalThis.__glassWorkerEventTargetConstructor = WorkerEventTargetNative;
   globalThis.EventTarget = WorkerEventTargetNative;
+  {message_channel_script}
   const workerCryptoPool = globalThis.__glassWorkerCryptoPool instanceof Array
     ? globalThis.__glassWorkerCryptoPool
     : [];
@@ -12713,6 +12715,7 @@ fn worker_bootstrap(
         initial_random_bytes = initial_random_bytes,
         now_ms = now_ms,
         import_script_counts = import_script_counts,
+        message_channel_script = message_channel_script,
     ))
 }
 
@@ -12770,6 +12773,328 @@ fn is_ready_state_comparison(source: &str) -> bool {
         return left.trim() == "document.readyState" && is_string_literal;
     }
     false
+}
+
+const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
+  const glassMessagePortQueueLimit = __GLASS_MESSAGE_PORT_QUEUE_LIMIT__;
+  const glassMessageChannelNameLimit = __GLASS_MESSAGE_CHANNEL_NAME_LIMIT__;
+  const glassMessagePortRegistry = globalThis.__glassMessagePortRegistry instanceof Map
+    ? globalThis.__glassMessagePortRegistry
+    : new Map();
+  const glassBroadcastChannelRegistry = globalThis.__glassBroadcastChannelRegistry instanceof Map
+    ? globalThis.__glassBroadcastChannelRegistry
+    : new Map();
+  let glassNextMessagePortId = Number.isSafeInteger(globalThis.__glassNextMessagePortId)
+    ? globalThis.__glassNextMessagePortId
+    : 1;
+  const glassMessageHidden = (target, name, value) => {
+    Object.defineProperty(target, name, {
+      configurable: false,
+      enumerable: false,
+      writable: true,
+      value,
+    });
+  };
+  const glassMessageException = (message, name) => {
+    const Exception = typeof globalThis.DOMException === "function"
+      ? globalThis.DOMException
+      : Error;
+    try { return new Exception(message, name); } catch (_error) { return new Error(message); }
+  };
+  const glassMessageClone = (value) => {
+    let encoded;
+    try { encoded = JSON.stringify(value); } catch (_error) {
+      throw glassMessageException("message could not be cloned", "DataCloneError");
+    }
+    if (encoded === undefined) {
+      if (value === undefined) return undefined;
+      throw glassMessageException("message could not be cloned", "DataCloneError");
+    }
+    if (encoded.length > __GLASS_MESSAGE_BYTES_LIMIT__)
+      throw new RangeError("native message data exceeds its limit");
+    try { return JSON.parse(encoded); } catch (_error) {
+      throw glassMessageException("message could not be cloned", "DataCloneError");
+    }
+  };
+  const glassMessageEventConstructor = typeof globalThis.__glassMessageEventConstructor === "function"
+    ? globalThis.__glassMessageEventConstructor
+    : (typeof globalThis.MessageEvent === "function" ? globalThis.MessageEvent : null);
+  const GlassMessageEvent = glassMessageEventConstructor || function MessageEvent(type, init) {
+    if (!(this instanceof GlassMessageEvent)) throw new TypeError("MessageEvent requires new");
+    const settings = init && typeof init === "object" ? init : {};
+    this.type = String(type);
+    this.bubbles = settings.bubbles === true;
+    this.cancelable = settings.cancelable === true;
+    this.composed = settings.composed === true;
+    this.defaultPrevented = false;
+    this.isTrusted = false;
+    this.timeStamp = Number(globalThis.performance && globalThis.performance.now && globalThis.performance.now()) || 0;
+    this.data = settings.data === undefined ? null : settings.data;
+    this.origin = String(settings.origin || "");
+    this.lastEventId = String(settings.lastEventId || "");
+    this.source = settings.source === undefined ? null : settings.source;
+    this.ports = Array.isArray(settings.ports) ? settings.ports.slice() : [];
+    this.target = null;
+    this.currentTarget = null;
+    this.eventPhase = 0;
+    this._immediateStopped = false;
+  };
+  if (!glassMessageEventConstructor) {
+    GlassMessageEvent.prototype = Object.create(
+      typeof globalThis.Event === "function" ? globalThis.Event.prototype : Object.prototype,
+    );
+    GlassMessageEvent.prototype.constructor = GlassMessageEvent;
+    GlassMessageEvent.prototype.preventDefault = function() {
+      if (this.cancelable) this.defaultPrevented = true;
+    };
+    GlassMessageEvent.prototype.stopPropagation = function() { this.cancelBubble = true; };
+    GlassMessageEvent.prototype.stopImmediatePropagation = function() {
+      this.cancelBubble = true;
+      this._immediateStopped = true;
+    };
+  }
+  globalThis.__glassMessageEventConstructor = GlassMessageEvent;
+  globalThis.MessageEvent = GlassMessageEvent;
+  const glassMessageInvoke = (callback, target, event) => {
+    if (typeof callback === "function") callback.call(target, event);
+    else if (callback && typeof callback.handleEvent === "function") callback.handleEvent(event);
+  };
+  const glassMessageDispatch = (target, event) => {
+    if (!event || typeof event !== "object" || !event.type)
+      throw new TypeError("native message event is invalid");
+    const type = String(event.type);
+    if (event.target === null || event.target === undefined) event.target = target;
+    event.currentTarget = target;
+    event.eventPhase = 2;
+    const handler = target["on" + type];
+    if (typeof handler === "function") {
+      try { handler.call(target, event); } catch (_error) {}
+    }
+    const listeners = target.__glassMessageListeners instanceof Map
+      ? target.__glassMessageListeners
+      : new Map();
+    const records = (listeners.get(type) || []).slice();
+    for (const record of records) {
+      try { glassMessageInvoke(record.callback, target, event); } catch (_error) {}
+      if (record.once) {
+        const current = listeners.get(type) || [];
+        listeners.set(type, current.filter(candidate => candidate !== record));
+      }
+      if (event._immediateStopped === true) break;
+    }
+    event.currentTarget = null;
+    event.eventPhase = 0;
+    return event.defaultPrevented !== true;
+  };
+  const glassMessageEvent = (target, data, ports) => {
+    const event = new GlassMessageEvent("message", {
+      data,
+      origin: "",
+      source: null,
+      ports: Array.isArray(ports) ? ports : [],
+    });
+    event.target = target;
+    return event;
+  };
+  const glassMessageSchedule = (target) => {
+    if (target.__glassMessageClosed || target.__glassMessageDeliveryQueued) return;
+    glassMessageHidden(target, "__glassMessageDeliveryQueued", true);
+    const run = () => {
+      target.__glassMessageDeliveryQueued = false;
+      if (target.__glassMessageClosed || !target.__glassMessageStarted) return;
+      const queue = target.__glassMessageQueue;
+      while (queue.length > 0 && !target.__glassMessageClosed) {
+        const item = queue.shift();
+        glassMessageDispatch(target, glassMessageEvent(target, item.data, item.ports));
+      }
+    };
+    if (typeof globalThis.queueMicrotask === "function") globalThis.queueMicrotask(run);
+    else Promise.resolve().then(run);
+  };
+  const glassMessageEnqueue = (target, data, ports) => {
+    if (!target || target.__glassMessageClosed) return;
+    const queue = target.__glassMessageQueue;
+    if (queue.length >= glassMessagePortQueueLimit)
+      throw glassMessageException("native message queue is full", "QuotaExceededError");
+    queue.push({ data, ports: Array.isArray(ports) ? ports.slice() : [] });
+    if (target.__glassMessageStarted || typeof target.onmessage === "function") {
+      target.__glassMessageStarted = true;
+      glassMessageSchedule(target);
+    }
+  };
+  const glassMessageStart = (target) => {
+    target.__glassMessageStarted = true;
+    glassMessageSchedule(target);
+  };
+  const glassMessageInstallHandlers = (target) => {
+    for (const type of ["message", "messageerror"]) {
+      let handler = null;
+      Object.defineProperty(target, "on" + type, {
+        configurable: false,
+        enumerable: true,
+        get() { return handler; },
+        set(value) {
+          handler = typeof value === "function" ? value : null;
+          if (handler && type === "message") glassMessageStart(target);
+        },
+      });
+    }
+  };
+  const glassMessageInstallPrototype = (prototype) => {
+    prototype.addEventListener = function(type, callback, options) {
+      if (callback === null || callback === undefined) return;
+      if (typeof callback !== "function" && !(callback && typeof callback.handleEvent === "function"))
+        throw new TypeError("message listener must be callable");
+      const name = String(type);
+      const capture = options === true || Boolean(options && typeof options === "object" && options.capture);
+      const once = Boolean(options && typeof options === "object" && options.once);
+      const listeners = this.__glassMessageListeners;
+      const current = listeners.get(name) || [];
+      if (current.some(record => record.callback === callback && record.capture === capture)) return;
+      current.push({ callback, capture, once });
+      listeners.set(name, current);
+      if (name === "message") glassMessageStart(this);
+    };
+    prototype.removeEventListener = function(type, callback, options) {
+      const name = String(type);
+      const capture = options === true || Boolean(options && typeof options === "object" && options.capture);
+      const listeners = this.__glassMessageListeners;
+      const current = listeners.get(name) || [];
+      listeners.set(name, current.filter(record => !(record.callback === callback && record.capture === capture)));
+    };
+    prototype.dispatchEvent = function(event) { return glassMessageDispatch(this, event); };
+  };
+  const MessagePortNative = typeof globalThis.__glassMessagePortConstructor === "function"
+    ? globalThis.__glassMessagePortConstructor
+    : function MessagePort() { throw new TypeError("Illegal constructor"); };
+  glassMessageInstallPrototype(MessagePortNative.prototype);
+  try {
+    if (typeof globalThis.EventTarget === "function" && globalThis.EventTarget.prototype)
+      Object.setPrototypeOf(MessagePortNative.prototype, globalThis.EventTarget.prototype);
+  } catch (_error) {}
+  MessagePortNative.prototype.constructor = MessagePortNative;
+  MessagePortNative.prototype.start = function() { glassMessageStart(this); };
+  MessagePortNative.prototype.close = function() {
+    if (this.__glassMessageClosed) return;
+    this.__glassMessageClosed = true;
+    this.__glassMessageQueue.length = 0;
+    glassMessagePortRegistry.delete(this.__glassMessagePortId);
+  };
+  MessagePortNative.prototype.postMessage = function(message, options) {
+    if (this.__glassMessageClosed)
+      throw glassMessageException("message port is closed", "InvalidStateError");
+    const transfer = options === undefined
+      ? []
+      : Array.isArray(options)
+        ? options
+        : options && typeof options === "object" && options.transfer !== undefined
+          ? options.transfer
+          : null;
+    if (!Array.isArray(transfer)) throw new TypeError("message transfer list must be an array");
+    if (transfer.length > 0)
+      throw glassMessageException("native message transferables are not supported", "DataCloneError");
+    const peer = this.__glassMessagePortPeer;
+    if (!peer || peer.__glassMessageClosed) return;
+    glassMessageEnqueue(peer, glassMessageClone(message), []);
+  };
+  globalThis.__glassMessagePortConstructor = MessagePortNative;
+  globalThis.MessagePort = MessagePortNative;
+  const glassMakeMessagePort = () => {
+    const port = Object.create(MessagePortNative.prototype);
+    const id = glassNextMessagePortId;
+    glassNextMessagePortId += 1;
+    globalThis.__glassNextMessagePortId = glassNextMessagePortId;
+    glassMessageHidden(port, "__glassMessagePortId", id);
+    glassMessageHidden(port, "__glassMessagePortPeer", null);
+    glassMessageHidden(port, "__glassMessageListeners", new Map());
+    glassMessageHidden(port, "__glassMessageQueue", []);
+    glassMessageHidden(port, "__glassMessageStarted", false);
+    glassMessageHidden(port, "__glassMessageClosed", false);
+    glassMessageInstallHandlers(port);
+    glassMessagePortRegistry.set(id, port);
+    return port;
+  };
+  const MessageChannelNative = typeof globalThis.__glassMessageChannelConstructor === "function"
+    ? globalThis.__glassMessageChannelConstructor
+    : function MessageChannel() {
+        if (!(this instanceof MessageChannelNative)) throw new TypeError("MessageChannel requires new");
+        const port1 = glassMakeMessagePort();
+        const port2 = glassMakeMessagePort();
+        port1.__glassMessagePortPeer = port2;
+        port2.__glassMessagePortPeer = port1;
+        Object.defineProperty(this, "port1", { configurable: false, enumerable: true, value: port1 });
+        Object.defineProperty(this, "port2", { configurable: false, enumerable: true, value: port2 });
+      };
+  MessageChannelNative.prototype.constructor = MessageChannelNative;
+  globalThis.__glassMessageChannelConstructor = MessageChannelNative;
+  globalThis.MessageChannel = MessageChannelNative;
+  const BroadcastChannelNative = typeof globalThis.__glassBroadcastChannelConstructor === "function"
+    ? globalThis.__glassBroadcastChannelConstructor
+    : function BroadcastChannel(name) {
+        if (!(this instanceof BroadcastChannelNative)) throw new TypeError("BroadcastChannel requires new");
+        const normalized = String(name);
+        if (!normalized || normalized.length > glassMessageChannelNameLimit)
+          throw new TypeError("native BroadcastChannel name is invalid");
+        Object.defineProperty(this, "name", {
+          configurable: false,
+          enumerable: true,
+          value: normalized,
+        });
+        glassMessageHidden(this, "__glassMessageListeners", new Map());
+        glassMessageHidden(this, "__glassMessageQueue", []);
+        glassMessageHidden(this, "__glassMessageStarted", false);
+        glassMessageHidden(this, "__glassMessageClosed", false);
+        glassMessageInstallHandlers(this);
+        const channels = glassBroadcastChannelRegistry.get(normalized) || new Set();
+        channels.add(this);
+        glassBroadcastChannelRegistry.set(normalized, channels);
+      };
+  glassMessageInstallPrototype(BroadcastChannelNative.prototype);
+  try {
+    if (typeof globalThis.EventTarget === "function" && globalThis.EventTarget.prototype)
+      Object.setPrototypeOf(BroadcastChannelNative.prototype, globalThis.EventTarget.prototype);
+  } catch (_error) {}
+  BroadcastChannelNative.prototype.constructor = BroadcastChannelNative;
+  BroadcastChannelNative.prototype.postMessage = function(message) {
+    if (this.__glassMessageClosed)
+      throw glassMessageException("broadcast channel is closed", "InvalidStateError");
+    const cloned = glassMessageClone(message);
+    const channels = glassBroadcastChannelRegistry.get(this.name) || new Set();
+    for (const channel of Array.from(channels)) {
+      if (channel !== this && !channel.__glassMessageClosed) glassMessageEnqueue(channel, cloned, []);
+    }
+  };
+  BroadcastChannelNative.prototype.close = function() {
+    if (this.__glassMessageClosed) return;
+    this.__glassMessageClosed = true;
+    this.__glassMessageQueue.length = 0;
+    const channels = glassBroadcastChannelRegistry.get(this.name);
+    if (channels) {
+      channels.delete(this);
+      if (channels.size === 0) glassBroadcastChannelRegistry.delete(this.name);
+    }
+  };
+  globalThis.__glassMessagePortRegistry = glassMessagePortRegistry;
+  globalThis.__glassBroadcastChannelRegistry = glassBroadcastChannelRegistry;
+  globalThis.__glassNextMessagePortId = glassNextMessagePortId;
+  globalThis.__glassBroadcastChannelConstructor = BroadcastChannelNative;
+  globalThis.BroadcastChannel = BroadcastChannelNative;
+"###;
+
+fn message_channel_bootstrap() -> String {
+    NATIVE_MESSAGE_CHANNEL_BOOTSTRAP
+        .replace(
+            "__GLASS_MESSAGE_PORT_QUEUE_LIMIT__",
+            &super::interaction::MAX_NATIVE_EFFECTS.to_string(),
+        )
+        .replace(
+            "__GLASS_MESSAGE_CHANNEL_NAME_LIMIT__",
+            &crate::browser_backend::MAX_BACKEND_ID_BYTES.to_string(),
+        )
+        .replace(
+            "__GLASS_MESSAGE_BYTES_LIMIT__",
+            &MAX_NATIVE_POST_MESSAGE_BYTES.to_string(),
+        )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -12857,6 +13182,7 @@ fn document_bootstrap(
             operation: "serialize document ready state".into(),
             reason: "native document ready state could not be serialized".into(),
         })?;
+    let message_channel_script = message_channel_bootstrap();
     Ok(format!(
         r###"(() => {{
   const host = {serialized};
@@ -26235,6 +26561,7 @@ fn document_bootstrap(
   globalThis.StorageEvent = StorageEventNative;
   globalThis.ErrorEvent = ErrorEventNative;
   globalThis.PromiseRejectionEvent = PromiseRejectionEventNative;
+  {message_channel_script}
   try {{ Object.setPrototypeOf(CustomEventNative.prototype, EventNative.prototype); }} catch (_error) {{}}
   try {{ Object.setPrototypeOf(StorageEventNative.prototype, EventNative.prototype); }} catch (_error) {{}}
   try {{ Object.setPrototypeOf(ErrorEventNative.prototype, EventNative.prototype); }} catch (_error) {{}}
@@ -26354,5 +26681,6 @@ fn document_bootstrap(
         page_crypto_values_limit = MAX_NATIVE_PAGE_CRYPTO_VALUES_BYTES,
         native_crypto_derive_work = MAX_NATIVE_CRYPTO_DERIVE_WORK,
         native_canvas_source = NATIVE_CANVAS_SCRIPT,
+        message_channel_script = message_channel_script,
     ))
 }

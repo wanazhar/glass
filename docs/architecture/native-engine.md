@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-334` slice. The native runtime is now the primary
+`native-engine-browser-335` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -59,6 +59,17 @@ schemeful same-site filtering using the current initiator across navigation,
 Fetch/XHR, EventSource, WebSocket, CSS, image, script, and worker requests.
 The implementation keeps a bounded registrable-site approximation; a full
 public-suffix-list and partitioned-cookie owner remain separate profile gates.
+
+Slice 335 adds the message-channel primitives to both page and dedicated-worker
+realms. `MessageChannel` creates bounded entangled `MessagePort` pairs with
+cloned asynchronous delivery, `start()`/`close()`, handler and listener
+dispatch, and stable `EventTarget`/`MessageEvent` identity. `BroadcastChannel`
+delivers cloned messages asynchronously to other open same-name channels in the
+owning realm. Existing QuickJS microtask ownership provides ordering and the
+existing message-size boundary rejects cyclic or over-sized payloads and
+non-empty transferable lists. Cross-context port transfer, transferables,
+shared/service workers, and full task-source scheduling remain issue #40
+promotion work.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

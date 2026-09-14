@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-343` slice. The native runtime is now the primary
+`native-engine-browser-344` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -172,6 +172,19 @@ read/delete-only through `ignoreMethod`, while `Cache.put()` stays GET-only.
 Freshness/revalidation, richer transferables, complete task-source
 interleaving, and final certification remain separate issue #40 gates. Exact
 evidence is recorded in `docs/plan/tasks/native-engine-browser-343.md`.
+
+Slice 344 replaces the empty native Service Worker `clients.matchAll()`
+placeholder with a bounded current top-level window client projection during
+Fetch dispatch. The client exposes stable opaque identity, document URL,
+window/type and top-level frame metadata, visibility, focus, and control
+state; `window`/`all`, worker-only filtering, and `includeUncontrolled` are
+handled without a Chromium/CDP query. Fetch-only client state is cleared
+before lifecycle evaluations, so install and activate cannot inherit stale
+request context. Multi-tab/frame ownership, `Client.postMessage()`,
+`openWindow()`, freshness/revalidation, richer transferables, complete
+task-source interleaving, and final certification remain issue #40 gates.
+Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-344.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

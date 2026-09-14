@@ -1950,8 +1950,26 @@ impl NativeContentProcess {
         result
     }
 
-    pub(crate) fn is_healthy(&self) -> bool {
-        self.healthy
+    /// Refresh the cached health bit without writing to the worker channel.
+    ///
+    /// A worker may exit between two successful exchanges. Keeping the
+    /// previous boolean forever would make recovery miss that dead owner and
+    /// would turn the next operation into an avoidable transport failure.
+    pub(crate) fn refresh_health(&mut self) -> bool {
+        if !self.healthy {
+            return false;
+        }
+        match self.child.try_wait() {
+            Ok(Some(_)) => {
+                self.mark_failed(NativeWorkerFailureKind::Exited);
+                false
+            }
+            Ok(None) => true,
+            Err(_) => {
+                self.mark_failed(NativeWorkerFailureKind::Transport);
+                false
+            }
+        }
     }
 
     pub(crate) fn failure_kind(&self) -> Option<NativeWorkerFailureKind> {
@@ -9580,4 +9598,22 @@ fn worker_binary_path() -> Result<PathBuf, NativeEngineError> {
         NativeWorkerFailureKind::Spawn,
         "native content worker executable was not found; build the glass-native-content-worker binary",
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn refresh_health_detects_an_exited_content_worker() {
+        let mut process = NativeContentProcess::spawn(None).await.unwrap();
+        process.child.start_kill().unwrap();
+        process.child.wait().await.unwrap();
+
+        assert!(!process.refresh_health());
+        assert_eq!(
+            process.failure_kind(),
+            Some(NativeWorkerFailureKind::Exited)
+        );
+    }
 }

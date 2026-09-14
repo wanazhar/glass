@@ -4587,6 +4587,7 @@ mod tests {
         content_security_policy, cors_origin_header, cors_preflight_response_allowed,
         cors_response_allowed, decode_html_body, document_cache_fresh_until,
         document_cache_storage_allowed, mixed_content_allowed, referrer_for_navigation,
+        resolve_subresource_url,
     };
     use reqwest::header::{
         ACCESS_CONTROL_ALLOW_CREDENTIALS, ACCESS_CONTROL_ALLOW_HEADERS,

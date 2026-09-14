@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-357` slice. The native runtime is now the primary
+`native-engine-browser-358` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -355,6 +355,16 @@ microtask checkpoint. Worker, Service Worker, MessagePort, rendering,
 navigation, and browser-wide cross-process queue arbitration remain issue #40
 gates. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-357.md`.
+
+Slice 358 adds a bounded browser-owned effect scheduler. Popup, postMessage,
+navigation, and close effects are selected one at a time through a persistent
+round-robin cursor, while each source keeps FIFO order and nested effects are
+returned to their originating queue. This removes the fixed popup-first drain
+that could starve messages or target navigation across repeated operation
+boundaries. The scheduler remains serialized at the backend topology owner;
+worker, Service Worker, MessagePort, rendering, registration, live-client,
+and cross-process task queues remain issue #40 work. Exact evidence is
+recorded in `docs/plan/tasks/native-engine-browser-358.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-331` locally. Native is now the default runtime for
+`native-engine-browser-332` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -134,6 +134,15 @@ rebuilt by the explicit native recovery path. Navigation, script, action,
 lifecycle, storage, and close boundaries share the same liveness refresh.
 Process isolation, cancellation, conformance, and final production
 certification remain active issue #40 gates.
+
+The completed native visual-encoder slice is
+[native-engine-browser-332](tasks/native-engine-browser-332.md): the native
+visual capture contract now emits bounded PNG, JPEG, and WebP bytes with
+quality handling, while preserving clip, scale, full-page, element, and
+metadata behavior. MCP's native screenshot route now uses the same complete
+capture contract as CLI and `BrowserSession`, including metadata. Process
+isolation, cancellation, conformance, and final production certification
+remain active issue #40 gates.
 
 The completed computed-style/media-query slice is
 [native-engine-browser-282](tasks/native-engine-browser-282.md). It exposes a

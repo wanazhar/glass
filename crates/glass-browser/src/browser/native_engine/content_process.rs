@@ -96,6 +96,27 @@ const MAX_CONTENT_STYLESHEET_BYTES: usize = 512 * 1024;
 const MAX_CONTENT_IMAGES: usize = 64;
 const MAX_CONTENT_FRAME_SOURCES: usize = 64;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NativeContentTaskSource {
+    Networking,
+    WebSocket,
+    FetchStream,
+    EventSource,
+    Timer,
+}
+
+impl NativeContentTaskSource {
+    fn next(self) -> Self {
+        match self {
+            Self::Networking => Self::WebSocket,
+            Self::WebSocket => Self::FetchStream,
+            Self::FetchStream => Self::EventSource,
+            Self::EventSource => Self::Timer,
+            Self::Timer => Self::Networking,
+        }
+    }
+}
+
 pub(crate) struct NativeContentLoad {
     pub(crate) url: String,
     pub(crate) origin: NativeOrigin,
@@ -9197,6 +9218,7 @@ async fn resolve_script_fetches(
     mut pump_background_events: bool,
     evaluation: NativeScriptEvaluation,
 ) -> Result<(NativeDocument, NativeContentMutation, Option<Value>), NativeEngineError> {
+    let _timer_pump = runtime.suspend_timer_pump();
     let NativeScriptEvaluation {
         commands: initial_commands,
         top_level_await_pending,
@@ -9246,8 +9268,70 @@ async fn resolve_script_fetches(
     let mut resolved_count = 0usize;
     let mut resolved_value = None;
     let mut event_loop_turns = 0usize;
+    let mut next_task_source = NativeContentTaskSource::Networking;
     loop {
-        while let Some((
+        if top_level_await_pending && resolved_value.is_some() {
+            break;
+        }
+        if top_level_await_pending && let Some(value) = runtime.take_top_level_await_result()? {
+            resolved_value = Some(value);
+            break;
+        }
+        let pump_fetch_streams = pump_background_events
+            || fetch_stream_connections
+                .values()
+                .any(|connection| connection.read_pending);
+        let mut selected_source = None;
+        let mut selected_fetch = None;
+        let mut selected_websocket_event = None;
+        let mut selected_fetch_stream_event = None;
+        let mut selected_event_source_event = None;
+        for _ in 0..5 {
+            let source = next_task_source;
+            next_task_source = source.next();
+            match source {
+                NativeContentTaskSource::Networking => {
+                    if let Some(fetch) = pending.pop_front() {
+                        selected_fetch = Some(fetch);
+                        selected_source = Some(source);
+                        break;
+                    }
+                }
+                NativeContentTaskSource::WebSocket if pump_background_events => {
+                    if let Some(event) = take_websocket_event(websocket_connections) {
+                        selected_websocket_event = Some(event);
+                        selected_source = Some(source);
+                        break;
+                    }
+                }
+                NativeContentTaskSource::FetchStream if pump_fetch_streams => {
+                    if let Some(event) = take_fetch_stream_event(fetch_stream_connections) {
+                        selected_fetch_stream_event = Some(event);
+                        selected_source = Some(source);
+                        break;
+                    }
+                }
+                NativeContentTaskSource::EventSource if pump_background_events => {
+                    if let Some(event) = take_event_source_event(event_source_connections) {
+                        selected_event_source_event = Some(event);
+                        selected_source = Some(source);
+                        break;
+                    }
+                }
+                NativeContentTaskSource::Timer => {
+                    if top_level_await_pending
+                        && runtime
+                            .next_timer_delay_ms()?
+                            .is_some_and(|delay| delay == 0)
+                    {
+                        selected_source = Some(source);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some((
             request_id,
             href,
             method,
@@ -9259,7 +9343,7 @@ async fn resolve_script_fetches(
             cache_mode,
             timeout,
             credentials,
-        )) = pending.pop_front()
+        )) = selected_fetch.take()
         {
             resolved_count = resolved_count.saturating_add(1);
             if resolved_count > MAX_NATIVE_EFFECTS {
@@ -9430,20 +9514,10 @@ async fn resolve_script_fetches(
             pending.extend(fetch_commands(&resolved_commands)?);
             pending.extend(fetch_commands(&dynamic_fetches)?);
             pump_background_events |= dynamic_background;
+            continue;
         }
-        if top_level_await_pending && resolved_value.is_some() {
-            break;
-        }
-        if top_level_await_pending && let Some(value) = runtime.take_top_level_await_result()? {
-            resolved_value = Some(value);
-            break;
-        }
-        let pump_fetch_streams = pump_background_events
-            || fetch_stream_connections
-                .values()
-                .any(|connection| connection.read_pending);
-        if pump_background_events
-            && let Some((socket_id, event)) = take_websocket_event(websocket_connections)
+        if selected_source == Some(NativeContentTaskSource::WebSocket)
+            && let Some((socket_id, event)) = selected_websocket_event.take()
         {
             event_loop_turns = event_loop_turns.saturating_add(1);
             if event_loop_turns > MAX_CONTENT_EVENT_LOOP_TURNS {
@@ -9530,8 +9604,8 @@ async fn resolve_script_fetches(
             }
             continue;
         }
-        if pump_fetch_streams
-            && let Some((stream_id, event)) = take_fetch_stream_event(fetch_stream_connections)
+        if selected_source == Some(NativeContentTaskSource::FetchStream)
+            && let Some((stream_id, event)) = selected_fetch_stream_event.take()
         {
             event_loop_turns = event_loop_turns.saturating_add(1);
             if event_loop_turns > MAX_CONTENT_EVENT_LOOP_TURNS {
@@ -9628,15 +9702,16 @@ async fn resolve_script_fetches(
             }
             continue;
         }
-        if fetch_stream_connections
-            .values()
-            .any(|connection| connection.read_pending)
+        if selected_source.is_none()
+            && fetch_stream_connections
+                .values()
+                .any(|connection| connection.read_pending)
         {
             sleep(NATIVE_WEBSOCKET_POLL_INTERVAL).await;
             continue;
         }
-        if pump_background_events
-            && let Some((source_id, event)) = take_event_source_event(event_source_connections)
+        if selected_source == Some(NativeContentTaskSource::EventSource)
+            && let Some((source_id, event)) = selected_event_source_event.take()
         {
             event_loop_turns = event_loop_turns.saturating_add(1);
             if event_loop_turns > MAX_CONTENT_EVENT_LOOP_TURNS {

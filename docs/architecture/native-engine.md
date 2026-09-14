@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-356` slice. The native runtime is now the primary
+`native-engine-browser-357` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -342,6 +342,19 @@ network task is resolved. Cross-source arbitration between networking,
 timers, MessagePort/worker delivery, WebSocket, EventSource, rendering, and
 other browser task sources remains separate issue #40 work; exact evidence is
 recorded in `docs/plan/tasks/native-engine-browser-356.md`.
+
+Slice 357 adds an explicit bounded content-process task-source scheduler.
+Networking, WebSocket, FetchStream, EventSource, and Timer each have a
+source-local ready queue or event view; one ready host task is selected per
+cycle through a rotating round-robin cursor. Networking remains FIFO, while a
+due timer can receive a turn between continuously ready Fetch continuations.
+The scheduler suspends the implicit timer pump during host continuations so a
+bootstrap evaluation cannot run a timer ahead of the selected source; the
+explicit Timer turn remains responsible for timer execution and its normal
+microtask checkpoint. Worker, Service Worker, MessagePort, rendering,
+navigation, and browser-wide cross-process queue arbitration remain issue #40
+gates. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-357.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

@@ -17,7 +17,7 @@ use super::javascript::{
     NativeScriptCommand, NativeScriptEvaluation, NativeServiceWorkerCacheEntry,
     NativeServiceWorkerCacheState, NativeServiceWorkerRegistrationProfile,
     NativeServiceWorkerRegistrationState, load_service_worker_source,
-    validate_message_port_transfers,
+    validate_message_port_transfers, validate_native_service_worker_cache_request_headers,
 };
 use super::origin::NativeOrigin;
 use super::resource_loader::{
@@ -1004,12 +1004,28 @@ fn apply_service_worker_cache_command(
             cache_name,
             request_url,
             request_method,
+            request_headers,
+            ignore_search,
+            ignore_method,
+            ignore_vary,
             ..
         } => {
-            let key = validate_cache_request(&request_url, &request_method)?;
+            validate_native_service_worker_cache_request_headers(&request_headers)?;
+            let request = validate_cache_request(&request_url, &request_method)?;
             let response = caches
                 .get(&cache_name)
-                .and_then(|entries| entries.get(&key))
+                .into_iter()
+                .flat_map(|entries| entries.values())
+                .find(|entry| {
+                    cache_entry_matches(
+                        entry,
+                        &request,
+                        &request_headers,
+                        ignore_search,
+                        ignore_method,
+                        ignore_vary,
+                    )
+                })
                 .map(cache_entry_payload);
             Ok((
                 request_id,
@@ -1020,13 +1036,21 @@ fn apply_service_worker_cache_command(
             cache_name,
             request_url,
             request_method,
+            request_headers,
             response,
             ..
         } => {
-            let key = validate_cache_request(&request_url, &request_method)?;
-            let entry = cache_entry_from_payload(&response, &request_url)?;
+            let request = validate_cache_request(&request_url, &request_method)?;
+            if request.method != "GET" {
+                return Err(NativeEngineError::invalid(
+                    "native service worker cache request method",
+                    "Cache.put only supports GET requests",
+                ));
+            }
+            let entry = cache_entry_from_payload(&response, &request.url, request_headers)?;
             {
                 let entries = caches.entry(cache_name).or_default();
+                let key = cache_entry_key(&request.method, &request.url);
                 if !entries.contains_key(&key)
                     && entries.len() >= MAX_NATIVE_SERVICE_WORKER_CACHE_ENTRIES
                 {
@@ -1048,35 +1072,106 @@ fn apply_service_worker_cache_command(
             cache_name,
             request_url,
             request_method,
+            request_headers,
+            ignore_search,
+            ignore_method,
+            ignore_vary,
             ..
         } => {
-            let key = validate_cache_request(&request_url, &request_method)?;
-            let deleted = caches
-                .get_mut(&cache_name)
-                .and_then(|entries| entries.remove(&key))
-                .is_some();
+            validate_native_service_worker_cache_request_headers(&request_headers)?;
+            let request = validate_cache_request(&request_url, &request_method)?;
+            let mut deleted = false;
+            if let Some(entries) = caches.get_mut(&cache_name) {
+                let keys = entries
+                    .iter()
+                    .filter(|(_, entry)| {
+                        cache_entry_matches(
+                            entry,
+                            &request,
+                            &request_headers,
+                            ignore_search,
+                            ignore_method,
+                            ignore_vary,
+                        )
+                    })
+                    .map(|(key, _)| key.clone())
+                    .collect::<Vec<_>>();
+                for key in keys {
+                    deleted |= entries.remove(&key).is_some();
+                }
+            }
             Ok((request_id, json!({"deleted":deleted})))
         }
-        NativeScriptCommand::ServiceWorkerCacheEntries { cache_name, .. } => Ok((
-            request_id,
-            json!({
-                "entries": caches
-                    .get(&cache_name)
-                    .into_iter()
-                    .flat_map(|entries| entries.values())
-                    .map(|entry| json!({"url":entry.request_url,"method":entry.method}))
-                    .collect::<Vec<_>>()
-            }),
-        )),
+        NativeScriptCommand::ServiceWorkerCacheEntries {
+            cache_name,
+            request_url,
+            request_method,
+            request_headers,
+            ignore_search,
+            ignore_method,
+            ignore_vary,
+            ..
+        } => {
+            validate_native_service_worker_cache_request_headers(&request_headers)?;
+            let request = match (request_url, request_method) {
+                (Some(request_url), Some(request_method)) => {
+                    Some(validate_cache_request(&request_url, &request_method)?)
+                }
+                (None, None) => None,
+                _ => {
+                    return Err(NativeEngineError::invalid(
+                        "native service worker cache keys request",
+                        "URL and method must be supplied together",
+                    ));
+                }
+            };
+            let entries = caches
+                .get(&cache_name)
+                .into_iter()
+                .flat_map(|entries| entries.values())
+                .filter(|entry| {
+                    request.as_ref().is_none_or(|request| {
+                        cache_entry_matches(
+                            entry,
+                            request,
+                            &request_headers,
+                            ignore_search,
+                            ignore_method,
+                            ignore_vary,
+                        )
+                    })
+                })
+                .map(|entry| {
+                    json!({
+                        "url": entry.request_url,
+                        "method": entry.method,
+                        "headers": entry.request_headers,
+                    })
+                })
+                .collect::<Vec<_>>();
+            Ok((request_id, json!({"entries":entries})))
+        }
         _ => unreachable!(),
     }
 }
 
-fn validate_cache_request(url: &str, method: &str) -> Result<String, NativeEngineError> {
-    if method != "GET" {
+struct NativeServiceWorkerCacheRequest {
+    url: String,
+    method: String,
+}
+
+fn validate_cache_request(
+    url: &str,
+    method: &str,
+) -> Result<NativeServiceWorkerCacheRequest, NativeEngineError> {
+    let method = method.to_ascii_uppercase();
+    if !matches!(
+        method.as_str(),
+        "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS"
+    ) {
         return Err(NativeEngineError::invalid(
             "native service worker cache request method",
-            "only GET requests are supported",
+            "method is unsupported",
         ));
     }
     let url = without_fragment(
@@ -1090,17 +1185,86 @@ fn validate_cache_request(url: &str, method: &str) -> Result<String, NativeEngin
             url.len(),
         ));
     }
-    Ok(cache_entry_key(method, &url))
+    Ok(NativeServiceWorkerCacheRequest { url, method })
 }
 
 fn cache_entry_key(method: &str, url: &str) -> String {
     format!("{method}\n{url}")
 }
 
+fn cache_match_url(url: &str, ignore_search: bool) -> Result<String, NativeEngineError> {
+    let mut parsed = parse_network_url("native service worker cache match URL", url)?;
+    if ignore_search {
+        parsed.set_query(None);
+    }
+    Ok(without_fragment(parsed.as_str()).to_owned())
+}
+
+fn cache_header_value(headers: &[(String, String)], name: &str) -> Option<String> {
+    let values = headers
+        .iter()
+        .filter(|(header_name, _)| header_name.eq_ignore_ascii_case(name))
+        .map(|(_, value)| value.as_str())
+        .collect::<Vec<_>>();
+    (!values.is_empty()).then(|| values.join(", "))
+}
+
+fn cache_entry_vary_matches(
+    entry: &NativeServiceWorkerCacheEntry,
+    request_headers: &[(String, String)],
+    ignore_vary: bool,
+) -> bool {
+    if ignore_vary {
+        return true;
+    }
+    for (_, value) in entry
+        .headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("vary"))
+    {
+        for field in value.split(',').map(str::trim) {
+            if field == "*" {
+                return false;
+            }
+            if field.is_empty() {
+                continue;
+            }
+            if cache_header_value(&entry.request_headers, field)
+                != cache_header_value(request_headers, field)
+            {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn cache_entry_matches(
+    entry: &NativeServiceWorkerCacheEntry,
+    request: &NativeServiceWorkerCacheRequest,
+    request_headers: &[(String, String)],
+    ignore_search: bool,
+    ignore_method: bool,
+    ignore_vary: bool,
+) -> bool {
+    if !ignore_method && entry.method != request.method {
+        return false;
+    }
+    let Ok(entry_url) = cache_match_url(&entry.request_url, ignore_search) else {
+        return false;
+    };
+    let Ok(request_url) = cache_match_url(&request.url, ignore_search) else {
+        return false;
+    };
+    entry_url == request_url && cache_entry_vary_matches(entry, request_headers, ignore_vary)
+}
+
 fn cache_entry_from_payload(
     value: &Value,
     fallback_url: &str,
+    request_headers: Vec<(String, String)>,
 ) -> Result<NativeServiceWorkerCacheEntry, NativeEngineError> {
+    validate_native_service_worker_cache_request_headers(&request_headers)?;
     if value.get("opaque").and_then(Value::as_bool) == Some(true)
         || value.get("opaqueRedirect").and_then(Value::as_bool) == Some(true)
     {
@@ -1127,6 +1291,7 @@ fn cache_entry_from_payload(
     Ok(NativeServiceWorkerCacheEntry {
         method: "GET".into(),
         request_url: without_fragment(fallback_url).to_owned(),
+        request_headers,
         url,
         status: response.status,
         status_text: value

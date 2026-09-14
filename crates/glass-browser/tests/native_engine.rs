@@ -3865,6 +3865,106 @@ self.addEventListener('fetch', event => {
 }
 
 #[tokio::test]
+async fn native_service_worker_cache_matching_options_filter_entries() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for (expected_path, content_type, body) in [
+            (
+                "/page",
+                "text/html",
+                "<!doctype html><html><body><script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script><main>cache matching page</main></body></html>",
+            ),
+            (
+                "/sw.js",
+                "application/javascript",
+                r#"self.addEventListener('install', event => event.waitUntil(caches.open('matching').then(async cache => {
+  await cache.put(new Request('/asset?lang=en', { headers: { 'X-Variant': 'en' } }), new Response('english', {
+    headers: { 'Vary': 'X-Variant', 'X-Value': 'en' },
+  }));
+  await cache.put(new Request('/asset?lang=fr', { headers: { 'X-Variant': 'fr' } }), new Response('french', {
+    headers: { 'Vary': 'X-Variant', 'X-Value': 'fr' },
+  }));
+  await cache.put('/method', new Response('get-only'));
+  return self.skipWaiting();
+})));
+self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+self.addEventListener('fetch', event => {
+  if (new URL(event.request.url).pathname !== '/probe') return;
+  event.respondWith((async () => {
+    const cache = await caches.open('matching');
+    const exact = await cache.match(new Request('/asset?lang=en', { headers: { 'X-Variant': 'en' } }));
+    const queryless = await cache.match(new Request('/asset?lang=de', { headers: { 'X-Variant': 'en' } }), { ignoreSearch: true });
+    const varyMiss = await cache.match(new Request('/asset?lang=en', { headers: { 'X-Variant': 'fr' } }));
+    const varyIgnored = await cache.match(new Request('/asset?lang=en', { headers: { 'X-Variant': 'fr' } }), { ignoreVary: true });
+    const headDefault = await cache.match(new Request('/method', { method: 'HEAD' }));
+    const headIgnored = await cache.match(new Request('/method', { method: 'HEAD' }), { ignoreMethod: true });
+    const keys = await cache.keys(new Request('/asset?lang=de', { headers: { 'X-Variant': 'en' } }), { ignoreSearch: true });
+    const deleted = await cache.delete(new Request('/asset?lang=en', { headers: { 'X-Variant': 'fr' } }), { ignoreVary: true });
+    const afterDelete = await cache.match(new Request('/asset?lang=en', { headers: { 'X-Variant': 'en' } }), { ignoreVary: true });
+    return new Response(JSON.stringify({
+      exact: exact && await exact.text(),
+      queryless: queryless && await queryless.text(),
+      varyMiss: varyMiss ? await varyMiss.text() : null,
+      varyIgnored: varyIgnored && await varyIgnored.text(),
+      headDefault: Boolean(headDefault),
+      headIgnored: headIgnored && await headIgnored.text(),
+      keys: keys.map(request => request.url),
+      deleted,
+      afterDelete: Boolean(afterDelete),
+    }), { headers: { 'Content-Type': 'application/json' } });
+  })());
+});"#,
+            ),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await registrationPromise.then(reg => [reg.active.state, reg.active.scriptURL])"
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["activated", format!("http://{address}/sw.js")])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("await fetch('/probe').then(response => response.json())")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "exact": "english",
+            "queryless": "english",
+            "varyMiss": null,
+            "varyIgnored": "english",
+            "headDefault": false,
+            "headIgnored": "get-only",
+            "keys": [format!("http://{address}/asset?lang=en")],
+            "deleted": true,
+            "afterDelete": false,
+        })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_persists_service_worker_cache_across_restart() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

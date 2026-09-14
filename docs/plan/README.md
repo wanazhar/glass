@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-342` locally. Native is now the default runtime for
+`native-engine-browser-343` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -207,17 +207,19 @@ including `caches.open/delete/has/keys` and `Cache.match/put/delete/keys/add`
 and `addAll`; lifecycle `waitUntil` work is settled before install, activate,
 and fetch results are published; and cache entries are persisted in the
 existing Rust storage profile and reloaded by a new content process. Cache
-matching options, richer transferable values, complete task-source scheduling,
-and final production certification remain active issue #40 gates.
+matching options were added in the later 343 slice; richer transferable
+values, complete task-source scheduling, and final production certification
+remain active issue #40 gates.
 
 The completed native Service Worker registration persistence slice is
 [native-engine-browser-341](tasks/native-engine-browser-341.md): canonical
 same-origin registration metadata is stored with the profile, matching
 registrations are restored before navigation and page-script execution, and
 the existing worker script/module loading policy rebuilds the isolated worker
-owner after a content-process restart. Full update/lifecycle conformance,
-cache matching options, richer transferable values, complete task-source
-scheduling, and final production certification remain active issue #40 gates.
+owner after a content-process restart. Full update/lifecycle conformance was
+advanced by 342 and CacheStorage matching was completed by 343; richer
+transferable values, complete task-source scheduling, and final production
+certification remain active issue #40 gates.
 
 The completed native Service Worker update slice is
 [native-engine-browser-342](tasks/native-engine-browser-342.md):
@@ -226,9 +228,18 @@ native resource policy, settles bounded install/activate work, replaces the
 active isolated worker, refreshes persisted registration metadata, and routes
 later navigation and Fetch requests through the new worker version. Waiting
 and installing registration states, update notifications, byte-identical
-short-circuiting, full CacheStorage matching, richer transferable values,
+short-circuiting, cache freshness/revalidation, richer transferable values,
 complete task-source scheduling, and final production certification remain
 active issue #40 gates.
+
+The completed native Service Worker CacheStorage matching slice is
+[native-engine-browser-343](tasks/native-engine-browser-343.md): bounded
+`Cache.match()`, `Cache.delete()`, and `Cache.keys()` plus `caches.match()` now
+implement `ignoreSearch`, `ignoreMethod`, and `ignoreVary`, retain request
+headers for Vary comparisons, and return filtered request keys while preserving
+the GET-only `Cache.put()` contract. Cache freshness/revalidation, richer
+transferable values, complete task-source scheduling, and final production
+certification remain active issue #40 gates.
 
 The completed native cookie-policy slice is
 [native-engine-browser-334](tasks/native-engine-browser-334.md): cookie

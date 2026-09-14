@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-341` slice. The native runtime is now the primary
+`native-engine-browser-342` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -149,6 +149,17 @@ profile atomically with cache and storage state. Full worker update/version
 conformance and complete CacheStorage matching semantics remain separate
 issue #40 gates. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-341.md`.
+
+Slice 342 implements active `ServiceWorkerRegistration.update()`. The native
+owner reloads the registered script and its module/import graph through the
+resource policy, settles bounded install and activate work in a fresh isolated
+worker, removes the old worker routes, refreshes the durable registration
+metadata, and exposes the replacement to the page. Subsequent navigation and
+Fetch requests use the updated worker without Chromium/CDP. Installing and
+waiting states, update notifications, byte-identical short-circuiting, full
+CacheStorage matching semantics, richer transferables, complete task-source
+interleaving, and final certification remain separate issue #40 gates. Exact
+evidence is recorded in `docs/plan/tasks/native-engine-browser-342.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

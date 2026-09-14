@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-338` slice. The native runtime is now the primary
+`native-engine-browser-339` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -108,6 +108,20 @@ boundary. SharedWorker channel ownership, richer transferable types, complete
 task-source scheduling, and final profile certification remain separate gates.
 Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-338.md`.
+
+Slice 339 adds native SharedWorker ownership to both local fixture and
+HTTP(S) content-process pages. Matching URL/name pairs reuse one isolated
+QuickJS worker runtime for matching URL/name/type keys while each constructor receives its own transferred
+`MessagePort`; each connection dispatches a bounded `connect` event and can
+exchange messages in both directions. Classic and module worker types use the
+existing worker resource and module-graph policy, and initial inline page
+worker commands are drained before the next local script turn so startup does
+not lose a connection. The owner keeps shared-worker identity and bridge
+routes in Rust, never exposes a JavaScript object or pointer to the host, and
+removes routes when the shared runtime closes. Durable Cache API state, richer
+transferable values, complete task-source interleaving, and final production
+certification remain separate issue #40 gates. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-339.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

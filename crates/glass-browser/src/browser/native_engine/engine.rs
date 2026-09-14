@@ -1632,7 +1632,26 @@ impl NativeEngine {
             .set_cookie_state(cookie);
         self.sync_javascript_scroll_offset();
         self.sync_javascript_history();
+        let initial_worker_commands = self
+            .javascript
+            .as_ref()
+            .expect("local JavaScript runtime initialized")
+            .take_worker_commands();
+        let owner_url = self.url.clone();
+        self.workers
+            .apply_commands(initial_worker_commands, &mut self.loader, &owner_url)
+            .await?;
+        let initial_message_port_commands = self
+            .javascript
+            .as_ref()
+            .expect("local JavaScript runtime initialized")
+            .take_message_port_commands();
+        self.workers
+            .apply_page_message_port_commands(initial_message_port_commands, &mut self.loader)
+            .await?;
         self.workers.run_due_timers(&mut self.loader).await?;
+        self.pending_message_port_messages
+            .extend(self.workers.take_message_port_messages());
         let worker_messages = self.workers.take_messages();
         let message_port_messages = std::mem::take(&mut self.pending_message_port_messages)
             .into_iter()

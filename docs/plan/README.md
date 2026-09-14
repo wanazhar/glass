@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-338` locally. Native is now the default runtime for
+`native-engine-browser-339` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -192,7 +192,16 @@ deliver a ready event, and reply through that port across the in-process and
 HTTP(S) content-process paths. Page-owned routes are cleared on navigation or
 reload and removed when their worker is replaced or unregistered. Shared
 workers, richer transferable types, complete task-source scheduling, and
-final production certification remain active issue #40 gates.
+final production certification remain active issue #40 gates. The completed
+native SharedWorker ownership slice is
+[native-engine-browser-339](tasks/native-engine-browser-339.md): local and
+HTTP(S) pages can create named SharedWorkers, reuse one isolated worker
+runtime for matching URL/name/type keys, attach independent connection ports,
+receive `connect` events, and exchange bounded messages through the existing
+owner bridge. Initial inline page creation is drained before the next local
+turn so local and content-process startup have the same observable contract.
+Durable worker caches, richer transferable types, complete task-source
+scheduling, and final production certification remain active issue #40 gates.
 
 The completed native cookie-policy slice is
 [native-engine-browser-334](tasks/native-engine-browser-334.md): cookie

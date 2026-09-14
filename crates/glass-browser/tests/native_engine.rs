@@ -1442,6 +1442,99 @@ async fn native_local_script_runs_dedicated_worker_and_delivers_messages() {
 }
 
 #[tokio::test]
+async fn native_local_message_channels_deliver_events_in_page_and_worker_realms() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://message-channel-page",
+            "<html><body><main>Native</main></body></html>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://message-channel-worker",
+            "const channel = new MessageChannel(); channel.port2.onmessage = event => postMessage({ kind: 'port', value: event.data.value, target: event.target === channel.port2, currentTarget: event.currentTarget === channel.port2, messageEvent: event instanceof MessageEvent }); channel.port1.postMessage({ value: 7 });",
+        )
+        .unwrap()
+        .with_initial_url("fixture://message-channel-page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"(() => {
+                    const channel = new MessageChannel();
+                    const events = [];
+                    channel.port2.onmessage = event => events.push([
+                        event.data.value,
+                        event.target === channel.port2,
+                        event.currentTarget === channel.port2,
+                        event instanceof MessageEvent,
+                        event.ports.length,
+                    ]);
+                    const payload = { value: 1, nested: { ok: true } };
+                    channel.port1.postMessage(payload);
+                    payload.value = 9;
+                    channel.port1.postMessage({ value: 2 });
+                    const sender = new BroadcastChannel('native-message-channel');
+                    const receiver = new BroadcastChannel('native-message-channel');
+                    const broadcasts = [];
+                    receiver.addEventListener('message', event => broadcasts.push([
+                        event.data.value,
+                        event.target === receiver,
+                        event instanceof MessageEvent,
+                    ]));
+                    sender.postMessage({ value: 3 });
+                    globalThis.messageChannelState = {
+                        events,
+                        broadcasts,
+                        constructors: [
+                            typeof MessageChannel,
+                            typeof MessagePort,
+                            typeof BroadcastChannel,
+                            channel.port1 instanceof MessagePort,
+                            channel.port1 instanceof EventTarget,
+                        ],
+                        senderCount: 0,
+                    };
+                    return true;
+                })()"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine.evaluate_async("messageChannelState").await.unwrap(),
+        serde_json::json!({
+            "events": [[1, true, true, true, 0], [2, true, true, true, 0]],
+            "broadcasts": [[3, true, true]],
+            "constructors": ["function", "function", "function", true, true],
+            "senderCount": 0,
+        })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "globalThis.workerMessages = []; globalThis.worker = new Worker('fixture://message-channel-worker'); worker.onmessage = event => workerMessages.push(event.data); true",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine.evaluate_async("workerMessages").await.unwrap(),
+        serde_json::json!([{
+            "kind": "port",
+            "value": 7,
+            "target": true,
+            "currentTarget": true,
+            "messageEvent": true,
+        }])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_worker_timers_run_on_the_next_page_turn() {
     let config = NativeEngineConfig::default()
         .with_fixture(

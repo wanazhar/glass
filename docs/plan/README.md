@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-334` locally. Native is now the default runtime for
+`native-engine-browser-335` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -152,6 +152,14 @@ cookie map, and uses the same semantics in the CDP adapter. Full cookie import
 metadata remains available through `setCookies`; process isolation,
 cancellation, conformance, and final production certification remain active
 issue #40 gates.
+
+The completed native message-channel slice is
+[native-engine-browser-335](tasks/native-engine-browser-335.md): page and
+dedicated-worker realms now expose bounded entangled `MessagePort` pairs and
+same-realm `BroadcastChannel` delivery with cloned asynchronous messages,
+stable `EventTarget`/`MessageEvent` identity, and typed limits. Cross-context
+port transfer, transferables, shared/service workers, complete task-source
+scheduling, and final production certification remain active issue #40 gates.
 
 The completed native cookie-policy slice is
 [native-engine-browser-334](tasks/native-engine-browser-334.md): cookie

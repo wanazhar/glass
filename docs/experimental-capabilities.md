@@ -105,22 +105,23 @@ the broader claim.
 
 ## Native browser engine
 
-The Glass-owned native engine is an experimental `glass-browser` backend from
-[issue #40](https://github.com/wanazhar/glass/issues/40). It is compiled only
-when explicitly requested:
+The Glass-owned native engine is the primary feature-enabled `glass-browser`
+backend tracked by [issue #40](https://github.com/wanazhar/glass/issues/40).
+It is enabled by default and selected without a silent CDP fallback:
 
 ```console
 cargo check -p glass-browser --features native-engine --locked
 cargo test -p glass-browser --features native-engine --test native_engine --locked
 ```
 
-Phase 2 and the initial Phase 3 layout/display-list/software-surface seeds are
-headless and deterministic. It accepts `about:blank`, bounded percent-decoded
-or standard padded-base64 `data:text/html` URLs, and registered `fixture://`
-documents through the Rust API. It exposes lifecycle, navigation, one context,
-bounded URL/title/visible-
-text evidence, semantic click/type actions for local controls, and a
-revision/changed effects signal through the existing backend dispatcher.
+The native engine is headless and deterministic where its current contract is
+bounded. It accepts `about:blank`, bounded percent-decoded or standard
+padded-base64 `data:text/html` URLs, registered `fixture://` documents through
+the Rust API, and external HTTP(S) documents through the native content worker.
+It exposes lifecycle, navigation, page targets, frames, bounded URL/title/
+visible-text evidence, semantic actions, storage, script, workers, capture,
+and revisioned recovery through the existing backend dispatcher. The complete
+Core Web Profile and production promotion gates remain owned by issue #40.
 
 The action surface focuses supported controls, toggles checkbox/radio state,
 selects an option in a single-select control, and replaces private text state

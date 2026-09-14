@@ -712,11 +712,13 @@ servers must remain private.
 
 ## Backends and surfaces
 
-CDP is the production backend for the full session. Firefox WebDriver BiDi and
-Safari W3C WebDriver are experimental bounded adapters for the portable
-semantic session. The feature-gated native engine is an experimental,
-fixture/data-URL-only Glass-owned backend exposed through the explicit Rust
-factory and local one-shot runtime. Its current semantic surface includes
+The Glass-owned native engine is the primary backend for feature-enabled CLI,
+MCP, TUI, resident, and portable-session browser paths. Chromium/CDP remains
+available only as an explicit migration backend; native selection never falls
+back silently to CDP. Firefox WebDriver BiDi and Safari W3C WebDriver remain
+external bounded adapters for the portable semantic session. Native supports
+local and external HTTP(S) documents as well as registered Rust fixtures, and
+its current semantic surface includes
 bounded presentation, inherited text color, bounded `overflow:hidden` clips
 shared by paint, viewport projection, and point hit-testing, bounded
 axis-specific `overflow-x`/`overflow-y` `hidden`/`clip` clips through the same

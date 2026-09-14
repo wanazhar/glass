@@ -4205,9 +4205,12 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                         .await?;
                                     let message_port_commands =
                                         runtime.take_message_port_commands();
-                                    service_workers.apply_page_message_port_commands(
-                                        message_port_commands.clone(),
-                                    )?;
+                                    service_workers
+                                        .apply_page_message_port_commands(
+                                            message_port_commands.clone(),
+                                            loader,
+                                        )
+                                        .await?;
                                     workers
                                         .apply_page_message_port_commands(
                                             message_port_commands,
@@ -4505,7 +4508,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     .apply_commands(worker_commands, loader, &committed_url)
                     .await?;
                 let message_port_commands = runtime.take_message_port_commands();
-                service_workers.apply_page_message_port_commands(message_port_commands.clone())?;
+                service_workers
+                    .apply_page_message_port_commands(message_port_commands.clone(), loader)
+                    .await?;
                 workers
                     .apply_page_message_port_commands(message_port_commands, loader)
                     .await?;
@@ -4624,9 +4629,12 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                     .await?;
                                 let dynamic_message_port_commands =
                                     runtime.take_message_port_commands();
-                                service_workers.apply_page_message_port_commands(
-                                    dynamic_message_port_commands.clone(),
-                                )?;
+                                service_workers
+                                    .apply_page_message_port_commands(
+                                        dynamic_message_port_commands.clone(),
+                                        loader,
+                                    )
+                                    .await?;
                                 workers
                                     .apply_page_message_port_commands(
                                         dynamic_message_port_commands,
@@ -5914,7 +5922,9 @@ async fn resolve_service_worker_commands(
                 data,
                 transfer_ports,
             } => {
-                registry.post_message(&scope, &data, &transfer_ports)?;
+                registry
+                    .post_message(loader, &scope, &data, &transfer_ports)
+                    .await?;
                 pending.extend(runtime.take_service_worker_commands());
             }
             other => document_commands.push(other),

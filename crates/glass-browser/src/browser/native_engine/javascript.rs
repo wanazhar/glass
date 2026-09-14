@@ -307,6 +307,11 @@ pub(crate) enum NativeScriptCommand {
         request_headers: Vec<(String, String)>,
         response: serde_json::Value,
     },
+    ServiceWorkerCachePutAll {
+        request_id: u32,
+        cache_name: String,
+        entries: Vec<NativeServiceWorkerCacheBatchEntry>,
+    },
     ServiceWorkerCacheDeleteRequest {
         request_id: u32,
         cache_name: String,
@@ -3288,6 +3293,15 @@ struct NativeWebStorageProfile {
 pub(crate) struct NativeServiceWorkerCacheState {
     pub(crate) origins:
         BTreeMap<String, BTreeMap<String, BTreeMap<String, NativeServiceWorkerCacheEntry>>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub(crate) struct NativeServiceWorkerCacheBatchEntry {
+    pub(crate) request_url: String,
+    pub(crate) request_method: String,
+    #[serde(default)]
+    pub(crate) request_headers: Vec<(String, String)>,
+    pub(crate) response: serde_json::Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -10211,6 +10225,44 @@ impl NativeJavaScriptRuntime {
         self.evaluate_worker(worker_id, worker_url, &source, import_script_counts)
     }
 
+    pub(crate) fn resolve_service_worker_fetch(
+        &self,
+        worker_id: u32,
+        worker_url: &str,
+        request_id: u32,
+        payload: &serde_json::Value,
+        is_module: bool,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        if request_id == 0 {
+            return Err(NativeEngineError::invalid(
+                "native service worker fetch request id",
+                "must be positive",
+            ));
+        }
+        let serialized = serde_json::to_string(payload).map_err(|_| NativeEngineError::Worker {
+            operation: "serialize native service worker fetch response".into(),
+            reason: "native service worker fetch response could not be serialized".into(),
+        })?;
+        let source = if serialized.len() > MAX_NATIVE_SCRIPT_BYTES {
+            format!(
+                "globalThis.__glassResolveWorkerFetch({request_id}, {{ error: \"service worker fetch response exceeded the script transfer limit\" }});"
+            )
+        } else {
+            format!("globalThis.__glassResolveWorkerFetch({request_id}, {serialized});")
+        };
+        let bootstrap = service_worker_bootstrap(
+            worker_id,
+            worker_url,
+            self.now_ms(),
+            &BTreeMap::new(),
+            is_module,
+            &self.service_worker_clients(),
+        )?;
+        self.evaluate_worker_source_with_bootstrap(
+            worker_id, worker_url, None, &source, bootstrap, true, false,
+        )
+    }
+
     pub(crate) fn resolve_service_worker_cache(
         &self,
         worker_id: u32,
@@ -10606,6 +10658,7 @@ fn is_service_worker_cache_command(command: &NativeScriptCommand) -> bool {
             | NativeScriptCommand::ServiceWorkerCacheKeys { .. }
             | NativeScriptCommand::ServiceWorkerCacheMatch { .. }
             | NativeScriptCommand::ServiceWorkerCachePut { .. }
+            | NativeScriptCommand::ServiceWorkerCachePutAll { .. }
             | NativeScriptCommand::ServiceWorkerCacheDeleteRequest { .. }
             | NativeScriptCommand::ServiceWorkerCacheEntries { .. }
     )
@@ -10646,6 +10699,7 @@ fn validate_service_worker_cache_command(
         | NativeScriptCommand::ServiceWorkerCacheKeys { request_id }
         | NativeScriptCommand::ServiceWorkerCacheMatch { request_id, .. }
         | NativeScriptCommand::ServiceWorkerCachePut { request_id, .. }
+        | NativeScriptCommand::ServiceWorkerCachePutAll { request_id, .. }
         | NativeScriptCommand::ServiceWorkerCacheDeleteRequest { request_id, .. }
         | NativeScriptCommand::ServiceWorkerCacheEntries { request_id, .. } => *request_id,
         _ => return Ok(()),
@@ -10662,6 +10716,7 @@ fn validate_service_worker_cache_command(
         | NativeScriptCommand::ServiceWorkerCacheHas { cache_name, .. }
         | NativeScriptCommand::ServiceWorkerCacheMatch { cache_name, .. }
         | NativeScriptCommand::ServiceWorkerCachePut { cache_name, .. }
+        | NativeScriptCommand::ServiceWorkerCachePutAll { cache_name, .. }
         | NativeScriptCommand::ServiceWorkerCacheDeleteRequest { cache_name, .. }
         | NativeScriptCommand::ServiceWorkerCacheEntries { cache_name, .. } => Some(cache_name),
         NativeScriptCommand::ServiceWorkerCacheKeys { .. } => None,
@@ -10688,49 +10743,54 @@ fn validate_service_worker_cache_command(
             request_method,
             request_headers,
             ..
+        } => {
+            validate_service_worker_cache_request_fields(
+                request_url,
+                request_method,
+                request_headers,
+            )?;
         }
-        | NativeScriptCommand::ServiceWorkerCachePut {
+        NativeScriptCommand::ServiceWorkerCachePut {
             request_url,
             request_method,
             request_headers,
+            response,
             ..
         } => {
-            if request_url.is_empty() || request_url.len() > MAX_NATIVE_SCRIPT_BYTES {
+            validate_service_worker_cache_put_fields(
+                request_url,
+                request_method,
+                request_headers,
+                response,
+            )?;
+        }
+        NativeScriptCommand::ServiceWorkerCachePutAll { entries, .. } => {
+            if entries.len() > MAX_NATIVE_SERVICE_WORKER_CACHE_ENTRIES {
                 return Err(NativeEngineError::limit(
-                    "native service worker cache request URL",
-                    MAX_NATIVE_SCRIPT_BYTES,
-                    request_url.len(),
+                    "native service worker cache batch entries",
+                    MAX_NATIVE_SERVICE_WORKER_CACHE_ENTRIES,
+                    entries.len(),
                 ));
             }
-            if !matches!(
-                request_method.as_str(),
-                "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS"
-            ) {
-                return Err(NativeEngineError::invalid(
-                    "native service worker cache request method",
-                    "method is unsupported",
-                ));
-            }
-            if matches!(command, NativeScriptCommand::ServiceWorkerCachePut { .. })
-                && request_method != "GET"
-            {
-                return Err(NativeEngineError::invalid(
-                    "native service worker cache request method",
-                    "Cache.put only supports GET requests",
-                ));
-            }
-            validate_native_service_worker_cache_request_headers(request_headers)?;
-            if let NativeScriptCommand::ServiceWorkerCachePut { response, .. } = command {
+            let mut encoded_bytes = 0usize;
+            for entry in entries {
+                validate_service_worker_cache_put_fields(
+                    &entry.request_url,
+                    &entry.request_method,
+                    &entry.request_headers,
+                    &entry.response,
+                )?;
                 let encoded =
-                    serde_json::to_vec(response).map_err(|_| NativeEngineError::Worker {
+                    serde_json::to_vec(&entry.response).map_err(|_| NativeEngineError::Worker {
                         operation: "validate native service worker cache response".into(),
                         reason: "cached response could not be serialized".into(),
                     })?;
-                if encoded.len() > MAX_NATIVE_SCRIPT_RESULT_BYTES {
+                encoded_bytes = encoded_bytes.saturating_add(encoded.len());
+                if encoded_bytes > MAX_NATIVE_SCRIPT_COMMAND_BYTES {
                     return Err(NativeEngineError::limit(
-                        "native service worker cache response",
-                        MAX_NATIVE_SCRIPT_RESULT_BYTES,
-                        encoded.len(),
+                        "native service worker cache batch",
+                        MAX_NATIVE_SCRIPT_COMMAND_BYTES,
+                        encoded_bytes,
                     ));
                 }
             }
@@ -10771,6 +10831,58 @@ fn validate_service_worker_cache_command(
         }
         _ => {}
     }
+    Ok(())
+}
+
+fn validate_service_worker_cache_put_fields(
+    request_url: &str,
+    request_method: &str,
+    request_headers: &[(String, String)],
+    response: &serde_json::Value,
+) -> Result<(), NativeEngineError> {
+    validate_service_worker_cache_request_fields(request_url, request_method, request_headers)?;
+    if request_method != "GET" {
+        return Err(NativeEngineError::invalid(
+            "native service worker cache request method",
+            "Cache.put only supports GET requests",
+        ));
+    }
+    let encoded = serde_json::to_vec(response).map_err(|_| NativeEngineError::Worker {
+        operation: "validate native service worker cache response".into(),
+        reason: "cached response could not be serialized".into(),
+    })?;
+    if encoded.len() > MAX_NATIVE_SCRIPT_RESULT_BYTES {
+        return Err(NativeEngineError::limit(
+            "native service worker cache response",
+            MAX_NATIVE_SCRIPT_RESULT_BYTES,
+            encoded.len(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_service_worker_cache_request_fields(
+    request_url: &str,
+    request_method: &str,
+    request_headers: &[(String, String)],
+) -> Result<(), NativeEngineError> {
+    if request_url.is_empty() || request_url.len() > MAX_NATIVE_SCRIPT_BYTES {
+        return Err(NativeEngineError::limit(
+            "native service worker cache request URL",
+            MAX_NATIVE_SCRIPT_BYTES,
+            request_url.len(),
+        ));
+    }
+    if !matches!(
+        request_method,
+        "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS"
+    ) {
+        return Err(NativeEngineError::invalid(
+            "native service worker cache request method",
+            "method is unsupported",
+        ));
+    }
+    validate_native_service_worker_cache_request_headers(request_headers)?;
     Ok(())
 }
 
@@ -15158,6 +15270,10 @@ fn service_worker_bootstrap_script(
             "__GLASS_SERVICE_WORKER_CACHE_NAME_LIMIT__",
             &MAX_NATIVE_SERVICE_WORKER_CACHE_NAME_BYTES.to_string(),
         )
+        .replace(
+            "__GLASS_SERVICE_WORKER_CACHE_ENTRY_LIMIT__",
+            &MAX_NATIVE_SERVICE_WORKER_CACHE_ENTRIES.to_string(),
+        )
         .replace("__GLASS_SERVICE_WORKER_CLIENTS__", &serialized_clients))
 }
 
@@ -16334,6 +16450,12 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
       return Promise.reject(new TypeError("native Cache.put only supports GET requests"));
     if (!response || typeof response.clone !== "function")
       return Promise.reject(new TypeError("native Cache.put requires a Response"));
+    if (response.type === "error" || response.type === "opaque" || response.type === "opaqueredirect"
+      || response.status === 206)
+      return Promise.reject(new TypeError("native Cache.put received a non-cacheable response"));
+    const vary = response.headers && response.headers.get("vary");
+    if (vary && vary.split(",").some(field => field.trim() === "*"))
+      return Promise.reject(new TypeError("native Cache.put received a response with Vary: *"));
     return serviceWorkerFetchResponse(response).then(payload =>
       serviceWorkerCacheQueueRequest("serviceWorkerCachePut", {
         cache_name: cache.name,
@@ -16388,12 +16510,47 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
   };
   ServiceWorkerCacheNative.prototype.addAll = function(requests) {
     const cache = serviceWorkerCacheRequire(this);
-    if (!requests || typeof requests[Symbol.iterator] !== "function")
-      return Promise.reject(new TypeError("native Cache.addAll requires an iterable"));
-    const values = Array.from(requests);
-    let chain = Promise.resolve();
-    for (const request of values) chain = chain.then(() => cache.add(request));
-    return chain.then(() => undefined);
+    let values;
+    try {
+      if (!requests || typeof requests[Symbol.iterator] !== "function")
+        throw new TypeError("native Cache.addAll requires an iterable");
+      values = Array.from(requests);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    if (values.length > __GLASS_SERVICE_WORKER_CACHE_ENTRY_LIMIT__)
+      return Promise.reject(new RangeError("native Cache.addAll request limit exceeded"));
+    if (values.length === 0) return Promise.resolve(undefined);
+    let keys;
+    try {
+      keys = values.map(request => {
+        const key = serviceWorkerCacheRequestKey(request);
+        if (key.method !== "GET")
+          throw new TypeError("native Cache.addAll only supports GET requests");
+        return key;
+      });
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    return Promise.all(values.map(request => workerFetchNative(request)))
+      .then(responses => Promise.all(responses.map((response, index) => {
+        if (!response || response.type === "error" || response.type === "opaque"
+          || response.type === "opaqueredirect" || !response.ok || response.status === 206)
+          throw new TypeError("native Cache.addAll received a non-cacheable response");
+        const vary = response.headers && response.headers.get("vary");
+        if (vary && vary.split(",").some(field => field.trim() === "*"))
+          throw new TypeError("native Cache.addAll received a response with Vary: *");
+        return serviceWorkerFetchResponse(response).then(payload => ({
+          request_url: keys[index].url,
+          request_method: keys[index].method,
+          request_headers: keys[index].headers,
+          response: payload,
+        }));
+      })))
+      .then(entries => serviceWorkerCacheQueueRequest("serviceWorkerCachePutAll", {
+        cache_name: cache.name,
+        entries,
+      }).then(() => undefined));
   };
   globalThis.__glassServiceWorkerCacheConstructor = ServiceWorkerCacheNative;
   globalThis.Cache = ServiceWorkerCacheNative;

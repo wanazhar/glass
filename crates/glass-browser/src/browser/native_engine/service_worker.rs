@@ -41,6 +41,13 @@ struct NativeServiceWorker {
     import_script_counts: BTreeMap<String, usize>,
 }
 
+fn completed_lifecycle_states() -> Vec<String> {
+    ["installing", "installed", "activating", "activated"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
 pub(crate) struct NativeServiceWorkerRegistry {
     registrations: BTreeMap<String, NativeServiceWorker>,
     next_worker_id: u32,
@@ -137,6 +144,7 @@ impl NativeServiceWorkerRegistry {
                     script_url: worker.script_url.clone(),
                     scope: worker.scope.clone(),
                     state: "activated".into(),
+                    lifecycle: Vec::new(),
                 })
             })
             .collect())
@@ -316,6 +324,7 @@ impl NativeServiceWorkerRegistry {
             script_url: worker.script_url.clone(),
             scope: worker.scope.clone(),
             state: "activated".into(),
+            lifecycle: completed_lifecycle_states(),
         };
         self.remember_registration(&worker);
         self.registrations.insert(scope.to_owned(), worker);
@@ -460,6 +469,7 @@ impl NativeServiceWorkerRegistry {
             script_url: worker.script_url.clone(),
             scope: scope.clone(),
             state: "activated".into(),
+            lifecycle: completed_lifecycle_states(),
         };
         let previous_id = self.registrations.get(&scope).map(|previous| previous.id);
         if let Some(previous_id) = previous_id {

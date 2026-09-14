@@ -17,8 +17,9 @@ use super::javascript::{
     NativeMessagePortPageMessage, NativeMessagePortTransfer, NativeScriptCommand,
     NativeScriptEvaluation, NativeServiceWorkerCacheEntry, NativeServiceWorkerCacheState,
     NativeServiceWorkerClientMessage, NativeServiceWorkerRegistrationProfile,
-    NativeServiceWorkerRegistrationState, load_service_worker_source,
-    validate_message_port_transfers, validate_native_service_worker_cache_request_headers,
+    NativeServiceWorkerRegistrationState, NativeServiceWorkerWorkerState,
+    load_service_worker_source, validate_message_port_transfers,
+    validate_native_service_worker_cache_request_headers,
 };
 use super::origin::NativeOrigin;
 use super::resource_loader::{
@@ -39,6 +40,7 @@ struct NativeServiceWorker {
     is_module: bool,
     runtime: NativeJavaScriptRuntime,
     import_script_counts: BTreeMap<String, usize>,
+    skip_waiting_requested: bool,
 }
 
 fn completed_lifecycle_states() -> Vec<String> {
@@ -48,8 +50,50 @@ fn completed_lifecycle_states() -> Vec<String> {
         .collect()
 }
 
+fn waiting_lifecycle_states() -> Vec<String> {
+    ["installing", "installed"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
+fn worker_state(worker: &NativeServiceWorker, state: &str) -> NativeServiceWorkerWorkerState {
+    NativeServiceWorkerWorkerState {
+        script_url: worker.script_url.clone(),
+        state: state.to_owned(),
+    }
+}
+
+fn registration_state_for_workers(
+    scope: &str,
+    active: Option<&NativeServiceWorker>,
+    waiting: Option<&NativeServiceWorker>,
+    lifecycle: Vec<String>,
+) -> Result<NativeServiceWorkerRegistrationState, NativeEngineError> {
+    let active_state = active.map(|worker| worker_state(worker, "activated"));
+    let waiting_state = waiting.map(|worker| worker_state(worker, "installed"));
+    let representative = active_state
+        .as_ref()
+        .or(waiting_state.as_ref())
+        .ok_or_else(|| {
+            NativeEngineError::invalid(
+                "native service worker registration state",
+                "must contain an active or waiting worker",
+            )
+        })?;
+    Ok(NativeServiceWorkerRegistrationState {
+        script_url: representative.script_url.clone(),
+        scope: scope.to_owned(),
+        state: representative.state.clone(),
+        lifecycle,
+        active: active_state,
+        waiting: waiting_state,
+    })
+}
+
 pub(crate) struct NativeServiceWorkerRegistry {
     registrations: BTreeMap<String, NativeServiceWorker>,
+    waiting_workers: BTreeMap<String, NativeServiceWorker>,
     next_worker_id: u32,
     cache_state: NativeServiceWorkerCacheState,
     registration_profiles: Vec<NativeServiceWorkerRegistrationProfile>,
@@ -62,6 +106,7 @@ impl Default for NativeServiceWorkerRegistry {
     fn default() -> Self {
         Self {
             registrations: BTreeMap::new(),
+            waiting_workers: BTreeMap::new(),
             next_worker_id: 1,
             cache_state: NativeServiceWorkerCacheState::default(),
             registration_profiles: Vec::new(),
@@ -134,17 +179,40 @@ impl NativeServiceWorkerRegistry {
     ) -> Result<Vec<NativeServiceWorkerRegistrationState>, NativeEngineError> {
         let document = parse_network_url("service worker document URL", document_url)?;
         let document_origin = NativeOrigin::from_url(&document)?;
-        Ok(self
+        let scopes = self
             .registrations
-            .values()
-            .filter_map(|worker| {
-                let scope = Url::parse(without_fragment(&worker.scope)).ok()?;
+            .keys()
+            .chain(self.waiting_workers.keys())
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        Ok(scopes
+            .into_iter()
+            .filter_map(|scope_text| {
+                let scope = Url::parse(without_fragment(&scope_text)).ok()?;
                 let scope_origin = NativeOrigin::from_url(&scope).ok()?;
-                (scope_origin == document_origin).then_some(NativeServiceWorkerRegistrationState {
-                    script_url: worker.script_url.clone(),
-                    scope: worker.scope.clone(),
-                    state: "activated".into(),
+                if scope_origin != document_origin {
+                    return None;
+                }
+                let active = self.registrations.get(&scope_text).map(|worker| {
+                    NativeServiceWorkerWorkerState {
+                        script_url: worker.script_url.clone(),
+                        state: "activated".into(),
+                    }
+                });
+                let waiting = self.waiting_workers.get(&scope_text).map(|worker| {
+                    NativeServiceWorkerWorkerState {
+                        script_url: worker.script_url.clone(),
+                        state: "installed".into(),
+                    }
+                });
+                let representative = active.as_ref().or(waiting.as_ref())?;
+                Some(NativeServiceWorkerRegistrationState {
+                    script_url: representative.script_url.clone(),
+                    scope: scope_text,
+                    state: representative.state.clone(),
                     lifecycle: Vec::new(),
+                    active,
+                    waiting,
                 })
             })
             .collect())
@@ -192,6 +260,7 @@ impl NativeServiceWorkerRegistry {
             is_module,
             runtime,
             import_script_counts,
+            skip_waiting_requested: false,
         };
         let initial = if is_module {
             worker.runtime.evaluate_service_worker_source(
@@ -246,6 +315,83 @@ impl NativeServiceWorkerRegistry {
         )
     }
 
+    fn settle_worker_install(
+        &mut self,
+        worker: &mut NativeServiceWorker,
+    ) -> Result<(), NativeEngineError> {
+        let install = worker.runtime.evaluate_service_worker_lifecycle(
+            worker.id,
+            &worker.script_url,
+            "install",
+            worker.is_module,
+        )?;
+        let client_messages =
+            settle_service_worker_cache_event(worker, install, &mut self.cache_state, None)?;
+        self.enqueue_client_messages(client_messages)
+    }
+
+    fn settle_worker_activate(
+        &mut self,
+        worker: &mut NativeServiceWorker,
+    ) -> Result<(), NativeEngineError> {
+        let activate = worker.runtime.evaluate_service_worker_lifecycle(
+            worker.id,
+            &worker.script_url,
+            "activate",
+            worker.is_module,
+        )?;
+        let client_messages =
+            settle_service_worker_cache_event(worker, activate, &mut self.cache_state, None)?;
+        self.enqueue_client_messages(client_messages)
+    }
+
+    fn commit_activated_worker(
+        &mut self,
+        scope: &str,
+        worker: NativeServiceWorker,
+    ) -> NativeServiceWorkerRegistrationState {
+        if let Some(previous_id) = self.registrations.get(scope).map(|previous| previous.id) {
+            self.remove_worker_routes(previous_id);
+        }
+        if let Some(previous_waiting) = self.waiting_workers.remove(scope)
+            && previous_waiting.id != worker.id
+        {
+            self.remove_worker_routes(previous_waiting.id);
+        }
+        let state = NativeServiceWorkerRegistrationState {
+            script_url: worker.script_url.clone(),
+            scope: scope.to_owned(),
+            state: "activated".into(),
+            lifecycle: completed_lifecycle_states(),
+            active: Some(worker_state(&worker, "activated")),
+            waiting: None,
+        };
+        self.remember_registration(&worker);
+        self.registrations.insert(scope.to_owned(), worker);
+        state
+    }
+
+    fn install_worker(
+        &mut self,
+        mut worker: NativeServiceWorker,
+    ) -> Result<NativeServiceWorkerRegistrationState, NativeEngineError> {
+        let scope = worker.scope.clone();
+        self.settle_worker_install(&mut worker)?;
+        if worker.skip_waiting_requested || !self.registrations.contains_key(&scope) {
+            self.settle_worker_activate(&mut worker)?;
+            return Ok(self.commit_activated_worker(&scope, worker));
+        }
+        if let Some(previous_waiting) = self.waiting_workers.insert(scope.clone(), worker) {
+            self.remove_worker_routes(previous_waiting.id);
+        }
+        registration_state_for_workers(
+            &scope,
+            self.registrations.get(&scope),
+            self.waiting_workers.get(&scope),
+            waiting_lifecycle_states(),
+        )
+    }
+
     pub(crate) async fn update(
         &mut self,
         scope: &str,
@@ -269,6 +415,19 @@ impl NativeServiceWorkerRegistry {
                         },
                     })
             })
+            .or_else(|| {
+                self.waiting_workers.get(scope).map(|worker| {
+                    NativeServiceWorkerRegistrationProfile {
+                        script_url: worker.script_url.clone(),
+                        scope: worker.scope.clone(),
+                        worker_type: if worker.is_module {
+                            "module".into()
+                        } else {
+                            "classic".into()
+                        },
+                    }
+                })
+            })
             .ok_or_else(|| {
                 NativeEngineError::invalid(
                     "native service worker update scope",
@@ -291,7 +450,7 @@ impl NativeServiceWorkerRegistry {
         let (source, import_script_counts, module_sources) =
             load_service_worker_source(loader, &profile.script_url, resource.clone(), is_module)
                 .await?;
-        let mut worker = self.instantiate_worker(
+        let worker = self.instantiate_worker(
             resource.url,
             profile.scope.clone(),
             is_module,
@@ -299,36 +458,7 @@ impl NativeServiceWorkerRegistry {
             import_script_counts,
             module_sources,
         )?;
-        let install = worker.runtime.evaluate_service_worker_lifecycle(
-            worker.id,
-            &worker.script_url,
-            "install",
-            worker.is_module,
-        )?;
-        let client_messages =
-            settle_service_worker_cache_event(&mut worker, install, &mut self.cache_state, None)?;
-        self.enqueue_client_messages(client_messages)?;
-        let activate = worker.runtime.evaluate_service_worker_lifecycle(
-            worker.id,
-            &worker.script_url,
-            "activate",
-            worker.is_module,
-        )?;
-        let client_messages =
-            settle_service_worker_cache_event(&mut worker, activate, &mut self.cache_state, None)?;
-        self.enqueue_client_messages(client_messages)?;
-        if let Some(previous_id) = self.registrations.get(scope).map(|worker| worker.id) {
-            self.remove_worker_routes(previous_id);
-        }
-        let state = NativeServiceWorkerRegistrationState {
-            script_url: worker.script_url.clone(),
-            scope: worker.scope.clone(),
-            state: "activated".into(),
-            lifecycle: completed_lifecycle_states(),
-        };
-        self.remember_registration(&worker);
-        self.registrations.insert(scope.to_owned(), worker);
-        Ok(state)
+        self.install_worker(worker)
     }
 
     fn remember_registration(&mut self, worker: &NativeServiceWorker) {
@@ -417,17 +547,29 @@ impl NativeServiceWorkerRegistry {
                 reason: "service worker scope exceeds the script directory".into(),
             });
         }
-        if !self.registrations.contains_key(&scope)
-            && !self
+        let known_scope = self.registrations.contains_key(&scope)
+            || self.waiting_workers.contains_key(&scope)
+            || self
                 .registration_profiles
                 .iter()
-                .any(|profile| profile.scope == scope)
-            && self.registration_profiles.len() >= MAX_NATIVE_SERVICE_WORKERS
-        {
+                .any(|profile| profile.scope == scope);
+        let registration_scope_count = self
+            .registrations
+            .keys()
+            .chain(self.waiting_workers.keys())
+            .chain(
+                self.registration_profiles
+                    .iter()
+                    .map(|profile| &profile.scope),
+            )
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .len();
+        if !known_scope && registration_scope_count >= MAX_NATIVE_SERVICE_WORKERS {
             return Err(NativeEngineError::limit(
                 "native service worker registrations",
                 MAX_NATIVE_SERVICE_WORKERS,
-                self.registrations.len().saturating_add(1),
+                registration_scope_count.saturating_add(1),
             ));
         }
         let resource = loader
@@ -439,7 +581,7 @@ impl NativeServiceWorkerRegistry {
             })?;
         let (source, import_script_counts, module_sources) =
             load_service_worker_source(loader, owner_url, resource.clone(), is_module).await?;
-        let mut worker = self.instantiate_worker(
+        let worker = self.instantiate_worker(
             resource.url,
             scope.clone(),
             is_module,
@@ -447,37 +589,7 @@ impl NativeServiceWorkerRegistry {
             import_script_counts,
             module_sources,
         )?;
-        let install = worker.runtime.evaluate_service_worker_lifecycle(
-            worker.id,
-            &worker.script_url,
-            "install",
-            worker.is_module,
-        )?;
-        let client_messages =
-            settle_service_worker_cache_event(&mut worker, install, &mut self.cache_state, None)?;
-        self.enqueue_client_messages(client_messages)?;
-        let activate = worker.runtime.evaluate_service_worker_lifecycle(
-            worker.id,
-            &worker.script_url,
-            "activate",
-            worker.is_module,
-        )?;
-        let client_messages =
-            settle_service_worker_cache_event(&mut worker, activate, &mut self.cache_state, None)?;
-        self.enqueue_client_messages(client_messages)?;
-        let state = NativeServiceWorkerRegistrationState {
-            script_url: worker.script_url.clone(),
-            scope: scope.clone(),
-            state: "activated".into(),
-            lifecycle: completed_lifecycle_states(),
-        };
-        let previous_id = self.registrations.get(&scope).map(|previous| previous.id);
-        if let Some(previous_id) = previous_id {
-            self.remove_worker_routes(previous_id);
-        }
-        self.remember_registration(&worker);
-        self.registrations.insert(scope, worker);
-        Ok(state)
+        self.install_worker(worker)
     }
 
     pub(crate) fn clear_page_message_port_routes(&mut self) {
@@ -527,11 +639,17 @@ impl NativeServiceWorkerRegistry {
             .any(|profile| profile.scope == scope);
         self.registration_profiles
             .retain(|profile| profile.scope != scope);
-        let Some(worker) = self.registrations.remove(scope) else {
-            return removed_profile;
-        };
-        self.remove_worker_routes(worker.id);
-        true
+        let removed_active = self.registrations.remove(scope);
+        let had_active = removed_active.is_some();
+        if let Some(worker) = removed_active {
+            self.remove_worker_routes(worker.id);
+        }
+        let removed_waiting = self.waiting_workers.remove(scope);
+        let had_waiting = removed_waiting.is_some();
+        if let Some(worker) = removed_waiting {
+            self.remove_worker_routes(worker.id);
+        }
+        removed_profile || had_active || had_waiting
     }
 
     pub(crate) fn post_message(
@@ -687,6 +805,11 @@ impl NativeServiceWorkerRegistry {
         navigation: &NativeNavigationRequest,
         _referrer: Option<&str>,
     ) -> Result<Option<NativeResource>, NativeEngineError> {
+        let target = parse_network_url(
+            "service worker navigation URL",
+            without_fragment(&navigation.url),
+        )?;
+        self.activate_waiting_for_navigation(&target)?;
         let Some(response) = self
             .intercept_fetch(
                 loader,
@@ -834,6 +957,39 @@ impl NativeServiceWorkerRegistry {
             .map(|(_, scope)| scope))
     }
 
+    fn matching_waiting_scope(&self, target: &Url) -> Result<Option<String>, NativeEngineError> {
+        let target_origin = NativeOrigin::from_url(target)?;
+        Ok(self
+            .waiting_workers
+            .values()
+            .filter_map(|worker| {
+                let scope = Url::parse(without_fragment(&worker.scope)).ok()?;
+                if NativeOrigin::from_url(&scope).ok()? != target_origin
+                    || !target.path().starts_with(scope.path())
+                {
+                    return None;
+                }
+                Some((scope.path().len(), worker.scope.clone()))
+            })
+            .max_by_key(|(length, _)| *length)
+            .map(|(_, scope)| scope))
+    }
+
+    fn activate_waiting_for_navigation(&mut self, target: &Url) -> Result<(), NativeEngineError> {
+        let Some(scope) = self.matching_waiting_scope(target)? else {
+            return Ok(());
+        };
+        let Some(mut worker) = self.waiting_workers.remove(&scope) else {
+            return Ok(());
+        };
+        if let Err(error) = self.settle_worker_activate(&mut worker) {
+            self.waiting_workers.insert(scope, worker);
+            return Err(error);
+        }
+        self.commit_activated_worker(&scope, worker);
+        Ok(())
+    }
+
     fn register_page_transfers(
         &mut self,
         worker_id: u32,
@@ -974,6 +1130,9 @@ fn settle_service_worker_cache_event(
                 MAX_NATIVE_MODULE_IMPORTS,
                 turns,
             ));
+        }
+        if apply_service_worker_lifecycle_command(worker, &command)? {
+            continue;
         }
         if let Some(message) =
             service_worker_client_message_command(worker.id, command.clone(), current_client_id)?
@@ -1498,6 +1657,9 @@ async fn settle_service_worker_fetch(
                 resolved_fetches,
             ));
         }
+        if apply_service_worker_lifecycle_command(worker, &command)? {
+            continue;
+        }
         if let Some(message) = service_worker_client_message_command(
             worker.id,
             command.clone(),
@@ -1625,6 +1787,30 @@ async fn settle_service_worker_fetch(
         });
     }
     Ok((value, client_messages))
+}
+
+fn apply_service_worker_lifecycle_command(
+    worker: &mut NativeServiceWorker,
+    command: &NativeScriptCommand,
+) -> Result<bool, NativeEngineError> {
+    let worker_id = match command {
+        NativeScriptCommand::ServiceWorkerSkipWaiting { worker_id }
+        | NativeScriptCommand::ServiceWorkerClientsClaim { worker_id } => *worker_id,
+        _ => return Ok(false),
+    };
+    if worker_id == 0 || worker_id != worker.id {
+        return Err(NativeEngineError::Worker {
+            operation: "service worker lifecycle command".into(),
+            reason: "service worker lifecycle command owner is invalid".into(),
+        });
+    }
+    if matches!(
+        command,
+        NativeScriptCommand::ServiceWorkerSkipWaiting { .. }
+    ) {
+        worker.skip_waiting_requested = true;
+    }
+    Ok(true)
 }
 
 fn is_service_worker_cache_command(command: &NativeScriptCommand) -> bool {

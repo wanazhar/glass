@@ -250,6 +250,12 @@ pub(crate) enum NativeScriptCommand {
         request_id: u32,
         scope: String,
     },
+    ServiceWorkerSkipWaiting {
+        worker_id: u32,
+    },
+    ServiceWorkerClientsClaim {
+        worker_id: u32,
+    },
     ServiceWorkerPostMessage {
         scope: String,
         data: serde_json::Value,
@@ -560,6 +566,12 @@ pub(crate) struct NativeMessagePortTransfer {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct NativeServiceWorkerWorkerState {
+    pub(crate) script_url: String,
+    pub(crate) state: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct NativeServiceWorkerRegistrationState {
     pub(crate) script_url: String,
     pub(crate) scope: String,
@@ -569,6 +581,12 @@ pub(crate) struct NativeServiceWorkerRegistrationState {
     /// empty because those transitions already happened in an earlier owner.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) lifecycle: Vec<String>,
+    /// Explicit active/waiting projections let a waiting update coexist with
+    /// the prior active worker without overloading the top-level state fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) active: Option<NativeServiceWorkerWorkerState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) waiting: Option<NativeServiceWorkerWorkerState>,
 }
 
 /// Persistent metadata for one activated Service Worker registration. The
@@ -9765,8 +9783,15 @@ impl NativeJavaScriptRuntime {
             let commands = read_script_commands(ctx.clone())?;
             let mut worker_commands = Vec::with_capacity(commands.len());
             for command in commands {
-                if service_worker && is_service_worker_cache_command(&command) {
-                    validate_service_worker_cache_command(&command)?;
+                if service_worker
+                    && (is_service_worker_cache_command(&command)
+                        || is_service_worker_lifecycle_command(&command))
+                {
+                    if is_service_worker_cache_command(&command) {
+                        validate_service_worker_cache_command(&command)?;
+                    } else {
+                        validate_service_worker_lifecycle_command(&command)?;
+                    }
                     worker_commands.push(command);
                     continue;
                 }
@@ -9815,6 +9840,12 @@ impl NativeJavaScriptRuntime {
                     NativeScriptCommand::ServiceWorkerClientPostMessage {
                         worker_id: command_worker_id,
                         ..
+                    } => service_worker && *command_worker_id == worker_id,
+                    NativeScriptCommand::ServiceWorkerSkipWaiting {
+                        worker_id: command_worker_id,
+                    }
+                    | NativeScriptCommand::ServiceWorkerClientsClaim {
+                        worker_id: command_worker_id,
                     } => service_worker && *command_worker_id == worker_id,
                     _ => false,
                 };
@@ -10477,6 +10508,31 @@ fn is_service_worker_cache_command(command: &NativeScriptCommand) -> bool {
             | NativeScriptCommand::ServiceWorkerCacheDeleteRequest { .. }
             | NativeScriptCommand::ServiceWorkerCacheEntries { .. }
     )
+}
+
+fn is_service_worker_lifecycle_command(command: &NativeScriptCommand) -> bool {
+    matches!(
+        command,
+        NativeScriptCommand::ServiceWorkerSkipWaiting { .. }
+            | NativeScriptCommand::ServiceWorkerClientsClaim { .. }
+    )
+}
+
+fn validate_service_worker_lifecycle_command(
+    command: &NativeScriptCommand,
+) -> Result<(), NativeEngineError> {
+    let worker_id = match command {
+        NativeScriptCommand::ServiceWorkerSkipWaiting { worker_id }
+        | NativeScriptCommand::ServiceWorkerClientsClaim { worker_id } => *worker_id,
+        _ => return Ok(()),
+    };
+    if worker_id == 0 {
+        return Err(NativeEngineError::invalid(
+            "native service worker lifecycle command",
+            "worker id must be positive",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_service_worker_cache_command(
@@ -15752,8 +15808,8 @@ const NATIVE_SERVICE_WORKER_PAGE_SCRIPT: &str = r###"
   };
   const serviceWorkerMakeWorker = (state, scope) => {
     const worker = Object.create(ServiceWorkerNative.prototype);
-    worker.scriptURL = String(state.script_url || "");
-    worker.state = String(state.state || "activated");
+    worker.scriptURL = String(state && state.script_url || "");
+    worker.state = String(state && state.state || "activated");
     worker.onstatechange = null;
     Object.defineProperty(worker, "__glassServiceWorkerListeners", {
       configurable: false, enumerable: false, value: new Map(),
@@ -15765,11 +15821,15 @@ const NATIVE_SERVICE_WORKER_PAGE_SCRIPT: &str = r###"
   };
   const serviceWorkerMakeRegistration = (state) => {
     const scope = String(state.scope || "");
+    const hasExplicitActive = Object.prototype.hasOwnProperty.call(state, "active");
+    const activeState = hasExplicitActive ? state.active : state;
     const registration = Object.create(ServiceWorkerRegistrationNative.prototype);
     registration.scope = scope;
     registration.installing = null;
-    registration.waiting = null;
-    registration.active = serviceWorkerMakeWorker(state, scope);
+    registration.waiting = state.waiting
+      ? serviceWorkerMakeWorker(state.waiting, scope) : null;
+    registration.active = activeState
+      ? serviceWorkerMakeWorker(activeState, scope) : null;
     registration.onupdatefound = null;
     Object.defineProperty(registration, "__glassServiceWorkerListeners", {
       configurable: false, enumerable: false, value: new Map(),
@@ -15810,18 +15870,29 @@ const NATIVE_SERVICE_WORKER_PAGE_SCRIPT: &str = r###"
   };
   const serviceWorkerApplyRegistration = (registration, state) => {
     const scope = String(state.scope || registration.scope || "");
+    const hasExplicitActive = Object.prototype.hasOwnProperty.call(state, "active");
+    const activeState = hasExplicitActive ? state.active : state;
+    const waitingState = state.waiting || null;
     const lifecycle = Array.isArray(state.lifecycle)
       ? state.lifecycle.map(String).filter(value => ["installing", "installed", "activating", "activated"].includes(value))
       : [];
     const previousActive = registration.active;
+    if (hasExplicitActive && !registration.active && activeState)
+      registration.active = serviceWorkerMakeWorker(activeState, scope);
     if (lifecycle.length === 0) {
       registration.scope = scope;
-      registration.active = serviceWorkerMakeWorker(state, scope);
+      registration.active = activeState
+        ? serviceWorkerMakeWorker(activeState, scope) : null;
       registration.installing = null;
-      registration.waiting = null;
+      registration.waiting = waitingState
+        ? serviceWorkerMakeWorker(waitingState, scope) : null;
       return;
     }
-    const worker = serviceWorkerMakeWorker({ script_url: state.script_url, state: lifecycle[0] }, scope);
+    const candidateState = waitingState || activeState || state;
+    const worker = serviceWorkerMakeWorker({
+      script_url: candidateState && candidateState.script_url,
+      state: lifecycle[0],
+    }, scope);
     registration.scope = scope;
     registration.installing = worker;
     registration.waiting = null;
@@ -15862,8 +15933,14 @@ const NATIVE_SERVICE_WORKER_PAGE_SCRIPT: &str = r###"
         serviceWorkerRegistrations.set(scope, registration);
       } else {
         registration.scope = scope;
-        if (!registration.active && state.script_url)
-          registration.active = serviceWorkerMakeWorker(state, scope);
+        const hasExplicitActive = Object.prototype.hasOwnProperty.call(state, "active");
+        const activeState = hasExplicitActive ? state.active : state;
+        if (!registration.active && activeState)
+          registration.active = serviceWorkerMakeWorker(activeState, scope);
+        if (hasExplicitActive) {
+          registration.waiting = state.waiting
+            ? serviceWorkerMakeWorker(state.waiting, scope) : null;
+        }
       }
     }
     globalThis.__glassServiceWorkerRegistrations = serviceWorkerRegistrations;
@@ -15925,7 +16002,7 @@ const NATIVE_SERVICE_WORKER_PAGE_SCRIPT: &str = r###"
     } catch (error) { return Promise.reject(error); }
   };
   serviceWorkerContainer.getRegistrations = () => Promise.resolve(
-    Array.from(serviceWorkerRegistrations.values()).filter(registration => registration && registration.active)
+    Array.from(serviceWorkerRegistrations.values()).filter(registration => registration)
   );
   serviceWorkerContainer.addEventListener = serviceWorkerContainer.addEventListener || function(type, callback) {
     if (!this.__glassListeners) this.__glassListeners = new Map();
@@ -16326,10 +16403,22 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
     });
   }
   globalThis.__glassDispatchServiceWorkerFetch = serviceWorkerDispatchFetch;
-  globalThis.skipWaiting = () => Promise.resolve(undefined);
+  globalThis.skipWaiting = () => {
+    const workerId = Number.isSafeInteger(globalThis.__glassWorkerId)
+      ? globalThis.__glassWorkerId : 0;
+    if (!workerId) return Promise.reject(new Error("native service worker is unavailable"));
+    pushCommand({ kind: "serviceWorkerSkipWaiting", worker_id: workerId });
+    return Promise.resolve(undefined);
+  };
   const serviceWorkerClients = globalThis.clients && typeof globalThis.clients === "object"
     ? globalThis.clients : {};
-  serviceWorkerClients.claim = () => Promise.resolve(undefined);
+  serviceWorkerClients.claim = () => {
+    const workerId = Number.isSafeInteger(globalThis.__glassWorkerId)
+      ? globalThis.__glassWorkerId : 0;
+    if (!workerId) return Promise.reject(new Error("native service worker is unavailable"));
+    pushCommand({ kind: "serviceWorkerClientsClaim", worker_id: workerId });
+    return Promise.resolve(undefined);
+  };
   serviceWorkerClients.matchAll = (options) => {
     const settings = options && typeof options === "object" ? options : {};
     const type = settings.type === undefined ? "window" : String(settings.type);

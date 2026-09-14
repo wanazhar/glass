@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-350` locally. Native is now the default runtime for
+`native-engine-browser-351` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -305,6 +305,18 @@ arbitration, exact `skipWaiting()` activation policy, multi-client controller
 ownership, Service-Worker CacheStorage freshness, richer transferables,
 complete task-source scheduling, and final production certification remain
 active issue #40 gates.
+
+The completed native Service Worker waiting-worker arbitration slice is
+[native-engine-browser-351](tasks/native-engine-browser-351.md): workers that
+do not request `skipWaiting()` remain installed and waiting beside the active
+worker, with page-facing `registration.waiting` and installing/installed
+events. Validated `skipWaiting()` requests still activate immediately, and a
+matching native navigation promotes a waiting worker only after activate
+`waitUntil()` work settles; failed promotion preserves the previous active
+worker. Waiting-worker persistence, multi-client controller ownership, exact
+task-source scheduling, Service-Worker CacheStorage freshness, richer
+transferables, and final production certification remain active issue #40
+gates.
 
 The completed native cookie-policy slice is
 [native-engine-browser-334](tasks/native-engine-browser-334.md): cookie

@@ -855,8 +855,8 @@ impl NativeEngine {
                 self.runtime.close()?;
                 self.runtime_worker.take();
                 self.lifecycle = NativeLifecycleState::Closed;
-                if let Some(process) = self.content_process.take()
-                    && process.is_healthy()
+                if let Some(mut process) = self.content_process.take()
+                    && process.refresh_health()
                 {
                     process.close().await?;
                 }
@@ -928,8 +928,8 @@ impl NativeEngine {
         self.require_running("recover")?;
         if self
             .content_process
-            .as_ref()
-            .is_some_and(|process| !process.is_healthy())
+            .as_mut()
+            .is_some_and(|process| !process.refresh_health())
         {
             self.content_process.take();
         }
@@ -1084,8 +1084,8 @@ impl NativeEngine {
     async fn ensure_content_process(&mut self) -> Result<(), NativeEngineError> {
         if self
             .content_process
-            .as_ref()
-            .is_some_and(|process| !process.is_healthy())
+            .as_mut()
+            .is_some_and(|process| !process.refresh_health())
         {
             self.content_process.take();
         }
@@ -1299,8 +1299,8 @@ impl NativeEngine {
         let mut navigation = None;
         let allowed = if self
             .content_process
-            .as_ref()
-            .is_some_and(NativeContentProcess::is_healthy)
+            .as_mut()
+            .is_some_and(NativeContentProcess::refresh_health)
         {
             let (allowed, next_navigation) = self.dispatch_content_before_unload_async().await?;
             navigation = next_navigation;
@@ -1318,8 +1318,8 @@ impl NativeEngine {
         let events = [NativeEventKind::PageHide, NativeEventKind::Unload];
         if self
             .content_process
-            .as_ref()
-            .is_some_and(NativeContentProcess::is_healthy)
+            .as_mut()
+            .is_some_and(NativeContentProcess::refresh_health)
         {
             if let Some(next_navigation) = self.dispatch_content_events_async(&events).await? {
                 if navigation.is_some() {
@@ -1350,7 +1350,7 @@ impl NativeEngine {
             let Some(process) = self.content_process.as_mut() else {
                 return Ok((true, None));
             };
-            if !process.is_healthy() {
+            if !process.refresh_health() {
                 return Ok((true, None));
             }
             process.dispatch_before_unload().await?
@@ -1375,7 +1375,7 @@ impl NativeEngine {
             let Some(process) = self.content_process.as_mut() else {
                 return Ok(None);
             };
-            if !process.is_healthy() {
+            if !process.refresh_health() {
                 return Ok(None);
             }
             process.dispatch_lifecycle_events(events).await?
@@ -1397,7 +1397,7 @@ impl NativeEngine {
         let Some(process) = self.content_process.as_mut() else {
             return Ok(None);
         };
-        if !process.is_healthy() {
+        if !process.refresh_health() {
             return Ok(None);
         }
         let mutation = process
@@ -1419,7 +1419,7 @@ impl NativeEngine {
             let Some(process) = self.content_process.as_mut() else {
                 return Ok(None);
             };
-            if !process.is_healthy() {
+            if !process.refresh_health() {
                 return Ok(None);
             }
             process.dispatch_hash_change(old_url, new_url).await?
@@ -1547,7 +1547,7 @@ impl NativeEngine {
                     .content_process
                     .as_mut()
                     .expect("content process presence was checked");
-                if !process.is_healthy() {
+                if !process.refresh_health() {
                     return Err(NativeEngineError::worker_failure(
                         "content process script",
                         process
@@ -2744,10 +2744,10 @@ impl NativeEngine {
         if self.content_process.is_some() {
             self.deliver_pending_external_storage_events().await?;
         }
-        let Some(process) = self.content_process.as_ref() else {
+        let Some(process) = self.content_process.as_mut() else {
             return self.action(action);
         };
-        if !process.is_healthy() {
+        if !process.refresh_health() {
             return Err(NativeEngineError::worker_failure(
                 "content process mutation",
                 process
@@ -3801,7 +3801,7 @@ impl NativeEngine {
         let recovery_pending = self.storage_state_recovery_pending;
         let indexed_db_pending = self.indexed_db_state_delivery_pending;
         if let Some(process) = self.content_process.as_mut() {
-            if !process.is_healthy() {
+            if !process.refresh_health() {
                 self.pending_external_storage_events = events;
                 return Err(NativeEngineError::worker_failure(
                     "content process storage events",
@@ -3881,8 +3881,8 @@ impl NativeEngine {
     fn persist_local_web_storage(&mut self) -> Result<(), NativeEngineError> {
         if self
             .content_process
-            .as_ref()
-            .is_some_and(NativeContentProcess::is_healthy)
+            .as_mut()
+            .is_some_and(NativeContentProcess::refresh_health)
         {
             return Ok(());
         }
@@ -5852,8 +5852,8 @@ impl NativeEngine {
             if old_url != new_url && without_fragment(&old_url) == without_fragment(&new_url) {
                 if self
                     .content_process
-                    .as_ref()
-                    .is_some_and(NativeContentProcess::is_healthy)
+                    .as_mut()
+                    .is_some_and(NativeContentProcess::refresh_health)
                 {
                     self.dispatch_content_hash_change_async(&old_url, &new_url)
                         .await?

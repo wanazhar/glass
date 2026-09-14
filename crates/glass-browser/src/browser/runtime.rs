@@ -518,8 +518,8 @@ impl BrowserRuntimeSession {
     }
 
     /// Capture the active context through the selected backend's native image
-    /// or document owner.  Native PNG and PDF are first-class captures; a
-    /// backend returns a typed unsupported error when it cannot encode the
+    /// or document owner. Native PNG, JPEG, and PDF are first-class captures;
+    /// a backend returns a typed unsupported error when it cannot encode the
     /// requested format rather than silently switching transports.
     pub async fn capture(&self, format: CaptureFormat) -> BrowserResult<CaptureResult> {
         let _operation = self.operation_lock.lock().await;

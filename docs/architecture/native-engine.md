@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-359` slice. The native runtime is now the primary
+`native-engine-browser-360` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -377,6 +377,17 @@ browser IPC request is routed by stable worker, request, context, and frame
 identity. Fetch-event suspension and arbitrary-target WindowClient messaging
 remain separate Service Worker conformance gates. Exact evidence is recorded
 in `docs/plan/tasks/native-engine-browser-359.md`.
+
+Slice 360 completes the browser-owned routing half of Service Worker client
+messaging. Same-client `Client.postMessage()` delivery remains local, while a
+message addressed to another `WindowClient` crosses the content-process IPC
+boundary with bounded clone and transfer metadata. The backend resolves the
+opaque client id across selected and parked targets and frames, dispatches the
+page `ServiceWorkerContainer` event in the exact owner, and returns nested
+effects through a sixth fair browser-effect source. Exact evidence is recorded
+in `docs/plan/tasks/native-engine-browser-360.md`; richer transferables,
+fetch-event suspension, registration arbitration, durable live-client leases,
+and final Core Web Profile certification remain issue #40 gates.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

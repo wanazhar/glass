@@ -144,6 +144,15 @@ capture contract as CLI and `BrowserSession`, including metadata. Process
 isolation, cancellation, conformance, and final production certification
 remain active issue #40 gates.
 
+The completed native semantic-cookie-write slice is
+[native-engine-browser-333](tasks/native-engine-browser-333.md): the shared
+storage write operation now performs a current-origin `document.cookie`
+assignment in native local and content-process documents, returns the resulting
+cookie map, and uses the same semantics in the CDP adapter. Full cookie import
+metadata remains available through `setCookies`; process isolation,
+cancellation, conformance, and final production certification remain active
+issue #40 gates.
+
 The completed computed-style/media-query slice is
 [native-engine-browser-282](tasks/native-engine-browser-282.md). It exposes a
 bounded read-only `getComputedStyle` surface backed by the native cascade and

@@ -48,9 +48,9 @@ use super::origin::NativeOrigin;
 use super::resource_loader::{
     MAX_NATIVE_RESPONSE_HEADER_BYTES, MAX_NATIVE_RESPONSE_HEADER_NAME_BYTES,
     MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES, MAX_NATIVE_RESPONSE_HEADERS, NativeCorsMode,
-    NativeFetchRedirectMode, NativeFetchRequest, NativeFetchResponse, NativeFetchResponseStream,
-    NativeNavigationMethod, NativeNavigationRequest, NativeRequestBody, NativeResourceLoader,
-    NativeWebSocketTarget,
+    NativeFetchCacheMode, NativeFetchRedirectMode, NativeFetchRequest, NativeFetchResponse,
+    NativeFetchResponseStream, NativeNavigationMethod, NativeNavigationRequest, NativeRequestBody,
+    NativeResourceLoader, NativeWebSocketTarget,
 };
 #[cfg(windows)]
 use super::sandbox::NativeContentSandbox;
@@ -8833,6 +8833,7 @@ fn fetch_commands(
         Option<String>,
         NativeCorsMode,
         NativeFetchRedirectMode,
+        NativeFetchCacheMode,
         Option<Duration>,
         bool,
     )>,
@@ -8852,6 +8853,7 @@ fn fetch_commands(
                 content_type,
                 mode,
                 redirect,
+                cache,
                 timeout_ms,
                 ..
             } => Some((
@@ -8864,6 +8866,7 @@ fn fetch_commands(
                 content_type.clone(),
                 mode.clone(),
                 redirect.clone(),
+                cache.clone(),
                 *timeout_ms,
                 *credentials,
             )),
@@ -8880,6 +8883,7 @@ fn fetch_commands(
                 content_type,
                 mode,
                 redirect,
+                cache,
                 timeout_ms,
                 credentials,
             )| {
@@ -8912,6 +8916,7 @@ fn fetch_commands(
                         ));
                     }
                 };
+                let cache_mode = NativeFetchCacheMode::from_option(cache.as_deref())?;
                 let method =
                     NativeNavigationMethod::from_fetch_method(method.as_str()).map_err(|_| {
                         NativeEngineError::invalid(
@@ -8949,6 +8954,7 @@ fn fetch_commands(
                     content_type,
                     cors_mode,
                     redirect_mode,
+                    cache_mode,
                     timeout,
                     credentials,
                 ))
@@ -8991,24 +8997,40 @@ fn fetch_stream_response_payload(response: NativeFetchResponse, stream_id: u32) 
 async fn collect_native_fetch_response(
     opened: NativeFetchResponseStream,
 ) -> Result<NativeFetchResponse, NativeEngineError> {
-    let mut stream = opened.body.bytes_stream();
-    let mut body = Vec::new();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|error| NativeEngineError::Network {
-            operation: "fetch response body".into(),
-            reason: error.to_string(),
-        })?;
-        let next_len = body.len().saturating_add(chunk.len());
-        if next_len > opened.max_response_bytes {
-            return Err(NativeEngineError::limit(
-                "fetch response",
-                opened.max_response_bytes,
-                next_len,
-            ));
+    let NativeFetchResponseStream {
+        mut response,
+        body: response_body,
+        cached_body,
+        max_response_bytes,
+    } = opened;
+    let body = if let Some(body) = cached_body {
+        body
+    } else {
+        let Some(body) = response_body else {
+            return Err(NativeEngineError::Worker {
+                operation: "fetch response body".into(),
+                reason: "native fetch response had no readable body".into(),
+            });
+        };
+        let mut stream = body.bytes_stream();
+        let mut body = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|error| NativeEngineError::Network {
+                operation: "fetch response body".into(),
+                reason: error.to_string(),
+            })?;
+            let next_len = body.len().saturating_add(chunk.len());
+            if next_len > max_response_bytes {
+                return Err(NativeEngineError::limit(
+                    "fetch response",
+                    max_response_bytes,
+                    next_len,
+                ));
+            }
+            body.extend_from_slice(&chunk);
         }
-        body.extend_from_slice(&chunk);
-    }
-    let mut response = opened.response;
+        body
+    };
     response.body = body;
     Ok(response)
 }
@@ -9134,6 +9156,7 @@ async fn resolve_script_fetches(
             content_type,
             cors_mode,
             redirect_mode,
+            cache_mode,
             timeout,
             credentials,
         )) = pending.pop()
@@ -9184,21 +9207,24 @@ async fn resolve_script_fetches(
                             request_headers: headers,
                             cors_mode,
                             redirect_mode,
+                            cache_mode,
                             timeout,
                             credentials,
                             max_response_bytes: None,
                         })
                         .await;
                     match opened {
-                        Ok(opened)
-                            if !opened.response.opaque && !opened.response.opaque_redirect =>
+                        Ok(mut opened)
+                            if !opened.response.opaque
+                                && !opened.response.opaque_redirect
+                                && opened.body.is_some() =>
                         {
                             if let std::collections::btree_map::Entry::Vacant(e) =
                                 fetch_stream_connections.entry(request_id)
                             {
                                 let response = opened.response;
                                 let stream = spawn_native_fetch_stream(
-                                    opened.body,
+                                    opened.body.take().expect("fetch stream body is present"),
                                     opened.max_response_bytes,
                                 );
                                 e.insert(stream);

@@ -15,11 +15,12 @@ use super::javascript::{
     MAX_NATIVE_SERVICE_WORKER_CACHES, MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES,
     MAX_NATIVE_SERVICE_WORKERS, MAX_NATIVE_WORKER_MESSAGES, NativeJavaScriptRuntime,
     NativeMessagePortPageMessage, NativeMessagePortTransfer, NativeScriptCommand,
-    NativeScriptEvaluation, NativeServiceWorkerCacheEntry, NativeServiceWorkerCacheState,
-    NativeServiceWorkerClientMessage, NativeServiceWorkerClientState,
-    NativeServiceWorkerRegistrationProfile, NativeServiceWorkerRegistrationState,
-    NativeServiceWorkerWorkerProfile, NativeServiceWorkerWorkerState, load_service_worker_source,
-    validate_message_port_transfers, validate_native_service_worker_cache_request_headers,
+    NativeScriptEvaluation, NativeServiceWorkerCacheBatchEntry, NativeServiceWorkerCacheEntry,
+    NativeServiceWorkerCacheState, NativeServiceWorkerClientMessage,
+    NativeServiceWorkerClientState, NativeServiceWorkerRegistrationProfile,
+    NativeServiceWorkerRegistrationState, NativeServiceWorkerWorkerProfile,
+    NativeServiceWorkerWorkerState, load_service_worker_source, validate_message_port_transfers,
+    validate_native_service_worker_cache_request_headers,
 };
 use super::origin::NativeOrigin;
 use super::resource_loader::{
@@ -445,8 +446,9 @@ impl NativeServiceWorkerRegistry {
         Ok(worker_id)
     }
 
-    fn instantiate_worker(
+    async fn instantiate_worker(
         &mut self,
+        loader: &mut NativeResourceLoader,
         script_url: String,
         scope: String,
         is_module: bool,
@@ -489,8 +491,14 @@ impl NativeServiceWorkerRegistry {
                 &worker.import_script_counts,
             )?
         };
-        let client_messages =
-            settle_service_worker_cache_event(&mut worker, initial, &mut self.cache_state, None)?;
+        let client_messages = settle_service_worker_cache_event(
+            &mut worker,
+            initial,
+            loader,
+            &mut self.cache_state,
+            None,
+        )
+        .await?;
         self.enqueue_client_messages(client_messages)?;
         Ok(worker)
     }
@@ -513,6 +521,7 @@ impl NativeServiceWorkerRegistry {
         let (source, import_script_counts, module_sources) =
             load_service_worker_source(loader, script_url, resource.clone(), is_module).await?;
         self.instantiate_worker(
+            loader,
             resource.url,
             scope.to_owned(),
             is_module,
@@ -520,11 +529,13 @@ impl NativeServiceWorkerRegistry {
             import_script_counts,
             module_sources,
         )
+        .await
     }
 
-    fn settle_worker_install(
+    async fn settle_worker_install(
         &mut self,
         worker: &mut NativeServiceWorker,
+        loader: &mut NativeResourceLoader,
     ) -> Result<(), NativeEngineError> {
         self.set_worker_client_view(worker)?;
         let install = worker.runtime.evaluate_service_worker_lifecycle(
@@ -534,13 +545,15 @@ impl NativeServiceWorkerRegistry {
             worker.is_module,
         )?;
         let client_messages =
-            settle_service_worker_cache_event(worker, install, &mut self.cache_state, None)?;
+            settle_service_worker_cache_event(worker, install, loader, &mut self.cache_state, None)
+                .await?;
         self.enqueue_client_messages(client_messages)
     }
 
-    fn settle_worker_activate(
+    async fn settle_worker_activate(
         &mut self,
         worker: &mut NativeServiceWorker,
+        loader: &mut NativeResourceLoader,
     ) -> Result<(), NativeEngineError> {
         self.set_worker_client_view(worker)?;
         let activate = worker.runtime.evaluate_service_worker_lifecycle(
@@ -549,8 +562,14 @@ impl NativeServiceWorkerRegistry {
             "activate",
             worker.is_module,
         )?;
-        let client_messages =
-            settle_service_worker_cache_event(worker, activate, &mut self.cache_state, None)?;
+        let client_messages = settle_service_worker_cache_event(
+            worker,
+            activate,
+            loader,
+            &mut self.cache_state,
+            None,
+        )
+        .await?;
         self.enqueue_client_messages(client_messages)
     }
 
@@ -588,14 +607,15 @@ impl NativeServiceWorkerRegistry {
         })
     }
 
-    fn install_worker(
+    async fn install_worker(
         &mut self,
         mut worker: NativeServiceWorker,
+        loader: &mut NativeResourceLoader,
     ) -> Result<NativeServiceWorkerRegistrationState, NativeEngineError> {
         let scope = worker.scope.clone();
-        self.settle_worker_install(&mut worker)?;
+        self.settle_worker_install(&mut worker, loader).await?;
         if worker.skip_waiting_requested || !self.registrations.contains_key(&scope) {
-            self.settle_worker_activate(&mut worker)?;
+            self.settle_worker_activate(&mut worker, loader).await?;
             return self.commit_activated_worker(&scope, worker);
         }
         if let Some(previous_waiting) = self.waiting_workers.insert(scope.clone(), worker) {
@@ -671,15 +691,18 @@ impl NativeServiceWorkerRegistry {
         let (source, import_script_counts, module_sources) =
             load_service_worker_source(loader, &profile.script_url, resource.clone(), is_module)
                 .await?;
-        let worker = self.instantiate_worker(
-            resource.url,
-            profile.scope.clone(),
-            is_module,
-            source,
-            import_script_counts,
-            module_sources,
-        )?;
-        self.install_worker(worker)
+        let worker = self
+            .instantiate_worker(
+                loader,
+                resource.url,
+                profile.scope.clone(),
+                is_module,
+                source,
+                import_script_counts,
+                module_sources,
+            )
+            .await?;
+        self.install_worker(worker, loader).await
     }
 
     fn remember_registration(&mut self, worker: &NativeServiceWorker) {
@@ -826,15 +849,18 @@ impl NativeServiceWorkerRegistry {
             })?;
         let (source, import_script_counts, module_sources) =
             load_service_worker_source(loader, owner_url, resource.clone(), is_module).await?;
-        let worker = self.instantiate_worker(
-            resource.url,
-            scope.clone(),
-            is_module,
-            source,
-            import_script_counts,
-            module_sources,
-        )?;
-        self.install_worker(worker)
+        let worker = self
+            .instantiate_worker(
+                loader,
+                resource.url,
+                scope.clone(),
+                is_module,
+                source,
+                import_script_counts,
+                module_sources,
+            )
+            .await?;
+        self.install_worker(worker, loader).await
     }
 
     pub(crate) fn clear_page_message_port_routes(&mut self) {
@@ -900,8 +926,9 @@ impl NativeServiceWorkerRegistry {
         removed_profile || had_active || had_waiting
     }
 
-    pub(crate) fn post_message(
+    pub(crate) async fn post_message(
         &mut self,
+        loader: &mut NativeResourceLoader,
         scope: &str,
         data: &Value,
         transfer_ports: &[NativeMessagePortTransfer],
@@ -946,9 +973,12 @@ impl NativeServiceWorkerRegistry {
                 .get_mut(scope)
                 .expect("service worker registration was retained"),
             evaluation,
+            loader,
             &mut self.cache_state,
             None,
-        ) {
+        )
+        .await
+        {
             Ok(messages) => messages,
             Err(error) => {
                 self.remove_transfer_routes(transfer_ports);
@@ -962,9 +992,10 @@ impl NativeServiceWorkerRegistry {
         Ok(())
     }
 
-    pub(crate) fn apply_page_message_port_commands(
+    pub(crate) async fn apply_page_message_port_commands(
         &mut self,
         commands: Vec<NativeScriptCommand>,
+        loader: &mut NativeResourceLoader,
     ) -> Result<(), NativeEngineError> {
         if commands.len() > MAX_NATIVE_WORKER_MESSAGES {
             return Err(NativeEngineError::limit(
@@ -1032,9 +1063,12 @@ impl NativeServiceWorkerRegistry {
                     .get_mut(&scope)
                     .expect("service worker registration was retained"),
                 evaluation,
+                loader,
                 &mut self.cache_state,
                 None,
-            ) {
+            )
+            .await
+            {
                 Ok(messages) => messages,
                 Err(error) => {
                     self.remove_transfer_routes(&transfer_ports);
@@ -1059,7 +1093,8 @@ impl NativeServiceWorkerRegistry {
             "service worker navigation URL",
             without_fragment(&navigation.url),
         )?;
-        self.activate_waiting_for_navigation(&target)?;
+        self.activate_waiting_for_navigation(loader, &target)
+            .await?;
         let Some(response) = self
             .intercept_fetch(
                 loader,
@@ -1261,14 +1296,18 @@ impl NativeServiceWorkerRegistry {
             .map(|(_, scope)| scope))
     }
 
-    fn activate_waiting_for_navigation(&mut self, target: &Url) -> Result<(), NativeEngineError> {
+    async fn activate_waiting_for_navigation(
+        &mut self,
+        loader: &mut NativeResourceLoader,
+        target: &Url,
+    ) -> Result<(), NativeEngineError> {
         let Some(scope) = self.matching_waiting_scope(target)? else {
             return Ok(());
         };
         let Some(mut worker) = self.waiting_workers.remove(&scope) else {
             return Ok(());
         };
-        if let Err(error) = self.settle_worker_activate(&mut worker) {
+        if let Err(error) = self.settle_worker_activate(&mut worker, loader).await {
             self.waiting_workers.insert(scope, worker);
             return Err(error);
         }
@@ -1398,13 +1437,15 @@ impl NativeServiceWorkerRegistry {
     }
 }
 
-fn settle_service_worker_cache_event(
+async fn settle_service_worker_cache_event(
     worker: &mut NativeServiceWorker,
     evaluation: NativeScriptEvaluation,
+    loader: &mut NativeResourceLoader,
     cache_state: &mut NativeServiceWorkerCacheState,
     current_client_id: Option<&str>,
 ) -> Result<Vec<NativeServiceWorkerClientMessage>, NativeEngineError> {
     let mut pending = VecDeque::from(evaluation.commands);
+    let mut value = evaluation.value;
     let mut awaiting = evaluation.top_level_await_pending;
     let mut client_messages = Vec::new();
     let mut turns = 0usize;
@@ -1426,6 +1467,18 @@ fn settle_service_worker_cache_event(
             client_messages.push(message);
             continue;
         }
+        if resolve_service_worker_fetch_command(
+            worker,
+            loader,
+            command.clone(),
+            &mut pending,
+            &mut awaiting,
+            &mut value,
+        )
+        .await?
+        {
+            continue;
+        }
         let (request_id, payload) =
             apply_service_worker_cache_command(worker, command, cache_state)?;
         let resolved = worker.runtime.resolve_service_worker_cache(
@@ -1437,7 +1490,8 @@ fn settle_service_worker_cache_event(
         )?;
         pending.extend(resolved.commands);
         awaiting |= resolved.top_level_await_pending;
-        if worker.runtime.take_top_level_await_result()?.is_some() {
+        if let Some(resolved_value) = worker.runtime.take_top_level_await_result()? {
+            value = resolved_value;
             awaiting = false;
         }
     }
@@ -1506,6 +1560,107 @@ fn service_worker_client_message_command(
     }))
 }
 
+async fn resolve_service_worker_fetch_command(
+    worker: &mut NativeServiceWorker,
+    loader: &mut NativeResourceLoader,
+    command: NativeScriptCommand,
+    pending: &mut VecDeque<NativeScriptCommand>,
+    awaiting: &mut bool,
+    value: &mut Value,
+) -> Result<bool, NativeEngineError> {
+    let NativeScriptCommand::Fetch {
+        request_id,
+        worker_id,
+        href,
+        credentials,
+        method,
+        headers,
+        body,
+        body_base64,
+        content_type,
+        mode,
+        redirect,
+        cache,
+        timeout_ms,
+    } = command
+    else {
+        return Ok(false);
+    };
+    let Some(worker_id) = worker_id else {
+        return Err(NativeEngineError::Worker {
+            operation: "service worker fetch event".into(),
+            reason: "service worker fetch command owner is invalid".into(),
+        });
+    };
+    if worker_id != worker.id || request_id == 0 {
+        return Err(NativeEngineError::Worker {
+            operation: "service worker fetch event".into(),
+            reason: "service worker fetch command owner is invalid".into(),
+        });
+    }
+    let request_body = match body_base64 {
+        Some(encoded) => Some(NativeRequestBody::Bytes(
+            base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .map_err(|_| {
+                    NativeEngineError::invalid("service worker fetch body", "must be valid base64")
+                })?,
+        )),
+        None => body.map(NativeRequestBody::Text),
+    };
+    if request_body
+        .as_ref()
+        .is_some_and(|body| body.len() > MAX_NATIVE_FORM_BODY_BYTES)
+    {
+        return Err(NativeEngineError::limit(
+            "service worker fetch body",
+            MAX_NATIVE_FORM_BODY_BYTES,
+            request_body.as_ref().map_or(0, NativeRequestBody::len),
+        ));
+    }
+    let method = NativeNavigationMethod::from_fetch_method(&method)?;
+    let cors_mode = parse_cors_mode(mode.as_deref().unwrap_or("same-origin"))?;
+    let redirect_mode = parse_redirect_mode(redirect.as_deref().unwrap_or("follow"))?;
+    let cache_mode = NativeFetchCacheMode::from_option(cache.as_deref())?;
+    let response = loader
+        .fetch_request_with_headers_async(NativeFetchRequest {
+            document_url: &worker.script_url,
+            href: &href,
+            method,
+            body: request_body,
+            content_type,
+            request_headers: headers,
+            credentials,
+            cors_mode,
+            redirect_mode,
+            cache_mode,
+            timeout: timeout_ms.map(|value| Duration::from_millis(u64::from(value))),
+            max_response_bytes: None,
+        })
+        .await;
+    let payload = match response {
+        Ok(response) => service_worker_fetch_payload(response),
+        Err(error) => json!({
+            "error": error.to_string(),
+            "timeout": false,
+        }),
+    };
+    let resolved = worker.runtime.resolve_service_worker_fetch(
+        worker.id,
+        &worker.script_url,
+        request_id,
+        &payload,
+        worker.is_module,
+    )?;
+    pending.extend(resolved.commands);
+    *awaiting |= resolved.top_level_await_pending;
+    if let Some(resolved_value) = worker.runtime.take_top_level_await_result()? {
+        *value = resolved_value;
+        *awaiting = false;
+    }
+    Ok(true)
+}
+
 fn apply_service_worker_cache_command(
     worker: &mut NativeServiceWorker,
     command: NativeScriptCommand,
@@ -1523,6 +1678,7 @@ fn apply_service_worker_cache_command(
         | NativeScriptCommand::ServiceWorkerCacheKeys { request_id }
         | NativeScriptCommand::ServiceWorkerCacheMatch { request_id, .. }
         | NativeScriptCommand::ServiceWorkerCachePut { request_id, .. }
+        | NativeScriptCommand::ServiceWorkerCachePutAll { request_id, .. }
         | NativeScriptCommand::ServiceWorkerCacheDeleteRequest { request_id, .. }
         | NativeScriptCommand::ServiceWorkerCacheEntries { request_id, .. } => *request_id,
         _ => {
@@ -1544,6 +1700,7 @@ fn apply_service_worker_cache_command(
         | NativeScriptCommand::ServiceWorkerCacheHas { cache_name, .. }
         | NativeScriptCommand::ServiceWorkerCacheMatch { cache_name, .. }
         | NativeScriptCommand::ServiceWorkerCachePut { cache_name, .. }
+        | NativeScriptCommand::ServiceWorkerCachePutAll { cache_name, .. }
         | NativeScriptCommand::ServiceWorkerCacheDeleteRequest { cache_name, .. }
         | NativeScriptCommand::ServiceWorkerCacheEntries { cache_name, .. } => cache_name,
         NativeScriptCommand::ServiceWorkerCacheKeys { .. } => "",
@@ -1657,6 +1814,46 @@ fn apply_service_worker_cache_command(
                 }
                 entries.insert(key, entry);
             }
+            if let Err(error) = cache_state.validate() {
+                *cache_state = previous_state;
+                return Err(error);
+            }
+            Ok((request_id, json!({"ok":true})))
+        }
+        NativeScriptCommand::ServiceWorkerCachePutAll {
+            cache_name,
+            entries: batch_entries,
+            ..
+        } => {
+            let mut staged_entries = caches.get(&cache_name).cloned().unwrap_or_default();
+            for batch_entry in batch_entries {
+                let NativeServiceWorkerCacheBatchEntry {
+                    request_url,
+                    request_method,
+                    request_headers,
+                    response,
+                } = batch_entry;
+                let request = validate_cache_request(&request_url, &request_method)?;
+                if request.method != "GET" {
+                    return Err(NativeEngineError::invalid(
+                        "native service worker cache request method",
+                        "Cache.addAll only supports GET requests",
+                    ));
+                }
+                let entry = cache_entry_from_payload(&response, &request.url, request_headers)?;
+                let key = cache_entry_key(&request.method, &request.url);
+                if !staged_entries.contains_key(&key)
+                    && staged_entries.len() >= MAX_NATIVE_SERVICE_WORKER_CACHE_ENTRIES
+                {
+                    return Err(NativeEngineError::limit(
+                        "native service worker cache entries",
+                        MAX_NATIVE_SERVICE_WORKER_CACHE_ENTRIES,
+                        staged_entries.len().saturating_add(1),
+                    ));
+                }
+                staged_entries.insert(key, entry);
+            }
+            caches.insert(cache_name, staged_entries);
             if let Err(error) = cache_state.validate() {
                 *cache_state = previous_state;
                 return Err(error);
@@ -1869,6 +2066,20 @@ fn cache_entry_from_payload(
         });
     }
     let response = decode_service_worker_response(value, fallback_url)?;
+    if response.status == 206 {
+        return Err(NativeEngineError::invalid(
+            "native service worker cached response status",
+            "Cache.put and Cache.addAll must reject 206 Partial Content",
+        ));
+    }
+    if response.headers.iter().any(|(name, value)| {
+        name.eq_ignore_ascii_case("vary") && value.split(',').any(|field| field.trim() == "*")
+    }) {
+        return Err(NativeEngineError::invalid(
+            "native service worker cached response Vary header",
+            "Cache.put and Cache.addAll must reject Vary: *",
+        ));
+    }
     if response.body.len() > MAX_NATIVE_SERVICE_WORKER_CACHE_BODY_BYTES {
         return Err(NativeEngineError::limit(
             "native service worker cached response body",
@@ -1972,95 +2183,20 @@ async fn settle_service_worker_fetch(
             }
             continue;
         }
-        let NativeScriptCommand::Fetch {
-            request_id,
-            worker_id: Some(worker_id),
-            href,
-            credentials,
-            method,
-            headers,
-            body,
-            body_base64,
-            content_type,
-            mode,
-            redirect,
-            cache,
-            timeout_ms,
-        } = command
-        else {
+        if !resolve_service_worker_fetch_command(
+            worker,
+            loader,
+            command,
+            &mut pending,
+            &mut awaiting,
+            &mut value,
+        )
+        .await?
+        {
             return Err(NativeEngineError::Worker {
                 operation: "service worker fetch event".into(),
                 reason: "service worker emitted an unsupported host command".into(),
             });
-        };
-        if worker_id != worker.id || request_id == 0 {
-            return Err(NativeEngineError::Worker {
-                operation: "service worker fetch event".into(),
-                reason: "service worker fetch command owner is invalid".into(),
-            });
-        }
-        let request_body = match body_base64 {
-            Some(encoded) => Some(NativeRequestBody::Bytes(
-                base64::engine::general_purpose::STANDARD
-                    .decode(encoded)
-                    .map_err(|_| {
-                        NativeEngineError::invalid(
-                            "service worker fetch body",
-                            "must be valid base64",
-                        )
-                    })?,
-            )),
-            None => body.map(NativeRequestBody::Text),
-        };
-        if request_body
-            .as_ref()
-            .is_some_and(|body| body.len() > MAX_NATIVE_FORM_BODY_BYTES)
-        {
-            return Err(NativeEngineError::limit(
-                "service worker fetch body",
-                MAX_NATIVE_FORM_BODY_BYTES,
-                request_body.as_ref().map_or(0, NativeRequestBody::len),
-            ));
-        }
-        let method = NativeNavigationMethod::from_fetch_method(&method)?;
-        let cors_mode = parse_cors_mode(mode.as_deref().unwrap_or("same-origin"))?;
-        let redirect_mode = parse_redirect_mode(redirect.as_deref().unwrap_or("follow"))?;
-        let cache_mode = NativeFetchCacheMode::from_option(cache.as_deref())?;
-        let response = loader
-            .fetch_request_with_headers_async(NativeFetchRequest {
-                document_url: &worker.script_url,
-                href: &href,
-                method,
-                body: request_body,
-                content_type,
-                request_headers: headers,
-                credentials,
-                cors_mode,
-                redirect_mode,
-                cache_mode,
-                timeout: timeout_ms.map(|value| Duration::from_millis(u64::from(value))),
-                max_response_bytes: None,
-            })
-            .await;
-        let payload = match response {
-            Ok(response) => service_worker_fetch_payload(response),
-            Err(error) => json!({
-                "error": error.to_string(),
-                "timeout": false,
-            }),
-        };
-        let resolved = worker.runtime.resolve_worker_fetch(
-            worker.id,
-            &worker.script_url,
-            request_id,
-            &payload,
-            &worker.import_script_counts,
-        )?;
-        pending.extend(resolved.commands);
-        awaiting |= resolved.top_level_await_pending;
-        if let Some(resolved_value) = worker.runtime.take_top_level_await_result()? {
-            value = resolved_value;
-            awaiting = false;
         }
     }
     if awaiting {
@@ -2110,6 +2246,7 @@ fn is_service_worker_cache_command(command: &NativeScriptCommand) -> bool {
             | NativeScriptCommand::ServiceWorkerCacheKeys { .. }
             | NativeScriptCommand::ServiceWorkerCacheMatch { .. }
             | NativeScriptCommand::ServiceWorkerCachePut { .. }
+            | NativeScriptCommand::ServiceWorkerCachePutAll { .. }
             | NativeScriptCommand::ServiceWorkerCacheDeleteRequest { .. }
             | NativeScriptCommand::ServiceWorkerCacheEntries { .. }
     )

@@ -4376,6 +4376,94 @@ self.addEventListener('fetch', event => {
 }
 
 #[tokio::test]
+async fn native_service_worker_cache_rejects_partial_and_commits_add_all_atomically() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..5 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap_or_default();
+            let (status, reason, content_type, body) = match path {
+                "/page" => (
+                    200,
+                    "OK",
+                    "text/html",
+                    "<!doctype html><html><body><script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script><main>cache conformance page</main></body></html>",
+                ),
+                "/sw.js" => (
+                    200,
+                    "OK",
+                    "application/javascript",
+                    r#"self.addEventListener('install', event => event.waitUntil((async () => {
+  const cache = await caches.open('v1');
+  await cache.put('/stable', new Response('stable'));
+  let partialRejected = false;
+  try { await cache.put('/partial', new Response('partial', { status: 206 })); } catch (_) { partialRejected = true; }
+  let varyRejected = false;
+  try { await cache.put('/vary', new Response('vary', { headers: { 'Vary': '*' } })); } catch (_) { varyRejected = true; }
+  await cache.addAll(['/good']);
+  let addAllRejected = false;
+  try { await cache.addAll(['/good-again', '/partial']); } catch (_) { addAllRejected = true; }
+  const keys = await cache.keys();
+  await cache.put('/result', new Response(JSON.stringify({
+    partialRejected,
+    varyRejected,
+    addAllRejected,
+    keyUrls: keys.map(request => request.url),
+  }), { headers: { 'Content-Type': 'application/json' } }));
+  return self.skipWaiting();
+})()));
+self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+self.addEventListener('fetch', event => event.respondWith(caches.match(event.request).then(cached => cached || fetch(event.request))));"#,
+                ),
+                "/good" | "/good-again" => (200, "OK", "text/plain", "good"),
+                "/partial" => (206, "Partial Content", "text/plain", "partial"),
+                _ => panic!("unexpected cache conformance request: {path}"),
+            };
+            let response = format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await registrationPromise.then(reg => [reg.active.state, reg.active.scriptURL])",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["activated", format!("http://{address}/sw.js")])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("await fetch('/result').then(response => response.json())")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "partialRejected": true,
+            "varyRejected": true,
+            "addAllRejected": true,
+            "keyUrls": [
+                format!("http://{address}/good"),
+                format!("http://{address}/stable"),
+            ],
+        })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_persists_service_worker_cache_across_restart() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

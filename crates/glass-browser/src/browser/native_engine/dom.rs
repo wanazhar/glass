@@ -3586,6 +3586,7 @@ impl NativeDocument {
                 | NativeScriptCommand::ServiceWorkerCacheKeys { .. }
                 | NativeScriptCommand::ServiceWorkerCacheMatch { .. }
                 | NativeScriptCommand::ServiceWorkerCachePut { .. }
+                | NativeScriptCommand::ServiceWorkerCachePutAll { .. }
                 | NativeScriptCommand::ServiceWorkerCacheDeleteRequest { .. }
                 | NativeScriptCommand::ServiceWorkerCacheEntries { .. }
                 | NativeScriptCommand::MessagePortPostMessage { .. } => {}

@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-354` slice. The native runtime is now the primary
+`native-engine-browser-355` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -316,6 +316,22 @@ message delivery, `clients.openWindow()`, browser-wide registration
 arbitration, exact task-source scheduling, and durable live-client leases
 remain separate issue #40 gates. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-354.md`.
+
+Slice 355 aligns the native Service Worker Cache API admission and batch
+semantics with the Web Platform contract. `Cache.put()` rejects error,
+opaque, redirect-opaque, partial (`206`), and `Vary: *` responses; bounded
+`Cache.addAll()` fetches its request set through the shared Service Worker
+resource policy and commits the serialized responses atomically through one
+host operation. Lifecycle and message turns now resume Service Worker-owned
+Fetch commands through that same policy, so Cache API work is usable during
+install, activate, and message handling rather than only from page-triggered
+fetches. CacheStorage remains explicit application-managed state: HTTP
+`Cache-Control` freshness does not evict it, while HTTP response freshness
+continues to belong to the resource-loader cache owner. Cross-process client
+message delivery, `clients.openWindow()`, browser-wide registration
+arbitration, exact task-source scheduling, durable live-client leases, and
+final production certification remain issue #40 gates. Exact evidence is
+recorded in `docs/plan/tasks/native-engine-browser-355.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

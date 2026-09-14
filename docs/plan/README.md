@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-354` locally. Native is now the default runtime for
+`native-engine-browser-355` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -347,6 +347,20 @@ visibility, and focus metadata into every live content process. Same-origin
 `clients.matchAll()` honors `type` and `includeUncontrolled` across shared
 profile-backed targets, and lifecycle, message, cache, and fetch turns consume
 the same worker client projection. Cross-process client messaging,
+`clients.openWindow()`, browser-wide registration arbitration, exact
+task-source scheduling, durable live-client leases, and final production
+certification remain active issue #40 gates.
+
+The completed native Service Worker Cache API conformance slice is
+[native-engine-browser-355](tasks/native-engine-browser-355.md): `Cache.put()`
+now rejects error, opaque, redirect-opaque, partial (`206`), and `Vary: *`
+responses, while bounded `Cache.addAll()` fetches through the shared worker
+resource policy and commits all entries atomically. Install, activate, and
+message turns can resume worker-owned Fetch commands through the same policy,
+so Cache API operations are not limited to page-triggered fetches. This is
+explicit CacheStorage state, not HTTP freshness: `Cache-Control` does not
+silently evict application cache entries, and HTTP response freshness remains
+owned by the resource-loader cache. Cross-process client messaging,
 `clients.openWindow()`, browser-wide registration arbitration, exact
 task-source scheduling, durable live-client leases, and final production
 certification remain active issue #40 gates.

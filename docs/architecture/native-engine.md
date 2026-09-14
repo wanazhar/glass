@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-342` slice. The native runtime is now the primary
+`native-engine-browser-343` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -132,10 +132,10 @@ atomically persists the cache state beside web storage and IndexedDB. The
 content process reloads this state on startup, so a newly registered worker in
 the same profile can serve an entry written by a previous content-process
 owner. Lifecycle and fetch `waitUntil` promises are settled through the same
-bounded command loop before results are exposed. Unsupported matching options
-remain explicit errors; full request/Vary matching, richer transferable values,
-complete task-source interleaving, and final production certification remain
-separate issue #40 gates. Exact evidence is recorded in
+bounded command loop before results are exposed. The later 343 slice closes
+the bounded request/Vary matching options; cache freshness/revalidation,
+richer transferable values, complete task-source interleaving, and final
+production certification remain separate issue #40 gates. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-340.md`.
 
 Slice 341 persists canonical Service Worker registration metadata in the
@@ -146,8 +146,10 @@ rebuilds an isolated QuickJS owner without replaying install/activate, and
 keeps a temporarily unavailable script from blocking the page while retaining
 the profile for a later retry. Registration and unregistration update the
 profile atomically with cache and storage state. Full worker update/version
-conformance and complete CacheStorage matching semantics remain separate
-issue #40 gates. Exact evidence is recorded in
+conformance was advanced by 342 and bounded CacheStorage matching semantics
+were completed by 343; cache freshness/revalidation, richer transferables,
+and complete task-source interleaving remain separate issue #40 gates. Exact
+evidence is recorded in
 `docs/plan/tasks/native-engine-browser-341.md`.
 
 Slice 342 implements active `ServiceWorkerRegistration.update()`. The native
@@ -156,10 +158,20 @@ resource policy, settles bounded install and activate work in a fresh isolated
 worker, removes the old worker routes, refreshes the durable registration
 metadata, and exposes the replacement to the page. Subsequent navigation and
 Fetch requests use the updated worker without Chromium/CDP. Installing and
-waiting states, update notifications, byte-identical short-circuiting, full
-CacheStorage matching semantics, richer transferables, complete task-source
+waiting states, update notifications, byte-identical short-circuiting, cache
+freshness/revalidation, richer transferables, complete task-source
 interleaving, and final certification remain separate issue #40 gates. Exact
 evidence is recorded in `docs/plan/tasks/native-engine-browser-342.md`.
+
+Slice 343 completes the bounded Service Worker CacheStorage request-matching
+options. `Cache.match()`, `Cache.delete()`, `Cache.keys()`, and
+`caches.match()` now compare normalized URLs with optional query removal,
+method ignoring, and response `Vary` headers; cached request headers persist
+through the profile and filtered keys return them. Non-GET matching remains
+read/delete-only through `ignoreMethod`, while `Cache.put()` stays GET-only.
+Freshness/revalidation, richer transferables, complete task-source
+interleaving, and final certification remain separate issue #40 gates. Exact
+evidence is recorded in `docs/plan/tasks/native-engine-browser-343.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

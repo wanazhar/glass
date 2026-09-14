@@ -3821,24 +3821,41 @@ async fn native_content_process_persists_service_worker_cache_across_restart() {
 });
 self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
 self.addEventListener('fetch', event => {
-  event.respondWith(caches.match(event.request).then(cached => cached ||
-    new Response('<!doctype html><html><body>controlled cache page</body></html>', { headers: { 'Content-Type': 'text/html' } })));
+  event.respondWith(caches.match(event.request).then(cached => cached || fetch(event.request)));
+});"#,
+            ),
+            (
+                "/controlled",
+                "text/html",
+                "<!doctype html><html><body><main>controlled navigation</main></body></html>",
+            ),
+            (
+                "/sw.js",
+                "application/javascript",
+                r#"self.addEventListener('install', event => {
+  event.waitUntil(caches.open('v1').then(async cache => {
+    await cache.put('/durable', new Response('persisted cache value', {
+      status: 200,
+      headers: { 'Content-Type': 'text/plain', 'X-Cache': 'durable' },
+    }));
+    const keys = await cache.keys();
+    const has = await caches.has('v1');
+    await cache.put('/cache-diagnostics', new Response(JSON.stringify({ keys: keys.length, has }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    return self.skipWaiting();
+  }));
+});
+self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+self.addEventListener('fetch', event => {
+  event.respondWith(caches.match(event.request).then(cached => cached || fetch(event.request)));
 });"#,
             ),
             (
                 "/reopen",
                 "text/html",
-                "<!doctype html><html><body><script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw-reopen.js', { scope: '/' });</script><main>cache reopen page</main></body></html>",
-            ),
-            (
-                "/sw-reopen.js",
-                "application/javascript",
-                r#"self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
-self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
-self.addEventListener('fetch', event => {
-  event.respondWith(caches.match(event.request).then(cached => cached ||
-    new Response('<!doctype html><html><body>controlled cache page</body></html>', { headers: { 'Content-Type': 'text/html' } })));
-});"#,
+                "<!doctype html><html><body><script>globalThis.registrationPromise = navigator.serviceWorker.ready; globalThis.restoredController = navigator.serviceWorker.controller !== null;</script><main>cache reopen page</main></body></html>",
             ),
         ] {
             let (mut stream, _) = listener.accept().await.unwrap();
@@ -3895,6 +3912,7 @@ self.addEventListener('fetch', event => {
     engine.close_async().await.unwrap();
     let profile = fs::read_to_string(&profile_path).unwrap();
     assert!(profile.contains("service_worker_caches"));
+    assert!(profile.contains("service_worker_registrations"));
 
     let mut reopened = NativeEngine::new(
         NativeEngineConfig::default()
@@ -3906,16 +3924,12 @@ self.addEventListener('fetch', event => {
     assert_eq!(
         reopened
             .evaluate_async(
-                "await registrationPromise.then(reg => [reg.active.state, reg.active.scriptURL])",
+                "await registrationPromise.then(reg => [restoredController, reg.active.state, reg.active.scriptURL])",
             )
             .await
             .unwrap(),
-        serde_json::json!(["activated", format!("http://{address}/sw-reopen.js")])
+        serde_json::json!([true, "activated", format!("http://{address}/sw.js")])
     );
-    reopened
-        .navigate_async(format!("http://{address}/controlled-reopen"))
-        .await
-        .unwrap();
     assert_eq!(
         reopened
             .evaluate_async(

@@ -6,7 +6,7 @@
 
 use super::config::{
     MAX_NATIVE_WINDOW_NAME_BYTES, Viewport, validate_context_id, validate_url_text,
-    validate_window_name,
+    validate_window_name, without_fragment,
 };
 use super::dom::{
     NativeDocument, NativePageScriptSource, NativePageScriptTiming, NativeScriptDocumentSnapshot,
@@ -53,6 +53,10 @@ use url::Url;
 
 fn default_true() -> bool {
     true
+}
+
+fn default_classic_worker_type() -> String {
+    "classic".into()
 }
 
 /// Maximum source accepted by the native script evaluator.
@@ -516,6 +520,94 @@ pub(crate) struct NativeServiceWorkerRegistrationState {
     pub(crate) script_url: String,
     pub(crate) scope: String,
     pub(crate) state: String,
+}
+
+/// Persistent metadata for one activated Service Worker registration. The
+/// worker source remains owned by the network/resource policy and is loaded
+/// again when a content-process owner is restored.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub(crate) struct NativeServiceWorkerRegistrationProfile {
+    pub(crate) script_url: String,
+    pub(crate) scope: String,
+    #[serde(default = "default_classic_worker_type")]
+    pub(crate) worker_type: String,
+}
+
+impl NativeServiceWorkerRegistrationProfile {
+    pub(crate) fn validate(&self) -> Result<(), NativeEngineError> {
+        if self.script_url.is_empty() || self.script_url.len() > MAX_NATIVE_SCRIPT_BYTES {
+            return Err(NativeEngineError::limit(
+                "native service worker registration script URL",
+                MAX_NATIVE_SCRIPT_BYTES,
+                self.script_url.len(),
+            ));
+        }
+        if self.scope.is_empty() || self.scope.len() > MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES {
+            return Err(NativeEngineError::limit(
+                "native service worker registration scope",
+                MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES,
+                self.scope.len(),
+            ));
+        }
+        let script = Url::parse(without_fragment(&self.script_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "native service worker registration script URL is invalid".into(),
+            }
+        })?;
+        let scope = Url::parse(without_fragment(&self.scope)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "native service worker registration scope URL is invalid".into(),
+            }
+        })?;
+        if !matches!(script.scheme(), "http" | "https")
+            || !matches!(scope.scheme(), "http" | "https")
+            || !script.username().is_empty()
+            || script.password().is_some()
+            || !scope.username().is_empty()
+            || scope.password().is_some()
+        {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "native service worker registration URLs must be credential-free HTTP(S)"
+                    .into(),
+            });
+        }
+        if NativeOrigin::from_url(&script)? != NativeOrigin::from_url(&scope)? {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "native service worker registration script and scope must be same-origin"
+                    .into(),
+            });
+        }
+        let script_directory = script
+            .path()
+            .rfind('/')
+            .map(|index| &script.path()[..=index])
+            .unwrap_or("/");
+        if !scope.path().starts_with(script_directory)
+            || scope.query().is_some()
+            || scope.fragment().is_some()
+        {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "native service worker registration scope exceeds its script directory"
+                    .into(),
+            });
+        }
+        let canonical_scope = format!("{}{}", scope.origin().ascii_serialization(), scope.path());
+        if self.scope != canonical_scope {
+            return Err(NativeEngineError::invalid(
+                "native service worker registration scope",
+                "must be a canonical origin and path",
+            ));
+        }
+        if !self.worker_type.eq_ignore_ascii_case("classic")
+            && !self.worker_type.eq_ignore_ascii_case("module")
+        {
+            return Err(NativeEngineError::invalid(
+                "native service worker registration type",
+                "must be classic or module",
+            ));
+        }
+        Ok(())
+    }
 }
 
 pub(crate) struct NativeScriptEvaluation {
@@ -3025,6 +3117,8 @@ struct NativeWebStorageProfile {
     indexed_db: NativeIndexedDbState,
     #[serde(default)]
     service_worker_caches: NativeServiceWorkerCacheState,
+    #[serde(default)]
+    service_worker_registrations: Vec<NativeServiceWorkerRegistrationProfile>,
 }
 
 /// Profile-owned CacheStorage state. The map is partitioned by serialized
@@ -3194,6 +3288,29 @@ impl NativeServiceWorkerCacheState {
         }
         Ok(())
     }
+}
+
+fn validate_service_worker_registration_profiles(
+    registrations: &[NativeServiceWorkerRegistrationProfile],
+) -> Result<(), NativeEngineError> {
+    if registrations.len() > MAX_NATIVE_SERVICE_WORKERS {
+        return Err(NativeEngineError::limit(
+            "native service worker registrations",
+            MAX_NATIVE_SERVICE_WORKERS,
+            registrations.len(),
+        ));
+    }
+    let mut scopes = BTreeSet::new();
+    for registration in registrations {
+        registration.validate()?;
+        if !scopes.insert(&registration.scope) {
+            return Err(NativeEngineError::invalid(
+                "native service worker registration scope",
+                "must be unique in the profile",
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -4117,6 +4234,20 @@ pub(crate) fn load_service_worker_cache_profile(
     Ok(profile.service_worker_caches)
 }
 
+pub(crate) fn load_service_worker_registration_profiles(
+    path: Option<&Path>,
+) -> Result<Vec<NativeServiceWorkerRegistrationProfile>, NativeEngineError> {
+    let Some(path) = path else {
+        return Ok(Vec::new());
+    };
+    let _lock = lock_web_storage_profile(path, false)?;
+    let Some(profile) = read_web_storage_profile(path)? else {
+        return Ok(Vec::new());
+    };
+    validate_service_worker_registration_profiles(&profile.service_worker_registrations)?;
+    Ok(profile.service_worker_registrations)
+}
+
 fn read_web_storage_profile(
     path: &Path,
 ) -> Result<Option<NativeWebStorageProfile>, NativeEngineError> {
@@ -4168,6 +4299,7 @@ fn read_web_storage_profile(
         cookies,
         indexed_db,
         service_worker_caches,
+        service_worker_registrations,
         ..
     } = profile;
     let state = NativeWebStorageState {
@@ -4177,6 +4309,7 @@ fn read_web_storage_profile(
     validate_web_storage_state(&state)?;
     indexed_db.validate()?;
     service_worker_caches.validate()?;
+    validate_service_worker_registration_profiles(&service_worker_registrations)?;
     validate_cookie_profile(&cookies)?;
     let cookies = cookies
         .into_iter()
@@ -4193,6 +4326,7 @@ fn read_web_storage_profile(
         cookies,
         indexed_db,
         service_worker_caches,
+        service_worker_registrations,
     }))
 }
 
@@ -4268,8 +4402,13 @@ pub(crate) fn save_web_storage_profile(
             .as_ref()
             .map(|profile| profile.service_worker_caches.clone())
             .unwrap_or_default(),
+        service_worker_registrations: current
+            .as_ref()
+            .map(|profile| profile.service_worker_registrations.clone())
+            .unwrap_or_default(),
     };
     profile.service_worker_caches.validate()?;
+    validate_service_worker_registration_profiles(&profile.service_worker_registrations)?;
     let bytes = serde_json::to_vec(&profile).map_err(|_| NativeEngineError::Worker {
         operation: "save native Web Storage profile".into(),
         reason: "native Web Storage profile cannot be encoded".into(),
@@ -4311,11 +4450,13 @@ pub(crate) fn save_web_storage_profile(
 pub(crate) fn save_service_worker_cache_profile(
     path: Option<&Path>,
     cache_state: &NativeServiceWorkerCacheState,
+    registration_profiles: &[NativeServiceWorkerRegistrationProfile],
 ) -> Result<(), NativeEngineError> {
     let Some(path) = path else {
         return Ok(());
     };
     cache_state.validate()?;
+    validate_service_worker_registration_profiles(registration_profiles)?;
     if let Some(parent) = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -4352,6 +4493,7 @@ pub(crate) fn save_service_worker_cache_profile(
             .map(|profile| profile.indexed_db.clone())
             .unwrap_or_default(),
         service_worker_caches: cache_state.clone(),
+        service_worker_registrations: registration_profiles.to_vec(),
     };
     let bytes = serde_json::to_vec(&profile).map_err(|_| NativeEngineError::Worker {
         operation: "save native service worker cache profile".into(),

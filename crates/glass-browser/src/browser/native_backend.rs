@@ -3265,6 +3265,108 @@ impl NativeEngineBackend {
     }
 }
 
+impl NativeEngineBackend {
+    async fn synchronize_native_service_worker_clients(&self) -> Result<(), BrowserBackendError> {
+        let mut targets = self.lock_targets(BackendOperation::Contexts)?;
+        let mut engine = self.lock_engine_raw(BackendOperation::Contexts)?;
+        if targets.active_target_id.is_none()
+            || engine.lifecycle() != super::native_engine::NativeLifecycleState::Running
+        {
+            return Ok(());
+        }
+
+        reconcile_native_frames(&mut targets.active_frames, &engine).await?;
+        for target in targets.parked.values_mut() {
+            if target.engine.lifecycle() == super::native_engine::NativeLifecycleState::Running {
+                let target_engine = &target.engine;
+                reconcile_native_frames(&mut target.frames, target_engine).await?;
+            }
+        }
+
+        let active_frame_id = targets.active_frames.active_frame_id.clone();
+        let focused_frame_id = targets
+            .active_frames
+            .focused_frame_id
+            .clone()
+            .unwrap_or_else(|| active_frame_id.clone());
+        let active_frame_type = if targets.active_frames.active_parent_id.is_some() {
+            "nested"
+        } else {
+            "top-level"
+        };
+        let mut clients = Vec::new();
+        clients.push(
+            engine.service_worker_client_state(
+                active_frame_type,
+                focused_frame_id == active_frame_id,
+            ),
+        );
+        for (frame_id, frame) in &targets.active_frames.parked {
+            if frame.engine.lifecycle() != super::native_engine::NativeLifecycleState::Running {
+                continue;
+            }
+            let frame_type = if frame.parent_id.is_some() {
+                "nested"
+            } else {
+                "top-level"
+            };
+            clients.push(
+                frame
+                    .engine
+                    .service_worker_client_state(frame_type, focused_frame_id == *frame_id),
+            );
+        }
+        for target in targets.parked.values() {
+            if target.engine.lifecycle() == super::native_engine::NativeLifecycleState::Running {
+                let frame_type = if target.frames.active_parent_id.is_some() {
+                    "nested"
+                } else {
+                    "top-level"
+                };
+                clients.push(target.engine.service_worker_client_state(frame_type, false));
+            }
+            for frame in target.frames.parked.values() {
+                if frame.engine.lifecycle() != super::native_engine::NativeLifecycleState::Running {
+                    continue;
+                }
+                let frame_type = if frame.parent_id.is_some() {
+                    "nested"
+                } else {
+                    "top-level"
+                };
+                clients.push(frame.engine.service_worker_client_state(frame_type, false));
+            }
+        }
+
+        engine
+            .replace_service_worker_clients(clients.clone())
+            .await
+            .map_err(native_error)?;
+        for target in targets.parked.values_mut() {
+            target
+                .engine
+                .replace_service_worker_clients(clients.clone())
+                .await
+                .map_err(native_error)?;
+            for frame in target.frames.parked.values_mut() {
+                frame
+                    .engine
+                    .replace_service_worker_clients(clients.clone())
+                    .await
+                    .map_err(native_error)?;
+            }
+        }
+        for frame in targets.active_frames.parked.values_mut() {
+            frame
+                .engine
+                .replace_service_worker_clients(clients.clone())
+                .await
+                .map_err(native_error)?;
+        }
+        Ok(())
+    }
+}
+
 impl BrowserBackend for NativeEngineBackend {
     fn profile(&self) -> &BackendProfile {
         &self.profile
@@ -3285,6 +3387,9 @@ impl BrowserBackend for NativeEngineBackend {
             ) {
                 self.close_all().await?;
                 return Ok(BackendResponse::Unit);
+            }
+            if !matches!(operation, BackendOperation::Initialize) {
+                self.synchronize_native_service_worker_clients().await?;
             }
             let proxy_updates = if matches!(
                 operation,
@@ -4396,6 +4501,7 @@ async fn reconcile_native_frames(
             };
             let mut child = NativeEngine::new(child_config).map_err(native_error)?;
             child.set_frame_id(frame_id.clone());
+            child.inherit_service_worker_clients(&parent_engine.service_worker_clients());
             child.set_embedding_frame_policy(embedding_document_url, embedding_frame_sources);
             if let Err(error) = child.initialize_async().await {
                 let _ = child.close_async().await;

@@ -5,7 +5,7 @@
 //! JavaScript remains isolated in its own QuickJS realm; only bounded request,
 //! response, and message envelopes cross back to the content-process owner.
 
-use super::config::{validate_url_text, without_fragment};
+use super::config::{is_network_url, validate_context_id, validate_url_text, without_fragment};
 use super::error::NativeEngineError;
 use super::interaction::MAX_NATIVE_FORM_BODY_BYTES;
 use super::javascript::{
@@ -16,10 +16,10 @@ use super::javascript::{
     MAX_NATIVE_SERVICE_WORKERS, MAX_NATIVE_WORKER_MESSAGES, NativeJavaScriptRuntime,
     NativeMessagePortPageMessage, NativeMessagePortTransfer, NativeScriptCommand,
     NativeScriptEvaluation, NativeServiceWorkerCacheEntry, NativeServiceWorkerCacheState,
-    NativeServiceWorkerClientMessage, NativeServiceWorkerRegistrationProfile,
-    NativeServiceWorkerRegistrationState, NativeServiceWorkerWorkerProfile,
-    NativeServiceWorkerWorkerState, load_service_worker_source, validate_message_port_transfers,
-    validate_native_service_worker_cache_request_headers,
+    NativeServiceWorkerClientMessage, NativeServiceWorkerClientState,
+    NativeServiceWorkerRegistrationProfile, NativeServiceWorkerRegistrationState,
+    NativeServiceWorkerWorkerProfile, NativeServiceWorkerWorkerState, load_service_worker_source,
+    validate_message_port_transfers, validate_native_service_worker_cache_request_headers,
 };
 use super::origin::NativeOrigin;
 use super::resource_loader::{
@@ -32,6 +32,9 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::Duration;
 use url::Url;
+
+const MAX_NATIVE_SERVICE_WORKER_CLIENTS: usize =
+    crate::browser::session::TOPOLOGY_MAX_TARGETS * crate::browser::session::TOPOLOGY_MAX_FRAMES;
 
 struct NativeServiceWorker {
     id: u32,
@@ -114,7 +117,7 @@ pub(crate) struct NativeServiceWorkerRegistry {
     current_client_id: String,
     current_client_url: Option<String>,
     current_client_scope: Option<String>,
-    next_client_id: u64,
+    client_states: Vec<NativeServiceWorkerClientState>,
 }
 
 impl Default for NativeServiceWorkerRegistry {
@@ -131,26 +134,34 @@ impl Default for NativeServiceWorkerRegistry {
             current_client_id: String::new(),
             current_client_url: None,
             current_client_scope: None,
-            next_client_id: 1,
+            client_states: Vec::new(),
         }
     }
 }
 
 impl NativeServiceWorkerRegistry {
-    pub(crate) fn begin_document(&mut self, document_url: &str) -> Result<(), NativeEngineError> {
+    pub(crate) fn begin_document(
+        &mut self,
+        document_url: &str,
+        client_id: Option<&str>,
+    ) -> Result<(), NativeEngineError> {
         let document = parse_network_url("service worker document URL", document_url)?;
         let document_url = without_fragment(document.as_str()).to_owned();
-        let client_number = self.next_client_id;
-        self.next_client_id = self.next_client_id.checked_add(1).ok_or_else(|| {
-            NativeEngineError::limit(
-                "native service worker client identifiers",
-                u64::MAX as usize,
-                u64::MAX as usize,
-            )
-        })?;
-        self.current_client_id = format!("native-client-{client_number}");
+        if let Some(client_id) = client_id {
+            validate_context_id(client_id)?;
+            if client_id.is_empty() {
+                return Err(NativeEngineError::invalid(
+                    "native service worker client id",
+                    "must not be empty",
+                ));
+            }
+        }
+        self.current_client_id = client_id
+            .map(str::to_owned)
+            .unwrap_or_else(|| native_service_worker_url_client_id(&document_url));
         self.current_client_url = Some(document_url);
         self.current_client_scope = None;
+        self.ensure_current_client_state()?;
         Ok(())
     }
 
@@ -158,6 +169,7 @@ impl NativeServiceWorkerRegistry {
         let document = parse_network_url("service worker document URL", document_url)?;
         self.current_client_url = Some(without_fragment(document.as_str()).to_owned());
         self.current_client_scope = self.matching_scope(&document)?;
+        self.update_current_client_state_url(document.as_str());
         Ok(())
     }
 
@@ -168,7 +180,7 @@ impl NativeServiceWorkerRegistry {
         {
             return self.current_client_id.clone();
         }
-        native_service_worker_client_id(canonical)
+        native_service_worker_url_client_id(canonical)
     }
 
     fn current_client_is_controlled(&self, document_url: &str) -> bool {
@@ -191,6 +203,103 @@ impl NativeServiceWorkerRegistry {
             self.current_client_scope = Some(scope.to_owned());
         }
         Ok(())
+    }
+
+    pub(crate) fn replace_client_states(
+        &mut self,
+        states: Vec<NativeServiceWorkerClientState>,
+    ) -> Result<(), NativeEngineError> {
+        validate_service_worker_client_states(&states)?;
+        self.client_states = states;
+        self.ensure_current_client_state()
+    }
+
+    fn ensure_current_client_state(&mut self) -> Result<(), NativeEngineError> {
+        let Some(client_url) = self.current_client_url.clone() else {
+            return Ok(());
+        };
+        if let Some(state) = self
+            .client_states
+            .iter_mut()
+            .find(|state| state.id == self.current_client_id)
+        {
+            state.url = client_url;
+            return Ok(());
+        }
+        if self.client_states.len() >= MAX_NATIVE_SERVICE_WORKER_CLIENTS {
+            return Err(NativeEngineError::limit(
+                "native service worker clients",
+                MAX_NATIVE_SERVICE_WORKER_CLIENTS,
+                self.client_states.len().saturating_add(1),
+            ));
+        }
+        self.client_states.push(NativeServiceWorkerClientState {
+            id: self.current_client_id.clone(),
+            url: client_url,
+            client_type: "window".into(),
+            frame_type: "top-level".into(),
+            visibility_state: "visible".into(),
+            focused: true,
+        });
+        Ok(())
+    }
+
+    fn update_current_client_state_url(&mut self, document_url: &str) {
+        let canonical = without_fragment(document_url);
+        if let Some(state) = self
+            .client_states
+            .iter_mut()
+            .find(|state| state.id == self.current_client_id)
+        {
+            state.url = canonical.to_owned();
+        }
+    }
+
+    fn client_states_for_worker(&self, scope: &str) -> Result<Vec<Value>, NativeEngineError> {
+        let scope_url =
+            Url::parse(without_fragment(scope)).map_err(|_| NativeEngineError::Worker {
+                operation: "service worker clients".into(),
+                reason: "service worker scope is invalid".into(),
+            })?;
+        let scope_origin = NativeOrigin::from_url(&scope_url)?;
+        let mut clients = Vec::new();
+        for state in &self.client_states {
+            let Ok(client_url) = Url::parse(without_fragment(&state.url)) else {
+                continue;
+            };
+            if !is_network_url(client_url.as_str())
+                || NativeOrigin::from_url(&client_url)? != scope_origin
+            {
+                continue;
+            }
+            let client_url_text = without_fragment(client_url.as_str());
+            let controlled = if state.id == self.current_client_id
+                && self.current_client_url.as_deref() == Some(client_url_text)
+            {
+                self.current_client_scope.as_deref() == Some(scope)
+            } else {
+                self.matching_scope(&client_url)?.as_deref() == Some(scope)
+            };
+            clients.push(json!({
+                "clientId": state.id,
+                "clientUrl": client_url_text,
+                "clientType": state.client_type,
+                "frameType": state.frame_type,
+                "visibilityState": state.visibility_state,
+                "focused": state.focused,
+                "controlled": controlled,
+            }));
+        }
+        Ok(clients)
+    }
+
+    fn set_worker_client_view(
+        &self,
+        worker: &NativeServiceWorker,
+    ) -> Result<Vec<Value>, NativeEngineError> {
+        let clients = self.client_states_for_worker(&worker.scope)?;
+        worker.runtime.set_service_worker_clients(clients.clone());
+        Ok(clients)
     }
 
     pub(crate) fn replace_cache_state(&mut self, cache_state: NativeServiceWorkerCacheState) {
@@ -362,6 +471,7 @@ impl NativeServiceWorkerRegistry {
             skip_waiting_requested: false,
             clients_claim_requested: false,
         };
+        self.set_worker_client_view(&worker)?;
         let initial = if is_module {
             worker.runtime.evaluate_service_worker_source(
                 worker.id,
@@ -416,6 +526,7 @@ impl NativeServiceWorkerRegistry {
         &mut self,
         worker: &mut NativeServiceWorker,
     ) -> Result<(), NativeEngineError> {
+        self.set_worker_client_view(worker)?;
         let install = worker.runtime.evaluate_service_worker_lifecycle(
             worker.id,
             &worker.script_url,
@@ -431,6 +542,7 @@ impl NativeServiceWorkerRegistry {
         &mut self,
         worker: &mut NativeServiceWorker,
     ) -> Result<(), NativeEngineError> {
+        self.set_worker_client_view(worker)?;
         let activate = worker.runtime.evaluate_service_worker_lifecycle(
             worker.id,
             &worker.script_url,
@@ -799,11 +911,13 @@ impl NativeServiceWorkerRegistry {
         };
         validate_message_port_transfers(transfer_ports)?;
         self.register_page_transfers(worker_id, transfer_ports)?;
+        let clients = self.client_states_for_worker(scope)?;
         let evaluation = {
             let worker = self
                 .registrations
                 .get(scope)
                 .ok_or_else(|| NativeEngineError::invalid("service worker scope", "not found"))?;
+            worker.runtime.set_service_worker_clients(clients);
             worker.runtime.dispatch_service_worker_message(
                 worker.id,
                 &worker.script_url,
@@ -1010,6 +1124,12 @@ impl NativeServiceWorkerRegistry {
         };
         let client_id = self.current_client_id_for(document_url);
         let controlled = self.current_client_is_controlled(document_url);
+        let clients = self.client_states_for_worker(&scope)?;
+        let current_client = self
+            .client_states
+            .iter()
+            .find(|state| state.id == client_id)
+            .cloned();
         let body_null = body.is_none();
         let (body_text, body_base64) = match body {
             Some(NativeRequestBody::Text(value)) => (Some(value), None),
@@ -1038,15 +1158,32 @@ impl NativeServiceWorkerRegistry {
             "destination": destination,
             "clientId": client_id,
             "clientUrl": client_url,
-            "clientType": "window",
-            "frameType": "top-level",
-            "visibilityState": "visible",
-            "focused": true,
+            "clientType": current_client
+                .as_ref()
+                .map(|state| state.client_type.as_str())
+                .unwrap_or("window"),
+            "frameType": current_client
+                .as_ref()
+                .map(|state| state.frame_type.as_str())
+                .unwrap_or("top-level"),
+            "visibilityState": current_client
+                .as_ref()
+                .map(|state| state.visibility_state.as_str())
+                .unwrap_or("visible"),
+            "focused": current_client.as_ref().is_some_and(|state| state.focused),
             "controlled": controlled,
+            "clients": clients,
         });
         let Some(worker) = self.registrations.get_mut(&scope) else {
             return Ok(None);
         };
+        worker.runtime.set_service_worker_clients(
+            payload
+                .get("clients")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+        );
         let evaluation = worker.runtime.evaluate_service_worker_fetch(
             worker.id,
             &worker.script_url,
@@ -2144,10 +2281,88 @@ fn resolve_same_origin_or_cross_origin_url(
     parse_network_url(field, url.as_str())
 }
 
-fn native_service_worker_client_id(document_url: &str) -> String {
-    // A content process currently owns one top-level document. Keep the
-    // client identity stable for repeated fetches without exposing the full
-    // document URL as an opaque Service Worker client id.
+fn validate_service_worker_client_states(
+    states: &[NativeServiceWorkerClientState],
+) -> Result<(), NativeEngineError> {
+    if states.len() > MAX_NATIVE_SERVICE_WORKER_CLIENTS {
+        return Err(NativeEngineError::limit(
+            "native service worker clients",
+            MAX_NATIVE_SERVICE_WORKER_CLIENTS,
+            states.len(),
+        ));
+    }
+    let mut ids = BTreeSet::new();
+    for state in states {
+        validate_context_id(&state.id)?;
+        if state.id.is_empty() {
+            return Err(NativeEngineError::invalid(
+                "native service worker client id",
+                "must not be empty",
+            ));
+        }
+        if !ids.insert(state.id.clone()) {
+            return Err(NativeEngineError::invalid(
+                "native service worker client id",
+                "must be unique within the client projection",
+            ));
+        }
+        validate_url_text("native service worker client URL", &state.url)?;
+        if state.url.len() > MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES {
+            return Err(NativeEngineError::limit(
+                "native service worker client URL",
+                MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES,
+                state.url.len(),
+            ));
+        }
+        if !matches!(
+            state.client_type.as_str(),
+            "window" | "worker" | "sharedworker"
+        ) {
+            return Err(NativeEngineError::invalid(
+                "native service worker client type",
+                "must be window, worker, or sharedworker",
+            ));
+        }
+        if !matches!(
+            state.frame_type.as_str(),
+            "top-level" | "nested" | "auxiliary" | "none"
+        ) {
+            return Err(NativeEngineError::invalid(
+                "native service worker client frame type",
+                "must be top-level, nested, auxiliary, or none",
+            ));
+        }
+        if !matches!(
+            state.visibility_state.as_str(),
+            "visible" | "hidden" | "prerender"
+        ) {
+            return Err(NativeEngineError::invalid(
+                "native service worker client visibility state",
+                "must be visible, hidden, or prerender",
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn native_service_worker_client_id(context_id: &str, frame_id: &str) -> String {
+    // The browser backend owns context/frame identity. Hash both components
+    // so the client id survives content-process replacement without exposing
+    // a document URL as an opaque Service Worker client id.
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in context_id
+        .as_bytes()
+        .iter()
+        .chain(std::iter::once(&0xff))
+        .chain(frame_id.as_bytes().iter())
+    {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3_u64);
+    }
+    format!("native-client-{hash:016x}")
+}
+
+fn native_service_worker_url_client_id(document_url: &str) -> String {
     let mut hash = 0xcbf29ce484222325_u64;
     for byte in document_url.as_bytes() {
         hash ^= u64::from(*byte);

@@ -30,11 +30,11 @@ use super::javascript::{
     NativeFrameScriptRequest, NativeFrameScriptWindow, NativeIndexedDbChange, NativeIndexedDbState,
     NativeJavaScriptRuntime, NativeMessagePortPageMessage, NativePageScript,
     NativePageScriptResult, NativePopupRequest, NativePostMessageRequest, NativeScriptCommand,
-    NativeScriptEvaluation, NativeServiceWorkerClientMessage, NativeStorageEvent,
-    NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
-    NativeWindowProxyUpdate, NativeWorkerEventSourceCommand, NativeWorkerMessage,
-    NativeWorkerRegistry, NativeWorkerWebSocketCommand, diff_indexed_db_changes,
-    execute_dynamic_page_scripts, execute_page_scripts, host_event_script,
+    NativeScriptEvaluation, NativeServiceWorkerClientMessage, NativeServiceWorkerClientState,
+    NativeStorageEvent, NativeWebStorageState, NativeWindowCloseRequest,
+    NativeWindowNavigationRequest, NativeWindowProxyUpdate, NativeWorkerEventSourceCommand,
+    NativeWorkerMessage, NativeWorkerRegistry, NativeWorkerWebSocketCommand,
+    diff_indexed_db_changes, execute_dynamic_page_scripts, execute_page_scripts, host_event_script,
     host_hash_change_event_script, host_key_event_script, host_key_event_script_with_modifiers,
     host_submit_event_script, literal_dynamic_module_specifiers, load_indexed_db_profile,
     load_service_worker_cache_profile, load_service_worker_registration_profiles,
@@ -78,7 +78,7 @@ use url::Url;
 // the base64 envelope and the rest of the document state.
 const MAX_CONTENT_IPC_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CONTENT_DOCUMENT_WIRE_BYTES: usize = 16 * 1024 * 1024;
-const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 8;
+const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 9;
 const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTENT_PROCESS_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -1092,6 +1092,7 @@ impl NativeContentProcess {
         opener_url: &str,
         frame_context: Option<&NativeFrameScriptContext>,
         environment: &NativeEnvironmentOverrides,
+        service_worker_clients: &[NativeServiceWorkerClientState],
     ) -> Result<(), NativeEngineError> {
         environment.validate()?;
         let id = self.next_id();
@@ -1109,6 +1110,7 @@ impl NativeContentProcess {
                 "opener_url": opener_url,
                 "frame_context": frame_context,
                 "environment": environment,
+                "service_worker_clients": service_worker_clients,
             }))
             .await?;
         let result = require_response_kind(&response, "started", id, "content process start");
@@ -1156,6 +1158,46 @@ impl NativeContentProcess {
             "environment_synced",
             id,
             "content process environment synchronization",
+        );
+        if result.is_err() {
+            self.mark_failed(NativeWorkerFailureKind::InvalidTransfer);
+            let _ = self.child.start_kill();
+        }
+        result
+    }
+
+    pub(crate) async fn sync_service_worker_clients(
+        &mut self,
+        clients: &[NativeServiceWorkerClientState],
+    ) -> Result<(), NativeEngineError> {
+        let id = self.next_id();
+        let response = match timeout(
+            CONTENT_PROCESS_SCRIPT_TIMEOUT,
+            self.exchange(json!({
+                "kind": "service_worker_clients_sync",
+                "id": id,
+                "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
+                "clients": clients,
+            })),
+        )
+        .await
+        {
+            Ok(response) => response?,
+            Err(_) => {
+                self.mark_failed(NativeWorkerFailureKind::Timeout);
+                let _ = self.child.start_kill();
+                return Err(NativeEngineError::worker_failure(
+                    "content process Service Worker client synchronization",
+                    NativeWorkerFailureKind::Timeout,
+                    "content process Service Worker client synchronization exceeded its deadline",
+                ));
+            }
+        };
+        let result = require_response_kind(
+            &response,
+            "service_worker_clients_synced",
+            id,
+            "content process Service Worker client synchronization",
         );
         if result.is_err() {
             self.mark_failed(NativeWorkerFailureKind::InvalidTransfer);
@@ -1227,6 +1269,8 @@ impl NativeContentProcess {
         limits: &NativeEngineLimits,
         viewport: Viewport,
         referrer: Option<&str>,
+        client_id: &str,
+        service_worker_clients: &[NativeServiceWorkerClientState],
     ) -> Result<NativeContentLoad, NativeEngineError> {
         let id = self.next_id();
         let response = match timeout(
@@ -1256,6 +1300,8 @@ impl NativeContentProcess {
                 "viewport_width": viewport.width,
                 "viewport_height": viewport.height,
                 "viewport_device_scale_factor_milli": viewport.device_scale_factor_milli,
+                "client_id": client_id,
+                "service_worker_clients": service_worker_clients,
             })),
         )
         .await
@@ -3556,6 +3602,19 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     .get("storage_path")
                     .and_then(Value::as_str)
                     .map(PathBuf::from);
+                let requested_service_worker_clients = request
+                    .get("service_worker_clients")
+                    .map(|value| {
+                        serde_json::from_value::<Vec<NativeServiceWorkerClientState>>(value.clone())
+                            .map_err(|_| {
+                                NativeEngineError::invalid(
+                                    "content-process Service Worker clients",
+                                    "must be a valid native client projection",
+                                )
+                            })
+                    })
+                    .transpose()?
+                    .unwrap_or_default();
                 let loaded_web_storage = requested_path
                     .as_deref()
                     .map(|path| load_web_storage_profile(Some(path)))
@@ -3596,6 +3655,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         if let Some(loaded) = loaded_service_worker_registrations {
                             service_workers.replace_registration_profiles(loaded)?;
                         }
+                        service_workers.replace_client_states(requested_service_worker_clients)?;
                         storage_profile_path = requested_path;
                         storage_context_id = requested_context_id.to_owned();
                         frame_id = requested_frame_id.to_owned();
@@ -3863,6 +3923,23 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     runtime.set_frame_script_context(frame_script_context.clone());
                 }
                 json!({"kind":"frame_script_context_synced","id":id})
+            }
+            "service_worker_clients_sync" if protocol_matches(&request) && running => {
+                let value = request.get("clients").ok_or_else(|| {
+                    NativeEngineError::invalid(
+                        "content-process Service Worker clients",
+                        "must be present",
+                    )
+                })?;
+                let clients: Vec<NativeServiceWorkerClientState> =
+                    serde_json::from_value(value.clone()).map_err(|_| {
+                        NativeEngineError::invalid(
+                            "content-process Service Worker clients",
+                            "must be a valid native client projection",
+                        )
+                    })?;
+                service_workers.replace_client_states(clients)?;
+                json!({"kind":"service_worker_clients_synced","id":id})
             }
             "storage_state" if protocol_matches(&request) && running => {
                 let value = request.get("state").ok_or_else(|| {
@@ -6027,6 +6104,17 @@ async fn load_content_resource(
             })
         })
         .transpose()?;
+    let client_id = request.get("client_id").and_then(Value::as_str);
+    if let Some(value) = request.get("service_worker_clients") {
+        let clients: Vec<NativeServiceWorkerClientState> = serde_json::from_value(value.clone())
+            .map_err(|_| {
+                NativeEngineError::invalid(
+                    "content-process Service Worker clients",
+                    "must be a valid native client projection",
+                )
+            })?;
+        service_workers.replace_client_states(clients)?;
+    }
     let loader = match resource_loader {
         Some(loader) if loader.max_document_bytes() == max_document_bytes => loader,
         Some(_) => {
@@ -6046,7 +6134,7 @@ async fn load_content_resource(
         }
     };
     loader.set_environment(environment)?;
-    service_workers.begin_document(url)?;
+    service_workers.begin_document(url, client_id)?;
     service_workers.restore_for_document(url, loader).await?;
     let resource = match service_workers
         .intercept_navigation(loader, &navigation, referrer)

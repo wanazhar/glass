@@ -24,12 +24,13 @@ use super::javascript::{
     NativeFrameScriptContext, NativeFrameScriptRequest, NativeIndexedDbChange,
     NativeIndexedDbState, NativeJavaScriptRuntime, NativeMessagePortPageMessage,
     NativePageNavigation, NativePopupRequest, NativePostMessageRequest, NativeScriptCommand,
-    NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState, NativeWindowCloseRequest,
-    NativeWindowNavigationRequest, NativeWindowProxyUpdate, NativeWorkerRegistry,
-    append_storage_changes, apply_indexed_db_changes, diff_indexed_db_changes,
-    execute_dynamic_page_scripts, execute_inline_scripts, frame_event_script, host_event_script,
-    host_hash_change_event_script, host_message_event_script, host_submit_event_script,
-    load_indexed_db_profile, load_web_storage_profile, message_port_script, new_storage_writer_id,
+    NativeScriptEvaluation, NativeServiceWorkerClientState, NativeStorageEvent,
+    NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
+    NativeWindowProxyUpdate, NativeWorkerRegistry, append_storage_changes,
+    apply_indexed_db_changes, diff_indexed_db_changes, execute_dynamic_page_scripts,
+    execute_inline_scripts, frame_event_script, host_event_script, host_hash_change_event_script,
+    host_message_event_script, host_submit_event_script, load_indexed_db_profile,
+    load_web_storage_profile, message_port_script, new_storage_writer_id,
     page_script_sources_to_scripts, read_storage_event_journal, register_storage_reader,
     save_web_storage_profile, storage_event_cursor, storage_key, unregister_storage_reader,
     worker_message_script,
@@ -45,6 +46,7 @@ use super::resource_loader::{
 };
 use super::runtime::{NativeRuntimeState, NativeRuntimeTraceEvent};
 use super::scheduler::{DeterministicScheduler, NativeTask};
+use super::service_worker::native_service_worker_client_id;
 use super::worker::{NativeRuntimeShared, NativeRuntimeWorker};
 use crate::browser::session::{
     Cookie, DownloadOutcome, GeoLocation, NetworkConditions, PendingDialog,
@@ -344,6 +346,7 @@ pub struct NativeEngine {
     runtime_worker: Option<NativeRuntimeWorker>,
     content_process: Option<NativeContentProcess>,
     javascript: Option<NativeJavaScriptRuntime>,
+    service_worker_clients: Vec<NativeServiceWorkerClientState>,
     workers: NativeWorkerRegistry,
     web_storage: NativeWebStorageState,
     indexed_db: NativeIndexedDbState,
@@ -407,6 +410,15 @@ impl NativeEngine {
         if !is_network_url(&config.initial_url) {
             loader.load(&config.initial_url)?;
         }
+        let frame_id = format!("{}:main", config.context_id);
+        let service_worker_clients = vec![NativeServiceWorkerClientState {
+            id: native_service_worker_client_id(&config.context_id, &frame_id),
+            url: without_fragment(&config.initial_url).to_owned(),
+            client_type: "window".into(),
+            frame_type: "top-level".into(),
+            visibility_state: "visible".into(),
+            focused: true,
+        }];
         let runtime = NativeRuntimeShared::new(config.limits.max_scheduler_tasks)?;
         let max_history_entries = config.limits.max_history_entries;
         register_storage_reader(
@@ -416,7 +428,7 @@ impl NativeEngine {
         )?;
         Ok(Self {
             url: config.initial_url.clone(),
-            frame_id: format!("{}:main", config.context_id),
+            frame_id,
             config,
             loader,
             environment: NativeEnvironmentOverrides::default(),
@@ -424,6 +436,7 @@ impl NativeEngine {
             runtime_worker: None,
             content_process: None,
             javascript: None,
+            service_worker_clients,
             workers: NativeWorkerRegistry::new(),
             web_storage,
             indexed_db,
@@ -574,10 +587,66 @@ impl NativeEngine {
     }
 
     pub(crate) fn set_frame_id(&mut self, frame_id: String) {
+        let previous_client_id =
+            native_service_worker_client_id(&self.config.context_id, &self.frame_id);
         self.frame_id = frame_id;
+        let next_client_id = self.service_worker_client_id();
+        if let Some(client) = self
+            .service_worker_clients
+            .iter_mut()
+            .find(|client| client.id == previous_client_id)
+        {
+            client.id = next_client_id;
+            client.frame_type = "nested".into();
+            client.focused = false;
+        }
         if let Some(javascript) = self.javascript.as_ref() {
             javascript.set_frame_id(self.frame_id.clone());
         }
+    }
+
+    pub(crate) fn service_worker_client_id(&self) -> String {
+        native_service_worker_client_id(&self.config.context_id, &self.frame_id)
+    }
+
+    pub(crate) fn service_worker_client_state(
+        &self,
+        frame_type: &str,
+        focused: bool,
+    ) -> NativeServiceWorkerClientState {
+        NativeServiceWorkerClientState {
+            id: self.service_worker_client_id(),
+            url: without_fragment(&self.url).to_owned(),
+            client_type: "window".into(),
+            frame_type: frame_type.to_owned(),
+            visibility_state: "visible".into(),
+            focused,
+        }
+    }
+
+    pub(crate) async fn replace_service_worker_clients(
+        &mut self,
+        clients: Vec<NativeServiceWorkerClientState>,
+    ) -> Result<(), NativeEngineError> {
+        if self.service_worker_clients == clients {
+            return Ok(());
+        }
+        if let Some(process) = self.content_process.as_mut() {
+            process.sync_service_worker_clients(&clients).await?;
+        }
+        self.service_worker_clients = clients;
+        Ok(())
+    }
+
+    pub(crate) fn service_worker_clients(&self) -> Vec<NativeServiceWorkerClientState> {
+        self.service_worker_clients.clone()
+    }
+
+    pub(crate) fn inherit_service_worker_clients(
+        &mut self,
+        clients: &[NativeServiceWorkerClientState],
+    ) {
+        self.service_worker_clients = clients.to_vec();
     }
 
     pub(crate) fn set_frame_script_bindings(&mut self, bindings: Vec<NativeFrameScriptBinding>) {
@@ -757,6 +826,7 @@ impl NativeEngine {
                     &self.config.opener_url,
                     self.frame_script_context.as_ref(),
                     &self.environment,
+                    &self.service_worker_clients,
                 )
                 .await?;
         }
@@ -1108,6 +1178,7 @@ impl NativeEngine {
                     &self.config.opener_url,
                     self.frame_script_context.as_ref(),
                     &self.environment,
+                    &self.service_worker_clients,
                 )
                 .await?;
             self.content_process = Some(process);
@@ -1131,6 +1202,8 @@ impl NativeEngine {
         }
         loop {
             self.request_ledger.begin()?;
+            let client_id = self.service_worker_client_id();
+            let service_worker_clients = self.service_worker_clients.clone();
             let content_result = match self.content_process.as_mut() {
                 Some(process) => {
                     process
@@ -1139,6 +1212,8 @@ impl NativeEngine {
                             &self.config.limits,
                             self.config.viewport,
                             referrer.as_deref(),
+                            &client_id,
+                            &service_worker_clients,
                         )
                         .await
                 }

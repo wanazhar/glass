@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-355`, with native-first product
+expansion checkpoint is `native-engine-browser-357`, with native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
 CacheStorage request matching, CacheStorage response admission and atomic
@@ -59,8 +59,14 @@ JavaScript owner before the next queued response, and the existing microtask
 drain therefore observes deterministic request/continuation order. This
 closes a concrete networking task-order defect without claiming cross-source
 arbitration between networking, timers, workers, MessagePorts, WebSocket,
-EventSource, rendering, and other browser task sources. The
-completed 234 slice carries bounded
+EventSource, rendering, and other browser task sources. The completed Slice
+357 adds a bounded content-process task-source scheduler: Networking,
+WebSocket, FetchStream, EventSource, and Timer are selected one ready host
+task at a time through a rotating round-robin cursor; the Networking source
+remains FIFO, and the implicit timer pump is suspended while host
+continuations run so explicit Timer turns own timer execution. This prevents
+continuously ready Fetch work from starving a due timer without claiming
+cross-process task-queue parity. The completed 234 slice carries bounded
 root-scroll sticky positioning through
 shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -5663,8 +5669,10 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-356.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-357.md` is the latest completed browser
 task;
+`docs/plan/tasks/native-engine-browser-356.md` is the preceding completed
+browser task;
 `docs/plan/tasks/native-engine-browser-355.md` is the preceding completed
 browser task;
 `docs/plan/tasks/native-engine-browser-354.md` is the preceding completed

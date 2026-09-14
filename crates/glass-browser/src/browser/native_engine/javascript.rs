@@ -7692,6 +7692,17 @@ pub(crate) struct NativeJavaScriptRuntime {
     clock_origin: Instant,
 }
 
+pub(crate) struct NativeTimerPumpGuard<'a> {
+    runtime: &'a NativeJavaScriptRuntime,
+    previous: bool,
+}
+
+impl Drop for NativeTimerPumpGuard<'_> {
+    fn drop(&mut self) {
+        self.runtime.set_timer_pump_enabled(self.previous);
+    }
+}
+
 impl NativeJavaScriptRuntime {
     pub(crate) fn new_with_context_id(
         context_id: impl Into<String>,
@@ -7886,6 +7897,15 @@ impl NativeJavaScriptRuntime {
     pub(crate) fn set_timer_pump_enabled(&self, enabled: bool) {
         if let Ok(mut current) = self.timer_pump_enabled.lock() {
             *current = enabled;
+        }
+    }
+
+    pub(crate) fn suspend_timer_pump(&self) -> NativeTimerPumpGuard<'_> {
+        let previous = self.timer_pump_enabled();
+        self.set_timer_pump_enabled(false);
+        NativeTimerPumpGuard {
+            runtime: self,
+            previous,
         }
     }
 

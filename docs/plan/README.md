@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-356` locally. Native is now the default runtime for
+`native-engine-browser-357` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -373,6 +373,16 @@ the next queued response is processed. This removes the prior reverse-order
 artifact for concurrent Fetch calls while cross-source task arbitration,
 durable task queues, and final production certification remain active issue
 #40 gates.
+
+The completed native content task-source scheduling slice is
+[native-engine-browser-357](tasks/native-engine-browser-357.md): one ready
+host task is selected per cycle across Networking, WebSocket, FetchStream,
+EventSource, and Timer using a rotating round-robin cursor. Networking keeps
+its script-emission FIFO order, while due timers cannot be starved by
+continuously ready Fetch work. The timer pump is suspended during host
+continuations so explicit Timer turns own timer execution. Worker,
+ServiceWorker, MessagePort, rendering, navigation, browser-wide queue
+arbitration, and final production certification remain active issue #40 gates.
 
 The completed native cookie-policy slice is
 [native-engine-browser-334](tasks/native-engine-browser-334.md): cookie

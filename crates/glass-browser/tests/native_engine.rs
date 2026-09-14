@@ -3666,7 +3666,7 @@ async fn native_content_process_registers_service_worker_and_intercepts_fetch_an
             (
                 "/register",
                 "text/html",
-                "<script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script><main>registration page</main>",
+                "<!doctype html><html><body><script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script><main>registration page</main></body></html>",
             ),
             (
                 "/sw.js",
@@ -3681,7 +3681,7 @@ self.addEventListener('fetch', event => {
       headers: { 'Content-Type': 'text/plain', 'X-Native-Worker': 'yes' },
     }));
   } else {
-    event.respondWith(new Response('<main id="controlled">controlled by native service worker</main>', {
+    event.respondWith(new Response('<!doctype html><html><body><main id="controlled">controlled by native service worker</main></body></html>', {
       headers: { 'Content-Type': 'text/html' },
     }));
   }
@@ -3690,7 +3690,7 @@ self.addEventListener('fetch', event => {
             (
                 "/network",
                 "text/html",
-                "<main id='network'>network fallback</main>",
+                "<!doctype html><html><body><main id='network'>network fallback</main></body></html>",
             ),
         ] {
             let (mut stream, _) = listener.accept().await.unwrap();
@@ -3712,7 +3712,7 @@ self.addEventListener('fetch', event => {
     assert_eq!(
         engine
             .evaluate_async(
-                "await registrationPromise.then(reg => [reg.scope, reg.active.state, reg.active.scriptURL, navigator.serviceWorker.getRegistrations().then(items => items.length)])",
+                "await registrationPromise.then(async reg => [reg.scope, reg.active.state, reg.active.scriptURL, await navigator.serviceWorker.getRegistrations().then(items => items.length)])",
             )
             .await
             .unwrap(),
@@ -3773,6 +3773,75 @@ self.addEventListener('fetch', event => {
             .await
             .unwrap(),
         serde_json::json!("network fallback")
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_service_worker_transfers_message_port_round_trip() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for (expected_path, content_type, body) in [
+            (
+                "/page",
+                "text/html",
+                "<script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' }); globalThis.swEvents = [];</script><main>service worker message port</main>",
+            ),
+            (
+                "/sw.js",
+                "application/javascript",
+                "self.addEventListener('message', event => { const port = event.ports[0]; if (!port) return; port.onmessage = message => port.postMessage({ kind: 'reply', value: Number(message.data.value) + 1 }); port.start(); port.postMessage({ kind: 'ready', value: 1 }); });",
+            ),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await registrationPromise.then(reg => { globalThis.channel = new MessageChannel(); channel.port2.onmessage = event => swEvents.push({ kind: event.data.kind, value: event.data.value, portCount: event.ports.length }); channel.port2.start(); reg.active.postMessage({ kind: 'connect' }, [channel.port1]); let detachedError = ''; try { channel.port1.postMessage({}); } catch (error) { detachedError = error.name; } return { detachedError, port2: channel.port2 instanceof MessagePort }; })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({"detachedError": "InvalidStateError", "port2": true})
+    );
+    assert_eq!(
+        engine.evaluate_async("({ swEvents })").await.unwrap(),
+        serde_json::json!({
+            "swEvents": [{"kind": "ready", "value": 1, "portCount": 0}],
+        })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("channel.port2.postMessage({ value: 4 }); true")
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine.evaluate_async("({ swEvents })").await.unwrap(),
+        serde_json::json!({
+            "swEvents": [
+                {"kind": "ready", "value": 1, "portCount": 0},
+                {"kind": "reply", "value": 5, "portCount": 0},
+            ],
+        })
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

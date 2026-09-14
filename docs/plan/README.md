@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-337` locally. Native is now the default runtime for
+`native-engine-browser-338` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -178,8 +178,20 @@ dedicated-worker `MessagePort` endpoints can cross the native owner in both
 directions, including worker-created ports returned to a page. Source
 detachment, stable realm-qualified bridge identity, bounded transfer lists,
 `MessageEvent.ports`, and replies are covered in both the in-process fixture
-engine and HTTP(S) content process. Shared workers, service-worker channel
-ownership, richer transferable types, complete task-source scheduling, and
+engine and HTTP(S) content process. Shared workers, richer transferable types,
+complete task-source scheduling, and final production certification remain
+active issue #40 gates. The follow-on
+[native-engine-browser-338](tasks/native-engine-browser-338.md) slice extends
+the same owner bridge to page-to-service-worker `MessagePort` transfer and
+worker-to-page replies.
+
+The completed native service-worker MessagePort slice is
+[native-engine-browser-338](tasks/native-engine-browser-338.md): an active
+same-origin service worker can receive a transferred page `MessagePort`,
+deliver a ready event, and reply through that port across the in-process and
+HTTP(S) content-process paths. Page-owned routes are cleared on navigation or
+reload and removed when their worker is replaced or unregistered. Shared
+workers, richer transferable types, complete task-source scheduling, and
 final production certification remain active issue #40 gates.
 
 The completed native cookie-policy slice is

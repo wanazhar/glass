@@ -3878,6 +3878,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 workers.clear();
                 pending_worker_messages.clear();
                 pending_message_port_messages.clear();
+                service_workers.clear_page_message_port_routes();
                 if let Some(runtime) = javascript_runtime.as_ref() {
                     storage_state = runtime.storage_state();
                 }
@@ -4006,11 +4007,13 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                             });
                                         }
                                     };
+                                    pending_message_port_messages
+                                        .extend(service_workers.take_message_port_messages());
                                     page_scripts.pending_fetches.extend(resolved);
                                 }
                                 match (script_runtime.as_ref(), resource_loader.as_mut()) {
                                     (Some(runtime), Some(loader)) => {
-                                        match resolve_script_fetches(
+                                        let script_fetch_result = resolve_script_fetches(
                                             &parsed,
                                             runtime,
                                             Some(loader),
@@ -4033,8 +4036,10 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                                 top_level_await_pending: false,
                                             },
                                         )
-                                        .await
-                                        {
+                                        .await;
+                                        pending_message_port_messages
+                                            .extend(service_workers.take_message_port_messages());
+                                        match script_fetch_result {
                                             Ok((next, mutation, _resolved_value)) => {
                                                 page_events.extend(
                                                     mutation.events.into_iter().map(|event| {
@@ -4084,6 +4089,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                         .await?;
                                     let message_port_commands =
                                         runtime.take_message_port_commands();
+                                    service_workers.apply_page_message_port_commands(
+                                        message_port_commands.clone(),
+                                    )?;
                                     workers
                                         .apply_page_message_port_commands(
                                             message_port_commands,
@@ -4193,6 +4201,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         "fetch",
                     )
                     .await;
+                pending_message_port_messages.extend(service_workers.take_message_port_messages());
                 let fetch = match intercepted {
                     Ok(Some(response)) => Ok(response),
                     Ok(None) => loader.fetch_async(document_url, href, credentials).await,
@@ -4319,6 +4328,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 .await?;
                 pending_worker_messages.extend(workers.take_messages());
                 pending_message_port_messages.extend(workers.take_message_port_messages());
+                pending_message_port_messages.extend(service_workers.take_message_port_messages());
                 let worker_messages = std::mem::take(&mut pending_worker_messages)
                     .into_iter()
                     .collect::<Vec<_>>();
@@ -4358,11 +4368,13 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     } else {
                         Vec::new()
                     };
+                pending_message_port_messages.extend(service_workers.take_message_port_messages());
                 let worker_commands = runtime.take_worker_commands();
                 workers
                     .apply_commands(worker_commands, loader, &committed_url)
                     .await?;
                 let message_port_commands = runtime.take_message_port_commands();
+                service_workers.apply_page_message_port_commands(message_port_commands.clone())?;
                 workers
                     .apply_page_message_port_commands(message_port_commands, loader)
                     .await?;
@@ -4451,6 +4463,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             },
                         )
                         .await;
+                        pending_message_port_messages
+                            .extend(service_workers.take_message_port_messages());
                         match result {
                             Ok((next, mutation, resolved_value)) => {
                                 let value = resolved_value.unwrap_or(value);
@@ -4477,6 +4491,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                     .await?;
                                 let dynamic_message_port_commands =
                                     runtime.take_message_port_commands();
+                                service_workers.apply_page_message_port_commands(
+                                    dynamic_message_port_commands.clone(),
+                                )?;
                                 workers
                                     .apply_page_message_port_commands(
                                         dynamic_message_port_commands,
@@ -5729,8 +5746,12 @@ async fn resolve_service_worker_commands(
                 document_commands.extend(evaluation.commands);
                 pending.extend(runtime.take_service_worker_commands());
             }
-            NativeScriptCommand::ServiceWorkerPostMessage { scope, data } => {
-                registry.post_message(&scope, &data)?;
+            NativeScriptCommand::ServiceWorkerPostMessage {
+                scope,
+                data,
+                transfer_ports,
+            } => {
+                registry.post_message(&scope, &data, &transfer_ports)?;
                 pending.extend(runtime.take_service_worker_commands());
             }
             other => document_commands.push(other),

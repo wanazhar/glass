@@ -422,6 +422,8 @@ pub(crate) enum NativeScriptCommand {
     WorkerPostMessage {
         worker_id: u32,
         data: serde_json::Value,
+        #[serde(default)]
+        transfer_ports: Vec<NativeMessagePortTransfer>,
     },
     WorkerTerminate {
         worker_id: u32,
@@ -429,6 +431,26 @@ pub(crate) enum NativeScriptCommand {
     WorkerClose {
         worker_id: u32,
     },
+    MessagePortPostMessage {
+        bridge_key: String,
+        data: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worker_id: Option<u32>,
+        #[serde(default)]
+        transfer_ports: Vec<NativeMessagePortTransfer>,
+    },
+}
+
+/// A bounded, owner-issued identity for one transferred MessagePort endpoint.
+/// The source realm contributes `port_id`; the receiving endpoint remains
+/// addressable through `peer_id` inside that source realm. The content process
+/// owns the bridge key and never accepts a JavaScript object or raw pointer
+/// across the realm boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct NativeMessagePortTransfer {
+    pub(crate) bridge_key: String,
+    pub(crate) port_id: u32,
+    pub(crate) peer_id: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -461,6 +483,16 @@ pub(crate) struct NativeWorkerMessage {
     pub(crate) data: serde_json::Value,
     #[serde(default)]
     pub(crate) error: Option<String>,
+    #[serde(default)]
+    pub(crate) transfer_ports: Vec<NativeMessagePortTransfer>,
+}
+
+/// A MessagePort event waiting for delivery to the page realm.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct NativeMessagePortPageMessage {
+    pub(crate) bridge_key: String,
+    pub(crate) data: serde_json::Value,
+    pub(crate) transfer_ports: Vec<NativeMessagePortTransfer>,
 }
 
 pub(crate) struct NativeWorkerWebSocketCommand {
@@ -482,6 +514,11 @@ struct NativeDedicatedWorker {
     module_sources: BTreeMap<String, String>,
     is_module: bool,
     next_module_turn: AtomicU64,
+}
+
+#[derive(Debug, Clone)]
+struct NativeMessagePortRoute {
+    worker_id: u32,
 }
 
 impl NativeDedicatedWorker {
@@ -577,8 +614,10 @@ impl NativeDedicatedWorker {
 pub(crate) struct NativeWorkerRegistry {
     workers: BTreeMap<u32, NativeDedicatedWorker>,
     pending_messages: VecDeque<NativeWorkerMessage>,
+    pending_message_port_messages: VecDeque<NativeMessagePortPageMessage>,
     pending_websocket_commands: VecDeque<NativeWorkerWebSocketCommand>,
     pending_event_source_commands: VecDeque<NativeWorkerEventSourceCommand>,
+    message_port_routes: BTreeMap<String, NativeMessagePortRoute>,
 }
 
 impl NativeWorkerRegistry {
@@ -586,20 +625,28 @@ impl NativeWorkerRegistry {
         Self {
             workers: BTreeMap::new(),
             pending_messages: VecDeque::new(),
+            pending_message_port_messages: VecDeque::new(),
             pending_websocket_commands: VecDeque::new(),
             pending_event_source_commands: VecDeque::new(),
+            message_port_routes: BTreeMap::new(),
         }
     }
 
     pub(crate) fn clear(&mut self) {
         self.workers.clear();
         self.pending_messages.clear();
+        self.pending_message_port_messages.clear();
         self.pending_websocket_commands.clear();
         self.pending_event_source_commands.clear();
+        self.message_port_routes.clear();
     }
 
     pub(crate) fn take_messages(&mut self) -> Vec<NativeWorkerMessage> {
         self.pending_messages.drain(..).collect()
+    }
+
+    pub(crate) fn take_message_port_messages(&mut self) -> Vec<NativeMessagePortPageMessage> {
+        self.pending_message_port_messages.drain(..).collect()
     }
 
     pub(crate) fn take_websocket_commands(&mut self) -> Vec<NativeWorkerWebSocketCommand> {
@@ -648,6 +695,7 @@ impl NativeWorkerRegistry {
                         .map(|worker| worker.url.clone())
                         .unwrap_or_default();
                     self.workers.remove(&worker_id);
+                    self.remove_worker_routes(worker_id);
                     self.queue_error(worker_id, &worker_url, &error.to_string())?;
                 }
             }
@@ -678,12 +726,18 @@ impl NativeWorkerRegistry {
                     self.create_worker(worker_id, href, worker_type, loader, owner_url)
                         .await?;
                 }
-                NativeScriptCommand::WorkerPostMessage { worker_id, data } => {
-                    self.post_message(worker_id, data, loader).await?;
+                NativeScriptCommand::WorkerPostMessage {
+                    worker_id,
+                    data,
+                    transfer_ports,
+                } => {
+                    self.post_message(worker_id, data, transfer_ports, loader)
+                        .await?;
                 }
                 NativeScriptCommand::WorkerTerminate { worker_id }
                 | NativeScriptCommand::WorkerClose { worker_id } => {
                     self.workers.remove(&worker_id);
+                    self.remove_worker_routes(worker_id);
                 }
                 _ => {
                     return Err(NativeEngineError::invalid(
@@ -787,6 +841,7 @@ impl NativeWorkerRegistry {
             }
             Err(error) => {
                 self.workers.remove(&worker_id);
+                self.remove_worker_routes(worker_id);
                 self.queue_error(worker_id, &resource.url, &error.to_string())
             }
         }
@@ -796,11 +851,13 @@ impl NativeWorkerRegistry {
         &mut self,
         worker_id: u32,
         data: serde_json::Value,
+        transfer_ports: Vec<NativeMessagePortTransfer>,
         loader: &mut NativeResourceLoader,
     ) -> Result<(), NativeEngineError> {
         if !self.workers.contains_key(&worker_id) {
             return Ok(());
         }
+        self.register_page_transfers(worker_id, &transfer_ports)?;
         let serialized = serde_json::to_string(&data).map_err(|_| NativeEngineError::Worker {
             operation: "serialize native Worker message".into(),
             reason: "native Worker message could not be serialized".into(),
@@ -819,7 +876,15 @@ impl NativeWorkerRegistry {
                 .expect("worker presence was checked");
             worker.evaluate_turn(
                 worker_id,
-                &format!("globalThis.__glassDispatchWorkerMessage({serialized});"),
+                &format!(
+                    "globalThis.__glassDispatchWorkerMessage({{data:{serialized},transfer_ports:{}}});",
+                    serde_json::to_string(&transfer_ports).map_err(|_| {
+                        NativeEngineError::Worker {
+                            operation: "serialize native Worker port transfers".into(),
+                            reason: "Worker port transfers could not be serialized".into(),
+                        }
+                    })?
+                ),
             )
         };
         match evaluation {
@@ -829,6 +894,7 @@ impl NativeWorkerRegistry {
             }
             Err(error) => {
                 self.workers.remove(&worker_id);
+                self.remove_worker_routes(worker_id);
                 self.queue_error(worker_id, "", &error.to_string())
             }
         }
@@ -852,21 +918,65 @@ impl NativeWorkerRegistry {
                 ));
             }
             let mut closed = false;
+            let message_port_commands = self
+                .workers
+                .get(&current_worker_id)
+                .map(|worker| worker.runtime.take_message_port_commands())
+                .unwrap_or_default();
+            for command in message_port_commands {
+                match command {
+                    NativeScriptCommand::MessagePortPostMessage {
+                        bridge_key,
+                        data,
+                        worker_id: Some(command_worker_id),
+                        transfer_ports,
+                    } if command_worker_id == current_worker_id => {
+                        self.queue_page_message_port(
+                            current_worker_id,
+                            bridge_key,
+                            data,
+                            transfer_ports,
+                        )?;
+                    }
+                    _ => {
+                        return Err(NativeEngineError::invalid(
+                            "native Worker MessagePort command",
+                            "worker emitted an invalid MessagePort host command",
+                        ));
+                    }
+                }
+            }
             for command in evaluation.commands {
                 match command {
                     NativeScriptCommand::WorkerPostMessage {
                         worker_id: command_worker_id,
                         data,
+                        transfer_ports,
                     } if command_worker_id == current_worker_id => {
+                        self.register_worker_transfers(current_worker_id, &transfer_ports)?;
                         self.queue_message(NativeWorkerMessage {
                             worker_id: current_worker_id,
                             data,
                             error: None,
+                            transfer_ports,
                         })?;
                     }
                     NativeScriptCommand::WorkerClose {
                         worker_id: command_worker_id,
                     } if command_worker_id == current_worker_id => closed = true,
+                    NativeScriptCommand::MessagePortPostMessage {
+                        bridge_key,
+                        data,
+                        worker_id: Some(command_worker_id),
+                        transfer_ports,
+                    } if command_worker_id == current_worker_id => {
+                        self.queue_page_message_port(
+                            current_worker_id,
+                            bridge_key,
+                            data,
+                            transfer_ports,
+                        )?;
+                    }
                     NativeScriptCommand::Fetch {
                         worker_id: Some(command_worker_id),
                         ..
@@ -910,9 +1020,176 @@ impl NativeWorkerRegistry {
             }
             if closed {
                 self.workers.remove(&current_worker_id);
+                self.remove_worker_routes(current_worker_id);
             }
         }
         Ok(())
+    }
+
+    /// Route page-owned MessagePort commands into the worker endpoint named by
+    /// the bridge key. Commands are applied after ordinary WorkerCreate and
+    /// WorkerPostMessage commands from the same page turn, so a page can wire
+    /// a channel and immediately send its first message deterministically.
+    pub(crate) async fn apply_page_message_port_commands(
+        &mut self,
+        commands: Vec<NativeScriptCommand>,
+        loader: &mut NativeResourceLoader,
+    ) -> Result<(), NativeEngineError> {
+        if commands.len() > MAX_NATIVE_WORKER_MESSAGES {
+            return Err(NativeEngineError::limit(
+                "native page MessagePort commands",
+                MAX_NATIVE_WORKER_MESSAGES,
+                commands.len(),
+            ));
+        }
+        for command in commands {
+            let NativeScriptCommand::MessagePortPostMessage {
+                bridge_key,
+                data,
+                worker_id: None,
+                transfer_ports,
+            } = command
+            else {
+                return Err(NativeEngineError::invalid(
+                    "native page MessagePort command",
+                    "command did not originate from the page realm",
+                ));
+            };
+            let Some(route) = self.message_port_routes.get(&bridge_key).cloned() else {
+                continue;
+            };
+            self.register_page_transfers(route.worker_id, &transfer_ports)?;
+            let serialized_data =
+                serde_json::to_string(&data).map_err(|_| NativeEngineError::Worker {
+                    operation: "serialize native page MessagePort data".into(),
+                    reason: "page MessagePort data could not be serialized".into(),
+                })?;
+            let serialized_transfers =
+                serde_json::to_string(&transfer_ports).map_err(|_| NativeEngineError::Worker {
+                    operation: "serialize native page MessagePort transfers".into(),
+                    reason: "page MessagePort transfers could not be serialized".into(),
+                })?;
+            let source = format!(
+                "globalThis.__glassDispatchMessagePortByBridge({bridge_key:?}, {{data:{serialized_data},transfer_ports:{serialized_transfers}}});"
+            );
+            let worker_id = route.worker_id;
+            let evaluation = self
+                .workers
+                .get(&worker_id)
+                .map(|worker| worker.evaluate_turn(worker_id, &source))
+                .ok_or_else(|| {
+                    NativeEngineError::invalid(
+                        "native page MessagePort route",
+                        "target Worker no longer exists",
+                    )
+                })?;
+            match evaluation {
+                Ok(evaluation) => {
+                    self.collect_worker_evaluation(worker_id, evaluation, loader)
+                        .await?;
+                }
+                Err(error) => {
+                    let worker_url = self
+                        .workers
+                        .get(&worker_id)
+                        .map(|worker| worker.url.clone())
+                        .unwrap_or_default();
+                    self.workers.remove(&worker_id);
+                    self.remove_worker_routes(worker_id);
+                    self.queue_error(worker_id, &worker_url, &error.to_string())?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn register_page_transfers(
+        &mut self,
+        worker_id: u32,
+        transfers: &[NativeMessagePortTransfer],
+    ) -> Result<(), NativeEngineError> {
+        self.register_transfers(worker_id, transfers)
+    }
+
+    fn register_worker_transfers(
+        &mut self,
+        worker_id: u32,
+        transfers: &[NativeMessagePortTransfer],
+    ) -> Result<(), NativeEngineError> {
+        self.register_transfers(worker_id, transfers)
+    }
+
+    fn register_transfers(
+        &mut self,
+        worker_id: u32,
+        transfers: &[NativeMessagePortTransfer],
+    ) -> Result<(), NativeEngineError> {
+        if transfers.len() > MAX_NATIVE_WORKER_MESSAGES {
+            return Err(NativeEngineError::limit(
+                "native MessagePort transfers",
+                MAX_NATIVE_WORKER_MESSAGES,
+                transfers.len(),
+            ));
+        }
+        for transfer in transfers {
+            validate_message_port_transfers(std::slice::from_ref(transfer))?;
+            if self.message_port_routes.contains_key(&transfer.bridge_key) {
+                return Err(NativeEngineError::invalid(
+                    "native MessagePort transfer",
+                    "bridge key was already transferred",
+                ));
+            }
+            self.message_port_routes.insert(
+                transfer.bridge_key.clone(),
+                NativeMessagePortRoute { worker_id },
+            );
+        }
+        Ok(())
+    }
+
+    fn queue_page_message_port(
+        &mut self,
+        worker_id: u32,
+        bridge_key: String,
+        data: serde_json::Value,
+        transfer_ports: Vec<NativeMessagePortTransfer>,
+    ) -> Result<(), NativeEngineError> {
+        let Some(route) = self.message_port_routes.get(&bridge_key).cloned() else {
+            return Ok(());
+        };
+        if route.worker_id != worker_id {
+            return Err(NativeEngineError::invalid(
+                "native MessagePort route",
+                "worker id does not own the MessagePort bridge",
+            ));
+        }
+        self.register_worker_transfers(worker_id, &transfer_ports)?;
+        if self.pending_message_port_messages.len() >= MAX_NATIVE_WORKER_MESSAGES {
+            return Err(NativeEngineError::limit(
+                "native page MessagePort messages",
+                MAX_NATIVE_WORKER_MESSAGES,
+                self.pending_message_port_messages.len().saturating_add(1),
+            ));
+        }
+        self.pending_message_port_messages
+            .push_back(NativeMessagePortPageMessage {
+                bridge_key,
+                data,
+                transfer_ports,
+            });
+        Ok(())
+    }
+
+    fn remove_worker_routes(&mut self, worker_id: u32) {
+        self.message_port_routes
+            .retain(|_, route| route.worker_id != worker_id);
+        let live_bridge_keys = self
+            .message_port_routes
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        self.pending_message_port_messages
+            .retain(|message| live_bridge_keys.contains(&message.bridge_key));
     }
 
     pub(crate) async fn dispatch_websocket_event(
@@ -938,6 +1215,7 @@ impl NativeWorkerRegistry {
                     .map(|worker| worker.url.clone())
                     .unwrap_or_default();
                 self.workers.remove(&worker_id);
+                self.remove_worker_routes(worker_id);
                 self.queue_error(worker_id, &worker_url, &error.to_string())
             }
         }
@@ -966,6 +1244,7 @@ impl NativeWorkerRegistry {
                     .map(|worker| worker.url.clone())
                     .unwrap_or_default();
                 self.workers.remove(&worker_id);
+                self.remove_worker_routes(worker_id);
                 self.queue_error(worker_id, &worker_url, &error.to_string())
             }
         }
@@ -1187,10 +1466,12 @@ impl NativeWorkerRegistry {
             } else {
                 format!("{message} ({worker_url})")
             }),
+            transfer_ports: Vec::new(),
         })
     }
 
     fn queue_message(&mut self, message: NativeWorkerMessage) -> Result<(), NativeEngineError> {
+        validate_message_port_transfers(&message.transfer_ports)?;
         let encoded = serde_json::to_vec(&message.data).map_err(|_| NativeEngineError::Worker {
             operation: "queue native Worker message".into(),
             reason: "Worker message data could not be serialized".into(),
@@ -6381,6 +6662,7 @@ pub(crate) struct NativeJavaScriptRuntime {
     window_navigation_events: Arc<Mutex<Vec<NativeWindowNavigationRequest>>>,
     frame_script_events: Arc<Mutex<Vec<NativeFrameScriptRequest>>>,
     worker_commands: Arc<Mutex<Vec<NativeScriptCommand>>>,
+    message_port_commands: Arc<Mutex<Vec<NativeScriptCommand>>>,
     service_worker_commands: Arc<Mutex<Vec<NativeScriptCommand>>>,
     service_worker_registrations: Arc<Mutex<Vec<NativeServiceWorkerRegistrationState>>>,
     pending_window_proxy_updates: Arc<Mutex<Vec<NativeWindowProxyUpdate>>>,
@@ -6512,6 +6794,7 @@ impl NativeJavaScriptRuntime {
             window_navigation_events: Arc::new(Mutex::new(Vec::new())),
             frame_script_events: Arc::new(Mutex::new(Vec::new())),
             worker_commands: Arc::new(Mutex::new(Vec::new())),
+            message_port_commands: Arc::new(Mutex::new(Vec::new())),
             service_worker_commands: Arc::new(Mutex::new(Vec::new())),
             service_worker_registrations: Arc::new(Mutex::new(Vec::new())),
             pending_window_proxy_updates: Arc::new(Mutex::new(Vec::new())),
@@ -6753,6 +7036,13 @@ impl NativeJavaScriptRuntime {
 
     pub(crate) fn take_worker_commands(&self) -> Vec<NativeScriptCommand> {
         self.worker_commands
+            .lock()
+            .map(|mut commands| std::mem::take(&mut *commands))
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn take_message_port_commands(&self) -> Vec<NativeScriptCommand> {
+        self.message_port_commands
             .lock()
             .map(|mut commands| std::mem::take(&mut *commands))
             .unwrap_or_default()
@@ -7598,7 +7888,9 @@ impl NativeJavaScriptRuntime {
                     });
                 }
             }
-            NativeScriptCommand::WorkerPostMessage { worker_id, data } => {
+            NativeScriptCommand::WorkerPostMessage {
+                worker_id, data, ..
+            } => {
                 if *worker_id == 0 {
                     return Err(NativeEngineError::invalid(
                         "native Worker id",
@@ -7638,6 +7930,63 @@ impl NativeJavaScriptRuntime {
         if commands.len() >= MAX_NATIVE_WORKER_MESSAGES {
             return Err(NativeEngineError::limit(
                 "native Worker commands",
+                MAX_NATIVE_WORKER_MESSAGES,
+                commands.len().saturating_add(1),
+            ));
+        }
+        commands.push(command.clone());
+        Ok(true)
+    }
+
+    fn apply_message_port_command(
+        &self,
+        command: &NativeScriptCommand,
+    ) -> Result<bool, NativeEngineError> {
+        let NativeScriptCommand::MessagePortPostMessage {
+            bridge_key,
+            data,
+            worker_id,
+            transfer_ports,
+        } = command
+        else {
+            return Ok(false);
+        };
+        validate_url_text("native MessagePort bridge key", bridge_key)?;
+        if bridge_key.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES {
+            return Err(NativeEngineError::limit(
+                "native MessagePort bridge key",
+                crate::browser_backend::MAX_BACKEND_ID_BYTES,
+                bridge_key.len(),
+            ));
+        }
+        if worker_id.is_some_and(|worker_id| worker_id == 0) {
+            return Err(NativeEngineError::invalid(
+                "native MessagePort worker id",
+                "must be positive when present",
+            ));
+        }
+        validate_message_port_transfers(transfer_ports)?;
+        let encoded = serde_json::to_vec(data).map_err(|_| NativeEngineError::Worker {
+            operation: "record native MessagePort message".into(),
+            reason: "MessagePort data could not be serialized".into(),
+        })?;
+        if encoded.len() > MAX_NATIVE_POST_MESSAGE_BYTES {
+            return Err(NativeEngineError::limit(
+                "native MessagePort message",
+                MAX_NATIVE_POST_MESSAGE_BYTES,
+                encoded.len(),
+            ));
+        }
+        let mut commands =
+            self.message_port_commands
+                .lock()
+                .map_err(|_| NativeEngineError::Worker {
+                    operation: "record native MessagePort command".into(),
+                    reason: "native MessagePort command queue is unavailable".into(),
+                })?;
+        if commands.len() >= MAX_NATIVE_WORKER_MESSAGES {
+            return Err(NativeEngineError::limit(
+                "native MessagePort commands",
                 MAX_NATIVE_WORKER_MESSAGES,
                 commands.len().saturating_add(1),
             ));
@@ -8070,6 +8419,9 @@ impl NativeJavaScriptRuntime {
                 if self.apply_post_message_command(&command)? {
                     continue;
                 }
+                if self.apply_message_port_command(&command)? {
+                    continue;
+                }
                 if self.apply_service_worker_command(&command)? {
                     continue;
                 }
@@ -8354,8 +8706,21 @@ impl NativeJavaScriptRuntime {
                 }
             }
             let commands = read_script_commands(ctx.clone())?;
-            for command in &commands {
-                let valid = match command {
+            let mut worker_commands = Vec::with_capacity(commands.len());
+            for command in commands {
+                if !service_worker
+                    && matches!(
+                        &command,
+                        NativeScriptCommand::MessagePortPostMessage {
+                            worker_id: Some(command_worker_id),
+                            ..
+                        } if *command_worker_id == worker_id
+                    )
+                    && self.apply_message_port_command(&command)?
+                {
+                    continue;
+                }
+                let valid = match &command {
                     NativeScriptCommand::WorkerPostMessage { .. }
                     | NativeScriptCommand::WorkerClose { .. } => !service_worker,
                     NativeScriptCommand::Fetch {
@@ -8382,6 +8747,10 @@ impl NativeJavaScriptRuntime {
                         worker_id: Some(command_worker_id),
                         ..
                     } => *command_worker_id == worker_id,
+                    NativeScriptCommand::MessagePortPostMessage {
+                        worker_id: Some(command_worker_id),
+                        ..
+                    } => !service_worker && *command_worker_id == worker_id,
                     _ => false,
                 };
                 if !valid {
@@ -8390,6 +8759,7 @@ impl NativeJavaScriptRuntime {
                         "worker command has an invalid owner or unsupported operation",
                     ));
                 }
+                worker_commands.push(command);
             }
             let json = ctx
                 .json_stringify(value)
@@ -8422,7 +8792,7 @@ impl NativeJavaScriptRuntime {
             };
             Ok(NativeScriptEvaluation {
                 value,
-                commands,
+                commands: worker_commands,
                 top_level_await_pending,
             })
         });
@@ -8880,6 +9250,9 @@ impl NativeJavaScriptRuntime {
                     continue;
                 }
                 if self.apply_post_message_command(&command)? {
+                    continue;
+                }
+                if self.apply_message_port_command(&command)? {
                     continue;
                 }
                 if self.apply_service_worker_command(&command)? {
@@ -9622,6 +9995,42 @@ fn read_script_commands<'js>(
     Ok(commands)
 }
 
+fn validate_message_port_transfers(
+    transfers: &[NativeMessagePortTransfer],
+) -> Result<(), NativeEngineError> {
+    if transfers.len() > MAX_NATIVE_WORKER_MESSAGES {
+        return Err(NativeEngineError::limit(
+            "native MessagePort transfers",
+            MAX_NATIVE_WORKER_MESSAGES,
+            transfers.len(),
+        ));
+    }
+    let mut keys = BTreeSet::new();
+    for transfer in transfers {
+        validate_url_text("native MessagePort bridge key", &transfer.bridge_key)?;
+        if transfer.bridge_key.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES {
+            return Err(NativeEngineError::limit(
+                "native MessagePort bridge key",
+                crate::browser_backend::MAX_BACKEND_ID_BYTES,
+                transfer.bridge_key.len(),
+            ));
+        }
+        if transfer.port_id == 0 || transfer.peer_id == 0 {
+            return Err(NativeEngineError::invalid(
+                "native MessagePort transfer",
+                "source and peer port ids must be positive",
+            ));
+        }
+        if !keys.insert(&transfer.bridge_key) {
+            return Err(NativeEngineError::invalid(
+                "native MessagePort transfer",
+                "a bridge key may appear only once in a transfer list",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn read_indexed_db_state<'js>(
     ctx: rquickjs::Ctx<'js>,
 ) -> Result<NativeIndexedDbOrigin, NativeEngineError> {
@@ -10064,6 +10473,8 @@ fn worker_bootstrap(
   const initialImportScriptCounts = {import_script_counts};
   const initialWorkerCryptoBytes = {initial_random_bytes};
   const isModuleWorker = {is_module};
+  globalThis.__glassWorkerId = workerId;
+  globalThis.__glassMessageRealmKey = "worker:" + String(workerId);
   const commands = [];
   const activeCommands = () => Array.isArray(globalThis.__glassWorkerCommandBuffer)
     ? globalThis.__glassWorkerCommandBuffer
@@ -13074,9 +13485,10 @@ fn worker_bootstrap(
     : importScriptsNative;
   globalThis.addEventListener = addEventListener;
   globalThis.removeEventListener = removeEventListener;
-  globalThis.postMessage = (message) => {{
+  globalThis.postMessage = (message, options) => {{
     if (closed) return;
-    pushCommand({{ kind: "workerPostMessage", worker_id: workerId, data: cloneMessageData(message) }});
+    const envelope = glassMessageCloneWithTransfers(message, glassMessageTransferList(options));
+    pushCommand({{ kind: "workerPostMessage", worker_id: workerId, data: envelope.data, transfer_ports: envelope.transfer_ports }});
   }};
   globalThis.close = () => {{
     if (closed) return;
@@ -13084,9 +13496,10 @@ fn worker_bootstrap(
     globalThis.__glassWorkerClosed = true;
     pushCommand({{ kind: "workerClose", worker_id: workerId }});
   }};
-  globalThis.__glassDispatchWorkerMessage = (data) => {{
+  globalThis.__glassDispatchWorkerMessage = (payload) => {{
     if (closed) return null;
-    dispatch("message", {{ type: "message", data, origin: "", source: null, target: globalThis, currentTarget: globalThis }});
+    const envelope = glassMessageDecodeEnvelope(payload);
+    dispatch("message", {{ type: "message", data: envelope.data, ports: envelope.ports, origin: "", source: null, target: globalThis, currentTarget: globalThis }});
     return null;
   }};
   globalThis.__glassWorkerListeners = listeners;
@@ -13202,9 +13615,11 @@ pub(crate) fn worker_message_script(
                 "must be positive",
             ));
         }
+        validate_message_port_transfers(&message.transfer_ports)?;
         let payload = serde_json::json!({
             "data": message.data,
             "error": message.error,
+            "transfer_ports": message.transfer_ports,
         });
         let encoded = serde_json::to_string(&payload).map_err(|_| NativeEngineError::Worker {
             operation: "serialize native Worker event".into(),
@@ -13218,6 +13633,56 @@ pub(crate) fn worker_message_script(
     if source.len() > MAX_NATIVE_SCRIPT_BYTES {
         return Err(NativeEngineError::limit(
             "native Worker event script",
+            MAX_NATIVE_SCRIPT_BYTES,
+            source.len(),
+        ));
+    }
+    Ok(Some(source))
+}
+
+pub(crate) fn message_port_script(
+    messages: &[NativeMessagePortPageMessage],
+) -> Result<Option<String>, NativeEngineError> {
+    if messages.is_empty() {
+        return Ok(None);
+    }
+    let mut source = String::new();
+    for message in messages {
+        validate_url_text("native MessagePort bridge key", &message.bridge_key)?;
+        if message.bridge_key.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES {
+            return Err(NativeEngineError::limit(
+                "native MessagePort bridge key",
+                crate::browser_backend::MAX_BACKEND_ID_BYTES,
+                message.bridge_key.len(),
+            ));
+        }
+        let bridge_key =
+            serde_json::to_string(&message.bridge_key).map_err(|_| NativeEngineError::Worker {
+                operation: "serialize native MessagePort bridge key".into(),
+                reason: "native MessagePort bridge key could not be serialized".into(),
+            })?;
+        if message.bridge_key.is_empty() {
+            return Err(NativeEngineError::invalid(
+                "native MessagePort bridge key",
+                "must not be empty",
+            ));
+        }
+        validate_message_port_transfers(&message.transfer_ports)?;
+        let payload = serde_json::json!({
+            "data": message.data,
+            "transfer_ports": message.transfer_ports,
+        });
+        let encoded = serde_json::to_string(&payload).map_err(|_| NativeEngineError::Worker {
+            operation: "serialize native page MessagePort event".into(),
+            reason: "native page MessagePort event could not be serialized".into(),
+        })?;
+        source.push_str(&format!(
+            "globalThis.__glassDispatchMessagePortByBridge({bridge_key}, {encoded});"
+        ));
+    }
+    if source.len() > MAX_NATIVE_SCRIPT_BYTES {
+        return Err(NativeEngineError::limit(
+            "native page MessagePort event script",
             MAX_NATIVE_SCRIPT_BYTES,
             source.len(),
         ));
@@ -13250,6 +13715,10 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
   const glassMessagePortRegistry = globalThis.__glassMessagePortRegistry instanceof Map
     ? globalThis.__glassMessagePortRegistry
     : new Map();
+  const glassMessageBridgeRegistry = globalThis.__glassMessageBridgeRegistry instanceof Map
+    ? globalThis.__glassMessageBridgeRegistry
+    : new Map();
+  const glassMessageRealmKey = String(globalThis.__glassMessageRealmKey || "native");
   const glassBroadcastChannelRegistry = globalThis.__glassBroadcastChannelRegistry instanceof Map
     ? globalThis.__glassBroadcastChannelRegistry
     : new Map();
@@ -13284,6 +13753,143 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
     try { return JSON.parse(encoded); } catch (_error) {
       throw glassMessageException("message could not be cloned", "DataCloneError");
     }
+  };
+  const glassMessageTransferList = (options) => {
+    const transfer = options === undefined
+      ? []
+      : Array.isArray(options)
+        ? options
+        : options && typeof options === "object" && options.transfer !== undefined
+          ? options.transfer
+          : null;
+    if (!Array.isArray(transfer))
+      throw glassMessageException("message transfer list must be an array", "TypeError");
+    if (transfer.length > glassMessagePortQueueLimit)
+      throw new RangeError("native message transfer list exceeds its limit");
+    return transfer;
+  };
+  const glassMessageTransferDescriptor = (port) => {
+    if (!port || typeof port !== "object")
+      throw glassMessageException("transfer list member is not a MessagePort", "DataCloneError");
+    const id = Number(port.__glassMessagePortId);
+    if (!Number.isSafeInteger(id) || glassMessagePortRegistry.get(id) !== port
+        || port.__glassMessageClosed || port.__glassMessagePortTransferred
+        || port.__glassMessagePortBridgeKey) {
+      throw glassMessageException("MessagePort is not transferable", "DataCloneError");
+    }
+    const peer = port.__glassMessagePortPeer;
+    const peerId = peer && Number(peer.__glassMessagePortId);
+    if (!peer || !Number.isSafeInteger(peerId) || peer.__glassMessageClosed
+        || peer.__glassMessagePortTransferred || peer.__glassMessagePortBridgeKey) {
+      throw glassMessageException("MessagePort is not entangled", "DataCloneError");
+    }
+    const bridgeKey = glassMessageRealmKey + ":port:" + String(id);
+    if (bridgeKey.length > __GLASS_MESSAGE_CHANNEL_NAME_LIMIT__)
+      throw new RangeError("native MessagePort bridge key exceeds its limit");
+    if (glassMessageBridgeRegistry.has(bridgeKey))
+      throw glassMessageException("MessagePort was already transferred", "DataCloneError");
+    return {
+      port,
+      peer,
+      id,
+      bridgeKey,
+      descriptor: { bridge_key: bridgeKey, port_id: id, peer_id: peerId },
+    };
+  };
+  const glassMessageCommitTransfer = ({ port, peer, id, bridgeKey }) => {
+    port.__glassMessagePortTransferred = true;
+    port.__glassMessageClosed = true;
+    port.__glassMessageQueue.length = 0;
+    glassMessagePortRegistry.delete(id);
+    peer.__glassMessagePortPeer = null;
+    peer.__glassMessagePortBridgeKey = bridgeKey;
+    glassMessageBridgeRegistry.set(bridgeKey, peer);
+  };
+  const glassMessageCloneWithTransfers = (value, transfer) => {
+    const prepared = [];
+    const members = new Map();
+    for (const port of transfer) {
+      if (members.has(port))
+        throw glassMessageException("MessagePort appears more than once in the transfer list", "DataCloneError");
+      const descriptor = glassMessageTransferDescriptor(port);
+      if (members.has(descriptor.peer))
+        throw glassMessageException("both endpoints of a MessageChannel cannot be transferred together", "DataCloneError");
+      members.set(port, prepared.length);
+      prepared.push(descriptor);
+    }
+    let encoded;
+    try {
+      encoded = JSON.stringify(value, (_key, current) => {
+        const index = members.get(current);
+        return index === undefined ? current : { __glassMessagePortTransferIndex: index };
+      });
+    } catch (_error) {
+      throw glassMessageException("message could not be cloned", "DataCloneError");
+    }
+    if (encoded === undefined || encoded.length > __GLASS_MESSAGE_BYTES_LIMIT__)
+      throw glassMessageException("message could not be cloned", "DataCloneError");
+    let data;
+    try { data = JSON.parse(encoded); } catch (_error) {
+      throw glassMessageException("message could not be cloned", "DataCloneError");
+    }
+    for (const descriptor of prepared) glassMessageCommitTransfer(descriptor);
+    return {
+      data,
+      transfer_ports: prepared.map(({ descriptor }) => descriptor),
+    };
+  };
+  const glassMessageMakeBridgePort = (descriptor) => {
+    const bridgeKey = String(descriptor && descriptor.bridge_key || "");
+    if (!bridgeKey || bridgeKey.length > __GLASS_MESSAGE_CHANNEL_NAME_LIMIT__)
+      throw glassMessageException("MessagePort bridge key is invalid", "DataCloneError");
+    const existing = glassMessageBridgeRegistry.get(bridgeKey);
+    if (existing && !existing.__glassMessageClosed) return existing;
+    const port = Object.create(MessagePortNative.prototype);
+    const id = glassNextMessagePortId;
+    glassNextMessagePortId += 1;
+    globalThis.__glassNextMessagePortId = glassNextMessagePortId;
+    glassMessageHidden(port, "__glassMessagePortId", id);
+    glassMessageHidden(port, "__glassMessagePortPeer", null);
+    glassMessageHidden(port, "__glassMessagePortBridgeKey", bridgeKey);
+    glassMessageHidden(port, "__glassMessageListeners", new Map());
+    glassMessageHidden(port, "__glassMessageQueue", []);
+    glassMessageHidden(port, "__glassMessageStarted", false);
+    glassMessageHidden(port, "__glassMessageDeliveryQueued", false);
+    glassMessageHidden(port, "__glassMessageClosed", false);
+    glassMessageHidden(port, "__glassMessagePortTransferred", false);
+    glassMessageInstallHandlers(port);
+    glassMessagePortRegistry.set(id, port);
+    glassMessageBridgeRegistry.set(bridgeKey, port);
+    return port;
+  };
+  const glassMessageReviveValue = (value, ports, seen = new Map()) => {
+    if (!value || typeof value !== "object") return value;
+    if (Array.isArray(value)) {
+      if (seen.has(value)) return seen.get(value);
+      const result = [];
+      seen.set(value, result);
+      for (const item of value) result.push(glassMessageReviveValue(item, ports, seen));
+      return result;
+    }
+    const marker = value.__glassMessagePortTransferIndex;
+    if (Object.keys(value).length === 1 && Number.isSafeInteger(marker))
+      return ports[marker] || null;
+    if (seen.has(value)) return seen.get(value);
+    const result = {};
+    seen.set(value, result);
+    for (const [key, item] of Object.entries(value))
+      result[key] = glassMessageReviveValue(item, ports, seen);
+    return result;
+  };
+  const glassMessageDecodeEnvelope = (payload) => {
+    const descriptors = payload && Array.isArray(payload.transfer_ports)
+      ? payload.transfer_ports
+      : [];
+    const ports = descriptors.map(glassMessageMakeBridgePort);
+    return {
+      data: glassMessageReviveValue(payload && payload.data, ports),
+      ports,
+    };
   };
   const glassMessageEventConstructor = typeof globalThis.__glassMessageEventConstructor === "function"
     ? globalThis.__glassMessageEventConstructor
@@ -13448,23 +14054,32 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
     this.__glassMessageClosed = true;
     this.__glassMessageQueue.length = 0;
     glassMessagePortRegistry.delete(this.__glassMessagePortId);
+    if (this.__glassMessagePortBridgeKey)
+      glassMessageBridgeRegistry.delete(this.__glassMessagePortBridgeKey);
   };
   MessagePortNative.prototype.postMessage = function(message, options) {
     if (this.__glassMessageClosed)
       throw glassMessageException("message port is closed", "InvalidStateError");
-    const transfer = options === undefined
-      ? []
-      : Array.isArray(options)
-        ? options
-        : options && typeof options === "object" && options.transfer !== undefined
-          ? options.transfer
-          : null;
-    if (!Array.isArray(transfer)) throw new TypeError("message transfer list must be an array");
-    if (transfer.length > 0)
-      throw glassMessageException("native message transferables are not supported", "DataCloneError");
+    const transfer = glassMessageTransferList(options);
+    if (!this.__glassMessagePortBridgeKey && transfer.length > 0)
+      throw glassMessageException("local MessagePort transfer requires a receiving realm", "DataCloneError");
+    const envelope = glassMessageCloneWithTransfers(message, transfer);
+    if (this.__glassMessagePortBridgeKey) {
+      const workerId = Number.isSafeInteger(globalThis.__glassWorkerId)
+        ? globalThis.__glassWorkerId
+        : null;
+      pushCommand({
+        kind: "messagePortPostMessage",
+        bridge_key: this.__glassMessagePortBridgeKey,
+        worker_id: workerId,
+        data: envelope.data,
+        transfer_ports: envelope.transfer_ports,
+      });
+      return;
+    }
     const peer = this.__glassMessagePortPeer;
     if (!peer || peer.__glassMessageClosed) return;
-    glassMessageEnqueue(peer, glassMessageClone(message), []);
+    glassMessageEnqueue(peer, envelope.data, []);
   };
   globalThis.__glassMessagePortConstructor = MessagePortNative;
   globalThis.MessagePort = MessagePortNative;
@@ -13475,10 +14090,12 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
     globalThis.__glassNextMessagePortId = glassNextMessagePortId;
     glassMessageHidden(port, "__glassMessagePortId", id);
     glassMessageHidden(port, "__glassMessagePortPeer", null);
+    glassMessageHidden(port, "__glassMessagePortBridgeKey", null);
     glassMessageHidden(port, "__glassMessageListeners", new Map());
     glassMessageHidden(port, "__glassMessageQueue", []);
     glassMessageHidden(port, "__glassMessageStarted", false);
     glassMessageHidden(port, "__glassMessageClosed", false);
+    glassMessageHidden(port, "__glassMessagePortTransferred", false);
     glassMessageInstallHandlers(port);
     glassMessagePortRegistry.set(id, port);
     return port;
@@ -13497,6 +14114,20 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
   MessageChannelNative.prototype.constructor = MessageChannelNative;
   globalThis.__glassMessageChannelConstructor = MessageChannelNative;
   globalThis.MessageChannel = MessageChannelNative;
+  globalThis.__glassDispatchMessagePortById = (portId, payload) => {
+    const port = glassMessagePortRegistry.get(Number(portId));
+    if (!port || port.__glassMessageClosed) return null;
+    const envelope = glassMessageDecodeEnvelope(payload);
+    glassMessageEnqueue(port, envelope.data, envelope.ports);
+    return null;
+  };
+  globalThis.__glassDispatchMessagePortByBridge = (bridgeKey, payload) => {
+    const port = glassMessageBridgeRegistry.get(String(bridgeKey));
+    if (!port || port.__glassMessageClosed) return null;
+    const envelope = glassMessageDecodeEnvelope(payload);
+    glassMessageEnqueue(port, envelope.data, envelope.ports);
+    return null;
+  };
   const BroadcastChannelNative = typeof globalThis.__glassBroadcastChannelConstructor === "function"
     ? globalThis.__glassBroadcastChannelConstructor
     : function BroadcastChannel(name) {
@@ -13544,6 +14175,7 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
     }
   };
   globalThis.__glassMessagePortRegistry = glassMessagePortRegistry;
+  globalThis.__glassMessageBridgeRegistry = glassMessageBridgeRegistry;
   globalThis.__glassBroadcastChannelRegistry = glassBroadcastChannelRegistry;
   globalThis.__glassNextMessagePortId = glassNextMessagePortId;
   globalThis.__glassBroadcastChannelConstructor = BroadcastChannelNative;
@@ -13980,6 +14612,7 @@ fn document_bootstrap(
     Ok(format!(
         r###"(() => {{
   const host = {serialized};
+  globalThis.__glassMessageRealmKey = "page:" + String(host.context_id || "native");
   const initialPageCryptoBytes = {initial_page_crypto_bytes};
   const state = host.state;
   const geometryByIndex = globalThis.__glassHostGeometry instanceof Map
@@ -23461,9 +24094,11 @@ fn document_bootstrap(
       }};
       workerDispatch(worker, "error", error);
     }} else {{
+      const envelope = glassMessageDecodeEnvelope(payload);
       workerDispatch(worker, "message", {{
         type: "message",
-        data: payload.data,
+        data: envelope.data,
+        ports: envelope.ports,
         origin: String(payload.origin || ""),
         source: null,
         target: worker,
@@ -23508,9 +24143,10 @@ fn document_bootstrap(
     if (!this.__glassWorkerListeners[name]) return;
     this.__glassWorkerListeners[name] = this.__glassWorkerListeners[name].filter((candidate) => candidate !== listener);
   }};
-  WorkerNative.prototype.postMessage = function(message) {{
+  WorkerNative.prototype.postMessage = function(message, options) {{
     if (this.__glassTerminated) return;
-    pushCommand({{ kind: "workerPostMessage", worker_id: this.__glassWorkerId, data: cloneMessageData(message) }});
+    const envelope = glassMessageCloneWithTransfers(message, glassMessageTransferList(options));
+    pushCommand({{ kind: "workerPostMessage", worker_id: this.__glassWorkerId, data: envelope.data, transfer_ports: envelope.transfer_ports }});
   }};
   WorkerNative.prototype.terminate = function() {{
     if (this.__glassTerminated) return;

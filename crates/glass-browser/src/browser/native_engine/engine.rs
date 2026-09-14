@@ -22,16 +22,17 @@ use super::javascript::{
     MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_DIALOGS, MAX_NATIVE_HISTORY_STATE_BYTES,
     MAX_NATIVE_SCRIPT_BYTES, NativeCookieProfileEntry, NativeDialog, NativeFrameScriptBinding,
     NativeFrameScriptContext, NativeFrameScriptRequest, NativeIndexedDbChange,
-    NativeIndexedDbState, NativeJavaScriptRuntime, NativePageNavigation, NativePopupRequest,
-    NativePostMessageRequest, NativeScriptCommand, NativeScriptEvaluation, NativeStorageEvent,
-    NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
-    NativeWindowProxyUpdate, NativeWorkerRegistry, append_storage_changes,
-    apply_indexed_db_changes, diff_indexed_db_changes, execute_dynamic_page_scripts,
-    execute_inline_scripts, frame_event_script, host_event_script, host_hash_change_event_script,
-    host_message_event_script, host_submit_event_script, load_indexed_db_profile,
-    load_web_storage_profile, new_storage_writer_id, page_script_sources_to_scripts,
-    read_storage_event_journal, register_storage_reader, save_web_storage_profile,
-    storage_event_cursor, storage_key, unregister_storage_reader, worker_message_script,
+    NativeIndexedDbState, NativeJavaScriptRuntime, NativeMessagePortPageMessage,
+    NativePageNavigation, NativePopupRequest, NativePostMessageRequest, NativeScriptCommand,
+    NativeScriptEvaluation, NativeStorageEvent, NativeWebStorageState, NativeWindowCloseRequest,
+    NativeWindowNavigationRequest, NativeWindowProxyUpdate, NativeWorkerRegistry,
+    append_storage_changes, apply_indexed_db_changes, diff_indexed_db_changes,
+    execute_dynamic_page_scripts, execute_inline_scripts, frame_event_script, host_event_script,
+    host_hash_change_event_script, host_message_event_script, host_submit_event_script,
+    load_indexed_db_profile, load_web_storage_profile, message_port_script, new_storage_writer_id,
+    page_script_sources_to_scripts, read_storage_event_journal, register_storage_reader,
+    save_web_storage_profile, storage_event_cursor, storage_key, unregister_storage_reader,
+    worker_message_script,
 };
 use super::layout::{NativeLayoutSnapshot, NativePoint, NativeRect};
 use super::lifecycle::NativeLifecycleState;
@@ -356,6 +357,7 @@ pub struct NativeEngine {
     pending_downloads: VecDeque<NativePendingDownload>,
     pending_popups: VecDeque<NativePopupRequest>,
     pending_post_messages: VecDeque<NativePostMessageRequest>,
+    pending_message_port_messages: VecDeque<NativeMessagePortPageMessage>,
     pending_window_closes: VecDeque<NativeWindowCloseRequest>,
     pending_window_navigations: VecDeque<NativeWindowNavigationRequest>,
     pending_frame_scripts: VecDeque<NativeFrameScriptRequest>,
@@ -435,6 +437,7 @@ impl NativeEngine {
             pending_downloads: VecDeque::new(),
             pending_popups: VecDeque::new(),
             pending_post_messages: VecDeque::new(),
+            pending_message_port_messages: VecDeque::new(),
             pending_window_closes: VecDeque::new(),
             pending_window_navigations: VecDeque::new(),
             pending_frame_scripts: VecDeque::new(),
@@ -1631,10 +1634,16 @@ impl NativeEngine {
         self.sync_javascript_history();
         self.workers.run_due_timers(&mut self.loader).await?;
         let worker_messages = self.workers.take_messages();
-        let source = match worker_message_script(&worker_messages)? {
-            Some(prefix) => format!("{prefix}{source}"),
-            None => source,
-        };
+        let message_port_messages = std::mem::take(&mut self.pending_message_port_messages)
+            .into_iter()
+            .collect::<Vec<_>>();
+        let mut source = source;
+        if let Some(prefix) = worker_message_script(&worker_messages)? {
+            source = format!("{prefix}{source}");
+        }
+        if let Some(prefix) = message_port_script(&message_port_messages)? {
+            source = format!("{prefix}{source}");
+        }
         let evaluation = self
             .javascript
             .as_ref()
@@ -1655,6 +1664,16 @@ impl NativeEngine {
         self.workers
             .apply_commands(worker_commands, &mut self.loader, &owner_url)
             .await?;
+        let message_port_commands = self
+            .javascript
+            .as_ref()
+            .expect("local JavaScript runtime initialized")
+            .take_message_port_commands();
+        self.workers
+            .apply_page_message_port_commands(message_port_commands, &mut self.loader)
+            .await?;
+        self.pending_message_port_messages
+            .extend(self.workers.take_message_port_messages());
         if !self.workers.take_websocket_commands().is_empty() {
             return Err(NativeEngineError::UnsupportedUrl {
                 reason: "worker WebSocket requires a process-backed HTTP(S) document".into(),
@@ -1682,6 +1701,16 @@ impl NativeEngine {
         self.workers
             .apply_commands(dynamic_worker_commands, &mut self.loader, &owner_url)
             .await?;
+        let dynamic_message_port_commands = self
+            .javascript
+            .as_ref()
+            .expect("local JavaScript runtime initialized")
+            .take_message_port_commands();
+        self.workers
+            .apply_page_message_port_commands(dynamic_message_port_commands, &mut self.loader)
+            .await?;
+        self.pending_message_port_messages
+            .extend(self.workers.take_message_port_messages());
         if !self.workers.take_websocket_commands().is_empty() {
             return Err(NativeEngineError::UnsupportedUrl {
                 reason: "worker WebSocket requires a process-backed HTTP(S) document".into(),
@@ -5495,6 +5524,7 @@ impl NativeEngine {
         let revision = prepared.document.revision();
         self.document = prepared.document;
         self.workers.clear();
+        self.pending_message_port_messages.clear();
         self.javascript = javascript;
         self.nested_scroll_offsets.clear();
         self.url = prepared.resource.url;
@@ -5626,6 +5656,7 @@ impl NativeEngine {
         let revision = prepared.document.revision();
         self.document = prepared.document;
         self.workers.clear();
+        self.pending_message_port_messages.clear();
         self.javascript = javascript;
         self.nested_scroll_offsets.clear();
         self.url = prepared.resource.url;

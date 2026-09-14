@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-336` slice. The native runtime is now the primary
+`native-engine-browser-337` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -67,9 +67,9 @@ dispatch, and stable `EventTarget`/`MessageEvent` identity. `BroadcastChannel`
 delivers cloned messages asynchronously to other open same-name channels in the
 owning realm. Existing QuickJS microtask ownership provides ordering and the
 existing message-size boundary rejects cyclic or over-sized payloads and
-non-empty transferable lists. Cross-context port transfer, transferables,
-shared workers, and full task-source scheduling remain issue #40
-promotion work.
+non-empty transferable lists. Cross-context port transfer is covered by slice
+337; richer transferable types, shared workers, and full task-source scheduling
+remain issue #40 promotion work.
 
 Slice 336 adds native service-worker ownership for HTTP(S) pages. Registration
 validates same-origin script and scope URLs, loads classic or static module
@@ -80,8 +80,19 @@ registration/controller state, selects the longest matching same-origin scope,
 and routes navigation and Fetch requests through worker `fetch` handlers with
 validated response metadata and byte-preserving bodies. Unhandled requests
 continue through the native loader; no CDP process or hidden fallback is
-introduced. Cross-context port transfer, durable worker caches, complete
-task-source scheduling, and final profile certification remain issue #40 work.
+introduced. Durable worker caches, complete task-source scheduling, and final
+profile certification remain issue #40 work.
+
+Slice 337 closes the dedicated-worker cross-realm `MessagePort` transfer
+boundary. Page and worker endpoints receive stable realm-qualified bridge keys,
+source endpoints are detached after a bounded clone succeeds, and
+`MessageEvent.ports` exposes the receiving endpoint in either direction. The
+same owner routing is exercised by the in-process fixture engine and the
+HTTP(S) content process; worker-created ports can return to a page and carry
+replies back to their worker peer. SharedWorker/service-worker channel
+ownership, richer transferable types, and complete task-source scheduling
+remain separate profile gates. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-337.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-
@@ -5500,10 +5511,11 @@ identity, OS-seeded worker and page `crypto`, and body ownership inside the
 worker realm. Asynchronous
 worker XHR, persistent worker WebSocket, and worker EventSource/SSE use the
 same owner-tagged content-process boundary and bounded page-turn delivery.
-Shared/service/worklet
-workers, transferables, dynamic/exact `importScripts()` timing, automatic
-background task-source fairness, and complete Worker Web IDL semantics remain
-outside the current profile.
+Dedicated-worker `MessagePort` transfer now crosses that boundary in both
+directions, including worker-created ports returned to a page. Shared/service/
+worklet workers, richer transferable types, dynamic/exact `importScripts()`
+timing, automatic background task-source fairness, and complete Worker Web IDL
+semantics remain outside the current profile.
 
 Within the available script profile, native Fetch `Response.clone()` creates a
 bounded fresh response/header/body owner; full disturbance and Web IDL

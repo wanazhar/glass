@@ -258,6 +258,11 @@ impl fmt::Debug for NativeResourceLoader {
             .field("max_document_bytes", &self.max_document_bytes)
             .field("cached_document_count", &self.network.cache.len())
             .field("cached_image_count", &self.network.image_cache.len())
+            .field(
+                "cached_stylesheet_count",
+                &self.network.stylesheet_cache.len(),
+            )
+            .field("cached_script_count", &self.network.script_cache.len())
             .field("cookie_count", &self.network.cookies.len())
             .field(
                 "document_policy_count",
@@ -277,6 +282,8 @@ impl fmt::Debug for NativeResourceLoader {
 struct NativeNetworkState {
     cache: BTreeMap<String, NativeDocumentCacheEntry>,
     image_cache: BTreeMap<String, NativeImageCacheEntry>,
+    stylesheet_cache: BTreeMap<String, NativeTextCacheEntry>,
+    script_cache: BTreeMap<String, NativeTextCacheEntry>,
     cookies: Vec<NativeCookie>,
     document_policies: BTreeMap<String, NativeCspPolicy>,
     preflight_cache: BTreeMap<String, Instant>,
@@ -288,6 +295,59 @@ struct NativeImageCacheEntry {
     fresh_until: Option<Instant>,
     etag: Option<String>,
     last_modified: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeTextCacheEntry {
+    url: String,
+    body: String,
+    fresh_until: Option<Instant>,
+    etag: Option<String>,
+    last_modified: Option<String>,
+}
+
+impl NativeTextCacheEntry {
+    fn from_response(url: String, body: String, headers: &HeaderMap, now: Instant) -> Option<Self> {
+        if !headers.contains_key(reqwest::header::CACHE_CONTROL)
+            && !headers.contains_key(reqwest::header::PRAGMA)
+            && !headers.contains_key(reqwest::header::ETAG)
+            && !headers.contains_key(reqwest::header::LAST_MODIFIED)
+        {
+            return None;
+        }
+        if !document_cache_storage_allowed(headers) {
+            return None;
+        }
+        Some(Self {
+            url,
+            body,
+            fresh_until: document_cache_fresh_until(headers, now),
+            etag: response_header_text(headers, reqwest::header::ETAG),
+            last_modified: response_header_text(headers, reqwest::header::LAST_MODIFIED),
+        })
+    }
+
+    fn is_fresh(&self, now: Instant) -> bool {
+        self.fresh_until.is_none_or(|deadline| now < deadline)
+    }
+
+    fn refresh_from_not_modified(mut self, headers: &HeaderMap, now: Instant) -> Option<Self> {
+        if !document_cache_storage_allowed(headers) {
+            return None;
+        }
+        if cache_control_requires_revalidation(headers) {
+            self.fresh_until = Some(now);
+        } else if let Some(fresh_until) = document_cache_fresh_until(headers, now) {
+            self.fresh_until = Some(fresh_until);
+        }
+        if let Some(etag) = response_header_text(headers, reqwest::header::ETAG) {
+            self.etag = Some(etag);
+        }
+        if let Some(last_modified) = response_header_text(headers, reqwest::header::LAST_MODIFIED) {
+            self.last_modified = Some(last_modified);
+        }
+        Some(self)
+    }
 }
 
 impl NativeImageCacheEntry {
@@ -2024,6 +2084,18 @@ impl NativeResourceLoader {
         if !policy.allows(NativeSubresourceKind::Style, &document_url, &target_url) {
             return Ok(None);
         }
+        let requested_cache_key = cache_key(&target_url);
+        let stale_cached_stylesheet = self
+            .network
+            .stylesheet_cache
+            .get(&requested_cache_key)
+            .cloned()
+            .filter(|cached| !cached.is_fresh(Instant::now()));
+        if let Some(cached) = self.network.stylesheet_cache.get(&requested_cache_key)
+            && cached.is_fresh(Instant::now())
+        {
+            return Ok(Some(cached.body.clone()));
+        }
 
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -2044,6 +2116,16 @@ impl NativeResourceLoader {
             );
             if let Some(referrer) = request_referrer.as_deref() {
                 request = request.header(reqwest::header::REFERER, referrer);
+            }
+            if redirects == 0
+                && let Some(cached) = stale_cached_stylesheet.as_ref()
+            {
+                if let Some(etag) = cached.etag.as_deref() {
+                    request = request.header(reqwest::header::IF_NONE_MATCH, etag);
+                }
+                if let Some(last_modified) = cached.last_modified.as_deref() {
+                    request = request.header(reqwest::header::IF_MODIFIED_SINCE, last_modified);
+                }
             }
             if let Some(cookie) = self.network.cookie_header_for_request(
                 &current_url,
@@ -2102,6 +2184,38 @@ impl NativeResourceLoader {
             current_url = next_url;
             redirects += 1;
         };
+        let response_headers = response.headers().clone();
+        let has_set_cookie = !pending_cookies.is_empty();
+        if response.status() == reqwest::StatusCode::NOT_MODIFIED {
+            let Some(cached) = stale_cached_stylesheet else {
+                return Err(NativeEngineError::Network {
+                    operation: "CSS subresource revalidation".into(),
+                    reason: "server returned HTTP 304 without a stale cached stylesheet".into(),
+                });
+            };
+            if redirects != 0 {
+                return Err(NativeEngineError::Network {
+                    operation: "CSS subresource revalidation".into(),
+                    reason: "HTTP 304 was received after a CSS redirect".into(),
+                });
+            }
+            for (cookie_url, cookie) in pending_cookies {
+                self.cookie_changes
+                    .extend(self.network.store_cookie(&cookie_url, &cookie));
+            }
+            let cached_body = cached.body.clone();
+            if has_set_cookie {
+                self.network.remove_stylesheet_cache(&requested_cache_key);
+            } else if let Some(entry) =
+                cached.refresh_from_not_modified(&response_headers, Instant::now())
+            {
+                self.network
+                    .store_stylesheet_cache(requested_cache_key, entry);
+            } else {
+                self.network.remove_stylesheet_cache(&requested_cache_key);
+            }
+            return Ok(Some(cached_body));
+        }
         if !response.status().is_success() {
             return Err(NativeEngineError::Network {
                 operation: "CSS subresource request".into(),
@@ -2152,6 +2266,23 @@ impl NativeResourceLoader {
         for (cookie_url, cookie) in pending_cookies {
             self.cookie_changes
                 .extend(self.network.store_cookie(&cookie_url, &cookie));
+        }
+        if !has_set_cookie
+            && let Some(entry) = NativeTextCacheEntry::from_response(
+                current_url.to_string(),
+                body.clone(),
+                &response_headers,
+                Instant::now(),
+            )
+        {
+            self.network
+                .store_stylesheet_cache(requested_cache_key, entry.clone());
+            self.network
+                .store_stylesheet_cache(cache_key(&current_url), entry);
+        } else {
+            self.network.remove_stylesheet_cache(&requested_cache_key);
+            self.network
+                .remove_stylesheet_cache(&cache_key(&current_url));
         }
         Ok(Some(body))
     }
@@ -2464,6 +2595,25 @@ impl NativeResourceLoader {
         if !policy.allows(subresource_kind, &document_url, &target_url) {
             return Ok(None);
         }
+        let requested_cache_key = cache_key(&target_url);
+        let stale_cached_script = (subresource_kind == NativeSubresourceKind::Script)
+            .then(|| {
+                self.network
+                    .script_cache
+                    .get(&requested_cache_key)
+                    .cloned()
+                    .filter(|cached| !cached.is_fresh(Instant::now()))
+            })
+            .flatten();
+        if subresource_kind == NativeSubresourceKind::Script
+            && let Some(cached) = self.network.script_cache.get(&requested_cache_key)
+            && cached.is_fresh(Instant::now())
+        {
+            return Ok(Some(NativeScriptResource {
+                url: cached.url.clone(),
+                body: cached.body.clone(),
+            }));
+        }
 
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -2483,6 +2633,16 @@ impl NativeResourceLoader {
             ));
             if let Some(referrer) = request_referrer.as_deref() {
                 request = request.header(reqwest::header::REFERER, referrer);
+            }
+            if redirects == 0
+                && let Some(cached) = stale_cached_script.as_ref()
+            {
+                if let Some(etag) = cached.etag.as_deref() {
+                    request = request.header(reqwest::header::IF_NONE_MATCH, etag);
+                }
+                if let Some(last_modified) = cached.last_modified.as_deref() {
+                    request = request.header(reqwest::header::IF_MODIFIED_SINCE, last_modified);
+                }
             }
             if let Some(cookie) = self.network.cookie_header_for_request(
                 &current_url,
@@ -2541,6 +2701,40 @@ impl NativeResourceLoader {
             current_url = next_url;
             redirects += 1;
         };
+        let response_headers = response.headers().clone();
+        let has_set_cookie = !pending_cookies.is_empty();
+        if response.status() == reqwest::StatusCode::NOT_MODIFIED {
+            let Some(cached) = stale_cached_script else {
+                return Err(NativeEngineError::Network {
+                    operation: "script subresource revalidation".into(),
+                    reason: "server returned HTTP 304 without a stale cached script".into(),
+                });
+            };
+            if redirects != 0 {
+                return Err(NativeEngineError::Network {
+                    operation: "script subresource revalidation".into(),
+                    reason: "HTTP 304 was received after a script redirect".into(),
+                });
+            }
+            for (cookie_url, cookie) in pending_cookies {
+                self.cookie_changes
+                    .extend(self.network.store_cookie(&cookie_url, &cookie));
+            }
+            let cached_resource = NativeScriptResource {
+                url: cached.url.clone(),
+                body: cached.body.clone(),
+            };
+            if has_set_cookie {
+                self.network.remove_script_cache(&requested_cache_key);
+            } else if let Some(entry) =
+                cached.refresh_from_not_modified(&response_headers, Instant::now())
+            {
+                self.network.store_script_cache(requested_cache_key, entry);
+            } else {
+                self.network.remove_script_cache(&requested_cache_key);
+            }
+            return Ok(Some(cached_resource));
+        }
         if !response.status().is_success() {
             return Err(NativeEngineError::Network {
                 operation: "script subresource request".into(),
@@ -2587,10 +2781,29 @@ impl NativeResourceLoader {
             self.cookie_changes
                 .extend(self.network.store_cookie(&cookie_url, &cookie));
         }
-        Ok(Some(NativeScriptResource {
+        let resource = NativeScriptResource {
             url: current_url.to_string(),
             body,
-        }))
+        };
+        if subresource_kind == NativeSubresourceKind::Script {
+            if !has_set_cookie
+                && let Some(entry) = NativeTextCacheEntry::from_response(
+                    resource.url.clone(),
+                    resource.body.clone(),
+                    &response_headers,
+                    Instant::now(),
+                )
+            {
+                self.network
+                    .store_script_cache(requested_cache_key, entry.clone());
+                self.network
+                    .store_script_cache(cache_key(&current_url), entry);
+            } else {
+                self.network.remove_script_cache(&requested_cache_key);
+                self.network.remove_script_cache(&cache_key(&current_url));
+            }
+        }
+        Ok(Some(resource))
     }
 
     fn load_data_url(&self, url: &str, data: &str) -> Result<NativeResource, NativeEngineError> {
@@ -3593,6 +3806,34 @@ impl NativeNetworkState {
 
     fn remove_image_cache(&mut self, key: &str) {
         self.image_cache.remove(key);
+    }
+
+    fn store_stylesheet_cache(&mut self, key: String, entry: NativeTextCacheEntry) {
+        if !self.stylesheet_cache.contains_key(&key)
+            && self.stylesheet_cache.len() >= MAX_NATIVE_CACHE_ENTRIES
+            && let Some(oldest) = self.stylesheet_cache.keys().next().cloned()
+        {
+            self.stylesheet_cache.remove(&oldest);
+        }
+        self.stylesheet_cache.insert(key, entry);
+    }
+
+    fn remove_stylesheet_cache(&mut self, key: &str) {
+        self.stylesheet_cache.remove(key);
+    }
+
+    fn store_script_cache(&mut self, key: String, entry: NativeTextCacheEntry) {
+        if !self.script_cache.contains_key(&key)
+            && self.script_cache.len() >= MAX_NATIVE_CACHE_ENTRIES
+            && let Some(oldest) = self.script_cache.keys().next().cloned()
+        {
+            self.script_cache.remove(&oldest);
+        }
+        self.script_cache.insert(key, entry);
+    }
+
+    fn remove_script_cache(&mut self, key: &str) {
+        self.script_cache.remove(key);
     }
 
     fn store_document_policy(&mut self, key: String, policy: NativeCspPolicy) {

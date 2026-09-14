@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-347` locally. Native is now the default runtime for
+`native-engine-browser-348` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -269,9 +269,18 @@ The completed native image-cache freshness slice is
 external images now honor bounded `Cache-Control` freshness, retain
 `ETag`/`Last-Modified` validators for stale entries, reuse validated `304`
 responses, and evict unsafe `no-store`/variance/cookie responses. Complete
-stylesheet/script/Fetch and Service-Worker CacheStorage freshness, richer
+Fetch/XHR and Service-Worker CacheStorage freshness, richer
 transferable values, complete task-source scheduling, and final production
 certification remain active issue #40 gates.
+
+The completed native stylesheet/page-script cache slice is
+[native-engine-browser-348](tasks/native-engine-browser-348.md): HTTP(S) CSS
+and classic page-script responses now use separate bounded freshness caches,
+retain validators for stale entries, reuse validated `304` responses, and
+evict unsafe entries. Worker source loading bypasses this page cache so worker
+updates remain observable. Fetch/XHR and Service-Worker CacheStorage
+freshness, richer transferable values, complete task-source scheduling, and
+final production certification remain active issue #40 gates.
 
 The completed native cookie-policy slice is
 [native-engine-browser-334](tasks/native-engine-browser-334.md): cookie

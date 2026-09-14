@@ -676,6 +676,7 @@ fn validate_alternative_runtime_command(
         Commands::Workflow { action: None, .. } if native => Ok(()),
         Commands::WorkflowResume { .. } if native => Ok(()),
         Commands::Navigate { .. }
+        | Commands::Recover { .. }
         | Commands::Click { .. }
         | Commands::Type { .. }
         | Commands::Clear { .. }
@@ -974,6 +975,17 @@ async fn run_alternative_runtime_command(
                     &session
                         .native_resume_workflow(policy, &workflow, &inputs, &checkpoint)
                         .await?,
+                    response_mode,
+                )
+            }
+            #[cfg(not(feature = "native-engine"))]
+            unreachable!("native runtime is feature-gated")
+        }
+        Commands::Recover { expected_revision } if session.runtime().is_native() => {
+            #[cfg(feature = "native-engine")]
+            {
+                alternative_json_output(
+                    &session.native_recover(*expected_revision).await?,
                     response_mode,
                 )
             }
@@ -3498,6 +3510,9 @@ async fn run_command(
                     .await?;
                 print_json(&page)?;
             }
+        }
+        Commands::Recover { .. } => {
+            return Err("recover is only available with --browser-runtime native".into());
         }
         Commands::Click {
             target,

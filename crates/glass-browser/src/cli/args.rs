@@ -492,6 +492,12 @@ pub enum Commands {
         expected_revision: Option<u64>,
     },
 
+    /// Rebuild the native document owner and reload the current URL.
+    Recover {
+        #[arg(long)]
+        expected_revision: Option<u64>,
+    },
+
     /// Click an element by an explicit ref/name/role/text/CSS/ordinal locator.
     Click {
         target: String,

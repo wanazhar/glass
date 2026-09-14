@@ -649,6 +649,19 @@ async fn native_runtime_supports_form_pdf_clipboard_and_consent_surfaces() {
     assert_eq!(capture.format, CaptureFormat::Png);
     assert!(capture.bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
 
+    let before_recovery = session.native_observe().await.unwrap();
+    let recovery = session
+        .native_recover(Some(before_recovery.revision))
+        .await
+        .unwrap();
+    assert_eq!(recovery.action, "recover");
+    assert_eq!(recovery.previous_revision, before_recovery.revision);
+    assert!(recovery.current_revision > recovery.previous_revision);
+    assert_eq!(
+        session.native_observe().await.unwrap().page.url,
+        before_recovery.page.url
+    );
+
     session
         .native_clipboard_write("native clipboard")
         .await
@@ -41677,7 +41690,7 @@ async fn native_backend_uses_configured_context_identity() {
 }
 
 #[test]
-fn native_backend_requires_explicit_factory_selection() {
+fn native_backend_is_selected_without_explicit_factory_preference() {
     let automatic = BackendSelectionRequest {
         schema_version: BROWSER_BACKEND_SCHEMA_VERSION,
         glass_version: env!("CARGO_PKG_VERSION").into(),
@@ -41685,17 +41698,10 @@ fn native_backend_requires_explicit_factory_selection() {
         browser_family: None,
         browser_version: None,
         required_capabilities: vec![],
-        minimum_certification: CertificationLevel::Experimental,
+        minimum_certification: CertificationLevel::Partial,
     };
     let native = BackendFactory::native(NativeEngineConfig::default()).unwrap();
-    assert!(BackendFactory::start(&automatic, vec![native]).is_err());
-
-    let explicit = BackendSelectionRequest {
-        preferred_backend_id: Some(NATIVE_ENGINE_BACKEND_ID.into()),
-        ..automatic
-    };
-    let native = BackendFactory::native(NativeEngineConfig::default()).unwrap();
-    let started = BackendFactory::start(&explicit, vec![native]).unwrap();
+    let started = BackendFactory::start(&automatic, vec![native]).unwrap();
     assert_eq!(
         started.profile().identity.backend_id,
         NATIVE_ENGINE_BACKEND_ID

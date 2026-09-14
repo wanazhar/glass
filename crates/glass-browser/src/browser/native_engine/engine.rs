@@ -24,13 +24,13 @@ use super::javascript::{
     NativeFrameScriptContext, NativeFrameScriptRequest, NativeIndexedDbChange,
     NativeIndexedDbState, NativeJavaScriptRuntime, NativeMessagePortPageMessage,
     NativePageNavigation, NativePopupRequest, NativePostMessageRequest, NativeScriptCommand,
-    NativeScriptEvaluation, NativeServiceWorkerClientState, NativeStorageEvent,
-    NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
-    NativeWindowProxyUpdate, NativeWorkerRegistry, append_storage_changes,
-    apply_indexed_db_changes, diff_indexed_db_changes, execute_dynamic_page_scripts,
-    execute_inline_scripts, frame_event_script, host_event_script, host_hash_change_event_script,
-    host_message_event_script, host_submit_event_script, load_indexed_db_profile,
-    load_web_storage_profile, message_port_script, new_storage_writer_id,
+    NativeScriptEvaluation, NativeServiceWorkerClientState, NativeServiceWorkerOpenWindowRequest,
+    NativeStorageEvent, NativeWebStorageState, NativeWindowCloseRequest,
+    NativeWindowNavigationRequest, NativeWindowProxyUpdate, NativeWorkerRegistry,
+    append_storage_changes, apply_indexed_db_changes, diff_indexed_db_changes,
+    execute_dynamic_page_scripts, execute_inline_scripts, frame_event_script, host_event_script,
+    host_hash_change_event_script, host_message_event_script, host_submit_event_script,
+    load_indexed_db_profile, load_web_storage_profile, message_port_script, new_storage_writer_id,
     page_script_sources_to_scripts, read_storage_event_journal, register_storage_reader,
     save_web_storage_profile, storage_event_cursor, storage_key, unregister_storage_reader,
     worker_message_script,
@@ -363,6 +363,7 @@ pub struct NativeEngine {
     pending_message_port_messages: VecDeque<NativeMessagePortPageMessage>,
     pending_window_closes: VecDeque<NativeWindowCloseRequest>,
     pending_window_navigations: VecDeque<NativeWindowNavigationRequest>,
+    pending_service_worker_open_windows: VecDeque<NativeServiceWorkerOpenWindowRequest>,
     pending_frame_scripts: VecDeque<NativeFrameScriptRequest>,
     completed_download_ids: VecDeque<String>,
     completed_downloads: u64,
@@ -453,6 +454,7 @@ impl NativeEngine {
             pending_message_port_messages: VecDeque::new(),
             pending_window_closes: VecDeque::new(),
             pending_window_navigations: VecDeque::new(),
+            pending_service_worker_open_windows: VecDeque::new(),
             pending_frame_scripts: VecDeque::new(),
             completed_download_ids: VecDeque::new(),
             completed_downloads: 0,
@@ -635,6 +637,77 @@ impl NativeEngine {
             process.sync_service_worker_clients(&clients).await?;
         }
         self.service_worker_clients = clients;
+        Ok(())
+    }
+
+    pub(crate) async fn resolve_service_worker_open_window_async(
+        &mut self,
+        worker_id: u32,
+        request_id: u32,
+        window: serde_json::Value,
+    ) -> Result<(), NativeEngineError> {
+        self.require_running("resolve service worker openWindow")?;
+        self.sync_external_storage_events()?;
+        let NativeContentScriptResult {
+            value: _,
+            mutation,
+            history,
+            frame_scripts,
+            storage_events,
+            indexed_db_changes,
+            dialogs,
+            popups,
+            post_messages,
+            window_closes,
+            window_navigations,
+            service_worker_open_windows,
+            window_name,
+        } = {
+            let process =
+                self.content_process
+                    .as_mut()
+                    .ok_or_else(|| NativeEngineError::Worker {
+                        operation: "service worker openWindow resolution".into(),
+                        reason: "native content process is not running".into(),
+                    })?;
+            if !process.refresh_health() {
+                return Err(NativeEngineError::worker_failure(
+                    "service worker openWindow resolution",
+                    process
+                        .failure_kind()
+                        .unwrap_or(NativeWorkerFailureKind::Exited),
+                    "content process is unavailable after a failed operation; navigate to recover it",
+                ));
+            }
+            self.request_ledger.begin()?;
+            let result = process
+                .resolve_service_worker_open_window(worker_id, request_id, &window)
+                .await;
+            self.request_ledger.finish();
+            result?
+        };
+        self.config.window_name = window_name;
+        self.queue_frame_script_requests(frame_scripts)?;
+        self.queue_service_worker_open_window_requests(service_worker_open_windows)?;
+        if let Some(mutation) = mutation {
+            let navigation = mutation.navigation.clone();
+            self.apply_content_process_mutation(mutation)?;
+            self.apply_content_history_commands(&history)?;
+            if let Some(navigation) = navigation {
+                self.navigate_script_navigation_async(navigation, 0).await?;
+            }
+        } else {
+            self.publish_content_state(&storage_events, &indexed_db_changes)?;
+            self.queue_popup_requests(popups)?;
+            self.queue_post_message_requests(post_messages)?;
+            self.queue_window_close_requests(window_closes)?;
+            self.queue_window_navigation_requests(window_navigations)?;
+            let dialog_url = self.url.clone();
+            self.install_dialogs(dialogs, &dialog_url)?;
+        }
+        if !history.is_empty() {
+            self.sync_content_history_async().await?;
+        }
         Ok(())
     }
 
@@ -1234,6 +1307,9 @@ impl NativeEngine {
             )?;
             self.queue_window_close_requests(std::mem::take(&mut content.window_closes))?;
             self.queue_window_navigation_requests(std::mem::take(&mut content.window_navigations))?;
+            self.queue_service_worker_open_window_requests(std::mem::take(
+                &mut content.service_worker_open_windows,
+            ))?;
             let Some(page_navigation) = content.navigation.clone() else {
                 return Ok((content, history_commit, page_navigation_handoffs));
             };
@@ -1619,6 +1695,7 @@ impl NativeEngine {
                 post_messages,
                 window_closes,
                 window_navigations,
+                service_worker_open_windows,
                 frame_scripts,
                 window_name,
                 mut history,
@@ -1643,6 +1720,7 @@ impl NativeEngine {
             };
             self.config.window_name = window_name;
             self.queue_frame_script_requests(frame_scripts)?;
+            self.queue_service_worker_open_window_requests(service_worker_open_windows)?;
             let mut history_traversal = None;
             let mutation_history = mutation
                 .as_ref()
@@ -2358,6 +2436,50 @@ impl NativeEngine {
         Ok(())
     }
 
+    fn queue_service_worker_open_window_request(
+        &mut self,
+        mut request: NativeServiceWorkerOpenWindowRequest,
+    ) -> Result<(), NativeEngineError> {
+        if self.pending_service_worker_open_windows.len() >= MAX_NATIVE_PENDING_POPUPS {
+            return Err(NativeEngineError::limit(
+                "native pending service worker openWindow requests",
+                MAX_NATIVE_PENDING_POPUPS,
+                self.pending_service_worker_open_windows
+                    .len()
+                    .saturating_add(1),
+            ));
+        }
+        if request.request_id == 0 || request.worker_id == 0 {
+            return Err(NativeEngineError::invalid(
+                "service worker openWindow request",
+                "request and worker ids must be positive",
+            ));
+        }
+        validate_url_text("service worker openWindow URL", &request.url)?;
+        if request.source_context_id.is_empty() {
+            request.source_context_id = self.config.context_id.clone();
+        } else {
+            super::config::validate_context_id(&request.source_context_id)?;
+        }
+        if request.source_frame_id.is_empty() {
+            request.source_frame_id = self.frame_id.clone();
+        } else {
+            super::config::validate_context_id(&request.source_frame_id)?;
+        }
+        self.pending_service_worker_open_windows.push_back(request);
+        Ok(())
+    }
+
+    fn queue_service_worker_open_window_requests(
+        &mut self,
+        requests: Vec<NativeServiceWorkerOpenWindowRequest>,
+    ) -> Result<(), NativeEngineError> {
+        for request in requests {
+            self.queue_service_worker_open_window_request(request)?;
+        }
+        Ok(())
+    }
+
     fn queue_frame_script_requests(
         &mut self,
         requests: Vec<NativeFrameScriptRequest>,
@@ -2400,6 +2522,12 @@ impl NativeEngine {
 
     pub(crate) fn take_pending_window_navigations(&mut self) -> Vec<NativeWindowNavigationRequest> {
         self.pending_window_navigations.drain(..).collect()
+    }
+
+    pub(crate) fn take_pending_service_worker_open_windows(
+        &mut self,
+    ) -> Vec<NativeServiceWorkerOpenWindowRequest> {
+        self.pending_service_worker_open_windows.drain(..).collect()
     }
 
     pub(crate) fn take_pending_frame_scripts(&mut self) -> Vec<NativeFrameScriptRequest> {

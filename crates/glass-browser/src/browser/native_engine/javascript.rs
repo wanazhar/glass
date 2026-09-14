@@ -269,6 +269,11 @@ pub(crate) enum NativeScriptCommand {
         #[serde(default)]
         transfer_ports: Vec<NativeMessagePortTransfer>,
     },
+    ServiceWorkerOpenWindow {
+        request_id: u32,
+        worker_id: u32,
+        url: String,
+    },
     ServiceWorkerCacheOpen {
         request_id: u32,
         cache_name: String,
@@ -804,6 +809,20 @@ pub(crate) struct NativeServiceWorkerClientMessage {
     pub(crate) client_id: String,
     pub(crate) data: serde_json::Value,
     pub(crate) transfer_ports: Vec<NativeMessagePortTransfer>,
+}
+
+/// A browser-owned request for a Service Worker to create a new top-level
+/// WindowClient. The source context is filled by the owning NativeEngine after
+/// the content-process response crosses back into the browser backend.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct NativeServiceWorkerOpenWindowRequest {
+    pub(crate) request_id: u32,
+    pub(crate) worker_id: u32,
+    pub(crate) url: String,
+    #[serde(default, skip_serializing)]
+    pub(crate) source_context_id: String,
+    #[serde(default, skip_serializing)]
+    pub(crate) source_frame_id: String,
 }
 
 pub(crate) struct NativeWorkerWebSocketCommand {
@@ -9914,12 +9933,15 @@ impl NativeJavaScriptRuntime {
             for command in commands {
                 if service_worker
                     && (is_service_worker_cache_command(&command)
-                        || is_service_worker_lifecycle_command(&command))
+                        || is_service_worker_lifecycle_command(&command)
+                        || is_service_worker_open_window_command(&command))
                 {
                     if is_service_worker_cache_command(&command) {
                         validate_service_worker_cache_command(&command)?;
-                    } else {
+                    } else if is_service_worker_lifecycle_command(&command) {
                         validate_service_worker_lifecycle_command(&command)?;
+                    } else {
+                        validate_service_worker_open_window_command(&command)?;
                     }
                     worker_commands.push(command);
                     continue;
@@ -9975,6 +9997,10 @@ impl NativeJavaScriptRuntime {
                     }
                     | NativeScriptCommand::ServiceWorkerClientsClaim {
                         worker_id: command_worker_id,
+                    } => service_worker && *command_worker_id == worker_id,
+                    NativeScriptCommand::ServiceWorkerOpenWindow {
+                        worker_id: command_worker_id,
+                        ..
                     } => service_worker && *command_worker_id == worker_id,
                     _ => false,
                 };
@@ -10307,6 +10333,44 @@ impl NativeJavaScriptRuntime {
             )
         } else {
             format!("globalThis.__glassResolveServiceWorkerCache({request_id}, {serialized});")
+        };
+        let bootstrap = service_worker_bootstrap(
+            worker_id,
+            worker_url,
+            self.now_ms(),
+            &BTreeMap::new(),
+            is_module,
+            &self.service_worker_clients(),
+        )?;
+        self.evaluate_worker_source_with_bootstrap(
+            worker_id, worker_url, None, &source, bootstrap, true, false,
+        )
+    }
+
+    pub(crate) fn resolve_service_worker_open_window(
+        &self,
+        worker_id: u32,
+        worker_url: &str,
+        request_id: u32,
+        payload: &serde_json::Value,
+        is_module: bool,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        if request_id == 0 {
+            return Err(NativeEngineError::invalid(
+                "native service worker openWindow request id",
+                "must be positive",
+            ));
+        }
+        let serialized = serde_json::to_string(payload).map_err(|_| NativeEngineError::Worker {
+            operation: "serialize native service worker openWindow response".into(),
+            reason: "native service worker openWindow response could not be serialized".into(),
+        })?;
+        let source = if serialized.len() > MAX_NATIVE_SCRIPT_BYTES {
+            format!(
+                "globalThis.__glassResolveServiceWorkerOpenWindow({request_id}, {{ error: \"service worker openWindow response exceeded the script transfer limit\" }});"
+            )
+        } else {
+            format!("globalThis.__glassResolveServiceWorkerOpenWindow({request_id}, {serialized});")
         };
         let bootstrap = service_worker_bootstrap(
             worker_id,
@@ -10692,6 +10756,10 @@ fn is_service_worker_lifecycle_command(command: &NativeScriptCommand) -> bool {
     )
 }
 
+fn is_service_worker_open_window_command(command: &NativeScriptCommand) -> bool {
+    matches!(command, NativeScriptCommand::ServiceWorkerOpenWindow { .. })
+}
+
 fn validate_service_worker_lifecycle_command(
     command: &NativeScriptCommand,
 ) -> Result<(), NativeEngineError> {
@@ -10704,6 +10772,34 @@ fn validate_service_worker_lifecycle_command(
         return Err(NativeEngineError::invalid(
             "native service worker lifecycle command",
             "worker id must be positive",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_service_worker_open_window_command(
+    command: &NativeScriptCommand,
+) -> Result<(), NativeEngineError> {
+    let NativeScriptCommand::ServiceWorkerOpenWindow {
+        request_id,
+        worker_id,
+        url,
+    } = command
+    else {
+        return Ok(());
+    };
+    if *request_id == 0 || *worker_id == 0 {
+        return Err(NativeEngineError::invalid(
+            "native service worker openWindow command",
+            "request and worker ids must be positive",
+        ));
+    }
+    validate_url_text("native service worker openWindow URL", url)?;
+    if url.len() > MAX_NATIVE_SCRIPT_BYTES {
+        return Err(NativeEngineError::limit(
+            "native service worker openWindow URL",
+            MAX_NATIVE_SCRIPT_BYTES,
+            url.len(),
         ));
     }
     Ok(())
@@ -16380,6 +16476,12 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
   let nextServiceWorkerCacheRequestId = Number.isSafeInteger(globalThis.__glassNextServiceWorkerCacheRequestId)
     ? globalThis.__glassNextServiceWorkerCacheRequestId
     : 1;
+  const serviceWorkerOpenWindowPendingRequests = globalThis.__glassServiceWorkerOpenWindowPendingRequests instanceof Map
+    ? globalThis.__glassServiceWorkerOpenWindowPendingRequests
+    : new Map();
+  let nextServiceWorkerOpenWindowRequestId = Number.isSafeInteger(globalThis.__glassNextServiceWorkerOpenWindowRequestId)
+    ? globalThis.__glassNextServiceWorkerOpenWindowRequestId
+    : 1;
   const serviceWorkerFetchResponse = (response) => {
     if (!response || typeof response.status !== "number" || typeof response.clone !== "function")
       return Promise.reject(new TypeError("service worker fetch handler must resolve to a Response"));
@@ -16415,6 +16517,34 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
         reject(error);
       }
     });
+  };
+  const serviceWorkerWindowClientFromState = (state) => {
+    if (!state || typeof state !== "object") return null;
+    const client = {
+      id: String(state.clientId || ""),
+      url: String(state.clientUrl || ""),
+      type: String(state.clientType || "window"),
+      frameType: String(state.frameType || "top-level"),
+      visibilityState: String(state.visibilityState || "visible"),
+      focused: state.focused === true,
+      postMessage(message, options) {
+        const workerId = Number.isSafeInteger(globalThis.__glassWorkerId)
+          ? globalThis.__glassWorkerId : 0;
+        if (!workerId) throw new Error("native service worker client is unavailable");
+        const envelope = glassMessageCloneWithTransfers(
+          message,
+          glassMessageTransferList(options),
+        );
+        pushCommand({
+          kind: "serviceWorkerClientPostMessage",
+          worker_id: workerId,
+          client_id: this.id,
+          data: envelope.data,
+          transfer_ports: envelope.transfer_ports,
+        });
+      },
+    };
+    return Object.freeze(client);
   };
   const serviceWorkerCacheRequestKey = (input) => {
     const source = input && input.__glassWorkerRequest === true
@@ -16740,7 +16870,32 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
       .filter(Boolean);
     return Promise.resolve(clients);
   };
-  serviceWorkerClients.openWindow = () => Promise.reject(new Error("native service worker clients.openWindow is unavailable"));
+  serviceWorkerClients.openWindow = (value) => {
+    const workerId = Number.isSafeInteger(globalThis.__glassWorkerId)
+      ? globalThis.__glassWorkerId : 0;
+    if (!workerId) return Promise.reject(new Error("native service worker is unavailable"));
+    let target;
+    try {
+      target = new WorkerURLNative(String(value), workerUrl);
+      if (!["http:", "https:"].includes(target.protocol) || target.origin !== workerLocation.origin)
+        throw new DOMExceptionNative("service worker openWindow URL must be same-origin HTTP(S)", "SecurityError");
+      if (target.username || target.password)
+        throw new DOMExceptionNative("service worker openWindow URL must not contain credentials", "SecurityError");
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    const requestId = nextServiceWorkerOpenWindowRequestId++;
+    globalThis.__glassNextServiceWorkerOpenWindowRequestId = nextServiceWorkerOpenWindowRequestId;
+    return new Promise((resolve, reject) => {
+      serviceWorkerOpenWindowPendingRequests.set(requestId, { resolve, reject });
+      try {
+        pushCommand({ kind: "serviceWorkerOpenWindow", request_id: requestId, worker_id: workerId, url: target.href });
+      } catch (error) {
+        serviceWorkerOpenWindowPendingRequests.delete(requestId);
+        reject(error);
+      }
+    });
+  };
   globalThis.clients = serviceWorkerClients;
   globalThis.registration = globalThis.registration || {
     scope: workerUrl.slice(0, workerUrl.lastIndexOf("/") + 1),
@@ -16773,8 +16928,26 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
     pending.resolve(payload || null);
     return null;
   };
+  globalThis.__glassResolveServiceWorkerOpenWindow = (requestId, payload) => {
+    const pending = serviceWorkerOpenWindowPendingRequests.get(Number(requestId));
+    if (!pending) return null;
+    serviceWorkerOpenWindowPendingRequests.delete(Number(requestId));
+    if (payload && payload.error) {
+      pending.reject(new Error(String(payload.error)));
+      return null;
+    }
+    const client = serviceWorkerWindowClientFromState(payload);
+    if (!client || !client.id || !client.url) {
+      pending.reject(new Error("native service worker openWindow response was invalid"));
+      return null;
+    }
+    pending.resolve(client);
+    return null;
+  };
   globalThis.__glassServiceWorkerCachePendingRequests = serviceWorkerCachePendingRequests;
   globalThis.__glassNextServiceWorkerCacheRequestId = nextServiceWorkerCacheRequestId;
+  globalThis.__glassServiceWorkerOpenWindowPendingRequests = serviceWorkerOpenWindowPendingRequests;
+  globalThis.__glassNextServiceWorkerOpenWindowRequestId = nextServiceWorkerOpenWindowRequestId;
 "###;
 
 #[allow(clippy::too_many_arguments)]

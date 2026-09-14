@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-358` slice. The native runtime is now the primary
+`native-engine-browser-359` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -365,6 +365,18 @@ boundaries. The scheduler remains serialized at the backend topology owner;
 worker, Service Worker, MessagePort, rendering, registration, live-client,
 and cross-process task queues remain issue #40 work. Exact evidence is
 recorded in `docs/plan/tasks/native-engine-browser-358.md`.
+
+Slice 359 connects Service Worker `clients.openWindow()` to the browser-owned
+target model. A validated same-origin HTTP(S) request from a non-fetch worker
+turn remains pending in the persistent worker runtime while the backend
+creates a real parked native target with the source context as opener. The
+browser-wide Service Worker client projection is synchronised before the
+worker Promise resolves with the new target's WindowClient descriptor, and
+nested browser effects return to the bounded effect scheduler. The content /
+browser IPC request is routed by stable worker, request, context, and frame
+identity. Fetch-event suspension and arbitrary-target WindowClient messaging
+remain separate Service Worker conformance gates. Exact evidence is recorded
+in `docs/plan/tasks/native-engine-browser-359.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

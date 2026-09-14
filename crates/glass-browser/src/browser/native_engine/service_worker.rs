@@ -7,7 +7,7 @@
 
 use super::config::{is_network_url, validate_context_id, validate_url_text, without_fragment};
 use super::error::NativeEngineError;
-use super::interaction::MAX_NATIVE_FORM_BODY_BYTES;
+use super::interaction::{MAX_NATIVE_EFFECTS, MAX_NATIVE_FORM_BODY_BYTES};
 use super::javascript::{
     MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_POST_MESSAGE_BYTES, MAX_NATIVE_SCRIPT_BYTES,
     MAX_NATIVE_SERVICE_WORKER_CACHE_BODY_BYTES, MAX_NATIVE_SERVICE_WORKER_CACHE_ENTRIES,
@@ -17,10 +17,10 @@ use super::javascript::{
     NativeMessagePortPageMessage, NativeMessagePortTransfer, NativeScriptCommand,
     NativeScriptEvaluation, NativeServiceWorkerCacheBatchEntry, NativeServiceWorkerCacheEntry,
     NativeServiceWorkerCacheState, NativeServiceWorkerClientMessage,
-    NativeServiceWorkerClientState, NativeServiceWorkerRegistrationProfile,
-    NativeServiceWorkerRegistrationState, NativeServiceWorkerWorkerProfile,
-    NativeServiceWorkerWorkerState, load_service_worker_source, validate_message_port_transfers,
-    validate_native_service_worker_cache_request_headers,
+    NativeServiceWorkerClientState, NativeServiceWorkerOpenWindowRequest,
+    NativeServiceWorkerRegistrationProfile, NativeServiceWorkerRegistrationState,
+    NativeServiceWorkerWorkerProfile, NativeServiceWorkerWorkerState, load_service_worker_source,
+    validate_message_port_transfers, validate_native_service_worker_cache_request_headers,
 };
 use super::origin::NativeOrigin;
 use super::resource_loader::{
@@ -114,6 +114,8 @@ pub(crate) struct NativeServiceWorkerRegistry {
     registration_profiles: Vec<NativeServiceWorkerRegistrationProfile>,
     pending_message_port_messages: VecDeque<NativeMessagePortPageMessage>,
     pending_client_messages: VecDeque<NativeServiceWorkerClientMessage>,
+    pending_open_windows: VecDeque<NativeServiceWorkerOpenWindowRequest>,
+    announced_open_windows: BTreeSet<(u32, u32)>,
     message_port_routes: BTreeMap<String, u32>,
     current_client_id: String,
     current_client_url: Option<String>,
@@ -131,6 +133,8 @@ impl Default for NativeServiceWorkerRegistry {
             registration_profiles: Vec::new(),
             pending_message_port_messages: VecDeque::new(),
             pending_client_messages: VecDeque::new(),
+            pending_open_windows: VecDeque::new(),
+            announced_open_windows: BTreeSet::new(),
             message_port_routes: BTreeMap::new(),
             current_client_id: String::new(),
             current_client_url: None,
@@ -497,6 +501,7 @@ impl NativeServiceWorkerRegistry {
             loader,
             &mut self.cache_state,
             None,
+            &mut self.pending_open_windows,
         )
         .await?;
         self.enqueue_client_messages(client_messages)?;
@@ -544,9 +549,15 @@ impl NativeServiceWorkerRegistry {
             "install",
             worker.is_module,
         )?;
-        let client_messages =
-            settle_service_worker_cache_event(worker, install, loader, &mut self.cache_state, None)
-                .await?;
+        let client_messages = settle_service_worker_cache_event(
+            worker,
+            install,
+            loader,
+            &mut self.cache_state,
+            None,
+            &mut self.pending_open_windows,
+        )
+        .await?;
         self.enqueue_client_messages(client_messages)
     }
 
@@ -568,6 +579,7 @@ impl NativeServiceWorkerRegistry {
             loader,
             &mut self.cache_state,
             None,
+            &mut self.pending_open_windows,
         )
         .await?;
         self.enqueue_client_messages(client_messages)
@@ -877,6 +889,17 @@ impl NativeServiceWorkerRegistry {
         self.pending_client_messages.drain(..).collect()
     }
 
+    pub(crate) fn take_open_windows(&mut self) -> Vec<NativeServiceWorkerOpenWindowRequest> {
+        self.pending_open_windows
+            .iter()
+            .filter_map(|request| {
+                self.announced_open_windows
+                    .insert((request.worker_id, request.request_id))
+                    .then(|| request.clone())
+            })
+            .collect()
+    }
+
     fn enqueue_client_messages(
         &mut self,
         messages: Vec<NativeServiceWorkerClientMessage>,
@@ -976,6 +999,7 @@ impl NativeServiceWorkerRegistry {
             loader,
             &mut self.cache_state,
             None,
+            &mut self.pending_open_windows,
         )
         .await
         {
@@ -990,6 +1014,117 @@ impl NativeServiceWorkerRegistry {
             return Err(error);
         }
         Ok(())
+    }
+
+    pub(crate) async fn resolve_open_window(
+        &mut self,
+        loader: &mut NativeResourceLoader,
+        worker_id: u32,
+        request_id: u32,
+        payload: &Value,
+    ) -> Result<(), NativeEngineError> {
+        if worker_id == 0 || request_id == 0 {
+            return Err(NativeEngineError::invalid(
+                "native service worker openWindow resolution",
+                "request and worker ids must be positive",
+            ));
+        }
+        let request_index = self
+            .pending_open_windows
+            .iter()
+            .position(|request| request.worker_id == worker_id && request.request_id == request_id)
+            .ok_or_else(|| {
+                NativeEngineError::invalid(
+                    "native service worker openWindow resolution",
+                    "request is unknown or was already resolved",
+                )
+            })?;
+        let request = self
+            .pending_open_windows
+            .remove(request_index)
+            .ok_or_else(|| {
+                NativeEngineError::invalid(
+                    "native service worker openWindow resolution",
+                    "request queue changed while resolving",
+                )
+            })?;
+        self.announced_open_windows
+            .remove(&(request.worker_id, request.request_id));
+        let scope = self
+            .registrations
+            .iter()
+            .find_map(|(scope, worker)| (worker.id == request.worker_id).then_some(scope.clone()))
+            .or_else(|| {
+                self.waiting_workers.iter().find_map(|(scope, worker)| {
+                    (worker.id == request.worker_id).then_some(scope.clone())
+                })
+            })
+            .ok_or_else(|| {
+                NativeEngineError::invalid(
+                    "native service worker openWindow resolution",
+                    "worker is no longer registered",
+                )
+            })?;
+        let current_client_id =
+            (!self.current_client_id.is_empty()).then(|| self.current_client_id.clone());
+        let (evaluation, worker_is_waiting) = if let Some(worker) = self.registrations.get(&scope) {
+            (
+                worker.runtime.resolve_service_worker_open_window(
+                    worker.id,
+                    &worker.script_url,
+                    request.request_id,
+                    payload,
+                    worker.is_module,
+                )?,
+                false,
+            )
+        } else if let Some(worker) = self.waiting_workers.get(&scope) {
+            (
+                worker.runtime.resolve_service_worker_open_window(
+                    worker.id,
+                    &worker.script_url,
+                    request.request_id,
+                    payload,
+                    worker.is_module,
+                )?,
+                true,
+            )
+        } else {
+            return Err(NativeEngineError::invalid(
+                "native service worker openWindow resolution",
+                "worker is no longer registered",
+            ));
+        };
+        let client_messages = if worker_is_waiting {
+            let worker = self
+                .waiting_workers
+                .get_mut(&scope)
+                .expect("waiting service worker was retained");
+            settle_service_worker_cache_event(
+                worker,
+                evaluation,
+                loader,
+                &mut self.cache_state,
+                current_client_id.as_deref(),
+                &mut self.pending_open_windows,
+            )
+            .await?
+        } else {
+            let worker = self
+                .registrations
+                .get_mut(&scope)
+                .expect("active service worker was retained");
+            settle_service_worker_cache_event(
+                worker,
+                evaluation,
+                loader,
+                &mut self.cache_state,
+                current_client_id.as_deref(),
+                &mut self.pending_open_windows,
+            )
+            .await?
+        };
+        self.enqueue_client_messages(client_messages)
     }
 
     pub(crate) async fn apply_page_message_port_commands(
@@ -1066,6 +1201,7 @@ impl NativeServiceWorkerRegistry {
                 loader,
                 &mut self.cache_state,
                 None,
+                &mut self.pending_open_windows,
             )
             .await
             {
@@ -1232,6 +1368,7 @@ impl NativeServiceWorkerRegistry {
             evaluation,
             &mut self.cache_state,
             &client_id,
+            &mut self.pending_open_windows,
         )
         .await?;
         let clients_claim_requested = worker.clients_claim_requested;
@@ -1434,6 +1571,10 @@ impl NativeServiceWorkerRegistry {
             .collect::<BTreeSet<_>>();
         self.pending_message_port_messages
             .retain(|message| live_bridge_keys.contains(&message.bridge_key));
+        self.pending_open_windows
+            .retain(|request| request.worker_id != worker_id);
+        self.announced_open_windows
+            .retain(|(request_worker_id, _)| *request_worker_id != worker_id);
     }
 }
 
@@ -1443,12 +1584,18 @@ async fn settle_service_worker_cache_event(
     loader: &mut NativeResourceLoader,
     cache_state: &mut NativeServiceWorkerCacheState,
     current_client_id: Option<&str>,
+    pending_open_windows: &mut VecDeque<NativeServiceWorkerOpenWindowRequest>,
 ) -> Result<Vec<NativeServiceWorkerClientMessage>, NativeEngineError> {
     let mut pending = VecDeque::from(evaluation.commands);
     let mut value = evaluation.value;
     let mut awaiting = evaluation.top_level_await_pending;
+    let mut open_window_pending = false;
     let mut client_messages = Vec::new();
     let mut turns = 0usize;
+    if let Some(resolved_value) = worker.runtime.take_top_level_await_result()? {
+        value = resolved_value;
+        awaiting = false;
+    }
     while let Some(command) = pending.pop_front() {
         turns = turns.saturating_add(1);
         if turns > MAX_NATIVE_MODULE_IMPORTS {
@@ -1465,6 +1612,18 @@ async fn settle_service_worker_cache_event(
             service_worker_client_message_command(worker.id, command.clone(), current_client_id)?
         {
             client_messages.push(message);
+            continue;
+        }
+        if let Some(request) = service_worker_open_window_command(worker, command.clone())? {
+            if pending_open_windows.len() >= MAX_NATIVE_EFFECTS {
+                return Err(NativeEngineError::limit(
+                    "native service worker openWindow requests",
+                    MAX_NATIVE_EFFECTS,
+                    pending_open_windows.len().saturating_add(1),
+                ));
+            }
+            pending_open_windows.push_back(request);
+            open_window_pending = true;
             continue;
         }
         if resolve_service_worker_fetch_command(
@@ -1495,7 +1654,7 @@ async fn settle_service_worker_cache_event(
             awaiting = false;
         }
     }
-    if awaiting && worker.runtime.take_top_level_await_result()?.is_none() {
+    if awaiting && worker.runtime.take_top_level_await_result()?.is_none() && !open_window_pending {
         return Err(NativeEngineError::Worker {
             operation: "service worker cache event".into(),
             reason: "service worker cache promise remained pending".into(),
@@ -1557,6 +1716,40 @@ fn service_worker_client_message_command(
         client_id,
         data,
         transfer_ports,
+    }))
+}
+
+fn service_worker_open_window_command(
+    worker: &NativeServiceWorker,
+    command: NativeScriptCommand,
+) -> Result<Option<NativeServiceWorkerOpenWindowRequest>, NativeEngineError> {
+    let NativeScriptCommand::ServiceWorkerOpenWindow {
+        request_id,
+        worker_id,
+        url,
+    } = command
+    else {
+        return Ok(None);
+    };
+    if request_id == 0 || worker_id == 0 || worker_id != worker.id {
+        return Err(NativeEngineError::Worker {
+            operation: "service worker openWindow request".into(),
+            reason: "service worker openWindow request owner is invalid".into(),
+        });
+    }
+    let target = parse_network_url("service worker openWindow URL", &url)?;
+    let worker_url = parse_network_url("service worker URL", &worker.script_url)?;
+    if NativeOrigin::from_url(&target)? != NativeOrigin::from_url(&worker_url)? {
+        return Err(NativeEngineError::UnsupportedUrl {
+            reason: "service worker openWindow URL must be same-origin".into(),
+        });
+    }
+    Ok(Some(NativeServiceWorkerOpenWindowRequest {
+        request_id,
+        worker_id,
+        url: without_fragment(target.as_str()).to_owned(),
+        source_context_id: String::new(),
+        source_frame_id: String::new(),
     }))
 }
 
@@ -2139,6 +2332,7 @@ async fn settle_service_worker_fetch(
     evaluation: NativeScriptEvaluation,
     cache_state: &mut NativeServiceWorkerCacheState,
     current_client_id: &str,
+    pending_open_windows: &mut VecDeque<NativeServiceWorkerOpenWindowRequest>,
 ) -> Result<(Value, Vec<NativeServiceWorkerClientMessage>), NativeEngineError> {
     let mut pending = VecDeque::from(evaluation.commands);
     let mut value = evaluation.value;
@@ -2164,6 +2358,20 @@ async fn settle_service_worker_fetch(
         )? {
             client_messages.push(message);
             continue;
+        }
+        if let Some(request) = service_worker_open_window_command(worker, command.clone())? {
+            if pending_open_windows.len() >= MAX_NATIVE_EFFECTS {
+                return Err(NativeEngineError::limit(
+                    "native service worker openWindow requests",
+                    MAX_NATIVE_EFFECTS,
+                    pending_open_windows.len().saturating_add(1),
+                ));
+            }
+            pending_open_windows.push_back(request);
+            return Err(NativeEngineError::Worker {
+                operation: "service worker fetch event".into(),
+                reason: "service worker fetch response is suspended by clients.openWindow".into(),
+            });
         }
         if is_service_worker_cache_command(&command) {
             let (request_id, payload) =

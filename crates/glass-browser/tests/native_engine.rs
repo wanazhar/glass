@@ -4033,6 +4033,124 @@ self.addEventListener('fetch', event => {
 }
 
 #[tokio::test]
+async fn native_runtime_service_worker_clients_open_window_materializes_window_client() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (shutdown_sender, mut shutdown_receiver) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = &mut shutdown_receiver => break,
+                accepted = listener.accept() => {
+                    let (mut stream, _) = accepted.unwrap();
+                    let request = read_http_request(&mut stream).await;
+                    let path = request.split_whitespace().nth(1).unwrap_or_default();
+                    let (content_type, body) = match path {
+                        "/register" => (
+                            "text/html",
+                            "<!doctype html><script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script><main>openWindow</main>",
+                        ),
+                        "/sw.js" => (
+                            "application/javascript",
+                            r#"self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
+self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+self.addEventListener('message', async event => {
+  const client = await clients.openWindow('/opened');
+  self.openedClient = client && {
+    id: client.id,
+    url: client.url,
+    type: client.type,
+    frameType: client.frameType,
+    visibilityState: client.visibilityState,
+    focused: client.focused,
+  };
+});
+self.addEventListener('fetch', event => {
+  if (new URL(event.request.url).pathname === '/inspect') {
+    event.respondWith(new Response(JSON.stringify(self.openedClient || null), {
+      headers: { 'Content-Type': 'application/json' },
+    }));
+  }
+});"#,
+                        ),
+                        "/opened" => (
+                            "text/html",
+                            "<!doctype html><main>opened window</main>",
+                        ),
+                        _ => ("text/plain", "unexpected native openWindow request"),
+                    };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                }
+            }
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/register")),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        session
+            .script("await registrationPromise.then(reg => [reg.active.state, navigator.serviceWorker.controller !== null])")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!(["activated", true])
+    );
+    assert_eq!(
+        session
+            .script("navigator.serviceWorker.controller.postMessage({ kind: 'open' }); true")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!(true)
+    );
+
+    let targets = session.native_list_targets().await.unwrap();
+    assert_eq!(targets.len(), 2);
+    assert_eq!(targets[0].id, "native-context");
+    assert!(targets[0].active);
+    assert_eq!(targets[1].url, format!("http://{address}/opened"));
+    assert_eq!(targets[1].opener_id.as_deref(), Some("native-context"));
+    assert!(!targets[1].active);
+    let client = session
+        .script("await fetch('/inspect').then(response => response.json())")
+        .await
+        .unwrap()
+        .value;
+    assert!(
+        client
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .is_some()
+    );
+    assert_eq!(
+        client.get("url"),
+        Some(&serde_json::json!(format!("http://{address}/opened")))
+    );
+    assert_eq!(client.get("type"), Some(&serde_json::json!("window")));
+    assert_eq!(
+        client.get("frameType"),
+        Some(&serde_json::json!("top-level"))
+    );
+    assert_eq!(
+        client.get("visibilityState"),
+        Some(&serde_json::json!("visible"))
+    );
+    assert_eq!(client.get("focused"), Some(&serde_json::json!(false)));
+
+    session.close().await.unwrap();
+    let _ = shutdown_sender.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_updates_service_worker_registration() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-358`, with native-first product
+expansion checkpoint is `native-engine-browser-359`, with native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
 CacheStorage request matching, CacheStorage response admission and atomic
@@ -73,7 +73,16 @@ preserved, and nested effects return to their source queue, so repeated popup
 cascades cannot permanently starve messages or navigation. This remains an
 operation-boundary scheduler rather than an autonomous cross-process event
 loop; worker, Service Worker, MessagePort, rendering, registration, and
-live-client queue ownership remain open. The completed 234 slice carries bounded
+live-client queue ownership remain open. The completed Slice 359 connects
+non-fetch Service Worker `clients.openWindow()` to the browser-owned target
+model: validated same-origin HTTP(S) requests cross the content-process IPC
+boundary with stable IDs, create a real parked target with the source context
+as opener, and resolve the persistent worker Promise with the new WindowClient
+descriptor after browser-wide client projection is synchronised. Nested
+effects return to the bounded browser-effect scheduler. Fetch-event
+suspension, arbitrary-target WindowClient messaging, browser-wide registration
+arbitration, and durable live-client leases remain separate gates. The
+completed 234 slice carries bounded
 root-scroll sticky positioning through
 shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -5676,8 +5685,10 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-358.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-359.md` is the latest completed browser
 task;
+`docs/plan/tasks/native-engine-browser-358.md` is the preceding completed
+browser task;
 `docs/plan/tasks/native-engine-browser-357.md` is the preceding completed
 browser task;
 `docs/plan/tasks/native-engine-browser-356.md` is the preceding completed

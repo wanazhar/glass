@@ -31,17 +31,17 @@ use super::javascript::{
     NativeJavaScriptRuntime, NativeMessagePortPageMessage, NativePageScript,
     NativePageScriptResult, NativePopupRequest, NativePostMessageRequest, NativeScriptCommand,
     NativeScriptEvaluation, NativeServiceWorkerClientMessage, NativeServiceWorkerClientState,
-    NativeStorageEvent, NativeWebStorageState, NativeWindowCloseRequest,
-    NativeWindowNavigationRequest, NativeWindowProxyUpdate, NativeWorkerEventSourceCommand,
-    NativeWorkerMessage, NativeWorkerRegistry, NativeWorkerWebSocketCommand,
-    diff_indexed_db_changes, execute_dynamic_page_scripts, execute_page_scripts, host_event_script,
-    host_hash_change_event_script, host_key_event_script, host_key_event_script_with_modifiers,
-    host_submit_event_script, literal_dynamic_module_specifiers, load_indexed_db_profile,
-    load_service_worker_cache_profile, load_service_worker_registration_profiles,
-    load_web_storage_profile, message_port_script, order_page_scripts,
-    page_script_sources_to_scripts, save_service_worker_cache_profile, save_web_storage_profile,
-    service_worker_client_message_script, static_module_specifiers, storage_key,
-    worker_message_script,
+    NativeServiceWorkerOpenWindowRequest, NativeStorageEvent, NativeWebStorageState,
+    NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
+    NativeWorkerEventSourceCommand, NativeWorkerMessage, NativeWorkerRegistry,
+    NativeWorkerWebSocketCommand, diff_indexed_db_changes, execute_dynamic_page_scripts,
+    execute_page_scripts, host_event_script, host_hash_change_event_script, host_key_event_script,
+    host_key_event_script_with_modifiers, host_submit_event_script,
+    literal_dynamic_module_specifiers, load_indexed_db_profile, load_service_worker_cache_profile,
+    load_service_worker_registration_profiles, load_web_storage_profile, message_port_script,
+    order_page_scripts, page_script_sources_to_scripts, save_service_worker_cache_profile,
+    save_web_storage_profile, service_worker_client_message_script, static_module_specifiers,
+    storage_key, worker_message_script,
 };
 use super::layout::NativePoint;
 use super::origin::NativeOrigin;
@@ -132,6 +132,7 @@ pub(crate) struct NativeContentLoad {
     pub(crate) post_messages: Vec<NativePostMessageRequest>,
     pub(crate) window_closes: Vec<NativeWindowCloseRequest>,
     pub(crate) window_navigations: Vec<NativeWindowNavigationRequest>,
+    pub(crate) service_worker_open_windows: Vec<NativeServiceWorkerOpenWindowRequest>,
     pub(crate) window_name: String,
 }
 
@@ -1004,6 +1005,7 @@ pub(crate) struct NativeContentScriptResult {
     pub(crate) post_messages: Vec<NativePostMessageRequest>,
     pub(crate) window_closes: Vec<NativeWindowCloseRequest>,
     pub(crate) window_navigations: Vec<NativeWindowNavigationRequest>,
+    pub(crate) service_worker_open_windows: Vec<NativeServiceWorkerOpenWindowRequest>,
     pub(crate) window_name: String,
 }
 
@@ -1575,6 +1577,61 @@ impl NativeContentProcess {
             });
         }
         decode_script_response(&response, id)
+    }
+
+    pub(crate) async fn resolve_service_worker_open_window(
+        &mut self,
+        worker_id: u32,
+        request_id: u32,
+        window: &Value,
+    ) -> Result<NativeContentScriptResult, NativeEngineError> {
+        if worker_id == 0 || request_id == 0 {
+            return Err(NativeEngineError::invalid(
+                "content-process service worker openWindow resolution",
+                "request and worker ids must be positive",
+            ));
+        }
+        let id = self.next_id();
+        let response = match timeout(
+            CONTENT_PROCESS_SCRIPT_TIMEOUT,
+            self.exchange(json!({
+                "kind": "service_worker_open_window_resolve",
+                "id": id,
+                "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
+                "worker_id": worker_id,
+                "request_id": request_id,
+                "window": window,
+            })),
+        )
+        .await
+        {
+            Ok(response) => response?,
+            Err(_) => {
+                self.mark_failed(NativeWorkerFailureKind::Timeout);
+                let _ = self.child.start_kill();
+                return Err(NativeEngineError::worker_failure(
+                    "content process service worker openWindow resolution",
+                    NativeWorkerFailureKind::Timeout,
+                    "content process service worker openWindow resolution exceeded its deadline",
+                ));
+            }
+        };
+        if response.get("kind").and_then(Value::as_str) == Some("error") {
+            return Err(NativeEngineError::Worker {
+                operation: "content process service worker openWindow resolution".into(),
+                reason: response
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("content process rejected the service worker openWindow resolution")
+                    .into(),
+            });
+        }
+        let result = decode_script_response(&response, id);
+        if result.is_err() {
+            self.mark_failed(NativeWorkerFailureKind::InvalidTransfer);
+            let _ = self.child.start_kill();
+        }
+        result
     }
 
     pub(crate) async fn sync_scroll_offset(
@@ -2286,6 +2343,8 @@ fn decode_loaded_response(
     let window_closes = decode_window_close_requests(response, "decode content process load")?;
     let window_navigations =
         decode_window_navigation_requests(response, "decode content process load")?;
+    let service_worker_open_windows =
+        decode_service_worker_open_window_requests(response, "decode content process load")?;
     let window_name = decode_window_name(response, "decode content process load")?;
     let frame_sources = decode_frame_sources(response, "decode content process load")?;
     Ok(NativeContentLoad {
@@ -2303,6 +2362,7 @@ fn decode_loaded_response(
         post_messages,
         window_closes,
         window_navigations,
+        service_worker_open_windows,
         window_name,
     })
 }
@@ -3111,6 +3171,8 @@ fn decode_script_response(
     let window_closes = decode_window_close_requests(response, "decode content process script")?;
     let window_navigations =
         decode_window_navigation_requests(response, "decode content process script")?;
+    let service_worker_open_windows =
+        decode_service_worker_open_window_requests(response, "decode content process script")?;
     let frame_scripts = decode_frame_script_requests(response, "decode content process script")?;
     let window_name = decode_window_name(response, "decode content process script")?;
     let history = decode_history_commands(response, "decode content process script")?;
@@ -3146,6 +3208,7 @@ fn decode_script_response(
         } else {
             window_navigations
         },
+        service_worker_open_windows,
         window_name,
     })
 }
@@ -3284,6 +3347,46 @@ fn decode_window_navigation_requests(
         if let Some(target_context_id) = request.target_context_id.as_deref() {
             validate_context_id(target_context_id)?;
         }
+    }
+    Ok(requests)
+}
+
+fn decode_service_worker_open_window_requests(
+    response: &Value,
+    operation: &str,
+) -> Result<Vec<NativeServiceWorkerOpenWindowRequest>, NativeEngineError> {
+    let Some(value) = response.get("service_worker_open_windows") else {
+        return Ok(Vec::new());
+    };
+    let values = value.as_array().ok_or_else(|| NativeEngineError::Worker {
+        operation: operation.into(),
+        reason: "content process returned invalid service worker openWindow requests".into(),
+    })?;
+    if values.len() > MAX_NATIVE_EFFECTS {
+        return Err(NativeEngineError::limit(
+            "content-process service worker openWindow requests",
+            MAX_NATIVE_EFFECTS,
+            values.len(),
+        ));
+    }
+    let requests =
+        serde_json::from_value::<Vec<NativeServiceWorkerOpenWindowRequest>>(value.clone())
+            .map_err(|_| NativeEngineError::Worker {
+                operation: operation.into(),
+                reason: "content process returned malformed service worker openWindow requests"
+                    .into(),
+            })?;
+    for request in &requests {
+        if request.request_id == 0 || request.worker_id == 0 {
+            return Err(NativeEngineError::invalid(
+                "content-process service worker openWindow request",
+                "request and worker ids must be positive",
+            ));
+        }
+        validate_url_text(
+            "content-process service worker openWindow URL",
+            &request.url,
+        )?;
     }
     Ok(requests)
 }
@@ -3961,6 +4064,59 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     })?;
                 service_workers.replace_client_states(clients)?;
                 json!({"kind":"service_worker_clients_synced","id":id})
+            }
+            "service_worker_open_window_resolve" if protocol_matches(&request) && running => {
+                let worker_id = request
+                    .get("worker_id")
+                    .and_then(Value::as_u64)
+                    .and_then(|value| u32::try_from(value).ok())
+                    .ok_or_else(|| {
+                        NativeEngineError::invalid(
+                            "content-process service worker openWindow worker id",
+                            "must be a positive integer",
+                        )
+                    })?;
+                let request_id = request
+                    .get("request_id")
+                    .and_then(Value::as_u64)
+                    .and_then(|value| u32::try_from(value).ok())
+                    .ok_or_else(|| {
+                        NativeEngineError::invalid(
+                            "content-process service worker openWindow request id",
+                            "must be a positive integer",
+                        )
+                    })?;
+                let window = request.get("window").ok_or_else(|| {
+                    NativeEngineError::invalid(
+                        "content-process service worker openWindow response",
+                        "must be present",
+                    )
+                })?;
+                let Some(loader) = resource_loader.as_mut() else {
+                    return Err(NativeEngineError::Worker {
+                        operation: "content process service worker openWindow resolution".into(),
+                        reason: "content process has no resource loader".into(),
+                    });
+                };
+                match service_workers
+                    .resolve_open_window(loader, worker_id, request_id, window)
+                    .await
+                {
+                    Ok(()) => {
+                        pending_message_port_messages
+                            .extend(service_workers.take_message_port_messages());
+                        pending_service_worker_client_messages
+                            .extend(service_workers.take_client_messages());
+                        json!({
+                            "kind": "evaluated",
+                            "id": id,
+                            "value": Value::Null,
+                            "history": [],
+                            "frame_scripts": [],
+                        })
+                    }
+                    Err(error) => content_error_response(id, error),
+                }
             }
             "storage_state" if protocol_matches(&request) && running => {
                 let value = request.get("state").ok_or_else(|| {
@@ -5615,6 +5771,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             document_url.as_deref(),
             document_origin.as_ref(),
         )?;
+        let service_worker_open_windows = service_workers.take_open_windows();
         if javascript_runtime.is_some() {
             window_name = response_window_name.clone();
         }
@@ -5723,6 +5880,17 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     NativeEngineError::Worker {
                         operation: "encode content process window navigation requests".into(),
                         reason: "content process window navigation requests could not be encoded"
+                            .into(),
+                    }
+                })?,
+            );
+            object.insert(
+                "service_worker_open_windows".into(),
+                serde_json::to_value(service_worker_open_windows).map_err(|_| {
+                    NativeEngineError::Worker {
+                        operation: "encode content process service worker openWindow requests"
+                            .into(),
+                        reason: "content process service worker openWindow requests could not be encoded"
                             .into(),
                     }
                 })?,
@@ -6239,6 +6407,7 @@ async fn load_content_resource(
             post_messages: Vec::new(),
             window_closes: Vec::new(),
             window_navigations: Vec::new(),
+            service_worker_open_windows: Vec::new(),
             window_name: String::new(),
         },
         document,

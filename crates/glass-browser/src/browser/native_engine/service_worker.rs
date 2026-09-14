@@ -9,13 +9,14 @@ use super::config::{validate_url_text, without_fragment};
 use super::error::NativeEngineError;
 use super::interaction::MAX_NATIVE_FORM_BODY_BYTES;
 use super::javascript::{
-    MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_SCRIPT_BYTES, MAX_NATIVE_SERVICE_WORKER_CACHE_BODY_BYTES,
-    MAX_NATIVE_SERVICE_WORKER_CACHE_ENTRIES, MAX_NATIVE_SERVICE_WORKER_CACHE_KEY_BYTES,
-    MAX_NATIVE_SERVICE_WORKER_CACHE_NAME_BYTES, MAX_NATIVE_SERVICE_WORKER_CACHES,
-    MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES, MAX_NATIVE_SERVICE_WORKERS, MAX_NATIVE_WORKER_MESSAGES,
-    NativeJavaScriptRuntime, NativeMessagePortPageMessage, NativeMessagePortTransfer,
-    NativeScriptCommand, NativeScriptEvaluation, NativeServiceWorkerCacheEntry,
-    NativeServiceWorkerCacheState, NativeServiceWorkerRegistrationProfile,
+    MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_POST_MESSAGE_BYTES, MAX_NATIVE_SCRIPT_BYTES,
+    MAX_NATIVE_SERVICE_WORKER_CACHE_BODY_BYTES, MAX_NATIVE_SERVICE_WORKER_CACHE_ENTRIES,
+    MAX_NATIVE_SERVICE_WORKER_CACHE_KEY_BYTES, MAX_NATIVE_SERVICE_WORKER_CACHE_NAME_BYTES,
+    MAX_NATIVE_SERVICE_WORKER_CACHES, MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES,
+    MAX_NATIVE_SERVICE_WORKERS, MAX_NATIVE_WORKER_MESSAGES, NativeJavaScriptRuntime,
+    NativeMessagePortPageMessage, NativeMessagePortTransfer, NativeScriptCommand,
+    NativeScriptEvaluation, NativeServiceWorkerCacheEntry, NativeServiceWorkerCacheState,
+    NativeServiceWorkerClientMessage, NativeServiceWorkerRegistrationProfile,
     NativeServiceWorkerRegistrationState, load_service_worker_source,
     validate_message_port_transfers, validate_native_service_worker_cache_request_headers,
 };
@@ -46,6 +47,7 @@ pub(crate) struct NativeServiceWorkerRegistry {
     cache_state: NativeServiceWorkerCacheState,
     registration_profiles: Vec<NativeServiceWorkerRegistrationProfile>,
     pending_message_port_messages: VecDeque<NativeMessagePortPageMessage>,
+    pending_client_messages: VecDeque<NativeServiceWorkerClientMessage>,
     message_port_routes: BTreeMap<String, u32>,
 }
 
@@ -57,6 +59,7 @@ impl Default for NativeServiceWorkerRegistry {
             cache_state: NativeServiceWorkerCacheState::default(),
             registration_profiles: Vec::new(),
             pending_message_port_messages: VecDeque::new(),
+            pending_client_messages: VecDeque::new(),
             message_port_routes: BTreeMap::new(),
         }
     }
@@ -199,7 +202,9 @@ impl NativeServiceWorkerRegistry {
                 &worker.import_script_counts,
             )?
         };
-        settle_service_worker_cache_event(&mut worker, initial, &mut self.cache_state)?;
+        let client_messages =
+            settle_service_worker_cache_event(&mut worker, initial, &mut self.cache_state, None)?;
+        self.enqueue_client_messages(client_messages)?;
         Ok(worker)
     }
 
@@ -292,14 +297,18 @@ impl NativeServiceWorkerRegistry {
             "install",
             worker.is_module,
         )?;
-        settle_service_worker_cache_event(&mut worker, install, &mut self.cache_state)?;
+        let client_messages =
+            settle_service_worker_cache_event(&mut worker, install, &mut self.cache_state, None)?;
+        self.enqueue_client_messages(client_messages)?;
         let activate = worker.runtime.evaluate_service_worker_lifecycle(
             worker.id,
             &worker.script_url,
             "activate",
             worker.is_module,
         )?;
-        settle_service_worker_cache_event(&mut worker, activate, &mut self.cache_state)?;
+        let client_messages =
+            settle_service_worker_cache_event(&mut worker, activate, &mut self.cache_state, None)?;
+        self.enqueue_client_messages(client_messages)?;
         if let Some(previous_id) = self.registrations.get(scope).map(|worker| worker.id) {
             self.remove_worker_routes(previous_id);
         }
@@ -435,14 +444,18 @@ impl NativeServiceWorkerRegistry {
             "install",
             worker.is_module,
         )?;
-        settle_service_worker_cache_event(&mut worker, install, &mut self.cache_state)?;
+        let client_messages =
+            settle_service_worker_cache_event(&mut worker, install, &mut self.cache_state, None)?;
+        self.enqueue_client_messages(client_messages)?;
         let activate = worker.runtime.evaluate_service_worker_lifecycle(
             worker.id,
             &worker.script_url,
             "activate",
             worker.is_module,
         )?;
-        settle_service_worker_cache_event(&mut worker, activate, &mut self.cache_state)?;
+        let client_messages =
+            settle_service_worker_cache_event(&mut worker, activate, &mut self.cache_state, None)?;
+        self.enqueue_client_messages(client_messages)?;
         let state = NativeServiceWorkerRegistrationState {
             script_url: worker.script_url.clone(),
             scope: scope.clone(),
@@ -459,11 +472,42 @@ impl NativeServiceWorkerRegistry {
 
     pub(crate) fn clear_page_message_port_routes(&mut self) {
         self.pending_message_port_messages.clear();
+        self.pending_client_messages.clear();
         self.message_port_routes.clear();
     }
 
     pub(crate) fn take_message_port_messages(&mut self) -> Vec<NativeMessagePortPageMessage> {
         self.pending_message_port_messages.drain(..).collect()
+    }
+
+    pub(crate) fn take_client_messages(&mut self) -> Vec<NativeServiceWorkerClientMessage> {
+        self.pending_client_messages.drain(..).collect()
+    }
+
+    fn enqueue_client_messages(
+        &mut self,
+        messages: Vec<NativeServiceWorkerClientMessage>,
+    ) -> Result<(), NativeEngineError> {
+        if messages.len() > MAX_NATIVE_WORKER_MESSAGES
+            || self
+                .pending_client_messages
+                .len()
+                .saturating_add(messages.len())
+                > MAX_NATIVE_WORKER_MESSAGES
+        {
+            return Err(NativeEngineError::limit(
+                "native service-worker client messages",
+                MAX_NATIVE_WORKER_MESSAGES,
+                self.pending_client_messages
+                    .len()
+                    .saturating_add(messages.len()),
+            ));
+        }
+        for message in &messages {
+            self.register_worker_transfers(message.worker_id, &message.transfer_ports)?;
+        }
+        self.pending_client_messages.extend(messages);
+        Ok(())
     }
 
     pub(crate) fn unregister(&mut self, scope: &str) -> bool {
@@ -519,13 +563,21 @@ impl NativeServiceWorkerRegistry {
             self.remove_transfer_routes(transfer_ports);
             return Err(error);
         }
-        if let Err(error) = settle_service_worker_cache_event(
+        let client_messages = match settle_service_worker_cache_event(
             self.registrations
                 .get_mut(scope)
                 .expect("service worker registration was retained"),
             evaluation,
             &mut self.cache_state,
+            None,
         ) {
+            Ok(messages) => messages,
+            Err(error) => {
+                self.remove_transfer_routes(transfer_ports);
+                return Err(error);
+            }
+        };
+        if let Err(error) = self.enqueue_client_messages(client_messages) {
             self.remove_transfer_routes(transfer_ports);
             return Err(error);
         }
@@ -597,13 +649,21 @@ impl NativeServiceWorkerRegistry {
                 self.remove_transfer_routes(&transfer_ports);
                 return Err(error);
             }
-            if let Err(error) = settle_service_worker_cache_event(
+            let client_messages = match settle_service_worker_cache_event(
                 self.registrations
                     .get_mut(&scope)
                     .expect("service worker registration was retained"),
                 evaluation,
                 &mut self.cache_state,
+                None,
             ) {
+                Ok(messages) => messages,
+                Err(error) => {
+                    self.remove_transfer_routes(&transfer_ports);
+                    return Err(error);
+                }
+            };
+            if let Err(error) = self.enqueue_client_messages(client_messages) {
                 self.remove_transfer_routes(&transfer_ports);
                 return Err(error);
             }
@@ -688,6 +748,7 @@ impl NativeServiceWorkerRegistry {
             .map(|(name, value)| json!([name, value]))
             .collect::<Vec<_>>();
         let client_url = without_fragment(document_url);
+        let client_id = native_service_worker_client_id(client_url);
         let payload = json!({
             "url": without_fragment(target.as_str()),
             "method": method.as_str(),
@@ -715,8 +776,15 @@ impl NativeServiceWorkerRegistry {
             worker.is_module,
         )?;
         let worker_id = worker.id;
-        let value =
-            settle_service_worker_fetch(worker, loader, evaluation, &mut self.cache_state).await?;
+        let (value, client_messages) = settle_service_worker_fetch(
+            worker,
+            loader,
+            evaluation,
+            &mut self.cache_state,
+            &client_id,
+        )
+        .await?;
+        self.enqueue_client_messages(client_messages)?;
         let message_port_commands = self
             .registrations
             .get(&scope)
@@ -882,9 +950,11 @@ fn settle_service_worker_cache_event(
     worker: &mut NativeServiceWorker,
     evaluation: NativeScriptEvaluation,
     cache_state: &mut NativeServiceWorkerCacheState,
-) -> Result<(), NativeEngineError> {
+    current_client_id: Option<&str>,
+) -> Result<Vec<NativeServiceWorkerClientMessage>, NativeEngineError> {
     let mut pending = VecDeque::from(evaluation.commands);
     let mut awaiting = evaluation.top_level_await_pending;
+    let mut client_messages = Vec::new();
     let mut turns = 0usize;
     while let Some(command) = pending.pop_front() {
         turns = turns.saturating_add(1);
@@ -894,6 +964,12 @@ fn settle_service_worker_cache_event(
                 MAX_NATIVE_MODULE_IMPORTS,
                 turns,
             ));
+        }
+        if let Some(message) =
+            service_worker_client_message_command(worker.id, command.clone(), current_client_id)?
+        {
+            client_messages.push(message);
+            continue;
         }
         let (request_id, payload) =
             apply_service_worker_cache_command(worker, command, cache_state)?;
@@ -916,7 +992,63 @@ fn settle_service_worker_cache_event(
             reason: "service worker cache promise remained pending".into(),
         });
     }
-    Ok(())
+    Ok(client_messages)
+}
+
+fn service_worker_client_message_command(
+    worker_id: u32,
+    command: NativeScriptCommand,
+    current_client_id: Option<&str>,
+) -> Result<Option<NativeServiceWorkerClientMessage>, NativeEngineError> {
+    let NativeScriptCommand::ServiceWorkerClientPostMessage {
+        worker_id: command_worker_id,
+        client_id,
+        data,
+        transfer_ports,
+    } = command
+    else {
+        return Ok(None);
+    };
+    if command_worker_id == 0 || command_worker_id != worker_id {
+        return Err(NativeEngineError::Worker {
+            operation: "service worker client message".into(),
+            reason: "service worker client message owner is invalid".into(),
+        });
+    }
+    if client_id.is_empty() {
+        return Err(NativeEngineError::invalid(
+            "native service worker client id",
+            "must not be empty",
+        ));
+    }
+    if client_id.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES {
+        return Err(NativeEngineError::limit(
+            "native service worker client id",
+            crate::browser_backend::MAX_BACKEND_ID_BYTES,
+            client_id.len(),
+        ));
+    }
+    validate_message_port_transfers(&transfer_ports)?;
+    let encoded = serde_json::to_vec(&data).map_err(|_| NativeEngineError::Worker {
+        operation: "serialize native service worker client message".into(),
+        reason: "service worker client message data could not be serialized".into(),
+    })?;
+    if encoded.len() > MAX_NATIVE_POST_MESSAGE_BYTES {
+        return Err(NativeEngineError::limit(
+            "native service worker client message",
+            MAX_NATIVE_POST_MESSAGE_BYTES,
+            encoded.len(),
+        ));
+    }
+    if current_client_id != Some(client_id.as_str()) {
+        return Ok(None);
+    }
+    Ok(Some(NativeServiceWorkerClientMessage {
+        worker_id,
+        client_id,
+        data,
+        transfer_ports,
+    }))
 }
 
 fn apply_service_worker_cache_command(
@@ -1340,10 +1472,12 @@ async fn settle_service_worker_fetch(
     loader: &mut NativeResourceLoader,
     evaluation: NativeScriptEvaluation,
     cache_state: &mut NativeServiceWorkerCacheState,
-) -> Result<Value, NativeEngineError> {
+    current_client_id: &str,
+) -> Result<(Value, Vec<NativeServiceWorkerClientMessage>), NativeEngineError> {
     let mut pending = VecDeque::from(evaluation.commands);
     let mut value = evaluation.value;
     let mut awaiting = evaluation.top_level_await_pending;
+    let mut client_messages = Vec::new();
     let mut resolved_fetches = 0usize;
     while let Some(command) = pending.pop_front() {
         resolved_fetches = resolved_fetches.saturating_add(1);
@@ -1353,6 +1487,14 @@ async fn settle_service_worker_fetch(
                 MAX_NATIVE_MODULE_IMPORTS,
                 resolved_fetches,
             ));
+        }
+        if let Some(message) = service_worker_client_message_command(
+            worker.id,
+            command.clone(),
+            Some(current_client_id),
+        )? {
+            client_messages.push(message);
+            continue;
         }
         if is_service_worker_cache_command(&command) {
             let (request_id, payload) =
@@ -1462,14 +1604,14 @@ async fn settle_service_worker_fetch(
     }
     if awaiting {
         if let Some(resolved_value) = worker.runtime.take_top_level_await_result()? {
-            return Ok(resolved_value);
+            return Ok((resolved_value, client_messages));
         }
         return Err(NativeEngineError::Worker {
             operation: "service worker fetch event".into(),
             reason: "service worker fetch response promise remained pending".into(),
         });
     }
-    Ok(value)
+    Ok((value, client_messages))
 }
 
 fn is_service_worker_cache_command(command: &NativeScriptCommand) -> bool {

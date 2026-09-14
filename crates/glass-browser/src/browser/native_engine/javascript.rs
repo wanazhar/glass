@@ -253,6 +253,13 @@ pub(crate) enum NativeScriptCommand {
         #[serde(default)]
         transfer_ports: Vec<NativeMessagePortTransfer>,
     },
+    ServiceWorkerClientPostMessage {
+        worker_id: u32,
+        client_id: String,
+        data: serde_json::Value,
+        #[serde(default)]
+        transfer_ports: Vec<NativeMessagePortTransfer>,
+    },
     ServiceWorkerCacheOpen {
         request_id: u32,
         cache_name: String,
@@ -675,6 +682,15 @@ pub(crate) struct NativeWorkerMessage {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct NativeMessagePortPageMessage {
     pub(crate) bridge_key: String,
+    pub(crate) data: serde_json::Value,
+    pub(crate) transfer_ports: Vec<NativeMessagePortTransfer>,
+}
+
+/// A bounded message emitted by a Service Worker for its current page client.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct NativeServiceWorkerClientMessage {
+    pub(crate) worker_id: u32,
+    pub(crate) client_id: String,
     pub(crate) data: serde_json::Value,
     pub(crate) transfer_ports: Vec<NativeMessagePortTransfer>,
 }
@@ -9785,6 +9801,10 @@ impl NativeJavaScriptRuntime {
                         worker_id: Some(command_worker_id),
                         ..
                     } => *command_worker_id == worker_id,
+                    NativeScriptCommand::ServiceWorkerClientPostMessage {
+                        worker_id: command_worker_id,
+                        ..
+                    } => service_worker && *command_worker_id == worker_id,
                     _ => false,
                 };
                 if !valid {
@@ -10094,6 +10114,7 @@ impl NativeJavaScriptRuntime {
         document_url: &str,
         origin: &NativeOrigin,
         viewport: Viewport,
+        prefix: Option<&str>,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
         let serialized = serde_json::to_string(payload).map_err(|_| NativeEngineError::Worker {
             operation: "serialize JavaScript fetch response".into(),
@@ -10102,7 +10123,8 @@ impl NativeJavaScriptRuntime {
         if serialized.len() > MAX_NATIVE_SCRIPT_BYTES {
             return self.evaluate(
                 &format!(
-                    "globalThis.__glassResolveFetch({request_id}, {{ error: \"fetch response exceeded the script transfer limit\" }});"
+                    "{}globalThis.__glassResolveFetch({request_id}, {{ error: \"fetch response exceeded the script transfer limit\" }});",
+                    prefix.unwrap_or_default(),
                 ),
                 document,
                 document_url,
@@ -10111,7 +10133,10 @@ impl NativeJavaScriptRuntime {
             );
         }
         self.evaluate(
-            &format!("globalThis.__glassResolveFetch({request_id}, {serialized});"),
+            &format!(
+                "{}globalThis.__glassResolveFetch({request_id}, {serialized});",
+                prefix.unwrap_or_default(),
+            ),
             document,
             document_url,
             origin,
@@ -15043,6 +15068,57 @@ pub(crate) fn message_port_script(
     Ok(Some(source))
 }
 
+pub(crate) fn service_worker_client_message_script(
+    messages: &[NativeServiceWorkerClientMessage],
+) -> Result<Option<String>, NativeEngineError> {
+    if messages.is_empty() {
+        return Ok(None);
+    }
+    let mut source = String::new();
+    for message in messages {
+        if message.worker_id == 0 {
+            return Err(NativeEngineError::invalid(
+                "native service-worker client message worker id",
+                "must be positive",
+            ));
+        }
+        if message.client_id.is_empty() {
+            return Err(NativeEngineError::invalid(
+                "native service-worker client message id",
+                "must not be empty",
+            ));
+        }
+        if message.client_id.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES {
+            return Err(NativeEngineError::limit(
+                "native service-worker client message id",
+                crate::browser_backend::MAX_BACKEND_ID_BYTES,
+                message.client_id.len(),
+            ));
+        }
+        validate_message_port_transfers(&message.transfer_ports)?;
+        let payload = serde_json::json!({
+            "worker_id": message.worker_id,
+            "data": message.data,
+            "transfer_ports": message.transfer_ports,
+        });
+        let encoded = serde_json::to_string(&payload).map_err(|_| NativeEngineError::Worker {
+            operation: "serialize native service-worker client event".into(),
+            reason: "native service-worker client event could not be serialized".into(),
+        })?;
+        source.push_str(&format!(
+            "globalThis.__glassDispatchServiceWorkerClientMessage({encoded});"
+        ));
+    }
+    if source.len() > MAX_NATIVE_SCRIPT_BYTES {
+        return Err(NativeEngineError::limit(
+            "native service-worker client event script",
+            MAX_NATIVE_SCRIPT_BYTES,
+            source.len(),
+        ));
+    }
+    Ok(Some(source))
+}
+
 fn is_ready_state_comparison(source: &str) -> bool {
     let source = source
         .trim()
@@ -15783,6 +15859,20 @@ const NATIVE_SERVICE_WORKER_PAGE_SCRIPT: &str = r###"
   };
   globalThis.__glassServiceWorkerRegistrations = serviceWorkerRegistrations;
   globalThis.__glassServiceWorkerPendingRequests = serviceWorkerPendingRequests;
+  globalThis.__glassDispatchServiceWorkerClientMessage = (payload) => {
+    const envelope = glassMessageDecodeEnvelope(payload || {});
+    const registration = serviceWorkerFind(String(host.url));
+    serviceWorkerContainer.dispatchEvent({
+      type: "message",
+      data: envelope.data,
+      origin: "",
+      source: registration && registration.active || null,
+      ports: envelope.ports,
+      target: serviceWorkerContainer,
+      currentTarget: serviceWorkerContainer,
+    });
+    return null;
+  };
 "###;
 
 fn service_worker_page_script() -> String {
@@ -15997,14 +16087,31 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
   const serviceWorkerClientFromState = () => {
     const state = globalThis.__glassServiceWorkerClientState;
     if (!state || typeof state !== "object") return null;
-    return Object.freeze({
+    const client = {
       id: String(state.clientId || ""),
       url: String(state.clientUrl || ""),
       type: String(state.clientType || "window"),
       frameType: String(state.frameType || "top-level"),
       visibilityState: String(state.visibilityState || "visible"),
       focused: state.focused === true,
-    });
+      postMessage(message, options) {
+        const workerId = Number.isSafeInteger(globalThis.__glassWorkerId)
+          ? globalThis.__glassWorkerId : 0;
+        if (!workerId) throw new Error("native service worker client is unavailable");
+        const envelope = glassMessageCloneWithTransfers(
+          message,
+          glassMessageTransferList(options),
+        );
+        pushCommand({
+          kind: "serviceWorkerClientPostMessage",
+          worker_id: workerId,
+          client_id: this.id,
+          data: envelope.data,
+          transfer_ports: envelope.transfer_ports,
+        });
+      },
+    };
+    return Object.freeze(client);
   };
   const serviceWorkerDispatchFetch = (payload) => {
     globalThis.__glassServiceWorkerClientState = payload && typeof payload === "object"

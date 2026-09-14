@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-344` slice. The native runtime is now the primary
+`native-engine-browser-345` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -185,6 +185,19 @@ request context. Multi-tab/frame ownership, `Client.postMessage()`,
 task-source interleaving, and final certification remain issue #40 gates.
 Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-344.md`.
+
+Slice 345 completes the active-client reverse messaging path. A bounded
+`Client.postMessage()` clone and transfer list leaves the isolated Service
+Worker through an owner-validated command, is queued only for the current
+top-level page client, and is delivered as a ServiceWorker-container
+`MessageEvent`; transferred ports reuse the existing bridge and are decoded in
+the page realm. Fetch continuations receive the event before the page observes
+the resolved Fetch result, while other worker-turn messages wait for the next
+bounded page evaluation. Multi-client/frame ownership, `openWindow()`,
+freshness/revalidation, richer transferables, complete task-source
+interleaving, and final certification remain issue #40 gates. Exact evidence
+is recorded in
+`docs/plan/tasks/native-engine-browser-345.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

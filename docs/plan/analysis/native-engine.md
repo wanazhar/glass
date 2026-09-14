@@ -1,10 +1,11 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-344`, with native-first product
+expansion checkpoint is `native-engine-browser-345`, with native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
-CacheStorage request matching, and Service Worker client enumeration
+CacheStorage request matching, Service Worker client enumeration, and
+Service Worker client messaging
 covered by the native owner across local and HTTP(S) paths. The completed 234
 slice carries bounded root-scroll sticky positioning through shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233
@@ -4556,14 +4557,14 @@ issue #40 gates. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-317.md`.
 
 The current post-selection continuation is recorded by browser tasks 318
-through 344. Tasks 318-326 move profile, snapshot, task, workflow, semantic,
+through 345. Tasks 318-326 move profile, snapshot, task, workflow, semantic,
 and resident-session ownership into the native path. Tasks 327-334 add native
 semantic MCP contracts, stack-safe lifecycle probes, capture/recovery/liveness
 and encoder coverage, and cookie writes/policy. Tasks 335-339 add message
 channels, Service Worker ownership/interception and cross-realm transfers,
-and SharedWorker ownership. Tasks 340-344 add durable Service Worker
+and SharedWorker ownership. Tasks 340-345 add durable Service Worker
 CacheStorage, persisted registration metadata, active registration update,
-matching options, and bounded client enumeration. Each task file remains the authoritative contract and local
+matching options, bounded client enumeration, and client messaging. Each task file remains the authoritative contract and local
 evidence record; complete Core Web Profile conformance and production
 certification remain issue #40 gates.
 
@@ -5606,6 +5607,8 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
+`docs/plan/tasks/native-engine-browser-345.md` is the latest completed browser
+task;
 `docs/plan/tasks/native-engine-browser-344.md` is the latest completed browser
 task;
 `docs/plan/tasks/native-engine-browser-343.md` is the latest completed browser
@@ -5673,7 +5676,8 @@ task;
 `docs/plan/tasks/native-engine-198.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-197.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-196.md` is the preceding completed task;
-The current browser-slice evidence chain is `native-engine-browser-344`,
+The current browser-slice evidence chain is `native-engine-browser-345`,
+`native-engine-browser-344`,
 `native-engine-browser-343`,
 `native-engine-browser-342`,
 `native-engine-browser-341`, `native-engine-browser-340`,

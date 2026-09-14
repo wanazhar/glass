@@ -24,16 +24,17 @@ use super::javascript::{
     NativeFrameScriptContext, NativeFrameScriptRequest, NativeIndexedDbChange,
     NativeIndexedDbState, NativeJavaScriptRuntime, NativeMessagePortPageMessage,
     NativePageNavigation, NativePopupRequest, NativePostMessageRequest, NativeScriptCommand,
-    NativeScriptEvaluation, NativeServiceWorkerClientState, NativeServiceWorkerOpenWindowRequest,
-    NativeStorageEvent, NativeWebStorageState, NativeWindowCloseRequest,
-    NativeWindowNavigationRequest, NativeWindowProxyUpdate, NativeWorkerRegistry,
-    append_storage_changes, apply_indexed_db_changes, diff_indexed_db_changes,
-    execute_dynamic_page_scripts, execute_inline_scripts, frame_event_script, host_event_script,
-    host_hash_change_event_script, host_message_event_script, host_submit_event_script,
-    load_indexed_db_profile, load_web_storage_profile, message_port_script, new_storage_writer_id,
+    NativeScriptEvaluation, NativeServiceWorkerClientMessage, NativeServiceWorkerClientState,
+    NativeServiceWorkerOpenWindowRequest, NativeStorageEvent, NativeWebStorageState,
+    NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
+    NativeWorkerRegistry, append_storage_changes, apply_indexed_db_changes,
+    diff_indexed_db_changes, execute_dynamic_page_scripts, execute_inline_scripts,
+    frame_event_script, host_event_script, host_hash_change_event_script,
+    host_message_event_script, host_submit_event_script, load_indexed_db_profile,
+    load_web_storage_profile, message_port_script, new_storage_writer_id,
     page_script_sources_to_scripts, read_storage_event_journal, register_storage_reader,
-    save_web_storage_profile, storage_event_cursor, storage_key, unregister_storage_reader,
-    worker_message_script,
+    save_web_storage_profile, service_worker_client_message_script, storage_event_cursor,
+    storage_key, unregister_storage_reader, worker_message_script,
 };
 use super::layout::{NativeLayoutSnapshot, NativePoint, NativeRect};
 use super::lifecycle::NativeLifecycleState;
@@ -363,6 +364,7 @@ pub struct NativeEngine {
     pending_message_port_messages: VecDeque<NativeMessagePortPageMessage>,
     pending_window_closes: VecDeque<NativeWindowCloseRequest>,
     pending_window_navigations: VecDeque<NativeWindowNavigationRequest>,
+    pending_service_worker_client_messages: VecDeque<NativeServiceWorkerClientMessage>,
     pending_service_worker_open_windows: VecDeque<NativeServiceWorkerOpenWindowRequest>,
     pending_frame_scripts: VecDeque<NativeFrameScriptRequest>,
     completed_download_ids: VecDeque<String>,
@@ -454,6 +456,7 @@ impl NativeEngine {
             pending_message_port_messages: VecDeque::new(),
             pending_window_closes: VecDeque::new(),
             pending_window_navigations: VecDeque::new(),
+            pending_service_worker_client_messages: VecDeque::new(),
             pending_service_worker_open_windows: VecDeque::new(),
             pending_frame_scripts: VecDeque::new(),
             completed_download_ids: VecDeque::new(),
@@ -660,6 +663,7 @@ impl NativeEngine {
             post_messages,
             window_closes,
             window_navigations,
+            service_worker_client_messages,
             service_worker_open_windows,
             window_name,
         } = {
@@ -688,6 +692,7 @@ impl NativeEngine {
         };
         self.config.window_name = window_name;
         self.queue_frame_script_requests(frame_scripts)?;
+        self.queue_service_worker_client_messages(service_worker_client_messages)?;
         self.queue_service_worker_open_window_requests(service_worker_open_windows)?;
         if let Some(mutation) = mutation {
             let navigation = mutation.navigation.clone();
@@ -709,6 +714,27 @@ impl NativeEngine {
             self.sync_content_history_async().await?;
         }
         Ok(())
+    }
+
+    pub(crate) async fn dispatch_service_worker_client_message_async(
+        &mut self,
+        message: NativeServiceWorkerClientMessage,
+    ) -> Result<(), NativeEngineError> {
+        self.require_running("deliver service worker client message")?;
+        if message.client_id != self.service_worker_client_id() {
+            return Err(NativeEngineError::invalid(
+                "service worker client message target",
+                "message client does not belong to this native frame",
+            ));
+        }
+        let source = service_worker_client_message_script(std::slice::from_ref(&message))?
+            .ok_or_else(|| {
+                NativeEngineError::invalid(
+                    "service worker client message",
+                    "message payload was empty",
+                )
+            })?;
+        self.evaluate_async(source).await.map(|_| ())
     }
 
     pub(crate) fn service_worker_clients(&self) -> Vec<NativeServiceWorkerClientState> {
@@ -1307,6 +1333,9 @@ impl NativeEngine {
             )?;
             self.queue_window_close_requests(std::mem::take(&mut content.window_closes))?;
             self.queue_window_navigation_requests(std::mem::take(&mut content.window_navigations))?;
+            self.queue_service_worker_client_messages(std::mem::take(
+                &mut content.service_worker_client_messages,
+            ))?;
             self.queue_service_worker_open_window_requests(std::mem::take(
                 &mut content.service_worker_open_windows,
             ))?;
@@ -1695,6 +1724,7 @@ impl NativeEngine {
                 post_messages,
                 window_closes,
                 window_navigations,
+                service_worker_client_messages,
                 service_worker_open_windows,
                 frame_scripts,
                 window_name,
@@ -1720,6 +1750,7 @@ impl NativeEngine {
             };
             self.config.window_name = window_name;
             self.queue_frame_script_requests(frame_scripts)?;
+            self.queue_service_worker_client_messages(service_worker_client_messages)?;
             self.queue_service_worker_open_window_requests(service_worker_open_windows)?;
             let mut history_traversal = None;
             let mutation_history = mutation
@@ -2480,6 +2511,43 @@ impl NativeEngine {
         Ok(())
     }
 
+    fn queue_service_worker_client_messages(
+        &mut self,
+        messages: Vec<NativeServiceWorkerClientMessage>,
+    ) -> Result<(), NativeEngineError> {
+        if self
+            .pending_service_worker_client_messages
+            .len()
+            .saturating_add(messages.len())
+            > MAX_NATIVE_PENDING_POPUPS
+        {
+            return Err(NativeEngineError::limit(
+                "native pending service worker client messages",
+                MAX_NATIVE_PENDING_POPUPS,
+                self.pending_service_worker_client_messages
+                    .len()
+                    .saturating_add(messages.len()),
+            ));
+        }
+        for message in messages {
+            if message.worker_id == 0 {
+                return Err(NativeEngineError::invalid(
+                    "service worker client message worker id",
+                    "must be positive",
+                ));
+            }
+            if message.client_id.is_empty() {
+                return Err(NativeEngineError::invalid(
+                    "service worker client message id",
+                    "must not be empty",
+                ));
+            }
+            self.pending_service_worker_client_messages
+                .push_back(message);
+        }
+        Ok(())
+    }
+
     fn queue_frame_script_requests(
         &mut self,
         requests: Vec<NativeFrameScriptRequest>,
@@ -2528,6 +2596,14 @@ impl NativeEngine {
         &mut self,
     ) -> Vec<NativeServiceWorkerOpenWindowRequest> {
         self.pending_service_worker_open_windows.drain(..).collect()
+    }
+
+    pub(crate) fn take_pending_service_worker_client_messages(
+        &mut self,
+    ) -> Vec<NativeServiceWorkerClientMessage> {
+        self.pending_service_worker_client_messages
+            .drain(..)
+            .collect()
     }
 
     pub(crate) fn take_pending_frame_scripts(&mut self) -> Vec<NativeFrameScriptRequest> {

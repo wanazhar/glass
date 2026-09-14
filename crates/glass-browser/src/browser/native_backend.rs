@@ -16,8 +16,8 @@ use super::native_engine::{
     NativeFrameScriptContext, NativeFrameScriptRequest, NativeFrameScriptWindow,
     NativeHistoryDirection, NativeInspectionSnapshot, NativeLayoutSnapshot, NativeOrigin,
     NativePoint, NativePopupRequest, NativePostMessageRequest, NativePreflightAction,
-    NativeScriptCommand, NativeServiceWorkerOpenWindowRequest, NativeSurface,
-    NativeTargetPreflight, NativeWindowCloseRequest, NativeWindowNavigationRequest,
+    NativeScriptCommand, NativeServiceWorkerClientMessage, NativeServiceWorkerOpenWindowRequest,
+    NativeSurface, NativeTargetPreflight, NativeWindowCloseRequest, NativeWindowNavigationRequest,
     NativeWindowProxyUpdate, Viewport, parse_point_target,
 };
 use crate::browser::session::{
@@ -25,6 +25,7 @@ use crate::browser::session::{
     VisualCapture, VisualCaptureMetadata, VisualCaptureOptions, VisualClip, VisualFormat,
     redact_diagnostic_text, redact_diagnostic_url,
 };
+use crate::browser_backend::MAX_BACKEND_ID_BYTES;
 use crate::browser_backend::{
     ActionResult, BROWSER_BACKEND_SCHEMA_VERSION, BackendFuture, BackendOperation, BackendProfile,
     BackendRequest, BackendResponse, BrowserBackend, BrowserBackendError, BrowserCapability,
@@ -72,6 +73,7 @@ enum NativeBrowserEffectSource {
     Navigation,
     Close,
     ServiceWorkerOpenWindow,
+    ServiceWorkerClientMessage,
 }
 
 impl NativeBrowserEffectSource {
@@ -81,7 +83,8 @@ impl NativeBrowserEffectSource {
             Self::Message => Self::Navigation,
             Self::Navigation => Self::Close,
             Self::Close => Self::ServiceWorkerOpenWindow,
-            Self::ServiceWorkerOpenWindow => Self::Popup,
+            Self::ServiceWorkerOpenWindow => Self::ServiceWorkerClientMessage,
+            Self::ServiceWorkerClientMessage => Self::Popup,
         }
     }
 }
@@ -93,8 +96,9 @@ fn next_ready_native_browser_effect_source(
     navigation_ready: bool,
     close_ready: bool,
     service_worker_open_window_ready: bool,
+    service_worker_client_message_ready: bool,
 ) -> Option<NativeBrowserEffectSource> {
-    for _ in 0..5 {
+    for _ in 0..6 {
         let candidate = *cursor;
         *cursor = candidate.next();
         let ready = match candidate {
@@ -103,6 +107,9 @@ fn next_ready_native_browser_effect_source(
             NativeBrowserEffectSource::Navigation => navigation_ready,
             NativeBrowserEffectSource::Close => close_ready,
             NativeBrowserEffectSource::ServiceWorkerOpenWindow => service_worker_open_window_ready,
+            NativeBrowserEffectSource::ServiceWorkerClientMessage => {
+                service_worker_client_message_ready
+            }
         };
         if ready {
             return Some(candidate);
@@ -476,6 +483,7 @@ impl NativeEngineBackend {
             runtime_effects.browser.2,
             runtime_effects.browser.3,
             runtime_effects.browser.4,
+            runtime_effects.browser.5,
         )
         .await?;
         Ok(Some(BackendResponse::Action(ActionResult {
@@ -642,6 +650,7 @@ impl NativeEngineBackend {
             runtime_effects.browser.2,
             runtime_effects.browser.3,
             runtime_effects.browser.4,
+            runtime_effects.browser.5,
         )
         .await?;
         Ok(Some(BackendResponse::Action(ActionResult {
@@ -729,6 +738,7 @@ impl NativeEngineBackend {
             runtime_effects.browser.2,
             runtime_effects.browser.3,
             runtime_effects.browser.4,
+            runtime_effects.browser.5,
         )
         .await?;
         Ok(ActionResult {
@@ -799,6 +809,7 @@ impl NativeEngineBackend {
             runtime_effects.browser.2,
             runtime_effects.browser.3,
             runtime_effects.browser.4,
+            runtime_effects.browser.5,
         )
         .await?;
         Ok(ActionResult {
@@ -963,6 +974,7 @@ impl NativeEngineBackend {
             runtime_effects.browser.2,
             runtime_effects.browser.3,
             runtime_effects.browser.4,
+            runtime_effects.browser.5,
         )
         .await?;
         Ok(Some(BackendResponse::Action(ActionResult {
@@ -1428,6 +1440,62 @@ impl NativeEngineBackend {
         Ok(None)
     }
 
+    fn service_worker_client_route(
+        &self,
+        client_id: &str,
+    ) -> Result<Option<(NativeFrameRoute, String)>, BrowserBackendError> {
+        if client_id.is_empty() {
+            return Err(BrowserBackendError::InvalidConfiguration {
+                field: "service worker client message target".into(),
+                reason: "client id must not be empty".into(),
+            });
+        }
+        if client_id.len() > MAX_BACKEND_ID_BYTES {
+            return Err(BrowserBackendError::InvalidConfiguration {
+                field: "service worker client message target".into(),
+                reason: format!(
+                    "client id exceeds the bounded limit ({MAX_BACKEND_ID_BYTES} bytes)"
+                ),
+            });
+        }
+        let targets = self.lock_targets(BackendOperation::Script)?;
+        let engine = self.lock_engine_raw(BackendOperation::Script)?;
+        if targets.active_target_id.is_some() {
+            if engine.service_worker_client_id() == client_id {
+                return Ok(Some((
+                    NativeFrameRoute::ActiveSelected,
+                    targets.active_frames.active_frame_id.clone(),
+                )));
+            }
+            for (frame_id, frame) in &targets.active_frames.parked {
+                if frame.engine.service_worker_client_id() == client_id {
+                    return Ok(Some((NativeFrameRoute::ActiveParked, frame_id.clone())));
+                }
+            }
+        }
+        for (target_id, target) in &targets.parked {
+            if target.engine.service_worker_client_id() == client_id {
+                return Ok(Some((
+                    NativeFrameRoute::ParkedSelected {
+                        target_id: target_id.clone(),
+                    },
+                    target.frames.active_frame_id.clone(),
+                )));
+            }
+            for (frame_id, frame) in &target.frames.parked {
+                if frame.engine.service_worker_client_id() == client_id {
+                    return Ok(Some((
+                        NativeFrameRoute::ParkedParked {
+                            target_id: target_id.clone(),
+                        },
+                        frame_id.clone(),
+                    )));
+                }
+            }
+        }
+        Ok(None)
+    }
+
     fn frame_parent_id(&self, frame_id: &str) -> Result<Option<String>, BrowserBackendError> {
         validate_native_topology_id(frame_id)?;
         let targets = self.lock_targets(BackendOperation::Script)?;
@@ -1520,7 +1588,7 @@ impl NativeEngineBackend {
             self.process_frame_event_effects(&source_frame_id, event_effects)
                 .await?;
             Box::pin(self.process_pending_browser_effects(
-                effects.0, effects.1, effects.2, effects.3, effects.4,
+                effects.0, effects.1, effects.2, effects.3, effects.4, effects.5,
             ))
             .await?;
             pending.extend(nested);
@@ -1869,11 +1937,9 @@ impl NativeEngineBackend {
         }
         Box::pin(self.process_pending_frame_scripts(pending_scripts)).await?;
         for queued in pending_browser {
-            Box::pin(
-                self.process_pending_browser_effects(
-                    queued.0, queued.1, queued.2, queued.3, queued.4,
-                ),
-            )
+            Box::pin(self.process_pending_browser_effects(
+                queued.0, queued.1, queued.2, queued.3, queued.4, queued.5,
+            ))
             .await?;
         }
         Ok(())
@@ -1958,7 +2024,7 @@ impl NativeEngineBackend {
     pub async fn create_target(&self, url: &str) -> Result<PageTargetInfo, BrowserBackendError> {
         self.create_target_named(url, None, None)
             .await
-            .map(|(target, _, _, _, _, _)| target)
+            .map(|(target, _, _, _, _, _, _)| target)
     }
 
     async fn create_target_named(
@@ -1974,6 +2040,7 @@ impl NativeEngineBackend {
             Vec<NativeWindowCloseRequest>,
             Vec<NativeWindowNavigationRequest>,
             Vec<NativeServiceWorkerOpenWindowRequest>,
+            Vec<NativeServiceWorkerClientMessage>,
         ),
         BrowserBackendError,
     > {
@@ -2045,6 +2112,8 @@ impl NativeEngineBackend {
         let nested_window_closes = engine.take_pending_window_closes();
         let nested_window_navigations = engine.take_pending_window_navigations();
         let nested_service_worker_open_windows = engine.take_pending_service_worker_open_windows();
+        let nested_service_worker_client_messages =
+            engine.take_pending_service_worker_client_messages();
         let target_name = native_window_name(&engine.config().window_name);
         let target = match project_native_target(&engine, &target_id, opener_id.clone(), false) {
             Ok(target) => target,
@@ -2076,6 +2145,7 @@ impl NativeEngineBackend {
             nested_window_closes,
             nested_window_navigations,
             nested_service_worker_open_windows,
+            nested_service_worker_client_messages,
         ))
     }
 
@@ -2150,6 +2220,7 @@ impl NativeEngineBackend {
                 runtime_effects.browser.2,
                 runtime_effects.browser.3,
                 runtime_effects.browser.4,
+                runtime_effects.browser.5,
             )
             .await?;
         let popup = created
@@ -2172,6 +2243,7 @@ impl NativeEngineBackend {
         window_closes: Vec<NativeWindowCloseRequest>,
         window_navigations: Vec<NativeWindowNavigationRequest>,
         service_worker_open_window_requests: Vec<NativeServiceWorkerOpenWindowRequest>,
+        service_worker_client_messages: Vec<NativeServiceWorkerClientMessage>,
     ) -> Result<Vec<PageTargetInfo>, BrowserBackendError> {
         let mut pending_popups = VecDeque::from(popup_requests);
         let mut pending_messages = VecDeque::from(post_messages);
@@ -2179,6 +2251,8 @@ impl NativeEngineBackend {
         let mut pending_window_navigations = VecDeque::from(window_navigations);
         let mut pending_service_worker_open_windows =
             VecDeque::from(service_worker_open_window_requests);
+        let mut pending_service_worker_client_messages =
+            VecDeque::from(service_worker_client_messages);
         let mut created: Vec<PageTargetInfo> = Vec::new();
         let mut next_source = *self
             .browser_effect_cursor
@@ -2190,6 +2264,7 @@ impl NativeEngineBackend {
             || !pending_window_closes.is_empty()
             || !pending_window_navigations.is_empty()
             || !pending_service_worker_open_windows.is_empty()
+            || !pending_service_worker_client_messages.is_empty()
         {
             processed = processed.saturating_add(1);
             if processed > NATIVE_MAX_TARGETS.saturating_mul(8) {
@@ -2204,6 +2279,7 @@ impl NativeEngineBackend {
                 !pending_window_navigations.is_empty(),
                 !pending_window_closes.is_empty(),
                 !pending_service_worker_open_windows.is_empty(),
+                !pending_service_worker_client_messages.is_empty(),
             ) else {
                 break;
             };
@@ -2223,6 +2299,7 @@ impl NativeEngineBackend {
                             nested_window_closes,
                             nested_window_navigations,
                             nested_service_worker_open_windows,
+                            nested_service_worker_client_messages,
                         ) = self
                             .navigate_named_target(&target_id, active, &request.url, false)
                             .await?;
@@ -2233,6 +2310,8 @@ impl NativeEngineBackend {
                         pending_window_navigations.extend(nested_window_navigations);
                         pending_service_worker_open_windows
                             .extend(nested_service_worker_open_windows);
+                        pending_service_worker_client_messages
+                            .extend(nested_service_worker_client_messages);
                         continue;
                     }
                     match self
@@ -2250,6 +2329,7 @@ impl NativeEngineBackend {
                             nested_window_closes,
                             nested_window_navigations,
                             nested_service_worker_open_windows,
+                            nested_service_worker_client_messages,
                         )) => {
                             self.bind_window_handle(&request, &target.id)?;
                             created.push(target);
@@ -2259,6 +2339,8 @@ impl NativeEngineBackend {
                             pending_window_navigations.extend(nested_window_navigations);
                             pending_service_worker_open_windows
                                 .extend(nested_service_worker_open_windows);
+                            pending_service_worker_client_messages
+                                .extend(nested_service_worker_client_messages);
                         }
                         Err(error) => {
                             for target in created {
@@ -2278,12 +2360,15 @@ impl NativeEngineBackend {
                         nested_window_closes,
                         nested_window_navigations,
                         nested_service_worker_open_windows,
+                        nested_service_worker_client_messages,
                     ) = self.deliver_post_message(message).await?;
                     pending_popups.extend(nested_popups);
                     pending_messages.extend(nested_messages);
                     pending_window_closes.extend(nested_window_closes);
                     pending_window_navigations.extend(nested_window_navigations);
                     pending_service_worker_open_windows.extend(nested_service_worker_open_windows);
+                    pending_service_worker_client_messages
+                        .extend(nested_service_worker_client_messages);
                 }
                 NativeBrowserEffectSource::Navigation => {
                     let navigation = pending_window_navigations
@@ -2298,6 +2383,7 @@ impl NativeEngineBackend {
                             nested_window_closes,
                             nested_window_navigations,
                             nested_service_worker_open_windows,
+                            nested_service_worker_client_messages,
                         ) = self
                             .navigate_frame_target(
                                 route,
@@ -2313,6 +2399,8 @@ impl NativeEngineBackend {
                         pending_window_navigations.extend(nested_window_navigations);
                         pending_service_worker_open_windows
                             .extend(nested_service_worker_open_windows);
+                        pending_service_worker_client_messages
+                            .extend(nested_service_worker_client_messages);
                         continue;
                     }
                     let Some((target_id, active)) = self.window_navigation_target(&navigation)?
@@ -2326,6 +2414,7 @@ impl NativeEngineBackend {
                         nested_closes,
                         nested_navigations,
                         nested_service_worker_open_windows,
+                        nested_service_worker_client_messages,
                     ) = self
                         .navigate_named_target(
                             &target_id,
@@ -2339,6 +2428,8 @@ impl NativeEngineBackend {
                     pending_window_closes.extend(nested_closes);
                     pending_window_navigations.extend(nested_navigations);
                     pending_service_worker_open_windows.extend(nested_service_worker_open_windows);
+                    pending_service_worker_client_messages
+                        .extend(nested_service_worker_client_messages);
                 }
                 NativeBrowserEffectSource::Close => {
                     let request = pending_window_closes
@@ -2360,6 +2451,7 @@ impl NativeEngineBackend {
                         nested_window_closes,
                         nested_window_navigations,
                         nested_service_worker_open_windows,
+                        nested_service_worker_client_messages,
                     ) = self
                         .create_target_named(
                             &request.url,
@@ -2396,11 +2488,26 @@ impl NativeEngineBackend {
                     pending_window_closes.extend(nested_window_closes);
                     pending_window_navigations.extend(nested_window_navigations);
                     pending_service_worker_open_windows.extend(nested_service_worker_open_windows);
+                    pending_service_worker_client_messages
+                        .extend(nested_service_worker_client_messages);
                     pending_popups.extend(resolved.0);
                     pending_messages.extend(resolved.1);
                     pending_window_closes.extend(resolved.2);
                     pending_window_navigations.extend(resolved.3);
                     pending_service_worker_open_windows.extend(resolved.4);
+                    pending_service_worker_client_messages.extend(resolved.5);
+                }
+                NativeBrowserEffectSource::ServiceWorkerClientMessage => {
+                    let message = pending_service_worker_client_messages.pop_front().expect(
+                        "service worker client message queue is non-empty after source selection",
+                    );
+                    let nested = self.deliver_service_worker_client_message(message).await?;
+                    pending_popups.extend(nested.0);
+                    pending_messages.extend(nested.1);
+                    pending_window_closes.extend(nested.2);
+                    pending_window_navigations.extend(nested.3);
+                    pending_service_worker_open_windows.extend(nested.4);
+                    pending_service_worker_client_messages.extend(nested.5);
                 }
             }
         }
@@ -2516,6 +2623,94 @@ impl NativeEngineBackend {
                         request.request_id,
                         window,
                     )
+                    .await
+                    .map_err(native_error)?;
+                let (effects, window_name) = take_native_browser_effects(&mut frame.engine);
+                (effects, target_id, window_name)
+            }
+        };
+        self.sync_target_name(&owner_id, &window_name)?;
+        Ok(effects)
+    }
+
+    async fn deliver_service_worker_client_message(
+        &self,
+        message: NativeServiceWorkerClientMessage,
+    ) -> Result<NativeQueuedBrowserEffects, BrowserBackendError> {
+        if message.worker_id == 0 || message.client_id.is_empty() {
+            return Err(BrowserBackendError::InvalidConfiguration {
+                field: "service worker client message".into(),
+                reason: "worker and client identifiers must be present".into(),
+            });
+        }
+        let Some((route, frame_id)) = self.service_worker_client_route(&message.client_id)? else {
+            return Err(BrowserBackendError::SelectionFailed {
+                reason: "service worker client disappeared before message delivery".into(),
+            });
+        };
+        let (effects, owner_id, window_name) = match route {
+            NativeFrameRoute::ActiveSelected => {
+                let mut engine = self.lock_engine_raw(BackendOperation::Script)?;
+                engine
+                    .dispatch_service_worker_client_message_async(message)
+                    .await
+                    .map_err(native_error)?;
+                let owner_id = engine.config().context_id.clone();
+                let (effects, window_name) = take_native_browser_effects(&mut engine);
+                (effects, owner_id, window_name)
+            }
+            NativeFrameRoute::ActiveParked => {
+                let mut targets = self.lock_targets(BackendOperation::Script)?;
+                let owner_id = targets.active_target_id.clone().ok_or_else(|| {
+                    BrowserBackendError::SelectionFailed {
+                        reason: "service worker client owner target disappeared".into(),
+                    }
+                })?;
+                let frame = targets
+                    .active_frames
+                    .parked
+                    .get_mut(&frame_id)
+                    .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                        reason: "service worker client frame disappeared".into(),
+                    })?;
+                frame
+                    .engine
+                    .dispatch_service_worker_client_message_async(message)
+                    .await
+                    .map_err(native_error)?;
+                let (effects, window_name) = take_native_browser_effects(&mut frame.engine);
+                (effects, owner_id, window_name)
+            }
+            NativeFrameRoute::ParkedSelected { target_id } => {
+                let mut targets = self.lock_targets(BackendOperation::Script)?;
+                let target = targets.parked.get_mut(&target_id).ok_or_else(|| {
+                    BrowserBackendError::SelectionFailed {
+                        reason: "service worker client owner target disappeared".into(),
+                    }
+                })?;
+                target
+                    .engine
+                    .dispatch_service_worker_client_message_async(message)
+                    .await
+                    .map_err(native_error)?;
+                let (effects, window_name) = take_native_browser_effects(&mut target.engine);
+                (effects, target_id, window_name)
+            }
+            NativeFrameRoute::ParkedParked { target_id } => {
+                let mut targets = self.lock_targets(BackendOperation::Script)?;
+                let target = targets.parked.get_mut(&target_id).ok_or_else(|| {
+                    BrowserBackendError::SelectionFailed {
+                        reason: "service worker client owner target disappeared".into(),
+                    }
+                })?;
+                let frame = target.frames.parked.get_mut(&frame_id).ok_or_else(|| {
+                    BrowserBackendError::SelectionFailed {
+                        reason: "service worker client frame disappeared".into(),
+                    }
+                })?;
+                frame
+                    .engine
+                    .dispatch_service_worker_client_message_async(message)
                     .await
                     .map_err(native_error)?;
                 let (effects, window_name) = take_native_browser_effects(&mut frame.engine);
@@ -2794,6 +2989,8 @@ impl NativeEngineBackend {
             let window_closes = engine.take_pending_window_closes();
             let window_navigations = engine.take_pending_window_navigations();
             let service_worker_open_windows = engine.take_pending_service_worker_open_windows();
+            let service_worker_client_messages =
+                engine.take_pending_service_worker_client_messages();
             let window_name = engine.config().window_name.clone();
             drop(engine);
             self.sync_target_name(&target_id, &window_name)?;
@@ -2803,6 +3000,7 @@ impl NativeEngineBackend {
                 window_closes,
                 window_navigations,
                 service_worker_open_windows,
+                service_worker_client_messages,
             ));
         }
         let mut targets = self.lock_targets(BackendOperation::Script)?;
@@ -2841,6 +3039,8 @@ impl NativeEngineBackend {
         let window_closes = parked.engine.take_pending_window_closes();
         let window_navigations = parked.engine.take_pending_window_navigations();
         let service_worker_open_windows = parked.engine.take_pending_service_worker_open_windows();
+        let service_worker_client_messages =
+            parked.engine.take_pending_service_worker_client_messages();
         let window_name = parked.engine.config().window_name.clone();
         drop(targets);
         self.sync_target_name(&target_id, &window_name)?;
@@ -2850,6 +3050,7 @@ impl NativeEngineBackend {
             window_closes,
             window_navigations,
             service_worker_open_windows,
+            service_worker_client_messages,
         ))
     }
 
@@ -3030,6 +3231,7 @@ impl NativeEngineBackend {
             Vec<NativeWindowCloseRequest>,
             Vec<NativeWindowNavigationRequest>,
             Vec<NativeServiceWorkerOpenWindowRequest>,
+            Vec<NativeServiceWorkerClientMessage>,
         ),
         BrowserBackendError,
     > {
@@ -3046,6 +3248,7 @@ impl NativeEngineBackend {
                 nested_window_closes,
                 nested_window_navigations,
                 nested_service_worker_open_windows,
+                nested_service_worker_client_messages,
                 window_name,
             ) = {
                 let mut engine = self.lock_engine_raw(BackendOperation::Navigate)?;
@@ -3063,6 +3266,8 @@ impl NativeEngineBackend {
                 let nested_window_navigations = engine.take_pending_window_navigations();
                 let nested_service_worker_open_windows =
                     engine.take_pending_service_worker_open_windows();
+                let nested_service_worker_client_messages =
+                    engine.take_pending_service_worker_client_messages();
                 let window_name = engine.config().window_name.clone();
                 let target = project_native_target(&engine, target_id, opener_id, true)?;
                 (
@@ -3072,6 +3277,7 @@ impl NativeEngineBackend {
                     nested_window_closes,
                     nested_window_navigations,
                     nested_service_worker_open_windows,
+                    nested_service_worker_client_messages,
                     window_name,
                 )
             };
@@ -3085,6 +3291,7 @@ impl NativeEngineBackend {
                 nested_window_closes,
                 nested_window_navigations,
                 nested_service_worker_open_windows,
+                nested_service_worker_client_messages,
             ))
         } else {
             let parked = {
@@ -3113,6 +3320,8 @@ impl NativeEngineBackend {
             let nested_window_navigations = engine.take_pending_window_navigations();
             let nested_service_worker_open_windows =
                 engine.take_pending_service_worker_open_windows();
+            let nested_service_worker_client_messages =
+                engine.take_pending_service_worker_client_messages();
             let window_name = engine.config().window_name.clone();
             let mut targets = self.lock_targets(BackendOperation::Contexts)?;
             if let Err(error) = result {
@@ -3145,6 +3354,7 @@ impl NativeEngineBackend {
                 nested_window_closes,
                 nested_window_navigations,
                 nested_service_worker_open_windows,
+                nested_service_worker_client_messages,
             ))
         }
     }
@@ -3344,7 +3554,15 @@ impl NativeEngineBackend {
                 let url = engine.context().map_err(native_error)?.url;
                 (target_id, url, engine.revision())
             };
-        let (_, popups, messages, closes, navigations, service_worker_open_windows) = self
+        let (
+            _,
+            popups,
+            messages,
+            closes,
+            navigations,
+            service_worker_open_windows,
+            service_worker_client_messages,
+        ) = self
             .navigate_named_target(&target_id, true, &url, true)
             .await?;
         self.process_pending_browser_effects(
@@ -3353,6 +3571,7 @@ impl NativeEngineBackend {
             closes,
             navigations,
             service_worker_open_windows,
+            service_worker_client_messages,
         )
         .await?;
         let current_revision = self.lock_engine(BackendOperation::Navigate)?.revision();
@@ -3391,6 +3610,7 @@ impl NativeEngineBackend {
             closes,
             navigations,
             service_worker_open_windows,
+            service_worker_client_messages,
             window_name,
             current_revision,
         ) = {
@@ -3405,6 +3625,8 @@ impl NativeEngineBackend {
             let closes = engine.take_pending_window_closes();
             let navigations = engine.take_pending_window_navigations();
             let service_worker_open_windows = engine.take_pending_service_worker_open_windows();
+            let service_worker_client_messages =
+                engine.take_pending_service_worker_client_messages();
             let window_name = engine.config().window_name.clone();
             project_native_target(&engine, &target_id, opener_id, true)?;
             (
@@ -3413,6 +3635,7 @@ impl NativeEngineBackend {
                 closes,
                 navigations,
                 service_worker_open_windows,
+                service_worker_client_messages,
                 window_name,
                 snapshot.revision,
             )
@@ -3427,6 +3650,7 @@ impl NativeEngineBackend {
             closes,
             navigations,
             service_worker_open_windows,
+            service_worker_client_messages,
         )
         .await?;
         Ok(NavigationControlOutcome {
@@ -3803,6 +4027,8 @@ impl BrowserBackend for NativeEngineBackend {
                     let window_navigations = engine.take_pending_window_navigations();
                     let service_worker_open_windows =
                         engine.take_pending_service_worker_open_windows();
+                    let service_worker_client_messages =
+                        engine.take_pending_service_worker_client_messages();
                     let window_name = engine.config().window_name.clone();
                     drop(engine);
                     self.sync_target_name(&active_context_id, &window_name)?;
@@ -3812,6 +4038,7 @@ impl BrowserBackend for NativeEngineBackend {
                         window_closes,
                         window_navigations,
                         service_worker_open_windows,
+                        service_worker_client_messages,
                     )
                     .await?;
                     Ok(BackendResponse::Unit)
@@ -3832,6 +4059,8 @@ impl BrowserBackend for NativeEngineBackend {
                     let window_navigations = engine.take_pending_window_navigations();
                     let service_worker_open_windows =
                         engine.take_pending_service_worker_open_windows();
+                    let service_worker_client_messages =
+                        engine.take_pending_service_worker_client_messages();
                     let window_name = engine.config().window_name.clone();
                     drop(engine);
                     self.sync_target_name(&active_context_id, &window_name)?;
@@ -3845,6 +4074,7 @@ impl BrowserBackend for NativeEngineBackend {
                         window_closes,
                         window_navigations,
                         service_worker_open_windows,
+                        service_worker_client_messages,
                     )
                     .await?;
                     Ok(BackendResponse::Navigation(NavigationResult {
@@ -3944,6 +4174,8 @@ impl BrowserBackend for NativeEngineBackend {
                     let window_navigations = engine.take_pending_window_navigations();
                     let service_worker_open_windows =
                         engine.take_pending_service_worker_open_windows();
+                    let service_worker_client_messages =
+                        engine.take_pending_service_worker_client_messages();
                     let window_name = engine.config().window_name.clone();
                     drop(engine);
                     self.sync_target_name(&active_context_id, &window_name)?;
@@ -3960,6 +4192,7 @@ impl BrowserBackend for NativeEngineBackend {
                         window_closes,
                         window_navigations,
                         service_worker_open_windows,
+                        service_worker_client_messages,
                     )
                     .await?;
                     Ok(BackendResponse::Action(ActionResult {
@@ -3997,6 +4230,8 @@ impl BrowserBackend for NativeEngineBackend {
                     let window_navigations = engine.take_pending_window_navigations();
                     let service_worker_open_windows =
                         engine.take_pending_service_worker_open_windows();
+                    let service_worker_client_messages =
+                        engine.take_pending_service_worker_client_messages();
                     let window_name = engine.config().window_name.clone();
                     drop(engine);
                     self.sync_target_name(&active_context_id, &window_name)?;
@@ -4011,6 +4246,7 @@ impl BrowserBackend for NativeEngineBackend {
                         window_closes,
                         window_navigations,
                         service_worker_open_windows,
+                        service_worker_client_messages,
                     )
                     .await?;
                     Ok(BackendResponse::Script(ScriptResult { value }))
@@ -4457,6 +4693,7 @@ type NativeQueuedBrowserEffects = (
     Vec<NativeWindowCloseRequest>,
     Vec<NativeWindowNavigationRequest>,
     Vec<NativeServiceWorkerOpenWindowRequest>,
+    Vec<NativeServiceWorkerClientMessage>,
 );
 
 struct NativeFrameRuntimeEffects {
@@ -4500,6 +4737,7 @@ fn take_native_browser_effects(engine: &mut NativeEngine) -> (NativeQueuedBrowse
     let closes = engine.take_pending_window_closes();
     let navigations = engine.take_pending_window_navigations();
     let service_worker_open_windows = engine.take_pending_service_worker_open_windows();
+    let service_worker_client_messages = engine.take_pending_service_worker_client_messages();
     let window_name = engine.config().window_name.clone();
     (
         (
@@ -4508,6 +4746,7 @@ fn take_native_browser_effects(engine: &mut NativeEngine) -> (NativeQueuedBrowse
             closes,
             navigations,
             service_worker_open_windows,
+            service_worker_client_messages,
         ),
         window_name,
     )
@@ -5065,8 +5304,9 @@ mod tests {
     #[test]
     fn native_browser_effect_sources_round_robin_without_starvation() {
         let mut cursor = NativeBrowserEffectSource::Popup;
-        let mut all_ready =
-            || next_ready_native_browser_effect_source(&mut cursor, true, true, true, true, true);
+        let mut all_ready = || {
+            next_ready_native_browser_effect_source(&mut cursor, true, true, true, true, true, true)
+        };
 
         assert_eq!(all_ready(), Some(NativeBrowserEffectSource::Popup));
         assert_eq!(all_ready(), Some(NativeBrowserEffectSource::Message));
@@ -5076,6 +5316,10 @@ mod tests {
             all_ready(),
             Some(NativeBrowserEffectSource::ServiceWorkerOpenWindow)
         );
+        assert_eq!(
+            all_ready(),
+            Some(NativeBrowserEffectSource::ServiceWorkerClientMessage)
+        );
         assert_eq!(all_ready(), Some(NativeBrowserEffectSource::Popup));
     }
 
@@ -5084,19 +5328,51 @@ mod tests {
         let mut cursor = NativeBrowserEffectSource::Popup;
 
         assert_eq!(
-            next_ready_native_browser_effect_source(&mut cursor, false, true, false, true, false),
+            next_ready_native_browser_effect_source(
+                &mut cursor,
+                false,
+                true,
+                false,
+                true,
+                false,
+                false
+            ),
             Some(NativeBrowserEffectSource::Message)
         );
         assert_eq!(
-            next_ready_native_browser_effect_source(&mut cursor, false, false, false, true, false),
+            next_ready_native_browser_effect_source(
+                &mut cursor,
+                false,
+                false,
+                false,
+                true,
+                false,
+                false
+            ),
             Some(NativeBrowserEffectSource::Close)
         );
         assert_eq!(
-            next_ready_native_browser_effect_source(&mut cursor, true, false, false, false, false),
+            next_ready_native_browser_effect_source(
+                &mut cursor,
+                true,
+                false,
+                false,
+                false,
+                false,
+                false
+            ),
             Some(NativeBrowserEffectSource::Popup)
         );
         assert_eq!(
-            next_ready_native_browser_effect_source(&mut cursor, false, false, false, false, false,),
+            next_ready_native_browser_effect_source(
+                &mut cursor,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+            ),
             None
         );
     }

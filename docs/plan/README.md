@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-359` locally. Native is now the default runtime for
+`native-engine-browser-360` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -400,9 +400,21 @@ window, the browser backend creates a real parked target with the source as
 opener, and the persistent worker Promise resolves with the new WindowClient
 descriptor. Requests cross the content-process boundary with stable IDs and
 return through the same browser-effect scheduler, including nested effects.
-Fetch-event suspension, arbitrary-target WindowClient messaging,
-browser-wide registration arbitration, durable live-client leases, and final
-production certification remain active issue #40 gates.
+Fetch-event suspension, browser-wide registration arbitration, durable
+live-client leases, and final production certification remain active issue #40
+gates.
+
+The completed native Service Worker cross-target client-message slice is
+[native-engine-browser-360](tasks/native-engine-browser-360.md):
+`WindowClient.postMessage()` records addressed to another client now cross the
+content-process boundary as bounded typed effects, resolve the opaque client id
+against the exact selected or parked target/frame owner, and dispatch the page
+`ServiceWorkerContainer` `MessageEvent` without changing selection. The
+browser-owned scheduler includes client messages as a fair source and retains
+same-client delivery behavior. Fetch-event suspension, browser-wide
+registration arbitration, durable live-client leases, richer transferables,
+complete task-source scheduling, and final production certification remain
+active issue #40 gates.
 
 The completed native cookie-policy slice is
 [native-engine-browser-334](tasks/native-engine-browser-334.md): cookie

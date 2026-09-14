@@ -886,7 +886,31 @@ impl NativeServiceWorkerRegistry {
     }
 
     pub(crate) fn take_client_messages(&mut self) -> Vec<NativeServiceWorkerClientMessage> {
-        self.pending_client_messages.drain(..).collect()
+        self.take_client_messages_matching(true)
+    }
+
+    pub(crate) fn take_external_client_messages(
+        &mut self,
+    ) -> Vec<NativeServiceWorkerClientMessage> {
+        self.take_client_messages_matching(false)
+    }
+
+    fn take_client_messages_matching(
+        &mut self,
+        current: bool,
+    ) -> Vec<NativeServiceWorkerClientMessage> {
+        let current_client_id = self.current_client_id.clone();
+        let mut selected = Vec::new();
+        let mut retained = VecDeque::new();
+        for message in self.pending_client_messages.drain(..) {
+            if (message.client_id == current_client_id) == current {
+                selected.push(message);
+            } else {
+                retained.push_back(message);
+            }
+        }
+        self.pending_client_messages = retained;
+        selected
     }
 
     pub(crate) fn take_open_windows(&mut self) -> Vec<NativeServiceWorkerOpenWindowRequest> {
@@ -1583,7 +1607,7 @@ async fn settle_service_worker_cache_event(
     evaluation: NativeScriptEvaluation,
     loader: &mut NativeResourceLoader,
     cache_state: &mut NativeServiceWorkerCacheState,
-    current_client_id: Option<&str>,
+    _current_client_id: Option<&str>,
     pending_open_windows: &mut VecDeque<NativeServiceWorkerOpenWindowRequest>,
 ) -> Result<Vec<NativeServiceWorkerClientMessage>, NativeEngineError> {
     let mut pending = VecDeque::from(evaluation.commands);
@@ -1608,9 +1632,7 @@ async fn settle_service_worker_cache_event(
         if apply_service_worker_lifecycle_command(worker, &command)? {
             continue;
         }
-        if let Some(message) =
-            service_worker_client_message_command(worker.id, command.clone(), current_client_id)?
-        {
+        if let Some(message) = service_worker_client_message_command(worker.id, command.clone())? {
             client_messages.push(message);
             continue;
         }
@@ -1666,7 +1688,6 @@ async fn settle_service_worker_cache_event(
 fn service_worker_client_message_command(
     worker_id: u32,
     command: NativeScriptCommand,
-    current_client_id: Option<&str>,
 ) -> Result<Option<NativeServiceWorkerClientMessage>, NativeEngineError> {
     let NativeScriptCommand::ServiceWorkerClientPostMessage {
         worker_id: command_worker_id,
@@ -1707,9 +1728,6 @@ fn service_worker_client_message_command(
             MAX_NATIVE_POST_MESSAGE_BYTES,
             encoded.len(),
         ));
-    }
-    if current_client_id != Some(client_id.as_str()) {
-        return Ok(None);
     }
     Ok(Some(NativeServiceWorkerClientMessage {
         worker_id,
@@ -2331,7 +2349,7 @@ async fn settle_service_worker_fetch(
     loader: &mut NativeResourceLoader,
     evaluation: NativeScriptEvaluation,
     cache_state: &mut NativeServiceWorkerCacheState,
-    current_client_id: &str,
+    _current_client_id: &str,
     pending_open_windows: &mut VecDeque<NativeServiceWorkerOpenWindowRequest>,
 ) -> Result<(Value, Vec<NativeServiceWorkerClientMessage>), NativeEngineError> {
     let mut pending = VecDeque::from(evaluation.commands);
@@ -2351,11 +2369,7 @@ async fn settle_service_worker_fetch(
         if apply_service_worker_lifecycle_command(worker, &command)? {
             continue;
         }
-        if let Some(message) = service_worker_client_message_command(
-            worker.id,
-            command.clone(),
-            Some(current_client_id),
-        )? {
+        if let Some(message) = service_worker_client_message_command(worker.id, command.clone())? {
             client_messages.push(message);
             continue;
         }

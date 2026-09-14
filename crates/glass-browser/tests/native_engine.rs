@@ -4065,6 +4065,7 @@ self.addEventListener('message', async event => {
     visibilityState: client.visibilityState,
     focused: client.focused,
   };
+  client?.postMessage({ kind: 'opened-target', value: 42 });
 });
 self.addEventListener('fetch', event => {
   if (new URL(event.request.url).pathname === '/inspect') {
@@ -4076,7 +4077,7 @@ self.addEventListener('fetch', event => {
                         ),
                         "/opened" => (
                             "text/html",
-                            "<!doctype html><main>opened window</main>",
+                            "<!doctype html><script>globalThis.received = []; navigator.serviceWorker.addEventListener('message', event => globalThis.received.push(event.data));</script><main>opened window</main>",
                         ),
                         _ => ("text/plain", "unexpected native openWindow request"),
                     };
@@ -4144,6 +4145,19 @@ self.addEventListener('fetch', event => {
         Some(&serde_json::json!("visible"))
     );
     assert_eq!(client.get("focused"), Some(&serde_json::json!(false)));
+
+    let opened_target = targets
+        .iter()
+        .find(|target| target.url == format!("http://{address}/opened"))
+        .unwrap();
+    session
+        .native_select_target(&opened_target.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        session.script("globalThis.received").await.unwrap().value,
+        serde_json::json!([{"kind": "opened-target", "value": 42}])
+    );
 
     session.close().await.unwrap();
     let _ = shutdown_sender.send(());

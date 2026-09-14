@@ -64,8 +64,8 @@ pub use interaction::{
 pub(crate) use javascript::{
     NativeFrameScriptBinding, NativeFrameScriptContext, NativeFrameScriptRequest,
     NativeFrameScriptWindow, NativePopupRequest, NativePostMessageRequest, NativeScriptCommand,
-    NativeServiceWorkerOpenWindowRequest, NativeWindowCloseRequest, NativeWindowNavigationRequest,
-    NativeWindowProxyUpdate,
+    NativeServiceWorkerClientMessage, NativeServiceWorkerOpenWindowRequest,
+    NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
 };
 pub use layout::{
     NativeLayoutBox, NativeLayoutSnapshot, NativePoint, NativeRect, NativeSvgSubpath,

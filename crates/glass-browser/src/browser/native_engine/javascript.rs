@@ -802,8 +802,10 @@ pub(crate) struct NativeMessagePortPageMessage {
     pub(crate) transfer_ports: Vec<NativeMessagePortTransfer>,
 }
 
-/// A bounded message emitted by a Service Worker for its current page client.
-#[derive(Debug, Clone, PartialEq)]
+/// A bounded message emitted by a Service Worker for one browser-wide page
+/// client. The browser backend resolves the opaque client ID to its target and
+/// frame owner before dispatching the page event.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct NativeServiceWorkerClientMessage {
     pub(crate) worker_id: u32,
     pub(crate) client_id: String,

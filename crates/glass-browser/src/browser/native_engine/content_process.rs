@@ -23,9 +23,10 @@ use super::javascript::{
     MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_DIALOGS, MAX_NATIVE_EVENTSOURCE_FIELD_BYTES,
     MAX_NATIVE_EVENTSOURCE_MESSAGE_BYTES, MAX_NATIVE_FETCH_STREAM_CHUNK_BYTES,
     MAX_NATIVE_HISTORY_STATE_BYTES, MAX_NATIVE_INDEXED_DB_CHANGES, MAX_NATIVE_MODULE_IMPORTS,
-    MAX_NATIVE_SCRIPT_BYTES, MAX_NATIVE_WEBSOCKET_CLOSE_REASON_BYTES,
-    MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES, MAX_NATIVE_WEBSOCKET_PROTOCOL_BYTES,
-    MAX_NATIVE_WEBSOCKET_PROTOCOLS, MAX_NATIVE_XHR_TIMEOUT_MS, NativeCookieChange,
+    MAX_NATIVE_POST_MESSAGE_BYTES, MAX_NATIVE_SCRIPT_BYTES,
+    MAX_NATIVE_WEBSOCKET_CLOSE_REASON_BYTES, MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES,
+    MAX_NATIVE_WEBSOCKET_PROTOCOL_BYTES, MAX_NATIVE_WEBSOCKET_PROTOCOLS,
+    MAX_NATIVE_WORKER_MESSAGES, MAX_NATIVE_XHR_TIMEOUT_MS, NativeCookieChange,
     NativeCookieProfileEntry, NativeDialog, NativeFrameScriptBinding, NativeFrameScriptContext,
     NativeFrameScriptRequest, NativeFrameScriptWindow, NativeIndexedDbChange, NativeIndexedDbState,
     NativeJavaScriptRuntime, NativeMessagePortPageMessage, NativePageScript,
@@ -41,7 +42,7 @@ use super::javascript::{
     load_service_worker_registration_profiles, load_web_storage_profile, message_port_script,
     order_page_scripts, page_script_sources_to_scripts, save_service_worker_cache_profile,
     save_web_storage_profile, service_worker_client_message_script, static_module_specifiers,
-    storage_key, worker_message_script,
+    storage_key, validate_message_port_transfers, worker_message_script,
 };
 use super::layout::NativePoint;
 use super::origin::NativeOrigin;
@@ -132,6 +133,7 @@ pub(crate) struct NativeContentLoad {
     pub(crate) post_messages: Vec<NativePostMessageRequest>,
     pub(crate) window_closes: Vec<NativeWindowCloseRequest>,
     pub(crate) window_navigations: Vec<NativeWindowNavigationRequest>,
+    pub(crate) service_worker_client_messages: Vec<NativeServiceWorkerClientMessage>,
     pub(crate) service_worker_open_windows: Vec<NativeServiceWorkerOpenWindowRequest>,
     pub(crate) window_name: String,
 }
@@ -1005,6 +1007,7 @@ pub(crate) struct NativeContentScriptResult {
     pub(crate) post_messages: Vec<NativePostMessageRequest>,
     pub(crate) window_closes: Vec<NativeWindowCloseRequest>,
     pub(crate) window_navigations: Vec<NativeWindowNavigationRequest>,
+    pub(crate) service_worker_client_messages: Vec<NativeServiceWorkerClientMessage>,
     pub(crate) service_worker_open_windows: Vec<NativeServiceWorkerOpenWindowRequest>,
     pub(crate) window_name: String,
 }
@@ -2343,6 +2346,10 @@ fn decode_loaded_response(
     let window_closes = decode_window_close_requests(response, "decode content process load")?;
     let window_navigations =
         decode_window_navigation_requests(response, "decode content process load")?;
+    let service_worker_client_messages = decode_service_worker_client_messages(
+        response,
+        "decode content process service worker client messages",
+    )?;
     let service_worker_open_windows =
         decode_service_worker_open_window_requests(response, "decode content process load")?;
     let window_name = decode_window_name(response, "decode content process load")?;
@@ -2362,6 +2369,7 @@ fn decode_loaded_response(
         post_messages,
         window_closes,
         window_navigations,
+        service_worker_client_messages,
         service_worker_open_windows,
         window_name,
     })
@@ -3171,6 +3179,10 @@ fn decode_script_response(
     let window_closes = decode_window_close_requests(response, "decode content process script")?;
     let window_navigations =
         decode_window_navigation_requests(response, "decode content process script")?;
+    let service_worker_client_messages = decode_service_worker_client_messages(
+        response,
+        "decode content process service worker client messages",
+    )?;
     let service_worker_open_windows =
         decode_service_worker_open_window_requests(response, "decode content process script")?;
     let frame_scripts = decode_frame_script_requests(response, "decode content process script")?;
@@ -3208,6 +3220,7 @@ fn decode_script_response(
         } else {
             window_navigations
         },
+        service_worker_client_messages,
         service_worker_open_windows,
         window_name,
     })
@@ -3389,6 +3402,65 @@ fn decode_service_worker_open_window_requests(
         )?;
     }
     Ok(requests)
+}
+
+fn decode_service_worker_client_messages(
+    response: &Value,
+    operation: &str,
+) -> Result<Vec<NativeServiceWorkerClientMessage>, NativeEngineError> {
+    let Some(value) = response.get("service_worker_client_messages") else {
+        return Ok(Vec::new());
+    };
+    let values = value.as_array().ok_or_else(|| NativeEngineError::Worker {
+        operation: operation.into(),
+        reason: "content process returned invalid service worker client messages".into(),
+    })?;
+    if values.len() > MAX_NATIVE_WORKER_MESSAGES {
+        return Err(NativeEngineError::limit(
+            "content-process service worker client messages",
+            MAX_NATIVE_WORKER_MESSAGES,
+            values.len(),
+        ));
+    }
+    let messages = serde_json::from_value::<Vec<NativeServiceWorkerClientMessage>>(value.clone())
+        .map_err(|_| NativeEngineError::Worker {
+        operation: operation.into(),
+        reason: "content process returned malformed service worker client messages".into(),
+    })?;
+    for message in &messages {
+        if message.worker_id == 0 {
+            return Err(NativeEngineError::invalid(
+                "content-process service worker client message worker id",
+                "must be positive",
+            ));
+        }
+        if message.client_id.is_empty() {
+            return Err(NativeEngineError::invalid(
+                "content-process service worker client message id",
+                "must not be empty",
+            ));
+        }
+        if message.client_id.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES {
+            return Err(NativeEngineError::limit(
+                "content-process service worker client message id",
+                crate::browser_backend::MAX_BACKEND_ID_BYTES,
+                message.client_id.len(),
+            ));
+        }
+        validate_message_port_transfers(&message.transfer_ports)?;
+        let encoded = serde_json::to_vec(&message.data).map_err(|_| NativeEngineError::Worker {
+            operation: operation.into(),
+            reason: "service worker client message data could not be serialized".into(),
+        })?;
+        if encoded.len() > MAX_NATIVE_POST_MESSAGE_BYTES {
+            return Err(NativeEngineError::limit(
+                "content-process service worker client message data",
+                MAX_NATIVE_POST_MESSAGE_BYTES,
+                encoded.len(),
+            ));
+        }
+    }
+    Ok(messages)
 }
 
 fn decode_window_proxy_updates(
@@ -5772,6 +5844,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             document_origin.as_ref(),
         )?;
         let service_worker_open_windows = service_workers.take_open_windows();
+        let service_worker_client_messages = service_workers.take_external_client_messages();
         if javascript_runtime.is_some() {
             window_name = response_window_name.clone();
         }
@@ -5881,6 +5954,17 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         operation: "encode content process window navigation requests".into(),
                         reason: "content process window navigation requests could not be encoded"
                             .into(),
+                    }
+                })?,
+            );
+            object.insert(
+                "service_worker_client_messages".into(),
+                serde_json::to_value(service_worker_client_messages).map_err(|_| {
+                    NativeEngineError::Worker {
+                        operation: "encode content process service worker client messages".into(),
+                        reason:
+                            "content process service worker client messages could not be encoded"
+                                .into(),
                     }
                 })?,
             );
@@ -6407,6 +6491,7 @@ async fn load_content_resource(
             post_messages: Vec::new(),
             window_closes: Vec::new(),
             window_navigations: Vec::new(),
+            service_worker_client_messages: Vec::new(),
             service_worker_open_windows: Vec::new(),
             window_name: String::new(),
         },

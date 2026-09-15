@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-378`, with native-first product
+expansion checkpoint is `native-engine-browser-379`, with native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
 CacheStorage request matching, CacheStorage response admission and atomic
@@ -265,6 +265,16 @@ document-wire, and host-turn bounds remain authoritative. Global task-source
 arbitration and the remaining Core Web Profile gates remain open. Exact
 evidence is recorded in
 `docs/plan/tasks/native-engine-browser-378.md`. The
+completed Slice 379 removes generated-source coupling from browser-owned
+WindowProxy synchronization. Validated `NativeWindowProxyUpdate` records are
+parsed once at the QuickJS boundary and passed to `__glassSyncWindowProxies`
+as a structured value during the static host turn. A maximum-size 16 KiB
+target URL is accepted and applied to a cached proxy even though the old
+interpolated update source would exceed the authored-script budget; cache-key
+matching, popup identity, navigation, close state, content-process transport,
+and the existing bounds remain unchanged. Global task-source arbitration and
+the remaining Core Web Profile gates remain open. Exact evidence is recorded
+in `docs/plan/tasks/native-engine-browser-379.md`. The
 completed 234 slice carries bounded
 completed 234 slice carries bounded
 root-scroll sticky positioning through

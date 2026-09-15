@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-373`, with native-first product
+expansion checkpoint is `native-engine-browser-374`, with native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
 CacheStorage request matching, CacheStorage response admission and atomic
@@ -211,6 +211,16 @@ process-backed 20,000-byte POST request is consumed by
 body, IPC, and operation limits remain authoritative. Browser-wide task-source
 arbitration and the remaining Core Web Profile gates remain open. Exact
 evidence is recorded in `docs/plan/tasks/native-engine-browser-373.md`. The
+completed Slice 374 removes generated-source coupling from page Promise
+rejection delivery. Unhandled and handled reason batches are serialized once,
+parsed into QuickJS, and passed to the installed
+`__glassDispatchPromiseRejections` callback after the microtask checkpoint. A
+five-event batch with 4,096-character reasons passes through the native runtime
+without hitting the authored-source budget; existing truncation, ordering,
+cancelability, and handler semantics remain intact. Promise identity is still
+outside the JSON-backed projection, and browser-wide task-source arbitration
+plus the remaining Core Web Profile gates remain open. Exact evidence is
+recorded in `docs/plan/tasks/native-engine-browser-374.md`. The
 completed 234 slice carries bounded
 completed 234 slice carries bounded
 root-scroll sticky positioning through

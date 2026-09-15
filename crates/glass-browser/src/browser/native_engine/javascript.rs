@@ -937,6 +937,12 @@ enum NativeWorkerDispatch<'a> {
         request_id: u32,
         payload: &'a serde_json::Value,
     },
+    ServiceWorkerFetch {
+        payload: &'a serde_json::Value,
+    },
+    ServiceWorkerLifecycle {
+        event_type: &'a str,
+    },
     WebSocket {
         socket_id: u32,
         payload: &'a serde_json::Value,
@@ -962,6 +968,10 @@ enum NativePageDispatch<'a> {
     },
     FetchStream {
         stream_id: u32,
+        payload: &'a serde_json::Value,
+    },
+    ServiceWorkerRegistration {
+        request_id: u32,
         payload: &'a serde_json::Value,
     },
 }
@@ -10479,12 +10489,19 @@ impl NativeJavaScriptRuntime {
                         CaughtError::from_error(&ctx, error)
                     ),
                 })?;
-            if let Some(dispatch) = dispatch {
-                dispatch_worker_event(ctx.clone(), dispatch)?;
-            }
+            let await_dispatch = if let Some(dispatch) = dispatch {
+                dispatch_worker_event(ctx.clone(), dispatch)?
+            } else {
+                false
+            };
+            let evaluation_source = if await_dispatch {
+                "await globalThis.__glassPendingNativeWorkerPromise.then(value => { globalThis.__glassPendingNativeWorkerPromise = undefined; return value; }, error => { globalThis.__glassPendingNativeWorkerPromise = undefined; throw error; });"
+            } else {
+                source
+            };
             let mut top_level_await_pending = false;
             let value: Value = if await_promise {
-                let promise = ctx.eval_promise(source).map_err(|error| {
+                let promise = ctx.eval_promise(evaluation_source).map_err(|error| {
                     NativeEngineError::Worker {
                         operation: "evaluate native service worker promise".into(),
                         reason: format!(
@@ -10760,18 +10777,6 @@ impl NativeJavaScriptRuntime {
         payload: &serde_json::Value,
         is_module: bool,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
-        let serialized = serde_json::to_string(payload).map_err(|_| NativeEngineError::Worker {
-            operation: "serialize native service worker fetch".into(),
-            reason: "service worker fetch request could not be serialized".into(),
-        })?;
-        if serialized.len() > MAX_NATIVE_SCRIPT_BYTES {
-            return Err(NativeEngineError::limit(
-                "native service worker fetch request",
-                MAX_NATIVE_SCRIPT_BYTES,
-                serialized.len(),
-            ));
-        }
-        let source = format!("await globalThis.__glassDispatchServiceWorkerFetch({serialized});");
         let bootstrap = service_worker_bootstrap(
             worker_id,
             worker_url,
@@ -10780,8 +10785,15 @@ impl NativeJavaScriptRuntime {
             is_module,
             &self.service_worker_clients(),
         )?;
-        self.evaluate_worker_source_with_bootstrap(
-            worker_id, worker_url, None, &source, bootstrap, true, true,
+        self.evaluate_worker_source_with_bootstrap_and_event(
+            worker_id,
+            worker_url,
+            None,
+            "undefined;",
+            bootstrap,
+            true,
+            true,
+            Some(NativeWorkerDispatch::ServiceWorkerFetch { payload }),
         )
     }
 
@@ -10792,13 +10804,6 @@ impl NativeJavaScriptRuntime {
         event_type: &str,
         is_module: bool,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
-        let event_type =
-            serde_json::to_string(event_type).map_err(|_| NativeEngineError::Worker {
-                operation: "serialize native service worker lifecycle".into(),
-                reason: "service worker lifecycle event could not be serialized".into(),
-            })?;
-        let source =
-            format!("await globalThis.__glassDispatchServiceWorkerLifecycle({event_type});");
         let bootstrap = service_worker_bootstrap(
             worker_id,
             worker_url,
@@ -10807,8 +10812,15 @@ impl NativeJavaScriptRuntime {
             is_module,
             &self.service_worker_clients(),
         )?;
-        self.evaluate_worker_source_with_bootstrap(
-            worker_id, worker_url, None, &source, bootstrap, true, true,
+        self.evaluate_worker_source_with_bootstrap_and_event(
+            worker_id,
+            worker_url,
+            None,
+            "undefined;",
+            bootstrap,
+            true,
+            true,
+            Some(NativeWorkerDispatch::ServiceWorkerLifecycle { event_type }),
         )
     }
 
@@ -11081,23 +11093,17 @@ impl NativeJavaScriptRuntime {
                 "must be positive",
             ));
         }
-        let serialized = serde_json::to_string(payload).map_err(|_| NativeEngineError::Worker {
-            operation: "serialize native service worker response".into(),
-            reason: "service worker response could not be serialized".into(),
-        })?;
-        if serialized.len() > MAX_NATIVE_SCRIPT_BYTES {
-            return Err(NativeEngineError::limit(
-                "native service worker response",
-                MAX_NATIVE_SCRIPT_BYTES,
-                serialized.len(),
-            ));
-        }
-        self.evaluate(
-            &format!("globalThis.__glassResolveServiceWorker({request_id}, {serialized});"),
+        self.evaluate_with_page_events_and_dispatch(
+            "undefined;",
             document,
             document_url,
             origin,
             viewport,
+            &NativePageEventBatch::default(),
+            Some(NativePageDispatch::ServiceWorkerRegistration {
+                request_id,
+                payload,
+            }),
         )
     }
 
@@ -12656,6 +12662,16 @@ fn dispatch_page_payload(
             stream_id,
             payload,
         )?,
+        NativePageDispatch::ServiceWorkerRegistration {
+            request_id,
+            payload,
+        } => dispatch_page_resolver(
+            &ctx,
+            "__glassResolveServiceWorker",
+            "native service worker response",
+            request_id,
+            payload,
+        )?,
     }
     Ok(())
 }
@@ -12693,8 +12709,8 @@ fn dispatch_page_resolver(
 fn dispatch_worker_event(
     ctx: rquickjs::Ctx<'_>,
     dispatch: NativeWorkerDispatch<'_>,
-) -> Result<(), NativeEngineError> {
-    match dispatch {
+) -> Result<bool, NativeEngineError> {
+    Ok(match dispatch {
         NativeWorkerDispatch::Message {
             data,
             transfer_ports,
@@ -12726,6 +12742,7 @@ fn dispatch_worker_event(
                         CaughtError::from_error(&ctx, error)
                     ),
                 })?;
+            false
         }
         NativeWorkerDispatch::MessagePort {
             bridge_key,
@@ -12759,52 +12776,125 @@ fn dispatch_worker_event(
                         CaughtError::from_error(&ctx, error)
                     ),
                 })?;
+            false
         }
         NativeWorkerDispatch::Fetch {
             request_id,
             payload,
-        } => dispatch_worker_resolver(
-            &ctx,
-            "__glassResolveWorkerFetch",
-            "native Worker fetch response",
-            request_id,
-            payload,
-        )?,
+        } => {
+            dispatch_worker_resolver(
+                &ctx,
+                "__glassResolveWorkerFetch",
+                "native Worker fetch response",
+                request_id,
+                payload,
+            )?;
+            false
+        }
         NativeWorkerDispatch::ServiceWorkerCache {
             request_id,
             payload,
-        } => dispatch_worker_resolver(
-            &ctx,
-            "__glassResolveServiceWorkerCache",
-            "native service-worker cache response",
-            request_id,
-            payload,
-        )?,
+        } => {
+            dispatch_worker_resolver(
+                &ctx,
+                "__glassResolveServiceWorkerCache",
+                "native service-worker cache response",
+                request_id,
+                payload,
+            )?;
+            false
+        }
         NativeWorkerDispatch::ServiceWorkerOpenWindow {
             request_id,
             payload,
-        } => dispatch_worker_resolver(
-            &ctx,
-            "__glassResolveServiceWorkerOpenWindow",
-            "native service-worker openWindow response",
-            request_id,
-            payload,
-        )?,
-        NativeWorkerDispatch::WebSocket { socket_id, payload } => dispatch_worker_resolver(
-            &ctx,
-            "__glassDispatchWorkerWebSocketEvent",
-            "native Worker WebSocket event",
-            socket_id,
-            payload,
-        )?,
-        NativeWorkerDispatch::EventSource { source_id, payload } => dispatch_worker_resolver(
-            &ctx,
-            "__glassDispatchWorkerEventSourceEvent",
-            "native Worker EventSource event",
-            source_id,
-            payload,
-        )?,
-    }
+        } => {
+            dispatch_worker_resolver(
+                &ctx,
+                "__glassResolveServiceWorkerOpenWindow",
+                "native service-worker openWindow response",
+                request_id,
+                payload,
+            )?;
+            false
+        }
+        NativeWorkerDispatch::ServiceWorkerFetch { payload } => {
+            dispatch_worker_promise(
+                &ctx,
+                "__glassDispatchServiceWorkerFetch",
+                "native service worker fetch",
+                payload,
+            )?;
+            true
+        }
+        NativeWorkerDispatch::ServiceWorkerLifecycle { event_type } => {
+            let payload = serde_json::Value::String(event_type.to_owned());
+            dispatch_worker_promise(
+                &ctx,
+                "__glassDispatchServiceWorkerLifecycle",
+                "native service worker lifecycle",
+                &payload,
+            )?;
+            true
+        }
+        NativeWorkerDispatch::WebSocket { socket_id, payload } => {
+            dispatch_worker_resolver(
+                &ctx,
+                "__glassDispatchWorkerWebSocketEvent",
+                "native Worker WebSocket event",
+                socket_id,
+                payload,
+            )?;
+            false
+        }
+        NativeWorkerDispatch::EventSource { source_id, payload } => {
+            dispatch_worker_resolver(
+                &ctx,
+                "__glassDispatchWorkerEventSourceEvent",
+                "native Worker EventSource event",
+                source_id,
+                payload,
+            )?;
+            false
+        }
+    })
+}
+
+fn dispatch_worker_promise(
+    ctx: &rquickjs::Ctx<'_>,
+    global_name: &str,
+    operation: &str,
+    payload: &serde_json::Value,
+) -> Result<(), NativeEngineError> {
+    let payload = native_structured_payload(ctx, payload, operation)?;
+    let dispatch: Function =
+        ctx.globals()
+            .get(global_name)
+            .map_err(|error| NativeEngineError::Worker {
+                operation: format!("dispatch {operation}"),
+                reason: format!(
+                    "{global_name} was unavailable: {}",
+                    CaughtError::from_error(ctx, error)
+                ),
+            })?;
+    let promise: Value =
+        dispatch
+            .call::<_, Value>((payload,))
+            .map_err(|error| NativeEngineError::Worker {
+                operation: format!("dispatch {operation}"),
+                reason: format!(
+                    "{operation} dispatch failed: {}",
+                    CaughtError::from_error(ctx, error)
+                ),
+            })?;
+    ctx.globals()
+        .set("__glassPendingNativeWorkerPromise", promise)
+        .map_err(|error| NativeEngineError::Worker {
+            operation: format!("stage {operation}"),
+            reason: format!(
+                "{operation} promise could not be staged: {}",
+                CaughtError::from_error(ctx, error)
+            ),
+        })?;
     Ok(())
 }
 

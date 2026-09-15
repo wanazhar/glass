@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-372` slice. The native runtime is now the primary
+`native-engine-browser-373` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -527,6 +527,19 @@ to generated source while retaining finite JSON/base64, IPC, and per-transport
 limits. Browser-wide task-source arbitration and the remaining Core Web Profile
 gates remain open. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-372.md`.
+
+Slice 373 extends the structured host boundary to Service Worker requests,
+lifecycle events, and registration settlements. The host parses the Fetch
+request or lifecycle value once, invokes the installed Service Worker callback
+directly, and awaits the returned Promise through a bounded static
+continuation; page registration responses use the same parsed resolver path.
+The process-backed fixture proves a 20,000-byte POST request body reaches
+`event.request.text()` and `respondWith()` without consuming authored-source
+budget, while the existing 17-test Service Worker suite remains green. The
+structured boundary retains the 16 MiB native envelope and existing body,
+IPC, and operation limits; browser-wide task-source arbitration and remaining
+Core Web Profile gates remain open. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-373.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

@@ -4028,6 +4028,57 @@ self.addEventListener('fetch', event => {
 }
 
 #[tokio::test]
+async fn native_content_process_service_worker_dispatches_large_fetch_request_as_data() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for (expected_path, content_type, body) in [
+            (
+                "/register",
+                "text/html",
+                "<!doctype html><script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script><main>large request</main>",
+            ),
+            (
+                "/sw.js",
+                "application/javascript",
+                "self.addEventListener('install', event => event.waitUntil(self.skipWaiting())); self.addEventListener('activate', event => event.waitUntil(self.clients.claim())); self.addEventListener('fetch', event => { if (new URL(event.request.url).pathname === '/echo') event.respondWith(event.request.text().then(body => new Response(String(body.length), { headers: { 'Content-Type': 'text/plain' } }))); });",
+            ),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/register")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await registrationPromise.then(async registration => ({ state: registration.active.state, controlled: navigator.serviceWorker.controller !== null, echoed: await fetch('/echo', { method: 'POST', body: 'x'.repeat(20000) }).then(response => response.text()) }))",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "state": "activated",
+            "controlled": true,
+            "echoed": "20000",
+        })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_does_not_intercept_uncontrolled_client_fetch() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-372` locally. Native is now the default runtime for
+`native-engine-browser-373` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -245,6 +245,17 @@ and EventSource witnesses, pass without interpolating payloads into
 authored-source evaluation; existing task-source queues and transport limits
 remain unchanged. Browser-wide task-source arbitration and the remaining Core
 Web Profile gates remain active issue #40 work.
+
+The completed native Service Worker transport-dispatch slice is
+[native-engine-browser-373](tasks/native-engine-browser-373.md): Service
+Worker Fetch request envelopes and lifecycle events now enter installed worker
+callbacks as bounded parsed values and preserve their awaited Promise
+settlement through a static continuation. Service Worker registration results
+also use the page structured resolver. A process-backed 20,000-byte POST body
+is consumed by `event.request.text()` and returned through `respondWith()`;
+existing activation, interception, cache, client, and suspension tests remain
+green. Browser-wide task-source arbitration and the remaining Core Web Profile
+gates remain active issue #40 work.
 
 The completed native visual-encoder slice is
 [native-engine-browser-332](tasks/native-engine-browser-332.md): the native

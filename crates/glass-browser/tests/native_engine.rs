@@ -5494,6 +5494,57 @@ async fn native_content_process_service_worker_transfers_message_port_round_trip
 }
 
 #[tokio::test]
+async fn native_content_process_runs_service_worker_timer_on_next_page_turn() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for (expected_path, content_type, body) in [
+            (
+                "/page",
+                "text/html",
+                "<script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' }); globalThis.swEvents = []; navigator.serviceWorker.addEventListener('message', event => swEvents.push(event.data));</script><main>service worker timer</main>",
+            ),
+            (
+                "/sw.js",
+                "application/javascript",
+                "self.addEventListener('message', event => { setTimeout(() => clients.matchAll({ includeUncontrolled: true }).then(clients => clients[0] && clients[0].postMessage({ kind: 'timer', value: event.data.value })), 0); });",
+            ),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await registrationPromise.then(reg => { reg.active.postMessage({ value: 7 }); return true; })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine.evaluate_async("swEvents").await.unwrap(),
+        serde_json::json!([{ "kind": "timer", "value": 7 }])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_shared_worker_reuses_named_runtime_and_ports() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -4861,6 +4861,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         reason: "content process resource loader is unavailable".into(),
                     });
                 };
+                service_workers.run_due_timers(loader).await?;
                 workers.run_due_timers(loader).await?;
                 process_worker_websocket_commands(
                     workers.take_websocket_commands(),

@@ -10661,6 +10661,31 @@ impl NativeJavaScriptRuntime {
         )
     }
 
+    pub(crate) fn evaluate_service_worker_timers(
+        &self,
+        worker_id: u32,
+        worker_url: &str,
+        is_module: bool,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        let bootstrap = service_worker_bootstrap(
+            worker_id,
+            worker_url,
+            self.now_ms(),
+            &BTreeMap::new(),
+            is_module,
+            &self.service_worker_clients(),
+        )?;
+        self.evaluate_worker_source_with_bootstrap(
+            worker_id,
+            worker_url,
+            None,
+            "globalThis.__glassRunWorkerTimers(performance.now());",
+            bootstrap,
+            true,
+            false,
+        )
+    }
+
     pub(crate) fn dispatch_service_worker_message(
         &self,
         worker_id: u32,

@@ -3825,6 +3825,38 @@ impl NativeEngineBackend {
             }
         }
 
+        engine
+            .synchronize_service_worker_registrations()
+            .await
+            .map_err(native_error)?;
+        for target in targets.parked.values_mut() {
+            if target.engine.lifecycle() == super::native_engine::NativeLifecycleState::Running {
+                target
+                    .engine
+                    .synchronize_service_worker_registrations()
+                    .await
+                    .map_err(native_error)?;
+            }
+            for frame in target.frames.parked.values_mut() {
+                if frame.engine.lifecycle() == super::native_engine::NativeLifecycleState::Running {
+                    frame
+                        .engine
+                        .synchronize_service_worker_registrations()
+                        .await
+                        .map_err(native_error)?;
+                }
+            }
+        }
+        for frame in targets.active_frames.parked.values_mut() {
+            if frame.engine.lifecycle() == super::native_engine::NativeLifecycleState::Running {
+                frame
+                    .engine
+                    .synchronize_service_worker_registrations()
+                    .await
+                    .map_err(native_error)?;
+            }
+        }
+
         let active_frame_id = targets.active_frames.active_frame_id.clone();
         let focused_frame_id = targets
             .active_frames

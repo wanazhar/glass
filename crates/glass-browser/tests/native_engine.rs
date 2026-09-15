@@ -4033,6 +4033,162 @@ self.addEventListener('fetch', event => {
 }
 
 #[tokio::test]
+async fn native_runtime_propagates_service_worker_registration_to_running_target() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let profile_path = std::env::temp_dir().join(format!(
+        "glass-native-service-worker-registration-sync-{}.json",
+        std::process::id()
+    ));
+    let lock_path = profile_path.with_extension("lock");
+    let events_path = profile_path.with_extension("events");
+    let readers_path = profile_path.with_extension("readers");
+    for path in [&profile_path, &lock_path, &events_path, &readers_path] {
+        let _ = fs::remove_file(path);
+    }
+    let (shutdown_sender, mut shutdown_receiver) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = &mut shutdown_receiver => break,
+                accepted = listener.accept() => {
+                    let (mut stream, _) = accepted.unwrap();
+                    let request = read_http_request(&mut stream).await;
+                    let path = request.split_whitespace().nth(1).unwrap_or_default();
+                    let (content_type, body) = match path {
+                        "/idle" => ("text/html", "<!doctype html><main>idle</main>"),
+                        "/register" => (
+                            "text/html",
+                            "<!doctype html><script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script><main>register</main>",
+                        ),
+                        "/sw.js" => (
+                            "application/javascript",
+                            r#"self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
+self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+self.addEventListener('fetch', event => {
+  if (new URL(event.request.url).pathname === '/controlled') {
+    event.respondWith(new Response('<!doctype html><html><body><main id="service-worker">native worker</main></body></html>', {
+      headers: { 'Content-Type': 'text/html' },
+    }));
+  }
+});"#,
+                        ),
+                        "/controlled" => (
+                            "text/html",
+                            "<!doctype html><html><body><main>network fallback</main></body></html>",
+                        ),
+                        "/after-unregister" => (
+                            "text/html",
+                            "<!doctype html><html><body><main>network fallback after unregister</main></body></html>",
+                        ),
+                        _ => ("text/plain", "unexpected native registration sync request"),
+                    };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                }
+            }
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default()
+            .with_storage_path(profile_path.clone())
+            .with_initial_url(format!("http://{address}/idle")),
+    )
+    .await
+    .unwrap();
+    let registration_target = session
+        .native_create_target(&format!("http://{address}/register"))
+        .await
+        .unwrap();
+    session
+        .native_select_target(&registration_target.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("await registrationPromise.then(reg => [reg.active.state, reg.scope])")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!(["activated", format!("http://{address}/")])
+    );
+
+    session
+        .native_select_target("native-context")
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script(
+                "await navigator.serviceWorker.getRegistration('/controlled').then(reg => reg && [reg.scope, reg.active.state])",
+            )
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([format!("http://{address}/"), "activated"])
+    );
+    assert_eq!(
+        session
+            .navigate(format!("http://{address}/controlled"))
+            .await
+            .unwrap()
+            .url,
+        format!("http://{address}/controlled")
+    );
+    assert_eq!(
+        session
+            .script("document.body.innerText")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("native worker")
+    );
+
+    session
+        .native_select_target(&registration_target.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script(
+                "await navigator.serviceWorker.getRegistration('/controlled').then(reg => reg.unregister())",
+            )
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!(true)
+    );
+    session
+        .native_select_target("native-context")
+        .await
+        .unwrap();
+    session
+        .navigate(format!("http://{address}/after-unregister"))
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("document.body.innerText")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("network fallback after unregister")
+    );
+
+    session.close().await.unwrap();
+    let _ = shutdown_sender.send(());
+    server.await.unwrap();
+    for path in [&profile_path, &lock_path, &events_path, &readers_path] {
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[tokio::test]
 async fn native_runtime_service_worker_clients_open_window_materializes_window_client() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

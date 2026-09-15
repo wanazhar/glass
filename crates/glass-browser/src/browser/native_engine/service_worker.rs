@@ -363,6 +363,45 @@ impl NativeServiceWorkerRegistry {
         for profile in &profiles {
             profile.validate()?;
         }
+        let mut removed_worker_ids = Vec::new();
+        self.registrations.retain(|scope, worker| {
+            let keep = profiles.iter().any(|profile| {
+                profile.scope == *scope
+                    && profile.script_url == worker.script_url
+                    && profile
+                        .worker_type
+                        .eq_ignore_ascii_case(&worker_type_name(worker))
+            });
+            if !keep {
+                removed_worker_ids.push(worker.id);
+            }
+            keep
+        });
+        self.waiting_workers.retain(|scope, worker| {
+            let keep = profiles.iter().any(|profile| {
+                profile.scope == *scope
+                    && profile.waiting.as_ref().is_some_and(|waiting| {
+                        waiting.script_url == worker.script_url
+                            && waiting
+                                .worker_type
+                                .eq_ignore_ascii_case(&worker_type_name(worker))
+                    })
+            });
+            if !keep {
+                removed_worker_ids.push(worker.id);
+            }
+            keep
+        });
+        for worker_id in removed_worker_ids {
+            self.remove_worker_routes(worker_id);
+        }
+        if self
+            .current_client_scope
+            .as_ref()
+            .is_some_and(|scope| !profiles.iter().any(|profile| profile.scope == *scope))
+        {
+            self.current_client_scope = None;
+        }
         self.registration_profiles = profiles;
         Ok(())
     }
@@ -435,6 +474,11 @@ impl NativeServiceWorkerRegistry {
             .registrations
             .keys()
             .chain(self.waiting_workers.keys())
+            .chain(
+                self.registration_profiles
+                    .iter()
+                    .map(|profile| &profile.scope),
+            )
             .cloned()
             .collect::<BTreeSet<_>>();
         Ok(scopes
@@ -445,18 +489,38 @@ impl NativeServiceWorkerRegistry {
                 if scope_origin != document_origin {
                     return None;
                 }
-                let active = self.registrations.get(&scope_text).map(|worker| {
-                    NativeServiceWorkerWorkerState {
+                let profile = self
+                    .registration_profiles
+                    .iter()
+                    .find(|profile| profile.scope == scope_text);
+                let active = self
+                    .registrations
+                    .get(&scope_text)
+                    .map(|worker| NativeServiceWorkerWorkerState {
                         script_url: worker.script_url.clone(),
                         state: "activated".into(),
-                    }
-                });
-                let waiting = self.waiting_workers.get(&scope_text).map(|worker| {
-                    NativeServiceWorkerWorkerState {
+                    })
+                    .or_else(|| {
+                        profile.map(|profile| NativeServiceWorkerWorkerState {
+                            script_url: profile.script_url.clone(),
+                            state: "activated".into(),
+                        })
+                    });
+                let waiting = self
+                    .waiting_workers
+                    .get(&scope_text)
+                    .map(|worker| NativeServiceWorkerWorkerState {
                         script_url: worker.script_url.clone(),
                         state: "installed".into(),
-                    }
-                });
+                    })
+                    .or_else(|| {
+                        profile
+                            .and_then(|profile| profile.waiting.as_ref())
+                            .map(|waiting| NativeServiceWorkerWorkerState {
+                                script_url: waiting.script_url.clone(),
+                                state: "installed".into(),
+                            })
+                    });
                 let representative = active.as_ref().or(waiting.as_ref())?;
                 let controlled = controlled_scope == Some(scope_text.as_str());
                 Some(NativeServiceWorkerRegistrationState {
@@ -1630,7 +1694,7 @@ impl NativeServiceWorkerRegistry {
             .filter_map(|worker| {
                 let scope = Url::parse(without_fragment(&worker.scope)).ok()?;
                 if NativeOrigin::from_url(&scope).ok()? != target_origin
-                    || !target.path().starts_with(scope.path())
+                    || !service_worker_scope_matches(scope.path(), target.path())
                 {
                     return None;
                 }
@@ -1648,7 +1712,7 @@ impl NativeServiceWorkerRegistry {
             .filter_map(|worker| {
                 let scope = Url::parse(without_fragment(&worker.scope)).ok()?;
                 if NativeOrigin::from_url(&scope).ok()? != target_origin
-                    || !target.path().starts_with(scope.path())
+                    || !service_worker_scope_matches(scope.path(), target.path())
                 {
                     return None;
                 }
@@ -1805,6 +1869,14 @@ impl NativeServiceWorkerRegistry {
         self.announced_open_windows
             .retain(|(request_worker_id, _)| *request_worker_id != worker_id);
     }
+}
+
+fn service_worker_scope_matches(scope_path: &str, target_path: &str) -> bool {
+    target_path == scope_path
+        || (scope_path.ends_with('/') && target_path.starts_with(scope_path))
+        || target_path
+            .strip_prefix(scope_path)
+            .is_some_and(|remainder| remainder.starts_with('/'))
 }
 
 async fn settle_service_worker_cache_event(

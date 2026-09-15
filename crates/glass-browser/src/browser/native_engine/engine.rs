@@ -24,17 +24,18 @@ use super::javascript::{
     NativeFrameScriptContext, NativeFrameScriptRequest, NativeIndexedDbChange,
     NativeIndexedDbState, NativeJavaScriptRuntime, NativeMessagePortPageMessage,
     NativePageNavigation, NativePopupRequest, NativePostMessageRequest, NativeScriptCommand,
-    NativeScriptEvaluation, NativeServiceWorkerClientMessage, NativeServiceWorkerClientState,
-    NativeServiceWorkerOpenWindowRequest, NativeStorageEvent, NativeWebStorageState,
-    NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
-    NativeWorkerRegistry, append_storage_changes, apply_indexed_db_changes,
-    diff_indexed_db_changes, execute_dynamic_page_scripts, execute_inline_scripts,
-    frame_event_script, host_event_script, host_hash_change_event_script,
+    NativeScriptEvaluation, NativeServiceWorkerClientLease, NativeServiceWorkerClientMessage,
+    NativeServiceWorkerClientState, NativeServiceWorkerOpenWindowRequest, NativeStorageEvent,
+    NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
+    NativeWindowProxyUpdate, NativeWorkerRegistry, append_storage_changes,
+    apply_indexed_db_changes, diff_indexed_db_changes, execute_dynamic_page_scripts,
+    execute_inline_scripts, frame_event_script, host_event_script, host_hash_change_event_script,
     host_message_event_script, host_submit_event_script, load_indexed_db_profile,
-    load_web_storage_profile, message_port_script, new_storage_writer_id,
-    page_script_sources_to_scripts, read_storage_event_journal, register_storage_reader,
-    save_web_storage_profile, service_worker_client_message_script, storage_event_cursor,
-    storage_key, unregister_storage_reader, worker_message_script,
+    load_service_worker_client_leases, load_web_storage_profile, message_port_script,
+    new_storage_writer_id, page_script_sources_to_scripts, read_storage_event_journal,
+    register_storage_reader, save_web_storage_profile, service_worker_client_message_script,
+    storage_event_cursor, storage_key, unregister_service_worker_client_lease,
+    unregister_storage_reader, validate_service_worker_client_states, worker_message_script,
 };
 use super::layout::{NativeLayoutSnapshot, NativePoint, NativeRect};
 use super::lifecycle::NativeLifecycleState;
@@ -405,6 +406,11 @@ impl Drop for NativeEngine {
                 self.config.storage_path.as_deref(),
                 &self.storage_writer_id,
             );
+            let _ = unregister_service_worker_client_lease(
+                self.config.storage_path.as_deref(),
+                &self.service_worker_client_id(),
+                &self.storage_writer_id,
+            );
         }
     }
 }
@@ -421,14 +427,25 @@ impl NativeEngine {
             loader.load(&config.initial_url)?;
         }
         let frame_id = format!("{}:main", config.context_id);
-        let service_worker_clients = vec![NativeServiceWorkerClientState {
+        let own_client = NativeServiceWorkerClientState {
             id: native_service_worker_client_id(&config.context_id, &frame_id),
             url: without_fragment(&config.initial_url).to_owned(),
             client_type: "window".into(),
             frame_type: "top-level".into(),
             visibility_state: "visible".into(),
             focused: true,
-        }];
+        };
+        let mut service_worker_clients =
+            load_service_worker_client_leases(config.storage_path.as_deref())?;
+        if let Some(client) = service_worker_clients
+            .iter_mut()
+            .find(|client| client.id == own_client.id)
+        {
+            *client = own_client;
+        } else {
+            service_worker_clients.push(own_client);
+        }
+        validate_service_worker_client_states(&service_worker_clients)?;
         let runtime = NativeRuntimeShared::new(config.limits.max_scheduler_tasks)?;
         let max_history_entries = config.limits.max_history_entries;
         register_storage_reader(
@@ -634,6 +651,18 @@ impl NativeEngine {
             frame_type: frame_type.to_owned(),
             visibility_state: "visible".into(),
             focused,
+        }
+    }
+
+    pub(crate) fn service_worker_client_lease(
+        &self,
+        frame_type: &str,
+        focused: bool,
+    ) -> NativeServiceWorkerClientLease {
+        NativeServiceWorkerClientLease {
+            state: self.service_worker_client_state(frame_type, focused),
+            owner_id: self.storage_writer_id.clone(),
+            heartbeat_unix_seconds: 0,
         }
     }
 
@@ -1033,6 +1062,11 @@ impl NativeEngine {
                     self.config.storage_path.as_deref(),
                     &self.storage_writer_id,
                 )?;
+                unregister_service_worker_client_lease(
+                    self.config.storage_path.as_deref(),
+                    &self.service_worker_client_id(),
+                    &self.storage_writer_id,
+                )?;
                 self.runtime.close()?;
                 self.runtime_worker.take();
                 self.content_process.take();
@@ -1055,6 +1089,11 @@ impl NativeEngine {
                 self.persist_local_web_storage()?;
                 unregister_storage_reader(
                     self.config.storage_path.as_deref(),
+                    &self.storage_writer_id,
+                )?;
+                unregister_service_worker_client_lease(
+                    self.config.storage_path.as_deref(),
+                    &self.service_worker_client_id(),
                     &self.storage_writer_id,
                 )?;
                 self.runtime.close()?;

@@ -4033,6 +4033,144 @@ self.addEventListener('fetch', event => {
 }
 
 #[tokio::test]
+async fn native_runtime_service_worker_client_leases_cross_sessions_and_close() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let profile_path = std::env::temp_dir().join(format!(
+        "glass-native-service-worker-client-leases-{}.json",
+        std::process::id()
+    ));
+    let lock_path = profile_path.with_extension("lock");
+    let events_path = profile_path.with_extension("events");
+    let readers_path = profile_path.with_extension("readers");
+    let clients_path = profile_path.with_extension("clients");
+    for path in [
+        &profile_path,
+        &lock_path,
+        &events_path,
+        &readers_path,
+        &clients_path,
+    ] {
+        let _ = fs::remove_file(path);
+    }
+    let (shutdown_sender, mut shutdown_receiver) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = &mut shutdown_receiver => break,
+                accepted = listener.accept() => {
+                    let (mut stream, _) = accepted.unwrap();
+                    let request = read_http_request(&mut stream).await;
+                    let path = request.split_whitespace().nth(1).unwrap_or_default();
+                    let (content_type, body) = match path {
+                        "/register" => (
+                            "text/html",
+                            "<!doctype html><script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script><main>network client</main>",
+                        ),
+                        "/two" => ("text/html", "<!doctype html><main>network client</main>"),
+                        "/sw.js" => (
+                            "application/javascript",
+                            r#"self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
+self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+self.addEventListener('fetch', event => {
+  if (new URL(event.request.url).pathname === '/api') {
+    event.respondWith(clients.matchAll({ type: 'window', includeUncontrolled: true }).then(items => new Response(JSON.stringify(items.map(client => ({
+      id: client.id,
+      url: client.url,
+    }))), { headers: { 'Content-Type': 'application/json' } })));
+  }
+});"#,
+                        ),
+                        "/api" => ("text/plain", "unexpected network API request"),
+                        _ => ("text/plain", "unexpected native client lease request"),
+                    };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                }
+            }
+        }
+    });
+
+    let first = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default()
+            .with_context_id("lease-one")
+            .with_storage_path(profile_path.clone())
+            .with_initial_url(format!("http://{address}/register")),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        first
+            .script("await registrationPromise.then(reg => reg.active.state)")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("activated")
+    );
+
+    let second = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default()
+            .with_context_id("lease-two")
+            .with_storage_path(profile_path.clone())
+            .with_initial_url(format!("http://{address}/two")),
+    )
+    .await
+    .unwrap();
+    let clients = second
+        .script("await fetch('/api').then(response => response.json())")
+        .await
+        .unwrap()
+        .value;
+    let mut clients = clients.as_array().unwrap().clone();
+    clients.sort_by(|left, right| {
+        left.get("url")
+            .and_then(serde_json::Value::as_str)
+            .cmp(&right.get("url").and_then(serde_json::Value::as_str))
+    });
+    assert_eq!(clients.len(), 2);
+    assert_eq!(
+        clients
+            .iter()
+            .map(|client| client.get("url").cloned().unwrap())
+            .collect::<Vec<_>>(),
+        vec![
+            serde_json::json!(format!("http://{address}/register")),
+            serde_json::json!(format!("http://{address}/two")),
+        ]
+    );
+    assert_ne!(clients[0].get("id"), clients[1].get("id"));
+
+    first.close().await.unwrap();
+    let clients = second
+        .script("await fetch('/api').then(response => response.json())")
+        .await
+        .unwrap()
+        .value;
+    assert_eq!(clients.as_array().unwrap().len(), 1);
+    assert_eq!(
+        clients[0].get("url"),
+        Some(&serde_json::json!(format!("http://{address}/two")))
+    );
+
+    second.close().await.unwrap();
+    let _ = shutdown_sender.send(());
+    server.await.unwrap();
+    for path in [
+        &profile_path,
+        &lock_path,
+        &events_path,
+        &readers_path,
+        &clients_path,
+    ] {
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[tokio::test]
 async fn native_runtime_propagates_service_worker_registration_to_running_target() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

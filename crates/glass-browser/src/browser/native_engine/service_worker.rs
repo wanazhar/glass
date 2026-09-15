@@ -21,6 +21,7 @@ use super::javascript::{
     NativeServiceWorkerRegistrationProfile, NativeServiceWorkerRegistrationState,
     NativeServiceWorkerWorkerProfile, NativeServiceWorkerWorkerState, load_service_worker_source,
     validate_message_port_transfers, validate_native_service_worker_cache_request_headers,
+    validate_service_worker_client_states,
 };
 use super::origin::NativeOrigin;
 use super::resource_loader::{
@@ -2938,70 +2939,6 @@ fn resolve_same_origin_or_cross_origin_url(
             reason: format!("{field} is not valid URL syntax"),
         })?;
     parse_network_url(field, url.as_str())
-}
-
-fn validate_service_worker_client_states(
-    states: &[NativeServiceWorkerClientState],
-) -> Result<(), NativeEngineError> {
-    if states.len() > MAX_NATIVE_SERVICE_WORKER_CLIENTS {
-        return Err(NativeEngineError::limit(
-            "native service worker clients",
-            MAX_NATIVE_SERVICE_WORKER_CLIENTS,
-            states.len(),
-        ));
-    }
-    let mut ids = BTreeSet::new();
-    for state in states {
-        validate_context_id(&state.id)?;
-        if state.id.is_empty() {
-            return Err(NativeEngineError::invalid(
-                "native service worker client id",
-                "must not be empty",
-            ));
-        }
-        if !ids.insert(state.id.clone()) {
-            return Err(NativeEngineError::invalid(
-                "native service worker client id",
-                "must be unique within the client projection",
-            ));
-        }
-        validate_url_text("native service worker client URL", &state.url)?;
-        if state.url.len() > MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES {
-            return Err(NativeEngineError::limit(
-                "native service worker client URL",
-                MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES,
-                state.url.len(),
-            ));
-        }
-        if !matches!(
-            state.client_type.as_str(),
-            "window" | "worker" | "sharedworker"
-        ) {
-            return Err(NativeEngineError::invalid(
-                "native service worker client type",
-                "must be window, worker, or sharedworker",
-            ));
-        }
-        if !matches!(
-            state.frame_type.as_str(),
-            "top-level" | "nested" | "auxiliary" | "none"
-        ) {
-            return Err(NativeEngineError::invalid(
-                "native service worker client frame type",
-                "must be top-level, nested, auxiliary, or none",
-            ));
-        }
-        if !matches!(
-            state.visibility_state.as_str(),
-            "visible" | "hidden" | "prerender"
-        ) {
-            return Err(NativeEngineError::invalid(
-                "native service worker client visibility state",
-                "must be visible, hidden, or prerender",
-            ));
-        }
-    }
-    Ok(())
 }
 
 pub(crate) fn native_service_worker_client_id(context_id: &str, frame_id: &str) -> String {

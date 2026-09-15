@@ -5,8 +5,8 @@ use super::config::{
     without_fragment,
 };
 use super::content_process::{
-    NativeContentLoad, NativeContentMutation, NativeContentNavigation, NativeContentProcess,
-    NativeContentScriptResult,
+    NativeContentLoad, NativeContentLoadResult, NativeContentMutation, NativeContentNavigation,
+    NativeContentProcess, NativeContentScriptResult,
 };
 use super::diagnostics::NativeDiagnostic;
 use super::dom::{NativeDocument, NativeNodeId, NativeScriptDocumentSnapshot};
@@ -82,6 +82,12 @@ struct NativePendingDownload {
     suggested_filename: String,
     target_id: String,
     frame_id: String,
+}
+
+#[derive(Debug, Clone)]
+struct NativePendingServiceWorkerNavigation {
+    history_commit: HistoryCommit,
+    page_navigation_handoffs: usize,
 }
 
 impl NativeRequestLedger {
@@ -366,6 +372,7 @@ pub struct NativeEngine {
     pending_window_navigations: VecDeque<NativeWindowNavigationRequest>,
     pending_service_worker_client_messages: VecDeque<NativeServiceWorkerClientMessage>,
     pending_service_worker_open_windows: VecDeque<NativeServiceWorkerOpenWindowRequest>,
+    pending_service_worker_navigation: Option<NativePendingServiceWorkerNavigation>,
     pending_frame_scripts: VecDeque<NativeFrameScriptRequest>,
     completed_download_ids: VecDeque<String>,
     completed_downloads: u64,
@@ -458,6 +465,7 @@ impl NativeEngine {
             pending_window_navigations: VecDeque::new(),
             pending_service_worker_client_messages: VecDeque::new(),
             pending_service_worker_open_windows: VecDeque::new(),
+            pending_service_worker_navigation: None,
             pending_frame_scripts: VecDeque::new(),
             completed_download_ids: VecDeque::new(),
             completed_downloads: 0,
@@ -665,6 +673,7 @@ impl NativeEngine {
             window_navigations,
             service_worker_client_messages,
             service_worker_open_windows,
+            service_worker_fetch_resumed,
             window_name,
         } = {
             let process =
@@ -712,6 +721,9 @@ impl NativeEngine {
         }
         if !history.is_empty() {
             self.sync_content_history_async().await?;
+        }
+        if service_worker_fetch_resumed {
+            self.resume_pending_service_worker_navigation().await?;
         }
         Ok(())
     }
@@ -933,14 +945,23 @@ impl NativeEngine {
         self.content_process = content_process;
         let mut use_content_process = has_content_process;
         let (prepared, history_commit, page_navigation_handoffs) = if has_content_process {
-            let (content, history_commit, page_navigation_handoffs) = self
+            let Some((content, history_commit, page_navigation_handoffs)) = self
                 .load_content_with_page_navigation(
                     NativeNavigationRequest::get(initial_url.clone()),
                     None,
                     HistoryCommit::Push,
                     0,
                 )
-                .await?;
+                .await?
+            else {
+                self.content_process.take();
+                self.pending_service_worker_open_windows.clear();
+                return Err(NativeEngineError::Worker {
+                    operation: "initial native navigation".into(),
+                    reason: "initial navigation is waiting for a service worker WindowClient"
+                        .into(),
+                });
+            };
             if !self.is_same_document_navigation(&content.url)
                 && !self.allows_frame_navigation(&content.url)?
             {
@@ -1188,14 +1209,17 @@ impl NativeEngine {
         if is_network_url(url) {
             let referrer = referrer_for_navigation(&self.url, url)?;
             self.ensure_content_process().await?;
-            let (content, history_commit, page_navigation_handoffs) = self
+            let Some((content, history_commit, page_navigation_handoffs)) = self
                 .load_content_with_page_navigation(
                     navigation,
                     referrer,
                     history_commit,
                     page_navigation_handoffs,
                 )
-                .await?;
+                .await?
+            else {
+                return Ok(self.snapshot_unchecked());
+            };
             if !self.is_same_document_navigation(&content.url)
                 && !self.allows_frame_navigation(&content.url)?
             {
@@ -1291,7 +1315,7 @@ impl NativeEngine {
         mut referrer: Option<String>,
         mut history_commit: HistoryCommit,
         mut page_navigation_handoffs: usize,
-    ) -> Result<(NativeContentLoad, HistoryCommit, usize), NativeEngineError> {
+    ) -> Result<Option<(NativeContentLoad, HistoryCommit, usize)>, NativeEngineError> {
         if page_navigation_handoffs > MAX_NATIVE_PAGE_NAVIGATION_HANDOFFS {
             return Err(NativeEngineError::limit(
                 "page navigation handoffs",
@@ -1322,25 +1346,27 @@ impl NativeEngine {
                 }),
             };
             self.request_ledger.finish();
-            let mut content = content_result?;
-            self.config.window_name = content.window_name.clone();
-            self.publish_content_state(&content.storage_events, &content.indexed_db_changes)?;
-            self.queue_popup_requests(std::mem::take(&mut content.popups))?;
-            let content_origin = content.origin.clone();
-            self.queue_post_message_requests_from_origin(
-                std::mem::take(&mut content.post_messages),
-                &content_origin,
-            )?;
-            self.queue_window_close_requests(std::mem::take(&mut content.window_closes))?;
-            self.queue_window_navigation_requests(std::mem::take(&mut content.window_navigations))?;
-            self.queue_service_worker_client_messages(std::mem::take(
-                &mut content.service_worker_client_messages,
-            ))?;
-            self.queue_service_worker_open_window_requests(std::mem::take(
-                &mut content.service_worker_open_windows,
-            ))?;
+            let mut content = match content_result? {
+                NativeContentLoadResult::Loaded(content) => content,
+                NativeContentLoadResult::Suspended(open_windows) => {
+                    if self.pending_service_worker_navigation.is_some() {
+                        return Err(NativeEngineError::Worker {
+                            operation: "native service worker navigation".into(),
+                            reason: "another service worker navigation is already suspended".into(),
+                        });
+                    }
+                    self.queue_service_worker_open_window_requests(open_windows)?;
+                    self.pending_service_worker_navigation =
+                        Some(NativePendingServiceWorkerNavigation {
+                            history_commit,
+                            page_navigation_handoffs,
+                        });
+                    return Ok(None);
+                }
+            };
+            self.apply_content_load_effects(&mut content)?;
             let Some(page_navigation) = content.navigation.clone() else {
-                return Ok((content, history_commit, page_navigation_handoffs));
+                return Ok(Some((content, history_commit, page_navigation_handoffs)));
             };
             if page_navigation_handoffs == MAX_NATIVE_PAGE_NAVIGATION_HANDOFFS {
                 return Err(NativeEngineError::limit(
@@ -1361,6 +1387,91 @@ impl NativeEngine {
             };
             referrer = referrer_for_navigation(&content.url, &target_url)?;
         }
+    }
+
+    fn apply_content_load_effects(
+        &mut self,
+        content: &mut NativeContentLoad,
+    ) -> Result<(), NativeEngineError> {
+        self.config.window_name = content.window_name.clone();
+        self.publish_content_state(&content.storage_events, &content.indexed_db_changes)?;
+        self.queue_popup_requests(std::mem::take(&mut content.popups))?;
+        let content_origin = content.origin.clone();
+        self.queue_post_message_requests_from_origin(
+            std::mem::take(&mut content.post_messages),
+            &content_origin,
+        )?;
+        self.queue_window_close_requests(std::mem::take(&mut content.window_closes))?;
+        self.queue_window_navigation_requests(std::mem::take(&mut content.window_navigations))?;
+        self.queue_service_worker_client_messages(std::mem::take(
+            &mut content.service_worker_client_messages,
+        ))?;
+        self.queue_service_worker_open_window_requests(std::mem::take(
+            &mut content.service_worker_open_windows,
+        ))?;
+        Ok(())
+    }
+
+    async fn resume_pending_service_worker_navigation(&mut self) -> Result<(), NativeEngineError> {
+        let content_result = {
+            let process =
+                self.content_process
+                    .as_mut()
+                    .ok_or_else(|| NativeEngineError::Worker {
+                        operation: "service worker navigation resume".into(),
+                        reason: "native content process is not running".into(),
+                    })?;
+            if !process.refresh_health() {
+                return Err(NativeEngineError::worker_failure(
+                    "service worker navigation resume",
+                    process
+                        .failure_kind()
+                        .unwrap_or(NativeWorkerFailureKind::Exited),
+                    "content process is unavailable after a failed service worker navigation",
+                ));
+            }
+            self.request_ledger.begin()?;
+            let result = process.resume_service_worker_navigation().await;
+            self.request_ledger.finish();
+            result?
+        };
+        let mut content = match content_result {
+            NativeContentLoadResult::Loaded(content) => content,
+            NativeContentLoadResult::Suspended(open_windows) => {
+                self.queue_service_worker_open_window_requests(open_windows)?;
+                return Ok(());
+            }
+        };
+        let pending = self
+            .pending_service_worker_navigation
+            .take()
+            .ok_or_else(|| NativeEngineError::Worker {
+                operation: "service worker navigation resume".into(),
+                reason: "content process resumed a navigation that the engine did not retain"
+                    .into(),
+            })?;
+        self.apply_content_load_effects(&mut content)?;
+        if !self.is_same_document_navigation(&content.url)
+            && !self.allows_frame_navigation(&content.url)?
+        {
+            return Ok(());
+        }
+        self.commit_content_process().await?;
+        let worker = self
+            .runtime_worker
+            .clone()
+            .ok_or_else(|| NativeEngineError::Worker {
+                operation: "service worker navigation resume".into(),
+                reason: "native runtime worker is not running".into(),
+            })?;
+        self.navigate_content_async(
+            content,
+            &worker,
+            pending.history_commit,
+            pending.page_navigation_handoffs,
+        )
+        .await
+        .map(|_| ())
     }
 
     async fn commit_content_process(&mut self) -> Result<(), NativeEngineError> {
@@ -1726,6 +1837,7 @@ impl NativeEngine {
                 window_navigations,
                 service_worker_client_messages,
                 service_worker_open_windows,
+                service_worker_fetch_resumed: _,
                 frame_scripts,
                 window_name,
                 mut history,
@@ -6461,14 +6573,17 @@ impl NativeEngine {
         if is_network_url(&target_url) {
             let referrer = referrer_for_navigation(&self.url, &target_url)?;
             self.ensure_content_process().await?;
-            let (content, history_commit, page_navigation_handoffs) = self
+            let Some((content, history_commit, page_navigation_handoffs)) = self
                 .load_content_with_page_navigation(
                     NativeNavigationRequest::get(target_url),
                     referrer,
                     history_commit,
                     0,
                 )
-                .await?;
+                .await?
+            else {
+                return Ok(Some(self.snapshot_unchecked()));
+            };
             if !self.is_same_document_navigation(&content.url)
                 && !self.allows_frame_navigation(&content.url)?
             {
@@ -7100,6 +7215,7 @@ fn extract_local_scroll_commands(commands: &[NativeScriptCommand]) -> Vec<Native
         .collect()
 }
 
+#[derive(Debug, Clone, Copy)]
 enum HistoryCommit {
     Push,
     Replace,

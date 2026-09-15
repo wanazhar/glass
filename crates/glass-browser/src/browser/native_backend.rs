@@ -4045,7 +4045,7 @@ impl BrowserBackend for NativeEngineBackend {
                 }
                 (BackendOperation::Navigate, BackendRequest::Navigate(request)) => {
                     let previous_revision = engine.revision();
-                    let snapshot = engine
+                    engine
                         .navigate_async(request.url)
                         .await
                         .map_err(native_error)?;
@@ -4077,6 +4077,10 @@ impl BrowserBackend for NativeEngineBackend {
                         service_worker_client_messages,
                     )
                     .await?;
+                    let snapshot = self
+                        .lock_engine(BackendOperation::Navigate)?
+                        .snapshot()
+                        .map_err(native_error)?;
                     Ok(BackendResponse::Navigation(NavigationResult {
                         url: snapshot.url,
                         revision: snapshot.revision,

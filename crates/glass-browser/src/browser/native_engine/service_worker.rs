@@ -48,6 +48,43 @@ struct NativeServiceWorker {
     clients_claim_requested: bool,
 }
 
+pub(crate) enum NativeServiceWorkerNavigationOutcome {
+    NotHandled,
+    Handled(NativeResource),
+    Suspended,
+}
+
+pub(crate) enum NativeServiceWorkerFetchOutcome {
+    NotHandled,
+    Handled(NativeFetchResponse),
+    Suspended,
+}
+
+pub(crate) struct NativeServiceWorkerFetchCompletion {
+    pub(crate) worker_id: u32,
+    pub(crate) response: Option<NativeFetchResponse>,
+}
+
+struct NativeServiceWorkerFetchContinuation {
+    worker_id: u32,
+    open_window_request_id: u32,
+    fallback_url: String,
+    pending: VecDeque<NativeScriptCommand>,
+    value: Value,
+    awaiting: bool,
+}
+
+enum NativeServiceWorkerFetchSettlement {
+    Complete {
+        value: Value,
+        client_messages: Vec<NativeServiceWorkerClientMessage>,
+    },
+    Suspended {
+        continuation: NativeServiceWorkerFetchContinuation,
+        client_messages: Vec<NativeServiceWorkerClientMessage>,
+    },
+}
+
 fn completed_lifecycle_states() -> Vec<String> {
     ["installing", "installed", "activating", "activated"]
         .into_iter()
@@ -115,6 +152,8 @@ pub(crate) struct NativeServiceWorkerRegistry {
     pending_message_port_messages: VecDeque<NativeMessagePortPageMessage>,
     pending_client_messages: VecDeque<NativeServiceWorkerClientMessage>,
     pending_open_windows: VecDeque<NativeServiceWorkerOpenWindowRequest>,
+    pending_fetches: BTreeMap<(u32, u32), NativeServiceWorkerFetchContinuation>,
+    completed_fetches: VecDeque<NativeServiceWorkerFetchCompletion>,
     announced_open_windows: BTreeSet<(u32, u32)>,
     message_port_routes: BTreeMap<String, u32>,
     current_client_id: String,
@@ -134,6 +173,8 @@ impl Default for NativeServiceWorkerRegistry {
             pending_message_port_messages: VecDeque::new(),
             pending_client_messages: VecDeque::new(),
             pending_open_windows: VecDeque::new(),
+            pending_fetches: BTreeMap::new(),
+            completed_fetches: VecDeque::new(),
             announced_open_windows: BTreeSet::new(),
             message_port_routes: BTreeMap::new(),
             current_client_id: String::new(),
@@ -924,6 +965,10 @@ impl NativeServiceWorkerRegistry {
             .collect()
     }
 
+    pub(crate) fn take_completed_fetch(&mut self) -> Option<NativeServiceWorkerFetchCompletion> {
+        self.completed_fetches.pop_front()
+    }
+
     fn enqueue_client_messages(
         &mut self,
         messages: Vec<NativeServiceWorkerClientMessage>,
@@ -1046,7 +1091,7 @@ impl NativeServiceWorkerRegistry {
         worker_id: u32,
         request_id: u32,
         payload: &Value,
-    ) -> Result<(), NativeEngineError> {
+    ) -> Result<bool, NativeEngineError> {
         if worker_id == 0 || request_id == 0 {
             return Err(NativeEngineError::invalid(
                 "native service worker openWindow resolution",
@@ -1091,6 +1136,7 @@ impl NativeServiceWorkerRegistry {
             })?;
         let current_client_id =
             (!self.current_client_id.is_empty()).then(|| self.current_client_id.clone());
+        let continuation = self.pending_fetches.remove(&(worker_id, request_id));
         let (evaluation, worker_is_waiting) = if let Some(worker) = self.registrations.get(&scope) {
             (
                 worker.runtime.resolve_service_worker_open_window(
@@ -1119,36 +1165,163 @@ impl NativeServiceWorkerRegistry {
                 "worker is no longer registered",
             ));
         };
-        let client_messages = if worker_is_waiting {
-            let worker = self
-                .waiting_workers
-                .get_mut(&scope)
-                .expect("waiting service worker was retained");
-            settle_service_worker_cache_event(
-                worker,
-                evaluation,
-                loader,
-                &mut self.cache_state,
-                current_client_id.as_deref(),
-                &mut self.pending_open_windows,
-            )
-            .await?
+        if let Some(continuation) = continuation {
+            let fallback_url = continuation.fallback_url.clone();
+            let mut pending = continuation.pending;
+            pending.extend(evaluation.commands);
+            let evaluation = NativeScriptEvaluation {
+                value: continuation.value,
+                commands: pending.into_iter().collect(),
+                top_level_await_pending: continuation.awaiting
+                    || evaluation.top_level_await_pending,
+            };
+            let settlement = if worker_is_waiting {
+                let worker = self
+                    .waiting_workers
+                    .get_mut(&scope)
+                    .expect("waiting service worker was retained");
+                settle_service_worker_fetch(
+                    worker,
+                    loader,
+                    evaluation,
+                    &mut self.cache_state,
+                    current_client_id.as_deref().unwrap_or_default(),
+                    &fallback_url,
+                    &mut self.pending_open_windows,
+                )
+                .await?
+            } else {
+                let worker = self
+                    .registrations
+                    .get_mut(&scope)
+                    .expect("active service worker was retained");
+                settle_service_worker_fetch(
+                    worker,
+                    loader,
+                    evaluation,
+                    &mut self.cache_state,
+                    current_client_id.as_deref().unwrap_or_default(),
+                    &fallback_url,
+                    &mut self.pending_open_windows,
+                )
+                .await?
+            };
+            match settlement {
+                NativeServiceWorkerFetchSettlement::Complete {
+                    value,
+                    client_messages,
+                } => {
+                    self.enqueue_client_messages(client_messages)?;
+                    let response = if value.get("handled").and_then(Value::as_bool) == Some(true) {
+                        let response =
+                            value
+                                .get("response")
+                                .ok_or_else(|| NativeEngineError::Worker {
+                                    operation: "decode service worker response".into(),
+                                    reason: "service worker returned no response envelope".into(),
+                                })?;
+                        Some(decode_service_worker_response(response, &fallback_url)?)
+                    } else {
+                        None
+                    };
+                    if self.completed_fetches.len() >= MAX_NATIVE_EFFECTS {
+                        return Err(NativeEngineError::limit(
+                            "native completed service worker fetches",
+                            MAX_NATIVE_EFFECTS,
+                            self.completed_fetches.len().saturating_add(1),
+                        ));
+                    }
+                    self.completed_fetches
+                        .push_back(NativeServiceWorkerFetchCompletion {
+                            worker_id,
+                            response,
+                        });
+                    let message_port_commands = if worker_is_waiting {
+                        self.waiting_workers
+                            .get(&scope)
+                            .map(|worker| worker.runtime.take_message_port_commands())
+                            .unwrap_or_default()
+                    } else {
+                        self.registrations
+                            .get(&scope)
+                            .map(|worker| worker.runtime.take_message_port_commands())
+                            .unwrap_or_default()
+                    };
+                    self.collect_message_port_commands(worker_id, message_port_commands)?;
+                    Ok(true)
+                }
+                NativeServiceWorkerFetchSettlement::Suspended {
+                    continuation,
+                    client_messages,
+                } => {
+                    self.enqueue_client_messages(client_messages)?;
+                    let key = (continuation.worker_id, continuation.open_window_request_id);
+                    if self.pending_fetches.insert(key, continuation).is_some() {
+                        return Err(NativeEngineError::Worker {
+                            operation: "service worker fetch event".into(),
+                            reason: "service worker fetch continuation identifier collided".into(),
+                        });
+                    }
+                    let message_port_commands = if worker_is_waiting {
+                        self.waiting_workers
+                            .get(&scope)
+                            .map(|worker| worker.runtime.take_message_port_commands())
+                            .unwrap_or_default()
+                    } else {
+                        self.registrations
+                            .get(&scope)
+                            .map(|worker| worker.runtime.take_message_port_commands())
+                            .unwrap_or_default()
+                    };
+                    self.collect_message_port_commands(worker_id, message_port_commands)?;
+                    Ok(false)
+                }
+            }
         } else {
-            let worker = self
-                .registrations
-                .get_mut(&scope)
-                .expect("active service worker was retained");
-            settle_service_worker_cache_event(
-                worker,
-                evaluation,
-                loader,
-                &mut self.cache_state,
-                current_client_id.as_deref(),
-                &mut self.pending_open_windows,
-            )
-            .await?
-        };
-        self.enqueue_client_messages(client_messages)
+            let client_messages = if worker_is_waiting {
+                let worker = self
+                    .waiting_workers
+                    .get_mut(&scope)
+                    .expect("waiting service worker was retained");
+                settle_service_worker_cache_event(
+                    worker,
+                    evaluation,
+                    loader,
+                    &mut self.cache_state,
+                    current_client_id.as_deref(),
+                    &mut self.pending_open_windows,
+                )
+                .await?
+            } else {
+                let worker = self
+                    .registrations
+                    .get_mut(&scope)
+                    .expect("active service worker was retained");
+                settle_service_worker_cache_event(
+                    worker,
+                    evaluation,
+                    loader,
+                    &mut self.cache_state,
+                    current_client_id.as_deref(),
+                    &mut self.pending_open_windows,
+                )
+                .await?
+            };
+            self.enqueue_client_messages(client_messages)?;
+            let message_port_commands = if worker_is_waiting {
+                self.waiting_workers
+                    .get(&scope)
+                    .map(|worker| worker.runtime.take_message_port_commands())
+                    .unwrap_or_default()
+            } else {
+                self.registrations
+                    .get(&scope)
+                    .map(|worker| worker.runtime.take_message_port_commands())
+                    .unwrap_or_default()
+            };
+            self.collect_message_port_commands(worker_id, message_port_commands)?;
+            Ok(false)
+        }
     }
 
     pub(crate) async fn apply_page_message_port_commands(
@@ -1248,14 +1421,14 @@ impl NativeServiceWorkerRegistry {
         loader: &mut NativeResourceLoader,
         navigation: &NativeNavigationRequest,
         _referrer: Option<&str>,
-    ) -> Result<Option<NativeResource>, NativeEngineError> {
+    ) -> Result<NativeServiceWorkerNavigationOutcome, NativeEngineError> {
         let target = parse_network_url(
             "service worker navigation URL",
             without_fragment(&navigation.url),
         )?;
         self.activate_waiting_for_navigation(loader, &target)
             .await?;
-        let Some(response) = self
+        let outcome = self
             .intercept_fetch(
                 loader,
                 &navigation.url,
@@ -1270,9 +1443,15 @@ impl NativeServiceWorkerRegistry {
                 true,
                 "document",
             )
-            .await?
-        else {
-            return Ok(None);
+            .await?;
+        let response = match outcome {
+            NativeServiceWorkerFetchOutcome::Handled(response) => response,
+            NativeServiceWorkerFetchOutcome::NotHandled => {
+                return Ok(NativeServiceWorkerNavigationOutcome::NotHandled);
+            }
+            NativeServiceWorkerFetchOutcome::Suspended => {
+                return Ok(NativeServiceWorkerNavigationOutcome::Suspended);
+            }
         };
         let url = if response.url.is_empty() {
             without_fragment(&navigation.url).to_owned()
@@ -1280,11 +1459,13 @@ impl NativeServiceWorkerRegistry {
             response.url.clone()
         };
         let parsed = parse_network_url("service worker navigation response URL", &url)?;
-        Ok(Some(NativeResource {
-            url,
-            origin: NativeOrigin::from_url(&parsed)?,
-            body: String::from_utf8_lossy(&response.body).into_owned(),
-        }))
+        Ok(NativeServiceWorkerNavigationOutcome::Handled(
+            NativeResource {
+                url,
+                origin: NativeOrigin::from_url(&parsed)?,
+                body: String::from_utf8_lossy(&response.body).into_owned(),
+            },
+        ))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1302,7 +1483,7 @@ impl NativeServiceWorkerRegistry {
         _timeout: Option<Duration>,
         credentials: bool,
         destination: &str,
-    ) -> Result<Option<NativeFetchResponse>, NativeEngineError> {
+    ) -> Result<NativeServiceWorkerFetchOutcome, NativeEngineError> {
         let owner = parse_network_url("service worker fetch owner URL", document_url)?;
         let target =
             resolve_same_origin_or_cross_origin_url(&owner, "service worker fetch URL", href)?;
@@ -1315,7 +1496,7 @@ impl NativeServiceWorkerRegistry {
             None
         };
         let Some(scope) = scope else {
-            return Ok(None);
+            return Ok(NativeServiceWorkerFetchOutcome::NotHandled);
         };
         let client_id = self.current_client_id_for(document_url);
         let controlled = self.current_client_is_controlled(document_url);
@@ -1370,7 +1551,7 @@ impl NativeServiceWorkerRegistry {
             "clients": clients,
         });
         let Some(worker) = self.registrations.get_mut(&scope) else {
-            return Ok(None);
+            return Ok(NativeServiceWorkerFetchOutcome::NotHandled);
         };
         worker.runtime.set_service_worker_clients(
             payload
@@ -1386,15 +1567,26 @@ impl NativeServiceWorkerRegistry {
             worker.is_module,
         )?;
         let worker_id = worker.id;
-        let (value, client_messages) = settle_service_worker_fetch(
+        let settlement = settle_service_worker_fetch(
             worker,
             loader,
             evaluation,
             &mut self.cache_state,
             &client_id,
+            target.as_str(),
             &mut self.pending_open_windows,
         )
         .await?;
+        let (value, suspended, client_messages) = match settlement {
+            NativeServiceWorkerFetchSettlement::Complete {
+                value,
+                client_messages,
+            } => (value, None, client_messages),
+            NativeServiceWorkerFetchSettlement::Suspended {
+                continuation,
+                client_messages,
+            } => (Value::Null, Some(continuation), client_messages),
+        };
         let clients_claim_requested = worker.clients_claim_requested;
         self.enqueue_client_messages(client_messages)?;
         let message_port_commands = self
@@ -1406,8 +1598,18 @@ impl NativeServiceWorkerRegistry {
         if clients_claim_requested {
             self.claim_current_client(&scope)?;
         }
+        if let Some(continuation) = suspended {
+            let key = (continuation.worker_id, continuation.open_window_request_id);
+            if self.pending_fetches.insert(key, continuation).is_some() {
+                return Err(NativeEngineError::Worker {
+                    operation: "service worker fetch event".into(),
+                    reason: "service worker fetch continuation identifier collided".into(),
+                });
+            }
+            return Ok(NativeServiceWorkerFetchOutcome::Suspended);
+        }
         if value.get("handled").and_then(Value::as_bool) != Some(true) {
-            return Ok(None);
+            return Ok(NativeServiceWorkerFetchOutcome::NotHandled);
         }
         let response = value
             .get("response")
@@ -1415,10 +1617,9 @@ impl NativeServiceWorkerRegistry {
                 operation: "decode service worker response".into(),
                 reason: "service worker returned no response envelope".into(),
             })?;
-        Ok(Some(decode_service_worker_response(
-            response,
-            target.as_str(),
-        )?))
+        Ok(NativeServiceWorkerFetchOutcome::Handled(
+            decode_service_worker_response(response, target.as_str())?,
+        ))
     }
 
     fn matching_scope(&self, target: &Url) -> Result<Option<String>, NativeEngineError> {
@@ -1597,6 +1798,10 @@ impl NativeServiceWorkerRegistry {
             .retain(|message| live_bridge_keys.contains(&message.bridge_key));
         self.pending_open_windows
             .retain(|request| request.worker_id != worker_id);
+        self.pending_fetches
+            .retain(|(pending_worker_id, _), _| *pending_worker_id != worker_id);
+        self.completed_fetches
+            .retain(|completion| completion.worker_id != worker_id);
         self.announced_open_windows
             .retain(|(request_worker_id, _)| *request_worker_id != worker_id);
     }
@@ -2350,13 +2555,19 @@ async fn settle_service_worker_fetch(
     evaluation: NativeScriptEvaluation,
     cache_state: &mut NativeServiceWorkerCacheState,
     _current_client_id: &str,
+    fallback_url: &str,
     pending_open_windows: &mut VecDeque<NativeServiceWorkerOpenWindowRequest>,
-) -> Result<(Value, Vec<NativeServiceWorkerClientMessage>), NativeEngineError> {
+) -> Result<NativeServiceWorkerFetchSettlement, NativeEngineError> {
     let mut pending = VecDeque::from(evaluation.commands);
     let mut value = evaluation.value;
     let mut awaiting = evaluation.top_level_await_pending;
     let mut client_messages = Vec::new();
+    let mut open_window_request_id = None;
     let mut resolved_fetches = 0usize;
+    if let Some(resolved_value) = worker.runtime.take_top_level_await_result()? {
+        value = resolved_value;
+        awaiting = false;
+    }
     while let Some(command) = pending.pop_front() {
         resolved_fetches = resolved_fetches.saturating_add(1);
         if resolved_fetches > MAX_NATIVE_MODULE_IMPORTS {
@@ -2381,11 +2592,9 @@ async fn settle_service_worker_fetch(
                     pending_open_windows.len().saturating_add(1),
                 ));
             }
+            open_window_request_id.get_or_insert(request.request_id);
             pending_open_windows.push_back(request);
-            return Err(NativeEngineError::Worker {
-                operation: "service worker fetch event".into(),
-                reason: "service worker fetch response is suspended by clients.openWindow".into(),
-            });
+            continue;
         }
         if is_service_worker_cache_command(&command) {
             let (request_id, payload) =
@@ -2423,14 +2632,33 @@ async fn settle_service_worker_fetch(
     }
     if awaiting {
         if let Some(resolved_value) = worker.runtime.take_top_level_await_result()? {
-            return Ok((resolved_value, client_messages));
+            return Ok(NativeServiceWorkerFetchSettlement::Complete {
+                value: resolved_value,
+                client_messages,
+            });
+        }
+        if let Some(open_window_request_id) = open_window_request_id {
+            return Ok(NativeServiceWorkerFetchSettlement::Suspended {
+                continuation: NativeServiceWorkerFetchContinuation {
+                    worker_id: worker.id,
+                    open_window_request_id,
+                    fallback_url: fallback_url.to_owned(),
+                    pending,
+                    value,
+                    awaiting,
+                },
+                client_messages,
+            });
         }
         return Err(NativeEngineError::Worker {
             operation: "service worker fetch event".into(),
             reason: "service worker fetch response promise remained pending".into(),
         });
     }
-    Ok((value, client_messages))
+    Ok(NativeServiceWorkerFetchSettlement::Complete {
+        value,
+        client_messages,
+    })
 }
 
 fn apply_service_worker_lifecycle_command(

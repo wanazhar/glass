@@ -4165,6 +4165,105 @@ self.addEventListener('fetch', event => {
 }
 
 #[tokio::test]
+async fn native_runtime_service_worker_fetch_open_window_resumes_navigation() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (shutdown_sender, mut shutdown_receiver) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = &mut shutdown_receiver => break,
+                accepted = listener.accept() => {
+                    let (mut stream, _) = accepted.unwrap();
+                    let request = read_http_request(&mut stream).await;
+                    let path = request.split_whitespace().nth(1).unwrap_or_default();
+                    let (content_type, body) = match path {
+                        "/register" => (
+                            "text/html",
+                            "<!doctype html><script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script><main>register</main>",
+                        ),
+                        "/sw.js" => (
+                            "application/javascript",
+                            r#"self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
+self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+self.addEventListener('fetch', event => {
+  if (new URL(event.request.url).pathname === '/suspended') {
+    event.respondWith((async () => {
+      const client = await clients.openWindow('/opened');
+      return new Response('<!doctype html><html><body><main id="resumed">' + (client ? client.url : 'missing') + '</main></body></html>', {
+        headers: { 'Content-Type': 'text/html' },
+      });
+    })());
+  }
+});"#,
+                        ),
+                        "/opened" => (
+                            "text/html",
+                            "<!doctype html><html><body><main>opened window</main></body></html>",
+                        ),
+                        "/suspended" => (
+                            "text/plain",
+                            "network fallback (service worker did not resume)",
+                        ),
+                        _ => ("text/plain", "unexpected native service worker request"),
+                    };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                }
+            }
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/register")),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        session
+            .script("await registrationPromise.then(reg => [reg.active.state, navigator.serviceWorker.controller !== null])")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!(["activated", true])
+    );
+
+    let navigation = session
+        .navigate(format!("http://{address}/suspended"))
+        .await
+        .unwrap();
+    assert_eq!(navigation.url, format!("http://{address}/suspended"));
+    let resumed = session
+        .script("({ href: location.href, body: document.body && document.body.innerText, html: document.documentElement && document.documentElement.outerHTML })")
+        .await
+        .unwrap()
+        .value;
+    assert_eq!(
+        resumed,
+        serde_json::json!({
+            "href": format!("http://{address}/suspended"),
+            "body": format!("http://{address}/opened"),
+            "html": format!("<html><body><main id=\"resumed\">http://{address}/opened</main></body></html>"),
+        })
+    );
+    let targets = session.native_list_targets().await.unwrap();
+    assert_eq!(targets.len(), 2);
+    assert!(
+        targets
+            .iter()
+            .any(|target| { target.url == format!("http://{address}/opened") && !target.active })
+    );
+
+    session.close().await.unwrap();
+    let _ = shutdown_sender.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_updates_service_worker_registration() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

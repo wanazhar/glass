@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-360`, with native-first product
+expansion checkpoint is `native-engine-browser-361`, with native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
 CacheStorage request matching, CacheStorage response admission and atomic
@@ -83,9 +83,15 @@ effects return to the bounded browser-effect scheduler. The completed Slice
 360 carries cross-target `WindowClient.postMessage()` records through typed
 content-process IPC, resolves their opaque client ids against selected or
 parked target/frame owners, and dispatches the page ServiceWorkerContainer
-event without changing selection. Fetch-event suspension, browser-wide
-registration arbitration, durable live-client leases, and richer transferables
-remain separate gates. The
+event without changing selection. The completed Slice 361 suspends a
+controlled Service Worker fetch navigation when its handler awaits
+`clients.openWindow()`, retains the fetch continuation and original request
+in the content process, and resumes it after the browser owner materializes
+the parked target and resolves the worker Promise. A resumed Service Worker
+response or bounded network fallback is committed before the backend returns
+its final navigation snapshot. Richer transferables, browser-wide
+registration arbitration, durable live-client leases, complete task-source
+conformance, and production certification remain separate gates. The
 completed 234 slice carries bounded
 root-scroll sticky positioning through
 shared flow,

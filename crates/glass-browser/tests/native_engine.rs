@@ -14752,6 +14752,38 @@ async fn native_local_unhandled_rejection_dispatches_window_event() {
 }
 
 #[tokio::test]
+async fn native_local_dispatches_large_promise_rejection_batch_as_data() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://large-unhandled-rejection",
+            r#"
+                <script>
+                    globalThis.rejectionLengths = [];
+                    window.addEventListener('unhandledrejection', event => {
+                        rejectionLengths.push(String(event.reason).length);
+                    });
+                    for (let index = 0; index < 5; index++) {
+                        Promise.reject('x'.repeat(4096));
+                    }
+                </script>
+                <main>Large rejection batch</main>
+            "#,
+        )
+        .unwrap()
+        .with_initial_url("fixture://large-unhandled-rejection");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.rejectionLengths")
+            .await
+            .unwrap(),
+        serde_json::json!([4096, 4096, 4096, 4096, 4096])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_resolves_literal_dynamic_imports() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

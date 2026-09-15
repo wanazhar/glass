@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-373` locally. Native is now the default runtime for
+`native-engine-browser-374` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -256,6 +256,16 @@ is consumed by `event.request.text()` and returned through `respondWith()`;
 existing activation, interception, cache, client, and suspension tests remain
 green. Browser-wide task-source arbitration and the remaining Core Web Profile
 gates remain active issue #40 work.
+
+The completed native Promise-rejection dispatch slice is
+[native-engine-browser-374](tasks/native-engine-browser-374.md): unhandled and
+handled Promise-rejection batches now enter the installed page dispatcher as
+bounded parsed values instead of generated source. A five-event batch with
+4,096-character reasons passes through the native runtime without consuming
+the authored-script source budget; existing rejection event identity,
+cancelability, ordering, and handler behavior remain green. Browser-wide
+task-source arbitration and the remaining Core Web Profile gates remain
+active issue #40 work.
 
 The completed native visual-encoder slice is
 [native-engine-browser-332](tasks/native-engine-browser-332.md): the native

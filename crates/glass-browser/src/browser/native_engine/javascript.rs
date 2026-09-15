@@ -7937,43 +7937,6 @@ pub(crate) fn host_script_error_event_script(
     Ok(Some(source))
 }
 
-/// Build the internal source used to report bounded unhandled Promise
-/// rejections into the persistent page realm after a microtask checkpoint.
-/// The rejection reason is intentionally transported as text until the native
-/// realm has a complete structured-reason bridge.
-fn promise_rejection_event_script(
-    event_type: &str,
-    reasons: &[String],
-    cancelable: bool,
-) -> Result<Option<String>, NativeEngineError> {
-    if reasons.is_empty() {
-        return Ok(None);
-    }
-    let descriptors = reasons
-        .iter()
-        .map(|reason| serde_json::json!({ "reason": reason }))
-        .collect::<Vec<_>>();
-    let encoded = serde_json::to_string(&descriptors).map_err(|_| NativeEngineError::Worker {
-        operation: "serialize native Promise rejection events".into(),
-        reason: "native Promise rejection metadata could not be serialized".into(),
-    })?;
-    let event_type = serde_json::to_string(event_type).map_err(|_| NativeEngineError::Worker {
-        operation: "serialize native Promise rejection event type".into(),
-        reason: "native Promise rejection event type could not be serialized".into(),
-    })?;
-    let source = format!(
-        "globalThis.__glassDispatchPromiseRejections({event_type}, {encoded}, {cancelable})"
-    );
-    if source.len() > MAX_NATIVE_SCRIPT_BYTES {
-        return Err(NativeEngineError::limit(
-            "native Promise rejection events",
-            MAX_NATIVE_SCRIPT_BYTES,
-            source.len(),
-        ));
-    }
-    Ok(Some(source))
-}
-
 fn bounded_unhandled_promise_rejection_reason(reason: String) -> String {
     reason
         .chars()
@@ -10146,19 +10109,7 @@ impl NativeJavaScriptRuntime {
                     self.take_handled_promise_rejections(),
                 ),
             ] {
-                if let Some(event_source) =
-                    promise_rejection_event_script(event_type, &reasons, cancelable)?
-                {
-                    ctx.eval::<(), _>(event_source.as_str()).map_err(|error| {
-                        NativeEngineError::Worker {
-                            operation: "dispatch native Promise rejection events".into(),
-                            reason: format!(
-                                "native Promise rejection event dispatch failed: {}",
-                                CaughtError::from_error(&ctx, error)
-                            ),
-                        }
-                    })?;
-                }
+                dispatch_promise_rejections(&ctx, event_type, &reasons, cancelable)?;
             }
             let commands = read_script_commands(ctx.clone())?;
             let mut document_commands = Vec::with_capacity(commands.len());
@@ -11304,19 +11255,7 @@ impl NativeJavaScriptRuntime {
                     self.take_handled_promise_rejections(),
                 ),
             ] {
-                if let Some(event_source) =
-                    promise_rejection_event_script(event_type, &reasons, cancelable)?
-                {
-                    ctx.eval::<(), _>(event_source.as_str()).map_err(|error| {
-                        NativeEngineError::Worker {
-                            operation: "dispatch native Promise rejection events".into(),
-                            reason: format!(
-                                "native Promise rejection event dispatch failed: {}",
-                                CaughtError::from_error(&ctx, error)
-                            ),
-                        }
-                    })?;
-                }
+                dispatch_promise_rejections(&ctx, event_type, &reasons, cancelable)?;
             }
             let commands = read_script_commands(ctx.clone())?;
             let mut document_commands = Vec::with_capacity(commands.len());
@@ -12428,6 +12367,52 @@ fn native_structured_payload<'js>(
                 CaughtError::from_error(ctx, error)
             ),
         })
+}
+
+fn dispatch_promise_rejections(
+    ctx: &rquickjs::Ctx<'_>,
+    event_type: &str,
+    reasons: &[String],
+    cancelable: bool,
+) -> Result<(), NativeEngineError> {
+    if reasons.is_empty() {
+        return Ok(());
+    }
+    let event_type = native_structured_payload(
+        ctx,
+        &serde_json::Value::String(event_type.to_owned()),
+        "native Promise rejection event type",
+    )?;
+    let reasons = native_structured_payload(
+        ctx,
+        &serde_json::Value::Array(
+            reasons
+                .iter()
+                .map(|reason| serde_json::json!({ "reason": reason }))
+                .collect(),
+        ),
+        "native Promise rejection events",
+    )?;
+    let dispatch: Function = ctx
+        .globals()
+        .get("__glassDispatchPromiseRejections")
+        .map_err(|error| NativeEngineError::Worker {
+            operation: "dispatch native Promise rejection events".into(),
+            reason: format!(
+                "native Promise rejection dispatcher was unavailable: {}",
+                CaughtError::from_error(ctx, error)
+            ),
+        })?;
+    dispatch
+        .call::<_, Value>((event_type, reasons, cancelable))
+        .map_err(|error| NativeEngineError::Worker {
+            operation: "dispatch native Promise rejection events".into(),
+            reason: format!(
+                "native Promise rejection event dispatch failed: {}",
+                CaughtError::from_error(ctx, error)
+            ),
+        })?;
+    Ok(())
 }
 
 fn validate_page_event_batch(events: &NativePageEventBatch) -> Result<(), NativeEngineError> {

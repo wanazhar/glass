@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-373` slice. The native runtime is now the primary
+`native-engine-browser-374` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -540,6 +540,18 @@ structured boundary retains the 16 MiB native envelope and existing body,
 IPC, and operation limits; browser-wide task-source arbitration and remaining
 Core Web Profile gates remain open. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-373.md`.
+
+Slice 374 removes generated-source coupling from page Promise-rejection
+delivery. The host serializes each bounded event type and reason descriptor,
+parses them as QuickJS values, and calls the installed
+`__glassDispatchPromiseRejections` function directly after the microtask
+checkpoint. Five 4,096-character reasons pass as one batch, while the
+existing bounded reason truncation, rejection ordering, event flags, and
+handler dispatch remain unchanged. The structured bridge does not add Promise
+identity for rejected values or make reason text unbounded; browser-wide
+task-source arbitration and remaining Core Web Profile gates remain open.
+Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-374.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

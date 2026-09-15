@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-371` locally. Native is now the default runtime for
+`native-engine-browser-372` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -232,8 +232,19 @@ settlements, and `clients.openWindow()` settlements now enter installed worker
 resolvers as bounded parsed values through one structured host-turn boundary.
 20,000-byte Worker Fetch, Service Worker nested Fetch, and CacheStorage match
 payloads cross the process without consuming the 16 KiB user-script source
-budget; openWindow continuation coverage remains green. Stream event transport
-and complete global task-source arbitration remain separate issue #40 gates.
+budget; openWindow continuation coverage remains green. Page and worker stream
+event transport remains a separate issue #40 gate.
+
+The completed native network-event dispatch slice is
+[native-engine-browser-372](tasks/native-engine-browser-372.md): page
+WebSocket, EventSource, and Fetch-stream events plus dedicated/shared Worker
+WebSocket and EventSource events now cross the host boundary as bounded parsed
+values and call their installed dispatchers directly. Large page WebSocket,
+EventSource, and Fetch-stream process witnesses, plus large Worker WebSocket
+and EventSource witnesses, pass without interpolating payloads into
+authored-source evaluation; existing task-source queues and transport limits
+remain unchanged. Browser-wide task-source arbitration and the remaining Core
+Web Profile gates remain active issue #40 work.
 
 The completed native visual-encoder slice is
 [native-engine-browser-332](tasks/native-engine-browser-332.md): the native

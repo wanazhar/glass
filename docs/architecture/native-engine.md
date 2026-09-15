@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-371` slice. The native runtime is now the primary
+`native-engine-browser-372` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -512,9 +512,21 @@ bounded QuickJS value and delivered to an installed resolver during a worker
 turn; the worker then evaluates only `undefined;`, so valid large bodies do
 not become executable source. Process-backed 20,000-byte Worker Fetch,
 Service Worker nested Fetch, and CacheStorage match witnesses pass alongside
-the openWindow continuation witness. Stream event transport and complete
-global task-source arbitration remain separate issue #40 gates. Exact
-evidence is recorded in `docs/plan/tasks/native-engine-browser-371.md`.
+the openWindow continuation witness. Page and worker stream event transport
+remains a separate issue #40 gate. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-371.md`.
+
+Slice 372 extends the structured boundary to network event payloads. Page
+WebSocket, EventSource, and Fetch-stream events, together with dedicated/shared
+Worker WebSocket and EventSource events, are parsed once as bounded QuickJS
+values and delivered to the installed dispatch functions during their existing
+serialized host turns. The HTTP(S) content-process fixture covers 20,000-byte
+page WebSocket, EventSource, and Fetch-stream payloads and 20,000-byte Worker
+WebSocket and EventSource payloads. The change removes payload-size coupling
+to generated source while retaining finite JSON/base64, IPC, and per-transport
+limits. Browser-wide task-source arbitration and the remaining Core Web Profile
+gates remain open. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-372.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

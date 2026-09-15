@@ -937,11 +937,31 @@ enum NativeWorkerDispatch<'a> {
         request_id: u32,
         payload: &'a serde_json::Value,
     },
+    WebSocket {
+        socket_id: u32,
+        payload: &'a serde_json::Value,
+    },
+    EventSource {
+        source_id: u32,
+        payload: &'a serde_json::Value,
+    },
 }
 
 enum NativePageDispatch<'a> {
     Fetch {
         request_id: u32,
+        payload: &'a serde_json::Value,
+    },
+    WebSocket {
+        socket_id: u32,
+        payload: &'a serde_json::Value,
+    },
+    EventSource {
+        source_id: u32,
+        payload: &'a serde_json::Value,
+    },
+    FetchStream {
+        stream_id: u32,
         payload: &'a serde_json::Value,
     },
 }
@@ -1134,20 +1154,13 @@ impl NativeDedicatedWorker {
         socket_id: u32,
         event: &serde_json::Value,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
-        let serialized = serde_json::to_string(event).map_err(|_| NativeEngineError::Worker {
-            operation: "serialize native Worker WebSocket event".into(),
-            reason: "native Worker WebSocket event could not be serialized".into(),
-        })?;
-        let source =
-            format!("globalThis.__glassDispatchWorkerWebSocketEvent({socket_id}, {serialized});");
-        if source.len() > MAX_NATIVE_SCRIPT_BYTES {
-            return Err(NativeEngineError::limit(
-                "native Worker WebSocket event",
-                MAX_NATIVE_SCRIPT_BYTES,
-                source.len(),
-            ));
-        }
-        self.evaluate_turn(worker_id, &source)
+        self.evaluate_turn_with_event(
+            worker_id,
+            NativeWorkerDispatch::WebSocket {
+                socket_id,
+                payload: event,
+            },
+        )
     }
 
     fn evaluate_event_source_event(
@@ -1156,20 +1169,13 @@ impl NativeDedicatedWorker {
         source_id: u32,
         event: &serde_json::Value,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
-        let serialized = serde_json::to_string(event).map_err(|_| NativeEngineError::Worker {
-            operation: "serialize native Worker EventSource event".into(),
-            reason: "native Worker EventSource event could not be serialized".into(),
-        })?;
-        let source =
-            format!("globalThis.__glassDispatchWorkerEventSourceEvent({source_id}, {serialized});");
-        if source.len() > MAX_NATIVE_SCRIPT_BYTES {
-            return Err(NativeEngineError::limit(
-                "native Worker EventSource event",
-                MAX_NATIVE_SCRIPT_BYTES,
-                source.len(),
-            ));
-        }
-        self.evaluate_turn(worker_id, &source)
+        self.evaluate_turn_with_event(
+            worker_id,
+            NativeWorkerDispatch::EventSource {
+                source_id,
+                payload: event,
+            },
+        )
     }
 }
 
@@ -9159,20 +9165,19 @@ impl NativeJavaScriptRuntime {
         origin: &NativeOrigin,
         viewport: Viewport,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
-        let serialized = serde_json::to_string(event).map_err(|_| NativeEngineError::Worker {
-            operation: "serialize native WebSocket event".into(),
-            reason: "native WebSocket event could not be serialized".into(),
-        })?;
-        let source =
-            format!("globalThis.__glassDispatchWebSocketEvent({socket_id}, {serialized});");
-        if source.len() > MAX_NATIVE_SCRIPT_BYTES {
-            return Err(NativeEngineError::limit(
-                "native WebSocket event",
-                MAX_NATIVE_SCRIPT_BYTES,
-                source.len(),
-            ));
-        }
-        self.evaluate(&source, document, document_url, origin, viewport)
+        let page_events = NativePageEventBatch::default();
+        self.evaluate_with_page_events_and_dispatch(
+            "undefined;",
+            document,
+            document_url,
+            origin,
+            viewport,
+            &page_events,
+            Some(NativePageDispatch::WebSocket {
+                socket_id,
+                payload: event,
+            }),
+        )
     }
 
     /// Deliver one host-owned EventSource event into the persistent page
@@ -9188,20 +9193,19 @@ impl NativeJavaScriptRuntime {
         origin: &NativeOrigin,
         viewport: Viewport,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
-        let serialized = serde_json::to_string(event).map_err(|_| NativeEngineError::Worker {
-            operation: "serialize native EventSource event".into(),
-            reason: "native EventSource event could not be serialized".into(),
-        })?;
-        let source =
-            format!("globalThis.__glassDispatchEventSourceEvent({source_id}, {serialized});");
-        if source.len() > MAX_NATIVE_SCRIPT_BYTES {
-            return Err(NativeEngineError::limit(
-                "native EventSource event",
-                MAX_NATIVE_SCRIPT_BYTES,
-                source.len(),
-            ));
-        }
-        self.evaluate(&source, document, document_url, origin, viewport)
+        let page_events = NativePageEventBatch::default();
+        self.evaluate_with_page_events_and_dispatch(
+            "undefined;",
+            document,
+            document_url,
+            origin,
+            viewport,
+            &page_events,
+            Some(NativePageDispatch::EventSource {
+                source_id,
+                payload: event,
+            }),
+        )
     }
 
     /// Deliver one host-owned Fetch response-stream event into the persistent
@@ -9216,20 +9220,19 @@ impl NativeJavaScriptRuntime {
         origin: &NativeOrigin,
         viewport: Viewport,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
-        let serialized = serde_json::to_string(event).map_err(|_| NativeEngineError::Worker {
-            operation: "serialize native fetch response stream event".into(),
-            reason: "native fetch response stream event could not be serialized".into(),
-        })?;
-        let source =
-            format!("globalThis.__glassDispatchFetchStreamEvent({stream_id}, {serialized});");
-        if source.len() > MAX_NATIVE_SCRIPT_BYTES {
-            return Err(NativeEngineError::limit(
-                "native fetch response stream event",
-                MAX_NATIVE_SCRIPT_BYTES,
-                source.len(),
-            ));
-        }
-        self.evaluate(&source, document, document_url, origin, viewport)
+        let page_events = NativePageEventBatch::default();
+        self.evaluate_with_page_events_and_dispatch(
+            "undefined;",
+            document,
+            document_url,
+            origin,
+            viewport,
+            &page_events,
+            Some(NativePageDispatch::FetchStream {
+                stream_id,
+                payload: event,
+            }),
+        )
     }
 
     pub(crate) fn reset_timer_clock(&mut self) {
@@ -12395,26 +12398,27 @@ fn native_message_payload<'js>(
         })
 }
 
-fn native_fetch_payload<'js>(
+fn native_structured_payload<'js>(
     ctx: &rquickjs::Ctx<'js>,
     payload: &serde_json::Value,
+    operation: &str,
 ) -> Result<Value<'js>, NativeEngineError> {
     let encoded = serde_json::to_vec(payload).map_err(|_| NativeEngineError::Worker {
-        operation: "serialize native fetch response".into(),
-        reason: "native fetch response could not be serialized".into(),
+        operation: format!("serialize {operation}"),
+        reason: format!("{operation} could not be serialized"),
     })?;
     if encoded.len() > MAX_NATIVE_SCRIPT_COMMAND_BYTES {
         return Err(NativeEngineError::limit(
-            "native fetch response",
+            operation,
             MAX_NATIVE_SCRIPT_COMMAND_BYTES,
             encoded.len(),
         ));
     }
     ctx.json_parse(encoded)
         .map_err(|error| NativeEngineError::Worker {
-            operation: "parse native fetch response".into(),
+            operation: format!("parse {operation}"),
             reason: format!(
-                "native fetch response could not enter the JavaScript realm: {}",
+                "{operation} could not enter the JavaScript realm: {}",
                 CaughtError::from_error(ctx, error)
             ),
         })
@@ -12624,28 +12628,65 @@ fn dispatch_page_payload(
         NativePageDispatch::Fetch {
             request_id,
             payload,
-        } => {
-            let payload = native_fetch_payload(&ctx, payload)?;
-            let resolve: Function = ctx.globals().get("__glassResolveFetch").map_err(|error| {
-                NativeEngineError::Worker {
-                    operation: "dispatch native fetch response".into(),
-                    reason: format!(
-                        "native fetch resolver was unavailable: {}",
-                        CaughtError::from_error(&ctx, error)
-                    ),
-                }
-            })?;
-            resolve
-                .call::<_, Value>((request_id, payload))
-                .map_err(|error| NativeEngineError::Worker {
-                    operation: "dispatch native fetch response".into(),
-                    reason: format!(
-                        "native fetch response dispatch failed: {}",
-                        CaughtError::from_error(&ctx, error)
-                    ),
-                })?;
-        }
+        } => dispatch_page_resolver(
+            &ctx,
+            "__glassResolveFetch",
+            "native fetch response",
+            request_id,
+            payload,
+        )?,
+        NativePageDispatch::WebSocket { socket_id, payload } => dispatch_page_resolver(
+            &ctx,
+            "__glassDispatchWebSocketEvent",
+            "native WebSocket event",
+            socket_id,
+            payload,
+        )?,
+        NativePageDispatch::EventSource { source_id, payload } => dispatch_page_resolver(
+            &ctx,
+            "__glassDispatchEventSourceEvent",
+            "native EventSource event",
+            source_id,
+            payload,
+        )?,
+        NativePageDispatch::FetchStream { stream_id, payload } => dispatch_page_resolver(
+            &ctx,
+            "__glassDispatchFetchStreamEvent",
+            "native fetch response stream event",
+            stream_id,
+            payload,
+        )?,
     }
+    Ok(())
+}
+
+fn dispatch_page_resolver(
+    ctx: &rquickjs::Ctx<'_>,
+    global_name: &str,
+    operation: &str,
+    identifier: u32,
+    payload: &serde_json::Value,
+) -> Result<(), NativeEngineError> {
+    let payload = native_structured_payload(ctx, payload, operation)?;
+    let resolve: Function =
+        ctx.globals()
+            .get(global_name)
+            .map_err(|error| NativeEngineError::Worker {
+                operation: format!("dispatch {operation}"),
+                reason: format!(
+                    "{global_name} was unavailable: {}",
+                    CaughtError::from_error(ctx, error)
+                ),
+            })?;
+    resolve
+        .call::<_, Value>((identifier, payload))
+        .map_err(|error| NativeEngineError::Worker {
+            operation: format!("dispatch {operation}"),
+            reason: format!(
+                "{operation} dispatch failed: {}",
+                CaughtError::from_error(ctx, error)
+            ),
+        })?;
     Ok(())
 }
 
@@ -12749,6 +12790,20 @@ fn dispatch_worker_event(
             request_id,
             payload,
         )?,
+        NativeWorkerDispatch::WebSocket { socket_id, payload } => dispatch_worker_resolver(
+            &ctx,
+            "__glassDispatchWorkerWebSocketEvent",
+            "native Worker WebSocket event",
+            socket_id,
+            payload,
+        )?,
+        NativeWorkerDispatch::EventSource { source_id, payload } => dispatch_worker_resolver(
+            &ctx,
+            "__glassDispatchWorkerEventSourceEvent",
+            "native Worker EventSource event",
+            source_id,
+            payload,
+        )?,
     }
     Ok(())
 }
@@ -12760,7 +12815,7 @@ fn dispatch_worker_resolver(
     request_id: u32,
     payload: &serde_json::Value,
 ) -> Result<(), NativeEngineError> {
-    let payload = native_fetch_payload(ctx, payload)?;
+    let payload = native_structured_payload(ctx, payload, operation)?;
     let resolve: Function =
         ctx.globals()
             .get(global_name)

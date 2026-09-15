@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-379`, with native-first product
+expansion checkpoint is `native-engine-browser-380`, with native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
 CacheStorage request matching, CacheStorage response admission and atomic
@@ -275,6 +275,18 @@ matching, popup identity, navigation, close state, content-process transport,
 and the existing bounds remain unchanged. Global task-source arbitration and
 the remaining Core Web Profile gates remain open. Exact evidence is recorded
 in `docs/plan/tasks/native-engine-browser-379.md`. The
+completed Slice 380 removes generated-source coupling from ordinary
+browser-owned host events. Focus, click, submit, keyboard, form, lifecycle,
+validation, image, and scroll descriptors now cross local and content-process
+page turns as bounded `NativeHostEvent` records and are passed to the installed
+`__glassDispatchHostEvents` function through a static continuation. The
+dispatcher result array preserves default-prevention decisions for click,
+submit, keydown, and beforeunload, while event type, key, modifier,
+submitter, count, envelope, and host-turn bounds remain enforced. The page
+owner still executes DOM event-path semantics; Rust owns the typed target and
+validation boundary. Browser-wide task-source arbitration and the remaining
+Core Web Profile gates remain open. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-380.md`. The
 completed 234 slice carries bounded
 completed 234 slice carries bounded
 root-scroll sticky positioning through

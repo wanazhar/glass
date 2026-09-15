@@ -16,7 +16,7 @@ use super::environment::NativeEnvironmentOverrides;
 use super::error::NativeEngineError;
 use super::interaction::{
     MAX_NATIVE_FILE_BYTES, MAX_NATIVE_FORM_BODY_BYTES, MAX_NATIVE_SCRIPT_COMMAND_BYTES,
-    NativeEventKind,
+    NativeEventKind, validate_native_key,
 };
 use super::layout::NativePoint;
 use super::origin::NativeOrigin;
@@ -146,6 +146,7 @@ pub(crate) const MAX_NATIVE_FETCH_STREAM_BODY_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) const MAX_NATIVE_FETCH_STREAM_QUEUED_CHUNKS: usize = 32;
 const MAX_NATIVE_UNHANDLED_REJECTIONS: usize = 64;
 const MAX_NATIVE_UNHANDLED_REJECTION_REASON_CHARS: usize = 4096;
+const NATIVE_HOST_EVENT_RESULT_SOURCE: &str = "globalThis.__glassLastHostEventResults || []";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -914,6 +915,34 @@ pub(crate) struct NativePageMessageEvent {
     pub(crate) data: serde_json::Value,
 }
 
+/// A browser-owned page event delivered through the installed host dispatcher.
+/// Event metadata remains structured until it enters the page realm, so keys,
+/// URLs, and other host values cannot become executable JavaScript source.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct NativeHostEvent {
+    pub(crate) node_index: u32,
+    #[serde(rename = "type")]
+    pub(crate) event_type: String,
+    pub(crate) bubbles: bool,
+    pub(crate) cancelable: bool,
+    #[serde(default)]
+    pub(crate) persisted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) code: Option<String>,
+    #[serde(default)]
+    pub(crate) alt_key: bool,
+    #[serde(default)]
+    pub(crate) ctrl_key: bool,
+    #[serde(default)]
+    pub(crate) meta_key: bool,
+    #[serde(default)]
+    pub(crate) shift_key: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) submitter_node_index: Option<u32>,
+}
+
 /// A bounded event observed by a child browsing context and delivered to its
 /// same-origin parent projection. Event metadata crosses the owner boundary
 /// as data so frame IDs and node generations never become JavaScript source.
@@ -963,6 +992,8 @@ pub(crate) struct NativePageEventBatch {
     pub(crate) frame_script_commands: Vec<NativeScriptCommand>,
     #[serde(default)]
     pub(crate) hash_change_events: Vec<NativeHashChangeEvent>,
+    #[serde(default)]
+    pub(crate) host_events: Vec<NativeHostEvent>,
 }
 
 enum NativeWorkerDispatch<'a> {
@@ -5999,14 +6030,14 @@ pub(crate) fn execute_page_scripts(
         if *event_kind == NativeEventKind::Load && failed_script_nodes.contains(node_index) {
             continue;
         }
-        let Some(event_source) = host_event_script(&[(*node_index, *event_kind)])? else {
+        let Some(event_batch) = host_event_batch(&[(*node_index, *event_kind)])? else {
             continue;
         };
         let evaluation = runtime
             .as_ref()
             .expect("page script runtime initialized")
-            .evaluate(
-                &event_source,
+            .evaluate_with_host_events(
+                &event_batch,
                 document,
                 document_url,
                 document_origin,
@@ -6031,14 +6062,14 @@ pub(crate) fn execute_page_scripts(
         (0, NativeEventKind::ReadyStateChange),
         (0, NativeEventKind::DomContentLoaded),
     ] {
-        let Some(event_source) = host_event_script(&[(target, kind)])? else {
+        let Some(event_batch) = host_event_batch(&[(target, kind)])? else {
             continue;
         };
         let evaluation = runtime
             .as_ref()
             .expect("page script runtime initialized")
-            .evaluate(
-                &event_source,
+            .evaluate_with_host_events(
+                &event_batch,
                 document,
                 document_url,
                 document_origin,
@@ -6063,14 +6094,14 @@ pub(crate) fn execute_page_scripts(
         (0, NativeEventKind::ReadyStateChange),
         (u32::MAX, NativeEventKind::Load),
     ] {
-        let Some(event_source) = host_event_script(&[(target, kind)])? else {
+        let Some(event_batch) = host_event_batch(&[(target, kind)])? else {
             continue;
         };
         let evaluation = runtime
             .as_ref()
             .expect("page script runtime initialized")
-            .evaluate(
-                &event_source,
+            .evaluate_with_host_events(
+                &event_batch,
                 document,
                 document_url,
                 document_origin,
@@ -6256,11 +6287,11 @@ pub(crate) fn execute_dynamic_page_scripts(
         if *event_kind == NativeEventKind::Load && failed_script_nodes.contains(node_index) {
             continue;
         }
-        let Some(event_source) = host_event_script(&[(*node_index, *event_kind)])? else {
+        let Some(event_batch) = host_event_batch(&[(*node_index, *event_kind)])? else {
             continue;
         };
-        let evaluation = runtime.evaluate(
-            &event_source,
+        let evaluation = runtime.evaluate_with_host_events(
+            &event_batch,
             document,
             document_url,
             document_origin,
@@ -7900,13 +7931,18 @@ fn dispatch_page_scroll_events(
         } else {
             u32::MAX
         };
-        let source = host_event_script(&[(event_node_index, NativeEventKind::Scroll)])?
+        let event_batch = host_event_batch(&[(event_node_index, NativeEventKind::Scroll)])?
             .ok_or_else(|| NativeEngineError::Worker {
                 operation: "native page scroll event".into(),
-                reason: "native page scroll event source was empty".into(),
+                reason: "native page scroll event batch was empty".into(),
             })?;
-        let evaluation =
-            runtime.evaluate(&source, document, document_url, document_origin, viewport)?;
+        let evaluation = runtime.evaluate_with_host_events(
+            &event_batch,
+            document,
+            document_url,
+            document_origin,
+            viewport,
+        )?;
         let mut emitted_scroll_commands = Vec::new();
         apply_page_script_evaluation(
             document,
@@ -7941,17 +7977,144 @@ fn dispatch_page_scroll_events(
     Ok(())
 }
 
-/// Build the internal source used to deliver Rust-owned semantic events into
-/// the persistent page realm. The source is generated from typed, bounded
-/// event metadata and never contains page-provided strings.
-pub(crate) fn host_event_script(
+fn host_event_metadata(
+    node_index: u32,
+    kind: NativeEventKind,
+    submitter_node_index: Option<u32>,
+) -> NativeHostEvent {
+    let (event_type, bubbles, cancelable) = match kind {
+        NativeEventKind::Blur => ("blur", false, false),
+        NativeEventKind::Focus => ("focus", false, false),
+        NativeEventKind::ReadyStateChange => ("readystatechange", false, false),
+        NativeEventKind::DomContentLoaded => ("DOMContentLoaded", false, false),
+        NativeEventKind::Load => ("load", false, false),
+        NativeEventKind::Error => ("error", false, false),
+        NativeEventKind::PageHide => ("pagehide", false, false),
+        NativeEventKind::Unload => ("unload", false, false),
+        NativeEventKind::PageShow => ("pageshow", false, false),
+        NativeEventKind::BeforeUnload => ("beforeunload", false, true),
+        NativeEventKind::HashChange => ("hashchange", false, false),
+        NativeEventKind::PopState => ("popstate", false, false),
+        NativeEventKind::Invalid => ("invalid", false, true),
+        NativeEventKind::KeyDown => ("keydown", true, true),
+        NativeEventKind::KeyUp => ("keyup", true, false),
+        NativeEventKind::Submit => ("submit", true, true),
+        NativeEventKind::Click => ("click", true, true),
+        NativeEventKind::MouseOver => ("mouseover", true, true),
+        NativeEventKind::MouseEnter => ("mouseenter", false, false),
+        NativeEventKind::DragStart => ("dragstart", true, true),
+        NativeEventKind::DragEnter => ("dragenter", true, true),
+        NativeEventKind::DragOver => ("dragover", true, true),
+        NativeEventKind::Drop => ("drop", true, true),
+        NativeEventKind::DragEnd => ("dragend", true, false),
+        NativeEventKind::Input => ("input", true, false),
+        NativeEventKind::Change => ("change", true, false),
+        NativeEventKind::Scroll => ("scroll", false, false),
+    };
+    NativeHostEvent {
+        node_index,
+        event_type: event_type.into(),
+        bubbles,
+        cancelable,
+        persisted: false,
+        key: None,
+        code: None,
+        alt_key: false,
+        ctrl_key: false,
+        meta_key: false,
+        shift_key: false,
+        submitter_node_index,
+    }
+}
+
+/// Build structured metadata used to deliver Rust-owned semantic events into
+/// the persistent page realm.
+pub(crate) fn host_event_batch(
     events: &[(u32, NativeEventKind)],
-) -> Result<Option<String>, NativeEngineError> {
-    let events = events
-        .iter()
-        .map(|(node_index, kind)| (*node_index, *kind, None))
-        .collect::<Vec<_>>();
-    host_event_script_with_submitters(&events)
+) -> Result<Option<Vec<NativeHostEvent>>, NativeEngineError> {
+    if events.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(
+        events
+            .iter()
+            .map(|(node_index, kind)| host_event_metadata(*node_index, *kind, None))
+            .collect(),
+    ))
+}
+
+pub(crate) fn host_submit_event_batch(
+    form_index: u32,
+    submitter_index: Option<u32>,
+) -> Result<Option<Vec<NativeHostEvent>>, NativeEngineError> {
+    Ok(Some(vec![host_event_metadata(
+        form_index,
+        NativeEventKind::Submit,
+        submitter_index,
+    )]))
+}
+
+pub(crate) fn host_key_event_batch_with_modifiers(
+    node_index: u32,
+    kind: NativeEventKind,
+    key: &str,
+    modifiers: i64,
+) -> Result<Option<Vec<NativeHostEvent>>, NativeEngineError> {
+    let (event_type, bubbles, cancelable) = match kind {
+        NativeEventKind::KeyDown => ("keydown", true, true),
+        NativeEventKind::KeyUp => ("keyup", true, false),
+        _ => {
+            return Err(NativeEngineError::invalid(
+                "native key event",
+                "key event dispatch requires keydown or keyup",
+            ));
+        }
+    };
+    validate_native_key(key)?;
+    if !(0..=15).contains(&modifiers) {
+        return Err(NativeEngineError::invalid(
+            "native key event modifiers",
+            "must be an integer mask from 0 through 15",
+        ));
+    }
+    let code = match key {
+        " " => "Space".to_owned(),
+        "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight" | "Enter" | "Tab" | "Escape"
+        | "Backspace" | "Delete" | "Home" | "End" | "PageUp" | "PageDown" => key.to_owned(),
+        _ if key.chars().count() == 1 => {
+            let character = key.chars().next().expect("single-character key");
+            if character.is_ascii_alphabetic() {
+                format!("Key{}", character.to_ascii_uppercase())
+            } else if character.is_ascii_digit() {
+                format!("Digit{character}")
+            } else {
+                key.to_owned()
+            }
+        }
+        _ => key.to_owned(),
+    };
+    Ok(Some(vec![NativeHostEvent {
+        node_index,
+        event_type: event_type.into(),
+        bubbles,
+        cancelable,
+        persisted: false,
+        key: Some(key.to_owned()),
+        code: Some(code),
+        alt_key: modifiers & 1 != 0,
+        ctrl_key: modifiers & 2 != 0,
+        meta_key: modifiers & 4 != 0,
+        shift_key: modifiers & 8 != 0,
+        submitter_node_index: None,
+    }]))
+}
+
+pub(crate) fn host_key_event_batch(
+    node_index: u32,
+    kind: NativeEventKind,
+    key: &str,
+) -> Result<Option<Vec<NativeHostEvent>>, NativeEngineError> {
+    host_key_event_batch_with_modifiers(node_index, kind, key, 0)
 }
 
 fn bounded_unhandled_promise_rejection_reason(reason: String) -> String {
@@ -8112,143 +8275,6 @@ fn is_frame_script_batch_command(command: &NativeScriptCommand) -> bool {
             | NativeScriptCommand::InsertBefore { .. }
             | NativeScriptCommand::SetCustomValidity { .. }
     )
-}
-
-pub(crate) fn host_submit_event_script(
-    form_index: u32,
-    submitter_index: Option<u32>,
-) -> Result<Option<String>, NativeEngineError> {
-    host_event_script_with_submitters(&[(form_index, NativeEventKind::Submit, submitter_index)])
-}
-
-fn host_event_script_with_submitters(
-    events: &[(u32, NativeEventKind, Option<u32>)],
-) -> Result<Option<String>, NativeEngineError> {
-    if events.is_empty() {
-        return Ok(None);
-    }
-    let descriptors = events
-        .iter()
-        .map(|(node_index, kind, submitter_index)| {
-            let (event_type, bubbles, cancelable) = match kind {
-                NativeEventKind::Blur => ("blur", false, false),
-                NativeEventKind::Focus => ("focus", false, false),
-                NativeEventKind::ReadyStateChange => ("readystatechange", false, false),
-                NativeEventKind::DomContentLoaded => ("DOMContentLoaded", false, false),
-                NativeEventKind::Load => ("load", false, false),
-                NativeEventKind::Error => ("error", false, false),
-                NativeEventKind::PageHide => ("pagehide", false, false),
-                NativeEventKind::Unload => ("unload", false, false),
-                NativeEventKind::PageShow => ("pageshow", false, false),
-                NativeEventKind::BeforeUnload => ("beforeunload", false, true),
-                NativeEventKind::HashChange => ("hashchange", false, false),
-                NativeEventKind::PopState => ("popstate", false, false),
-                NativeEventKind::Invalid => ("invalid", false, true),
-                NativeEventKind::KeyDown => ("keydown", true, true),
-                NativeEventKind::KeyUp => ("keyup", true, false),
-                NativeEventKind::Submit => ("submit", true, true),
-                NativeEventKind::Click => ("click", true, true),
-                NativeEventKind::MouseOver => ("mouseover", true, true),
-                NativeEventKind::MouseEnter => ("mouseenter", false, false),
-                NativeEventKind::DragStart => ("dragstart", true, true),
-                NativeEventKind::DragEnter => ("dragenter", true, true),
-                NativeEventKind::DragOver => ("dragover", true, true),
-                NativeEventKind::Drop => ("drop", true, true),
-                NativeEventKind::DragEnd => ("dragend", true, false),
-                NativeEventKind::Input => ("input", true, false),
-                NativeEventKind::Change => ("change", true, false),
-                NativeEventKind::Scroll => ("scroll", false, false),
-            };
-            serde_json::json!({
-                "node_index": node_index,
-                "type": event_type,
-                "bubbles": bubbles,
-                "cancelable": cancelable,
-                "persisted": false,
-                "submitter_node_index": submitter_index,
-            })
-        })
-        .collect::<Vec<_>>();
-    let encoded = serde_json::to_string(&descriptors).map_err(|_| NativeEngineError::Worker {
-        operation: "serialize native event dispatch".into(),
-        reason: "native event dispatch metadata could not be serialized".into(),
-    })?;
-    let source = format!("globalThis.__glassDispatchHostEvents({encoded})");
-    if source.len() > MAX_NATIVE_SCRIPT_BYTES {
-        return Err(NativeEngineError::limit(
-            "native event dispatch",
-            MAX_NATIVE_SCRIPT_BYTES,
-            source.len(),
-        ));
-    }
-    Ok(Some(source))
-}
-
-pub(crate) fn host_key_event_script(
-    node_index: u32,
-    kind: NativeEventKind,
-    key: &str,
-) -> Result<Option<String>, NativeEngineError> {
-    host_key_event_script_with_modifiers(node_index, kind, key, 0)
-}
-
-pub(crate) fn host_key_event_script_with_modifiers(
-    node_index: u32,
-    kind: NativeEventKind,
-    key: &str,
-    modifiers: i64,
-) -> Result<Option<String>, NativeEngineError> {
-    let (event_type, bubbles, cancelable) = match kind {
-        NativeEventKind::KeyDown => ("keydown", true, true),
-        NativeEventKind::KeyUp => ("keyup", true, false),
-        _ => {
-            return Err(NativeEngineError::invalid(
-                "native key event",
-                "key event dispatch requires keydown or keyup",
-            ));
-        }
-    };
-    let code = match key {
-        " " => "Space".to_owned(),
-        "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight" | "Enter" | "Tab" | "Escape"
-        | "Backspace" | "Delete" | "Home" | "End" | "PageUp" | "PageDown" => key.to_owned(),
-        _ if key.chars().count() == 1 => {
-            let character = key.chars().next().expect("single-character key");
-            if character.is_ascii_alphabetic() {
-                format!("Key{}", character.to_ascii_uppercase())
-            } else if character.is_ascii_digit() {
-                format!("Digit{character}")
-            } else {
-                key.to_owned()
-            }
-        }
-        _ => key.to_owned(),
-    };
-    let descriptors = serde_json::json!([{
-        "node_index": node_index,
-        "type": event_type,
-        "bubbles": bubbles,
-        "cancelable": cancelable,
-        "key": key,
-        "code": code,
-        "alt_key": modifiers & 1 != 0,
-        "ctrl_key": modifiers & 2 != 0,
-        "meta_key": modifiers & 4 != 0,
-        "shift_key": modifiers & 8 != 0,
-    }]);
-    let encoded = serde_json::to_string(&descriptors).map_err(|_| NativeEngineError::Worker {
-        operation: "serialize native key event dispatch".into(),
-        reason: "native key event metadata could not be serialized".into(),
-    })?;
-    let source = format!("globalThis.__glassDispatchHostEvents({encoded})");
-    if source.len() > MAX_NATIVE_SCRIPT_BYTES {
-        return Err(NativeEngineError::limit(
-            "native key event dispatch",
-            MAX_NATIVE_SCRIPT_BYTES,
-            source.len(),
-        ));
-    }
-    Ok(Some(source))
 }
 
 /// One persistent ECMAScript realm. A full navigation creates a new value;
@@ -9927,6 +9953,28 @@ impl NativeJavaScriptRuntime {
             origin,
             viewport,
             &NativePageEventBatch::default(),
+        )
+    }
+
+    pub(crate) fn evaluate_with_host_events(
+        &self,
+        events: &[NativeHostEvent],
+        document: &NativeDocument,
+        document_url: &str,
+        origin: &NativeOrigin,
+        viewport: Viewport,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        let page_events = NativePageEventBatch {
+            host_events: events.to_vec(),
+            ..NativePageEventBatch::default()
+        };
+        self.evaluate_with_page_events(
+            NATIVE_HOST_EVENT_RESULT_SOURCE,
+            document,
+            document_url,
+            origin,
+            viewport,
+            &page_events,
         )
     }
 
@@ -12475,6 +12523,7 @@ fn validate_page_event_batch(events: &NativePageEventBatch) -> Result<(), Native
             "native hashchange event batch",
             events.hash_change_events.len(),
         ),
+        ("native host event batch", events.host_events.len()),
     ] {
         if count > MAX_NATIVE_WORKER_MESSAGES {
             return Err(NativeEngineError::limit(
@@ -12635,6 +12684,73 @@ fn validate_page_event_batch(events: &NativePageEventBatch) -> Result<(), Native
             ));
         }
     }
+    for event in &events.host_events {
+        if !matches!(
+            event.event_type.as_str(),
+            "blur"
+                | "focus"
+                | "readystatechange"
+                | "DOMContentLoaded"
+                | "load"
+                | "error"
+                | "pagehide"
+                | "unload"
+                | "pageshow"
+                | "beforeunload"
+                | "hashchange"
+                | "popstate"
+                | "invalid"
+                | "keydown"
+                | "keyup"
+                | "submit"
+                | "click"
+                | "mouseover"
+                | "mouseenter"
+                | "dragstart"
+                | "dragenter"
+                | "dragover"
+                | "drop"
+                | "dragend"
+                | "input"
+                | "change"
+                | "scroll"
+        ) {
+            return Err(NativeEngineError::invalid(
+                "native host event type",
+                "must be a supported native event",
+            ));
+        }
+        let is_key_event = matches!(event.event_type.as_str(), "keydown" | "keyup");
+        if is_key_event {
+            let key = event.key.as_deref().ok_or_else(|| {
+                NativeEngineError::invalid(
+                    "native host key event",
+                    "must include a printable key value",
+                )
+            })?;
+            validate_native_key(key)?;
+            if let Some(code) = event.code.as_deref() {
+                validate_native_key(code)?;
+            }
+        } else if event.key.is_some()
+            || event.code.is_some()
+            || event.alt_key
+            || event.ctrl_key
+            || event.meta_key
+            || event.shift_key
+        {
+            return Err(NativeEngineError::invalid(
+                "native host event keyboard metadata",
+                "keyboard fields require a keydown or keyup event",
+            ));
+        }
+        if event.submitter_node_index.is_some() && event.event_type != "submit" {
+            return Err(NativeEngineError::invalid(
+                "native host event submitter",
+                "submitter metadata requires a submit event",
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -12643,6 +12759,34 @@ fn dispatch_page_event_batch(
     events: &NativePageEventBatch,
 ) -> Result<(), NativeEngineError> {
     validate_page_event_batch(events)?;
+
+    if !events.host_events.is_empty() {
+        let payload =
+            serde_json::to_value(&events.host_events).map_err(|_| NativeEngineError::Worker {
+                operation: "serialize native host events".into(),
+                reason: "native host event metadata could not be serialized".into(),
+            })?;
+        let payload = native_structured_payload(&ctx, &payload, "native host events")?;
+        let dispatch: Function =
+            ctx.globals()
+                .get("__glassDispatchHostEvents")
+                .map_err(|error| NativeEngineError::Worker {
+                    operation: "dispatch native host events".into(),
+                    reason: format!(
+                        "native host event dispatcher was unavailable: {}",
+                        CaughtError::from_error(&ctx, error)
+                    ),
+                })?;
+        dispatch
+            .call::<_, Value>((payload,))
+            .map_err(|error| NativeEngineError::Worker {
+                operation: "dispatch native host events".into(),
+                reason: format!(
+                    "native host event dispatch failed: {}",
+                    CaughtError::from_error(&ctx, error)
+                ),
+            })?;
+    }
 
     // Keep the established task-source order: Service Worker client events,
     // MessagePort events, then dedicated/shared-worker events. Each function
@@ -13702,6 +13846,57 @@ mod native_window_proxy_tests {
         assert_eq!(
             evaluation.value,
             serde_json::json!([MAX_NATIVE_SCRIPT_BYTES, true, false])
+        );
+    }
+}
+
+#[cfg(test)]
+mod native_host_event_tests {
+    use super::*;
+
+    #[test]
+    fn host_key_event_batch_dispatches_quoted_metadata_without_source_interpolation() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("host-event-test")
+            .expect("native JavaScript runtime must construct");
+        let document = NativeDocument::empty();
+        let origin = NativeOrigin::Opaque;
+        let viewport = Viewport::default();
+        let key = "A\"'\\;";
+
+        runtime
+            .evaluate(
+                r#"globalThis.addEventListener('keydown', (event) => {
+                  globalThis.__seenHostKey = [event.key, event.code, event.altKey, event.ctrlKey, event.metaKey, event.shiftKey];
+                  event.preventDefault();
+                }); true"#,
+                &document,
+                "about:blank",
+                &origin,
+                viewport,
+            )
+            .expect("host key listener must install");
+
+        let events =
+            host_key_event_batch_with_modifiers(u32::MAX, NativeEventKind::KeyDown, key, 7)
+                .expect("host key metadata must validate")
+                .expect("host key metadata must not be empty");
+        let evaluation = runtime
+            .evaluate_with_host_events(&events, &document, "about:blank", &origin, viewport)
+            .expect("structured host key event must dispatch");
+
+        assert_eq!(evaluation.value, serde_json::json!([false]));
+        let seen = runtime
+            .evaluate(
+                "globalThis.__seenHostKey",
+                &document,
+                "about:blank",
+                &origin,
+                viewport,
+            )
+            .expect("host key metadata must remain observable");
+        assert_eq!(
+            seen.value,
+            serde_json::json!([key, key, true, true, true, false])
         );
     }
 }
@@ -27476,32 +27671,36 @@ fn document_bootstrap(
   }});
   defineTreeAccessors(document);
   globalThis.__glassHostDocument = document;
-  globalThis.__glassDispatchHostEvents = (events) => events.map((descriptor) => {{
-    const target = descriptor.node_index === 0
-      ? document
-      : descriptor.node_index === 4294967295
-        ? globalThis
-        : elements.find((element) => element.nodeIndex === descriptor.node_index) || null;
-    if (!target) throw new TypeError("native event target is detached");
-    const event = createEvent(descriptor.type, {{
-      bubbles: Boolean(descriptor.bubbles),
-      cancelable: Boolean(descriptor.cancelable),
-      persisted: Boolean(descriptor.persisted),
-      key: descriptor.key,
-      code: descriptor.code,
-      altKey: Boolean(descriptor.alt_key),
-      ctrlKey: Boolean(descriptor.ctrl_key),
-      metaKey: Boolean(descriptor.meta_key),
-      shiftKey: Boolean(descriptor.shift_key),
-      submitter: descriptor.submitter_node_index == null
-        ? null
-        : elements.find((element) => element.nodeIndex === descriptor.submitter_node_index) || null,
-      oldURL: descriptor.old_url,
-      newURL: descriptor.new_url,
+  globalThis.__glassDispatchHostEvents = (events) => {{
+    const results = events.map((descriptor) => {{
+      const target = descriptor.node_index === 0
+        ? document
+        : descriptor.node_index === 4294967295
+          ? globalThis
+          : elements.find((element) => element.nodeIndex === descriptor.node_index) || null;
+      if (!target) throw new TypeError("native event target is detached");
+      const event = createEvent(descriptor.type, {{
+        bubbles: Boolean(descriptor.bubbles),
+        cancelable: Boolean(descriptor.cancelable),
+        persisted: Boolean(descriptor.persisted),
+        key: descriptor.key,
+        code: descriptor.code,
+        altKey: Boolean(descriptor.alt_key),
+        ctrlKey: Boolean(descriptor.ctrl_key),
+        metaKey: Boolean(descriptor.meta_key),
+        shiftKey: Boolean(descriptor.shift_key),
+        submitter: descriptor.submitter_node_index == null
+          ? null
+          : elements.find((element) => element.nodeIndex === descriptor.submitter_node_index) || null,
+        oldURL: descriptor.old_url,
+        newURL: descriptor.new_url,
+      }});
+      if (event.type === "popstate" && globalThis.history) event.state = globalThis.history.state;
+      return dispatchTarget(target, event);
     }});
-    if (event.type === "popstate" && globalThis.history) event.state = globalThis.history.state;
-    return dispatchTarget(target, event);
-  }});
+    globalThis.__glassLastHostEventResults = results;
+    return results;
+  }};
   globalThis.__glassDispatchScriptError = (descriptor) => {{
     if (!descriptor || typeof descriptor !== "object") throw new TypeError("native script error is invalid");
     const message = String(descriptor.message || "");

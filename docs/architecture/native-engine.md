@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-379` slice. The native runtime is now the primary
+`native-engine-browser-380` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -614,6 +614,19 @@ transport, and the existing per-field, envelope, and host-turn limits remain
 unchanged; browser-wide task-source arbitration and the remaining Core Web
 Profile gates remain open. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-379.md`.
+
+Slice 380 removes generated-source coupling from ordinary browser-owned event
+delivery. Focus, click, submit, keyboard, form, lifecycle, validation, image,
+and scroll metadata now travels as bounded `NativeHostEvent` records through
+the local and content-process page-event boundary, and the installed
+`__glassDispatchHostEvents` function writes its boolean dispatch results for a
+static continuation. The existing default-prevention contract for click,
+submit, keydown, and beforeunload remains intact; event type, key, modifier,
+submitter, count, envelope, and host-turn limits remain enforced. The page
+owner still supplies DOM event-path behavior, while Rust owns target identity
+and validation. Browser-wide task-source arbitration and the remaining Core
+Web Profile gates remain open. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-380.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

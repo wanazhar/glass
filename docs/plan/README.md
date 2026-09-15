@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-379` locally. Native is now the default runtime for
+`native-engine-browser-380` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -315,6 +315,16 @@ coupling the update to authored JavaScript source; popup identity, navigation,
 close state, cache-key matching, content-process routing, and existing bounds
 remain intact. Browser-wide task-source arbitration and the remaining Core Web
 Profile gates remain active issue #40 work.
+
+The completed native host-event transport slice is
+[native-engine-browser-380](tasks/native-engine-browser-380.md): ordinary
+focus, click, submit, keyboard, form, lifecycle, validation, image, and scroll
+events now cross local and content-process page owners as bounded
+`NativeHostEvent` records and call the installed dispatcher through a static
+continuation. Default-prevention results for click, submit, keydown, and
+beforeunload remain intact, while event metadata no longer consumes authored
+JavaScript source budget. Browser-wide task-source arbitration and the
+remaining Core Web Profile gates remain active issue #40 work.
 
 The completed native visual-encoder slice is
 [native-engine-browser-332](tasks/native-engine-browser-332.md): the native

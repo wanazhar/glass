@@ -9492,6 +9492,35 @@ async fn native_local_fragment_navigation_dispatches_hashchange_without_reload()
 }
 
 #[tokio::test]
+async fn native_local_hashchange_accepts_large_urls_without_source_coupling() {
+    let initial_fragment = "a".repeat(8200);
+    let next_fragment = format!("{}b", "a".repeat(8199));
+    let initial_url = format!("fixture://hash-large#{initial_fragment}");
+    let next_url = format!("fixture://hash-large#{next_fragment}");
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://hash-large",
+            "<script>globalThis.hashEvents = []; addEventListener('hashchange', event => hashEvents.push([event.oldURL.length, event.newURL.length, event.oldURL.endsWith('a'), event.newURL.endsWith('b')]));</script><p>Large hash</p>",
+        )
+        .unwrap()
+        .with_initial_url(initial_url.clone());
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    engine.navigate_async(next_url.clone()).await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.hashEvents")
+            .await
+            .unwrap(),
+        serde_json::json!([[initial_url.len(), next_url.len(), true, true]])
+    );
+    assert_eq!(engine.snapshot().unwrap().url, next_url);
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_inline_modules_run_in_document_order() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -13880,7 +13909,7 @@ async fn native_content_process_fragment_navigation_dispatches_hashchange_in_pla
         let read = stream.read(&mut request).await.unwrap();
         let request = String::from_utf8_lossy(&request[..read]);
         assert_eq!(request.split_whitespace().nth(1), Some("/page"));
-        let body = "<script>globalThis.hashEvents = []; addEventListener('hashchange', (event) => hashEvents.push({ oldURL: event.oldURL, newURL: event.newURL, href: location.href }));</script><p id='target'>Hash target</p>";
+        let body = "<script>globalThis.hashEvents = []; addEventListener('hashchange', (event) => hashEvents.push([event.oldURL.length, event.newURL.length, event.oldURL.endsWith('a'), event.newURL.endsWith('b')]));</script><p id='target'>Hash target</p>";
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
@@ -13888,31 +13917,24 @@ async fn native_content_process_fragment_navigation_dispatches_hashchange_in_pla
         stream.write_all(response.as_bytes()).await.unwrap();
     });
 
-    let mut engine = NativeEngine::new(
-        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page#one")),
-    )
-    .unwrap();
+    let initial_fragment = "a".repeat(8200);
+    let next_fragment = format!("{}b", "a".repeat(8199));
+    let initial_url = format!("http://{address}/page#{initial_fragment}");
+    let next_url = format!("http://{address}/page#{next_fragment}");
+    let mut engine =
+        NativeEngine::new(NativeEngineConfig::default().with_initial_url(initial_url.clone()))
+            .unwrap();
     engine.initialize_async().await.unwrap();
     let before_navigation = engine.revision();
-    engine
-        .navigate_async(format!("http://{address}/page#two"))
-        .await
-        .unwrap();
+    engine.navigate_async(next_url.clone()).await.unwrap();
     assert_eq!(
         engine
             .evaluate_async("globalThis.hashEvents")
             .await
             .unwrap(),
-        serde_json::json!([{
-            "oldURL": format!("http://{address}/page#one"),
-            "newURL": format!("http://{address}/page#two"),
-            "href": format!("http://{address}/page#two")
-        }])
+        serde_json::json!([[initial_url.len(), next_url.len(), true, true]])
     );
-    assert_eq!(
-        engine.snapshot().unwrap().url,
-        format!("http://{address}/page#two")
-    );
+    assert_eq!(engine.snapshot().unwrap().url, next_url);
     let effects = engine.effects_since(before_navigation).unwrap().effects;
     assert!(
         effects

@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-377`, with native-first product
+expansion checkpoint is `native-engine-browser-378`, with native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
 CacheStorage request matching, CacheStorage response admission and atomic
@@ -254,6 +254,17 @@ replacement frame document. This preserves the existing same-origin, IPC,
 document-wire, and host-turn limits; global task-source arbitration and the
 remaining Core Web Profile gates remain open. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-377.md`. The
+completed Slice 378 removes generated-source coupling from hash-change
+delivery. Local and content-process fragment navigation now place validated
+old/new URL metadata in a `NativeHashChangeEvent` page-event batch and invoke
+the installed host-event dispatcher during a static `undefined;` continuation.
+8.2 KiB fragment witnesses pass through both owners; the prior generated
+dispatch source would exceed the 16 KiB authored-script source budget. The
+existing same-document history, handler re-entry, URL validation, IPC,
+document-wire, and host-turn bounds remain authoritative. Global task-source
+arbitration and the remaining Core Web Profile gates remain open. Exact
+evidence is recorded in
+`docs/plan/tasks/native-engine-browser-378.md`. The
 completed 234 slice carries bounded
 completed 234 slice carries bounded
 root-scroll sticky positioning through

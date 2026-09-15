@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-375` slice. The native runtime is now the primary
+`native-engine-browser-376` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -563,6 +563,17 @@ unchanged. The descriptor remains finite and text-projected, and browser-wide
 task-source arbitration plus the remaining Core Web Profile gates remain open.
 Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-375.md`.
+
+Slice 376 removes generated-source coupling from browser-owned cross-window
+message delivery. A `NativePageMessageEvent` carries validated source context,
+source origin, and structured-clone data through the local or content-process
+page-event batch; the installed `__glassDispatchMessage` function receives the
+parsed value directly. Local and HTTP(S) 20,000-byte witnesses pass without
+exceeding the 16 KiB authored-source budget. Origin filtering, WindowProxy
+source identity, finite message bounds, and serialized host-turn ownership
+remain unchanged. Browser-wide task-source arbitration and the remaining Core
+Web Profile gates remain open. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-376.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

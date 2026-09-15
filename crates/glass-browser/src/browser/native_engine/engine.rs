@@ -23,20 +23,19 @@ use super::javascript::{
     MAX_NATIVE_SCRIPT_BYTES, NativeCookieProfileEntry, NativeDialog, NativeFrameScriptBinding,
     NativeFrameScriptContext, NativeFrameScriptRequest, NativeIndexedDbChange,
     NativeIndexedDbState, NativeJavaScriptRuntime, NativeMessagePortPageMessage,
-    NativePageEventBatch, NativePageNavigation, NativePopupRequest, NativePostMessageRequest,
-    NativeScriptCommand, NativeScriptEvaluation, NativeServiceWorkerClientLease,
-    NativeServiceWorkerClientMessage, NativeServiceWorkerClientState,
-    NativeServiceWorkerOpenWindowRequest, NativeStorageEvent, NativeWebStorageState,
-    NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
-    NativeWorkerRegistry, append_storage_changes, apply_indexed_db_changes,
-    diff_indexed_db_changes, execute_dynamic_page_scripts, execute_inline_scripts,
-    frame_event_script, host_event_script, host_hash_change_event_script,
-    host_message_event_script, host_submit_event_script, load_indexed_db_profile,
-    load_service_worker_client_leases, load_web_storage_profile, new_storage_writer_id,
-    page_script_sources_to_scripts, read_storage_event_journal, register_storage_reader,
-    save_web_storage_profile, storage_event_cursor, storage_key,
-    unregister_service_worker_client_lease, unregister_storage_reader,
-    validate_service_worker_client_states,
+    NativePageEventBatch, NativePageMessageEvent, NativePageNavigation, NativePopupRequest,
+    NativePostMessageRequest, NativeScriptCommand, NativeScriptEvaluation,
+    NativeServiceWorkerClientLease, NativeServiceWorkerClientMessage,
+    NativeServiceWorkerClientState, NativeServiceWorkerOpenWindowRequest, NativeStorageEvent,
+    NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
+    NativeWindowProxyUpdate, NativeWorkerRegistry, append_storage_changes,
+    apply_indexed_db_changes, diff_indexed_db_changes, execute_dynamic_page_scripts,
+    execute_inline_scripts, frame_event_script, host_event_script, host_hash_change_event_script,
+    host_submit_event_script, load_indexed_db_profile, load_service_worker_client_leases,
+    load_web_storage_profile, new_storage_writer_id, page_script_sources_to_scripts,
+    read_storage_event_journal, register_storage_reader, save_web_storage_profile,
+    storage_event_cursor, storage_key, unregister_service_worker_client_lease,
+    unregister_storage_reader, validate_service_worker_client_states,
 };
 use super::layout::{NativeLayoutSnapshot, NativePoint, NativeRect};
 use super::lifecycle::NativeLifecycleState;
@@ -2828,11 +2827,17 @@ impl NativeEngine {
         data: &serde_json::Value,
     ) -> Result<(), NativeEngineError> {
         self.require_running("message event")?;
-        let Some(source) = host_message_event_script(source_context_id, source_origin, data)?
-        else {
-            return Ok(());
-        };
-        self.evaluate_async(source).await.map(|_| ())
+        let mut page_events = NativePageEventBatch::default();
+        page_events
+            .post_message_events
+            .push(NativePageMessageEvent {
+                source_context_id: source_context_id.to_owned(),
+                source_origin: source_origin.to_owned(),
+                data: data.clone(),
+            });
+        self.evaluate_page_with_events_async("undefined;".into(), page_events)
+            .await
+            .map(|_| ())
     }
 
     /// Resolve one queued JavaScript dialog without creating a browser or

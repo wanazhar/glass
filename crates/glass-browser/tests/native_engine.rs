@@ -3782,6 +3782,54 @@ async fn native_content_process_worker_fetch_resolves_inside_worker_realm() {
 }
 
 #[tokio::test]
+async fn native_content_process_worker_fetch_preserves_large_response_payload() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in [
+            "/worker-large-page",
+            "/worker-large.js",
+            "/worker-large-data",
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let (content_type, body) = match expected_path {
+                "/worker-large-page" => (
+                    "text/html",
+                    "<script>globalThis.workerMessages = []; globalThis.worker = new Worker('/worker-large.js'); worker.onmessage = event => workerMessages.push(event.data);</script>".to_owned(),
+                ),
+                "/worker-large.js" => (
+                    "text/javascript",
+                    "fetch('/worker-large-data').then(response => response.text()).then(text => postMessage({ length: text.length })).catch(error => postMessage({ error: String(error) }));".to_owned(),
+                ),
+                "/worker-large-data" => ("text/plain", "x".repeat(20_000)),
+                _ => unreachable!(),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/worker-large-page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine.evaluate_async("workerMessages").await.unwrap(),
+        serde_json::json!([{"length": 20_000}])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_registers_service_worker_and_intercepts_fetch_and_navigation() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3791,12 +3839,15 @@ async fn native_content_process_registers_service_worker_and_intercepts_fetch_an
             (
                 "/register",
                 "text/html",
-                "<!doctype html><html><body><script>globalThis.controllerChanges = 0; navigator.serviceWorker.addEventListener('controllerchange', () => controllerChanges++); globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script><main>registration page</main></body></html>",
+                Cow::Borrowed(
+                    "<!doctype html><html><body><script>globalThis.controllerChanges = 0; navigator.serviceWorker.addEventListener('controllerchange', () => controllerChanges++); globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script><main>registration page</main></body></html>",
+                ),
             ),
             (
                 "/sw.js",
                 "application/javascript",
-                r#"self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
+                Cow::Borrowed(
+                    r#"self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
 self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
 self.addEventListener('fetch', event => {
     const path = new URL(event.request.url).pathname;
@@ -3806,6 +3857,8 @@ self.addEventListener('fetch', event => {
       const all = await clients.matchAll({ includeUncontrolled: true, type: 'all' });
       const workers = await clients.matchAll({ type: 'worker' });
       const client = matched[0];
+      const nested = await fetch('/service-worker-large-data');
+      const nestedLength = (await nested.text()).length;
       const channel = new MessageChannel();
       client.postMessage({ kind: 'fetch-client', url: event.request.url }, {
         transfer: [channel.port1],
@@ -3814,6 +3867,7 @@ self.addEventListener('fetch', event => {
         matched: matched.length,
         all: all.length,
         workers: workers.length,
+        nestedLength,
         clientIdPresent: Boolean(client && client.id),
         eventClientIdPresent: Boolean(event.clientId),
         clientUrl: client && client.url,
@@ -3832,19 +3886,28 @@ self.addEventListener('fetch', event => {
     }));
   }
 });"#,
+                ),
+            ),
+            (
+                "/service-worker-large-data",
+                "text/plain",
+                Cow::Owned("x".repeat(20_000)),
             ),
             (
                 "/network",
                 "text/html",
-                "<!doctype html><html><body><main id='network'>network fallback</main></body></html>",
+                Cow::Borrowed(
+                    "<!doctype html><html><body><main id='network'>network fallback</main></body></html>",
+                ),
             ),
         ] {
             let (mut stream, _) = listener.accept().await.unwrap();
             let request = read_http_request(&mut stream).await;
             assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body.as_ref()
             );
             stream.write_all(response.as_bytes()).await.unwrap();
         }
@@ -3912,6 +3975,7 @@ self.addEventListener('fetch', event => {
                 "matched": 1,
                 "all": 1,
                 "workers": 0,
+                "nestedLength": 20_000,
                 "clientIdPresent": true,
                 "eventClientIdPresent": true,
                 "clientUrl": format!("http://{address}/app/page"),
@@ -5053,7 +5117,7 @@ async fn native_service_worker_cache_matching_options_filter_entries() {
                 "/sw.js",
                 "application/javascript",
                 r#"self.addEventListener('install', event => event.waitUntil(caches.open('matching').then(async cache => {
-  await cache.put(new Request('/asset?lang=en', { headers: { 'X-Variant': 'en' } }), new Response('english', {
+  await cache.put(new Request('/asset?lang=en', { headers: { 'X-Variant': 'en' } }), new Response('x'.repeat(20000), {
     headers: { 'Vary': 'X-Variant', 'X-Value': 'en' },
   }));
   await cache.put(new Request('/asset?lang=fr', { headers: { 'X-Variant': 'fr' } }), new Response('french', {
@@ -5077,10 +5141,10 @@ self.addEventListener('fetch', event => {
     const deleted = await cache.delete(new Request('/asset?lang=en', { headers: { 'X-Variant': 'fr' } }), { ignoreVary: true });
     const afterDelete = await cache.match(new Request('/asset?lang=en', { headers: { 'X-Variant': 'en' } }), { ignoreVary: true });
     return new Response(JSON.stringify({
-      exact: exact && await exact.text(),
-      queryless: queryless && await queryless.text(),
+      exact: exact && (await exact.text()).length,
+      queryless: queryless && (await queryless.text()).length,
       varyMiss: varyMiss ? await varyMiss.text() : null,
-      varyIgnored: varyIgnored && await varyIgnored.text(),
+      varyIgnored: varyIgnored && (await varyIgnored.text()).length,
       headDefault: Boolean(headDefault),
       headIgnored: headIgnored && await headIgnored.text(),
       keys: keys.map(request => request.url),
@@ -5122,10 +5186,10 @@ self.addEventListener('fetch', event => {
             .await
             .unwrap(),
         serde_json::json!({
-            "exact": "english",
-            "queryless": "english",
+            "exact": 20000,
+            "queryless": 20000,
             "varyMiss": null,
-            "varyIgnored": "english",
+            "varyIgnored": 20000,
             "headDefault": false,
             "headIgnored": "get-only",
             "keys": [format!("http://{address}/asset?lang=en")],

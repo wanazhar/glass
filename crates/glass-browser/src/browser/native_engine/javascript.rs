@@ -925,6 +925,18 @@ enum NativeWorkerDispatch<'a> {
         data: &'a serde_json::Value,
         transfer_ports: &'a [NativeMessagePortTransfer],
     },
+    Fetch {
+        request_id: u32,
+        payload: &'a serde_json::Value,
+    },
+    ServiceWorkerCache {
+        request_id: u32,
+        payload: &'a serde_json::Value,
+    },
+    ServiceWorkerOpenWindow {
+        request_id: u32,
+        payload: &'a serde_json::Value,
+    },
 }
 
 enum NativePageDispatch<'a> {
@@ -2190,11 +2202,11 @@ impl NativeWorkerRegistry {
             )),
             None => body.map(NativeRequestBody::Text),
         };
-        let (worker_url, import_script_counts) = {
+        let worker_url = {
             let worker = self.workers.get(&worker_id).ok_or_else(|| {
                 NativeEngineError::invalid("native Worker fetch", "worker no longer exists")
             })?;
-            (worker.url.clone(), worker.import_script_counts.clone())
+            worker.url.clone()
         };
         let result = loader
             .fetch_request_with_headers_async(NativeFetchRequest {
@@ -2219,29 +2231,13 @@ impl NativeWorkerRegistry {
                 "worker terminated while its fetch was in flight",
             )
         })?;
-        if worker.is_module {
-            let serialized =
-                serde_json::to_string(&payload).map_err(|_| NativeEngineError::Worker {
-                    operation: "serialize native Worker fetch response".into(),
-                    reason: "native Worker fetch response could not be serialized".into(),
-                })?;
-            let source = if serialized.len() > MAX_NATIVE_SCRIPT_BYTES {
-                format!(
-                    "globalThis.__glassResolveWorkerFetch({request_id}, {{ error: \"worker fetch response exceeded the script transfer limit\" }});"
-                )
-            } else {
-                format!("globalThis.__glassResolveWorkerFetch({request_id}, {serialized});")
-            };
-            worker.evaluate_turn(worker_id, &source)
-        } else {
-            worker.runtime.resolve_worker_fetch(
-                worker_id,
-                &worker_url,
+        worker.evaluate_turn_with_event(
+            worker_id,
+            NativeWorkerDispatch::Fetch {
                 request_id,
-                &payload,
-                &import_script_counts,
-            )
-        }
+                payload: &payload,
+            },
+        )
     }
 
     fn queue_error(
@@ -10926,34 +10922,6 @@ impl NativeJavaScriptRuntime {
         )
     }
 
-    pub(crate) fn resolve_worker_fetch(
-        &self,
-        worker_id: u32,
-        worker_url: &str,
-        request_id: u32,
-        payload: &serde_json::Value,
-        import_script_counts: &BTreeMap<String, usize>,
-    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
-        if request_id == 0 {
-            return Err(NativeEngineError::invalid(
-                "native Worker fetch request id",
-                "must be positive",
-            ));
-        }
-        let serialized = serde_json::to_string(payload).map_err(|_| NativeEngineError::Worker {
-            operation: "serialize native Worker fetch response".into(),
-            reason: "native Worker fetch response could not be serialized".into(),
-        })?;
-        let source = if serialized.len() > MAX_NATIVE_SCRIPT_BYTES {
-            format!(
-                "globalThis.__glassResolveWorkerFetch({request_id}, {{ error: \"worker fetch response exceeded the script transfer limit\" }});"
-            )
-        } else {
-            format!("globalThis.__glassResolveWorkerFetch({request_id}, {serialized});")
-        };
-        self.evaluate_worker(worker_id, worker_url, &source, import_script_counts)
-    }
-
     pub(crate) fn resolve_service_worker_fetch(
         &self,
         worker_id: u32,
@@ -10968,17 +10936,6 @@ impl NativeJavaScriptRuntime {
                 "must be positive",
             ));
         }
-        let serialized = serde_json::to_string(payload).map_err(|_| NativeEngineError::Worker {
-            operation: "serialize native service worker fetch response".into(),
-            reason: "native service worker fetch response could not be serialized".into(),
-        })?;
-        let source = if serialized.len() > MAX_NATIVE_SCRIPT_BYTES {
-            format!(
-                "globalThis.__glassResolveWorkerFetch({request_id}, {{ error: \"service worker fetch response exceeded the script transfer limit\" }});"
-            )
-        } else {
-            format!("globalThis.__glassResolveWorkerFetch({request_id}, {serialized});")
-        };
         let bootstrap = service_worker_bootstrap(
             worker_id,
             worker_url,
@@ -10987,8 +10944,18 @@ impl NativeJavaScriptRuntime {
             is_module,
             &self.service_worker_clients(),
         )?;
-        self.evaluate_worker_source_with_bootstrap(
-            worker_id, worker_url, None, &source, bootstrap, true, false,
+        self.evaluate_worker_source_with_bootstrap_and_event(
+            worker_id,
+            worker_url,
+            None,
+            "undefined;",
+            bootstrap,
+            true,
+            false,
+            Some(NativeWorkerDispatch::Fetch {
+                request_id,
+                payload,
+            }),
         )
     }
 
@@ -11006,17 +10973,6 @@ impl NativeJavaScriptRuntime {
                 "must be positive",
             ));
         }
-        let serialized = serde_json::to_string(payload).map_err(|_| NativeEngineError::Worker {
-            operation: "serialize native service worker cache response".into(),
-            reason: "native service worker cache response could not be serialized".into(),
-        })?;
-        let source = if serialized.len() > MAX_NATIVE_SCRIPT_BYTES {
-            format!(
-                "globalThis.__glassResolveServiceWorkerCache({request_id}, {{ error: \"service worker cache response exceeded the script transfer limit\" }});"
-            )
-        } else {
-            format!("globalThis.__glassResolveServiceWorkerCache({request_id}, {serialized});")
-        };
         let bootstrap = service_worker_bootstrap(
             worker_id,
             worker_url,
@@ -11025,8 +10981,18 @@ impl NativeJavaScriptRuntime {
             is_module,
             &self.service_worker_clients(),
         )?;
-        self.evaluate_worker_source_with_bootstrap(
-            worker_id, worker_url, None, &source, bootstrap, true, false,
+        self.evaluate_worker_source_with_bootstrap_and_event(
+            worker_id,
+            worker_url,
+            None,
+            "undefined;",
+            bootstrap,
+            true,
+            false,
+            Some(NativeWorkerDispatch::ServiceWorkerCache {
+                request_id,
+                payload,
+            }),
         )
     }
 
@@ -11044,17 +11010,6 @@ impl NativeJavaScriptRuntime {
                 "must be positive",
             ));
         }
-        let serialized = serde_json::to_string(payload).map_err(|_| NativeEngineError::Worker {
-            operation: "serialize native service worker openWindow response".into(),
-            reason: "native service worker openWindow response could not be serialized".into(),
-        })?;
-        let source = if serialized.len() > MAX_NATIVE_SCRIPT_BYTES {
-            format!(
-                "globalThis.__glassResolveServiceWorkerOpenWindow({request_id}, {{ error: \"service worker openWindow response exceeded the script transfer limit\" }});"
-            )
-        } else {
-            format!("globalThis.__glassResolveServiceWorkerOpenWindow({request_id}, {serialized});")
-        };
         let bootstrap = service_worker_bootstrap(
             worker_id,
             worker_url,
@@ -11063,8 +11018,18 @@ impl NativeJavaScriptRuntime {
             is_module,
             &self.service_worker_clients(),
         )?;
-        self.evaluate_worker_source_with_bootstrap(
-            worker_id, worker_url, None, &source, bootstrap, true, false,
+        self.evaluate_worker_source_with_bootstrap_and_event(
+            worker_id,
+            worker_url,
+            None,
+            "undefined;",
+            bootstrap,
+            true,
+            false,
+            Some(NativeWorkerDispatch::ServiceWorkerOpenWindow {
+                request_id,
+                payload,
+            }),
         )
     }
 
@@ -12754,7 +12719,67 @@ fn dispatch_worker_event(
                     ),
                 })?;
         }
+        NativeWorkerDispatch::Fetch {
+            request_id,
+            payload,
+        } => dispatch_worker_resolver(
+            &ctx,
+            "__glassResolveWorkerFetch",
+            "native Worker fetch response",
+            request_id,
+            payload,
+        )?,
+        NativeWorkerDispatch::ServiceWorkerCache {
+            request_id,
+            payload,
+        } => dispatch_worker_resolver(
+            &ctx,
+            "__glassResolveServiceWorkerCache",
+            "native service-worker cache response",
+            request_id,
+            payload,
+        )?,
+        NativeWorkerDispatch::ServiceWorkerOpenWindow {
+            request_id,
+            payload,
+        } => dispatch_worker_resolver(
+            &ctx,
+            "__glassResolveServiceWorkerOpenWindow",
+            "native service-worker openWindow response",
+            request_id,
+            payload,
+        )?,
     }
+    Ok(())
+}
+
+fn dispatch_worker_resolver(
+    ctx: &rquickjs::Ctx<'_>,
+    global_name: &str,
+    operation: &str,
+    request_id: u32,
+    payload: &serde_json::Value,
+) -> Result<(), NativeEngineError> {
+    let payload = native_fetch_payload(ctx, payload)?;
+    let resolve: Function =
+        ctx.globals()
+            .get(global_name)
+            .map_err(|error| NativeEngineError::Worker {
+                operation: format!("dispatch {operation}"),
+                reason: format!(
+                    "{global_name} was unavailable: {}",
+                    CaughtError::from_error(ctx, error)
+                ),
+            })?;
+    resolve
+        .call::<_, Value>((request_id, payload))
+        .map_err(|error| NativeEngineError::Worker {
+            operation: format!("dispatch {operation}"),
+            reason: format!(
+                "{operation} dispatch failed: {}",
+                CaughtError::from_error(ctx, error)
+            ),
+        })?;
     Ok(())
 }
 

@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-370` locally. Native is now the default runtime for
+`native-engine-browser-371` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -224,6 +224,16 @@ parsed values, allowing a 20,000-byte HTTP response to resolve without
 consuming the 16 KiB user-script source budget. Worker and Service Worker Fetch
 response continuations, stream event transport, and complete global task-source
 arbitration remain separate issue #40 gates.
+
+The completed native Worker response-dispatch slice is
+[native-engine-browser-371](tasks/native-engine-browser-371.md): dedicated,
+shared, and Service Worker Fetch continuations, CacheStorage response
+settlements, and `clients.openWindow()` settlements now enter installed worker
+resolvers as bounded parsed values through one structured host-turn boundary.
+20,000-byte Worker Fetch, Service Worker nested Fetch, and CacheStorage match
+payloads cross the process without consuming the 16 KiB user-script source
+budget; openWindow continuation coverage remains green. Stream event transport
+and complete global task-source arbitration remain separate issue #40 gates.
 
 The completed native visual-encoder slice is
 [native-engine-browser-332](tasks/native-engine-browser-332.md): the native

@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-370` slice. The native runtime is now the primary
+`native-engine-browser-371` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -505,9 +505,16 @@ envelope is capped at 16 MiB, and existing loader, body, header, opaque, and
 stream ownership limits remain authoritative. A process-backed 20,000-byte
 same-origin response and the existing same-origin POST/fetch regression prove
 that response settlement no longer fails at the 16 KiB authored-script limit.
-Worker and Service Worker response continuations, stream event transport, and
-complete global task-source arbitration remain separate issue #40 gates. Exact
-evidence is recorded in `docs/plan/tasks/native-engine-browser-370.md`.
+Slice 371 applies the same structured boundary to dedicated/shared Worker
+Fetch, Service Worker nested Fetch, CacheStorage response, and
+`clients.openWindow()` settlements. Each host response is parsed into a
+bounded QuickJS value and delivered to an installed resolver during a worker
+turn; the worker then evaluates only `undefined;`, so valid large bodies do
+not become executable source. Process-backed 20,000-byte Worker Fetch,
+Service Worker nested Fetch, and CacheStorage match witnesses pass alongside
+the openWindow continuation witness. Stream event transport and complete
+global task-source arbitration remain separate issue #40 gates. Exact
+evidence is recorded in `docs/plan/tasks/native-engine-browser-371.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-364` slice. The native runtime is now the primary
+`native-engine-browser-365` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -439,6 +439,18 @@ it. The cross-session and stale-release evidence is recorded in
 with a bounded idle-expiry window, and complete background event/task parity,
 multi-instance arbitration, and final Core Web Profile certification remain
 issue #40 gates.
+
+Slice 365 adds per-scope Service Worker registration persistence arbitration.
+Each content owner records the final profile or deletion tombstone for every
+registration scope it changed. Under the existing profile lock, the writer
+applies those scoped changes to the latest durable profile instead of replacing
+the complete registration vector with a stale local snapshot. Independent
+scopes therefore survive concurrent owner writes; repeated saves are
+idempotent and the in-memory change journal is cleared only after a successful
+commit. Same-scope conflicts remain explicitly last-writer-wins at the profile
+lock boundary, so full event-order arbitration and final Core Web Profile
+certification remain issue #40 gates. The deterministic merge/tombstone witness
+is recorded in `docs/plan/tasks/native-engine-browser-365.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

@@ -6000,7 +6000,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     &indexed_db_state,
                     &storage_events,
                     &indexed_db_changes,
-                    &service_workers,
+                    &mut service_workers,
                     &mut resource_loader,
                 )?;
                 write_value_frame(&mut stdout, &json!({"kind":"closed","id":id})).await?;
@@ -6064,7 +6064,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             &indexed_db_state,
             &storage_events,
             &indexed_db_changes,
-            &service_workers,
+            &mut service_workers,
             &mut resource_loader,
         )?;
         let mut response_dialogs = decode_dialogs(&response, "merge content process dialogs")?;
@@ -6262,7 +6262,7 @@ fn persist_content_profile(
     indexed_db_state: &NativeIndexedDbState,
     storage_events: &[NativeStorageEvent],
     indexed_db_changes: &[NativeIndexedDbChange],
-    service_workers: &NativeServiceWorkerRegistry,
+    service_workers: &mut NativeServiceWorkerRegistry,
     resource_loader: &mut Option<NativeResourceLoader>,
 ) -> Result<(), NativeEngineError> {
     let cookie_state = resource_loader
@@ -6283,11 +6283,15 @@ fn persist_content_profile(
         indexed_db_changes,
     )?;
     let registration_profiles = service_workers.registration_profiles();
+    let registration_changes = service_workers.registration_changes().clone();
     save_service_worker_cache_profile(
         storage_path,
         service_workers.cache_state(),
         &registration_profiles,
-    )
+        &registration_changes,
+    )?;
+    service_workers.clear_registration_changes();
+    Ok(())
 }
 
 fn refresh_content_runtime_cookie(

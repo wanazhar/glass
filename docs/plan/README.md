@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-364` locally. Native is now the default runtime for
+`native-engine-browser-365` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -166,6 +166,17 @@ owners are merged with the durable projection before normal operations. Lease
 heartbeats are operation-boundary updates with a bounded idle-expiry window;
 full background event/task parity, multi-instance arbitration, and final
 production certification remain active issue #40 gates.
+
+The completed native Service Worker registration merge slice is
+[native-engine-browser-365](tasks/native-engine-browser-365.md): content
+owners journal final per-scope registration profiles and deletion tombstones,
+and profile persistence applies those changes to the latest locked durable
+vector. Concurrent owners changing independent scopes no longer erase one
+another through stale whole-vector writes. The journal clears only after a
+successful commit; same-scope conflicts are explicitly last-writer-wins at the
+profile-lock boundary. Full cross-instance event ordering, background
+task-source parity, and final production certification remain active issue #40
+gates.
 
 The completed native visual-encoder slice is
 [native-engine-browser-332](tasks/native-engine-browser-332.md): the native

@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-364`, with native-first product
+expansion checkpoint is `native-engine-browser-365`, with native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
 CacheStorage request matching, CacheStorage response admission and atomic
@@ -125,7 +125,17 @@ witness is recorded in `docs/plan/tasks/native-engine-browser-364.md`. This
 is an operation-boundary lease model with a bounded idle-expiry window rather
 than an always-running heartbeat thread; complete background event/task parity,
 multi-instance arbitration, and production certification remain separate
-gates. The
+gates. The completed Slice 365 adds a scoped registration-change journal to
+each native content owner. Profile persistence now locks and reads the latest
+durable registration vector, applies only the changed scopes or tombstones, and
+commits the merged vector; a stale owner cannot erase an unrelated registration
+created by another owner. The journal is cleared after commit so a failed write
+can be retried without losing the intended change. This is bounded per-scope
+serialization with last-writer-wins for two owners changing the same scope, not
+full cross-instance event-order arbitration; the witness is recorded in
+`docs/plan/tasks/native-engine-browser-365.md`. Complete background event/task
+parity, richer transferables, full arbitration semantics, and production
+certification remain separate gates. The
 completed 234 slice carries bounded
 root-scroll sticky positioning through
 shared flow,

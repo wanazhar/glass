@@ -37,8 +37,8 @@ use super::javascript::{
     NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
     NativeWorkerEventSourceCommand, NativeWorkerMessage, NativeWorkerRegistry,
     NativeWorkerWebSocketCommand, diff_indexed_db_changes, execute_dynamic_page_scripts,
-    execute_page_scripts, host_event_script, host_key_event_script,
-    host_key_event_script_with_modifiers, host_submit_event_script,
+    execute_page_scripts, host_event_batch, host_key_event_batch,
+    host_key_event_batch_with_modifiers, host_submit_event_batch,
     literal_dynamic_module_specifiers, load_indexed_db_profile, load_service_worker_cache_profile,
     load_service_worker_registration_profiles, load_web_storage_profile, order_page_scripts,
     page_script_sources_to_scripts, save_service_worker_cache_profile, save_web_storage_profile,
@@ -7164,9 +7164,14 @@ fn mutate_click_with_event_preflight(
         .iter()
         .map(|(node, kind)| (node.index(), *kind))
         .collect::<Vec<_>>();
-    if let Some(source) = host_event_script(&focus_metadata)? {
-        let evaluation =
-            runtime.evaluate(&source, &next, document_url, document_origin, viewport)?;
+    if let Some(event_batch) = host_event_batch(&focus_metadata)? {
+        let evaluation = runtime.evaluate_with_host_events(
+            &event_batch,
+            &next,
+            document_url,
+            document_origin,
+            viewport,
+        )?;
         apply_content_event_history(
             &evaluation.commands,
             document_url,
@@ -7178,15 +7183,15 @@ fn mutate_click_with_event_preflight(
         events.extend(next.apply_script_commands(&evaluation.commands)?);
     }
 
-    let click_source =
-        host_event_script(&[(node_index, NativeEventKind::Click)])?.ok_or_else(|| {
+    let click_event_batch =
+        host_event_batch(&[(node_index, NativeEventKind::Click)])?.ok_or_else(|| {
             NativeEngineError::Worker {
                 operation: "content process click preflight".into(),
-                reason: "native click event source was empty".into(),
+                reason: "native click event batch was empty".into(),
             }
         })?;
-    let click_evaluation = runtime.evaluate(
-        &click_source,
+    let click_evaluation = runtime.evaluate_with_host_events(
+        &click_event_batch,
         &next,
         document_url,
         document_origin,
@@ -7313,13 +7318,18 @@ fn dispatch_submit_event(
     history: &mut Vec<NativeScriptCommand>,
     scroll_commands: &mut Vec<NativeScriptCommand>,
 ) -> Result<bool, NativeEngineError> {
-    let source = host_submit_event_script(form_id.index(), submitter.map(NativeNodeId::index))?
+    let event_batch = host_submit_event_batch(form_id.index(), submitter.map(NativeNodeId::index))?
         .ok_or_else(|| NativeEngineError::Worker {
             operation: "content process submit event".into(),
-            reason: "native submit event source was empty".into(),
+            reason: "native submit event batch was empty".into(),
         })?;
-    let evaluation =
-        runtime.evaluate(&source, document, document_url, document_origin, viewport)?;
+    let evaluation = runtime.evaluate_with_host_events(
+        &event_batch,
+        document,
+        document_url,
+        document_origin,
+        viewport,
+    )?;
     apply_content_event_history(
         &evaluation.commands,
         document_url,
@@ -7357,11 +7367,16 @@ fn dispatch_invalid_events(
         .iter()
         .map(|id| (id.index(), NativeEventKind::Invalid))
         .collect::<Vec<_>>();
-    let Some(source) = host_event_script(&metadata)? else {
+    let Some(event_batch) = host_event_batch(&metadata)? else {
         return Ok(());
     };
-    let evaluation =
-        runtime.evaluate(&source, document, document_url, document_origin, viewport)?;
+    let evaluation = runtime.evaluate_with_host_events(
+        &event_batch,
+        document,
+        document_url,
+        document_origin,
+        viewport,
+    )?;
     apply_content_event_history(
         &evaluation.commands,
         document_url,
@@ -7396,12 +7411,17 @@ fn mutate_type_with_event_bridge(
     let mut events = next.apply_type(node_id, text)?;
     let default_events = events.clone();
     for (event_node, event_kind) in default_events {
-        let source = host_event_script(&[(event_node.index(), event_kind)])?;
-        let Some(source) = source else {
+        let event_batch = host_event_batch(&[(event_node.index(), event_kind)])?;
+        let Some(event_batch) = event_batch else {
             continue;
         };
-        let evaluation =
-            runtime.evaluate(&source, &next, document_url, document_origin, viewport)?;
+        let evaluation = runtime.evaluate_with_host_events(
+            &event_batch,
+            &next,
+            document_url,
+            document_origin,
+            viewport,
+        )?;
         apply_content_event_history(
             &evaluation.commands,
             document_url,
@@ -7489,12 +7509,17 @@ fn mutate_form_action_with_event_bridge(
     };
     let default_events = events.clone();
     for (event_node, event_kind) in default_events {
-        let source = host_event_script(&[(event_node.index(), event_kind)])?;
-        let Some(source) = source else {
+        let event_batch = host_event_batch(&[(event_node.index(), event_kind)])?;
+        let Some(event_batch) = event_batch else {
             continue;
         };
-        let evaluation =
-            runtime.evaluate(&source, &next, document_url, document_origin, viewport)?;
+        let evaluation = runtime.evaluate_with_host_events(
+            &event_batch,
+            &next,
+            document_url,
+            document_origin,
+            viewport,
+        )?;
         apply_content_event_history(
             &evaluation.commands,
             document_url,
@@ -7567,13 +7592,13 @@ fn mutate_key_with_event_bridge(
     let mut history = Vec::new();
     let mut scroll_commands = Vec::new();
     let mut events = vec![(node_id, NativeEventKind::KeyDown)];
-    let keydown_source = host_key_event_script(node_index, NativeEventKind::KeyDown, key)?
+    let keydown_event_batch = host_key_event_batch(node_index, NativeEventKind::KeyDown, key)?
         .ok_or_else(|| NativeEngineError::Worker {
             operation: "content process keydown event bridge".into(),
-            reason: "native keydown event source was empty".into(),
+            reason: "native keydown event batch was empty".into(),
         })?;
-    let keydown = runtime.evaluate(
-        &keydown_source,
+    let keydown = runtime.evaluate_with_host_events(
+        &keydown_event_batch,
         &next,
         document_url,
         document_origin,
@@ -7606,12 +7631,17 @@ fn mutate_key_with_event_bridge(
         let input_events = next.apply_key_press(node_id, key)?;
         events.extend(input_events.clone());
         for (event_node, event_kind) in input_events {
-            let source = host_event_script(&[(event_node.index(), event_kind)])?;
-            let Some(source) = source else {
+            let event_batch = host_event_batch(&[(event_node.index(), event_kind)])?;
+            let Some(event_batch) = event_batch else {
                 continue;
             };
-            let evaluation =
-                runtime.evaluate(&source, &next, document_url, document_origin, viewport)?;
+            let evaluation = runtime.evaluate_with_host_events(
+                &event_batch,
+                &next,
+                document_url,
+                document_origin,
+                viewport,
+            )?;
             apply_content_event_history(
                 &evaluation.commands,
                 document_url,
@@ -7625,15 +7655,13 @@ fn mutate_key_with_event_bridge(
     }
 
     events.push((node_id, NativeEventKind::KeyUp));
-    let keyup_source =
-        host_key_event_script(node_index, NativeEventKind::KeyUp, key)?.ok_or_else(|| {
-            NativeEngineError::Worker {
-                operation: "content process keyup event bridge".into(),
-                reason: "native keyup event source was empty".into(),
-            }
+    let keyup_event_batch = host_key_event_batch(node_index, NativeEventKind::KeyUp, key)?
+        .ok_or_else(|| NativeEngineError::Worker {
+            operation: "content process keyup event bridge".into(),
+            reason: "native keyup event batch was empty".into(),
         })?;
-    let keyup = runtime.evaluate(
-        &keyup_source,
+    let keyup = runtime.evaluate_with_host_events(
+        &keyup_event_batch,
         &next,
         document_url,
         document_origin,
@@ -7717,12 +7745,18 @@ fn mutate_key_event_with_event_bridge(
     let mut next = current.clone();
     let mut history = Vec::new();
     let mut scroll_commands = Vec::new();
-    let source = host_key_event_script_with_modifiers(node_index, kind, key, modifiers)?
+    let event_batch = host_key_event_batch_with_modifiers(node_index, kind, key, modifiers)?
         .ok_or_else(|| NativeEngineError::Worker {
             operation: "content process key event bridge".into(),
-            reason: "native key event source was empty".into(),
+            reason: "native key event batch was empty".into(),
         })?;
-    let evaluation = runtime.evaluate(&source, &next, document_url, document_origin, viewport)?;
+    let evaluation = runtime.evaluate_with_host_events(
+        &event_batch,
+        &next,
+        document_url,
+        document_origin,
+        viewport,
+    )?;
     apply_content_event_history(
         &evaluation.commands,
         document_url,
@@ -7810,14 +7844,14 @@ fn mutate_key_shortcut_with_event_bridge(
     let mut next = current.clone();
     let mut history = Vec::new();
     let mut scroll_commands = Vec::new();
-    let keydown_source =
-        host_key_event_script_with_modifiers(node_index, NativeEventKind::KeyDown, key, modifiers)?
+    let keydown_event_batch =
+        host_key_event_batch_with_modifiers(node_index, NativeEventKind::KeyDown, key, modifiers)?
             .ok_or_else(|| NativeEngineError::Worker {
                 operation: "content process shortcut event bridge".into(),
-                reason: "native shortcut keydown source was empty".into(),
+                reason: "native shortcut keydown batch was empty".into(),
             })?;
-    let keydown = runtime.evaluate(
-        &keydown_source,
+    let keydown = runtime.evaluate_with_host_events(
+        &keydown_event_batch,
         &next,
         document_url,
         document_origin,
@@ -7850,12 +7884,17 @@ fn mutate_key_shortcut_with_event_bridge(
         };
         events.extend(default_events.clone());
         for (event_node, event_kind) in default_events {
-            let source = host_event_script(&[(event_node.index(), event_kind)])?;
-            let Some(source) = source else {
+            let event_batch = host_event_batch(&[(event_node.index(), event_kind)])?;
+            let Some(event_batch) = event_batch else {
                 continue;
             };
-            let evaluation =
-                runtime.evaluate(&source, &next, document_url, document_origin, viewport)?;
+            let evaluation = runtime.evaluate_with_host_events(
+                &event_batch,
+                &next,
+                document_url,
+                document_origin,
+                viewport,
+            )?;
             apply_content_event_history(
                 &evaluation.commands,
                 document_url,
@@ -7867,14 +7906,14 @@ fn mutate_key_shortcut_with_event_bridge(
             events.extend(next.apply_script_commands(&evaluation.commands)?);
         }
     }
-    let keyup_source =
-        host_key_event_script_with_modifiers(node_index, NativeEventKind::KeyUp, key, modifiers)?
+    let keyup_event_batch =
+        host_key_event_batch_with_modifiers(node_index, NativeEventKind::KeyUp, key, modifiers)?
             .ok_or_else(|| NativeEngineError::Worker {
-            operation: "content process shortcut event bridge".into(),
-            reason: "native shortcut keyup source was empty".into(),
-        })?;
-    let keyup = runtime.evaluate(
-        &keyup_source,
+                operation: "content process shortcut event bridge".into(),
+                reason: "native shortcut keyup batch was empty".into(),
+            })?;
+    let keyup = runtime.evaluate_with_host_events(
+        &keyup_event_batch,
         &next,
         document_url,
         document_origin,
@@ -8024,13 +8063,18 @@ fn dispatch_scroll_events(
         } else {
             u32::MAX
         };
-        let source = host_event_script(&[(event_node_index, NativeEventKind::Scroll)])?
+        let event_batch = host_event_batch(&[(event_node_index, NativeEventKind::Scroll)])?
             .ok_or_else(|| NativeEngineError::Worker {
                 operation: "content process scroll event".into(),
-                reason: "native scroll event source was empty".into(),
+                reason: "native scroll event batch was empty".into(),
             })?;
-        let evaluation =
-            runtime.evaluate(&source, document, document_url, document_origin, viewport)?;
+        let evaluation = runtime.evaluate_with_host_events(
+            &event_batch,
+            document,
+            document_url,
+            document_origin,
+            viewport,
+        )?;
         apply_content_event_history(
             &evaluation.commands,
             document_url,
@@ -8227,14 +8271,20 @@ fn mutate_before_unload(
     document_origin: &NativeOrigin,
     viewport: Viewport,
 ) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
-    let source =
-        host_event_script(&[(u32::MAX, NativeEventKind::BeforeUnload)])?.ok_or_else(|| {
+    let event_batch =
+        host_event_batch(&[(u32::MAX, NativeEventKind::BeforeUnload)])?.ok_or_else(|| {
             NativeEngineError::Worker {
                 operation: "content process beforeunload".into(),
-                reason: "beforeunload event source was empty".into(),
+                reason: "beforeunload event batch was empty".into(),
             }
         })?;
-    let evaluation = runtime.evaluate(&source, current, document_url, document_origin, viewport)?;
+    let evaluation = runtime.evaluate_with_host_events(
+        &event_batch,
+        current,
+        document_url,
+        document_origin,
+        viewport,
+    )?;
     let allowed = evaluation
         .value
         .as_array()
@@ -8337,11 +8387,17 @@ fn mutate_lifecycle_events(
         .iter()
         .map(|kind| (u32::MAX, *kind))
         .collect::<Vec<_>>();
-    let source = host_event_script(&metadata)?.ok_or_else(|| NativeEngineError::Worker {
+    let event_batch = host_event_batch(&metadata)?.ok_or_else(|| NativeEngineError::Worker {
         operation: "content process lifecycle events".into(),
-        reason: "lifecycle event metadata was empty".into(),
+        reason: "lifecycle event batch was empty".into(),
     })?;
-    let evaluation = runtime.evaluate(&source, current, document_url, document_origin, viewport)?;
+    let evaluation = runtime.evaluate_with_host_events(
+        &event_batch,
+        current,
+        document_url,
+        document_origin,
+        viewport,
+    )?;
     let mut next = current.clone();
     let mut history = Vec::new();
     let mut scroll_commands = extract_scroll_commands(&evaluation.commands);
@@ -8612,15 +8668,20 @@ async fn mutate_script_document(
         .map(|(id, _)| *id)
         .collect::<Vec<_>>();
     if !validation_ids.is_empty()
-        && let Some(source) = host_event_script(
+        && let Some(event_batch) = host_event_batch(
             &validation_ids
                 .iter()
                 .map(|id| (id.index(), NativeEventKind::Invalid))
                 .collect::<Vec<_>>(),
         )?
     {
-        let evaluation =
-            runtime.evaluate(&source, &next, &document_url, document_origin, viewport)?;
+        let evaluation = runtime.evaluate_with_host_events(
+            &event_batch,
+            &next,
+            &document_url,
+            document_origin,
+            viewport,
+        )?;
         apply_content_event_history(
             &evaluation.commands,
             &mut document_url,
@@ -8637,11 +8698,16 @@ async fn mutate_script_document(
         Vec::new()
     };
     for (node_index, event_kind) in image_events {
-        let Some(source) = host_event_script(&[(node_index, event_kind)])? else {
+        let Some(event_batch) = host_event_batch(&[(node_index, event_kind)])? else {
             continue;
         };
-        let evaluation =
-            runtime.evaluate(&source, &next, &document_url, document_origin, viewport)?;
+        let evaluation = runtime.evaluate_with_host_events(
+            &event_batch,
+            &next,
+            &document_url,
+            document_origin,
+            viewport,
+        )?;
         apply_content_event_history(
             &evaluation.commands,
             &mut document_url,

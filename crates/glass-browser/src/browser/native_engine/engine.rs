@@ -30,10 +30,11 @@ use super::javascript::{
     NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
     NativeWindowProxyUpdate, NativeWorkerRegistry, append_storage_changes,
     apply_indexed_db_changes, diff_indexed_db_changes, execute_dynamic_page_scripts,
-    execute_inline_scripts, frame_event_batch, host_event_script, host_submit_event_script,
-    load_indexed_db_profile, load_service_worker_client_leases, load_web_storage_profile,
-    new_storage_writer_id, page_script_sources_to_scripts, read_storage_event_journal,
-    register_storage_reader, save_web_storage_profile, storage_event_cursor, storage_key,
+    execute_inline_scripts, frame_event_batch, host_event_batch,
+    host_key_event_batch_with_modifiers, host_submit_event_batch, load_indexed_db_profile,
+    load_service_worker_client_leases, load_web_storage_profile, new_storage_writer_id,
+    page_script_sources_to_scripts, read_storage_event_journal, register_storage_reader,
+    save_web_storage_profile, storage_event_cursor, storage_key,
     unregister_service_worker_client_lease, unregister_storage_reader,
     validate_frame_script_command, validate_service_worker_client_states,
 };
@@ -4751,7 +4752,7 @@ impl NativeEngine {
             .iter()
             .map(|(node_id, kind)| (node_id.index(), *kind))
             .collect::<Vec<_>>();
-        let Some(source) = host_event_script(&event_metadata)? else {
+        let Some(event_batch) = host_event_batch(&event_metadata)? else {
             return Ok(None);
         };
         let Some(javascript) = self.javascript.as_ref() else {
@@ -4760,8 +4761,8 @@ impl NativeEngine {
         javascript.set_scroll_offset(self.scroll_offset);
         javascript.set_nested_scroll_offsets(self.nested_scroll_offsets.clone());
         self.sync_javascript_history();
-        let evaluation = javascript.evaluate(
-            &source,
+        let evaluation = javascript.evaluate_with_host_events(
+            &event_batch,
             document,
             &self.url,
             &self.origin,
@@ -4779,8 +4780,8 @@ impl NativeEngine {
         form_id: NativeNodeId,
         submitter: Option<NativeNodeId>,
     ) -> Result<Option<NativeScriptEvaluation>, NativeEngineError> {
-        let Some(source) =
-            host_submit_event_script(form_id.index(), submitter.map(NativeNodeId::index))?
+        let Some(event_batch) =
+            host_submit_event_batch(form_id.index(), submitter.map(NativeNodeId::index))?
         else {
             return Ok(None);
         };
@@ -4790,8 +4791,8 @@ impl NativeEngine {
         javascript.set_scroll_offset(self.scroll_offset);
         javascript.set_nested_scroll_offsets(self.nested_scroll_offsets.clone());
         self.sync_javascript_history();
-        let evaluation = javascript.evaluate(
-            &source,
+        let evaluation = javascript.evaluate_with_host_events(
+            &event_batch,
             document,
             &self.url,
             &self.origin,
@@ -4811,12 +4812,8 @@ impl NativeEngine {
         key: &str,
         modifiers: i64,
     ) -> Result<Option<NativeScriptEvaluation>, NativeEngineError> {
-        let Some(source) = super::javascript::host_key_event_script_with_modifiers(
-            node_id.index(),
-            kind,
-            key,
-            modifiers,
-        )?
+        let Some(event_batch) =
+            host_key_event_batch_with_modifiers(node_id.index(), kind, key, modifiers)?
         else {
             return Ok(None);
         };
@@ -4826,8 +4823,8 @@ impl NativeEngine {
         javascript.set_scroll_offset(self.scroll_offset);
         javascript.set_nested_scroll_offsets(self.nested_scroll_offsets.clone());
         self.sync_javascript_history();
-        let evaluation = javascript.evaluate(
-            &source,
+        let evaluation = javascript.evaluate_with_host_events(
+            &event_batch,
             document,
             &self.url,
             &self.origin,

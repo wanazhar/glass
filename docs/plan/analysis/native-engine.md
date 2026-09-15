@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-376`, with native-first product
+expansion checkpoint is `native-engine-browser-377`, with native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
 CacheStorage request matching, CacheStorage response admission and atomic
@@ -242,6 +242,18 @@ bounds, and serialized host-turn ownership remain unchanged. Browser-wide
 task-source arbitration and the remaining Core Web Profile gates remain open.
 Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-376.md`. The
+completed Slice 377 removes generated-source coupling from same-origin frame
+commands and child-frame event projection. The parent now sends typed frame
+event batches and frame command records through `NativePageEventBatch`; the
+receiving owner parses them once and calls the installed frame dispatch or
+command function during a static `undefined;` continuation. Frame IDs, node
+generations, event flags, command allowlists, and bounded command payloads are
+validated before dispatch. A process-backed 16.3 KiB `innerHTML` command
+crosses the former 16 KiB generated-source threshold and is read back from the
+replacement frame document. This preserves the existing same-origin, IPC,
+document-wire, and host-turn limits; global task-source arbitration and the
+remaining Core Web Profile gates remain open. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-377.md`. The
 completed 234 slice carries bounded
 completed 234 slice carries bounded
 root-scroll sticky positioning through

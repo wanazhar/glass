@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-376` slice. The native runtime is now the primary
+`native-engine-browser-377` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -574,6 +574,21 @@ source identity, finite message bounds, and serialized host-turn ownership
 remain unchanged. Browser-wide task-source arbitration and the remaining Core
 Web Profile gates remain open. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-376.md`.
+
+Slice 377 removes generated-source coupling from same-origin frame delivery.
+Child-frame event descriptors are represented by typed `NativeFrameEventBatch`
+records, and parent-issued frame DOM commands are carried in the page-event
+batch and dispatched through the installed `__glassDispatchFrameEvents`,
+`__glassApplyNativeCommand`, or `__glassQueueNativeCommands` functions. The
+static continuation preserves the existing child-owner ordering while frame
+IDs, node generations, event metadata, and command values remain data rather
+than JavaScript source. The HTTP frame witness commits a 16.3 KiB `innerHTML`
+value whose former generated command source was 16,393 bytes, above the 16 KiB
+authored-source limit. Command allowlists, per-command/batch bounds, same-origin
+checks, and IPC/document limits remain enforced; browser-wide task-source
+arbitration and the remaining Core Web Profile gates remain open. Exact
+evidence is recorded in
+`docs/plan/tasks/native-engine-browser-377.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

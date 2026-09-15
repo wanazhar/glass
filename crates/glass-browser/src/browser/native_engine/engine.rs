@@ -30,12 +30,13 @@ use super::javascript::{
     NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
     NativeWindowProxyUpdate, NativeWorkerRegistry, append_storage_changes,
     apply_indexed_db_changes, diff_indexed_db_changes, execute_dynamic_page_scripts,
-    execute_inline_scripts, frame_event_script, host_event_script, host_hash_change_event_script,
+    execute_inline_scripts, frame_event_batch, host_event_script, host_hash_change_event_script,
     host_submit_event_script, load_indexed_db_profile, load_service_worker_client_leases,
     load_web_storage_profile, new_storage_writer_id, page_script_sources_to_scripts,
     read_storage_event_journal, register_storage_reader, save_web_storage_profile,
     storage_event_cursor, storage_key, unregister_service_worker_client_lease,
-    unregister_storage_reader, validate_service_worker_client_states,
+    unregister_storage_reader, validate_frame_script_command,
+    validate_service_worker_client_states,
 };
 use super::layout::{NativeLayoutSnapshot, NativePoint, NativeRect};
 use super::lifecycle::NativeLifecycleState;
@@ -2783,8 +2784,12 @@ impl NativeEngine {
         &mut self,
         command: NativeScriptCommand,
     ) -> Result<(), NativeEngineError> {
-        let source = frame_script_command_source(&command)?;
-        self.evaluate_async(source).await.map(|_| ())
+        validate_frame_script_command(&command)?;
+        let mut page_events = NativePageEventBatch::default();
+        page_events.frame_script_commands.push(command);
+        self.evaluate_page_with_events_async("undefined;".into(), page_events)
+            .await
+            .map(|_| ())
     }
 
     pub(crate) async fn apply_frame_script_command_with_effects_async(
@@ -2814,10 +2819,14 @@ impl NativeEngine {
                 )
             })
             .collect::<Vec<_>>();
-        let Some(source) = frame_event_script(frame_id, &metadata)? else {
+        let Some(batch) = frame_event_batch(frame_id, &metadata)? else {
             return Ok(());
         };
-        self.evaluate_async(source).await.map(|_| ())
+        let mut page_events = NativePageEventBatch::default();
+        page_events.frame_event_batches.push(batch);
+        self.evaluate_page_with_events_async("undefined;".into(), page_events)
+            .await
+            .map(|_| ())
     }
 
     pub(crate) async fn dispatch_post_message(
@@ -7032,99 +7041,6 @@ struct PreparedNavigation {
     initial_events: Vec<(u32, NativeEventKind)>,
     initial_scroll_commands: Vec<NativeScriptCommand>,
     execute_inline_scripts: bool,
-}
-
-fn frame_script_command_source(command: &NativeScriptCommand) -> Result<String, NativeEngineError> {
-    let supported = match command {
-        NativeScriptCommand::FrameScriptBatch { commands } => {
-            if commands.is_empty() || commands.len() > MAX_NATIVE_EFFECTS {
-                return Err(NativeEngineError::limit(
-                    "same-origin frame script batch",
-                    MAX_NATIVE_EFFECTS,
-                    commands.len(),
-                ));
-            }
-            commands.iter().all(is_frame_script_batch_command)
-        }
-        _ => matches!(
-            command,
-            NativeScriptCommand::Focus { .. }
-                | NativeScriptCommand::Blur { .. }
-                | NativeScriptCommand::Click { .. }
-                | NativeScriptCommand::ClearFileInput { .. }
-                | NativeScriptCommand::SetValue { .. }
-                | NativeScriptCommand::SetSelection { .. }
-                | NativeScriptCommand::CanvasCommit { .. }
-                | NativeScriptCommand::SetChecked { .. }
-                | NativeScriptCommand::SetSelected { .. }
-                | NativeScriptCommand::SetAttribute { .. }
-                | NativeScriptCommand::RemoveAttribute { .. }
-                | NativeScriptCommand::SetTextContent { .. }
-                | NativeScriptCommand::SetDocumentTitle { .. }
-                | NativeScriptCommand::SetInnerHtml { .. }
-                | NativeScriptCommand::RemoveNode { .. }
-                | NativeScriptCommand::CreateElement { .. }
-                | NativeScriptCommand::CreateTextNode { .. }
-                | NativeScriptCommand::CreateComment { .. }
-                | NativeScriptCommand::CreateDocumentType { .. }
-                | NativeScriptCommand::AppendChild { .. }
-                | NativeScriptCommand::InsertBefore { .. }
-                | NativeScriptCommand::SetCustomValidity { .. }
-                | NativeScriptCommand::CheckValidity { .. }
-                | NativeScriptCommand::ReportValidity { .. }
-        ),
-    };
-    if !supported {
-        return Err(NativeEngineError::TargetNotActionable {
-            reason: "same-origin frame script command is not a DOM operation".into(),
-        });
-    }
-    let serialized = match command {
-        NativeScriptCommand::FrameScriptBatch { commands } => serde_json::to_string(commands),
-        _ => serde_json::to_string(command),
-    }
-    .map_err(|_| NativeEngineError::Worker {
-        operation: "serialize same-origin frame command".into(),
-        reason: "same-origin frame command could not be serialized".into(),
-    })?;
-    let source = if matches!(command, NativeScriptCommand::FrameScriptBatch { .. }) {
-        format!("globalThis.__glassQueueNativeCommands({serialized}); true")
-    } else {
-        format!("globalThis.__glassApplyNativeCommand({serialized}); true")
-    };
-    if source.len() > MAX_NATIVE_SCRIPT_BYTES {
-        return Err(NativeEngineError::limit(
-            "same-origin frame command source",
-            MAX_NATIVE_SCRIPT_BYTES,
-            source.len(),
-        ));
-    }
-    Ok(source)
-}
-
-fn is_frame_script_batch_command(command: &NativeScriptCommand) -> bool {
-    matches!(
-        command,
-        NativeScriptCommand::SetValue { .. }
-            | NativeScriptCommand::ClearFileInput { .. }
-            | NativeScriptCommand::SetSelection { .. }
-            | NativeScriptCommand::CanvasCommit { .. }
-            | NativeScriptCommand::SetChecked { .. }
-            | NativeScriptCommand::SetSelected { .. }
-            | NativeScriptCommand::SetAttribute { .. }
-            | NativeScriptCommand::RemoveAttribute { .. }
-            | NativeScriptCommand::SetTextContent { .. }
-            | NativeScriptCommand::SetDocumentTitle { .. }
-            | NativeScriptCommand::SetInnerHtml { .. }
-            | NativeScriptCommand::RemoveNode { .. }
-            | NativeScriptCommand::CreateElement { .. }
-            | NativeScriptCommand::CreateTextNode { .. }
-            | NativeScriptCommand::CreateComment { .. }
-            | NativeScriptCommand::CreateDocumentType { .. }
-            | NativeScriptCommand::AppendChild { .. }
-            | NativeScriptCommand::InsertBefore { .. }
-            | NativeScriptCommand::SetCustomValidity { .. }
-    )
 }
 
 fn native_download_filename(download_attribute: &str, url: &str) -> String {

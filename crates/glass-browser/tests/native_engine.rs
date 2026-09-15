@@ -7079,7 +7079,9 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
                 "/child" => {
                     "<!doctype html><!--frame-root--><html><head><script>addEventListener('message', event => { document.getElementById('inside').setAttribute('data-message', event.data.ok ? 'received' : 'bad'); document.getElementById('field').focus(); }); addEventListener('beforeunload', () => document.getElementById('trigger').click());</script></head><body><!--frame-body--><p id='inside' data-message='none'>same-origin <span id='old-child'>child</span></p><input id='field' value='before'><button id='trigger'></button></body></html>"
                 }
-                "/child-next" => "<html><body><p id='next'>navigated frame</p></body></html>",
+                "/child-next" => {
+                    "<html><body><p id='next'>navigated frame</p><p id='inside'></p></body></html>"
+                }
                 other => panic!("unexpected frame projection request path: {other}"),
             };
             let response = format!(
@@ -7634,6 +7636,22 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
             ["load", true, true, 2],
             ["pageshow", true, true, 2],
         ])
+    );
+    session
+        .script(
+            "(() => { const child = document.getElementById('child').contentDocument; child.getElementById('inside').innerHTML = 'x'.repeat(16300); return true; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script(
+                "document.getElementById('child').contentDocument.getElementById('inside').innerHTML.length",
+            )
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!(16300)
     );
     session.close().await.unwrap();
     server.await.unwrap();

@@ -147,7 +147,7 @@ pub(crate) const MAX_NATIVE_FETCH_STREAM_QUEUED_CHUNKS: usize = 32;
 const MAX_NATIVE_UNHANDLED_REJECTIONS: usize = 64;
 const MAX_NATIVE_UNHANDLED_REJECTION_REASON_CHARS: usize = 4096;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub(crate) enum NativeScriptCommand {
     Focus {
@@ -914,6 +914,27 @@ pub(crate) struct NativePageMessageEvent {
     pub(crate) data: serde_json::Value,
 }
 
+/// A bounded event observed by a child browsing context and delivered to its
+/// same-origin parent projection. Event metadata crosses the owner boundary
+/// as data so frame IDs and node generations never become JavaScript source.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct NativeFrameEvent {
+    pub(crate) node_index: u32,
+    pub(crate) generation: u32,
+    #[serde(rename = "type")]
+    pub(crate) event_type: String,
+    pub(crate) bubbles: bool,
+    pub(crate) cancelable: bool,
+    pub(crate) persisted: bool,
+}
+
+/// A bounded batch of frame events for one same-origin parent projection.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct NativeFrameEventBatch {
+    pub(crate) frame_id: String,
+    pub(crate) events: Vec<NativeFrameEvent>,
+}
+
 /// Page-facing events admitted for one JavaScript host turn. The payloads stay
 /// structured until they enter the already-installed QuickJS dispatch
 /// functions; concatenating their JSON into the user script would make a
@@ -928,6 +949,10 @@ pub(crate) struct NativePageEventBatch {
     pub(crate) service_worker_client_messages: Vec<NativeServiceWorkerClientMessage>,
     #[serde(default)]
     pub(crate) post_message_events: Vec<NativePageMessageEvent>,
+    #[serde(default)]
+    pub(crate) frame_event_batches: Vec<NativeFrameEventBatch>,
+    #[serde(default)]
+    pub(crate) frame_script_commands: Vec<NativeScriptCommand>,
 }
 
 enum NativeWorkerDispatch<'a> {
@@ -7926,14 +7951,14 @@ fn bounded_unhandled_promise_rejection_reason(reason: String) -> String {
         .collect()
 }
 
-/// Build the internal source used to project events from a child browsing
+/// Build the structured payload used to project events from a child browsing
 /// context into its same-origin parent realm. The child node identity remains
 /// data; the receiving realm resolves it against its own immutable binding
 /// snapshot before dispatching the event.
-pub(crate) fn frame_event_script(
+pub(crate) fn frame_event_batch(
     frame_id: &str,
     events: &[(u32, u32, NativeEventKind)],
-) -> Result<Option<String>, NativeEngineError> {
+) -> Result<Option<NativeFrameEventBatch>, NativeEngineError> {
     if events.is_empty() {
         return Ok(None);
     }
@@ -7945,7 +7970,7 @@ pub(crate) fn frame_event_script(
             events.len(),
         ));
     }
-    let descriptors = events
+    let events = events
         .iter()
         .map(|(node_index, generation, kind)| {
             let (event_type, bubbles, cancelable) = match kind {
@@ -7977,33 +8002,106 @@ pub(crate) fn frame_event_script(
                 NativeEventKind::Change => ("change", true, false),
                 NativeEventKind::Scroll => ("scroll", false, false),
             };
-            serde_json::json!({
-                "node_index": node_index,
-                "generation": generation,
-                "type": event_type,
-                "bubbles": bubbles,
-                "cancelable": cancelable,
-                "persisted": false,
-            })
+            NativeFrameEvent {
+                node_index: *node_index,
+                generation: *generation,
+                event_type: event_type.into(),
+                bubbles,
+                cancelable,
+                persisted: false,
+            }
         })
         .collect::<Vec<_>>();
-    let encoded = serde_json::to_string(&descriptors).map_err(|_| NativeEngineError::Worker {
-        operation: "serialize native frame event dispatch".into(),
-        reason: "native frame event metadata could not be serialized".into(),
+    Ok(Some(NativeFrameEventBatch {
+        frame_id: frame_id.to_owned(),
+        events,
+    }))
+}
+
+pub(crate) fn validate_frame_script_command(
+    command: &NativeScriptCommand,
+) -> Result<(), NativeEngineError> {
+    let supported = match command {
+        NativeScriptCommand::FrameScriptBatch { commands } => {
+            if commands.is_empty() || commands.len() > super::interaction::MAX_NATIVE_EFFECTS {
+                return Err(NativeEngineError::limit(
+                    "same-origin frame script batch",
+                    super::interaction::MAX_NATIVE_EFFECTS,
+                    commands.len(),
+                ));
+            }
+            commands.iter().all(is_frame_script_batch_command)
+        }
+        _ => matches!(
+            command,
+            NativeScriptCommand::Focus { .. }
+                | NativeScriptCommand::Blur { .. }
+                | NativeScriptCommand::Click { .. }
+                | NativeScriptCommand::ClearFileInput { .. }
+                | NativeScriptCommand::SetValue { .. }
+                | NativeScriptCommand::SetSelection { .. }
+                | NativeScriptCommand::CanvasCommit { .. }
+                | NativeScriptCommand::SetChecked { .. }
+                | NativeScriptCommand::SetSelected { .. }
+                | NativeScriptCommand::SetAttribute { .. }
+                | NativeScriptCommand::RemoveAttribute { .. }
+                | NativeScriptCommand::SetTextContent { .. }
+                | NativeScriptCommand::SetDocumentTitle { .. }
+                | NativeScriptCommand::SetInnerHtml { .. }
+                | NativeScriptCommand::RemoveNode { .. }
+                | NativeScriptCommand::CreateElement { .. }
+                | NativeScriptCommand::CreateTextNode { .. }
+                | NativeScriptCommand::CreateComment { .. }
+                | NativeScriptCommand::CreateDocumentType { .. }
+                | NativeScriptCommand::AppendChild { .. }
+                | NativeScriptCommand::InsertBefore { .. }
+                | NativeScriptCommand::SetCustomValidity { .. }
+                | NativeScriptCommand::CheckValidity { .. }
+                | NativeScriptCommand::ReportValidity { .. }
+        ),
+    };
+    if !supported {
+        return Err(NativeEngineError::TargetNotActionable {
+            reason: "same-origin frame script command is not a DOM operation".into(),
+        });
+    }
+    let encoded = serde_json::to_vec(command).map_err(|_| NativeEngineError::Worker {
+        operation: "serialize same-origin frame command".into(),
+        reason: "same-origin frame command could not be serialized".into(),
     })?;
-    let frame_id = serde_json::to_string(frame_id).map_err(|_| NativeEngineError::Worker {
-        operation: "serialize native frame event dispatch".into(),
-        reason: "native frame event context could not be serialized".into(),
-    })?;
-    let source = format!("globalThis.__glassDispatchFrameEvents({frame_id}, {encoded})");
-    if source.len() > MAX_NATIVE_SCRIPT_BYTES {
+    if encoded.len() > MAX_NATIVE_SCRIPT_COMMAND_BYTES {
         return Err(NativeEngineError::limit(
-            "native frame event dispatch",
-            MAX_NATIVE_SCRIPT_BYTES,
-            source.len(),
+            "same-origin frame command",
+            MAX_NATIVE_SCRIPT_COMMAND_BYTES,
+            encoded.len(),
         ));
     }
-    Ok(Some(source))
+    Ok(())
+}
+
+fn is_frame_script_batch_command(command: &NativeScriptCommand) -> bool {
+    matches!(
+        command,
+        NativeScriptCommand::SetValue { .. }
+            | NativeScriptCommand::ClearFileInput { .. }
+            | NativeScriptCommand::SetSelection { .. }
+            | NativeScriptCommand::CanvasCommit { .. }
+            | NativeScriptCommand::SetChecked { .. }
+            | NativeScriptCommand::SetSelected { .. }
+            | NativeScriptCommand::SetAttribute { .. }
+            | NativeScriptCommand::RemoveAttribute { .. }
+            | NativeScriptCommand::SetTextContent { .. }
+            | NativeScriptCommand::SetDocumentTitle { .. }
+            | NativeScriptCommand::SetInnerHtml { .. }
+            | NativeScriptCommand::RemoveNode { .. }
+            | NativeScriptCommand::CreateElement { .. }
+            | NativeScriptCommand::CreateTextNode { .. }
+            | NativeScriptCommand::CreateComment { .. }
+            | NativeScriptCommand::CreateDocumentType { .. }
+            | NativeScriptCommand::AppendChild { .. }
+            | NativeScriptCommand::InsertBefore { .. }
+            | NativeScriptCommand::SetCustomValidity { .. }
+    )
 }
 
 pub(crate) fn host_submit_event_script(
@@ -12396,6 +12494,11 @@ fn validate_page_event_batch(events: &NativePageEventBatch) -> Result<(), Native
             "native page message event batch",
             events.post_message_events.len(),
         ),
+        ("native frame event batch", events.frame_event_batches.len()),
+        (
+            "native frame script command batch",
+            events.frame_script_commands.len(),
+        ),
     ] {
         if count > MAX_NATIVE_WORKER_MESSAGES {
             return Err(NativeEngineError::limit(
@@ -12487,6 +12590,62 @@ fn validate_page_event_batch(events: &NativePageEventBatch) -> Result<(), Native
             }),
             "native page message event",
         )?;
+    }
+    for batch in &events.frame_event_batches {
+        validate_context_id(&batch.frame_id)?;
+        if batch.events.is_empty() {
+            return Err(NativeEngineError::invalid(
+                "native frame event batch",
+                "must contain at least one event",
+            ));
+        }
+        if batch.events.len() > super::interaction::MAX_NATIVE_EFFECTS {
+            return Err(NativeEngineError::limit(
+                "native frame events",
+                super::interaction::MAX_NATIVE_EFFECTS,
+                batch.events.len(),
+            ));
+        }
+        for event in &batch.events {
+            if !matches!(
+                event.event_type.as_str(),
+                "blur"
+                    | "focus"
+                    | "readystatechange"
+                    | "DOMContentLoaded"
+                    | "load"
+                    | "error"
+                    | "pagehide"
+                    | "unload"
+                    | "pageshow"
+                    | "beforeunload"
+                    | "hashchange"
+                    | "popstate"
+                    | "invalid"
+                    | "keydown"
+                    | "keyup"
+                    | "submit"
+                    | "click"
+                    | "mouseover"
+                    | "mouseenter"
+                    | "dragstart"
+                    | "dragenter"
+                    | "dragover"
+                    | "drop"
+                    | "dragend"
+                    | "input"
+                    | "change"
+                    | "scroll"
+            ) {
+                return Err(NativeEngineError::invalid(
+                    "native frame event type",
+                    "must be a supported native event",
+                ));
+            }
+        }
+    }
+    for command in &events.frame_script_commands {
+        validate_frame_script_command(command)?;
     }
     Ok(())
 }
@@ -12616,6 +12775,65 @@ fn dispatch_page_event_batch(
                 operation: "dispatch native page message event".into(),
                 reason: format!(
                     "native page message event dispatch failed: {}",
+                    CaughtError::from_error(&ctx, error)
+                ),
+            })?;
+    }
+    for batch in &events.frame_event_batches {
+        let payload =
+            serde_json::to_value(&batch.events).map_err(|_| NativeEngineError::Worker {
+                operation: "serialize native frame event batch".into(),
+                reason: "native frame event metadata could not be serialized".into(),
+            })?;
+        let payload = native_structured_payload(&ctx, &payload, "native frame event batch")?;
+        let dispatch: Function =
+            ctx.globals()
+                .get("__glassDispatchFrameEvents")
+                .map_err(|error| NativeEngineError::Worker {
+                    operation: "dispatch native frame events".into(),
+                    reason: format!(
+                        "native frame event dispatcher was unavailable: {}",
+                        CaughtError::from_error(&ctx, error)
+                    ),
+                })?;
+        dispatch
+            .call::<_, Value>((batch.frame_id.as_str(), payload))
+            .map_err(|error| NativeEngineError::Worker {
+                operation: "dispatch native frame events".into(),
+                reason: format!(
+                    "native frame event dispatch failed: {}",
+                    CaughtError::from_error(&ctx, error)
+                ),
+            })?;
+    }
+    for command in &events.frame_script_commands {
+        let (global_name, value) = match command {
+            NativeScriptCommand::FrameScriptBatch { commands } => {
+                ("__glassQueueNativeCommands", serde_json::to_value(commands))
+            }
+            _ => ("__glassApplyNativeCommand", serde_json::to_value(command)),
+        };
+        let value = value.map_err(|_| NativeEngineError::Worker {
+            operation: "serialize native frame script command".into(),
+            reason: "native frame script command could not be serialized".into(),
+        })?;
+        let value = native_structured_payload(&ctx, &value, "native frame script command")?;
+        let dispatch: Function =
+            ctx.globals()
+                .get(global_name)
+                .map_err(|error| NativeEngineError::Worker {
+                    operation: "dispatch native frame script command".into(),
+                    reason: format!(
+                        "{global_name} was unavailable: {}",
+                        CaughtError::from_error(&ctx, error)
+                    ),
+                })?;
+        dispatch
+            .call::<_, Value>((value,))
+            .map_err(|error| NativeEngineError::Worker {
+                operation: "dispatch native frame script command".into(),
+                reason: format!(
+                    "native frame script command dispatch failed: {}",
                     CaughtError::from_error(&ctx, error)
                 ),
             })?;

@@ -970,6 +970,9 @@ enum NativePageDispatch<'a> {
         stream_id: u32,
         payload: &'a serde_json::Value,
     },
+    ScriptError {
+        payload: &'a serde_json::Value,
+    },
     ServiceWorkerRegistration {
         request_id: u32,
         payload: &'a serde_json::Value,
@@ -5905,30 +5908,28 @@ pub(crate) fn execute_page_scripts(
                 if let Some(node_index) = script_node_index {
                     failed_script_nodes.insert(node_index);
                     let message = page_script_error_message(&error);
-                    if let Some(event_source) =
-                        host_script_error_event_script(Some(node_index), &message, document_url)?
-                    {
-                        let error_evaluation = runtime
-                            .as_ref()
-                            .expect("page script runtime initialized")
-                            .evaluate(
-                                &event_source,
-                                document,
-                                document_url,
-                                document_origin,
-                                viewport,
-                            )?;
-                        apply_page_script_evaluation(
+                    let error_evaluation = runtime
+                        .as_ref()
+                        .expect("page script runtime initialized")
+                        .dispatch_script_error_event(
+                            Some(node_index),
+                            &message,
+                            document_url,
                             document,
-                            error_evaluation,
-                            &mut pending_fetches,
-                            &mut websocket_commands,
-                            &mut event_source_commands,
-                            &mut scroll_commands,
-                            &mut navigation,
+                            document_url,
+                            document_origin,
+                            viewport,
                         )?;
-                        events.push((node_index, NativeEventKind::Error));
-                    }
+                    apply_page_script_evaluation(
+                        document,
+                        error_evaluation,
+                        &mut pending_fetches,
+                        &mut websocket_commands,
+                        &mut event_source_commands,
+                        &mut scroll_commands,
+                        &mut navigation,
+                    )?;
+                    events.push((node_index, NativeEventKind::Error));
                 }
                 continue;
             }
@@ -6150,35 +6151,33 @@ pub(crate) fn execute_dynamic_page_scripts(
                 if let Some(node_index) = node_index {
                     failed_script_nodes.insert(node_index);
                     let message = page_script_error_message(&error);
-                    if let Some(event_source) =
-                        host_script_error_event_script(Some(node_index), &message, document_url)?
-                    {
-                        let error_evaluation = runtime.evaluate(
-                            &event_source,
-                            document,
-                            document_url,
-                            document_origin,
-                            viewport,
-                        )?;
-                        let commands = error_evaluation.commands.clone();
-                        apply_page_script_evaluation(
-                            document,
-                            error_evaluation,
-                            &mut pending_fetches,
-                            &mut websocket_commands,
-                            &mut event_source_commands,
-                            &mut scroll_commands,
-                            &mut navigation,
-                        )?;
-                        enqueue_dynamic_page_scripts(
-                            document,
-                            &commands,
-                            document_url,
-                            &mut pending,
-                            &mut pending_script_sources,
-                        )?;
-                        events.push((node_index, NativeEventKind::Error));
-                    }
+                    let error_evaluation = runtime.dispatch_script_error_event(
+                        Some(node_index),
+                        &message,
+                        document_url,
+                        document,
+                        document_url,
+                        document_origin,
+                        viewport,
+                    )?;
+                    let commands = error_evaluation.commands.clone();
+                    apply_page_script_evaluation(
+                        document,
+                        error_evaluation,
+                        &mut pending_fetches,
+                        &mut websocket_commands,
+                        &mut event_source_commands,
+                        &mut scroll_commands,
+                        &mut navigation,
+                    )?;
+                    enqueue_dynamic_page_scripts(
+                        document,
+                        &commands,
+                        document_url,
+                        &mut pending,
+                        &mut pending_script_sources,
+                    )?;
+                    events.push((node_index, NativeEventKind::Error));
                 }
                 continue;
             }
@@ -6273,35 +6272,33 @@ pub(crate) fn execute_dynamic_page_scripts(
             Err(error) if is_ignorable_page_script_error(&error) => {
                 if let Some(node_index) = node_index {
                     let message = page_script_error_message(&error);
-                    if let Some(event_source) =
-                        host_script_error_event_script(Some(node_index), &message, document_url)?
-                    {
-                        let error_evaluation = runtime.evaluate(
-                            &event_source,
-                            document,
-                            document_url,
-                            document_origin,
-                            viewport,
-                        )?;
-                        let commands = error_evaluation.commands.clone();
-                        apply_page_script_evaluation(
-                            document,
-                            error_evaluation,
-                            &mut pending_fetches,
-                            &mut websocket_commands,
-                            &mut event_source_commands,
-                            &mut scroll_commands,
-                            &mut navigation,
-                        )?;
-                        enqueue_dynamic_page_scripts(
-                            document,
-                            &commands,
-                            document_url,
-                            &mut pending,
-                            &mut pending_script_sources,
-                        )?;
-                        events.push((node_index, NativeEventKind::Error));
-                    }
+                    let error_evaluation = runtime.dispatch_script_error_event(
+                        Some(node_index),
+                        &message,
+                        document_url,
+                        document,
+                        document_url,
+                        document_origin,
+                        viewport,
+                    )?;
+                    let commands = error_evaluation.commands.clone();
+                    apply_page_script_evaluation(
+                        document,
+                        error_evaluation,
+                        &mut pending_fetches,
+                        &mut websocket_commands,
+                        &mut event_source_commands,
+                        &mut scroll_commands,
+                        &mut navigation,
+                    )?;
+                    enqueue_dynamic_page_scripts(
+                        document,
+                        &commands,
+                        document_url,
+                        &mut pending,
+                        &mut pending_script_sources,
+                    )?;
+                    events.push((node_index, NativeEventKind::Error));
                 }
                 continue;
             }
@@ -7907,36 +7904,6 @@ pub(crate) fn host_event_script(
     host_event_script_with_submitters(&events)
 }
 
-/// Build the internal source used to report an uncaught page-script failure.
-/// The event metadata is serialized as data, and the host creates the
-/// `ErrorEvent` plus its bounded `Error` value inside the page realm.
-pub(crate) fn host_script_error_event_script(
-    node_index: Option<u32>,
-    message: &str,
-    filename: &str,
-) -> Result<Option<String>, NativeEngineError> {
-    let descriptor = serde_json::json!({
-        "node_index": node_index,
-        "message": message,
-        "filename": filename,
-        "lineno": 0,
-        "colno": 0,
-    });
-    let encoded = serde_json::to_string(&descriptor).map_err(|_| NativeEngineError::Worker {
-        operation: "serialize native script error event".into(),
-        reason: "native script error event metadata could not be serialized".into(),
-    })?;
-    let source = format!("globalThis.__glassDispatchScriptError({encoded})");
-    if source.len() > MAX_NATIVE_SCRIPT_BYTES {
-        return Err(NativeEngineError::limit(
-            "native script error event",
-            MAX_NATIVE_SCRIPT_BYTES,
-            source.len(),
-        ));
-    }
-    Ok(Some(source))
-}
-
 fn bounded_unhandled_promise_rejection_reason(reason: String) -> String {
     reason
         .chars()
@@ -9205,6 +9172,34 @@ impl NativeJavaScriptRuntime {
                 stream_id,
                 payload: event,
             }),
+        )
+    }
+
+    pub(crate) fn dispatch_script_error_event(
+        &self,
+        node_index: Option<u32>,
+        message: &str,
+        filename: &str,
+        document: &NativeDocument,
+        document_url: &str,
+        origin: &NativeOrigin,
+        viewport: Viewport,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        let payload = serde_json::json!({
+            "node_index": node_index,
+            "message": message,
+            "filename": filename,
+            "lineno": 0,
+            "colno": 0,
+        });
+        self.evaluate_with_page_events_and_dispatch(
+            "undefined;",
+            document,
+            document_url,
+            origin,
+            viewport,
+            &NativePageEventBatch::default(),
+            Some(NativePageDispatch::ScriptError { payload: &payload }),
         )
     }
 
@@ -12657,6 +12652,12 @@ fn dispatch_page_payload(
             request_id,
             payload,
         )?,
+        NativePageDispatch::ScriptError { payload } => dispatch_page_callback(
+            &ctx,
+            "__glassDispatchScriptError",
+            "native script error event",
+            payload,
+        )?,
     }
     Ok(())
 }
@@ -12681,6 +12682,35 @@ fn dispatch_page_resolver(
             })?;
     resolve
         .call::<_, Value>((identifier, payload))
+        .map_err(|error| NativeEngineError::Worker {
+            operation: format!("dispatch {operation}"),
+            reason: format!(
+                "{operation} dispatch failed: {}",
+                CaughtError::from_error(ctx, error)
+            ),
+        })?;
+    Ok(())
+}
+
+fn dispatch_page_callback(
+    ctx: &rquickjs::Ctx<'_>,
+    global_name: &str,
+    operation: &str,
+    payload: &serde_json::Value,
+) -> Result<(), NativeEngineError> {
+    let payload = native_structured_payload(ctx, payload, operation)?;
+    let dispatch: Function =
+        ctx.globals()
+            .get(global_name)
+            .map_err(|error| NativeEngineError::Worker {
+                operation: format!("dispatch {operation}"),
+                reason: format!(
+                    "{global_name} was unavailable: {}",
+                    CaughtError::from_error(ctx, error)
+                ),
+            })?;
+    dispatch
+        .call::<_, Value>((payload,))
         .map_err(|error| NativeEngineError::Worker {
             operation: format!("dispatch {operation}"),
             reason: format!(

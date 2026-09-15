@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-374` locally. Native is now the default runtime for
+`native-engine-browser-375` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -266,6 +266,15 @@ the authored-script source budget; existing rejection event identity,
 cancelability, ordering, and handler behavior remain green. Browser-wide
 task-source arbitration and the remaining Core Web Profile gates remain
 active issue #40 work.
+
+The completed native page script-error dispatch slice is
+[native-engine-browser-375](tasks/native-engine-browser-375.md): page script
+error descriptors now enter the installed `ErrorEvent` dispatcher as bounded
+parsed values rather than generated source. A five-error batch with
+4,096-character messages passes without consuming the authored-script source
+budget, while document continuation and existing error listener semantics
+remain green. Browser-wide task-source arbitration and the remaining Core Web
+Profile gates remain active issue #40 work.
 
 The completed native visual-encoder slice is
 [native-engine-browser-332](tasks/native-engine-browser-332.md): the native

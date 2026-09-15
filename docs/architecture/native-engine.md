@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-374` slice. The native runtime is now the primary
+`native-engine-browser-375` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -552,6 +552,17 @@ identity for rejected values or make reason text unbounded; browser-wide
 task-source arbitration and remaining Core Web Profile gates remain open.
 Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-374.md`.
+
+Slice 375 removes generated-source coupling from page script-error delivery.
+Each bounded error descriptor is parsed as a QuickJS value and passed directly
+to `__glassDispatchScriptError` during the existing script continuation turn.
+A five-error batch with 4,096-character messages crosses the local runtime
+without exceeding the 16 KiB authored-source budget; the existing target
+error, window error, document continuation, and module-error behavior remain
+unchanged. The descriptor remains finite and text-projected, and browser-wide
+task-source arbitration plus the remaining Core Web Profile gates remain open.
+Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-375.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

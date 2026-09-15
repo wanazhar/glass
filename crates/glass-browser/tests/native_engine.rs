@@ -14648,6 +14648,38 @@ async fn native_local_inline_script_failure_dispatches_error_without_aborting_do
 }
 
 #[tokio::test]
+async fn native_local_dispatches_large_script_error_batch_as_data() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://large-script-error-batch",
+            r#"
+                <script>
+                    globalThis.errorLengths = [];
+                    window.addEventListener('error', event => errorLengths.push(event.message.length));
+                </script>
+                <script>throw new Error('x'.repeat(4096));</script>
+                <script>throw new Error('x'.repeat(4096));</script>
+                <script>throw new Error('x'.repeat(4096));</script>
+                <script>throw new Error('x'.repeat(4096));</script>
+                <script>throw new Error('x'.repeat(4096));</script>
+                <main>Large script error batch</main>
+            "#,
+        )
+        .unwrap()
+        .with_initial_url("fixture://large-script-error-batch");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("[errorLengths.length, errorLengths.every(length => length >= 4000)]")
+            .await
+            .unwrap(),
+        serde_json::json!([5, true])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_unhandled_rejection_dispatches_window_event() {
     let config = NativeEngineConfig::default()
         .with_fixture(

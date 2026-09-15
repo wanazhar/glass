@@ -49435,6 +49435,50 @@ async fn native_content_process_exposes_bounded_same_origin_post_fetch() {
 }
 
 #[tokio::test]
+async fn native_content_process_fetch_response_delivery_preserves_large_payloads() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let large_body = "x".repeat(20_000);
+    let expected_body = large_body.clone();
+    let server = tokio::spawn(async move {
+        let responses = vec![
+            (
+                "/page",
+                "text/html".to_owned(),
+                "<p>Fetch owner</p>".to_owned(),
+            ),
+            ("/large-fetch", "text/plain".to_owned(), large_body),
+        ];
+        for (expected_path, content_type, body) in responses {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("await fetch('/large-fetch').then(response => response.text())")
+            .await
+            .unwrap(),
+        serde_json::json!(expected_body)
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_exposes_bounded_xhr_fetch_bridge() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

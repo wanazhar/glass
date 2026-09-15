@@ -954,13 +954,11 @@ impl NativeEngine {
                 )
                 .await?
             else {
-                self.content_process.take();
-                self.pending_service_worker_open_windows.clear();
-                return Err(NativeEngineError::Worker {
-                    operation: "initial native navigation".into(),
-                    reason: "initial navigation is waiting for a service worker WindowClient"
-                        .into(),
-                });
+                let worker = NativeRuntimeWorker::spawn_shared(self.runtime.clone())?;
+                worker.start().await?;
+                self.runtime_worker = Some(worker);
+                self.lifecycle = NativeLifecycleState::Running;
+                return Ok(());
             };
             if !self.is_same_document_navigation(&content.url)
                 && !self.allows_frame_navigation(&content.url)?

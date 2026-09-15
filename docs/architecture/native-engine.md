@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-361` slice. The native runtime is now the primary
+`native-engine-browser-362` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -400,6 +400,18 @@ state. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-361.md`; richer transferables,
 registration arbitration, durable live-client leases, complete task-source
 conformance, and final Core Web Profile certification remain issue #40 gates.
+
+Slice 362 extends the same fetch-navigation suspension handoff to native
+startup. A restored Service Worker may intercept the configured initial URL,
+await `clients.openWindow()`, and keep its content process and request alive
+while the browser owner creates the parked target. Initialization now enters
+the running state with that bounded effect queued, allowing the normal
+browser-effect scheduler to resolve the worker and commit the resumed
+document. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-362.md`; browser-wide registration
+arbitration, durable live-client leases, richer transferables, complete
+task-source conformance, and final Core Web Profile certification remain
+issue #40 gates.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

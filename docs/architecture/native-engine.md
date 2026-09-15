@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-383` slice. The native runtime is now the primary
+`native-engine-browser-384` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -65,8 +65,8 @@ realms. `MessageChannel` creates bounded entangled `MessagePort` pairs with
 cloned asynchronous delivery, `start()`/`close()`, handler and listener
 dispatch, and stable `EventTarget`/`MessageEvent` identity. `BroadcastChannel`
 delivers cloned messages asynchronously to other open same-name channels in the
-owning realm. Existing QuickJS microtask ownership provides ordering and the
-existing message-size boundary rejects cyclic or over-sized payloads and
+    owning realm. At the 335 checkpoint, the JSON-only message-size boundary
+    rejected cyclic or over-sized payloads and
 non-empty transferable lists. Cross-context port transfer is covered by slice
 337; richer transferable types, shared workers, and full task-source scheduling
 remain issue #40 promotion work.
@@ -658,6 +658,20 @@ programs. Timer ordering, due-time calculation, and the existing clock and
 queue bounds remain unchanged; browser-wide task-source arbitration and the
 remaining Core Web Profile gates remain open. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-383.md`.
+
+Slice 384 replaces message transport's JSON-only value projection with a
+bounded tagged structured-clone graph. Page, dedicated/shared worker, service
+worker, MessagePort, BroadcastChannel, and WindowProxy message paths now
+preserve `undefined`, non-finite and negative-zero numbers, BigInt, Date,
+RegExp, Map, Set, cycles, shared object identity, ArrayBuffer, typed-array and
+DataView views, Blob/File metadata and bytes, and Error values across the
+native JSON-framed boundary. Local deliveries decode a fresh graph per
+recipient, while transferred MessagePort descriptors retain their existing
+owner-routed bridge. Functions, symbols, Promise-like objects,
+SharedArrayBuffer, and ArrayBuffer transfer/detachment remain explicit
+DataCloneError or follow-up gates; browser-wide task-source arbitration and
+final Core Web Profile certification remain open. Exact evidence is recorded
+in `docs/plan/tasks/native-engine-browser-384.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-
@@ -7200,7 +7214,8 @@ dedicated-worker owner. Page-created classic `Worker` objects emit typed
 create/post/terminate/close commands; the shared native registry loads local
 fixture or HTTP(S) worker source through the existing resource and
 `worker-src` policy path, executes each worker in an isolated bounded QuickJS
-realm, and queues bounded JSON-backed message/error events for the owning page.
+    realm, and queues bounded JSON-framed tagged structured-clone message/error
+    events for the owning page.
 Initial page scripts, ordinary evaluations, and dynamically attached scripts
 are covered in both the local owner and the out-of-process HTTP(S) content
 worker. Delivery is serialized at explicit page turns, preserving deterministic

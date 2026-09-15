@@ -65,8 +65,8 @@ pub(crate) const MAX_NATIVE_SCRIPT_BYTES: usize = crate::browser_backend::MAX_TE
 /// Maximum JSON representation returned to the semantic backend.
 pub(crate) const MAX_NATIVE_SCRIPT_RESULT_BYTES: usize = crate::browser_backend::MAX_JSON_BYTES;
 /// Maximum structured-clone payload accepted by the native `postMessage`
-/// bridge. The payload is JSON-backed today, but the limit is kept separate
-/// so future transferable values cannot silently enlarge IPC frames.
+/// bridge. The transport is JSON-framed, while the JavaScript payload uses a
+/// tagged graph so cloneable values and cycles survive the IPC boundary.
 pub(crate) const MAX_NATIVE_POST_MESSAGE_BYTES: usize = 256 * 1024;
 /// Maximum JSON-backed state retained by one History API entry.
 pub(crate) const MAX_NATIVE_HISTORY_STATE_BYTES: usize = 256 * 1024;
@@ -14141,17 +14141,7 @@ fn worker_bootstrap(
     if (target.length >= {max_commands}) throw new RangeError("native Worker command limit exceeded");
     target.push(command);
   }};
-  const cloneMessageData = (value) => {{
-    let encoded;
-    try {{ encoded = JSON.stringify(value); }} catch (_error) {{
-      throw new TypeError("Worker message could not be cloned");
-    }}
-    if (encoded === undefined || encoded.length > {post_message_bytes_limit})
-      throw new TypeError("Worker message could not be cloned");
-    try {{ return JSON.parse(encoded); }} catch (_error) {{
-      throw new TypeError("Worker message could not be cloned");
-    }}
-  }};
+  const cloneMessageData = (value) => glassMessageClone(value);
   const timers = globalThis.__glassWorkerTimers instanceof Map
     ? globalThis.__glassWorkerTimers
     : new Map();
@@ -17224,7 +17214,6 @@ fn worker_bootstrap(
 }})()"###,
         max_commands = MAX_NATIVE_WORKER_MESSAGES,
         max_timers = MAX_NATIVE_WORKER_TIMERS,
-        post_message_bytes_limit = MAX_NATIVE_POST_MESSAGE_BYTES,
         fetch_header_count_limit = MAX_NATIVE_FETCH_HEADERS,
         fetch_header_name_limit = MAX_NATIVE_FETCH_HEADER_NAME_BYTES,
         fetch_header_value_limit = MAX_NATIVE_FETCH_HEADER_VALUE_BYTES,
@@ -17379,21 +17368,271 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
       : Error;
     try { return new Exception(message, name); } catch (_error) { return new Error(message); }
   };
-  const glassMessageClone = (value) => {
-    let encoded;
-    try { encoded = JSON.stringify(value); } catch (_error) {
-      throw glassMessageException("message could not be cloned", "DataCloneError");
+  const glassMessageCloneMarker = "glass-native-structured-clone-v1";
+  const glassMessageCloneNodeLimit = __GLASS_MESSAGE_BYTES_LIMIT__;
+  const glassMessageTypedArrayNames = new Set([
+    "Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array", "Uint16Array",
+    "Int32Array", "Uint32Array", "Float32Array", "Float64Array",
+    "BigInt64Array", "BigUint64Array",
+  ]);
+  const glassMessageOwn = (target, key, value) => {
+    Object.defineProperty(target, key, {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value,
+    });
+  };
+  const glassMessageUtf8Bytes = (text) => {
+    const bytes = [];
+    for (let index = 0; index < text.length; index += 1) {
+      let code = text.charCodeAt(index);
+      if (code >= 0xd800 && code <= 0xdbff && index + 1 < text.length) {
+        const low = text.charCodeAt(index + 1);
+        if (low >= 0xdc00 && low <= 0xdfff) {
+          code = 0x10000 + ((code - 0xd800) << 10) + (low - 0xdc00);
+          index += 1;
+        }
+      } else if (code >= 0xd800 && code <= 0xdfff) {
+        code = 0xfffd;
+      }
+      if (code <= 0x7f) bytes.push(code);
+      else if (code <= 0x7ff) bytes.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f));
+      else if (code <= 0xffff) bytes.push(
+        0xe0 | (code >> 12),
+        0x80 | ((code >> 6) & 0x3f),
+        0x80 | (code & 0x3f),
+      );
+      else bytes.push(
+        0xf0 | (code >> 18),
+        0x80 | ((code >> 12) & 0x3f),
+        0x80 | ((code >> 6) & 0x3f),
+        0x80 | (code & 0x3f),
+      );
     }
-    if (encoded === undefined) {
-      if (value === undefined) return undefined;
-      throw glassMessageException("message could not be cloned", "DataCloneError");
-    }
-    if (encoded.length > __GLASS_MESSAGE_BYTES_LIMIT__)
-      throw new RangeError("native message data exceeds its limit");
-    try { return JSON.parse(encoded); } catch (_error) {
-      throw glassMessageException("message could not be cloned", "DataCloneError");
+    return bytes;
+  };
+  const glassMessagePortValue = (value) => {
+    try {
+      const id = Number(value && value.__glassMessagePortId);
+      return Number.isSafeInteger(id) && glassMessagePortRegistry.get(id) === value;
+    } catch (_error) {
+      return false;
     }
   };
+  const glassMessageNumberDescriptor = (value) => {
+    if (Number.isNaN(value)) return { type: "number", value: "nan" };
+    if (value === Infinity) return { type: "number", value: "infinity" };
+    if (value === -Infinity) return { type: "number", value: "negativeInfinity" };
+    if (Object.is(value, -0)) return { type: "number", value: "negativeZero" };
+    return { type: "number", value };
+  };
+  const glassMessageNormalizeBytes = (input, state) => {
+    if (!Array.isArray(input))
+      throw glassMessageException("binary message data is invalid", "DataCloneError");
+    if (input.length > glassMessageCloneNodeLimit - state.binaryBytes)
+      throw new RangeError("native message data exceeds its limit");
+    const bytes = input.slice();
+    for (const byte of bytes) {
+      if (!Number.isInteger(byte) || byte < 0 || byte > 255)
+        throw glassMessageException("binary message data is invalid", "DataCloneError");
+    }
+    state.binaryBytes += bytes.length;
+    return bytes;
+  };
+  const glassMessageBlobBytes = (value, state) => {
+    if (Array.isArray(value && value._bytes))
+      return glassMessageNormalizeBytes(value._bytes, state);
+    if (typeof (value && value._text) === "string")
+      return glassMessageNormalizeBytes(glassMessageUtf8Bytes(value._text), state);
+    throw glassMessageException("Blob data could not be cloned", "DataCloneError");
+  };
+  const glassMessageArrayIndex = (key, length) => {
+    if (typeof key !== "string" || key === "") return false;
+    const index = Number(key);
+    return Number.isInteger(index) && index >= 0 && index < length
+      && String(index) === key;
+  };
+  const glassMessageEncodeGraph = (value, transfers) => {
+    const nodes = [];
+    const seen = new Map();
+    const state = { binaryBytes: 0 };
+    const reserve = () => {
+      if (nodes.length >= glassMessageCloneNodeLimit)
+        throw new RangeError("native message data exceeds its limit");
+      const id = nodes.length;
+      nodes.push(null);
+      return id;
+    };
+    const encodeProperties = (value, skip) => {
+      const properties = [];
+      for (const key of Object.keys(value)) {
+        if (skip(key)) continue;
+        properties.push([key, encode(value[key])]);
+      }
+      return properties;
+    };
+    const encode = (current) => {
+      if (current === undefined) return { type: "undefined" };
+      if (current === null) return { type: "null" };
+      const kind = typeof current;
+      if (kind === "boolean") return { type: "boolean", value: current };
+      if (kind === "string") {
+        if (current.length > glassMessageCloneNodeLimit)
+          throw new RangeError("native message data exceeds its limit");
+        return { type: "string", value: current };
+      }
+      if (kind === "number") return glassMessageNumberDescriptor(current);
+      if (kind === "bigint") return { type: "bigint", value: String(current) };
+      if (kind === "function" || kind === "symbol")
+        throw glassMessageException("message could not be cloned", "DataCloneError");
+      if (kind !== "object")
+        throw glassMessageException("message could not be cloned", "DataCloneError");
+      if (transfers && transfers.has(current))
+        return { type: "port", index: transfers.get(current) };
+      if (glassMessagePortValue(current))
+        throw glassMessageException("MessagePort is not in the transfer list", "DataCloneError");
+      if (seen.has(current)) return { ref: seen.get(current) };
+
+      const id = reserve();
+      seen.set(current, id);
+      let tag;
+      try { tag = Object.prototype.toString.call(current); }
+      catch (_error) { throw glassMessageException("message could not be cloned", "DataCloneError"); }
+
+      if (tag === "[object SharedArrayBuffer]")
+        throw glassMessageException("SharedArrayBuffer is not supported by the native message bridge", "DataCloneError");
+      if (tag === "[object ArrayBuffer]") {
+        let bytes;
+        try { bytes = Array.from(new Uint8Array(current)); }
+        catch (_error) { throw glassMessageException("ArrayBuffer could not be cloned", "DataCloneError"); }
+        nodes[id] = { type: "arraybuffer", bytes: glassMessageNormalizeBytes(bytes, state) };
+        return { ref: id };
+      }
+      if (typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(current)) {
+        const viewTag = tag.slice(8, -1);
+        if (tag === "[object DataView]") {
+          if (Object.prototype.toString.call(current.buffer) === "[object SharedArrayBuffer]")
+            throw glassMessageException("SharedArrayBuffer is not supported by the native message bridge", "DataCloneError");
+          nodes[id] = {
+            type: "dataview",
+            buffer: encode(current.buffer),
+            byteOffset: current.byteOffset,
+            byteLength: current.byteLength,
+          };
+          return { ref: id };
+        }
+        if (glassMessageTypedArrayNames.has(viewTag)) {
+          if (Object.prototype.toString.call(current.buffer) === "[object SharedArrayBuffer]")
+            throw glassMessageException("SharedArrayBuffer is not supported by the native message bridge", "DataCloneError");
+          nodes[id] = {
+            type: "typedarray",
+            constructor: viewTag,
+            buffer: encode(current.buffer),
+            byteOffset: current.byteOffset,
+            length: current.length,
+          };
+          return { ref: id };
+        }
+        throw glassMessageException("typed array could not be cloned", "DataCloneError");
+      }
+      if (tag === "[object Date]") {
+        nodes[id] = { type: "date", value: encode(current.getTime()) };
+        return { ref: id };
+      }
+      if (tag === "[object RegExp]") {
+        nodes[id] = {
+          type: "regexp",
+          source: String(current.source),
+          flags: String(current.flags),
+          lastIndex: encode(current.lastIndex),
+        };
+        return { ref: id };
+      }
+      if (tag === "[object Map]") {
+        const node = { type: "map", entries: [] };
+        nodes[id] = node;
+        try {
+          current.forEach((mapValue, mapKey) => node.entries.push([encode(mapKey), encode(mapValue)]));
+        } catch (_error) {
+          throw glassMessageException("Map could not be cloned", "DataCloneError");
+        }
+        return { ref: id };
+      }
+      if (tag === "[object Set]") {
+        const node = { type: "set", values: [] };
+        nodes[id] = node;
+        try { current.forEach(item => node.values.push(encode(item))); }
+        catch (_error) { throw glassMessageException("Set could not be cloned", "DataCloneError"); }
+        return { ref: id };
+      }
+      if (tag === "[object Error]" || tag === "[object DOMException]") {
+        const node = {
+          type: "error",
+          name: String(current.name || "Error"),
+          message: String(current.message || ""),
+          stack: typeof current.stack === "string" ? current.stack : null,
+        };
+        nodes[id] = node;
+        if (Object.prototype.hasOwnProperty.call(current, "cause")) node.cause = encode(current.cause);
+        return { ref: id };
+      }
+      if (current.__glassNativeBlob === true || current.__glassWorkerBlob === true) {
+        const node = {
+          type: current.__glassNativeFile === true || current.__glassWorkerFile === true ? "file" : "blob",
+          bytes: glassMessageBlobBytes(current, state),
+          mime: String(current.type || ""),
+        };
+        if (node.type === "file") {
+          node.name = String(current.name || "");
+          node.lastModified = encode(Number(current.lastModified) || 0);
+        }
+        nodes[id] = node;
+        return { ref: id };
+      }
+      if (tag === "[object Promise]" || tag === "[object WeakMap]" || tag === "[object WeakSet]")
+        throw glassMessageException("message could not be cloned", "DataCloneError");
+      if (tag === "[object Number]" || tag === "[object String]" || tag === "[object Boolean]") {
+        nodes[id] = { type: "boxed", value: encode(current.valueOf()) };
+        return { ref: id };
+      }
+      const node = { type: Array.isArray(current) ? "array" : "object" };
+      nodes[id] = node;
+      if (node.type === "array") {
+        if (!Number.isSafeInteger(current.length) || current.length > glassMessageCloneNodeLimit)
+          throw new RangeError("native message data exceeds its limit");
+        node.length = current.length;
+        node.items = [];
+        for (let index = 0; index < current.length; index += 1) {
+          node.items.push(Object.prototype.hasOwnProperty.call(current, index)
+            ? encode(current[index])
+            : { type: "hole" });
+        }
+        node.properties = encodeProperties(current, key => glassMessageArrayIndex(key, current.length));
+      } else {
+        node.properties = encodeProperties(current, () => false);
+      }
+      return { ref: id };
+    };
+    return {
+      __glassMessageClone: glassMessageCloneMarker,
+      root: encode(value),
+      nodes,
+    };
+  };
+  const glassMessageEncodeMessage = (value, transfers) => {
+    const graph = glassMessageEncodeGraph(value, transfers || new Map());
+    let encoded;
+    try { encoded = JSON.stringify(graph); }
+    catch (_error) { throw glassMessageException("message could not be cloned", "DataCloneError"); }
+    if (encoded === undefined || encoded.length > __GLASS_MESSAGE_BYTES_LIMIT__)
+      throw new RangeError("native message data exceeds its limit");
+    return graph;
+  };
+  const glassMessageClone = (value) => glassMessageDecodeClone(
+    glassMessageEncodeMessage(value, new Map()),
+    [],
+  );
   const glassMessageTransferList = (options) => {
     const transfer = options === undefined
       ? []
@@ -17457,21 +17696,7 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
       members.set(port, prepared.length);
       prepared.push(descriptor);
     }
-    let encoded;
-    try {
-      encoded = JSON.stringify(value, (_key, current) => {
-        const index = members.get(current);
-        return index === undefined ? current : { __glassMessagePortTransferIndex: index };
-      });
-    } catch (_error) {
-      throw glassMessageException("message could not be cloned", "DataCloneError");
-    }
-    if (encoded === undefined || encoded.length > __GLASS_MESSAGE_BYTES_LIMIT__)
-      throw glassMessageException("message could not be cloned", "DataCloneError");
-    let data;
-    try { data = JSON.parse(encoded); } catch (_error) {
-      throw glassMessageException("message could not be cloned", "DataCloneError");
-    }
+    const data = glassMessageEncodeMessage(value, members);
     for (const descriptor of prepared) glassMessageCommitTransfer(descriptor);
     return {
       data,
@@ -17518,8 +17743,192 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
     const result = {};
     seen.set(value, result);
     for (const [key, item] of Object.entries(value))
-      result[key] = glassMessageReviveValue(item, ports, seen);
+      glassMessageOwn(result, key, glassMessageReviveValue(item, ports, seen));
     return result;
+  };
+  const glassMessageDecodeBytes = (bytes) => {
+    if (!Array.isArray(bytes) || bytes.length > __GLASS_MESSAGE_BYTES_LIMIT__)
+      throw glassMessageException("binary message data is invalid", "DataCloneError");
+    const result = bytes.slice();
+    for (const byte of result) {
+      if (!Number.isInteger(byte) || byte < 0 || byte > 255)
+        throw glassMessageException("binary message data is invalid", "DataCloneError");
+    }
+    return result;
+  };
+  const glassMessageDecodeClone = (payload, ports) => {
+    if (!payload || typeof payload !== "object"
+        || payload.__glassMessageClone !== glassMessageCloneMarker
+        || !Array.isArray(payload.nodes))
+      return glassMessageReviveValue(payload, ports || []);
+    const nodes = payload.nodes;
+    const cache = new Map();
+    const decodeNumber = (value) => {
+      if (value === "nan") return NaN;
+      if (value === "infinity") return Infinity;
+      if (value === "negativeInfinity") return -Infinity;
+      if (value === "negativeZero") return -0;
+      if (typeof value !== "number")
+        throw glassMessageException("number message data is invalid", "DataCloneError");
+      return value;
+    };
+    const decodeProperties = (target, properties) => {
+      if (!Array.isArray(properties))
+        throw glassMessageException("object message data is invalid", "DataCloneError");
+      for (const property of properties) {
+        if (!Array.isArray(property) || property.length !== 2 || typeof property[0] !== "string")
+          throw glassMessageException("object message data is invalid", "DataCloneError");
+        glassMessageOwn(target, property[0], decode(property[1]));
+      }
+    };
+    const decodeBytes = bytes => new Uint8Array(glassMessageDecodeBytes(bytes));
+    const decode = (descriptor) => {
+      if (!descriptor || typeof descriptor !== "object")
+        throw glassMessageException("message clone descriptor is invalid", "DataCloneError");
+      if (Object.prototype.hasOwnProperty.call(descriptor, "ref")) {
+        if (!Number.isSafeInteger(descriptor.ref) || descriptor.ref < 0 || descriptor.ref >= nodes.length)
+          throw glassMessageException("message clone reference is invalid", "DataCloneError");
+        return decodeNode(descriptor.ref);
+      }
+      switch (descriptor.type) {
+        case "undefined": return undefined;
+        case "null": return null;
+        case "boolean": return descriptor.value === true;
+        case "string":
+          if (typeof descriptor.value !== "string") throw glassMessageException("string message data is invalid", "DataCloneError");
+          return descriptor.value;
+        case "number": return decodeNumber(descriptor.value);
+        case "bigint":
+          if (typeof BigInt !== "function" || typeof descriptor.value !== "string")
+            throw glassMessageException("BigInt message data is unsupported", "DataCloneError");
+          try { return BigInt(descriptor.value); }
+          catch (_error) { throw glassMessageException("BigInt message data is invalid", "DataCloneError"); }
+        case "port":
+          if (!Number.isSafeInteger(descriptor.index) || !ports || !ports[descriptor.index])
+            throw glassMessageException("MessagePort clone reference is invalid", "DataCloneError");
+          return ports[descriptor.index];
+        case "hole": return undefined;
+        default:
+          throw glassMessageException("message clone descriptor is invalid", "DataCloneError");
+      }
+    };
+    const decodeNode = (id) => {
+      if (cache.has(id)) return cache.get(id);
+      const node = nodes[id];
+      if (!node || typeof node !== "object" || typeof node.type !== "string")
+        throw glassMessageException("message clone node is invalid", "DataCloneError");
+      let result;
+      switch (node.type) {
+        case "array":
+          if (!Number.isSafeInteger(node.length) || node.length < 0
+              || node.length > __GLASS_MESSAGE_BYTES_LIMIT__ || !Array.isArray(node.items)
+              || node.items.length !== node.length)
+            throw glassMessageException("array message data is invalid", "DataCloneError");
+          result = [];
+          result.length = node.length;
+          cache.set(id, result);
+          for (let index = 0; index < node.items.length; index += 1) {
+            if (node.items[index] && node.items[index].type !== "hole")
+              glassMessageOwn(result, String(index), decode(node.items[index]));
+          }
+          decodeProperties(result, node.properties);
+          return result;
+        case "object":
+          result = {};
+          cache.set(id, result);
+          decodeProperties(result, node.properties);
+          return result;
+        case "date":
+          result = new Date(decode(node.value));
+          cache.set(id, result);
+          return result;
+        case "regexp":
+          try { result = new RegExp(String(node.source), String(node.flags)); }
+          catch (_error) { throw glassMessageException("RegExp message data is invalid", "DataCloneError"); }
+          cache.set(id, result);
+          result.lastIndex = decode(node.lastIndex);
+          return result;
+        case "map":
+          if (!Array.isArray(node.entries)) throw glassMessageException("Map message data is invalid", "DataCloneError");
+          result = new Map();
+          cache.set(id, result);
+          for (const entry of node.entries) {
+            if (!Array.isArray(entry) || entry.length !== 2)
+              throw glassMessageException("Map message data is invalid", "DataCloneError");
+            result.set(decode(entry[0]), decode(entry[1]));
+          }
+          return result;
+        case "set":
+          if (!Array.isArray(node.values)) throw glassMessageException("Set message data is invalid", "DataCloneError");
+          result = new Set();
+          cache.set(id, result);
+          for (const item of node.values) result.add(decode(item));
+          return result;
+        case "arraybuffer":
+          result = decodeBytes(node.bytes).buffer;
+          cache.set(id, result);
+          return result;
+        case "dataview": {
+          const buffer = decode(node.buffer);
+          if (!(buffer instanceof ArrayBuffer) || !Number.isSafeInteger(node.byteOffset)
+              || !Number.isSafeInteger(node.byteLength) || node.byteOffset < 0 || node.byteLength < 0
+              || node.byteOffset + node.byteLength > buffer.byteLength)
+            throw glassMessageException("DataView message data is invalid", "DataCloneError");
+          try { result = new DataView(buffer, node.byteOffset, node.byteLength); }
+          catch (_error) { throw glassMessageException("DataView message data is invalid", "DataCloneError"); }
+          cache.set(id, result);
+          return result;
+        }
+        case "typedarray": {
+          const buffer = decode(node.buffer);
+          const Constructor = globalThis[String(node.constructor)];
+          if (!(buffer instanceof ArrayBuffer) || typeof Constructor !== "function"
+              || !glassMessageTypedArrayNames.has(String(node.constructor))
+              || !Number.isSafeInteger(node.byteOffset) || !Number.isSafeInteger(node.length)
+              || node.byteOffset < 0 || node.length < 0)
+            throw glassMessageException("typed array message data is invalid", "DataCloneError");
+          const bytesPerElement = Number(Constructor.BYTES_PER_ELEMENT);
+          if (!Number.isSafeInteger(bytesPerElement) || bytesPerElement <= 0
+              || node.byteOffset % bytesPerElement !== 0
+              || node.byteOffset + node.length * bytesPerElement > buffer.byteLength)
+            throw glassMessageException("typed array message data is invalid", "DataCloneError");
+          try { result = new Constructor(buffer, node.byteOffset, node.length); }
+          catch (_error) { throw glassMessageException("typed array message data is invalid", "DataCloneError"); }
+          cache.set(id, result);
+          return result;
+        }
+        case "blob":
+        case "file": {
+          const Constructor = node.type === "file" ? globalThis.File : globalThis.Blob;
+          if (typeof Constructor !== "function" || typeof node.mime !== "string")
+            throw glassMessageException("Blob message data is unsupported", "DataCloneError");
+          const bytes = decodeBytes(node.bytes);
+          try {
+            result = node.type === "file"
+              ? new Constructor([bytes], String(node.name || ""), { type: node.mime, lastModified: decode(node.lastModified) })
+              : new Constructor([bytes], { type: node.mime });
+          } catch (_error) {
+            throw glassMessageException("Blob message data is invalid", "DataCloneError");
+          }
+          cache.set(id, result);
+          return result;
+        }
+        case "error":
+          result = new Error(String(node.message || ""));
+          cache.set(id, result);
+          result.name = String(node.name || "Error");
+          if (node.stack !== null && node.stack !== undefined) result.stack = String(node.stack);
+          if (Object.prototype.hasOwnProperty.call(node, "cause")) glassMessageOwn(result, "cause", decode(node.cause));
+          return result;
+        case "boxed":
+          result = Object(decode(node.value));
+          cache.set(id, result);
+          return result;
+        default:
+          throw glassMessageException("message clone node is invalid", "DataCloneError");
+      }
+    };
+    return decode(payload.root);
   };
   const glassMessageDecodeEnvelope = (payload) => {
     const descriptors = payload && Array.isArray(payload.transfer_ports)
@@ -17527,7 +17936,7 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
       : [];
     const ports = descriptors.map(glassMessageMakeBridgePort);
     return {
-      data: glassMessageReviveValue(payload && payload.data, ports),
+      data: glassMessageDecodeClone(payload && payload.data, ports),
       ports,
     };
   };
@@ -17719,7 +18128,7 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
     }
     const peer = this.__glassMessagePortPeer;
     if (!peer || peer.__glassMessageClosed) return;
-    glassMessageEnqueue(peer, envelope.data, []);
+    glassMessageEnqueue(peer, glassMessageDecodeClone(envelope.data, []), []);
   };
   globalThis.__glassMessagePortConstructor = MessagePortNative;
   globalThis.MessagePort = MessagePortNative;
@@ -17798,10 +18207,11 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
   BroadcastChannelNative.prototype.postMessage = function(message) {
     if (this.__glassMessageClosed)
       throw glassMessageException("broadcast channel is closed", "InvalidStateError");
-    const cloned = glassMessageClone(message);
+    const cloned = glassMessageEncodeMessage(message, new Map());
     const channels = glassBroadcastChannelRegistry.get(this.name) || new Set();
     for (const channel of Array.from(channels)) {
-      if (channel !== this && !channel.__glassMessageClosed) glassMessageEnqueue(channel, cloned, []);
+      if (channel !== this && !channel.__glassMessageClosed)
+        glassMessageEnqueue(channel, glassMessageDecodeClone(cloned, []), []);
     }
   };
   BroadcastChannelNative.prototype.close = function() {
@@ -17848,15 +18258,7 @@ const NATIVE_SERVICE_WORKER_PAGE_SCRIPT: &str = r###"
   let nextServiceWorkerRequestId = Number.isSafeInteger(globalThis.__glassNextServiceWorkerRequestId)
     ? globalThis.__glassNextServiceWorkerRequestId
     : 1;
-  const serviceWorkerClone = (value) => {
-    let encoded;
-    try { encoded = JSON.stringify(value === undefined ? null : value); }
-    catch (_) { throw new DOMExceptionNative("service worker message could not be cloned", "DataCloneError"); }
-    if (encoded === undefined || encoded.length > __GLASS_SERVICE_WORKER_MESSAGE_LIMIT__)
-      throw new DOMExceptionNative("service worker message could not be cloned", "DataCloneError");
-    try { return JSON.parse(encoded); }
-    catch (_) { throw new DOMExceptionNative("service worker message could not be cloned", "DataCloneError"); }
-  };
+  const serviceWorkerClone = (value) => glassMessageClone(value);
   const serviceWorkerOrigin = String(host.origin || "null");
   const serviceWorkerUrl = (value) => {
     const url = new URLNative(String(value), host.url);
@@ -28088,17 +28490,7 @@ fn document_bootstrap(
     ? globalThis.__glassWindowProxyStates
     : new Map();
   globalThis.__glassWindowProxyStates = windowProxyStates;
-  const cloneMessageData = (value) => {{
-    let encoded;
-    try {{ encoded = JSON.stringify(value); }} catch (_error) {{
-      throw new TypeError("message could not be cloned");
-    }}
-    if (encoded === undefined) throw new TypeError("message could not be cloned");
-    if (encoded.length > {post_message_bytes_limit}) throw new RangeError("native postMessage data exceeds its limit");
-    try {{ return JSON.parse(encoded); }} catch (_error) {{
-      throw new TypeError("message could not be cloned");
-    }}
-  }};
+  const cloneMessageData = (value) => glassMessageClone(value);
   const queueWindowMessage = (handle, targetContextId, message, targetOrigin) => {{
     const origin = targetOrigin === undefined ? "/" : String(targetOrigin);
     if (origin.length === 0 || origin.length > {storage_key_limit}) throw new TypeError("invalid postMessage target origin");
@@ -28284,7 +28676,7 @@ fn document_bootstrap(
   globalThis.__glassDispatchMessage = (descriptor) => {{
     const event = createEvent("message", {{ bubbles: false, cancelable: false }});
     event.data = descriptor && Object.prototype.hasOwnProperty.call(descriptor, "data")
-      ? descriptor.data
+      ? glassMessageDecodeClone(descriptor.data, [])
       : null;
     event.origin = String(descriptor && descriptor.source_origin || "null");
     event.source = descriptor && descriptor.source_context_id
@@ -32407,7 +32799,6 @@ fn document_bootstrap(
         fetch_stream_body_limit = MAX_NATIVE_FETCH_STREAM_BODY_BYTES,
         fetch_stream_queue_limit = MAX_NATIVE_FETCH_STREAM_QUEUED_CHUNKS,
         dialog_text_limit = MAX_NATIVE_DIALOG_TEXT_BYTES,
-        post_message_bytes_limit = MAX_NATIVE_POST_MESSAGE_BYTES,
         max_frame_window_indices = MAX_NATIVE_FRAME_SCRIPT_BINDINGS,
         window_name_bytes_limit = MAX_NATIVE_WINDOW_NAME_BYTES,
         run_timers = run_timers,

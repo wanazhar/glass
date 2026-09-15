@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-382` locally. Native is now the default runtime for
+`native-engine-browser-384` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -352,6 +352,17 @@ timer bounds, and the existing serialized owner remain unchanged; browser-wide
 task-source arbitration and the remaining Core Web Profile gates remain active
 issue #40 work.
 
+The completed native structured-clone transport slice is
+[native-engine-browser-384](tasks/native-engine-browser-384.md): native message
+transport now carries a bounded tagged graph instead of a JSON-only value
+projection. Local and cross-realm page/worker message paths preserve rich
+cloneable values, cycles, shared object identity, binary views, Blob/File
+metadata, and independent recipient clones; transferred MessagePort routing
+retains its existing bridge contract. Unsupported functions, symbols,
+Promise-like values, SharedArrayBuffer, and ArrayBuffer detachment remain
+explicit gates. Browser-wide task-source arbitration and the remaining Core
+Web Profile gates remain active issue #40 work.
+
 The completed native visual-encoder slice is
 [native-engine-browser-332](tasks/native-engine-browser-332.md): the native
 visual capture contract now emits bounded PNG, JPEG, and WebP bytes with
@@ -669,7 +680,8 @@ The completed dedicated-worker slice is
 [native-engine-browser-283](tasks/native-engine-browser-283.md). It adds
 classic page-created `Worker` support for local fixtures and HTTP(S)
 content-process pages, including isolated QuickJS realms, shared resource and
-`worker-src` policy loading, bounded JSON-backed message/error delivery,
+`worker-src` policy loading, bounded JSON-framed tagged structured-clone
+message/error delivery,
 startup/runtime failure events, and terminate/close ownership. Worker events
 are delivered at explicit native page turns so local and content-process
 execution remain deterministic. Shared/service workers, transferables, and

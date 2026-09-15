@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-383`, with native-first product
+expansion checkpoint is `native-engine-browser-384`, with native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
 CacheStorage request matching, CacheStorage response admission and atomic
@@ -315,6 +315,17 @@ inspection programs, preserving due-time ordering and the existing timer
 limits. Browser-wide task-source arbitration and the remaining Core Web
 Profile gates remain open. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-383.md`. The
+completed Slice 384 replaces the message transport's JSON-only projection
+with a bounded tagged structured-clone graph. Page, worker, Service Worker,
+MessagePort, BroadcastChannel, and WindowProxy message paths preserve rich
+cloneable values, cycles, shared graph identity, binary buffers/views,
+Blob/File metadata, and Error values through the JSON-framed native boundary;
+local recipients decode independent graphs, while existing transferred-port
+bridge routing remains intact. Functions, symbols, Promise-like values,
+SharedArrayBuffer, and ArrayBuffer detachment remain explicit unsupported
+or follow-up gates. Browser-wide task-source arbitration and the remaining
+Core Web Profile gates remain open. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-384.md`. The
 completed 234 slice carries bounded
 completed 234 slice carries bounded
 root-scroll sticky positioning through
@@ -4506,7 +4517,8 @@ dedicated-worker owner. Page-created classic `Worker` objects emit typed
 create/post/terminate/close commands; the shared native registry loads local
 fixture or HTTP(S) worker source through the existing resource and
 `worker-src` policy path, executes each worker in an isolated bounded QuickJS
-realm, and queues bounded JSON-backed message/error events for the owning page.
+realm, and queues bounded JSON-framed tagged structured-clone message/error
+events for the owning page.
 Initial page scripts, ordinary evaluations, and dynamically attached scripts
 are covered in both the local owner and the out-of-process HTTP(S) content
 worker. Delivery is serialized at explicit page turns, preserving deterministic
@@ -5919,8 +5931,10 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-383.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-384.md` is the latest completed browser
 task;
+`docs/plan/tasks/native-engine-browser-383.md` is the preceding completed
+browser task;
 `docs/plan/tasks/native-engine-browser-382.md` is the preceding completed
 browser task;
 `docs/plan/tasks/native-engine-browser-381.md` is the preceding completed
@@ -6062,8 +6076,8 @@ task;
 `docs/plan/tasks/native-engine-198.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-197.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-196.md` is the preceding completed task;
-The current browser-slice evidence chain starts at `native-engine-browser-383`.
-Slices 382 through 356 are summarized in the current checkpoint paragraphs
+The current browser-slice evidence chain starts at `native-engine-browser-384`.
+Slices 383 through 356 are summarized in the current checkpoint paragraphs
 above; the historical continuation below begins with `native-engine-browser-355`,
 `native-engine-browser-354`,
 `native-engine-browser-353`, `native-engine-browser-352`,
@@ -6240,7 +6254,7 @@ browser task;
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 The current completed browser-expansion checkpoint is recorded for
-`docs/plan/tasks/native-engine-browser-383.md`; its implementation and focused
+`docs/plan/tasks/native-engine-browser-384.md`; its implementation and focused
 verification are recorded in that task file. The CSS foundation checkpoint
 remains `docs/plan/tasks/native-engine-234.md`: implementation is `8a96f56b`
 (design `b2119e5f`). It accepts bounded standalone case-insensitive finite

@@ -1573,6 +1573,142 @@ async fn native_local_message_channels_deliver_events_in_page_and_worker_realms(
 }
 
 #[tokio::test]
+async fn native_message_transport_preserves_structured_clone_values() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://structured-clone-page",
+            "<html><body><main>Native</main></body></html>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://structured-clone-worker",
+            r#"self.onmessage = event => {
+                const value = event.data;
+                const mapKey = Array.from(value.map.keys())[0];
+                postMessage({
+                    date: [value.date instanceof Date, value.date.getTime()],
+                    regexp: [value.regexp instanceof RegExp, value.regexp.source, value.regexp.flags, value.regexp.lastIndex],
+                    map: [value.map instanceof Map, value.map.get(mapKey).nested, value.map.get(mapKey) === value.alias],
+                    set: [value.set instanceof Set, Array.from(value.set)],
+                    buffer: [value.buffer instanceof ArrayBuffer, Array.from(new Uint8Array(value.buffer))],
+                    view: [value.view instanceof Uint16Array, Array.from(value.view), value.view.buffer === value.buffer],
+                    blob: [value.blob instanceof Blob, value.blob.type, value.blob.size],
+                    cycle: value.cycle.self === value.cycle,
+                    undefined: value.undefinedValue === undefined,
+                    numbers: [Number.isNaN(value.nan), Object.is(value.negativeZero, -0), value.infinity === Infinity],
+                    bigint: typeof value.bigint === 'bigint' ? [typeof value.bigint, String(value.bigint)] : [typeof value.bigint, null],
+                });
+            }"#,
+        )
+        .unwrap()
+        .with_initial_url("fixture://structured-clone-page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"(() => {
+                    const shared = { nested: true };
+                    const map = new Map([[shared, shared]]);
+                    const buffer = new ArrayBuffer(6);
+                    new Uint8Array(buffer).set([1, 2, 3, 4, 5, 6]);
+                    const payload = {
+                        date: new Date(1700000000123),
+                        regexp: /glass+/gi,
+                        map,
+                        set: new Set([1, 'two']),
+                        buffer,
+                        view: new Uint16Array(buffer, 2, 2),
+                        alias: shared,
+                        blob: new Blob(['native'], { type: 'text/plain' }),
+                        cycle: {},
+                        undefinedValue: undefined,
+                        nan: NaN,
+                        negativeZero: -0,
+                        infinity: Infinity,
+                        bigint: typeof BigInt === 'function' ? BigInt('9007199254740993') : undefined,
+                    };
+                    payload.cycle.self = payload.cycle;
+                    payload.regexp.lastIndex = 2;
+                    globalThis.localStructuredClone = structuredClone(payload);
+                    globalThis.localStructured = null;
+                    const channel = new MessageChannel();
+                    channel.port2.onmessage = event => {
+                        localStructured = {
+                            date: [event.data.date instanceof Date, event.data.date.getTime()],
+                            map: [event.data.map instanceof Map, event.data.map.get(event.data.alias) === event.data.alias],
+                            buffer: [event.data.buffer instanceof ArrayBuffer, Array.from(new Uint8Array(event.data.buffer))],
+                            view: [event.data.view instanceof Uint16Array, Array.from(event.data.view), event.data.view.buffer === event.data.buffer],
+                            blob: [event.data.blob instanceof Blob, event.data.blob.type, event.data.blob.size],
+                            cycle: event.data.cycle.self === event.data.cycle,
+                            numbers: [Number.isNaN(event.data.nan), Object.is(event.data.negativeZero, -0), event.data.infinity === Infinity],
+                        };
+                    };
+                    channel.port1.postMessage(payload);
+                    globalThis.workerMessages = [];
+                    globalThis.worker = new Worker('fixture://structured-clone-worker');
+                    worker.onmessage = event => workerMessages.push(event.data);
+                    worker.postMessage(payload);
+                    return true;
+                })()"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("({ localStructuredClone: [localStructuredClone.date instanceof Date, localStructuredClone.date.getTime(), localStructuredClone.map instanceof Map, localStructuredClone.map.get(localStructuredClone.alias) === localStructuredClone.alias, localStructuredClone.buffer instanceof ArrayBuffer, Array.from(new Uint8Array(localStructuredClone.buffer)), localStructuredClone.view instanceof Uint16Array, Array.from(localStructuredClone.view), localStructuredClone.view.buffer === localStructuredClone.buffer, localStructuredClone.blob instanceof Blob, localStructuredClone.blob.type, localStructuredClone.blob.size, localStructuredClone.cycle.self === localStructuredClone.cycle, Number.isNaN(localStructuredClone.nan), Object.is(localStructuredClone.negativeZero, -0), localStructuredClone.infinity === Infinity], localStructured, workerMessages })")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "localStructuredClone": [
+                true,
+                1700000000123_i64,
+                true,
+                true,
+                true,
+                [1, 2, 3, 4, 5, 6],
+                true,
+                [1027, 1541],
+                true,
+                true,
+                "text/plain",
+                6,
+                true,
+                true,
+                true,
+                true,
+            ],
+            "localStructured": {
+                "date": [true, 1700000000123_i64],
+                "map": [true, true],
+                "buffer": [true, [1, 2, 3, 4, 5, 6]],
+                "view": [true, [1027, 1541], true],
+                "blob": [true, "text/plain", 6],
+                "cycle": true,
+                "numbers": [true, true, true],
+            },
+            "workerMessages": [{
+                "date": [true, 1700000000123_i64],
+                "regexp": [true, "glass+", "gi", 2],
+                "map": [true, true, true],
+                "set": [true, [1, "two"]],
+                "buffer": [true, [1, 2, 3, 4, 5, 6]],
+                "view": [true, [1027, 1541], true],
+                "blob": [true, "text/plain", 6],
+                "cycle": true,
+                "undefined": true,
+                "numbers": [true, true, true],
+                "bigint": ["bigint", "9007199254740993"],
+            }],
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_message_ports_transfer_between_page_and_worker_realms() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -1623,11 +1759,10 @@ async fn native_message_ports_transfer_between_page_and_worker_realms() {
                     let detachedError = '';
                     try { channel.port1.postMessage({ value: 0 }); }
                     catch (error) { detachedError = error.name; }
-                    const cyclic = {};
-                    cyclic.self = cyclic;
-                    let cyclicError = '';
-                    try { worker.postMessage(cyclic, [rollbackChannel.port1]); }
-                    catch (error) { cyclicError = error.name; }
+                    const uncloneable = { callback: () => {} };
+                    let uncloneableError = '';
+                    try { worker.postMessage(uncloneable, [rollbackChannel.port1]); }
+                    catch (error) { uncloneableError = error.name; }
                     let rollbackPortError = '';
                     try { rollbackChannel.port1.postMessage({ value: 1 }); }
                     catch (error) { rollbackPortError = error.name; }
@@ -1637,7 +1772,7 @@ async fn native_message_ports_transfer_between_page_and_worker_realms() {
                     let invalidTransferPortError = '';
                     try { invalidTransferChannel.port1.postMessage({ value: 2 }); }
                     catch (error) { invalidTransferPortError = error.name; }
-                    return [detachedError, channel.port2 instanceof MessagePort, cyclicError, rollbackPortError, invalidTransferError, invalidTransferPortError];
+                    return [detachedError, channel.port2 instanceof MessagePort, uncloneableError, rollbackPortError, invalidTransferError, invalidTransferPortError];
                 })()"#,
             )
             .await

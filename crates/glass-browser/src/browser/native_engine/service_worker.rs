@@ -148,6 +148,7 @@ pub(crate) struct NativeServiceWorkerRegistry {
     registrations: BTreeMap<String, NativeServiceWorker>,
     waiting_workers: BTreeMap<String, NativeServiceWorker>,
     next_worker_id: u32,
+    next_timer_worker_id: u32,
     cache_state: NativeServiceWorkerCacheState,
     registration_profiles: Vec<NativeServiceWorkerRegistrationProfile>,
     registration_changes: BTreeMap<String, Option<NativeServiceWorkerRegistrationProfile>>,
@@ -170,6 +171,7 @@ impl Default for NativeServiceWorkerRegistry {
             registrations: BTreeMap::new(),
             waiting_workers: BTreeMap::new(),
             next_worker_id: 1,
+            next_timer_worker_id: 0,
             cache_state: NativeServiceWorkerCacheState::default(),
             registration_profiles: Vec::new(),
             registration_changes: BTreeMap::new(),
@@ -1015,6 +1017,115 @@ impl NativeServiceWorkerRegistry {
         self.pending_message_port_messages.clear();
         self.pending_client_messages.clear();
         self.message_port_routes.clear();
+    }
+
+    /// Admit at most one due Service Worker timer turn at a page host
+    /// boundary. Active and waiting workers share a rotating worker-id cursor
+    /// so one continuously-ready registration cannot monopolize delivery to
+    /// the page. The resulting host commands remain in the same bounded
+    /// client/MessagePort queues as lifecycle and message events.
+    pub(crate) async fn run_due_timers(
+        &mut self,
+        loader: &mut NativeResourceLoader,
+    ) -> Result<(), NativeEngineError> {
+        let mut workers = self
+            .registrations
+            .iter()
+            .map(|(scope, worker)| (worker.id, false, scope.clone()))
+            .chain(
+                self.waiting_workers
+                    .iter()
+                    .map(|(scope, worker)| (worker.id, true, scope.clone())),
+            )
+            .collect::<Vec<_>>();
+        workers.sort_unstable_by_key(|(worker_id, _, _)| *worker_id);
+
+        let mut selected = None;
+        let after_cursor = workers
+            .iter()
+            .filter(|(worker_id, _, _)| *worker_id > self.next_timer_worker_id);
+        let before_cursor = workers
+            .iter()
+            .filter(|(worker_id, _, _)| *worker_id <= self.next_timer_worker_id);
+        for (worker_id, waiting, scope) in after_cursor.chain(before_cursor) {
+            let worker = if *waiting {
+                self.waiting_workers.get(scope)
+            } else {
+                self.registrations.get(scope)
+            };
+            if let Some(worker) = worker
+                && worker.runtime.next_worker_timer_delay_ms()? == Some(0)
+            {
+                selected = Some((*worker_id, *waiting, scope.clone()));
+                break;
+            }
+        }
+        let Some((worker_id, waiting, scope)) = selected else {
+            return Ok(());
+        };
+        self.next_timer_worker_id = worker_id;
+
+        let evaluation = if waiting {
+            let worker = self.waiting_workers.get(&scope).ok_or_else(|| {
+                NativeEngineError::invalid("service worker timer", "worker vanished")
+            })?;
+            worker.runtime.evaluate_service_worker_timers(
+                worker.id,
+                &worker.script_url,
+                worker.is_module,
+            )?
+        } else {
+            let worker = self.registrations.get(&scope).ok_or_else(|| {
+                NativeEngineError::invalid("service worker timer", "worker vanished")
+            })?;
+            worker.runtime.evaluate_service_worker_timers(
+                worker.id,
+                &worker.script_url,
+                worker.is_module,
+            )?
+        };
+
+        let client_messages = if waiting {
+            let worker = self.waiting_workers.get_mut(&scope).ok_or_else(|| {
+                NativeEngineError::invalid("service worker timer", "worker vanished")
+            })?;
+            settle_service_worker_cache_event(
+                worker,
+                evaluation,
+                loader,
+                &mut self.cache_state,
+                None,
+                &mut self.pending_open_windows,
+            )
+            .await?
+        } else {
+            let worker = self.registrations.get_mut(&scope).ok_or_else(|| {
+                NativeEngineError::invalid("service worker timer", "worker vanished")
+            })?;
+            settle_service_worker_cache_event(
+                worker,
+                evaluation,
+                loader,
+                &mut self.cache_state,
+                None,
+                &mut self.pending_open_windows,
+            )
+            .await?
+        };
+        self.enqueue_client_messages(client_messages)?;
+
+        let message_port_commands = if waiting {
+            self.waiting_workers
+                .get(&scope)
+                .map(|worker| worker.runtime.take_message_port_commands())
+                .unwrap_or_default()
+        } else {
+            self.registrations
+                .get(&scope)
+                .map(|worker| worker.runtime.take_message_port_commands())
+                .unwrap_or_default()
+        };
+        self.collect_message_port_commands(worker_id, message_port_commands)
     }
 
     pub(crate) fn take_message_port_messages(&mut self) -> Vec<NativeMessagePortPageMessage> {

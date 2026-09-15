@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-366` slice. The native runtime is now the primary
+`native-engine-browser-367` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -463,6 +463,17 @@ than an autonomous background event loop; visibility throttling, independent
 background page scheduling, and complete cross-source conformance remain
 issue #40 gates. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-366.md`.
+
+Slice 367 extends the content and local worker owner with a rotating timer
+cursor. Each host boundary executes at most one due dedicated or shared worker
+timer turn, visiting worker ids after the cursor and wrapping across the live
+set. This prevents a continuously ready low-id worker from monopolizing page
+turns while retaining worker-realm timer batching, serialized command routing,
+and bounded operation latency. It is still operation-boundary scheduling, not
+a resident background loop or complete arbitration with page,
+ServiceWorker, MessagePort, rendering, or browser-context queues. Exact
+evidence is recorded in
+`docs/plan/tasks/native-engine-browser-367.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

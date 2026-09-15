@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-366`, with native-first product
+expansion checkpoint is `native-engine-browser-367`, with native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
 CacheStorage request matching, CacheStorage response admission and atomic
@@ -146,7 +146,15 @@ in `docs/plan/tasks/native-engine-browser-366.md`. This closes a queued-
 delivery gap without claiming a resident background loop, visibility
 throttling, or full cross-source task ordering. Autonomous background
 scheduling, worker/Service Worker/MessagePort/rendering fairness, and
-production certification remain separate gates. The
+production certification remain separate gates. The completed Slice 367 adds
+a rotating worker-id cursor to due worker timer admission. One dedicated or
+shared worker timer turn is selected per host boundary, with wraparound over
+the live worker set, so a continuously ready low-id worker cannot starve other
+worker realms. The existing worker-realm timer batching and command limits are
+preserved. This remains operation-boundary scheduling rather than a resident
+event loop; page, Service Worker, MessagePort, rendering, browser-context
+arbitration, and production certification remain separate gates. The witness
+is recorded in `docs/plan/tasks/native-engine-browser-367.md`. The
 completed 234 slice carries bounded
 root-scroll sticky positioning through
 shared flow,

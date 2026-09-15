@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-375` locally. Native is now the default runtime for
+`native-engine-browser-376` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -275,6 +275,16 @@ parsed values rather than generated source. A five-error batch with
 budget, while document continuation and existing error listener semantics
 remain green. Browser-wide task-source arbitration and the remaining Core Web
 Profile gates remain active issue #40 work.
+
+The completed native cross-window message-dispatch slice is
+[native-engine-browser-376](tasks/native-engine-browser-376.md): browser-owned
+`postMessage` deliveries now cross local and content-process page turns as
+structured page events and enter the installed `__glassDispatchMessage`
+function directly. Local and HTTP(S) witnesses deliver 20,000-byte message
+data without consuming the 16 KiB authored-script source budget; origin
+filtering, WindowProxy source identity, queue bounds, and existing task-turn
+ownership remain unchanged. Browser-wide task-source arbitration and the
+remaining Core Web Profile gates remain active issue #40 work.
 
 The completed native visual-encoder slice is
 [native-engine-browser-332](tasks/native-engine-browser-332.md): the native

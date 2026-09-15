@@ -901,6 +901,19 @@ pub(crate) struct NativeServiceWorkerClientMessage {
     pub(crate) transfer_ports: Vec<NativeMessagePortTransfer>,
 }
 
+/// A bounded cross-window message waiting for delivery to a page realm.
+///
+/// Unlike `NativePostMessageRequest`, this is the browser-owned delivery
+/// record rather than a page command. Keeping the source metadata here means
+/// a large structured-clone payload can cross the host boundary without being
+/// interpolated into generated JavaScript source.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct NativePageMessageEvent {
+    pub(crate) source_context_id: String,
+    pub(crate) source_origin: String,
+    pub(crate) data: serde_json::Value,
+}
+
 /// Page-facing events admitted for one JavaScript host turn. The payloads stay
 /// structured until they enter the already-installed QuickJS dispatch
 /// functions; concatenating their JSON into the user script would make a
@@ -913,6 +926,8 @@ pub(crate) struct NativePageEventBatch {
     pub(crate) message_port_messages: Vec<NativeMessagePortPageMessage>,
     #[serde(default)]
     pub(crate) service_worker_client_messages: Vec<NativeServiceWorkerClientMessage>,
+    #[serde(default)]
+    pub(crate) post_message_events: Vec<NativePageMessageEvent>,
 }
 
 enum NativeWorkerDispatch<'a> {
@@ -8023,50 +8038,6 @@ pub(crate) fn host_hash_change_event_script(
     Ok(Some(source))
 }
 
-/// Build the internal source used to deliver a cross-context `message` event.
-/// All page-controlled values are serialized as JSON data before entering the
-/// generated source; the receiving realm never evaluates them as JavaScript.
-pub(crate) fn host_message_event_script(
-    source_context_id: &str,
-    source_origin: &str,
-    data: &serde_json::Value,
-) -> Result<Option<String>, NativeEngineError> {
-    validate_context_id(source_context_id)?;
-    validate_url_text("message source origin", source_origin)?;
-    let data = serde_json::to_string(data).map_err(|_| NativeEngineError::Worker {
-        operation: "serialize message event".into(),
-        reason: "message data could not be serialized".into(),
-    })?;
-    if data.len() > MAX_NATIVE_POST_MESSAGE_BYTES {
-        return Err(NativeEngineError::limit(
-            "message event data",
-            MAX_NATIVE_POST_MESSAGE_BYTES,
-            data.len(),
-        ));
-    }
-    let source_context_id =
-        serde_json::to_string(source_context_id).map_err(|_| NativeEngineError::Worker {
-            operation: "serialize message event".into(),
-            reason: "message source context could not be serialized".into(),
-        })?;
-    let source_origin =
-        serde_json::to_string(source_origin).map_err(|_| NativeEngineError::Worker {
-            operation: "serialize message event".into(),
-            reason: "message source origin could not be serialized".into(),
-        })?;
-    let source = format!(
-        "globalThis.__glassDispatchMessage({{\"source_context_id\":{source_context_id},\"source_origin\":{source_origin},\"data\":{data}}})"
-    );
-    if source.len() > MAX_NATIVE_SCRIPT_BYTES {
-        return Err(NativeEngineError::limit(
-            "message event",
-            MAX_NATIVE_SCRIPT_BYTES,
-            source.len(),
-        ));
-    }
-    Ok(Some(source))
-}
-
 fn host_event_script_with_submitters(
     events: &[(u32, NativeEventKind, Option<u32>)],
 ) -> Result<Option<String>, NativeEngineError> {
@@ -12421,6 +12392,10 @@ fn validate_page_event_batch(events: &NativePageEventBatch) -> Result<(), Native
             "native service-worker client event batch",
             events.service_worker_client_messages.len(),
         ),
+        (
+            "native page message event batch",
+            events.post_message_events.len(),
+        ),
     ] {
         if count > MAX_NATIVE_WORKER_MESSAGES {
             return Err(NativeEngineError::limit(
@@ -12499,6 +12474,18 @@ fn validate_page_event_batch(events: &NativePageEventBatch) -> Result<(), Native
                 "transfer_ports": &message.transfer_ports,
             }),
             "native service-worker client event",
+        )?;
+    }
+    for message in &events.post_message_events {
+        validate_context_id(&message.source_context_id)?;
+        validate_url_text("native message source origin", &message.source_origin)?;
+        validate_native_message_payload(
+            &serde_json::json!({
+                "source_context_id": &message.source_context_id,
+                "source_origin": &message.source_origin,
+                "data": &message.data,
+            }),
+            "native page message event",
         )?;
     }
     Ok(())
@@ -12599,6 +12586,36 @@ fn dispatch_page_event_batch(
                 operation: "dispatch native Worker event".into(),
                 reason: format!(
                     "native Worker event dispatch failed: {}",
+                    CaughtError::from_error(&ctx, error)
+                ),
+            })?;
+    }
+    for message in &events.post_message_events {
+        let payload = native_message_payload(
+            &ctx,
+            &serde_json::json!({
+                "source_context_id": &message.source_context_id,
+                "source_origin": &message.source_origin,
+                "data": &message.data,
+            }),
+            "native page message event",
+        )?;
+        let dispatch: Function = ctx
+            .globals()
+            .get("__glassDispatchMessage")
+            .map_err(|error| NativeEngineError::Worker {
+                operation: "dispatch native page message event".into(),
+                reason: format!(
+                    "native page message dispatcher was unavailable: {}",
+                    CaughtError::from_error(&ctx, error)
+                ),
+            })?;
+        dispatch
+            .call::<_, Value>((payload,))
+            .map_err(|error| NativeEngineError::Worker {
+                operation: "dispatch native page message event".into(),
+                reason: format!(
+                    "native page message event dispatch failed: {}",
                     CaughtError::from_error(&ctx, error)
                 ),
             })?;

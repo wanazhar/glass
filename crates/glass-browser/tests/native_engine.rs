@@ -8194,6 +8194,37 @@ async fn native_post_message_round_trip_uses_window_proxy_and_origin_filter() {
 }
 
 #[tokio::test]
+async fn native_post_message_dispatch_keeps_large_data_out_of_script_source() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://large-message-parent",
+            "<script>globalThis.popup = window.open('fixture://large-message-child', 'large-message-child'); popup.postMessage({ kind: 'large', value: 'x'.repeat(20000) }, '*');</script><p>parent</p>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://large-message-child",
+            "<script>addEventListener('message', event => { globalThis.received = [event.data.kind, event.data.value.length, event.origin, Boolean(event.source)]; });</script><p>child</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://large-message-parent");
+    let session = BrowserRuntimeSession::connect_native(config).await.unwrap();
+    let child = session
+        .native_list_targets()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|target| !target.active)
+        .unwrap();
+    session.native_select_target(&child.id).await.unwrap();
+
+    assert_eq!(
+        session.script("globalThis.received").await.unwrap().value,
+        serde_json::json!(["large", 20000, "null", true])
+    );
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_http_post_message_crosses_content_worker_and_replies() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -8205,10 +8236,10 @@ async fn native_http_post_message_crosses_content_worker_and_replies() {
             let path = request.split_whitespace().nth(1).unwrap();
             let body = match path {
                 "/message-parent" => {
-                    "<title>HTTP message parent</title><script>addEventListener('message', event => { globalThis.reply = event.data.reply; }); const child = window.open('/message-child', 'message-child'); child.postMessage({ kind: 'worker-greeting' }, '*');</script><p>parent</p>"
+                    "<title>HTTP message parent</title><script>addEventListener('message', event => { globalThis.reply = event.data.reply; }); const child = window.open('/message-child', 'message-child'); child.postMessage({ kind: 'worker-greeting', payload: 'x'.repeat(20000) }, '*');</script><p>parent</p>"
                 }
                 "/message-child" => {
-                    "<script>addEventListener('message', event => { globalThis.received = [event.data.kind, event.origin, Boolean(event.source)]; event.source.postMessage({ reply: event.data.kind }, '*'); });</script><title>HTTP message child</title><p>child</p>"
+                    "<script>addEventListener('message', event => { globalThis.received = [event.data.kind, event.data.payload.length, event.origin, Boolean(event.source)]; event.source.postMessage({ reply: event.data.kind }, '*'); });</script><title>HTTP message child</title><p>child</p>"
                 }
                 other => panic!("unexpected postMessage request path: {other}"),
             };
@@ -8231,7 +8262,7 @@ async fn native_http_post_message_crosses_content_worker_and_replies() {
     session.native_select_target(&child.id).await.unwrap();
     assert_eq!(
         session.script("globalThis.received").await.unwrap().value,
-        serde_json::json!(["worker-greeting", format!("http://{address}"), true])
+        serde_json::json!(["worker-greeting", 20000, format!("http://{address}"), true])
     );
     session
         .native_select_target("native-context")

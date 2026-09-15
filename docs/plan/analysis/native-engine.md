@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-375`, with native-first product
+expansion checkpoint is `native-engine-browser-376`, with native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
 CacheStorage request matching, CacheStorage response admission and atomic
@@ -231,6 +231,17 @@ error projection stays bounded text plus the existing Error object contract;
 browser-wide task-source arbitration and the remaining Core Web Profile gates
 remain open. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-375.md`. The
+completed Slice 376 removes generated-source coupling from browser-owned
+cross-window message delivery. `NativePageMessageEvent` records validated
+source context, source origin, and structured-clone data in the page event
+batch; local and HTTP(S) page turns parse that record and call the installed
+`__glassDispatchMessage` function directly. The 20,000-byte local and
+content-process witnesses pass without consuming the 16 KiB authored-script
+source budget. Origin filtering, WindowProxy source identity, finite message
+bounds, and serialized host-turn ownership remain unchanged. Browser-wide
+task-source arbitration and the remaining Core Web Profile gates remain open.
+Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-376.md`. The
 completed 234 slice carries bounded
 completed 234 slice carries bounded
 root-scroll sticky positioning through

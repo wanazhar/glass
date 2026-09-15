@@ -150,6 +150,7 @@ pub(crate) struct NativeServiceWorkerRegistry {
     next_worker_id: u32,
     cache_state: NativeServiceWorkerCacheState,
     registration_profiles: Vec<NativeServiceWorkerRegistrationProfile>,
+    registration_changes: BTreeMap<String, Option<NativeServiceWorkerRegistrationProfile>>,
     pending_message_port_messages: VecDeque<NativeMessagePortPageMessage>,
     pending_client_messages: VecDeque<NativeServiceWorkerClientMessage>,
     pending_open_windows: VecDeque<NativeServiceWorkerOpenWindowRequest>,
@@ -171,6 +172,7 @@ impl Default for NativeServiceWorkerRegistry {
             next_worker_id: 1,
             cache_state: NativeServiceWorkerCacheState::default(),
             registration_profiles: Vec::new(),
+            registration_changes: BTreeMap::new(),
             pending_message_port_messages: VecDeque::new(),
             pending_client_messages: VecDeque::new(),
             pending_open_windows: VecDeque::new(),
@@ -409,6 +411,16 @@ impl NativeServiceWorkerRegistry {
 
     pub(crate) fn registration_profiles(&self) -> Vec<NativeServiceWorkerRegistrationProfile> {
         self.registration_profiles.clone()
+    }
+
+    pub(crate) fn registration_changes(
+        &self,
+    ) -> &BTreeMap<String, Option<NativeServiceWorkerRegistrationProfile>> {
+        &self.registration_changes
+    }
+
+    pub(crate) fn clear_registration_changes(&mut self) {
+        self.registration_changes.clear();
     }
 
     pub(crate) async fn restore_for_document(
@@ -835,6 +847,7 @@ impl NativeServiceWorkerRegistry {
             });
         self.registration_profiles
             .sort_unstable_by(|left, right| left.scope.cmp(&right.scope));
+        self.record_registration_change(&worker.scope);
     }
 
     fn remember_waiting_registration(
@@ -842,12 +855,19 @@ impl NativeServiceWorkerRegistry {
         scope: &str,
         waiting: NativeServiceWorkerWorkerProfile,
     ) {
-        if let Some(profile) = self
+        if self
             .registration_profiles
-            .iter_mut()
-            .find(|profile| profile.scope == scope)
+            .iter()
+            .any(|profile| profile.scope == scope)
         {
-            profile.waiting = Some(waiting);
+            if let Some(profile) = self
+                .registration_profiles
+                .iter_mut()
+                .find(|profile| profile.scope == scope)
+            {
+                profile.waiting = Some(waiting);
+            }
+            self.record_registration_change(scope);
             return;
         }
         let Some(active) = self.registrations.get(scope) else {
@@ -862,6 +882,16 @@ impl NativeServiceWorkerRegistry {
             });
         self.registration_profiles
             .sort_unstable_by(|left, right| left.scope.cmp(&right.scope));
+        self.record_registration_change(scope);
+    }
+
+    fn record_registration_change(&mut self, scope: &str) {
+        let profile = self
+            .registration_profiles
+            .iter()
+            .find(|profile| profile.scope == scope)
+            .cloned();
+        self.registration_changes.insert(scope.to_owned(), profile);
     }
 
     pub(crate) async fn register(
@@ -1080,7 +1110,11 @@ impl NativeServiceWorkerRegistry {
         if self.current_client_scope.as_deref() == Some(scope) {
             self.current_client_scope = None;
         }
-        removed_profile || had_active || had_waiting
+        let removed = removed_profile || had_active || had_waiting;
+        if removed {
+            self.record_registration_change(scope);
+        }
+        removed
     }
 
     pub(crate) async fn post_message(

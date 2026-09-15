@@ -4869,6 +4869,56 @@ mod storage_journal_tests {
         );
         remove_test_profile(&profile_path);
     }
+
+    #[test]
+    fn service_worker_registration_profile_writes_merge_scoped_changes() {
+        let profile_path = test_profile_path("registration-merge");
+        remove_test_profile(&profile_path);
+        let first = NativeServiceWorkerRegistrationProfile {
+            script_url: "https://registration.test/one/sw.js".into(),
+            scope: "https://registration.test/one/".into(),
+            worker_type: "classic".into(),
+            waiting: None,
+        };
+        let second = NativeServiceWorkerRegistrationProfile {
+            script_url: "https://registration.test/two/sw.js".into(),
+            scope: "https://registration.test/two/".into(),
+            worker_type: "classic".into(),
+            waiting: None,
+        };
+
+        save_service_worker_cache_profile(
+            Some(&profile_path),
+            &NativeServiceWorkerCacheState::default(),
+            std::slice::from_ref(&first),
+            &BTreeMap::from([(first.scope.clone(), Some(first.clone()))]),
+        )
+        .unwrap();
+        save_service_worker_cache_profile(
+            Some(&profile_path),
+            &NativeServiceWorkerCacheState::default(),
+            std::slice::from_ref(&second),
+            &BTreeMap::from([(second.scope.clone(), Some(second.clone()))]),
+        )
+        .unwrap();
+        assert_eq!(
+            load_service_worker_registration_profiles(Some(&profile_path)).unwrap(),
+            vec![first.clone(), second.clone()]
+        );
+
+        save_service_worker_cache_profile(
+            Some(&profile_path),
+            &NativeServiceWorkerCacheState::default(),
+            std::slice::from_ref(&second),
+            &BTreeMap::from([(first.scope.clone(), None)]),
+        )
+        .unwrap();
+        assert_eq!(
+            load_service_worker_registration_profiles(Some(&profile_path)).unwrap(),
+            vec![second]
+        );
+        remove_test_profile(&profile_path);
+    }
 }
 
 pub(crate) fn load_web_storage_profile(
@@ -5144,12 +5194,31 @@ pub(crate) fn save_service_worker_cache_profile(
     path: Option<&Path>,
     cache_state: &NativeServiceWorkerCacheState,
     registration_profiles: &[NativeServiceWorkerRegistrationProfile],
+    registration_changes: &BTreeMap<String, Option<NativeServiceWorkerRegistrationProfile>>,
 ) -> Result<(), NativeEngineError> {
     let Some(path) = path else {
         return Ok(());
     };
     cache_state.validate()?;
     validate_service_worker_registration_profiles(registration_profiles)?;
+    for (scope, profile) in registration_changes {
+        if scope.is_empty() || scope.len() > MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES {
+            return Err(NativeEngineError::limit(
+                "native service worker registration scope",
+                MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES,
+                scope.len(),
+            ));
+        }
+        if let Some(profile) = profile {
+            if profile.scope != *scope {
+                return Err(NativeEngineError::invalid(
+                    "native service worker registration change",
+                    "scope key must match the registration profile",
+                ));
+            }
+            profile.validate()?;
+        }
+    }
     if let Some(parent) = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -5161,6 +5230,18 @@ pub(crate) fn save_service_worker_cache_profile(
     }
     let _lock = lock_web_storage_profile(path, true)?;
     let current = read_web_storage_profile(path)?;
+    let mut merged_registrations = current
+        .as_ref()
+        .map(|profile| profile.service_worker_registrations.clone())
+        .unwrap_or_else(|| registration_profiles.to_vec());
+    for (scope, change) in registration_changes {
+        merged_registrations.retain(|profile| profile.scope != *scope);
+        if let Some(profile) = change {
+            merged_registrations.push(profile.clone());
+        }
+    }
+    merged_registrations.sort_unstable_by(|left, right| left.scope.cmp(&right.scope));
+    validate_service_worker_registration_profiles(&merged_registrations)?;
     let revision = current
         .as_ref()
         .map(|profile| profile.revision)
@@ -5186,7 +5267,7 @@ pub(crate) fn save_service_worker_cache_profile(
             .map(|profile| profile.indexed_db.clone())
             .unwrap_or_default(),
         service_worker_caches: cache_state.clone(),
-        service_worker_registrations: registration_profiles.to_vec(),
+        service_worker_registrations: merged_registrations,
     };
     let bytes = serde_json::to_vec(&profile).map_err(|_| NativeEngineError::Worker {
         operation: "save native service worker cache profile".into(),

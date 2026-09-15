@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-380` slice. The native runtime is now the primary
+`native-engine-browser-381` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -627,6 +627,18 @@ owner still supplies DOM event-path behavior, while Rust owns target identity
 and validation. Browser-wide task-source arbitration and the remaining Core
 Web Profile gates remain open. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-380.md`.
+
+Slice 381 removes the remaining connection-specific generated-source path for
+SharedWorker delivery. Validated MessagePort transfer descriptors now cross
+the worker boundary as a structured envelope and call the installed
+`__glassDispatchSharedWorkerConnect` function during a static continuation.
+Initial and reused named workers share the same path for classic and module
+workers; bridge-key, port-count, worker-identity, route-registration, and
+cleanup limits remain owned by Rust. The worker listener and port projection
+remain in the installed worker realm, while Rust owns descriptor validation and
+route identity. Browser-wide task-source arbitration and the remaining Core
+Web Profile gates remain open. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-381.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

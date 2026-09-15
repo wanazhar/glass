@@ -997,6 +997,9 @@ pub(crate) struct NativePageEventBatch {
 }
 
 enum NativeWorkerDispatch<'a> {
+    SharedWorkerConnect {
+        transfer_ports: &'a [NativeMessagePortTransfer],
+    },
     Message {
         data: &'a serde_json::Value,
         transfer_ports: &'a [NativeMessagePortTransfer],
@@ -10417,14 +10420,6 @@ impl NativeJavaScriptRuntime {
         is_module: bool,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
         validate_message_port_transfers(std::slice::from_ref(transfer_port))?;
-        let serialized =
-            serde_json::to_string(transfer_port).map_err(|_| NativeEngineError::Worker {
-                operation: "serialize native SharedWorker connection".into(),
-                reason: "SharedWorker connection port could not be serialized".into(),
-            })?;
-        let source = format!(
-            "globalThis.__glassDispatchSharedWorkerConnect({{transfer_ports:[{serialized}]}});"
-        );
         let bootstrap = shared_worker_bootstrap(
             worker_id,
             worker_url,
@@ -10432,8 +10427,17 @@ impl NativeJavaScriptRuntime {
             &BTreeMap::new(),
             is_module,
         )?;
-        self.evaluate_worker_source_with_bootstrap(
-            worker_id, worker_url, None, &source, bootstrap, false, false,
+        self.evaluate_worker_source_with_bootstrap_and_event(
+            worker_id,
+            worker_url,
+            None,
+            "undefined;",
+            bootstrap,
+            false,
+            false,
+            Some(NativeWorkerDispatch::SharedWorkerConnect {
+                transfer_ports: std::slice::from_ref(transfer_port),
+            }),
         )
     }
 
@@ -13126,6 +13130,35 @@ fn dispatch_worker_event(
     dispatch: NativeWorkerDispatch<'_>,
 ) -> Result<bool, NativeEngineError> {
     Ok(match dispatch {
+        NativeWorkerDispatch::SharedWorkerConnect { transfer_ports } => {
+            let payload = native_message_payload(
+                &ctx,
+                &serde_json::json!({
+                    "transfer_ports": transfer_ports,
+                }),
+                "native SharedWorker connection",
+            )?;
+            let dispatch: Function = ctx
+                .globals()
+                .get("__glassDispatchSharedWorkerConnect")
+                .map_err(|error| NativeEngineError::Worker {
+                    operation: "dispatch native SharedWorker connection".into(),
+                    reason: format!(
+                        "native SharedWorker connection dispatcher was unavailable: {}",
+                        CaughtError::from_error(&ctx, error)
+                    ),
+                })?;
+            dispatch
+                .call::<_, Value>((payload,))
+                .map_err(|error| NativeEngineError::Worker {
+                    operation: "dispatch native SharedWorker connection".into(),
+                    reason: format!(
+                        "native SharedWorker connection dispatch failed: {}",
+                        CaughtError::from_error(&ctx, error)
+                    ),
+                })?;
+            false
+        }
         NativeWorkerDispatch::Message {
             data,
             transfer_ports,

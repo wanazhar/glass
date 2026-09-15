@@ -48163,7 +48163,7 @@ async fn native_content_process_drives_websocket_text_binary_and_close_events() 
         let request = read_http_request(&mut stream).await;
         assert_eq!(request.split_whitespace().nth(1), Some("/page"));
         let body = format!(
-            "<input id='result' value='pending'><script>globalThis.pageScriptStatus = 'before'; try {{ globalThis.pageSocket = new WebSocket('ws://{address}/socket'); globalThis.pageScriptStatus = 'after'; }} catch (error) {{ globalThis.pageScriptStatus = String(error); }}</script>"
+            "<input id='result' value='pending'><script>globalThis.pageScriptStatus = 'before'; globalThis.pageMessages = []; try {{ globalThis.pageSocket = new WebSocket('ws://{address}/socket'); globalThis.pageSocket.binaryType = 'arraybuffer'; globalThis.pageSocket.onopen = () => {{ globalThis.pageSocket.send('client-text'); globalThis.pageSocket.send(new Uint8Array([1, 2, 3])); }}; globalThis.pageSocket.onmessage = event => {{ if (typeof event.data === 'string') globalThis.pageMessages.push(event.data); else globalThis.pageMessages.push(Array.from(new Uint8Array(event.data)).join(',')); if (globalThis.pageMessages.length === 2) {{ document.getElementById('result').value = globalThis.pageMessages.join('|'); globalThis.pageSocket.close(1000, 'done'); }} }}; globalThis.pageSocket.onerror = () => {{ globalThis.pageSocketError = true; }}; globalThis.pageScriptStatus = 'after'; }} catch (error) {{ globalThis.pageScriptStatus = String(error); }}</script>"
         );
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -48227,7 +48227,9 @@ async fn native_content_process_drives_websocket_text_binary_and_close_events() 
     );
     assert_eq!(
         engine
-            .evaluate_async(&"await new Promise((resolve, reject) => { const socket = globalThis.pageSocket; socket.binaryType = 'arraybuffer'; socket.onopen = () => { socket.send('client-text'); socket.send(new Uint8Array([1, 2, 3])); }; const messages = []; socket.onmessage = event => { if (typeof event.data === 'string') messages.push(event.data); else messages.push(Array.from(new Uint8Array(event.data)).join(',')); if (messages.length === 2) { document.getElementById('result').value = messages.join('|'); socket.close(1000, 'done'); resolve(messages.join('|')); } }; socket.onerror = () => reject(new Error('websocket failed')); })".to_string())
+            .evaluate_async(
+                "await new Promise((resolve, reject) => { const check = () => { if (globalThis.pageSocketError) { reject(new Error('websocket failed')); return; } if (globalThis.pageMessages.length === 2) { resolve(globalThis.pageMessages.join('|')); return; } if (globalThis.pageSocket.readyState === 3) { reject(new Error('websocket closed before messages')); return; } setTimeout(check, 1); }; check(); })",
+            )
             .await
             .unwrap(),
         serde_json::json!("server-text|7,8,255")
@@ -48238,6 +48240,52 @@ async fn native_content_process_drives_websocket_text_binary_and_close_events() 
             .await
             .unwrap(),
         serde_json::json!("server-text|7,8,255")
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_delivers_queued_websocket_events_on_ordinary_turns() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = format!(
+            "<body></body><script>globalThis.events = []; globalThis.socket = new WebSocket('ws://{address}/socket'); globalThis.socket.onmessage = event => events.push(event.data);</script>"
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut websocket = accept_async(stream).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        websocket
+            .send(Message::Text("queued-background".into()))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        engine.evaluate_async("events").await.unwrap(),
+        serde_json::json!([])
+    );
+    assert_eq!(
+        engine.evaluate_async("events").await.unwrap(),
+        serde_json::json!(["queued-background"])
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

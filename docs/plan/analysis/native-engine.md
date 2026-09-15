@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-361`, with native-first product
+expansion checkpoint is `native-engine-browser-362`, with native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
 CacheStorage request matching, CacheStorage response admission and atomic
@@ -92,6 +92,14 @@ response or bounded network fallback is committed before the backend returns
 its final navigation snapshot. Richer transferables, browser-wide
 registration arbitration, durable live-client leases, complete task-source
 conformance, and production certification remain separate gates. The
+completed Slice 362 extends that handoff to startup: a restored Service Worker
+can suspend the configured initial navigation while awaiting
+`clients.openWindow()`, and the backend can resolve the queued effect after
+initialization has entered the running state. The resumed document is then
+committed through the normal content owner without a CDP path. Browser-wide
+registration arbitration, durable live-client leases, richer transferables,
+complete task-source conformance, and production certification remain separate
+gates. The
 completed 234 slice carries bounded
 root-scroll sticky positioning through
 shared flow,
@@ -5966,9 +5974,11 @@ browser task;
 `docs/plan/tasks/native-engine-032.md` is an earlier completed checkpoint,
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
-The current completed checkpoint is recorded for
-`docs/plan/tasks/native-engine-234.md`: implementation is `8a96f56b` (design
-`b2119e5f`). It accepts bounded standalone case-insensitive finite
+The current completed browser-expansion checkpoint is recorded for
+`docs/plan/tasks/native-engine-browser-362.md`; its implementation and focused
+verification are recorded in that task file. The CSS foundation checkpoint
+remains `docs/plan/tasks/native-engine-234.md`: implementation is `8a96f56b`
+(design `b2119e5f`). It accepts bounded standalone case-insensitive finite
 `overflow: visible|auto|scroll`, `overflow-x: visible|auto|scroll`, and
 `overflow-y: visible|auto|scroll` values as the existing visible/no-clip
 projection, without nested scroll containers or scrollbar artifacts. It

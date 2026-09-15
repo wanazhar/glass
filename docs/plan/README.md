@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-361` locally. Native is now the default runtime for
+`native-engine-browser-362` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -134,6 +134,17 @@ rebuilt by the explicit native recovery path. Navigation, script, action,
 lifecycle, storage, and close boundaries share the same liveness refresh.
 Process isolation, cancellation, conformance, and final production
 certification remain active issue #40 gates.
+
+The completed native startup Service Worker fetch-suspension slice is
+[native-engine-browser-362](tasks/native-engine-browser-362.md): a restored
+Service Worker can intercept the configured initial URL, await
+`clients.openWindow()` across the content-process boundary, and keep the
+initialization handoff alive while the browser owner creates the parked
+target. Initialization enters the running state with the bounded effect
+queued, and the normal scheduler then resolves the worker and commits the
+resumed document. Browser-wide registration arbitration, durable live-client
+leases, richer transferables, complete task-source scheduling, and final
+production certification remain active issue #40 gates.
 
 The completed native visual-encoder slice is
 [native-engine-browser-332](tasks/native-engine-browser-332.md): the native

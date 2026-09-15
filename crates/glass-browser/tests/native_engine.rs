@@ -4264,6 +4264,118 @@ self.addEventListener('fetch', event => {
 }
 
 #[tokio::test]
+async fn native_runtime_restores_initial_service_worker_fetch_suspension() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let profile_path = std::env::temp_dir().join(format!(
+        "glass-native-service-worker-initial-suspension-{}.json",
+        std::process::id()
+    ));
+    let lock_path = profile_path.with_extension("lock");
+    let events_path = profile_path.with_extension("events");
+    let readers_path = profile_path.with_extension("readers");
+    for path in [&profile_path, &lock_path, &events_path, &readers_path] {
+        let _ = fs::remove_file(path);
+    }
+    let (shutdown_sender, mut shutdown_receiver) = oneshot::channel();
+    let service_worker = r#"self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
+self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+self.addEventListener('fetch', event => {
+  if (new URL(event.request.url).pathname === '/suspended') {
+    event.respondWith((async () => {
+      const client = await clients.openWindow('/opened');
+      return new Response('<!doctype html><html><body><main id="initial-resumed">' + (client ? client.url : 'missing') + '</main></body></html>', {
+        headers: { 'Content-Type': 'text/html' },
+      });
+    })());
+  }
+});"#;
+    let server = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = &mut shutdown_receiver => break,
+                accepted = listener.accept() => {
+                    let (mut stream, _) = accepted.unwrap();
+                    let request = read_http_request(&mut stream).await;
+                    let path = request.split_whitespace().nth(1).unwrap_or_default();
+                    let (content_type, body) = match path {
+                        "/register" => (
+                            "text/html",
+                            "<!doctype html><script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script><main>register</main>",
+                        ),
+                        "/sw.js" => ("application/javascript", service_worker),
+                        "/opened" => (
+                            "text/html",
+                            "<!doctype html><html><body><main>opened window</main></body></html>",
+                        ),
+                        "/suspended" => ("text/plain", "network fallback"),
+                        _ => ("text/plain", "unexpected request"),
+                    };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                }
+            }
+        }
+    });
+
+    let first = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/register"))
+            .with_storage_path(profile_path.clone()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        first
+            .script(
+                "await registrationPromise.then(reg => [reg.active.state, reg.active.scriptURL])"
+            )
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!(["activated", format!("http://{address}/sw.js")])
+    );
+    first.close().await.unwrap();
+
+    let reopened = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/suspended"))
+            .with_storage_path(profile_path.clone()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        reopened
+            .script("({ href: location.href, body: document.body && document.body.innerText })")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!({
+            "href": format!("http://{address}/suspended"),
+            "body": format!("http://{address}/opened"),
+        })
+    );
+    let targets = reopened.native_list_targets().await.unwrap();
+    assert_eq!(targets.len(), 2);
+    assert!(
+        targets
+            .iter()
+            .any(|target| { target.url == format!("http://{address}/opened") && !target.active })
+    );
+    reopened.close().await.unwrap();
+    let _ = shutdown_sender.send(());
+    server.await.unwrap();
+
+    for path in [&profile_path, &lock_path, &events_path, &readers_path] {
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[tokio::test]
 async fn native_content_process_updates_service_worker_registration() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
